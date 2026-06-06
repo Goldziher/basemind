@@ -60,6 +60,8 @@ enum Cmd {
         #[command(subcommand)]
         action: LangCmd,
     },
+    /// Run an MCP server (stdio) exposing the code map to AI agents.
+    Serve,
 }
 
 #[derive(Subcommand, Debug)]
@@ -100,11 +102,14 @@ enum HookCmd {
 }
 
 fn main() -> Result<()> {
+    // Diagnostics → stderr so they never collide with subcommand output (especially `serve`,
+    // whose stdout is the MCP JSON-RPC transport).
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -129,6 +134,7 @@ fn main() -> Result<()> {
             LangCmd::Install => cmd_lang_install(verbosity, no_color),
             LangCmd::Clean => cmd_lang_clean(),
         },
+        Cmd::Serve => cmd_serve(&root),
     }
 }
 
@@ -317,6 +323,34 @@ fn parse_kind(s: &str) -> Result<SymbolKind> {
         "module" => SymbolKind::Module,
         "macro" => SymbolKind::Macro,
         other => anyhow::bail!("unknown symbol kind: {other}"),
+    })
+}
+
+fn cmd_serve(root: &std::path::Path) -> Result<()> {
+    // Open the store in read-only mode so we don't conflict with a concurrent `gitmind watch`.
+    // The MCP server is purely a query surface.
+    let store = Store::open_read_only(root).context("open store (ro)")?;
+    let root_buf = root.to_path_buf();
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move {
+        use rmcp::ServiceExt;
+        let server = gitmind::mcp::GitmindServer::new(store, root_buf);
+        let transport = rmcp::transport::stdio();
+        let service = server
+            .serve(transport)
+            .await
+            .map_err(|e| anyhow::anyhow!("rmcp serve: {e}"))?;
+        // Block until the client disconnects (stdio EOF) or we're killed.
+        service
+            .waiting()
+            .await
+            .map_err(|e| anyhow::anyhow!("rmcp waiting: {e}"))?;
+        Ok::<(), anyhow::Error>(())
     })
 }
 

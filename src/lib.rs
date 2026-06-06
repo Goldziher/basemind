@@ -6,6 +6,7 @@ pub mod config;
 pub mod extract;
 pub mod hashing;
 pub mod lang;
+pub mod mcp;
 pub mod query;
 pub mod render;
 pub mod scanner;

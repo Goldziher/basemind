@@ -12,6 +12,7 @@ for the iteration plan.
 gitmind init                              # write .gitmind/gitmind.toml with defaults
 gitmind scan                              # one-shot scan, write .gitmind/
 gitmind watch                             # long-running file watcher
+gitmind serve                             # MCP server (stdio) for AI agents
 gitmind query outline <path> [--l2]       # symbols, imports (+ docs/calls with --l2)
 gitmind query symbol <needle> [--kind K]  # substring search across symbols
 gitmind query dependents <module>         # heuristic reverse-lookup
@@ -22,7 +23,48 @@ gitmind lang {list, install, clean}       # manage downloaded tree-sitter gramma
 Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color`
 (NO_COLOR is also honored).
 
-The MCP server (`gitmind serve`) is the next planned subcommand and not yet wired.
+## MCP server
+
+`gitmind serve` exposes the code map to AI agents over the canonical MCP
+[stdio transport](https://modelcontextprotocol.io/specification/2025-11-25).
+Tools shipped (all return JSON):
+
+| Tool             | Use                                                            |
+|------------------|----------------------------------------------------------------|
+| `outline`        | full per-file structure: symbols + line/col + signatures + imports (`l2: true` for calls + docs) |
+| `search_symbols` | substring lookup across every indexed file, with optional kind filter |
+| `list_files`     | enumerate indexed paths, optional `path_contains` + `language` filters |
+| `dependents`     | heuristic reverse-lookup via imports                            |
+| `status`         | repo overview: file count, language breakdown, cache directory  |
+
+The server opens the store **read-only** so it coexists with `gitmind watch`.
+On startup it preloads every L1 blob into RAM so cross-file queries are
+sub-millisecond. Trade: startup time scales with file count.
+
+Latency on a 39 270-file TypeScript repo:
+
+| Tool             | Wall time |
+|------------------|-----------|
+| startup          | 3.1 s, 77 MB RSS |
+| `status`         | 1.2 ms    |
+| `list_files`     | 3 ms      |
+| `outline` (1571 symbols) | 1.9 ms |
+| `search_symbols` | 1–3 ms    |
+| `dependents`     | 6.5 ms    |
+
+Wire into Claude Code (`~/.claude.json`) or any MCP client:
+
+```json
+{
+  "mcpServers": {
+    "gitmind": {
+      "command": "gitmind",
+      "args": ["serve"],
+      "cwd": "/abs/path/to/your/repo"
+    }
+  }
+}
+```
 
 ## Languages
 
