@@ -53,7 +53,12 @@ pub fn watch(
     info!(root = %root.display(), "initial scan");
     {
         let mut guard = store.lock().expect("store poisoned");
-        let report = crate::scanner::scan(root, &mut guard, &config)?;
+        let report = crate::scanner::scan(
+            root,
+            &mut guard,
+            &config,
+            crate::scanner::ScanSource::WorkingTree,
+        )?;
         on_batch(WatchBatch {
             kind: BatchKind::InitialScan,
             report: &report,

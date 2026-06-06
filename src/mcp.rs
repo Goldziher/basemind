@@ -45,6 +45,10 @@ struct ServerState {
     /// `outline` keeps reading via the store so it always sees fresh blobs (e.g. if `gitmind
     /// watch` rewrote a file in another process), and single-file reads are already cheap.
     cache: Arc<MapCache>,
+    /// Discovered git repository, or `None` when serving against a non-git directory.
+    /// All git-aware tools (`working_tree_status`, `recent_changes`, …) check this and
+    /// return an MCP error if `None`.
+    repo: Option<Arc<crate::git::Repo>>,
 }
 
 struct MapCache {
@@ -86,10 +90,11 @@ impl MapCache {
 }
 
 impl GitmindServer {
-    pub fn new(store: Store, root: PathBuf) -> Self {
+    pub fn new(store: Store, root: PathBuf, repo: Option<Arc<crate::git::Repo>>) -> Self {
         let cache = Arc::new(MapCache::build(&store));
         tracing::info!(
             files = cache.by_path.len(),
+            git = repo.is_some(),
             "preloaded code map into RAM for MCP server"
         );
         Self {
@@ -97,6 +102,7 @@ impl GitmindServer {
                 store: RwLock::new(store),
                 root,
                 cache,
+                repo,
             }),
             tool_router: Self::tool_router(),
         }
@@ -149,6 +155,44 @@ pub struct DependentsParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct StatusParams {}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WorkingTreeStatusParams {}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct RecentChangesParams {
+    /// Number of commits to walk back from HEAD. Default 20, max 100.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// When true, include the per-file change list for each commit. Default true.
+    #[serde(default = "default_true")]
+    pub include_files: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct CommitsTouchingParams {
+    /// Repository-relative path (forward-slash) of the file to follow.
+    pub path: String,
+    /// Number of commits returned, newest first. Default 20, max 100.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DiffOutlineParams {
+    /// Repository-relative path of the file to diff.
+    pub path: String,
+    /// Revision to compare against the *current view*. Defaults to "HEAD".
+    #[serde(default)]
+    pub rev: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct RepoInfoParams {}
+
+fn default_true() -> bool {
+    true
+}
 
 // ─── Response shapes (JSON-clean copies of the extract types) ────────────────
 
@@ -250,6 +294,73 @@ struct StatusResponse {
     root: String,
 }
 
+#[derive(Debug, Serialize)]
+struct CommitView {
+    sha: String,
+    short_sha: String,
+    summary: String,
+    author: String,
+    author_time_unix: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    files: Option<Vec<CommitFileView>>,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitFileView {
+    path: String,
+    change: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct WorkingTreeStatusView {
+    staged_added: Vec<String>,
+    staged_modified: Vec<String>,
+    staged_deleted: Vec<String>,
+    modified: Vec<String>,
+    untracked: Vec<String>,
+    is_clean: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RecentChangesResponse {
+    commits: Vec<CommitView>,
+}
+
+#[derive(Debug, Serialize)]
+struct CommitsTouchingResponse {
+    path: String,
+    commits: Vec<CommitView>,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffSymbolView {
+    name: String,
+    kind: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DiffOutlineResponse {
+    path: String,
+    rev: String,
+    /// In the current view but not at `rev`.
+    added: Vec<DiffSymbolView>,
+    /// At `rev` but not in the current view.
+    removed: Vec<DiffSymbolView>,
+    /// In both. Useful so the agent can see context without re-querying outline.
+    common: Vec<DiffSymbolView>,
+    /// Set when one side doesn't contain the file at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RepoInfoResponse {
+    workdir: String,
+    head_sha: Option<String>,
+    head_short_sha: Option<String>,
+    branch: Option<String>,
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn kind_to_str(k: SymbolKind) -> &'static str {
@@ -301,6 +412,41 @@ const SEARCH_LIMIT_DEFAULT: u32 = 100;
 const SEARCH_LIMIT_MAX: u32 = 1000;
 const LIST_LIMIT_DEFAULT: u32 = 200;
 const LIST_LIMIT_MAX: u32 = 5000;
+const LOG_LIMIT_DEFAULT: u32 = 20;
+const LOG_LIMIT_MAX: u32 = 100;
+
+fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
+    let files = if include_files {
+        Some(
+            c.files
+                .into_iter()
+                .map(|(path, kind)| CommitFileView {
+                    path,
+                    change: kind.as_str(),
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+    CommitView {
+        sha: c.sha,
+        short_sha: c.short_sha,
+        summary: c.summary,
+        author: c.author,
+        author_time_unix: c.author_time_unix,
+        files,
+    }
+}
+
+fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::Repo>, McpError> {
+    state.repo.as_ref().ok_or_else(|| {
+        McpError::invalid_request(
+            "this tool requires `gitmind serve` to be run inside a git repository",
+            None,
+        )
+    })
+}
 
 // ─── Tools ───────────────────────────────────────────────────────────────────
 
@@ -564,15 +710,255 @@ impl GitmindServer {
             root: self.state.root.display().to_string(),
         })
     }
+
+    /// `git status --porcelain` shape for an agent.
+    #[tool(
+        description = "Return what's dirty in the working tree: staged adds/modifies/deletes, \
+                       working-tree modifications, and untracked files. `is_clean: true` if all five \
+                       buckets are empty. Requires `gitmind serve` to be run inside a git repository."
+    )]
+    async fn working_tree_status(
+        &self,
+        Parameters(_): Parameters<WorkingTreeStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let s = repo
+            .status_porcelain()
+            .map_err(|e| McpError::internal_error(format!("git status: {e}"), None))?;
+        let is_clean = s.staged_added.is_empty()
+            && s.staged_modified.is_empty()
+            && s.staged_deleted.is_empty()
+            && s.modified.is_empty()
+            && s.untracked.is_empty();
+        json_result(&WorkingTreeStatusView {
+            staged_added: s.staged_added,
+            staged_modified: s.staged_modified,
+            staged_deleted: s.staged_deleted,
+            modified: s.modified,
+            untracked: s.untracked,
+            is_clean,
+        })
+    }
+
+    /// Walk HEAD ancestry and return the last N commits.
+    #[tool(
+        description = "Last N commits on the current branch, newest first. Each commit comes with \
+                       sha, summary (first line of message), author, unix timestamp, and — when \
+                       `include_files=true` (default) — the per-file change list relative to its first \
+                       parent. Default 20 commits, max 100."
+    )]
+    async fn recent_changes(
+        &self,
+        Parameters(params): Parameters<RecentChangesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
+        let commits = repo
+            .log_paths(limit, params.include_files)
+            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+        let view = commits
+            .into_iter()
+            .map(|c| commit_to_view(c, params.include_files))
+            .collect();
+        json_result(&RecentChangesResponse { commits: view })
+    }
+
+    /// Filter the log to commits whose tree differs from the parent at `path`.
+    #[tool(
+        description = "Commits that modified `path`, newest first. Returns the same per-commit \
+                       shape as `recent_changes` without the per-file list (the path is implicit). \
+                       Default 20 commits, max 100."
+    )]
+    async fn commits_touching(
+        &self,
+        Parameters(params): Parameters<CommitsTouchingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
+        let commits = repo
+            .log_for_path(&params.path, limit)
+            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+        let view = commits
+            .into_iter()
+            .map(|c| commit_to_view(c, false))
+            .collect();
+        json_result(&CommitsTouchingResponse {
+            path: params.path,
+            commits: view,
+        })
+    }
+
+    /// Symbol-level diff between the served view and another rev.
+    ///
+    /// We extract the rev side live (it isn't necessarily indexed) and compare against the
+    /// preloaded cache by `(name, kind)`. No textual diff, no signature diff — outline-level only.
+    #[tool(
+        description = "Diff the symbol set of `path` between the current view and another revision \
+                       (`rev`, defaults to HEAD). Returns three lists: `added` (in the current view, \
+                       not at `rev`), `removed` (at `rev`, not in current view), and `common`. Useful \
+                       for 'what symbols did this branch add' style questions without reading source."
+    )]
+    async fn diff_outline(
+        &self,
+        Parameters(params): Parameters<DiffOutlineParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
+        let rev_sha = repo
+            .resolve_rev(rev_spec)
+            .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
+
+        let here = self.state.cache.by_path.get(&params.path).map(|l1| {
+            l1.symbols
+                .iter()
+                .map(|s| (s.name.clone(), kind_to_str(s.kind)))
+                .collect::<Vec<(String, &'static str)>>()
+        });
+
+        let rev_blob = repo.read_blob_at_rev(&rev_sha, &params.path).map_err(|e| {
+            McpError::internal_error(format!("read blob {rev_sha}:{}: {e}", params.path), None)
+        })?;
+
+        let there: Option<Vec<(String, &'static str)>> = match rev_blob {
+            Some(bytes) => {
+                let lang =
+                    crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(|| {
+                        McpError::invalid_params(
+                            format!("unsupported language for {}", params.path),
+                            None,
+                        )
+                    })?;
+                let l1 = crate::extract::l1::extract_l1(lang, &bytes).map_err(|e| {
+                    McpError::internal_error(
+                        format!("extract {rev_sha}:{}: {e}", params.path),
+                        None,
+                    )
+                })?;
+                Some(
+                    l1.symbols
+                        .into_iter()
+                        .map(|s| (s.name, kind_to_str(s.kind)))
+                        .collect(),
+                )
+            }
+            None => None,
+        };
+
+        let (added, removed, common, note) = match (here, there) {
+            (Some(h), Some(t)) => {
+                let hs: ahash::AHashSet<(String, &'static str)> = h.iter().cloned().collect();
+                let ts: ahash::AHashSet<(String, &'static str)> = t.iter().cloned().collect();
+                let added = h
+                    .iter()
+                    .filter(|p| !ts.contains(*p))
+                    .cloned()
+                    .map(|(n, k)| DiffSymbolView {
+                        name: n,
+                        kind: k.to_string(),
+                    })
+                    .collect();
+                let removed = t
+                    .iter()
+                    .filter(|p| !hs.contains(*p))
+                    .cloned()
+                    .map(|(n, k)| DiffSymbolView {
+                        name: n,
+                        kind: k.to_string(),
+                    })
+                    .collect();
+                let common = h
+                    .iter()
+                    .filter(|p| ts.contains(*p))
+                    .cloned()
+                    .map(|(n, k)| DiffSymbolView {
+                        name: n,
+                        kind: k.to_string(),
+                    })
+                    .collect();
+                (added, removed, common, None)
+            }
+            (Some(h), None) => (
+                h.into_iter()
+                    .map(|(n, k)| DiffSymbolView {
+                        name: n,
+                        kind: k.to_string(),
+                    })
+                    .collect(),
+                Vec::new(),
+                Vec::new(),
+                Some(
+                    format!("path absent at {rev_spec}; entire file treated as added").to_string(),
+                ),
+            ),
+            (None, Some(t)) => (
+                Vec::new(),
+                t.into_iter()
+                    .map(|(n, k)| DiffSymbolView {
+                        name: n,
+                        kind: k.to_string(),
+                    })
+                    .collect(),
+                Vec::new(),
+                Some(
+                    "path not indexed in the current view; entire file treated as removed"
+                        .to_string(),
+                ),
+            ),
+            (None, None) => {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "path not present in current view or at {rev_spec}: {}",
+                        params.path
+                    ),
+                    None,
+                ));
+            }
+        };
+
+        json_result(&DiffOutlineResponse {
+            path: params.path,
+            rev: rev_sha,
+            added,
+            removed,
+            common,
+            note,
+        })
+    }
+
+    /// Workdir + branch + HEAD sha. No params.
+    #[tool(
+        description = "Repository identity: workdir path, current branch name (if HEAD is on one), \
+                       full HEAD sha, short HEAD sha. Pairs well with `working_tree_status`."
+    )]
+    async fn repo_info(
+        &self,
+        Parameters(_): Parameters<RepoInfoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let info = repo
+            .info()
+            .map_err(|e| McpError::internal_error(format!("repo info: {e}"), None))?;
+        json_result(&RepoInfoResponse {
+            workdir: info.workdir.display().to_string(),
+            head_sha: info.head_sha,
+            head_short_sha: info.head_short_sha,
+            branch: info.branch,
+        })
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for GitmindServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "gitmind exposes a tree-sitter-backed code map. Prefer `outline` for navigating a file, \
-             `search_symbols` for cross-repo name lookup, and `list_files` to enumerate what's indexed. \
-             All paths are repository-relative with forward-slash separators.",
+            "gitmind exposes a tree-sitter-backed code map plus git context. \
+             Code-map tools: `outline` for one file, `search_symbols` for cross-repo name lookup, \
+             `list_files` to enumerate what's indexed, `dependents` for reverse imports, `status` for \
+             cache stats. \
+             Git tools (need to be inside a git repo): `working_tree_status` (dirty/staged/untracked), \
+             `recent_changes` (HEAD ancestry), `commits_touching` (log filtered to a path), \
+             `diff_outline` (symbol-level diff between current view and a rev), `repo_info` \
+             (workdir/branch/HEAD). All paths are repository-relative with forward-slash separators.",
         )
     }
 }

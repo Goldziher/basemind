@@ -9,9 +9,35 @@ use tracing::debug;
 
 use crate::config::Config;
 use crate::extract::{ExtractError, FileMapL1, l1};
+use crate::git::{GitError, Repo};
 use crate::hashing;
 use crate::lang::{self, Lang};
 use crate::store::{FileEntry, Store, StoreError};
+
+/// What state of the repository the scanner indexes from.
+///
+/// - `WorkingTree` (today's default) — walk the filesystem via `ignore::WalkBuilder`,
+///   read bytes via `std::fs::read`.
+/// - `Staged` — list paths from the git index, read blob bytes from the index. Lets the
+///   pre-commit hook index *what is about to be committed* rather than whatever stale work
+///   is sitting in the working tree.
+/// - `Rev { sha }` — list the tree at `sha`, read blob bytes from that tree.
+#[derive(Clone)]
+pub enum ScanSource<'a> {
+    WorkingTree,
+    Staged(&'a Repo),
+    Rev { repo: &'a Repo, sha: String },
+}
+
+impl<'a> ScanSource<'a> {
+    fn label(&self) -> String {
+        match self {
+            ScanSource::WorkingTree => "working tree".to_string(),
+            ScanSource::Staged(_) => "staged index".to_string(),
+            ScanSource::Rev { sha, .. } => format!("rev {}", &sha[..7.min(sha.len())]),
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum ScanError {
@@ -19,6 +45,8 @@ pub enum ScanError {
     Store(#[from] StoreError),
     #[error("invalid glob in config: {0}")]
     BadGlob(String),
+    #[error("git error: {0}")]
+    Git(#[from] GitError),
 }
 
 /// Aggregate counters for a single scan invocation.
@@ -112,16 +140,29 @@ fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ScanError> {
     b.build().map_err(|e| ScanError::BadGlob(format!("{e}")))
 }
 
-/// One-shot scan: walk the whole repo, process every candidate file in parallel,
-/// purge stale index entries, flush the index, return a typed report.
-pub fn scan(root: &Path, store: &mut Store, config: &Config) -> Result<ScanReport, ScanError> {
+/// One-shot scan: enumerate every candidate file *via the requested source*, process them
+/// in parallel, purge stale index entries, flush the index, return a typed report.
+///
+/// Source-aware behavior:
+/// - `WorkingTree` uses `ignore::WalkBuilder` to walk the on-disk tree and `std::fs::read`.
+/// - `Staged` and `Rev` enumerate paths via gix and read bytes via gix.
+pub fn scan(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    source: ScanSource<'_>,
+) -> Result<ScanReport, ScanError> {
     let filters = Filters::build(config)?;
-    let candidates = walk_candidates(root, config, &filters);
-    debug!(count = candidates.len(), "scan candidates");
+    let candidates = candidates_for_source(root, config, &filters, &source)?;
+    debug!(
+        count = candidates.len(),
+        kind = source.label(),
+        "scan candidates"
+    );
 
     let outcomes: Vec<FileResult> = candidates
         .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store))
+        .map(|rel| process_file(root, rel, &filters, store, &source))
         .collect();
 
     let seen: ahash::AHashSet<String> = outcomes
@@ -170,6 +211,7 @@ pub fn scan_paths(
     paths: &[PathBuf],
 ) -> Result<ScanReport, ScanError> {
     let filters = Filters::build(config)?;
+    let source = ScanSource::WorkingTree;
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
@@ -197,7 +239,7 @@ pub fn scan_paths(
 
     let outcomes: Vec<FileResult> = rels
         .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store))
+        .map(|rel| process_file(root, rel, &filters, store, &source))
         .collect();
 
     let mut report = ScanReport::default();
@@ -254,6 +296,32 @@ fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<File
     }
 }
 
+fn candidates_for_source(
+    root: &Path,
+    config: &Config,
+    filters: &Filters,
+    source: &ScanSource<'_>,
+) -> Result<Vec<String>, ScanError> {
+    let raw = match source {
+        ScanSource::WorkingTree => walk_candidates(root, config, filters),
+        ScanSource::Staged(repo) => repo.list_paths_staged()?,
+        ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
+    };
+    // For git sources we still apply the configured include/exclude filters so the user can
+    // turn things off via `.gitmind/gitmind.toml`.
+    let mut out: Vec<String> = match source {
+        ScanSource::WorkingTree => raw,
+        _ => raw
+            .into_iter()
+            .filter(|rel| filters.allows(rel))
+            .filter(|rel| !rel.starts_with(crate::config::GITMIND_DIR))
+            .collect(),
+    };
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
 fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<String> {
     let mut out = Vec::new();
     let walker = WalkBuilder::new(root)
@@ -284,32 +352,13 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
 /// Process a single relative path. Returns a `FileResult`; if the file is being
 /// updated, the new `FileEntry` is attached via `FileResult::upsert` so the caller
 /// can apply it to the store from the single-threaded apply loop.
-fn process_file(root: &Path, rel: &str, filters: &Filters, store: &Store) -> FileResult {
-    let abs = root.join(rel);
-
-    let metadata = match std::fs::metadata(&abs) {
-        Ok(m) => m,
-        Err(source) => {
-            return FileResult {
-                path: rel.to_string(),
-                status: FileStatus::ReadFailed {
-                    kind: source.kind(),
-                    msg: source.to_string(),
-                },
-                upsert: None,
-            };
-        }
-    };
-    if metadata.len() > filters.max_file_bytes {
-        return FileResult {
-            path: rel.to_string(),
-            status: FileStatus::SkippedTooLarge {
-                size: metadata.len(),
-            },
-            upsert: None,
-        };
-    }
-
+fn process_file(
+    root: &Path,
+    rel: &str,
+    filters: &Filters,
+    store: &Store,
+    source: &ScanSource<'_>,
+) -> FileResult {
     let lang = match lang::detect(Path::new(rel)) {
         Some(l) => l,
         None => {
@@ -321,17 +370,39 @@ fn process_file(root: &Path, rel: &str, filters: &Filters, store: &Store) -> Fil
         }
     };
 
-    let bytes = match std::fs::read(&abs) {
-        Ok(b) => b,
-        Err(source) => {
-            return FileResult {
-                path: rel.to_string(),
-                status: FileStatus::ReadFailed {
-                    kind: source.kind(),
-                    msg: source.to_string(),
-                },
-                upsert: None,
-            };
+    // Source-aware byte read + size check + mtime.
+    let (bytes, size_bytes, mtime) = match source {
+        ScanSource::WorkingTree => match read_working_tree(root, rel, filters) {
+            Ok(triple) => triple,
+            Err(status) => {
+                return FileResult {
+                    path: rel.to_string(),
+                    status,
+                    upsert: None,
+                };
+            }
+        },
+        ScanSource::Staged(repo) => match read_via_git(filters, repo.read_blob_staged(rel)) {
+            Ok(triple) => triple,
+            Err(status) => {
+                return FileResult {
+                    path: rel.to_string(),
+                    status,
+                    upsert: None,
+                };
+            }
+        },
+        ScanSource::Rev { repo, sha } => {
+            match read_via_git(filters, repo.read_blob_at_rev(sha, rel)) {
+                Ok(triple) => triple,
+                Err(status) => {
+                    return FileResult {
+                        path: rel.to_string(),
+                        status,
+                        upsert: None,
+                    };
+                }
+            }
         }
     };
 
@@ -378,17 +449,10 @@ fn process_file(root: &Path, rel: &str, filters: &Filters, store: &Store) -> Fil
         };
     }
 
-    let mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
     let entry = FileEntry {
         hash_hex,
         language: lang_name(lang).to_string(),
-        size_bytes: metadata.len(),
+        size_bytes,
         mtime,
     };
     FileResult {
@@ -399,6 +463,58 @@ fn process_file(root: &Path, rel: &str, filters: &Filters, store: &Store) -> Fil
         },
         upsert: Some(entry),
     }
+}
+
+fn read_working_tree(
+    root: &Path,
+    rel: &str,
+    filters: &Filters,
+) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+    let abs = root.join(rel);
+    let metadata = std::fs::metadata(&abs).map_err(|e| FileStatus::ReadFailed {
+        kind: e.kind(),
+        msg: e.to_string(),
+    })?;
+    if metadata.len() > filters.max_file_bytes {
+        return Err(FileStatus::SkippedTooLarge {
+            size: metadata.len(),
+        });
+    }
+    let bytes = std::fs::read(&abs).map_err(|e| FileStatus::ReadFailed {
+        kind: e.kind(),
+        msg: e.to_string(),
+    })?;
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let size = metadata.len();
+    Ok((bytes, size, mtime))
+}
+
+fn read_via_git(
+    filters: &Filters,
+    blob: Result<Option<Vec<u8>>, GitError>,
+) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+    let blob = blob.map_err(|e| FileStatus::ReadFailed {
+        kind: std::io::ErrorKind::Other,
+        msg: e.to_string(),
+    })?;
+    let bytes = blob.ok_or(FileStatus::ReadFailed {
+        kind: std::io::ErrorKind::NotFound,
+        msg: "blob not present in this git source".to_string(),
+    })?;
+    if bytes.len() as u64 > filters.max_file_bytes {
+        return Err(FileStatus::SkippedTooLarge {
+            size: bytes.len() as u64,
+        });
+    }
+    let size = bytes.len() as u64;
+    // Git sources don't have an mtime. 0 just means "unknown" — the existing hash-equality
+    // check is what actually decides whether to re-extract.
+    Ok((bytes, size, 0))
 }
 
 fn format_extract_err(e: &ExtractError) -> String {

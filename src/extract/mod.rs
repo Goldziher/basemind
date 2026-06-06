@@ -7,9 +7,10 @@ use thiserror::Error;
 
 use crate::lang::LangError;
 
-/// Bumped any time the FileMap layout changes in an incompatible way.
-/// Stored in every serialized FileMap. Mismatch on read = auto-wipe + re-scan.
-pub const SCHEMA_VER: u16 = 2;
+/// Bumped any time the FileMap layout changes in an incompatible way OR the on-disk
+/// directory shape changes. Stored in every serialized FileMap. Mismatch on read =
+/// auto-wipe + re-scan. v3 = per-view index directories under `.gitmind/views/`.
+pub const SCHEMA_VER: u16 = 3;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

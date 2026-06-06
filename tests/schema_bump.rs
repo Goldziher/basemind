@@ -52,7 +52,8 @@ fn opening_against_v1_index_wipes_cache() {
     fs::write(gitmind_dir.join("index.msgpack"), bytes).unwrap();
 
     // Opening the store must detect the mismatch and wipe.
-    let store = gitmind::store::Store::open(root).expect("open should succeed via auto-wipe");
+    let store = gitmind::store::Store::open(root, gitmind::store::VIEW_WORKING)
+        .expect("open should succeed via auto-wipe");
     assert!(
         store.index.files.is_empty(),
         "in-memory index should be empty after wipe"
