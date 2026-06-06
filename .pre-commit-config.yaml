@@ -66,6 +66,11 @@ repos:
         args:
           - check
       - id: rustdoc-lint
+      # 1,000 LOC ceiling per .rs file — split early; expand exclusions only as
+      # a deliberate, time-boxed remediation backlog.
+      - id: rust-max-lines
+        args:
+          - --max=1000
 
       # JSON formatting
       - id: oxfmt
