@@ -107,7 +107,11 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
             start_row = p.row as u32;
             start_col = p.column as u32;
             if let Ok(text) = node.utf8_text(source) {
-                let first = text.lines().next().unwrap_or("").trim();
+                // Find the first newline directly on the byte slice — avoids the per-char
+                // search `str::lines` performs over potentially-large symbol bodies.
+                let bytes = text.as_bytes();
+                let end = memchr::memchr(b'\n', bytes).unwrap_or(bytes.len());
+                let first = text[..end].trim_end_matches('\r').trim();
                 if !first.is_empty() {
                     signature = Some(first.to_string());
                 }

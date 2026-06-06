@@ -105,19 +105,44 @@ impl Store {
     }
 
     pub fn blob_path_l1(&self, hash: &Hash) -> PathBuf {
-        self.gitmind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{}.l1.msgpack", hashing::hex(hash)))
+        let buf = hashing::hex_buf(hash);
+        self.blob_path_l1_hex(hashing::hex_str(&buf))
     }
 
     pub fn blob_path_l2(&self, hash: &Hash) -> PathBuf {
+        let buf = hashing::hex_buf(hash);
+        self.blob_path_l2_hex(hashing::hex_str(&buf))
+    }
+
+    /// Build the L1 blob path from an already-hex-encoded hash. Skips the encode round-trip
+    /// when the caller starts from a `FileEntry::hash_hex`.
+    pub fn blob_path_l1_hex(&self, hash_hex: &str) -> PathBuf {
         self.gitmind_dir
             .join(BLOBS_DIR)
-            .join(format!("{}.l2.msgpack", hashing::hex(hash)))
+            .join(format!("{hash_hex}.l1.msgpack"))
+    }
+
+    pub fn blob_path_l2_hex(&self, hash_hex: &str) -> PathBuf {
+        self.gitmind_dir
+            .join(BLOBS_DIR)
+            .join(format!("{hash_hex}.l2.msgpack"))
     }
 
     pub fn read_l1(&self, hash: &Hash) -> Result<Option<FileMapL1>, StoreError> {
-        let path = self.blob_path_l1(hash);
+        let buf = hashing::hex_buf(hash);
+        self.read_l1_by_hex(hashing::hex_str(&buf))
+    }
+
+    pub fn read_l2(&self, hash: &Hash) -> Result<Option<FileMapL2>, StoreError> {
+        let buf = hashing::hex_buf(hash);
+        self.read_l2_by_hex(hashing::hex_str(&buf))
+    }
+
+    /// Read an L1 blob given its already-hex-encoded hash. Avoids the
+    /// `hex → [u8;32] → hex` decode-encode cycle that the `read_l1(&Hash)` path
+    /// goes through when callers (CLI query, MCP) already hold the hex string.
+    pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
+        let path = self.blob_path_l1_hex(hash_hex);
         if !path.exists() {
             return Ok(None);
         }
@@ -130,8 +155,8 @@ impl Store {
         Ok(Some(map))
     }
 
-    pub fn read_l2(&self, hash: &Hash) -> Result<Option<FileMapL2>, StoreError> {
-        let path = self.blob_path_l2(hash);
+    pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
+        let path = self.blob_path_l2_hex(hash_hex);
         if !path.exists() {
             return Ok(None);
         }

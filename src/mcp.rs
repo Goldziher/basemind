@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::extract::{FileMapL1, Import, SymbolKind};
-use crate::hashing;
 use crate::query;
 use crate::store::Store;
 
@@ -51,6 +50,13 @@ struct ServerState {
 struct MapCache {
     /// path → L1 (kept sorted by path; iteration order matches `list_files`)
     by_path: BTreeMap<String, FileMapL1>,
+    /// Pre-flattened `(path, imports)` view used by the `dependents` tool.
+    ///
+    /// Without this, every `dependents` call rebuilds the same `HashMap<PathBuf, Vec<Import>>`
+    /// from scratch — that's one `Vec<Import>::clone()` per indexed file, ~1500 allocations on
+    /// the TypeScript repo (6.5 ms wall). Precomputing once at server boot drops that to
+    /// pure pointer-chase.
+    imports_index: Vec<(PathBuf, Vec<Import>)>,
 }
 
 impl MapCache {
@@ -59,17 +65,23 @@ impl MapCache {
     fn build(store: &Store) -> Self {
         let mut by_path = BTreeMap::new();
         for (path, entry) in &store.index.files {
-            let Some(hash) = hashing::from_hex(&entry.hash_hex) else {
-                continue;
-            };
-            match store.read_l1(&hash) {
+            match store.read_l1_by_hex(&entry.hash_hex) {
                 Ok(Some(l1)) => {
                     by_path.insert(path.clone(), l1);
                 }
                 Ok(None) | Err(_) => continue,
             }
         }
-        Self { by_path }
+        // BTreeMap iteration is already path-sorted, so the imports_index ends up sorted
+        // by path too — which is what `l3::dependents_of` sorts to anyway.
+        let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
+            .iter()
+            .map(|(p, l1)| (PathBuf::from(p), l1.imports.clone()))
+            .collect();
+        Self {
+            by_path,
+            imports_index,
+        }
     }
 }
 
@@ -351,37 +363,34 @@ impl GitmindServer {
             let entry = store.lookup(&params.path).ok_or_else(|| {
                 McpError::internal_error("file not indexed after outline succeeded", None)
             })?;
-            if let Some(hash) = hashing::from_hex(&entry.hash_hex) {
-                match store.read_l2(&hash) {
-                    Ok(Some(l2)) => {
-                        response.calls = Some(
-                            l2.calls
-                                .iter()
-                                .map(|c| CallView {
-                                    callee: c.callee.clone(),
-                                    start_byte: c.start_byte,
-                                })
-                                .collect(),
-                        );
-                        response.docs = Some(
-                            l2.docs
-                                .iter()
-                                .map(|d| DocView {
-                                    text: d.text.clone(),
-                                    start_byte: d.start_byte,
-                                })
-                                .collect(),
-                        );
-                    }
-                    Ok(None) => {
-                        response.l2_status = Some(
-                            "missing — run `gitmind query outline <path> --l2` to materialize",
-                        );
-                    }
-                    Err(e) => {
-                        response.l2_status = Some("error");
-                        return Err(McpError::internal_error(format!("read_l2: {e}"), None));
-                    }
+            match store.read_l2_by_hex(&entry.hash_hex) {
+                Ok(Some(l2)) => {
+                    response.calls = Some(
+                        l2.calls
+                            .iter()
+                            .map(|c| CallView {
+                                callee: c.callee.clone(),
+                                start_byte: c.start_byte,
+                            })
+                            .collect(),
+                    );
+                    response.docs = Some(
+                        l2.docs
+                            .iter()
+                            .map(|d| DocView {
+                                text: d.text.clone(),
+                                start_byte: d.start_byte,
+                            })
+                            .collect(),
+                    );
+                }
+                Ok(None) => {
+                    response.l2_status =
+                        Some("missing — run `gitmind query outline <path> --l2` to materialize");
+                }
+                Err(e) => {
+                    response.l2_status = Some("error");
+                    return Err(McpError::internal_error(format!("read_l2: {e}"), None));
                 }
             }
         }
@@ -409,14 +418,17 @@ impl GitmindServer {
         // hits, but keep counting `total` so the agent knows whether their needle was specific
         // enough. Hard cap on `total` iterations so a too-broad needle (e.g. "a") doesn't pin
         // a CPU on counting.
-        let needle = params.needle.as_str();
+        //
+        // memmem::Finder amortizes the bad-character table across every candidate symbol —
+        // `str::contains` rebuilds it on each call.
+        let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
         let max_total = limit.saturating_mul(64).max(2_000);
         let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
         let mut total: usize = 0;
         let mut total_is_partial = false;
         'outer: for (path, l1) in &self.state.cache.by_path {
             for sym in &l1.symbols {
-                if !sym.name.contains(needle) {
+                if finder.find(sym.name.as_bytes()).is_none() {
                     continue;
                 }
                 if let Some(k) = kind
@@ -462,35 +474,43 @@ impl GitmindServer {
         let limit = params
             .limit
             .unwrap_or(LIST_LIMIT_DEFAULT)
-            .min(LIST_LIMIT_MAX);
+            .min(LIST_LIMIT_MAX) as usize;
         let store = self.state.store.read().await;
 
-        let needle = params.path_contains.as_deref();
+        let path_finder = params
+            .path_contains
+            .as_ref()
+            .map(|n| memchr::memmem::Finder::new(n.as_bytes()));
         let lang_filter = params.language.as_deref();
 
-        let mut all: Vec<ListFilesEntry> = store
-            .index
-            .files
-            .iter()
-            .filter(|(p, e)| {
-                needle.is_none_or(|n| p.contains(n)) && lang_filter.is_none_or(|l| e.language == l)
-            })
-            .map(|(p, e)| ListFilesEntry {
-                path: p.clone(),
-                language: e.language.clone(),
-                size_bytes: e.size_bytes,
-            })
-            .collect();
-        let total = all.len();
-        all.sort_by(|a, b| a.path.cmp(&b.path));
-        let truncated = total > limit as usize;
-        all.truncate(limit as usize);
+        // BTreeMap iteration is already path-sorted, so we can walk in order and stop after
+        // `limit` matches — no full collect, no resort.
+        let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
+        let mut total: usize = 0;
+        for (p, e) in &store.index.files {
+            let path_ok = path_finder
+                .as_ref()
+                .is_none_or(|f| f.find(p.as_bytes()).is_some());
+            let lang_ok = lang_filter.is_none_or(|l| e.language == l);
+            if !(path_ok && lang_ok) {
+                continue;
+            }
+            total += 1;
+            if files.len() < limit {
+                files.push(ListFilesEntry {
+                    path: p.clone(),
+                    language: e.language.clone(),
+                    size_bytes: e.size_bytes,
+                });
+            }
+        }
+        let truncated = total > limit;
 
         json_result(&ListFilesResponse {
             total,
-            returned: all.len(),
+            returned: files.len(),
             truncated,
-            files: all,
+            files,
         })
     }
 
@@ -503,19 +523,13 @@ impl GitmindServer {
         &self,
         Parameters(params): Parameters<DependentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Pure-RAM scan; reuses the L3 substring heuristic but feeds it from the preloaded
-        // cache rather than re-reading every L1 blob from disk.
-        let by_path: std::collections::HashMap<PathBuf, Vec<Import>> = self
-            .state
-            .cache
-            .by_path
-            .iter()
-            .map(|(p, l1)| (PathBuf::from(p), l1.imports.clone()))
-            .collect();
-        let paths: Vec<String> = crate::extract::l3::dependents_of(&params.module, &by_path)
-            .into_iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
+        // Pure-RAM scan against the preloaded `imports_index`. No HashMap rebuild, no
+        // per-file Vec<Import>::clone — the L3 heuristic borrows directly from cache.
+        let paths: Vec<String> =
+            crate::extract::l3::dependents_of(&params.module, &self.state.cache.imports_index)
+                .into_iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
         json_result(&DependentsResponse {
             module: params.module.clone(),
             paths,

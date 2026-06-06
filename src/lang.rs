@@ -1,8 +1,8 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use ahash::AHashMap;
 use thiserror::Error;
 use tree_sitter::{Language, Parser, Query};
 
@@ -188,7 +188,7 @@ pub fn language(lang: Lang) -> Result<Language, LangError> {
 // Parser is !Sync and stateful — one per thread per language, kept hot in TLS.
 
 thread_local! {
-    static PARSERS: RefCell<HashMap<Lang, Parser>> = RefCell::new(HashMap::new());
+    static PARSERS: RefCell<AHashMap<Lang, Parser>> = RefCell::new(AHashMap::new());
 }
 
 /// Run a closure with a per-thread Parser for the given language.
@@ -199,12 +199,12 @@ where
 {
     PARSERS.with(|cell| {
         let mut map = cell.borrow_mut();
-        if let std::collections::hash_map::Entry::Vacant(e) = map.entry(lang) {
+        if !map.contains_key(&lang) {
             let mut p = Parser::new();
             let ts_lang = language(lang)?;
             p.set_language(&ts_lang)
                 .map_err(|_| LangError::ParserSetLanguage(lang.name().to_string()))?;
-            e.insert(p);
+            map.insert(lang, p);
         }
         Ok(f(map.get_mut(&lang).expect("just inserted")))
     })
@@ -237,7 +237,7 @@ impl QueryKind {
     }
 }
 
-static QUERIES: OnceLock<RwLock<HashMap<(Lang, QueryKind), Arc<Query>>>> = OnceLock::new();
+static QUERIES: OnceLock<RwLock<AHashMap<(Lang, QueryKind), Arc<Query>>>> = OnceLock::new();
 
 fn query_source(lang: Lang) -> &'static str {
     match lang {
@@ -277,7 +277,7 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
 }
 
 pub fn get_query(lang: Lang, kind: QueryKind) -> Result<Arc<Query>, LangError> {
-    let lock = QUERIES.get_or_init(|| RwLock::new(HashMap::new()));
+    let lock = QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
     if let Some(q) = lock.read().expect("query pool poisoned").get(&(lang, kind)) {
         return Ok(Arc::clone(q));
     }

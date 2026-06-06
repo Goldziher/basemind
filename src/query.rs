@@ -1,10 +1,8 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, Symbol, SymbolKind};
-use crate::hashing;
 use crate::store::{Store, StoreError};
 
 #[derive(Debug, Error)]
@@ -30,10 +28,8 @@ pub fn file_outline(store: &Store, rel: &str) -> Result<FileMapL1, QueryError> {
     let entry = store
         .lookup(rel)
         .ok_or_else(|| QueryError::NotIndexed(rel.to_string()))?;
-    let hash =
-        hashing::from_hex(&entry.hash_hex).ok_or_else(|| QueryError::BadHash(rel.to_string()))?;
     let l1 = store
-        .read_l1(&hash)?
+        .read_l1_by_hex(&entry.hash_hex)?
         .ok_or_else(|| QueryError::BlobMissing(rel.to_string()))?;
     Ok(l1)
 }
@@ -51,12 +47,12 @@ pub fn file_outline_l2(
     let entry = store
         .lookup(rel)
         .ok_or_else(|| QueryError::NotIndexed(rel.to_string()))?;
-    let hash =
-        hashing::from_hex(&entry.hash_hex).ok_or_else(|| QueryError::BadHash(rel.to_string()))?;
-    if let Some(l2) = store.read_l2(&hash)? {
+    if let Some(l2) = store.read_l2_by_hex(&entry.hash_hex)? {
         return Ok(l2);
     }
-    // Live escalation: read source, extract, persist.
+    // Live escalation: read source, extract, persist. write_l2 wants the bytes-form hash.
+    let hash = crate::hashing::from_hex(&entry.hash_hex)
+        .ok_or_else(|| QueryError::BadHash(rel.to_string()))?;
     let abs = root.join(rel);
     let bytes = std::fs::read(&abs).map_err(|source| {
         QueryError::Store(StoreError::Io {
@@ -83,18 +79,15 @@ pub fn search_symbols(
     needle: &str,
     kind: Option<SymbolKind>,
 ) -> Result<Vec<SymbolHit>, QueryError> {
+    let finder = memchr::memmem::Finder::new(needle.as_bytes());
     let mut out = Vec::new();
     for (rel, entry) in &store.index.files {
-        let hash = match hashing::from_hex(&entry.hash_hex) {
-            Some(h) => h,
-            None => continue,
-        };
-        let l1 = match store.read_l1(&hash)? {
+        let l1 = match store.read_l1_by_hex(&entry.hash_hex)? {
             Some(m) => m,
             None => continue,
         };
         for sym in l1.symbols {
-            if !sym.name.contains(needle) {
+            if finder.find(sym.name.as_bytes()).is_none() {
                 continue;
             }
             if let Some(k) = kind
@@ -113,17 +106,14 @@ pub fn search_symbols(
 
 /// Heuristic L3: read every L1, collect imports, return paths whose imports mention `module`.
 pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<String>, QueryError> {
-    let mut by_path: HashMap<PathBuf, Vec<crate::extract::Import>> = HashMap::new();
+    let mut by_path: Vec<(PathBuf, Vec<crate::extract::Import>)> =
+        Vec::with_capacity(store.index.files.len());
     for (rel, entry) in &store.index.files {
-        let hash = match hashing::from_hex(&entry.hash_hex) {
-            Some(h) => h,
-            None => continue,
-        };
-        let l1 = match store.read_l1(&hash)? {
+        let l1 = match store.read_l1_by_hex(&entry.hash_hex)? {
             Some(m) => m,
             None => continue,
         };
-        by_path.insert(PathBuf::from(rel), l1.imports);
+        by_path.push((PathBuf::from(rel), l1.imports));
     }
     let paths = crate::extract::l3::dependents_of(module, &by_path);
     Ok(paths

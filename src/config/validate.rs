@@ -22,7 +22,7 @@ pub fn validate_v1(value: &Value) -> Result<(), ConfigError> {
     let validator = validator_v1();
     let errors: Vec<String> = validator
         .iter_errors(value)
-        .map(|e| format!("  at {}: {}", e.instance_path, e))
+        .map(|e| format!("  at {}: {}", e.instance_path(), e))
         .collect();
     if errors.is_empty() {
         Ok(())

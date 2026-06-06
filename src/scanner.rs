@@ -124,7 +124,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config) -> Result<ScanRepor
         .map(|rel| process_file(root, rel, &filters, store))
         .collect();
 
-    let seen: std::collections::HashSet<String> = outcomes
+    let seen: ahash::AHashSet<String> = outcomes
         .iter()
         .filter_map(|r| match &r.status {
             FileStatus::Updated { .. } | FileStatus::Unchanged => Some(r.path.clone()),
