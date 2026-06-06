@@ -985,6 +985,7 @@ dependencies = [
  "anstream",
  "anstyle",
  "anyhow",
+ "arc-swap",
  "blake3",
  "clap",
  "fs2",
@@ -994,10 +995,12 @@ dependencies = [
  "ignore",
  "insta",
  "jsonschema",
+ "lru",
  "memchr",
  "notify",
  "notify-debouncer-full",
  "rayon",
+ "regex",
  "rmcp",
  "rmp-serde",
  "serde",
@@ -2604,6 +2607,15 @@ name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
+
+[[package]]
+name = "lru"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a860605968fce16869fd239cf4237a82f3ac470723415db603b0e8b6c8d4fb9"
+dependencies = [
+ "hashbrown 0.17.1",
+]
 
 [[package]]
 name = "matchers"

@@ -20,6 +20,7 @@ gitmind query symbol <needle> [--kind K]  # substring search across symbols
 gitmind query dependents <module>         # heuristic reverse-lookup
 gitmind hook install                      # install git pre-commit hook (uses --staged)
 gitmind lang {list, install, clean}       # manage downloaded tree-sitter grammars
+gitmind cache clear                       # drop .gitmind/git-cache/
 ```
 
 Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color`
@@ -61,13 +62,41 @@ over the canonical MCP
 
 ### Git tools (require `gitmind serve` inside a git repo)
 
-| Tool                  | Use                                                       |
-|-----------------------|-----------------------------------------------------------|
-| `working_tree_status` | porcelain shape: staged adds/mods/dels, modified, untracked, `is_clean` flag |
-| `recent_changes`      | last N commits on the current branch with per-commit file lists |
-| `commits_touching`    | log filtered to a single path                              |
-| `diff_outline`        | symbol-level diff between the served view and any revision (e.g. "what did this branch add") |
-| `repo_info`           | workdir, branch name, HEAD sha                             |
+| Tool                    | Use                                                                                  |
+|-------------------------|--------------------------------------------------------------------------------------|
+| `working_tree_status`   | porcelain shape: staged adds/mods/dels, modified, untracked, `is_clean` flag         |
+| `recent_changes`        | last N commits on the current branch with per-commit file lists                      |
+| `commits_touching`      | log filtered to a single path                                                        |
+| `find_commits_by_path`  | regex over changed file paths in HEAD ancestry (cheap pickaxe)                       |
+| `hot_files`             | top-K most-changed files in the last N commits (churn map)                           |
+| `diff_outline`          | symbol-level diff: which symbols exist on each side of a rev                         |
+| `diff_file`             | content-level unified-diff hunks for one file across two revs                        |
+| `blame_file`            | per-hunk `(commit, author, time)` for a file, optionally clamped to a line range     |
+| `blame_symbol`          | blame clamped to one tree-sitter symbol's lines (looked up via cached L1)            |
+| `symbol_history`        | commits where a named symbol's body bytes changed — tree-sitter × git, the marquee   |
+| `repo_info`             | workdir, branch name, HEAD sha                                                       |
+
+### Git cache
+
+Sha-keyed git artifacts persist under `.gitmind/git-cache/`. The cache has two tiers:
+an in-process LRU (1024 entries per category by default, tune via
+`gitmind serve --git-cache-mem`) and a sha-keyed disk store
+(`commit_files/<sha>.msgpack`, `log/<head_sha>__<scope>.msgpack`,
+`blame/<sha>__<path_hash>.msgpack`).
+
+Commits are immutable, so once an entry is on disk it's valid forever — the next
+`gitmind serve` reads it back without touching git. HEAD-keyed entries like `log`
+naturally roll off when HEAD moves (the new sha defines a new key).
+
+Drop the disk cache with `gitmind cache clear`. Disable persistence per-run with
+`gitmind serve --no-git-cache-disk`.
+
+### Live refresh
+
+The MCP server watches its view's `index.msgpack`. When `gitmind watch` rewrites
+the index in another terminal, the server rebuilds its in-RAM code map off-thread
+and atomically swaps. `search_symbols` and `dependents` reflect the new index
+within ~150 ms; no `serve` restart needed.
 
 The server opens the store **read-only** so it coexists with `gitmind watch`.
 On startup it preloads every L1 blob into RAM so cross-file queries are

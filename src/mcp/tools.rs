@@ -1,456 +1,21 @@
-//! MCP server exposing the gitmind code map to AI agents.
+//! `#[tool_router]` impl block for `GitmindServer`.
 //!
-//! The server is read-only and opens the store without taking the exclusive lock, so it can
-//! coexist with `gitmind watch` running in another terminal. Tools all return JSON so the
-//! agent can navigate the codebase by file path + line numbers without opening source files.
-//!
-//! Transport: stdio (the canonical MCP transport). Spawn this from an MCP-aware host.
+//! Every `#[tool]`-annotated method below becomes a dispatchable MCP tool. Helpers live
+//! in `super::helpers`; param/response shapes in `super::types`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::sync::Arc;
 
-use rmcp::ServerHandler;
-use rmcp::handler::server::tool::ToolRouter;
+use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
-use rmcp::schemars;
-use rmcp::{ErrorData as McpError, tool, tool_handler, tool_router};
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use rmcp::model::CallToolResult;
+use rmcp::tool;
 
-use crate::extract::{FileMapL1, Import, SymbolKind};
+use super::GitmindServer;
+use super::helpers::*;
+use super::types::*;
 use crate::query;
-use crate::store::Store;
 
-/// Shared MCP server state. Wraps a read-only `Store` plus the repo root path.
-///
-/// `ToolRouter<Self>` is Clone (cheap — Arc inside), so we hold it directly on the struct as
-/// the `#[tool_handler]` macro expects.
-#[derive(Clone)]
-pub struct GitmindServer {
-    state: Arc<ServerState>,
-    // Touched by macro-generated dispatch; dead_code can't see that.
-    #[allow(dead_code)]
-    tool_router: ToolRouter<Self>,
-}
-
-struct ServerState {
-    store: RwLock<Store>,
-    root: PathBuf,
-    /// In-RAM mirror of every indexed file's L1 blob, built once at startup.
-    ///
-    /// Cross-file queries (`search_symbols`, `dependents`) otherwise re-read 1 blob per file
-    /// per call — for a 39k-file repo that's seconds. With the preload they're pure-RAM scans.
-    /// `outline` keeps reading via the store so it always sees fresh blobs (e.g. if `gitmind
-    /// watch` rewrote a file in another process), and single-file reads are already cheap.
-    cache: Arc<MapCache>,
-    /// Discovered git repository, or `None` when serving against a non-git directory.
-    /// All git-aware tools (`working_tree_status`, `recent_changes`, …) check this and
-    /// return an MCP error if `None`.
-    repo: Option<Arc<crate::git::Repo>>,
-}
-
-struct MapCache {
-    /// path → L1 (kept sorted by path; iteration order matches `list_files`)
-    by_path: BTreeMap<String, FileMapL1>,
-    /// Pre-flattened `(path, imports)` view used by the `dependents` tool.
-    ///
-    /// Without this, every `dependents` call rebuilds the same `HashMap<PathBuf, Vec<Import>>`
-    /// from scratch — that's one `Vec<Import>::clone()` per indexed file, ~1500 allocations on
-    /// the TypeScript repo (6.5 ms wall). Precomputing once at server boot drops that to
-    /// pure pointer-chase.
-    imports_index: Vec<(PathBuf, Vec<Import>)>,
-}
-
-impl MapCache {
-    /// Walks the store index once, loading every L1 blob into RAM. Silently skips entries
-    /// whose blob is missing — a fresh `gitmind scan` will reconstruct them.
-    fn build(store: &Store) -> Self {
-        let mut by_path = BTreeMap::new();
-        for (path, entry) in &store.index.files {
-            match store.read_l1_by_hex(&entry.hash_hex) {
-                Ok(Some(l1)) => {
-                    by_path.insert(path.clone(), l1);
-                }
-                Ok(None) | Err(_) => continue,
-            }
-        }
-        // BTreeMap iteration is already path-sorted, so the imports_index ends up sorted
-        // by path too — which is what `l3::dependents_of` sorts to anyway.
-        let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
-            .iter()
-            .map(|(p, l1)| (PathBuf::from(p), l1.imports.clone()))
-            .collect();
-        Self {
-            by_path,
-            imports_index,
-        }
-    }
-}
-
-impl GitmindServer {
-    pub fn new(store: Store, root: PathBuf, repo: Option<Arc<crate::git::Repo>>) -> Self {
-        let cache = Arc::new(MapCache::build(&store));
-        tracing::info!(
-            files = cache.by_path.len(),
-            git = repo.is_some(),
-            "preloaded code map into RAM for MCP server"
-        );
-        Self {
-            state: Arc::new(ServerState {
-                store: RwLock::new(store),
-                root,
-                cache,
-                repo,
-            }),
-            tool_router: Self::tool_router(),
-        }
-    }
-}
-
-// ─── Parameter / response shapes ─────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct OutlineParams {
-    /// Repository-relative path (forward-slash). Must be a file gitmind has scanned.
-    pub path: String,
-    /// When true, also include calls + doc comments (L2). Falls back to empty
-    /// arrays if no L2 blob exists for the file's current content.
-    #[serde(default)]
-    pub l2: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchSymbolsParams {
-    /// Substring matched against symbol name (case-sensitive).
-    pub needle: String,
-    /// Optional kind filter: function, method, struct, enum, class, interface,
-    /// trait, type, const, module, macro.
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// Cap the number of results returned. Default 100, max 1000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct ListFilesParams {
-    /// Optional substring matched against the path. Cheaper than reading a glob crate.
-    #[serde(default)]
-    pub path_contains: Option<String>,
-    /// Filter by language (e.g. "rust", "python").
-    #[serde(default)]
-    pub language: Option<String>,
-    /// Cap. Default 200, max 5000.
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct DependentsParams {
-    /// Module / import target (e.g. "tokio::sync" or "react").
-    pub module: String,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct StatusParams {}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct WorkingTreeStatusParams {}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RecentChangesParams {
-    /// Number of commits to walk back from HEAD. Default 20, max 100.
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// When true, include the per-file change list for each commit. Default true.
-    #[serde(default = "default_true")]
-    pub include_files: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct CommitsTouchingParams {
-    /// Repository-relative path (forward-slash) of the file to follow.
-    pub path: String,
-    /// Number of commits returned, newest first. Default 20, max 100.
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct DiffOutlineParams {
-    /// Repository-relative path of the file to diff.
-    pub path: String,
-    /// Revision to compare against the *current view*. Defaults to "HEAD".
-    #[serde(default)]
-    pub rev: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RepoInfoParams {}
-
-fn default_true() -> bool {
-    true
-}
-
-// ─── Response shapes (JSON-clean copies of the extract types) ────────────────
-
-#[derive(Debug, Serialize)]
-struct OutlineResponse {
-    path: String,
-    language: String,
-    size_bytes: u64,
-    had_errors: bool,
-    error_count: u32,
-    symbols: Vec<SymbolView>,
-    imports: Vec<ImportView>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    calls: Option<Vec<CallView>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    docs: Option<Vec<DocView>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    l2_status: Option<&'static str>,
-}
-
-#[derive(Debug, Serialize)]
-struct SymbolView {
-    name: String,
-    kind: String,
-    start_row: u32,
-    start_col: u32,
-    start_byte: u32,
-    end_byte: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportView {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    module: Option<String>,
-    raw: String,
-    start_byte: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct CallView {
-    callee: String,
-    start_byte: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct DocView {
-    text: String,
-    start_byte: u32,
-}
-
-#[derive(Debug, Serialize)]
-struct SearchHitView {
-    path: String,
-    name: String,
-    kind: String,
-    start_row: u32,
-    start_col: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct SearchResponse {
-    total: usize,
-    truncated: bool,
-    results: Vec<SearchHitView>,
-}
-
-#[derive(Debug, Serialize)]
-struct ListFilesEntry {
-    path: String,
-    language: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct ListFilesResponse {
-    total: usize,
-    returned: usize,
-    truncated: bool,
-    files: Vec<ListFilesEntry>,
-}
-
-#[derive(Debug, Serialize)]
-struct DependentsResponse {
-    module: String,
-    paths: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct StatusResponse {
-    file_count: usize,
-    total_size_bytes: u64,
-    languages: BTreeMap<String, usize>,
-    cache_dir: String,
-    schema_version: u16,
-    root: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CommitView {
-    sha: String,
-    short_sha: String,
-    summary: String,
-    author: String,
-    author_time_unix: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    files: Option<Vec<CommitFileView>>,
-}
-
-#[derive(Debug, Serialize)]
-struct CommitFileView {
-    path: String,
-    change: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-struct WorkingTreeStatusView {
-    staged_added: Vec<String>,
-    staged_modified: Vec<String>,
-    staged_deleted: Vec<String>,
-    modified: Vec<String>,
-    untracked: Vec<String>,
-    is_clean: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct RecentChangesResponse {
-    commits: Vec<CommitView>,
-}
-
-#[derive(Debug, Serialize)]
-struct CommitsTouchingResponse {
-    path: String,
-    commits: Vec<CommitView>,
-}
-
-#[derive(Debug, Serialize)]
-struct DiffSymbolView {
-    name: String,
-    kind: String,
-}
-
-#[derive(Debug, Serialize)]
-struct DiffOutlineResponse {
-    path: String,
-    rev: String,
-    /// In the current view but not at `rev`.
-    added: Vec<DiffSymbolView>,
-    /// At `rev` but not in the current view.
-    removed: Vec<DiffSymbolView>,
-    /// In both. Useful so the agent can see context without re-querying outline.
-    common: Vec<DiffSymbolView>,
-    /// Set when one side doesn't contain the file at all.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct RepoInfoResponse {
-    workdir: String,
-    head_sha: Option<String>,
-    head_short_sha: Option<String>,
-    branch: Option<String>,
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-fn kind_to_str(k: SymbolKind) -> &'static str {
-    match k {
-        SymbolKind::Function => "function",
-        SymbolKind::Method => "method",
-        SymbolKind::Struct => "struct",
-        SymbolKind::Enum => "enum",
-        SymbolKind::Class => "class",
-        SymbolKind::Interface => "interface",
-        SymbolKind::Trait => "trait",
-        SymbolKind::Type => "type",
-        SymbolKind::Const => "const",
-        SymbolKind::Module => "module",
-        SymbolKind::Macro => "macro",
-        SymbolKind::Unknown => "unknown",
-    }
-}
-
-fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
-    Ok(match s.to_ascii_lowercase().as_str() {
-        "function" => SymbolKind::Function,
-        "method" => SymbolKind::Method,
-        "struct" => SymbolKind::Struct,
-        "enum" => SymbolKind::Enum,
-        "class" => SymbolKind::Class,
-        "interface" => SymbolKind::Interface,
-        "trait" => SymbolKind::Trait,
-        "type" => SymbolKind::Type,
-        "const" => SymbolKind::Const,
-        "module" => SymbolKind::Module,
-        "macro" => SymbolKind::Macro,
-        other => {
-            return Err(McpError::invalid_params(
-                format!("unknown symbol kind: {other}"),
-                None,
-            ));
-        }
-    })
-}
-
-fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
-    let content = Content::json(value)
-        .map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
-    Ok(CallToolResult::success(vec![content]))
-}
-
-const SEARCH_LIMIT_DEFAULT: u32 = 100;
-const SEARCH_LIMIT_MAX: u32 = 1000;
-const LIST_LIMIT_DEFAULT: u32 = 200;
-const LIST_LIMIT_MAX: u32 = 5000;
-const LOG_LIMIT_DEFAULT: u32 = 20;
-const LOG_LIMIT_MAX: u32 = 100;
-
-fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
-    let files = if include_files {
-        Some(
-            c.files
-                .into_iter()
-                .map(|(path, kind)| CommitFileView {
-                    path,
-                    change: kind.as_str(),
-                })
-                .collect(),
-        )
-    } else {
-        None
-    };
-    CommitView {
-        sha: c.sha,
-        short_sha: c.short_sha,
-        summary: c.summary,
-        author: c.author,
-        author_time_unix: c.author_time_unix,
-        files,
-    }
-}
-
-fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::Repo>, McpError> {
-    state.repo.as_ref().ok_or_else(|| {
-        McpError::invalid_request(
-            "this tool requires `gitmind serve` to be run inside a git repository",
-            None,
-        )
-    })
-}
-
-// ─── Tools ───────────────────────────────────────────────────────────────────
-
-#[tool_router]
+#[rmcp::tool_router(vis = "pub(super)")]
 impl GitmindServer {
     /// File outline: symbols + imports (L1), optionally calls + docs (L2).
     #[tool(
@@ -505,7 +70,6 @@ impl GitmindServer {
         };
 
         if params.l2 {
-            // Look up the L2 blob by hash without doing live extraction (we are read-only).
             let entry = store.lookup(&params.path).ok_or_else(|| {
                 McpError::internal_error("file not indexed after outline succeeded", None)
             })?;
@@ -560,19 +124,13 @@ impl GitmindServer {
             .unwrap_or(SEARCH_LIMIT_DEFAULT)
             .min(SEARCH_LIMIT_MAX) as usize;
 
-        // Pure-RAM scan over the preloaded code map. We collect into `results` until `limit`
-        // hits, but keep counting `total` so the agent knows whether their needle was specific
-        // enough. Hard cap on `total` iterations so a too-broad needle (e.g. "a") doesn't pin
-        // a CPU on counting.
-        //
-        // memmem::Finder amortizes the bad-character table across every candidate symbol —
-        // `str::contains` rebuilds it on each call.
         let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
         let max_total = limit.saturating_mul(64).max(2_000);
         let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
         let mut total: usize = 0;
         let mut total_is_partial = false;
-        'outer: for (path, l1) in &self.state.cache.by_path {
+        let cache = self.state.cache.load_full();
+        'outer: for (path, l1) in &cache.by_path {
             for sym in &l1.symbols {
                 if finder.find(sym.name.as_bytes()).is_none() {
                     continue;
@@ -629,8 +187,6 @@ impl GitmindServer {
             .map(|n| memchr::memmem::Finder::new(n.as_bytes()));
         let lang_filter = params.language.as_deref();
 
-        // BTreeMap iteration is already path-sorted, so we can walk in order and stop after
-        // `limit` matches — no full collect, no resort.
         let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
         let mut total: usize = 0;
         for (p, e) in &store.index.files {
@@ -669,13 +225,13 @@ impl GitmindServer {
         &self,
         Parameters(params): Parameters<DependentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Pure-RAM scan against the preloaded `imports_index`. No HashMap rebuild, no
-        // per-file Vec<Import>::clone — the L3 heuristic borrows directly from cache.
-        let paths: Vec<String> =
-            crate::extract::l3::dependents_of(&params.module, &self.state.cache.imports_index)
-                .into_iter()
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
+        let paths: Vec<String> = crate::extract::l3::dependents_of(
+            &params.module,
+            &self.state.cache.load().imports_index,
+        )
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
         json_result(&DependentsResponse {
             module: params.module.clone(),
             paths,
@@ -745,19 +301,23 @@ impl GitmindServer {
         description = "Last N commits on the current branch, newest first. Each commit comes with \
                        sha, summary (first line of message), author, unix timestamp, and — when \
                        `include_files=true` (default) — the per-file change list relative to its first \
-                       parent. Default 20 commits, max 100."
+                       parent. Default 20 commits, max 100. Cached by HEAD sha."
     )]
     async fn recent_changes(
         &self,
         Parameters(params): Parameters<RecentChangesParams>,
     ) -> Result<CallToolResult, McpError> {
         let repo = require_git_repo(&self.state)?;
-        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
-        let commits = repo
-            .log_paths(limit, params.include_files)
+        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX);
+        let head = head_sha(repo)?;
+        let commits = self
+            .state
+            .git_cache
+            .log(repo, &head, None, limit, params.include_files)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
         let view = commits
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|c| commit_to_view(c, params.include_files))
             .collect();
         json_result(&RecentChangesResponse { commits: view })
@@ -774,12 +334,16 @@ impl GitmindServer {
         Parameters(params): Parameters<CommitsTouchingParams>,
     ) -> Result<CallToolResult, McpError> {
         let repo = require_git_repo(&self.state)?;
-        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
-        let commits = repo
-            .log_for_path(&params.path, limit)
+        let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX);
+        let head = head_sha(repo)?;
+        let commits = self
+            .state
+            .git_cache
+            .log(repo, &head, Some(&params.path), limit, false)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
         let view = commits
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|c| commit_to_view(c, false))
             .collect();
         json_result(&CommitsTouchingResponse {
@@ -789,9 +353,6 @@ impl GitmindServer {
     }
 
     /// Symbol-level diff between the served view and another rev.
-    ///
-    /// We extract the rev side live (it isn't necessarily indexed) and compare against the
-    /// preloaded cache by `(name, kind)`. No textual diff, no signature diff — outline-level only.
     #[tool(
         description = "Diff the symbol set of `path` between the current view and another revision \
                        (`rev`, defaults to HEAD). Returns three lists: `added` (in the current view, \
@@ -808,7 +369,8 @@ impl GitmindServer {
             .resolve_rev(rev_spec)
             .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
 
-        let here = self.state.cache.by_path.get(&params.path).map(|l1| {
+        let cache = self.state.cache.load_full();
+        let here = cache.by_path.get(&params.path).map(|l1| {
             l1.symbols
                 .iter()
                 .map(|s| (s.name.clone(), kind_to_str(s.kind)))
@@ -886,9 +448,9 @@ impl GitmindServer {
                     .collect(),
                 Vec::new(),
                 Vec::new(),
-                Some(
-                    format!("path absent at {rev_spec}; entire file treated as added").to_string(),
-                ),
+                Some(format!(
+                    "path absent at {rev_spec}; entire file treated as added"
+                )),
             ),
             (None, Some(t)) => (
                 Vec::new(),
@@ -925,7 +487,335 @@ impl GitmindServer {
         })
     }
 
-    /// Workdir + branch + HEAD sha. No params.
+    /// Cheap pickaxe: regex over changed file paths in HEAD ancestry.
+    #[tool(
+        description = "Walk recent commits (default last 200, max 1000) and return those whose \
+                       changed-file list contains any path matching the regex `pattern`. Cheaper \
+                       than `git log -G` because we only match paths, not patch text. Cached via \
+                       the same `commit_files` cache as `recent_changes`."
+    )]
+    async fn find_commits_by_path(
+        &self,
+        Parameters(params): Parameters<FindCommitsByPathParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let re = regex::Regex::new(&params.pattern)
+            .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
+        let window = params.window.unwrap_or(200).min(1000);
+        let limit = params.limit.unwrap_or(50).min(500);
+
+        let head = head_sha(repo)?;
+        let commits = self
+            .state
+            .git_cache
+            .log(repo, &head, None, window, true)
+            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+
+        let mut hits: Vec<CommitView> = Vec::new();
+        for c in commits.iter() {
+            if hits.len() >= limit as usize {
+                break;
+            }
+            if c.files.iter().any(|(p, _)| re.is_match(p)) {
+                hits.push(commit_to_view(c.clone(), true));
+            }
+        }
+        json_result(&FindCommitsByPathResponse {
+            pattern: params.pattern,
+            window_inspected: window,
+            commits: hits,
+        })
+    }
+
+    /// Most-changed files in a recent commit window.
+    #[tool(
+        description = "Top-K files most-frequently modified in the last `window` commits on the \
+                       current branch (default 200, max 2000). Each entry returns the per-kind \
+                       breakdown (added/modified/deleted). Useful for a churn map of where the \
+                       activity is concentrated."
+    )]
+    async fn hot_files(
+        &self,
+        Parameters(params): Parameters<HotFilesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let window = params.window.unwrap_or(200).min(2000);
+        let top_k = params.top_k.unwrap_or(20).min(200) as usize;
+        let head = head_sha(repo)?;
+        let commits = self
+            .state
+            .git_cache
+            .log(repo, &head, None, window, true)
+            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+
+        let mut counts: ahash::AHashMap<String, (u32, u32, u32, u32)> = ahash::AHashMap::new();
+        for c in commits.iter() {
+            for (path, kind) in &c.files {
+                let entry = counts.entry(path.clone()).or_insert((0, 0, 0, 0));
+                entry.0 += 1;
+                match kind {
+                    crate::git::ChangeKind::Added => entry.1 += 1,
+                    crate::git::ChangeKind::Modified | crate::git::ChangeKind::Renamed => {
+                        entry.2 += 1
+                    }
+                    crate::git::ChangeKind::Deleted => entry.3 += 1,
+                }
+            }
+        }
+        let total_files_changed = counts.len() as u32;
+        let mut ranked: Vec<HotFileEntry> = counts
+            .into_iter()
+            .map(|(path, (n, added, modified, deleted))| HotFileEntry {
+                path,
+                commits_touching: n,
+                added,
+                modified,
+                deleted,
+            })
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.commits_touching
+                .cmp(&a.commits_touching)
+                .then(a.path.cmp(&b.path))
+        });
+        ranked.truncate(top_k);
+
+        json_result(&HotFilesResponse {
+            window_inspected: window,
+            total_files_changed,
+            files: ranked,
+        })
+    }
+
+    /// Content-level diff between two revs for one file.
+    #[tool(
+        description = "Hunks for `path` between `rev_old` and `rev_new`. Each hunk reports old/new \
+                       1-based line ranges plus the changed text (lines prefixed with '-'/'+' for \
+                       modifications). When the file is absent on one side, `present_at_old` or \
+                       `present_at_new` indicates so and hunks describe the full add/remove."
+    )]
+    async fn diff_file(
+        &self,
+        Parameters(params): Parameters<DiffFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let old_sha = repo.resolve_rev(&params.rev_old).map_err(|e| {
+            McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_old), None)
+        })?;
+        let new_sha = repo.resolve_rev(&params.rev_new).map_err(|e| {
+            McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_new), None)
+        })?;
+        let result = repo
+            .diff_file(&old_sha, &new_sha, &params.path)
+            .map_err(|e| McpError::internal_error(format!("diff: {e}"), None))?;
+        let (hunks, present_old, present_new) = result.unwrap_or((Vec::new(), false, false));
+        let hunks = hunks
+            .into_iter()
+            .map(|h| HunkView {
+                kind: h.kind.as_str(),
+                old_line_start: h.old_line_start,
+                old_line_count: h.old_line_count,
+                new_line_start: h.new_line_start,
+                new_line_count: h.new_line_count,
+                text: h.text,
+            })
+            .collect();
+        json_result(&DiffFileResponse {
+            path: params.path,
+            rev_old: old_sha,
+            rev_new: new_sha,
+            present_at_old: present_old,
+            present_at_new: present_new,
+            hunks,
+        })
+    }
+
+    /// Tree-sitter × git: commits where a specific symbol's body changed.
+    #[tool(
+        description = "List commits where the named symbol's body bytes changed (or where it was \
+                       added/removed). Combines tree-sitter outline extraction with the commit log: \
+                       a `recent_changes` filtered by symbol identity rather than file identity. \
+                       Up to `limit` commits returned (default 20, max 100)."
+    )]
+    async fn symbol_history(
+        &self,
+        Parameters(params): Parameters<SymbolHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let kind = params.kind.as_deref().map(parse_kind).transpose()?;
+        let limit = params.limit.unwrap_or(20).min(100) as usize;
+        let lang = crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(|| {
+            McpError::invalid_params(format!("unsupported language: {}", params.path), None)
+        })?;
+
+        let head = head_sha(repo)?;
+        let commits = self
+            .state
+            .git_cache
+            .log(repo, &head, Some(&params.path), limit as u32 * 4, false)
+            .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+
+        // Walk commits oldest→newest so "introduced" / "modified" labels are correct.
+        let chronological: Vec<crate::git::CommitInfo> = commits.iter().cloned().rev().collect();
+
+        let mut history = Vec::new();
+        let mut prev_bytes: Option<Vec<u8>> = None;
+        let mut prev_existed = false;
+        let mut inspected: u32 = 0;
+        for c in chronological {
+            inspected += 1;
+            let blob = repo
+                .read_blob_at_rev(&c.sha, &params.path)
+                .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
+            let symbol_bytes = match &blob {
+                Some(bytes) => find_symbol_bytes(lang, bytes, &params.name, kind),
+                None => None,
+            };
+            let change = match (prev_existed, symbol_bytes.as_ref()) {
+                (false, Some(_)) => Some("introduced"),
+                (true, None) => Some("removed"),
+                (true, Some(curr)) => {
+                    if prev_bytes.as_deref() != Some(curr.as_slice()) {
+                        Some("modified")
+                    } else {
+                        None
+                    }
+                }
+                (false, None) => None,
+            };
+            if let Some(kind_str) = change {
+                history.push(SymbolHistoryEntry {
+                    sha: c.sha.clone(),
+                    short_sha: c.short_sha.clone(),
+                    summary: c.summary.clone(),
+                    author: c.author.clone(),
+                    author_time_unix: c.author_time_unix,
+                    change: kind_str,
+                });
+            }
+            prev_existed = symbol_bytes.is_some();
+            prev_bytes = symbol_bytes;
+        }
+        history.reverse();
+        history.truncate(limit);
+
+        json_result(&SymbolHistoryResponse {
+            path: params.path,
+            name: params.name,
+            kind: kind.map(|k| kind_to_str(k).to_string()),
+            commits_inspected: inspected,
+            history,
+        })
+    }
+
+    /// Line-level blame, optionally clamped to a 1-based inclusive line range.
+    #[tool(
+        description = "Blame the file at the given revision (default HEAD), returning one hunk per \
+                       consecutive run of lines that share a source commit. Optional 1-based \
+                       `line_start`/`line_end` clamp to a range. Each hunk carries commit sha, \
+                       author, unix time, summary, and the renamed source path if applicable. \
+                       Results are cached forever by (suspect_sha, path, range)."
+    )]
+    async fn blame_file(
+        &self,
+        Parameters(params): Parameters<BlameFileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let suspect_sha = match params.rev.as_deref() {
+            Some(r) => repo
+                .resolve_rev(r)
+                .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
+            None => head_sha(repo)?,
+        };
+        let range = match (params.line_start, params.line_end) {
+            (Some(lo), Some(hi)) => Some((lo, hi)),
+            (None, None) => None,
+            _ => {
+                return Err(McpError::invalid_params(
+                    "line_start and line_end must be provided together",
+                    None,
+                ));
+            }
+        };
+        let result = self
+            .state
+            .git_cache
+            .blame(repo, &suspect_sha, &params.path, range)
+            .map_err(|e| McpError::internal_error(format!("blame: {e}"), None))?;
+        let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+        json_result(&BlameResponse {
+            path: result.path.clone(),
+            suspect_sha: result.suspect_sha.clone(),
+            hunks,
+        })
+    }
+
+    /// Blame clamped to a specific tree-sitter symbol.
+    #[tool(
+        description = "Blame only the lines that belong to a named symbol in a file. Resolves the \
+                       symbol via the cached L1 outline (must be indexed in the current view) and \
+                       feeds its line range to `blame_file`. `kind` disambiguates same-named \
+                       symbols of different kinds."
+    )]
+    async fn blame_symbol(
+        &self,
+        Parameters(params): Parameters<BlameSymbolParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let repo = require_git_repo(&self.state)?;
+        let kind = params.kind.as_deref().map(parse_kind).transpose()?;
+        let cache = self.state.cache.load_full();
+        let l1 = cache.by_path.get(&params.path).ok_or_else(|| {
+            McpError::invalid_params(
+                format!("file not indexed in current view: {}", params.path),
+                None,
+            )
+        })?;
+        let sym = l1
+            .symbols
+            .iter()
+            .find(|s| s.name == params.name && kind.is_none_or(|k| s.kind == k))
+            .ok_or_else(|| {
+                McpError::invalid_params(
+                    format!(
+                        "symbol `{}`{} not found in {}",
+                        params.name,
+                        kind.map(|k| format!(" (kind={})", kind_to_str(k)))
+                            .unwrap_or_default(),
+                        params.path
+                    ),
+                    None,
+                )
+            })?;
+        let (line_start, line_end) = symbol_line_range(repo, &params.path, sym);
+        let suspect_sha = match params.rev.as_deref() {
+            Some(r) => repo
+                .resolve_rev(r)
+                .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
+            None => head_sha(repo)?,
+        };
+        let result = self
+            .state
+            .git_cache
+            .blame(
+                repo,
+                &suspect_sha,
+                &params.path,
+                Some((line_start, line_end)),
+            )
+            .map_err(|e| McpError::internal_error(format!("blame: {e}"), None))?;
+        let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+        json_result(&BlameSymbolResponse {
+            path: result.path.clone(),
+            suspect_sha: result.suspect_sha.clone(),
+            name: sym.name.clone(),
+            kind: kind_to_str(sym.kind).to_string(),
+            line_start,
+            line_end,
+            hunks,
+        })
+    }
+
+    /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch name (if HEAD is on one), \
                        full HEAD sha, short HEAD sha. Pairs well with `working_tree_status`."
@@ -944,21 +834,5 @@ impl GitmindServer {
             head_short_sha: info.head_short_sha,
             branch: info.branch,
         })
-    }
-}
-
-#[tool_handler]
-impl ServerHandler for GitmindServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "gitmind exposes a tree-sitter-backed code map plus git context. \
-             Code-map tools: `outline` for one file, `search_symbols` for cross-repo name lookup, \
-             `list_files` to enumerate what's indexed, `dependents` for reverse imports, `status` for \
-             cache stats. \
-             Git tools (need to be inside a git repo): `working_tree_status` (dirty/staged/untracked), \
-             `recent_changes` (HEAD ancestry), `commits_touching` (log filtered to a path), \
-             `diff_outline` (symbol-level diff between current view and a rev), `repo_info` \
-             (workdir/branch/HEAD). All paths are repository-relative with forward-slash separators.",
-        )
     }
 }

@@ -43,7 +43,8 @@ pub struct WorkingTreeStatus {
     pub untracked: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ChangeKind {
     Added,
     Modified,
@@ -62,7 +63,7 @@ impl ChangeKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CommitInfo {
     pub sha: String,
     pub short_sha: String,
@@ -72,6 +73,60 @@ pub struct CommitInfo {
     /// Files that changed in this commit relative to its first parent.
     /// Empty for the root commit, and empty when `include_files=false` was used.
     pub files: Vec<(String, ChangeKind)>,
+}
+
+/// One contiguous diff hunk between two file revisions. Line counts are 1-based.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Hunk {
+    pub kind: HunkKind,
+    pub old_line_start: u32,
+    pub old_line_count: u32,
+    pub new_line_start: u32,
+    pub new_line_count: u32,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HunkKind {
+    Added,
+    Removed,
+    Modified,
+}
+
+impl HunkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HunkKind::Added => "added",
+            HunkKind::Removed => "removed",
+            HunkKind::Modified => "modified",
+        }
+    }
+}
+
+/// A single blame hunk: a run of consecutive lines all introduced by one commit.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlameHunk {
+    pub commit_sha: String,
+    pub short_sha: String,
+    /// 1-based line where the hunk starts in the blamed file.
+    pub start_line: u32,
+    /// Number of lines covered by this hunk (>= 1).
+    pub len: u32,
+    /// 1-based line where the hunk starts in the source commit (before any renames/offsets).
+    pub source_start_line: u32,
+    pub author: String,
+    pub author_time_unix: i64,
+    pub summary: String,
+    /// Set when the file was renamed at `commit_sha` — name in the commit's tree.
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BlameResult {
+    pub path: String,
+    pub suspect_sha: String,
+    pub hunks: Vec<BlameHunk>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +339,142 @@ impl Repo {
         Ok(out)
     }
 
+    /// Blame the given file at the given suspect rev, optionally clamped to a 1-based
+    /// inclusive line range. Returns one [`BlameHunk`] per consecutive run of lines that
+    /// share a source commit. Author info is fetched once per unique commit to keep cost
+    /// linear in the number of distinct commits, not in the number of hunks.
+    pub fn blame_file(
+        &self,
+        suspect_sha: &str,
+        path: &str,
+        line_range: Option<(u32, u32)>,
+    ) -> Result<BlameResult, GitError> {
+        use gix::bstr::BStr;
+
+        let local = self.local();
+        let suspect = local
+            .rev_parse_single(suspect_sha)
+            .map_err(|e| GitError::RevParse {
+                rev: suspect_sha.to_string(),
+                msg: e.to_string(),
+            })?
+            .detach();
+
+        let mut options = gix::repository::blame_file::Options {
+            diff_algorithm: Some(gix::diff::blob::Algorithm::Histogram),
+            ranges: gix::blame::BlameRanges::default(),
+            since: None,
+            rewrites: Some(gix::diff::Rewrites::default()),
+        };
+        if let Some((lo, hi)) = line_range {
+            options.ranges = gix::blame::BlameRanges::from_one_based_inclusive_range(lo..=hi)
+                .map_err(|e| GitError::Other(format!("invalid blame range {lo}..={hi}: {e}")))?;
+        }
+
+        let outcome = local
+            .blame_file(BStr::new(path.as_bytes()), suspect, options)
+            .map_err(|e| GitError::Read {
+                what: format!("blame {suspect_sha}:{path}"),
+                msg: e.to_string(),
+            })?;
+
+        // Resolve author info per unique commit id, then map each hunk.
+        let mut author_cache: ahash::AHashMap<gix::ObjectId, (String, i64, String)> =
+            ahash::AHashMap::new();
+        let mut hunks = Vec::with_capacity(outcome.entries.len());
+        for entry in &outcome.entries {
+            let (author, time, summary) = author_cache
+                .entry(entry.commit_id)
+                .or_insert_with(|| {
+                    let commit = match local.find_commit(entry.commit_id) {
+                        Ok(c) => c,
+                        Err(_) => return ("?".to_string(), 0, String::new()),
+                    };
+                    let author = commit
+                        .author()
+                        .ok()
+                        .and_then(|a| std::str::from_utf8(a.name).ok().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "?".to_string());
+                    let time = commit
+                        .author()
+                        .ok()
+                        .and_then(|a| a.time().ok())
+                        .map(|t| t.seconds)
+                        .unwrap_or(0);
+                    let summary = commit
+                        .message()
+                        .ok()
+                        .map(|m| m.summary().to_string())
+                        .unwrap_or_default();
+                    (author, time, summary)
+                })
+                .clone();
+            let sha = entry.commit_id.to_string();
+            let short_sha = sha[..7.min(sha.len())].to_string();
+            let source_path = entry
+                .source_file_name
+                .as_ref()
+                .and_then(|b| std::str::from_utf8(b).ok().map(|s| s.to_string()));
+            hunks.push(BlameHunk {
+                commit_sha: sha,
+                short_sha,
+                start_line: entry.start_in_blamed_file + 1,
+                len: entry.len.get(),
+                source_start_line: entry.start_in_source_file + 1,
+                author,
+                author_time_unix: time,
+                summary,
+                source_path,
+            });
+        }
+        hunks.sort_by_key(|h| h.start_line);
+
+        Ok(BlameResult {
+            path: path.to_string(),
+            suspect_sha: suspect_sha.to_string(),
+            hunks,
+        })
+    }
+
+    /// Content-level hunks for `path` between `rev_old` and `rev_new`. Returns the bytes for
+    /// either side and the unified-diff hunks. The output is empty (an empty Vec, not an
+    /// error) when the file exists at both revs but the bytes are identical, and `None` when
+    /// the path is absent at both sides.
+    pub fn diff_file(
+        &self,
+        rev_old: &str,
+        rev_new: &str,
+        path: &str,
+    ) -> Result<Option<(Vec<Hunk>, bool, bool)>, GitError> {
+        let old_bytes = self.read_blob_at_rev(rev_old, path)?;
+        let new_bytes = self.read_blob_at_rev(rev_new, path)?;
+        if old_bytes.is_none() && new_bytes.is_none() {
+            return Ok(None);
+        }
+        let old_buf = old_bytes.clone().unwrap_or_default();
+        let new_buf = new_bytes.clone().unwrap_or_default();
+        let hunks = compute_hunks(&old_buf, &new_buf);
+        Ok(Some((hunks, old_bytes.is_some(), new_bytes.is_some())))
+    }
+
+    /// Diff the commit at `commit_sha` against its first parent. Returns the per-file
+    /// (path, change-kind) list. **No caching** — call through `GitCache::commit_files`
+    /// in hot paths. Public so the cache layer can drive it.
+    pub fn commit_files_uncached(
+        &self,
+        commit_sha: &str,
+    ) -> Result<Vec<(String, ChangeKind)>, GitError> {
+        let local = self.local();
+        let id = local
+            .rev_parse_single(commit_sha)
+            .map_err(|e| GitError::RevParse {
+                rev: commit_sha.to_string(),
+                msg: e.to_string(),
+            })?
+            .detach();
+        Ok(commit_files(&local, id).unwrap_or_default())
+    }
+
     pub fn info(&self) -> Result<RepoInfo, GitError> {
         let local = self.local();
         let head_id = local.head_id().ok();
@@ -409,6 +600,90 @@ fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &
         return false;
     };
     files.iter().any(|(p, _)| p == rel)
+}
+
+/// Line-diff between two byte buffers using the histogram algorithm + slider heuristics.
+/// Returns one `Hunk` per `imara_diff::Hunk` — runs without surrounding context lines,
+/// because agents have direct access to the source via the outline tools.
+fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
+    use gix::diff::blob::{Algorithm, InternedInput, diff_with_slider_heuristics, sources};
+
+    let input = InternedInput::new(sources::byte_lines(old), sources::byte_lines(new));
+    let diff = diff_with_slider_heuristics(Algorithm::Histogram, &input);
+
+    let old_lines = line_byte_offsets(old);
+    let new_lines = line_byte_offsets(new);
+    let mut out =
+        Vec::with_capacity(diff.count_additions() as usize + diff.count_removals() as usize);
+    for hunk in diff.hunks() {
+        let removed_count = hunk.before.end - hunk.before.start;
+        let added_count = hunk.after.end - hunk.after.start;
+        let kind = match (removed_count, added_count) {
+            (0, _) => HunkKind::Added,
+            (_, 0) => HunkKind::Removed,
+            _ => HunkKind::Modified,
+        };
+        let mut removed = String::new();
+        for line in hunk.before.start..hunk.before.end {
+            if let Some((s, e)) = old_lines.get(line as usize).copied()
+                && let Ok(t) = std::str::from_utf8(&old[s as usize..e as usize])
+            {
+                removed.push_str(t);
+            }
+        }
+        let mut added = String::new();
+        for line in hunk.after.start..hunk.after.end {
+            if let Some((s, e)) = new_lines.get(line as usize).copied()
+                && let Ok(t) = std::str::from_utf8(&new[s as usize..e as usize])
+            {
+                added.push_str(t);
+            }
+        }
+        let text = if removed_count == 0 {
+            added
+        } else if added_count == 0 {
+            removed
+        } else {
+            // Git-style unified body: lines from the removed side prefixed with '-',
+            // added side with '+'. Trailing newlines preserved when present in source.
+            let mut s = String::with_capacity(removed.len() + added.len());
+            for line in removed.lines() {
+                s.push('-');
+                s.push_str(line);
+                s.push('\n');
+            }
+            for line in added.lines() {
+                s.push('+');
+                s.push_str(line);
+                s.push('\n');
+            }
+            s
+        };
+        out.push(Hunk {
+            kind,
+            old_line_start: hunk.before.start + 1,
+            old_line_count: removed_count,
+            new_line_start: hunk.after.start + 1,
+            new_line_count: added_count,
+            text,
+        });
+    }
+    out
+}
+
+fn line_byte_offsets(buf: &[u8]) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    let mut s: u32 = 0;
+    for (i, &b) in buf.iter().enumerate() {
+        if b == b'\n' {
+            out.push((s, (i + 1) as u32));
+            s = (i + 1) as u32;
+        }
+    }
+    if (s as usize) < buf.len() {
+        out.push((s, buf.len() as u32));
+    }
+    out
 }
 
 fn classify_tree_change(

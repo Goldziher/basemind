@@ -62,6 +62,17 @@ enum Cmd {
     },
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
+    /// Manage the sha-keyed git cache at .gitmind/git-cache/.
+    Cache {
+        #[command(subcommand)]
+        action: CacheCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CacheCmd {
+    /// Drop every persisted git-cache entry. Next MCP query will warm from scratch.
+    Clear,
 }
 
 #[derive(clap::Args, Debug)]
@@ -84,6 +95,13 @@ struct ServeArgs {
     /// `gitmind scan --rev <REV>`.
     #[arg(long, default_value_t = gitmind::store::VIEW_WORKING.to_string())]
     view: String,
+    /// LRU capacity per category for the in-process git cache (commit_files, log, blame).
+    #[arg(long, default_value_t = 1024)]
+    git_cache_mem: usize,
+    /// Disable the on-disk git cache. RAM LRU still applies but nothing persists between
+    /// `gitmind serve` runs.
+    #[arg(long)]
+    no_git_cache_disk: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -163,7 +181,18 @@ fn main() -> Result<()> {
             LangCmd::Clean => cmd_lang_clean(),
         },
         Cmd::Serve(args) => cmd_serve(&root, &args),
+        Cmd::Cache { action } => match action {
+            CacheCmd::Clear => cmd_cache_clear(&root),
+        },
     }
+}
+
+fn cmd_cache_clear(root: &std::path::Path) -> Result<()> {
+    let gitmind_dir = root.join(gitmind::config::GITMIND_DIR);
+    let cache = gitmind::git_cache::GitCache::open(&gitmind_dir, 1, true).context("open cache")?;
+    let removed = cache.clear().context("clear cache")?;
+    println!("cleared git-cache ({removed} files removed)");
+    Ok(())
 }
 
 fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
@@ -419,6 +448,7 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
     // Open the store in read-only mode so we don't conflict with a concurrent `gitmind watch`.
     // The MCP server is purely a query surface.
     let store = Store::open_read_only(root, &args.view).context("open store (ro)")?;
+    let gitmind_dir = root.join(gitmind::config::GITMIND_DIR);
     let root_buf = root.to_path_buf();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -429,10 +459,18 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
     // Open the git repo once if we're inside one; pass it to the server so the git-aware
     // tools (`working_tree_status`, `recent_changes`, …) work without re-discovering.
     let repo = gitmind::git::Repo::discover(root).ok().map(Arc::new);
+    let git_cache = Arc::new(
+        gitmind::git_cache::GitCache::open(
+            &gitmind_dir,
+            args.git_cache_mem,
+            !args.no_git_cache_disk,
+        )
+        .context("open git cache")?,
+    );
 
     runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = gitmind::mcp::GitmindServer::new(store, root_buf, repo);
+        let server = gitmind::mcp::GitmindServer::new(store, root_buf, repo, git_cache);
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)
