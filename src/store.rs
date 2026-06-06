@@ -13,6 +13,17 @@ use crate::hashing::{self, Hash};
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
+pub const VIEWS_DIR: &str = "views";
+
+/// View name used for the working-tree index. Also the default for `gitmind serve`.
+pub const VIEW_WORKING: &str = "working";
+/// View name used when scanning the staging index.
+pub const VIEW_STAGED: &str = "staged";
+
+/// Build the view name used for an arbitrary rev. Slash-free so it's a single directory.
+pub fn view_name_for_rev(short_sha: &str) -> String {
+    format!("rev-{short_sha}")
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -60,26 +71,38 @@ pub struct FileEntry {
 pub struct Store {
     pub root: PathBuf,
     pub gitmind_dir: PathBuf,
+    pub view_dir: PathBuf,
+    pub view: String,
     pub index: Index,
     _lock: Option<File>,
 }
 
 impl Store {
-    pub fn open(root: &Path) -> Result<Self, StoreError> {
+    /// Open the store for a specific view. View names are flat strings: `"working"`,
+    /// `"staged"`, `"rev-<sha7>"`. Each view has its own `index.msgpack` under
+    /// `.gitmind/views/<view>/`; blobs are shared in `.gitmind/blobs/`.
+    pub fn open(root: &Path, view: &str) -> Result<Self, StoreError> {
         let gitmind_dir = root.join(crate::config::GITMIND_DIR);
         ensure_dir(&gitmind_dir)?;
         ensure_dir(&gitmind_dir.join(BLOBS_DIR))?;
+        ensure_dir(&gitmind_dir.join(VIEWS_DIR))?;
+        migrate_legacy_index_into_views(&gitmind_dir)?;
+
+        let view_dir = gitmind_dir.join(VIEWS_DIR).join(view);
+        ensure_dir(&view_dir)?;
         let lock = acquire_lock(&gitmind_dir)?;
-        let index = match read_index(&gitmind_dir) {
+        let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
                 tracing::info!(
                     found,
                     expected,
-                    "cache schema bumped; wiping .gitmind/index.msgpack and blobs/"
+                    view,
+                    "cache schema bumped; wiping view index + shared blobs"
                 );
-                wipe_cache(&gitmind_dir)?;
+                wipe_view(&view_dir)?;
+                wipe_blobs(&gitmind_dir)?;
                 Index::empty()
             }
             Err(e) => return Err(e),
@@ -87,18 +110,27 @@ impl Store {
         Ok(Self {
             root: root.to_path_buf(),
             gitmind_dir,
+            view_dir,
+            view: view.to_string(),
             index,
             _lock: Some(lock),
         })
     }
 
-    /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP --attach).
-    pub fn open_read_only(root: &Path) -> Result<Self, StoreError> {
+    /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
+    pub fn open_read_only(root: &Path, view: &str) -> Result<Self, StoreError> {
         let gitmind_dir = root.join(crate::config::GITMIND_DIR);
-        let index = read_index(&gitmind_dir)?.unwrap_or_else(Index::empty);
+        // Idempotent migration so a read-only consumer sees the same shape a fresh writer would.
+        if gitmind_dir.exists() {
+            let _ = migrate_legacy_index_into_views(&gitmind_dir);
+        }
+        let view_dir = gitmind_dir.join(VIEWS_DIR).join(view);
+        let index = read_index(&view_dir)?.unwrap_or_else(Index::empty);
         Ok(Self {
             root: root.to_path_buf(),
             gitmind_dir,
+            view_dir,
+            view: view.to_string(),
             index,
             _lock: None,
         })
@@ -191,8 +223,8 @@ impl Store {
 
     /// Atomically rewrite the index file (tmp + rename).
     pub fn flush(&self) -> Result<(), StoreError> {
-        let final_path = self.gitmind_dir.join(INDEX_FILE);
-        let tmp_path = self.gitmind_dir.join(format!("{INDEX_FILE}.tmp"));
+        let final_path = self.view_dir.join(INDEX_FILE);
+        let tmp_path = self.view_dir.join(format!("{INDEX_FILE}.tmp"));
         let bytes = rmp_serde::to_vec_named(&self.index)?;
         {
             let mut f = OpenOptions::new()
@@ -228,16 +260,21 @@ fn ensure_dir(p: &Path) -> Result<(), StoreError> {
     })
 }
 
-/// Delete the index file and every blob; leave the lock + config alone.
-/// Called from `Store::open` when the persisted schema version doesn't match `SCHEMA_VER`.
-fn wipe_cache(gitmind_dir: &Path) -> Result<(), StoreError> {
-    let index_path = gitmind_dir.join(INDEX_FILE);
+/// Delete the index file in a single view's directory.
+fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
+    let index_path = view_dir.join(INDEX_FILE);
     if index_path.exists() {
         std::fs::remove_file(&index_path).map_err(|source| StoreError::Io {
             path: index_path,
             source,
         })?;
     }
+    Ok(())
+}
+
+/// Wipe the shared blobs directory. Called from `Store::open` when the persisted schema
+/// version doesn't match `SCHEMA_VER` — once one view's blobs are stale, all are.
+fn wipe_blobs(gitmind_dir: &Path) -> Result<(), StoreError> {
     let blobs_dir = gitmind_dir.join(BLOBS_DIR);
     if blobs_dir.exists() {
         std::fs::remove_dir_all(&blobs_dir).map_err(|source| StoreError::Io {
@@ -252,8 +289,32 @@ fn wipe_cache(gitmind_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn read_index(gitmind_dir: &Path) -> Result<Option<Index>, StoreError> {
-    let path = gitmind_dir.join(INDEX_FILE);
+/// Pre-views installs kept `index.msgpack` at the top of `.gitmind/`. After the upgrade,
+/// each view lives under `.gitmind/views/<view>/`. If we detect the legacy file AND no
+/// working-view file exists yet, move it in place. Idempotent: re-runs are no-ops.
+fn migrate_legacy_index_into_views(gitmind_dir: &Path) -> Result<(), StoreError> {
+    let legacy = gitmind_dir.join(INDEX_FILE);
+    if !legacy.exists() {
+        return Ok(());
+    }
+    let working_dir = gitmind_dir.join(VIEWS_DIR).join(VIEW_WORKING);
+    let working_index = working_dir.join(INDEX_FILE);
+    if working_index.exists() {
+        // Both present — `legacy` is the duplicate. Remove it so we don't migrate twice.
+        let _ = std::fs::remove_file(&legacy);
+        return Ok(());
+    }
+    ensure_dir(&working_dir)?;
+    std::fs::rename(&legacy, &working_index).map_err(|source| StoreError::Io {
+        path: working_index,
+        source,
+    })?;
+    tracing::info!("migrated .gitmind/index.msgpack → .gitmind/views/{VIEW_WORKING}/index.msgpack");
+    Ok(())
+}
+
+fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
+    let path = view_dir.join(INDEX_FILE);
     if !path.exists() {
         return Ok(None);
     }

@@ -21,6 +21,7 @@ anyhow = "1"
 blake3 = "1"
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
+gix = { version = "0.84.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"
 ignore = "0.4"

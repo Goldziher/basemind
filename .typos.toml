@@ -1,0 +1,4 @@
+# gix uses `rela_path` (relative path) as an identifier on `Entry` / `Modification`.
+# Without this exception the typos hook rewrites it to `real_path` and we no longer compile.
+[default.extend-identifiers]
+rela_path = "rela_path"

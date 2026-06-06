@@ -4,6 +4,7 @@
 
 pub mod config;
 pub mod extract;
+pub mod git;
 pub mod hashing;
 pub mod lang;
 pub mod mcp;

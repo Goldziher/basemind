@@ -184,6 +184,22 @@ pub fn render_grammar_bootstrap(
     }
 }
 
+/// Tiny header used by non-working-tree scans (staged / rev). Working-tree scans don't get
+/// one — they're the default and shouldn't grow noise on every run.
+pub fn render_scan_header(w: &mut AutoStream<std::io::Stdout>, label: &str, verbosity: Verbosity) {
+    if verbosity == Verbosity::Quiet {
+        return;
+    }
+    let style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue)));
+    let _ = writeln!(
+        w,
+        "{s}▶ scanning {label}{r}",
+        s = style.render(),
+        r = Reset.render(),
+        label = label,
+    );
+}
+
 pub fn render_batch_header(
     w: &mut AutoStream<std::io::Stdout>,
     paths: usize,

@@ -10,24 +10,46 @@ for the iteration plan.
 
 ```text
 gitmind init                              # write .gitmind/gitmind.toml with defaults
-gitmind scan                              # one-shot scan, write .gitmind/
-gitmind watch                             # long-running file watcher
-gitmind serve                             # MCP server (stdio) for AI agents
+gitmind scan                              # working-tree scan (default)
+gitmind scan --staged                     # index what's in the git staging area
+gitmind scan --rev <REV>                  # index a commit / branch / sha
+gitmind watch                             # long-running working-tree watcher
+gitmind serve [--view <name>]             # MCP server (stdio) for AI agents
 gitmind query outline <path> [--l2]       # symbols, imports (+ docs/calls with --l2)
 gitmind query symbol <needle> [--kind K]  # substring search across symbols
 gitmind query dependents <module>         # heuristic reverse-lookup
-gitmind hook install                      # install git pre-commit hook
+gitmind hook install                      # install git pre-commit hook (uses --staged)
 gitmind lang {list, install, clean}       # manage downloaded tree-sitter grammars
 ```
 
 Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color`
 (NO_COLOR is also honored).
 
+## Git views
+
+A "view" is a code map for a specific snapshot of the repo. Each view has its own
+index file under `.gitmind/views/<view>/`; blobs are shared in `.gitmind/blobs/`.
+
+- **`working`** (default) — the on-disk working tree
+- **`staged`** — the git staging area; what's about to be committed
+- **`rev-<sha7>`** — whatever you scanned with `gitmind scan --rev <REV>`
+
+`gitmind scan` (no flags) builds the `working` view. `gitmind scan --staged` builds
+`staged`. `gitmind scan --rev HEAD~5` resolves to a 7-char sha and builds
+`rev-<sha7>`. They coexist — running one doesn't clobber the others.
+
+The pre-commit hook installed by `gitmind hook install` runs `gitmind scan --staged
+--quiet`, so the hook indexes what's actually being committed rather than whatever
+half-finished work is sitting in the working tree.
+
 ## MCP server
 
-`gitmind serve` exposes the code map to AI agents over the canonical MCP
+`gitmind serve [--view <name>]` exposes the code map and git context to AI agents
+over the canonical MCP
 [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25).
-Tools shipped (all return JSON):
+`--view` picks which scan to serve (default: `working`). All tools return JSON.
+
+### Code-map tools
 
 | Tool             | Use                                                            |
 |------------------|----------------------------------------------------------------|
@@ -36,6 +58,16 @@ Tools shipped (all return JSON):
 | `list_files`     | enumerate indexed paths, optional `path_contains` + `language` filters |
 | `dependents`     | heuristic reverse-lookup via imports                            |
 | `status`         | repo overview: file count, language breakdown, cache directory  |
+
+### Git tools (require `gitmind serve` inside a git repo)
+
+| Tool                  | Use                                                       |
+|-----------------------|-----------------------------------------------------------|
+| `working_tree_status` | porcelain shape: staged adds/mods/dels, modified, untracked, `is_clean` flag |
+| `recent_changes`      | last N commits on the current branch with per-commit file lists |
+| `commits_touching`    | log filtered to a single path                              |
+| `diff_outline`        | symbol-level diff between the served view and any revision (e.g. "what did this branch add") |
+| `repo_info`           | workdir, branch name, HEAD sha                             |
 
 The server opens the store **read-only** so it coexists with `gitmind watch`.
 On startup it preloads every L1 blob into RAM so cross-file queries are

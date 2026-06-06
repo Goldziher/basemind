@@ -44,13 +44,13 @@ enum Cmd {
     /// Initialize a new .gitmind/ folder with a default config.
     Init,
     /// Run a one-shot scan over the repository and write the code map.
-    Scan,
+    Scan(ScanArgs),
     /// Long-running watcher; keeps the code map current as files change.
     Watch,
     /// Query the code map.
     #[command(subcommand)]
     Query(QueryCmd),
-    /// Install a pre-commit hook that runs `gitmind scan`.
+    /// Install a pre-commit hook that runs `gitmind scan --staged`.
     Hook {
         #[command(subcommand)]
         action: HookCmd,
@@ -61,7 +61,29 @@ enum Cmd {
         action: LangCmd,
     },
     /// Run an MCP server (stdio) exposing the code map to AI agents.
-    Serve,
+    Serve(ServeArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct ScanArgs {
+    /// Index the git staging area instead of the working tree. Used by the
+    /// pre-commit hook so the cache reflects what's about to be committed.
+    /// Mutually exclusive with --rev.
+    #[arg(long, conflicts_with = "rev")]
+    staged: bool,
+    /// Index the tree at the given revision (HEAD, branch name, sha, HEAD~3).
+    /// Writes under .gitmind/views/rev-<sha7>/ — separate from the working-tree view.
+    #[arg(long, value_name = "REV")]
+    rev: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct ServeArgs {
+    /// Which view to serve. "working" (default) is the on-disk tree; "staged" is
+    /// the git index; "rev-<sha7>" is whatever you previously scanned with
+    /// `gitmind scan --rev <REV>`.
+    #[arg(long, default_value_t = gitmind::store::VIEW_WORKING.to_string())]
+    view: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -115,15 +137,21 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let no_color = cli.no_color;
-    let root = cli
+    let start = cli
         .root
         .clone()
         .map(|p| p.canonicalize().unwrap_or(p))
         .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+    // Prefer the discovered git workdir so `gitmind` invoked from a subdirectory still
+    // operates against the repo root. Outside a git repo, fall back to CWD.
+    let root = match gitmind::git::Repo::discover(&start) {
+        Ok(repo) => repo.workdir().to_path_buf(),
+        Err(_) => start,
+    };
 
     match cli.cmd {
         Cmd::Init => cmd_init(&root),
-        Cmd::Scan => cmd_scan(&root, verbosity, no_color),
+        Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Query(q) => cmd_query(&root, q),
         Cmd::Hook { action } => match action {
@@ -134,7 +162,7 @@ fn main() -> Result<()> {
             LangCmd::Install => cmd_lang_install(verbosity, no_color),
             LangCmd::Clean => cmd_lang_clean(),
         },
-        Cmd::Serve => cmd_serve(&root),
+        Cmd::Serve(args) => cmd_serve(&root, &args),
     }
 }
 
@@ -186,12 +214,70 @@ fn load_or_default(root: &std::path::Path) -> Result<Config> {
     }
 }
 
-fn cmd_scan(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {
+fn cmd_scan(
+    root: &std::path::Path,
+    args: &ScanArgs,
+    verbosity: Verbosity,
+    no_color: bool,
+) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
-    let mut store = Store::open(root).context("open store")?;
-    let report = gitmind::scanner::scan(root, &mut store, &config).context("scan")?;
+
+    // Decide view + source up front; we need the source to outlive scan, so the Repo lives
+    // here. WorkingTree doesn't need a repo at all.
     let mut out = render::stdout(no_color);
+    if args.staged {
+        let repo = gitmind::git::Repo::discover(root)
+            .context("`--staged` requires being inside a git repository")?;
+        let mut store =
+            Store::open(root, gitmind::store::VIEW_STAGED).context("open store (staged)")?;
+        render::render_scan_header(&mut out, "staged index", verbosity);
+        let report = gitmind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            gitmind::scanner::ScanSource::Staged(&repo),
+        )
+        .context("scan staged")?;
+        render::render_report(&mut out, &report, verbosity);
+        if report.stats.read_failed + report.stats.extract_failed > 0 {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+    if let Some(rev_spec) = &args.rev {
+        let repo = gitmind::git::Repo::discover(root)
+            .context("`--rev` requires being inside a git repository")?;
+        let sha = repo.resolve_rev(rev_spec).context("resolve rev")?;
+        let short = &sha[..7.min(sha.len())];
+        let view = gitmind::store::view_name_for_rev(short);
+        let mut store = Store::open(root, &view).context("open store (rev)")?;
+        render::render_scan_header(&mut out, &format!("rev {short}"), verbosity);
+        let report = gitmind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            gitmind::scanner::ScanSource::Rev {
+                repo: &repo,
+                sha: sha.clone(),
+            },
+        )
+        .context("scan rev")?;
+        render::render_report(&mut out, &report, verbosity);
+        if report.stats.read_failed + report.stats.extract_failed > 0 {
+            std::process::exit(2);
+        }
+        return Ok(());
+    }
+
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).context("open store")?;
+    let report = gitmind::scanner::scan(
+        root,
+        &mut store,
+        &config,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
     if report.stats.read_failed + report.stats.extract_failed > 0 {
         std::process::exit(2);
@@ -202,7 +288,9 @@ fn cmd_scan(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Res
 fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = Arc::new(load_or_default(root)?);
-    let store = Arc::new(Mutex::new(Store::open(root).context("open store")?));
+    let store = Arc::new(Mutex::new(
+        Store::open(root, gitmind::store::VIEW_WORKING).context("open store")?,
+    ));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -244,7 +332,8 @@ fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
     // Query reads cached extracts; grammars are not strictly needed, but the L2 escalation
     // path falls back to live extraction. Bootstrap quietly so first-time L2 doesn't stall.
     let _ = gitmind::lang::ensure_grammars();
-    let store = Store::open_read_only(root).context("open store (ro)")?;
+    let store =
+        Store::open_read_only(root, gitmind::store::VIEW_WORKING).context("open store (ro)")?;
     match q {
         QueryCmd::Outline { path, l2 } => {
             let outline = gitmind::query::file_outline(&store, &path)?;
@@ -326,10 +415,10 @@ fn parse_kind(s: &str) -> Result<SymbolKind> {
     })
 }
 
-fn cmd_serve(root: &std::path::Path) -> Result<()> {
+fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
     // Open the store in read-only mode so we don't conflict with a concurrent `gitmind watch`.
     // The MCP server is purely a query surface.
-    let store = Store::open_read_only(root).context("open store (ro)")?;
+    let store = Store::open_read_only(root, &args.view).context("open store (ro)")?;
     let root_buf = root.to_path_buf();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -337,9 +426,13 @@ fn cmd_serve(root: &std::path::Path) -> Result<()> {
         .build()
         .context("build tokio runtime")?;
 
+    // Open the git repo once if we're inside one; pass it to the server so the git-aware
+    // tools (`working_tree_status`, `recent_changes`, …) work without re-discovering.
+    let repo = gitmind::git::Repo::discover(root).ok().map(Arc::new);
+
     runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = gitmind::mcp::GitmindServer::new(store, root_buf);
+        let server = gitmind::mcp::GitmindServer::new(store, root_buf, repo);
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)
@@ -449,10 +542,13 @@ fn cmd_hook_install(root: &std::path::Path) -> Result<()> {
         anyhow::bail!("no .git/hooks directory at {}", hooks_dir.display());
     }
     let hook_path = hooks_dir.join("pre-commit");
+    // --staged makes the hook index the about-to-be-committed snapshot rather than
+    // whatever messy state the working tree might be in. --quiet keeps successful commits
+    // free of noise.
     let body = r#"#!/usr/bin/env sh
 # Installed by gitmind hook install.
 set -e
-exec gitmind scan
+exec gitmind scan --staged --quiet
 "#;
     std::fs::write(&hook_path, body)?;
     #[cfg(unix)]

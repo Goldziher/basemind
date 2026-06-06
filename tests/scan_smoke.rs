@@ -23,8 +23,14 @@ fn scan_extracts_rust_symbols() {
     )
     .unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    let report = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 1);
     assert_eq!(report.stats.skipped_unchanged, 0);
 
@@ -47,13 +53,25 @@ fn rescan_is_idempotent_and_uses_cache() {
 
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    let first = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let first = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert_eq!(first.stats.updated, 1);
     drop(store);
 
-    let mut store = Store::open(root).unwrap();
-    let second = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let second = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert_eq!(second.stats.updated, 0);
     assert_eq!(second.stats.skipped_unchanged, 1);
 }
@@ -65,13 +83,25 @@ fn modifying_a_file_triggers_reextract() {
 
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     {
-        let mut store = Store::open(root).unwrap();
-        scan(root, &mut store, &cfg).unwrap();
+        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            gitmind::scanner::ScanSource::WorkingTree,
+        )
+        .unwrap();
     }
     fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
     {
-        let mut store = Store::open(root).unwrap();
-        let s = scan(root, &mut store, &cfg).unwrap();
+        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let s = scan(
+            root,
+            &mut store,
+            &cfg,
+            gitmind::scanner::ScanSource::WorkingTree,
+        )
+        .unwrap();
         assert_eq!(s.stats.updated, 1);
         let hits = gitmind::query::search_symbols(&store, "gamma", None).unwrap();
         assert_eq!(hits.len(), 1);
@@ -88,13 +118,25 @@ fn removed_files_get_purged_from_index() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
     {
-        let mut store = Store::open(root).unwrap();
-        scan(root, &mut store, &cfg).unwrap();
+        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            gitmind::scanner::ScanSource::WorkingTree,
+        )
+        .unwrap();
     }
     fs::remove_file(root.join("b.rs")).unwrap();
     {
-        let mut store = Store::open(root).unwrap();
-        let s = scan(root, &mut store, &cfg).unwrap();
+        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let s = scan(
+            root,
+            &mut store,
+            &cfg,
+            gitmind::scanner::ScanSource::WorkingTree,
+        )
+        .unwrap();
         assert_eq!(s.stats.removed, 1);
         assert!(store.lookup("b.rs").is_none());
         assert!(store.lookup("a.rs").is_some());
@@ -110,8 +152,14 @@ fn skips_large_files() {
     let big = vec![b'x'; 4096];
     fs::write(root.join("big.rs"), &big).unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    let s = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let s = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert_eq!(s.stats.skipped_too_large, 1);
     assert!(store.lookup("big.rs").is_none());
 }
@@ -122,8 +170,14 @@ fn ignores_unknown_languages() {
     let root = dir.path();
     fs::write(root.join("weird.xyz"), b"data").unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    let s = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let s = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     // Globset default doesn't include *.xyz so it isn't even a candidate.
     assert_eq!(s.stats.scanned, 0);
 }
@@ -138,8 +192,14 @@ fn extracts_python() {
     )
     .unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
 
     let outline = gitmind::query::file_outline(&store, "m.py").unwrap();
     assert_eq!(outline.language, "python");
@@ -153,12 +213,14 @@ fn extracts_python() {
 fn store_lock_prevents_concurrent_open() {
     let (dir, _cfg) = fresh_repo();
     let root = dir.path();
-    let first = Store::open(root).unwrap();
-    let err = Store::open(root).err().expect("second open must fail");
+    let first = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let err = Store::open(root, gitmind::store::VIEW_WORKING)
+        .err()
+        .expect("second open must fail");
     assert!(matches!(err, gitmind::store::StoreError::Locked(_)));
     drop(first);
     // After dropping, open succeeds again.
-    Store::open(root).unwrap();
+    Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
 }
 
 #[test]
@@ -172,8 +234,14 @@ fn scan_flags_files_with_syntax_errors() {
     )
     .unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    let report = scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 1);
     assert_eq!(
         report.stats.updated_with_warnings, 1,
@@ -214,8 +282,14 @@ fn scan_paths_only_touches_listed_files() {
     fs::write(root.join("b.rs"), b"pub fn b() {}\n").unwrap();
     fs::write(root.join("c.rs"), b"pub fn c() {}\n").unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
 
     let hash_b_before = store.lookup("b.rs").unwrap().hash_hex.clone();
     let hash_c_before = store.lookup("c.rs").unwrap().hash_hex.clone();
@@ -242,8 +316,14 @@ fn scan_paths_purges_removed_files() {
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();
 
-    let mut store = Store::open(root).unwrap();
-    scan(root, &mut store, &cfg).unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
     assert!(store.lookup("a.rs").is_some());
 
     fs::remove_file(root.join("a.rs")).unwrap();

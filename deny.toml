@@ -51,6 +51,12 @@ license-files = []
 name = "option-ext"
 allow = ["MPL-2.0"]
 
+# uluru (transitive via gix-pack → gix) is an LRU cache crate, MPL-2.0. Accept
+# the same file-level copyleft scope as option-ext.
+[[licenses.exceptions]]
+name = "uluru"
+allow = ["MPL-2.0"]
+
 [licenses.private]
 ignore = false
 registries = []
