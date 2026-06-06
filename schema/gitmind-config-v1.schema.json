@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gitmind.dev/schema/v1.json",
+  "title": "GitmindConfigV1",
+  "description": "Configuration for the gitmind file-watcher and code-map generator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL or short tag identifying the config schema version. Must match one of the known versions.",
+      "enum": [
+        "https://gitmind.dev/schema/v1.json",
+        "v1"
+      ]
+    },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "File discovery rules.",
+      "properties": {
+        "include": {
+          "type": "array",
+          "description": "Glob patterns (relative to repo root) of files to include.",
+          "items": { "type": "string", "minLength": 1 },
+          "default": ["**/*.rs", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.go"]
+        },
+        "exclude": {
+          "type": "array",
+          "description": "Glob patterns to exclude. Applied after include.",
+          "items": { "type": "string", "minLength": 1 },
+          "default": [
+            "**/target/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/.venv/**",
+            "**/.gitmind/**",
+            "**/.git/**"
+          ]
+        },
+        "respect_gitignore": {
+          "type": "boolean",
+          "description": "Honor .gitignore files when walking the tree.",
+          "default": true
+        },
+        "max_file_bytes": {
+          "type": "integer",
+          "description": "Skip files larger than this. Prevents minified-bundle stalls.",
+          "minimum": 1024,
+          "default": 2097152
+        },
+        "max_file_lines": {
+          "type": "integer",
+          "description": "Skip files with more than this many lines.",
+          "minimum": 100,
+          "default": 50000
+        }
+      },
+      "default": {}
+    },
+    "watch": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Long-running watcher settings.",
+      "properties": {
+        "debounce_ms": {
+          "type": "integer",
+          "description": "Coalesce file events within this window.",
+          "minimum": 0,
+          "maximum": 60000,
+          "default": 250
+        },
+        "live_l2": {
+          "type": "boolean",
+          "description": "Eagerly compute L2 (docs + call graph) on every change instead of on-demand.",
+          "default": false
+        }
+      },
+      "default": {}
+    },
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "In-memory cache limits.",
+      "properties": {
+        "file_map_lru": {
+          "type": "integer",
+          "description": "Maximum number of extracted FileMaps to keep hot in memory.",
+          "minimum": 0,
+          "default": 256
+        }
+      },
+      "default": {}
+    },
+    "mcp": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "MCP server settings.",
+      "properties": {
+        "transport": {
+          "type": "string",
+          "description": "MCP transport. Only stdio is wired in v1.",
+          "enum": ["stdio"],
+          "default": "stdio"
+        }
+      },
+      "default": {}
+    },
+    "languages": {
+      "type": "object",
+      "description": "Per-language overrides keyed by language name (matches tree-sitter-language-pack identifiers).",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Disable extraction for this language without removing it from scan globs.",
+            "default": true
+          }
+        }
+      },
+      "default": {}
+    }
+  }
+}

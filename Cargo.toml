@@ -1,0 +1,48 @@
+[package]
+name = "gitmind"
+version = "0.1.0"
+edition = "2024"
+description = "File-watcher and code-map generator using tree-sitter"
+license = "MIT"
+
+[lib]
+name = "gitmind"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gitmind"
+path = "src/main.rs"
+
+[dependencies]
+anstream = "0.6"
+anstyle = "1"
+anyhow = "1"
+blake3 = "1"
+clap = { version = "4", features = ["derive"] }
+fs2 = "0.4"
+globset = "0.4"
+hex = "0.4"
+ignore = "0.4"
+jsonschema = "0.36"
+notify = "8"
+notify-debouncer-full = "0.6"
+rayon = "1"
+rmp-serde = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+streaming-iterator = "0.1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tree-sitter = "0.26"
+tree-sitter-language-pack = "=1.9.0-rc.22"
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
