@@ -8,9 +8,10 @@ priority: high
 
 ```text
 Walker (gitignore-aware)
-  → filter by extension + size cap
+  → filter by user glob + size cap
   → rayon par_iter
     → process_file(rel, contents):
+        lang::detect()                — TSLP extension → LangId (or skip)
         L1 outline   (always)         — extract::l1
         L2 calls     (eager if cfg)   — extract::l2
         Store::write_l1               — content-addressed msgpack blob
@@ -33,6 +34,8 @@ Walker (gitignore-aware)
 
 ### Where to extend
 
-- New language → add a tree-sitter parser registration in `extract::l1::extract` and `extract::l2::extract`, plus the file extension in the scanner glob.
+- Language detection is fully dynamic via `tree_sitter_language_pack::detect_language` → `LangId = &'static str` (the pack name). All ~300 TSLP grammars dispatch on first sight; the scanner does no per-extension special-casing.
+- Richer outlines for a new language → drop a `src/queries/<pack-name>.scm` override with `;; section: symbols / imports / calls / docs` sections. See the `language-support` skill.
+- Languages without an override still parse (via TSLP) and land in `list_files`; symbol/call extraction stays empty until either an override lands or the upstream TSLP `get_tags_query` accessor is wired into `lang::try_get_query`.
 - New extraction tier (e.g. `l4` semantic types) → mirror the `l1`/`l2` shape: `extract/l4.rs`, blob suffix `.l4.msgpack`, optional eager toggle in `ScanConfig`.
 - New index partition → see the `index-keyspace-evolution` skill.

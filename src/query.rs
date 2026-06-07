@@ -65,7 +65,7 @@ pub fn file_outline_l2(
             source,
         })
     })?;
-    let lang = crate::lang::Lang::from_pack_name(&entry.language)
+    let lang = crate::lang::intern(&entry.language)
         .ok_or_else(|| QueryError::NotIndexed(format!("unknown language {}", entry.language)))?;
     let l2 = crate::extract::l2::extract_l2(lang, &bytes).map_err(|e| {
         QueryError::Store(StoreError::Io {

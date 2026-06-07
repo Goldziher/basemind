@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use thiserror::Error;
 use tree_sitter::{Language, ParseOptions, Parser, Query, Tree};
 
@@ -42,58 +42,81 @@ pub enum LangError {
 
 /// Stable language identifier used as the key everywhere (parser pool, query pool, FileMap.language).
 ///
-/// This enum is the boundary between "tree-sitter-language-pack can parse this" and "gitmind
-/// has a hand-written query for this". Adding a language requires a new `.scm` and a new variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Lang {
-    Rust,
-    Python,
-    TypeScript,
-    Tsx,
-    JavaScript,
-    Go,
+/// `LangId` is the tree-sitter-language-pack identifier (e.g. `"rust"`, `"cpp"`, `"ruby"`),
+/// always sourced from TSLP's static registry. Any string handed to `with_parser` / `get_query`
+/// must come from [`detect`] or [`intern`] so the lifetime guarantee holds and TSLP can resolve it.
+pub type LangId = &'static str;
+
+/// Languages we ship hand-written `.scm` query overrides for. Anything outside this set falls
+/// back to TSLP's vendored `tags.scm` (when wired) and produces best-effort extraction.
+///
+/// Order is the bootstrap download order — keep `rust` first so the most common cold-start case
+/// stays fast.
+pub const OVERRIDE_LANGUAGES: &[LangId] =
+    &["rust", "python", "typescript", "tsx", "javascript", "go"];
+
+/// Back-compat alias used by `gitmind lang install` and tests that pre-warm the cache.
+pub const SUPPORTED_LANGUAGES: &[LangId] = OVERRIDE_LANGUAGES;
+
+/// Static map of override `(LangId, .scm source)` pairs. Tail of the lookup chain in
+/// [`get_query`]. Adding a language here means dropping a new file in `src/queries/<lang>.scm`
+/// using the same `;; section: <name>` convention.
+fn override_query_source(lang: LangId) -> Option<&'static str> {
+    Some(match lang {
+        "rust" => include_str!("queries/rust.scm"),
+        "python" => include_str!("queries/python.scm"),
+        "typescript" => include_str!("queries/typescript.scm"),
+        "tsx" => include_str!("queries/tsx.scm"),
+        "javascript" => include_str!("queries/javascript.scm"),
+        "go" => include_str!("queries/go.scm"),
+        _ => return None,
+    })
 }
 
-impl Lang {
-    pub fn name(self) -> &'static str {
-        match self {
-            Lang::Rust => "rust",
-            Lang::Python => "python",
-            Lang::TypeScript => "typescript",
-            Lang::Tsx => "tsx",
-            Lang::JavaScript => "javascript",
-            Lang::Go => "go",
+/// Whether gitmind ships a hand-written override `.scm` file for this language.
+pub fn has_override(lang: LangId) -> bool {
+    override_query_source(lang).is_some()
+}
+
+/// Intern a (possibly non-static) language name into the static `LangId` form.
+///
+/// Used by code paths that load a language tag out of persisted state (`FileEntry.language`,
+/// `FileMapL1.language`) and need to feed it back into the parser / query pool. Returns
+/// `Some` only when the name resolves through TSLP — unknown strings stay `None` so callers
+/// can fail loud instead of leaking arbitrary input.
+///
+/// Interning is monotonic: each new name is leaked once via `Box::leak` and cached. Cap is
+/// bounded by the size of TSLP's registry (~306 grammars × ~10 bytes), well under the cost
+/// of a single open file.
+pub fn intern(name: &str) -> Option<LangId> {
+    // Hot path: known override names are static literals — return them without touching the
+    // interner lock. Cheap branch that absorbs 99% of indexed-file lookups.
+    for &lid in OVERRIDE_LANGUAGES {
+        if lid == name {
+            return Some(lid);
         }
     }
-
-    pub fn all() -> &'static [Lang] {
-        &[
-            Lang::Rust,
-            Lang::Python,
-            Lang::TypeScript,
-            Lang::Tsx,
-            Lang::JavaScript,
-            Lang::Go,
-        ]
+    // Already interned? Fast read path.
+    let lock = INTERNED.get_or_init(|| RwLock::new(AHashSet::new()));
+    if let Some(&existing) = lock
+        .read()
+        .expect("intern pool poisoned")
+        .iter()
+        .find(|s| **s == name)
+    {
+        return Some(existing);
     }
-
-    /// Map a tree-sitter-language-pack identifier back to our enum.
-    pub fn from_pack_name(name: &str) -> Option<Self> {
-        Some(match name {
-            "rust" => Lang::Rust,
-            "python" => Lang::Python,
-            "typescript" => Lang::TypeScript,
-            "tsx" => Lang::Tsx,
-            "javascript" => Lang::JavaScript,
-            "go" => Lang::Go,
-            _ => return None,
-        })
+    // Cold path: validate against TSLP's registry before leaking the bytes. Unknown names
+    // should not pin memory.
+    if !tree_sitter_language_pack::has_language(name) {
+        return None;
     }
+    let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+    lock.write().expect("intern pool poisoned").insert(leaked);
+    Some(leaked)
 }
 
-/// Languages we ship queries for — used as the bootstrap download set.
-pub const SUPPORTED_LANGUAGES: &[&str] =
-    &["rust", "python", "typescript", "tsx", "javascript", "go"];
+static INTERNED: OnceLock<RwLock<AHashSet<&'static str>>> = OnceLock::new();
 
 /// Result of the one-shot grammar bootstrap.
 #[derive(Debug, Clone)]
@@ -123,8 +146,12 @@ fn tslp_version_from_cache_dir(p: &Path) -> Option<String> {
     leaf.strip_prefix('v').map(str::to_string)
 }
 
-/// Ensure all `SUPPORTED_LANGUAGES` grammars are present in the tslp cache, downloading any
+/// Ensure all `OVERRIDE_LANGUAGES` grammars are present in the tslp cache, downloading any
 /// missing ones. Idempotent across the process — runs at most once.
+///
+/// Only the override-supported set is pre-warmed; dynamic-path languages are pulled on first
+/// use of a file with that extension. Keeps cold-start small while still guaranteeing the
+/// common cases parse instantly.
 ///
 /// Uses `DownloadManager::ensure_languages` directly rather than the top-level
 /// `tree_sitter_language_pack::download()` because the latter has a bug in 1.9.0-rc.22 where
@@ -150,7 +177,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
             let installed: Vec<String> = dm.installed_languages();
             let mut already_cached: Vec<String> = Vec::new();
             let mut missing: Vec<&'static str> = Vec::new();
-            for &name in SUPPORTED_LANGUAGES {
+            for &name in OVERRIDE_LANGUAGES {
                 if installed.iter().any(|n| n == name) {
                     already_cached.push(name.to_string());
                 } else {
@@ -200,16 +227,16 @@ pub fn clean_grammar_cache() -> Result<(), LangError> {
     tree_sitter_language_pack::clean_cache().map_err(|e| LangError::Pack(format!("{e}")))
 }
 
-/// Detect the language for a path. Returns None for files we don't have queries for yet.
-pub fn detect(path: &Path) -> Option<Lang> {
-    let pack_name = tree_sitter_language_pack::detect_language(path.to_str()?)?;
-    Lang::from_pack_name(pack_name)
+/// Detect the language for a path. Returns the TSLP pack name (a `'static` slice) for any
+/// extension TSLP can resolve — across all 306 bundled grammars. Returns `None` for unknown
+/// extensions; the scanner skips those files entirely.
+pub fn detect(path: &Path) -> Option<LangId> {
+    tree_sitter_language_pack::detect_language(path.to_str()?)
 }
 
-/// Fetch the underlying tree-sitter Language for a given Lang.
-pub fn language(lang: Lang) -> Result<Language, LangError> {
-    tree_sitter_language_pack::get_language(lang.name())
-        .map_err(|e| LangError::Pack(format!("{e}")))
+/// Fetch the underlying tree-sitter Language for a given `LangId`.
+pub fn language(lang: LangId) -> Result<Language, LangError> {
+    tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
 }
 
 // ─── Parser pool ──────────────────────────────────────────────────────────────
@@ -217,12 +244,12 @@ pub fn language(lang: Lang) -> Result<Language, LangError> {
 // Parser is !Sync and stateful — one per thread per language, kept hot in TLS.
 
 thread_local! {
-    static PARSERS: RefCell<AHashMap<Lang, Parser>> = RefCell::new(AHashMap::new());
+    static PARSERS: RefCell<AHashMap<LangId, Parser>> = RefCell::new(AHashMap::new());
 }
 
 /// Run a closure with a per-thread Parser for the given language.
 /// The parser is reused across calls on the same thread.
-pub fn with_parser<F, R>(lang: Lang, f: F) -> Result<R, LangError>
+pub fn with_parser<F, R>(lang: LangId, f: F) -> Result<R, LangError>
 where
     F: FnOnce(&mut Parser) -> R,
 {
@@ -232,7 +259,7 @@ where
             let mut p = Parser::new();
             let ts_lang = language(lang)?;
             p.set_language(&ts_lang)
-                .map_err(|_| LangError::ParserSetLanguage(lang.name().to_string()))?;
+                .map_err(|_| LangError::ParserSetLanguage(lang.to_string()))?;
             map.insert(lang, p);
         }
         Ok(f(map.get_mut(&lang).expect("just inserted")))
@@ -309,19 +336,12 @@ impl QueryKind {
     }
 }
 
-type QueryMap = AHashMap<(Lang, QueryKind), Arc<Query>>;
+/// Two-state query cache value: `Some` when a query was found and compiled; `None` when the
+/// language has no override section + no TSLP fallback for this kind. The `None` is cached
+/// to avoid re-doing the negative lookup for every file in that language.
+type CachedQuery = Option<Arc<Query>>;
+type QueryMap = AHashMap<(LangId, QueryKind), CachedQuery>;
 static QUERIES: OnceLock<RwLock<QueryMap>> = OnceLock::new();
-
-fn query_source(lang: Lang) -> &'static str {
-    match lang {
-        Lang::Rust => include_str!("queries/rust.scm"),
-        Lang::Python => include_str!("queries/python.scm"),
-        Lang::TypeScript => include_str!("queries/typescript.scm"),
-        Lang::Tsx => include_str!("queries/tsx.scm"),
-        Lang::JavaScript => include_str!("queries/javascript.scm"),
-        Lang::Go => include_str!("queries/go.scm"),
-    }
-}
 
 /// Extract a single named query (S-expression `;; @section name`) from the .scm source.
 ///
@@ -349,29 +369,54 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
     }
 }
 
-pub fn get_query(lang: Lang, kind: QueryKind) -> Result<Arc<Query>, LangError> {
+/// Look up a `(lang, kind)` query, returning `Ok(Some(arc))` when one exists,
+/// `Ok(None)` when neither the override file nor the TSLP fallback provides this section,
+/// and `Err` only on a compile error in source we do have.
+///
+/// Lookup chain:
+/// 1. Local override — `src/queries/<lang>.scm` `;; section: <kind>`.
+/// 2. TSLP `tags.scm` — for Symbols/Calls only, gated on the upstream `get_tags_query`
+///    accessor (not yet wired; placeholder branch returns `None`).
+/// 3. None — file is still detected and indexed, but symbol/import/call extraction yields
+///    empty vectors for this language.
+pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangError> {
     let lock = QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(q) = lock.read().expect("query pool poisoned").get(&(lang, kind)) {
-        return Ok(Arc::clone(q));
+    if let Some(slot) = lock.read().expect("query pool poisoned").get(&(lang, kind)) {
+        return Ok(slot.as_ref().map(Arc::clone));
     }
-    let source = extract_section(query_source(lang), kind.name()).ok_or_else(|| {
-        LangError::QueryCompile {
-            lang: lang.name(),
-            kind: kind.name(),
-            msg: format!("no `;; section: {}` in {}.scm", kind.name(), lang.name()),
+
+    let source = override_query_source(lang).and_then(|raw| extract_section(raw, kind.name()));
+    // Future: when TSLP exposes `get_tags_query`, plug it in here for Symbols/Calls under
+    // languages without an override. The adapter rewrites @definition.*/@reference.call
+    // captures into our @symbol.*/@call.* shape before compiling.
+
+    let cached = match source {
+        Some(src) => {
+            let ts_lang = language(lang)?;
+            let query = Query::new(&ts_lang, &src).map_err(|e| LangError::QueryCompile {
+                lang,
+                kind: kind.name(),
+                msg: format!("{e}"),
+            })?;
+            Some(Arc::new(query))
         }
-    })?;
-    let ts_lang = language(lang)?;
-    let query = Query::new(&ts_lang, &source).map_err(|e| LangError::QueryCompile {
-        lang: lang.name(),
-        kind: kind.name(),
-        msg: format!("{e}"),
-    })?;
-    let arc = Arc::new(query);
+        None => None,
+    };
+
     lock.write()
         .expect("query pool poisoned")
-        .insert((lang, kind), Arc::clone(&arc));
-    Ok(arc)
+        .insert((lang, kind), cached.as_ref().map(Arc::clone));
+    Ok(cached)
+}
+
+/// Strict variant of [`try_get_query`] for callers that treat missing sections as errors.
+/// Prefer `try_get_query` in new code so unsupported languages degrade gracefully.
+pub fn get_query(lang: LangId, kind: QueryKind) -> Result<Arc<Query>, LangError> {
+    try_get_query(lang, kind)?.ok_or_else(|| LangError::QueryCompile {
+        lang,
+        kind: kind.name(),
+        msg: format!("no override or TSLP fallback for {}/{}", lang, kind.name()),
+    })
 }
 
 #[cfg(test)]
@@ -380,9 +425,16 @@ mod tests {
 
     #[test]
     fn detect_known_extensions() {
-        assert_eq!(detect(Path::new("foo.rs")), Some(Lang::Rust));
-        assert_eq!(detect(Path::new("foo.py")), Some(Lang::Python));
-        assert_eq!(detect(Path::new("foo.go")), Some(Lang::Go));
+        assert_eq!(detect(Path::new("foo.rs")), Some("rust"));
+        assert_eq!(detect(Path::new("foo.py")), Some("python"));
+        assert_eq!(detect(Path::new("foo.go")), Some("go"));
+    }
+
+    #[test]
+    fn detect_dynamic_extension_resolves() {
+        // Any TSLP-registered grammar resolves through detect(); cpp is outside the override
+        // set but ships in the language pack, so dynamic dispatch must produce its pack name.
+        assert_eq!(detect(Path::new("foo.cpp")), Some("cpp"));
     }
 
     #[test]
@@ -394,8 +446,29 @@ mod tests {
     }
 
     #[test]
-    fn supported_set_matches_enum() {
-        let from_enum: Vec<&str> = Lang::all().iter().map(|l| l.name()).collect();
-        assert_eq!(from_enum, SUPPORTED_LANGUAGES);
+    fn has_override_for_each_supported() {
+        for &name in OVERRIDE_LANGUAGES {
+            assert!(has_override(name), "missing override source for {name}");
+        }
+    }
+
+    #[test]
+    fn intern_known_overrides_returns_static() {
+        let owned = "rust".to_string();
+        let id = intern(&owned).expect("rust must intern");
+        assert!(std::ptr::eq(id, "rust"));
+    }
+
+    #[test]
+    fn intern_unknown_returns_none() {
+        assert!(intern("this-is-not-a-real-grammar-name").is_none());
+    }
+
+    #[test]
+    fn try_get_query_returns_none_for_unsupported_lang() {
+        // C++ has no override and the TSLP-fallback branch is not yet wired, so the lookup
+        // returns `None`. When `get_tags_query` lands upstream this becomes `Some(...)`.
+        let res = try_get_query("cpp", QueryKind::Symbols).expect("query lookup must not error");
+        assert!(res.is_none());
     }
 }

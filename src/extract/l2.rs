@@ -2,9 +2,9 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, QueryMatch};
 
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER};
-use crate::lang::{Lang, QueryKind, get_query, with_parser};
+use crate::lang::{LangId, QueryKind, try_get_query, with_parser};
 
-pub fn extract_l2(lang: Lang, source: &[u8]) -> Result<FileMapL2, ExtractError> {
+pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
     let tree = with_parser(lang, |p| p.parse(source, None))?.ok_or(ExtractError::ParseFailure)?;
     let root = tree.root_node();
 
@@ -13,18 +13,20 @@ pub fn extract_l2(lang: Lang, source: &[u8]) -> Result<FileMapL2, ExtractError> 
 
     Ok(FileMapL2 {
         schema_ver: SCHEMA_VER,
-        language: lang.name().to_string(),
+        language: lang.to_string(),
         calls,
         docs,
     })
 }
 
 fn run_calls(
-    lang: Lang,
+    lang: LangId,
     root: tree_sitter::Node,
     source: &[u8],
 ) -> Result<Vec<Call>, ExtractError> {
-    let q = get_query(lang, QueryKind::Calls)?;
+    let Some(q) = try_get_query(lang, QueryKind::Calls)? else {
+        return Ok(Vec::new());
+    };
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();
@@ -37,11 +39,13 @@ fn run_calls(
 }
 
 fn run_docs(
-    lang: Lang,
+    lang: LangId,
     root: tree_sitter::Node,
     source: &[u8],
 ) -> Result<Vec<DocComment>, ExtractError> {
-    let q = get_query(lang, QueryKind::Docs)?;
+    let Some(q) = try_get_query(lang, QueryKind::Docs)? else {
+        return Ok(Vec::new());
+    };
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();

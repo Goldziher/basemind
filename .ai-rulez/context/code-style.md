@@ -8,7 +8,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 ## Module layout
 
-- One concern per file. When `src/mcp/tools.rs` accumulated to 1057 lines after iter-3, the bodies were extracted to `helpers.rs`; that's the canonical split for the `tools.rs` cap.
+- One concern per file. When `src/mcp/tools.rs` approached the 1000-line cap, the bodies were extracted to `helpers.rs`; that's the canonical split for the `tools.rs` cap.
 - 1000-line cap on `src/**/*.rs` enforced by the `rust-max-lines` prek hook. Refactor by extracting helpers or types, never by lifting the cap.
 - Tests sit in `tests/<area>_smoke.rs` files (one per area) plus the integration harness at `tests/harden.rs`.
 

@@ -47,6 +47,51 @@ fn scan_extracts_rust_symbols() {
 }
 
 #[test]
+fn scan_indexes_dynamic_language_without_override_queries() {
+    // A file in a TSLP-supported language for which gitmind ships no hand-written `.scm`
+    // override should still:
+    //   1. Resolve through TSLP's dynamic registry to its pack name (`cpp`).
+    //   2. Extract successfully — `try_get_query` returns `None`, so symbols/calls land as
+    //      empty vectors instead of erroring out.
+    //   3. Be discoverable via the store lookup so cross-language tooling (`list_files`,
+    //      `repo_info`) sees the file's existence.
+    //
+    // When the TSLP `get_tags_query` accessor lands upstream and the fallback wires in,
+    // the empty-symbols assertion below will flip; update it then.
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+
+    fs::write(
+        root.join("a.cpp"),
+        b"#include <string>\nint alpha(int x) { return x + 1; }\n",
+    )
+    .unwrap();
+
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+    assert_eq!(report.stats.updated, 1, "cpp file should be processed");
+    assert_eq!(report.stats.skipped_no_lang, 0, "cpp must not be skipped");
+
+    let entry = store.lookup("a.cpp").expect("a.cpp indexed");
+    assert_eq!(entry.language, "cpp", "language stored as TSLP pack name");
+
+    // Symbols are empty (no override + TSLP-fallback not yet wired) but the lookup chain
+    // doesn't error out. Files in dynamic-only languages are queryable as paths only until
+    // a tags.scm source is wired.
+    let hits = gitmind::query::search_symbols(&store, "alpha", None).unwrap();
+    assert!(
+        hits.is_empty(),
+        "cpp symbols stay empty until TSLP tags fallback lands"
+    );
+}
+
+#[test]
 fn rescan_is_idempotent_and_uses_cache() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
@@ -178,8 +223,10 @@ fn ignores_unknown_languages() {
         gitmind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
-    // Globset default doesn't include *.xyz so it isn't even a candidate.
-    assert_eq!(s.stats.scanned, 0);
+    // `.xyz` is not in the tree-sitter-language-pack registry, so `lang::detect()` returns
+    // `None` and the file is counted as `skipped_no_lang` without ever reaching extraction.
+    assert_eq!(s.stats.skipped_no_lang, 1);
+    assert!(store.lookup("weird.xyz").is_none());
 }
 
 #[test]
