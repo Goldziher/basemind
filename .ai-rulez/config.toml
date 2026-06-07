@@ -1,0 +1,39 @@
+version = "4.0"
+name = "gitmind"
+description = "Code-map MCP server + scanner — pure-Rust, content-addressed, Fjall-backed inverted index."
+gitignore = true
+
+presets = [
+  "claude",
+  "cursor",
+  "gemini",
+  "windsurf",
+  "copilot",
+  "continue-dev",
+  "amp",
+  "cline",
+  "codex",
+  "opencode",
+  "junie",
+  "antigravity",
+]
+
+builtins = [
+  "rust",
+  "cicd",
+  "documentation",
+  "observability",
+  "default-commands",
+]
+
+[[mcp_servers]]
+name = "gitmind"
+description = "Gitmind code-map MCP — outlines, reference search, symbol history, blame, churn."
+command = "gitmind"
+args = ["serve"]
+
+[[mcp_servers]]
+name = "ai-rulez"
+description = "Manage AI governance config via MCP."
+command = "npx"
+args = ["-y", "ai-rulez@latest", "mcp"]

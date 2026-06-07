@@ -1,0 +1,21 @@
+# rumdl — Rust-based markdown linter
+# https://github.com/rvben/rumdl
+
+respect-gitignore = true
+exclude = [
+  "node_modules",
+  "target",
+  "dist",
+  "vendor",
+]
+
+# MD013: Line length — prose in .ai-rulez/ rules / context can be long.
+# MD024: Allow repeated headings (CHANGELOG-style sections).
+# MD033: Inline HTML.
+# MD041: Don't require first line to be an H1.
+disable = [
+  "MD013",
+  "MD024",
+  "MD033",
+  "MD041",
+]

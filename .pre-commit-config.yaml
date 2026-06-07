@@ -46,6 +46,9 @@ repos:
       # Markdown
       - id: rumdl-fmt
       - id: markdownlint-rumdl-strict
+        # .ai-rulez/ content is rendered into many tool-native formats; long
+        # prose lines are expected and respected by ai-rulez's own templates.
+        exclude: ^\.ai-rulez/
 
       # Rust
       - id: cargo-fmt
