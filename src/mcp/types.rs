@@ -7,12 +7,14 @@ use std::collections::BTreeMap;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::path::RelPath;
+
 // ─── Parameter shapes ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct OutlineParams {
     /// Repository-relative path (forward-slash). Must be a file gitmind has scanned.
-    pub path: String,
+    pub path: RelPath,
     /// When true, also include calls + doc comments (L2). Falls back to empty
     /// arrays if no L2 blob exists for the file's current content.
     #[serde(default)]
@@ -70,7 +72,7 @@ pub struct RecentChangesParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CommitsTouchingParams {
     /// Repository-relative path (forward-slash) of the file to follow.
-    pub path: String,
+    pub path: RelPath,
     /// Number of commits returned, newest first. Default 20, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
@@ -79,7 +81,7 @@ pub struct CommitsTouchingParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DiffOutlineParams {
     /// Repository-relative path of the file to diff.
-    pub path: String,
+    pub path: RelPath,
     /// Revision to compare against the *current view*. Defaults to "HEAD".
     #[serde(default)]
     pub rev: Option<String>,
@@ -90,7 +92,7 @@ pub struct RepoInfoParams {}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BlameFileParams {
-    pub path: String,
+    pub path: RelPath,
     #[serde(default)]
     pub line_start: Option<u32>,
     #[serde(default)]
@@ -120,22 +122,29 @@ pub struct HotFilesParams {
 pub struct DiffFileParams {
     pub rev_old: String,
     pub rev_new: String,
-    pub path: String,
+    pub path: RelPath,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SymbolHistoryParams {
-    pub path: String,
+    pub path: RelPath,
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Fingerprint strategy for detecting body changes between commits. One of
+    /// `"normalized"` (default — byte compare after comment+whitespace strip),
+    /// `"structural"` (AST shape + identifiers + literal text, formatter-stable), or
+    /// `"structural_loose"` (AST shape + identifiers only, ignores literal contents —
+    /// useful when i18n string churn dominates).
+    #[serde(default)]
+    pub hash_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BlameSymbolParams {
-    pub path: String,
+    pub path: RelPath,
     pub name: String,
     #[serde(default)]
     pub kind: Option<String>,
@@ -151,7 +160,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, Serialize)]
 pub(super) struct OutlineResponse {
-    pub path: String,
+    pub path: RelPath,
     pub language: String,
     pub size_bytes: u64,
     pub had_errors: bool,
@@ -200,7 +209,7 @@ pub(super) struct DocView {
 
 #[derive(Debug, Serialize)]
 pub(super) struct SearchHitView {
-    pub path: String,
+    pub path: RelPath,
     pub name: String,
     pub kind: String,
     pub start_row: u32,
@@ -218,7 +227,7 @@ pub(super) struct SearchResponse {
 
 #[derive(Debug, Serialize)]
 pub(super) struct ListFilesEntry {
-    pub path: String,
+    pub path: RelPath,
     pub language: String,
     pub size_bytes: u64,
 }
@@ -234,7 +243,7 @@ pub(super) struct ListFilesResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct DependentsResponse {
     pub module: String,
-    pub paths: Vec<String>,
+    pub paths: Vec<RelPath>,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +254,12 @@ pub(super) struct StatusResponse {
     pub cache_dir: String,
     pub schema_version: u16,
     pub root: String,
+    /// Forward-slash worktree roots of every submodule declared in `.gitmodules`. Always
+    /// reported regardless of `scan.skip_submodules` — lets clients see the boundary the
+    /// scanner respects (or didn't, when the knob is disabled). Empty for repos with no
+    /// submodules and for non-repo serves.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub submodules: Vec<RelPath>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,17 +275,17 @@ pub(super) struct CommitView {
 
 #[derive(Debug, Serialize)]
 pub(super) struct CommitFileView {
-    pub path: String,
+    pub path: RelPath,
     pub change: &'static str,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct WorkingTreeStatusView {
-    pub staged_added: Vec<String>,
-    pub staged_modified: Vec<String>,
-    pub staged_deleted: Vec<String>,
-    pub modified: Vec<String>,
-    pub untracked: Vec<String>,
+    pub staged_added: Vec<RelPath>,
+    pub staged_modified: Vec<RelPath>,
+    pub staged_deleted: Vec<RelPath>,
+    pub modified: Vec<RelPath>,
+    pub untracked: Vec<RelPath>,
     pub is_clean: bool,
 }
 
@@ -287,7 +302,7 @@ pub(super) struct RecentChangesResponse {
 
 #[derive(Debug, Serialize)]
 pub(super) struct CommitsTouchingResponse {
-    pub path: String,
+    pub path: RelPath,
     pub commits: Vec<CommitView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
@@ -303,7 +318,7 @@ pub(super) struct DiffSymbolView {
 
 #[derive(Debug, Serialize)]
 pub(super) struct DiffOutlineResponse {
-    pub path: String,
+    pub path: RelPath,
     pub rev: String,
     pub added: Vec<DiffSymbolView>,
     pub removed: Vec<DiffSymbolView>,
@@ -323,12 +338,12 @@ pub(super) struct BlameHunkView {
     pub author_time_unix: i64,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_path: Option<String>,
+    pub source_path: Option<RelPath>,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct BlameResponse {
-    pub path: String,
+    pub path: RelPath,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunkView>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -339,7 +354,7 @@ pub(super) struct BlameResponse {
 
 #[derive(Debug, Serialize)]
 pub(super) struct BlameSymbolResponse {
-    pub path: String,
+    pub path: RelPath,
     pub suspect_sha: String,
     pub name: String,
     pub kind: String,
@@ -361,7 +376,7 @@ pub(super) struct FindCommitsByPathResponse {
 
 #[derive(Debug, Serialize)]
 pub(super) struct HotFileEntry {
-    pub path: String,
+    pub path: RelPath,
     pub commits_touching: u32,
     pub added: u32,
     pub modified: u32,
@@ -387,7 +402,7 @@ pub(super) struct HunkView {
 
 #[derive(Debug, Serialize)]
 pub(super) struct DiffFileResponse {
-    pub path: String,
+    pub path: RelPath,
     pub rev_old: String,
     pub rev_new: String,
     pub present_at_old: bool,
@@ -407,11 +422,15 @@ pub(super) struct SymbolHistoryEntry {
 
 #[derive(Debug, Serialize)]
 pub(super) struct SymbolHistoryResponse {
-    pub path: String,
+    pub path: RelPath,
     pub name: String,
     pub kind: Option<String>,
     pub commits_inspected: u32,
     pub history: Vec<SymbolHistoryEntry>,
+    /// Echoes the fingerprint strategy that produced this response — `"normalized"`,
+    /// `"structural"`, or `"structural_loose"`. Clients can use this to confirm the mode
+    /// they got matches the mode they asked for.
+    pub hash_mode: &'static str,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -40,7 +40,7 @@ fn scan_extracts_rust_symbols() {
     let hits = gitmind::query::search_symbols(&store, "alpha", None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
-    assert_eq!(hits[0].path, "a.rs");
+    assert_eq!(hits[0].path.as_str(), Some("a.rs"));
 
     let hits = gitmind::query::search_symbols(&store, "Beta", Some(SymbolKind::Struct)).unwrap();
     assert_eq!(hits.len(), 1);
@@ -479,4 +479,184 @@ fn scan_paths_purges_removed_files() {
     let report = scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
     assert_eq!(report.stats.removed, 1);
     assert!(store.lookup("a.rs").is_none());
+}
+
+#[test]
+fn ts_namespace_is_namespace_kind() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("ns.ts"),
+        b"namespace Outer {\n  export const x: number = 1;\n}\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "Outer", None).unwrap();
+    assert_eq!(hits.len(), 1, "expected one Outer namespace hit");
+    assert_eq!(
+        hits[0].symbol.kind,
+        SymbolKind::Namespace,
+        "namespace Outer should be kind=namespace"
+    );
+}
+
+#[test]
+fn ts_getter_and_setter_kinds() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("c.ts"),
+        b"class Box {\n  private _x: number = 0;\n  get x(): number { return this._x; }\n  set x(v: number) { this._x = v; }\n}\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "x", None).unwrap();
+    let getter = hits
+        .iter()
+        .find(|h| h.symbol.kind == SymbolKind::Getter)
+        .expect("getter x should surface as kind=getter");
+    let setter = hits
+        .iter()
+        .find(|h| h.symbol.kind == SymbolKind::Setter)
+        .expect("setter x should surface as kind=setter");
+    assert_eq!(getter.symbol.name, "x");
+    assert_eq!(setter.symbol.name, "x");
+}
+
+#[test]
+fn python_decorators_attach_to_symbol() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("d.py"),
+        b"@dataclass\n@total_ordering\nclass Point:\n    x: int\n    y: int\n\n@property\ndef name(self):\n    return self._name\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "Point", None).unwrap();
+    let point = hits
+        .iter()
+        .find(|h| h.symbol.kind == SymbolKind::Class)
+        .expect("Point class should be present");
+    assert!(
+        point.symbol.decorators.contains(&"@dataclass".to_string()),
+        "Point should carry @dataclass; got {:?}",
+        point.symbol.decorators
+    );
+    assert!(
+        point
+            .symbol
+            .decorators
+            .contains(&"@total_ordering".to_string()),
+        "Point should carry @total_ordering; got {:?}",
+        point.symbol.decorators
+    );
+
+    let hits = gitmind::query::search_symbols(&store, "name", None).unwrap();
+    let name = hits
+        .iter()
+        .find(|h| h.symbol.kind == SymbolKind::Function)
+        .expect("name function should be present");
+    assert!(
+        name.symbol.decorators.contains(&"@property".to_string()),
+        "name should carry @property; got {:?}",
+        name.symbol.decorators
+    );
+}
+
+// Skipped on macOS — APFS rejects non-UTF-8 filenames with EILSEQ at fs::write time. The
+// Linux CI runner exercises the real filesystem-level non-UTF-8 path; the JSON / msgpack
+// round-trip is covered cross-platform by the unit tests in `src/path.rs`.
+#[cfg(target_os = "linux")]
+#[test]
+fn scanner_preserves_non_utf8_filename_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    // Build a filename containing an invalid UTF-8 lead byte (0xff). On Unix, paths are
+    // raw bytes — std::fs::write happily creates this file.
+    let raw_bytes: &[u8] = b"f\xffoo.rs";
+    let bad_name = std::ffi::OsStr::from_bytes(raw_bytes);
+    fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
+
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+    assert!(
+        report.stats.updated >= 1,
+        "scanner should index files with non-UTF-8 names; updated={}",
+        report.stats.updated
+    );
+    // The path should round-trip through the on-disk index as raw bytes.
+    let key = gitmind::path::RelPath::from(raw_bytes);
+    let entry = store
+        .lookup(&key)
+        .expect("non-UTF-8 path should be in index");
+    assert_eq!(entry.language, "rust");
+}
+
+#[test]
+fn ts_multiline_generic_signature_is_collapsed() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("g.ts"),
+        b"function foo<\n  T extends Bar,\n  U extends Baz,\n>(x: T): U {\n  return x as unknown as U;\n}\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "foo", None).unwrap();
+    assert_eq!(hits.len(), 1);
+    let sig = hits[0]
+        .symbol
+        .signature
+        .as_deref()
+        .expect("signature should be present");
+    // Signature should be on one line, contain both generic params, and stop before the brace.
+    assert!(
+        sig.contains("T extends Bar") && sig.contains("U extends Baz"),
+        "signature lost generic params: {sig}"
+    );
+    assert!(
+        !sig.contains('{') && !sig.contains('\n'),
+        "signature should be collapsed and stop at brace: {sig}"
+    );
 }

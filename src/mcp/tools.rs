@@ -225,12 +225,12 @@ impl GitmindServer {
         &self,
         Parameters(params): Parameters<DependentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        let paths: Vec<String> = crate::extract::l3::dependents_of(
+        let paths: Vec<crate::path::RelPath> = crate::extract::l3::dependents_of(
             &params.module,
             &self.state.cache.load().imports_index,
         )
         .into_iter()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| crate::path::RelPath::from(p.as_path()))
         .collect();
         json_result(&DependentsResponse {
             module: params.module.clone(),
@@ -257,6 +257,12 @@ impl GitmindServer {
         let cache_dir = crate::lang::grammar_cache_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(unresolved)".to_string());
+        let submodules = self
+            .state
+            .repo
+            .as_ref()
+            .map(|r| r.submodule_paths())
+            .unwrap_or_default();
         json_result(&StatusResponse {
             file_count: store.index.files.len(),
             total_size_bytes: total_size,
@@ -264,6 +270,7 @@ impl GitmindServer {
             cache_dir,
             schema_version: crate::extract::SCHEMA_VER,
             root: self.state.root.display().to_string(),
+            submodules,
         })
     }
 
@@ -524,7 +531,7 @@ impl GitmindServer {
             if hits.len() >= limit as usize {
                 break;
             }
-            if c.files.iter().any(|(p, _)| re.is_match(p)) {
+            if c.files.iter().any(|(p, _)| re.is_match(&p.to_str_lossy())) {
                 hits.push(commit_to_view(c.clone(), true));
             }
         }
@@ -556,7 +563,8 @@ impl GitmindServer {
             .log(repo, &head, None, window, true)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
 
-        let mut counts: ahash::AHashMap<String, (u32, u32, u32, u32)> = ahash::AHashMap::new();
+        let mut counts: ahash::AHashMap<crate::path::RelPath, (u32, u32, u32, u32)> =
+            ahash::AHashMap::new();
         for c in commits.iter() {
             for (path, kind) in &c.files {
                 let entry = counts.entry(path.clone()).or_insert((0, 0, 0, 0));
@@ -655,6 +663,10 @@ impl GitmindServer {
         let lang = crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(|| {
             McpError::invalid_params(format!("unsupported language: {}", params.path), None)
         })?;
+        let hash_mode = match params.hash_mode.as_deref() {
+            Some(s) => parse_hash_mode(s)?,
+            None => HashMode::Normalized,
+        };
 
         let head = head_sha(repo)?;
         let commits = self
@@ -667,23 +679,30 @@ impl GitmindServer {
         let chronological: Vec<crate::git::CommitInfo> = commits.iter().cloned().rev().collect();
 
         let mut history = Vec::new();
-        let mut prev_bytes: Option<Vec<u8>> = None;
+        let mut prev_fp: Option<Vec<u8>> = None;
         let mut prev_existed = false;
         let mut inspected: u32 = 0;
         for c in chronological {
             inspected += 1;
             let blob = repo
-                .read_blob_at_rev(&c.sha, &params.path)
+                .read_blob_at_rev_with_oid(&c.sha, &params.path)
                 .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
-            let symbol_bytes = match &blob {
-                Some(bytes) => find_symbol_bytes(lang, bytes, &params.name, kind),
+            // Look up (or insert) the parsed outline + source for this blob OID. Cache hits
+            // skip both the blob copy and the tree-sitter parse — symbol_history walks 20+
+            // commits and many of them share blob OIDs, so this is the dominant speedup.
+            let fingerprint = match blob {
+                Some((bytes, oid)) => {
+                    outline_entry_for_blob(&self.state.outline_cache, oid, lang, bytes).and_then(
+                        |entry| symbol_fingerprint(&entry, &params.name, kind, lang, hash_mode),
+                    )
+                }
                 None => None,
             };
-            let change = match (prev_existed, symbol_bytes.as_ref()) {
+            let change = match (prev_existed, fingerprint.as_ref()) {
                 (false, Some(_)) => Some("introduced"),
                 (true, None) => Some("removed"),
                 (true, Some(curr)) => {
-                    if prev_bytes.as_deref() != Some(curr.as_slice()) {
+                    if prev_fp.as_deref() != Some(curr.as_slice()) {
                         Some("modified")
                     } else {
                         None
@@ -701,8 +720,8 @@ impl GitmindServer {
                     change: kind_str,
                 });
             }
-            prev_existed = symbol_bytes.is_some();
-            prev_bytes = symbol_bytes;
+            prev_existed = fingerprint.is_some();
+            prev_fp = fingerprint;
         }
         history.reverse();
         history.truncate(limit);
@@ -714,6 +733,7 @@ impl GitmindServer {
             kind: kind.map(|k| kind_to_str(k).to_string()),
             commits_inspected: inspected,
             history,
+            hash_mode: hash_mode.as_str(),
             truncated,
             truncated_reason: truncated.then_some("shallow_clone"),
         })

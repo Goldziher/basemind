@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, Symbol, SymbolKind};
+use crate::path::RelPath;
 use crate::store::{Store, StoreError};
 
 #[derive(Debug, Error)]
@@ -19,18 +20,19 @@ pub enum QueryError {
 
 #[derive(Debug, Clone)]
 pub struct SymbolHit {
-    pub path: String,
+    pub path: RelPath,
     pub symbol: Symbol,
 }
 
 /// Read an L1 map for the given relative path from the store.
-pub fn file_outline(store: &Store, rel: &str) -> Result<FileMapL1, QueryError> {
+pub fn file_outline(store: &Store, rel: impl AsRef<[u8]>) -> Result<FileMapL1, QueryError> {
+    let rel_bytes = rel.as_ref();
     let entry = store
-        .lookup(rel)
-        .ok_or_else(|| QueryError::NotIndexed(rel.to_string()))?;
+        .lookup(rel_bytes)
+        .ok_or_else(|| QueryError::NotIndexed(String::from_utf8_lossy(rel_bytes).into_owned()))?;
     let l1 = store
         .read_l1_by_hex(&entry.hash_hex)?
-        .ok_or_else(|| QueryError::BlobMissing(rel.to_string()))?;
+        .ok_or_else(|| QueryError::BlobMissing(String::from_utf8_lossy(rel_bytes).into_owned()))?;
     Ok(l1)
 }
 
@@ -41,19 +43,22 @@ pub fn file_outline(store: &Store, rel: &str) -> Result<FileMapL1, QueryError> {
 /// blob, and returns it. "Becomes live on request."
 pub fn file_outline_l2(
     store: &Store,
-    rel: &str,
+    rel: impl AsRef<[u8]>,
     root: &std::path::Path,
 ) -> Result<FileMapL2, QueryError> {
+    let rel_bytes = rel.as_ref();
+    let rel_display = String::from_utf8_lossy(rel_bytes).into_owned();
     let entry = store
-        .lookup(rel)
-        .ok_or_else(|| QueryError::NotIndexed(rel.to_string()))?;
+        .lookup(rel_bytes)
+        .ok_or_else(|| QueryError::NotIndexed(rel_display.clone()))?;
     if let Some(l2) = store.read_l2_by_hex(&entry.hash_hex)? {
         return Ok(l2);
     }
     // Live escalation: read source, extract, persist. write_l2 wants the bytes-form hash.
     let hash = crate::hashing::from_hex(&entry.hash_hex)
-        .ok_or_else(|| QueryError::BadHash(rel.to_string()))?;
-    let abs = root.join(rel);
+        .ok_or_else(|| QueryError::BadHash(rel_display.clone()))?;
+    let rel_path = RelPath::from(rel_bytes);
+    let abs = root.join(rel_path.to_path_buf());
     let bytes = std::fs::read(&abs).map_err(|source| {
         QueryError::Store(StoreError::Io {
             path: abs.clone(),
@@ -105,7 +110,7 @@ pub fn search_symbols(
 }
 
 /// Heuristic L3: read every L1, collect imports, return paths whose imports mention `module`.
-pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<String>, QueryError> {
+pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryError> {
     let mut by_path: Vec<(PathBuf, Vec<crate::extract::Import>)> =
         Vec::with_capacity(store.index.files.len());
     for (rel, entry) in &store.index.files {
@@ -113,11 +118,11 @@ pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<String>, QueryEr
             Some(m) => m,
             None => continue,
         };
-        by_path.push((PathBuf::from(rel), l1.imports));
+        by_path.push((rel.to_path_buf(), l1.imports));
     }
     let paths = crate::extract::l3::dependents_of(module, &by_path);
     Ok(paths
         .into_iter()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| RelPath::from(p.as_path()))
         .collect())
 }

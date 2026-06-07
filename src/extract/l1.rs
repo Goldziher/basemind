@@ -95,6 +95,15 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
                     existing.signature = sym.signature;
                 }
             }
+            // Decorator captures travel one-per-match (tree-sitter fires the
+            // `(decorator) @symbol.decorator` pattern once per decorator child of a
+            // decorated_definition), so on collision we union the lists — deduplicated by
+            // string, preserving first-seen order.
+            for d in sym.decorators {
+                if !existing.decorators.contains(&d) {
+                    existing.decorators.push(d);
+                }
+            }
         } else {
             keep.push(sym);
         }
@@ -131,12 +140,21 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
     let mut start_row = 0u32;
     let mut start_col = 0u32;
     let mut signature: Option<String> = None;
+    let mut decorators: Vec<String> = Vec::new();
 
     for cap in m.captures {
         let cname = capture_name(q, cap.index);
         let node = cap.node;
         if cname == "symbol.name" {
             name = node.utf8_text(source).ok().map(|s| s.to_string());
+        } else if cname == "symbol.decorator" {
+            // Decorator captures travel alongside their owning symbol — collect them all.
+            if let Ok(text) = node.utf8_text(source) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    decorators.push(trimmed.to_string());
+                }
+            }
         } else if let Some(suffix) = cname.strip_prefix("symbol.") {
             kind = Some(SymbolKind::from_capture_suffix(suffix));
             start_byte = node.start_byte() as u32;
@@ -145,13 +163,11 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
             start_row = p.row as u32;
             start_col = p.column as u32;
             if let Ok(text) = node.utf8_text(source) {
-                // Find the first newline directly on the byte slice — avoids the per-char
-                // search `str::lines` performs over potentially-large symbol bodies.
-                let bytes = text.as_bytes();
-                let end = memchr::memchr(b'\n', bytes).unwrap_or(bytes.len());
-                let first = text[..end].trim_end_matches('\r').trim();
-                if !first.is_empty() {
-                    signature = Some(first.to_string());
+                signature = signature_slice(text);
+                if matches!(kind, Some(SymbolKind::Method))
+                    && let Some(promoted) = detect_accessor(text)
+                {
+                    kind = Some(promoted);
                 }
             }
         }
@@ -165,7 +181,53 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
         start_row,
         start_col,
         signature,
+        decorators,
     })
+}
+
+/// Promote a `method_definition` capture to `Getter` or `Setter` when the source slice
+/// starts with the `get`/`set` keyword (after skipping any leading modifier keywords).
+/// Matching the accessor `kind` field directly in tree-sitter queries is fragile across
+/// grammar versions, so we look at the bytes instead. Token scan caps at 8 to bound work
+/// on pathological input.
+fn detect_accessor(slice: &str) -> Option<SymbolKind> {
+    for tok in slice.split_whitespace().take(8) {
+        match tok {
+            "get" => return Some(SymbolKind::Getter),
+            "set" => return Some(SymbolKind::Setter),
+            "static" | "public" | "private" | "protected" | "readonly" | "override" | "async" => {
+                continue;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Reduce a symbol's full body text down to a single-line signature header.
+///
+/// Strategy: walk byte-by-byte from the start of the node's text until we hit the first
+/// `{` (function/class/interface body) or `;` (statement terminator for type aliases,
+/// const declarations, interface members). Everything before that becomes the signature,
+/// with internal whitespace runs collapsed to single spaces — this keeps multi-line
+/// generic parameter lists readable as `function foo< T extends Bar, U > (x): T`.
+///
+/// Returns `None` for empty/whitespace-only signatures so callers can leave the field unset.
+fn signature_slice(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut end = bytes.len();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'{' || b == b';' {
+            end = i;
+            break;
+        }
+    }
+    let collapsed: String = text[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
 }
 
 fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {

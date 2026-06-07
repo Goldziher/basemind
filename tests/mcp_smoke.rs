@@ -234,6 +234,39 @@ async fn mcp_server_exercises_representative_tools() {
         modifieds >= 1,
         "expected ≥ 1 'modified' entry for alpha after the tweak commit: {history:?}"
     );
+    assert_eq!(
+        body.get("hash_mode").and_then(Value::as_str),
+        Some("normalized"),
+        "default hash_mode echo should be normalized"
+    );
+
+    // symbol_history (Stage 2): structural mode is opt-in and echoes its name back.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "symbol_history",
+                json!({ "path": "a.rs", "name": "alpha", "limit": 10, "hash_mode": "structural" }),
+            ))
+            .await
+            .expect("symbol_history(structural)"),
+    );
+    assert_eq!(
+        body.get("hash_mode").and_then(Value::as_str),
+        Some("structural"),
+        "structural hash_mode should be echoed back to the caller"
+    );
+    let history = body
+        .get("history")
+        .and_then(Value::as_array)
+        .expect("history");
+    let modifieds = history
+        .iter()
+        .filter(|e| e.get("change").and_then(Value::as_str) == Some("modified"))
+        .count();
+    assert!(
+        modifieds >= 1,
+        "structural mode should also see the 'tweak alpha' literal change: {history:?}"
+    );
 
     // blame_file: should succeed on a non-shallow repo (the gix shallow path doesn't fire).
     let body = decode_text(

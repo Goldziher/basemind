@@ -20,6 +20,7 @@ anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.1"
 blake3 = "1"
+bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 gix = { version = "0.84.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }

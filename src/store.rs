@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::hashing::{self, Hash};
+use crate::path::RelPath;
 
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
@@ -46,8 +47,10 @@ pub enum StoreError {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Index {
     pub schema_ver: u16,
-    /// Relative path (forward-slash separated) → FileEntry. BTreeMap for deterministic serialization.
-    pub files: BTreeMap<String, FileEntry>,
+    /// Relative path → FileEntry. Keyed by `RelPath` so paths with non-UTF-8 bytes
+    /// round-trip losslessly through the msgpack store; valid UTF-8 paths serialize as
+    /// plain strings (zero wire-format churn for the common case).
+    pub files: BTreeMap<RelPath, FileEntry>,
 }
 
 impl Index {
@@ -209,16 +212,19 @@ impl Store {
         write_blob(self.blob_path_l2(hash), map)
     }
 
-    pub fn upsert(&mut self, rel: &str, entry: FileEntry) {
-        self.index.files.insert(rel.to_string(), entry);
+    pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
+        self.index.files.insert(rel.into(), entry);
     }
 
-    pub fn remove(&mut self, rel: &str) {
-        self.index.files.remove(rel);
+    pub fn remove(&mut self, rel: impl AsRef<[u8]>) {
+        self.index.files.remove(bstr::BStr::new(rel.as_ref()));
     }
 
-    pub fn lookup(&self, rel: &str) -> Option<&FileEntry> {
-        self.index.files.get(rel)
+    /// Look a file up by its repository-relative path. Accepts any byte source —
+    /// `&str`, `&RelPath`, `&[u8]` — so call sites that already hold a String can keep
+    /// working without an explicit conversion.
+    pub fn lookup(&self, rel: impl AsRef<[u8]>) -> Option<&FileEntry> {
+        self.index.files.get(bstr::BStr::new(rel.as_ref()))
     }
 
     /// Atomically rewrite the index file (tmp + rename).

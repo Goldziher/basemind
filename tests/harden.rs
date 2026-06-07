@@ -184,7 +184,7 @@ struct ScanOutcome {
 
 struct SampleFile {
     /// repo-relative forward-slash path
-    path: String,
+    path: gitmind::path::RelPath,
     /// non-empty when the file has at least one indexed symbol
     sample_symbol: Option<String>,
     /// non-empty when the file has at least one import with a resolved module

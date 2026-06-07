@@ -9,8 +9,13 @@ use crate::lang::LangError;
 
 /// Bumped any time the FileMap layout changes in an incompatible way OR the on-disk
 /// directory shape changes. Stored in every serialized FileMap. Mismatch on read =
-/// auto-wipe + re-scan. v3 = per-view index directories under `.gitmind/views/`.
-pub const SCHEMA_VER: u16 = 3;
+/// auto-wipe + re-scan.
+///
+/// - v3: per-view index directories under `.gitmind/views/`.
+/// - v4: path keys in the index and msgpack store became `RelPath` (BString) — the wire
+///   format is identical for ASCII/UTF-8 paths but non-UTF-8 paths now round-trip via a
+///   discriminated `{"bytes": [u8...]}` object.
+pub const SCHEMA_VER: u16 = 4;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {
@@ -46,6 +51,11 @@ pub struct Symbol {
     pub start_row: u32,
     pub start_col: u32,
     pub signature: Option<String>,
+    /// Decorator/annotation strings attached to the symbol — currently populated for Python
+    /// (`@dataclass`, `@property`, …). Empty for languages that don't surface a decorator
+    /// concept. Serde-default so old msgpack indices without this field still deserialize.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decorators: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -65,6 +75,13 @@ pub enum SymbolKind {
     /// Rust `impl` blocks. The captured name is the type the impl is for (e.g. `Foo` in
     /// `impl Foo { ... }`), trait impls show the trait + type concatenated by the query.
     Impl,
+    /// TypeScript `namespace Foo {…}` and ambient `module "foo" {…}` declarations.
+    Namespace,
+    /// TypeScript / JavaScript class accessors — `get x() {…}` and `set x(v) {…}`.
+    /// Surfaced as distinct kinds so callers can search for accessors specifically and so
+    /// `outline` rendering can highlight the read/write split.
+    Getter,
+    Setter,
     Unknown,
 }
 
@@ -83,6 +100,9 @@ impl SymbolKind {
             "module" => Self::Module,
             "macro" => Self::Macro,
             "impl" => Self::Impl,
+            "namespace" => Self::Namespace,
+            "getter" => Self::Getter,
+            "setter" => Self::Setter,
             _ => Self::Unknown,
         }
     }
@@ -99,7 +119,7 @@ impl SymbolKind {
             // Same score — first-seen wins among them, which keeps document order intact
             // when the same symbol is captured twice as e.g. both function and method.
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module
-            | Macro | Impl => 2,
+            | Macro | Impl | Namespace | Getter | Setter => 2,
         }
     }
 }

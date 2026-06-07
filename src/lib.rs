@@ -9,6 +9,7 @@ pub mod git_cache;
 pub mod hashing;
 pub mod lang;
 pub mod mcp;
+pub mod path;
 pub mod query;
 pub mod render;
 pub mod scanner;

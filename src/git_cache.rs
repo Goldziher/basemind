@@ -49,7 +49,7 @@ pub enum CacheError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CommitFilesPayload {
     schema_ver: u16,
-    files: Vec<(String, ChangeKind)>,
+    files: Vec<(crate::path::RelPath, ChangeKind)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +69,7 @@ struct BlamePayload {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlameKey {
     pub suspect_sha: String,
-    pub path: String,
+    pub path: crate::path::RelPath,
     pub range: Option<(u32, u32)>,
 }
 
@@ -79,7 +79,7 @@ pub struct LogKey {
     /// always return the same walk; once HEAD moves, the new sha defines a new key.
     pub head_sha: String,
     /// Optional path filter (Some for `commits_touching`, None for `recent_changes`).
-    pub path: Option<String>,
+    pub path: Option<crate::path::RelPath>,
     pub limit: u32,
     pub include_files: bool,
 }
@@ -87,7 +87,7 @@ pub struct LogKey {
 // ─── main cache ──────────────────────────────────────────────────────────────
 
 /// `(path, change_kind)` for one file in a commit's tree-against-parent diff.
-type CommitFileChange = (String, ChangeKind);
+type CommitFileChange = (crate::path::RelPath, ChangeKind);
 
 pub struct GitCache {
     commit_files: Mutex<LruCache<String /* sha40 */, Arc<Vec<CommitFileChange>>>>,
@@ -133,7 +133,7 @@ impl GitCache {
         &self,
         repo: &Repo,
         commit_sha: &str,
-    ) -> Result<Arc<Vec<(String, ChangeKind)>>, CacheError> {
+    ) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
         if let Some(hit) = self.commit_files.lock().unwrap().get(commit_sha).cloned() {
             return Ok(hit);
         }
@@ -161,13 +161,13 @@ impl GitCache {
         &self,
         repo: &Repo,
         head_sha: &str,
-        path: Option<&str>,
+        path: Option<&crate::path::RelPath>,
         limit: u32,
         include_files: bool,
     ) -> Result<Arc<Vec<CommitInfo>>, CacheError> {
         let key = LogKey {
             head_sha: head_sha.to_string(),
-            path: path.map(str::to_string),
+            path: path.cloned(),
             limit,
             include_files,
         };
@@ -195,12 +195,12 @@ impl GitCache {
         &self,
         repo: &Repo,
         suspect_sha: &str,
-        path: &str,
+        path: &crate::path::RelPath,
         range: Option<(u32, u32)>,
     ) -> Result<Arc<BlameResult>, CacheError> {
         let key = BlameKey {
             suspect_sha: suspect_sha.to_string(),
-            path: path.to_string(),
+            path: path.clone(),
             range,
         };
         if let Some(hit) = self.blame.lock().unwrap().get(&key).cloned() {
@@ -248,7 +248,7 @@ impl GitCache {
 
     // ─── disk helpers ───────────────────────────────────────────────────
 
-    fn read_commit_files_disk(&self, sha: &str) -> Option<Vec<(String, ChangeKind)>> {
+    fn read_commit_files_disk(&self, sha: &str) -> Option<Vec<CommitFileChange>> {
         let path = self.commit_files_path(sha)?;
         if !path.exists() {
             return None;
@@ -261,7 +261,7 @@ impl GitCache {
         Some(payload.files)
     }
 
-    fn write_commit_files_disk(&self, sha: &str, files: &[(String, ChangeKind)]) {
+    fn write_commit_files_disk(&self, sha: &str, files: &[CommitFileChange]) {
         let Some(path) = self.commit_files_path(sha) else {
             return;
         };

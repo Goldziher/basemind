@@ -16,7 +16,12 @@
 
 (enum_declaration name: (identifier) @symbol.name) @symbol.enum
 
+;; Methods (incl. accessors) — getter/setter promotion happens in extract/l1.rs.
 (method_definition name: (property_identifier) @symbol.name) @symbol.method
+
+;; TS namespaces inside .tsx files (rare but legal).
+(internal_module name: (identifier) @symbol.name) @symbol.namespace
+(module name: (identifier) @symbol.name) @symbol.namespace
 
 (lexical_declaration
   (variable_declarator name: (identifier) @symbol.name)) @symbol.const

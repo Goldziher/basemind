@@ -28,8 +28,11 @@ pub struct ScanConfig {
     pub respect_gitignore: bool,
     #[serde(default = "ScanConfig::default_max_file_bytes")]
     pub max_file_bytes: u64,
-    #[serde(default = "ScanConfig::default_max_file_lines")]
-    pub max_file_lines: u64,
+    /// When true (default), the scanner skips paths under any submodule root listed in
+    /// `.gitmodules`. Set to false to recurse into submodule working trees — useful only
+    /// if you want one combined index across the parent + its embedded repos.
+    #[serde(default = "ScanConfig::default_skip_submodules")]
+    pub skip_submodules: bool,
 }
 
 impl ScanConfig {
@@ -60,8 +63,8 @@ impl ScanConfig {
     fn default_max_file_bytes() -> u64 {
         2_097_152
     }
-    fn default_max_file_lines() -> u64 {
-        50_000
+    fn default_skip_submodules() -> bool {
+        true
     }
 }
 
@@ -72,7 +75,7 @@ impl Default for ScanConfig {
             exclude: Self::default_exclude(),
             respect_gitignore: Self::default_respect_gitignore(),
             max_file_bytes: Self::default_max_file_bytes(),
-            max_file_lines: Self::default_max_file_lines(),
+            skip_submodules: Self::default_skip_submodules(),
         }
     }
 }

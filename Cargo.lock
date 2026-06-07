@@ -993,6 +993,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "blake3",
+ "bstr",
  "clap",
  "fs2",
  "gix",

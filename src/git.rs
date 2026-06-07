@@ -22,7 +22,7 @@ pub enum GitError {
     /// `GITMIND_BLAME_MAX_BYTES` (default 1 MiB) and `GITMIND_BLAME_MAX_LINES` (default 5 000).
     #[error("blame skipped: {path} is too large ({bytes} bytes, {lines} lines)")]
     BlameTooLarge {
-        path: String,
+        path: crate::path::RelPath,
         bytes: u64,
         lines: u64,
     },
@@ -48,11 +48,11 @@ pub struct Repo {
 
 #[derive(Debug, Default, Clone)]
 pub struct WorkingTreeStatus {
-    pub staged_added: Vec<String>,
-    pub staged_modified: Vec<String>,
-    pub staged_deleted: Vec<String>,
-    pub modified: Vec<String>,
-    pub untracked: Vec<String>,
+    pub staged_added: Vec<crate::path::RelPath>,
+    pub staged_modified: Vec<crate::path::RelPath>,
+    pub staged_deleted: Vec<crate::path::RelPath>,
+    pub modified: Vec<crate::path::RelPath>,
+    pub untracked: Vec<crate::path::RelPath>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -84,7 +84,7 @@ pub struct CommitInfo {
     pub author_time_unix: i64,
     /// Files that changed in this commit relative to its first parent.
     /// Empty for the root commit, and empty when `include_files=false` was used.
-    pub files: Vec<(String, ChangeKind)>,
+    pub files: Vec<(crate::path::RelPath, ChangeKind)>,
 }
 
 /// One contiguous diff hunk between two file revisions. Line counts are 1-based.
@@ -131,12 +131,12 @@ pub struct BlameHunk {
     pub author_time_unix: i64,
     pub summary: String,
     /// Set when the file was renamed at `commit_sha` — name in the commit's tree.
-    pub source_path: Option<String>,
+    pub source_path: Option<crate::path::RelPath>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BlameResult {
-    pub path: String,
+    pub path: crate::path::RelPath,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunk>,
     /// Set when blame was cut short — currently only fires for shallow clones where gix
@@ -239,6 +239,34 @@ impl Repo {
         Ok(out)
     }
 
+    /// Return the worktree-relative roots of every submodule declared in `.gitmodules`.
+    /// Paths use forward slashes; the list is empty when `.gitmodules` is absent, malformed,
+    /// or has no entries. Errors from gix are downgraded to an empty list — submodule
+    /// awareness is a hint to the scanner, not a hard requirement.
+    pub fn submodule_paths(&self) -> Vec<crate::path::RelPath> {
+        let local = self.local();
+        let iter = match local.submodules() {
+            Ok(Some(it)) => it,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for sm in iter {
+            let path = match sm.path() {
+                Ok(cow) => {
+                    let bstr: &gix::bstr::BStr = &cow;
+                    crate::path::RelPath::from(<gix::bstr::BStr as AsRef<[u8]>>::as_ref(bstr))
+                }
+                Err(_) => continue,
+            };
+            if !path.is_empty() {
+                out.push(path);
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Read the staged blob content for `rel` (forward-slash). `None` = not in the index.
     pub fn read_blob_staged(&self, rel: &str) -> Result<Option<Vec<u8>>, GitError> {
         let local = self.local();
@@ -260,25 +288,46 @@ impl Repo {
     }
 
     /// Read the blob content for `rel` at `rev_sha`. `None` = path doesn't exist at that rev.
-    pub fn read_blob_at_rev(&self, rev_sha: &str, rel: &str) -> Result<Option<Vec<u8>>, GitError> {
+    pub fn read_blob_at_rev(
+        &self,
+        rev_sha: &str,
+        rel: impl AsRef<Path>,
+    ) -> Result<Option<Vec<u8>>, GitError> {
+        Ok(self
+            .read_blob_at_rev_with_oid(rev_sha, rel)?
+            .map(|(bytes, _)| bytes))
+    }
+
+    /// Like `read_blob_at_rev` but also returns the blob's git OID. Callers caching parsed
+    /// outlines key on `(oid, lang)` to skip re-parsing identical blobs across commits.
+    pub fn read_blob_at_rev_with_oid(
+        &self,
+        rev_sha: &str,
+        rel: impl AsRef<Path>,
+    ) -> Result<Option<(Vec<u8>, gix::ObjectId)>, GitError> {
         let local = self.local();
         let tree = resolve_tree(&local, rev_sha)?;
-        let entry = match tree.lookup_entry_by_path(rel).map_err(|e| GitError::Read {
-            what: format!("{rev_sha}:{rel}"),
-            msg: e.to_string(),
-        })? {
+        let rel_ref = rel.as_ref();
+        let rel_display = rel_ref.display();
+        let entry = match tree
+            .lookup_entry_by_path(rel_ref)
+            .map_err(|e| GitError::Read {
+                what: format!("{rev_sha}:{rel_display}"),
+                msg: e.to_string(),
+            })? {
             Some(e) => e,
             None => return Ok(None),
         };
+        let oid = entry.object_id();
         let object = entry.object().map_err(|e| GitError::Read {
-            what: format!("{rev_sha}:{rel}"),
+            what: format!("{rev_sha}:{rel_display}"),
             msg: e.to_string(),
         })?;
         let blob = object.try_into_blob().map_err(|e| GitError::Read {
-            what: format!("{rev_sha}:{rel}"),
+            what: format!("{rev_sha}:{rel_display}"),
             msg: format!("not a blob: {e}"),
         })?;
-        Ok(Some(blob.data.clone()))
+        Ok(Some((blob.data.clone(), oid)))
     }
 
     /// Porcelain-style status: bucketed by stage vs working tree, including untracked files.
@@ -338,7 +387,14 @@ impl Repo {
     }
 
     /// Recent commits that touch `rel`, newest first.
-    pub fn log_for_path(&self, rel: &str, max_commits: usize) -> Result<Vec<CommitInfo>, GitError> {
+    pub fn log_for_path(
+        &self,
+        rel: impl AsRef<Path>,
+        max_commits: usize,
+    ) -> Result<Vec<CommitInfo>, GitError> {
+        let rel_bytes_buf: bstr::BString =
+            bstr::BString::from(rel.as_ref().as_os_str().as_encoded_bytes());
+        let rel: &[u8] = rel_bytes_buf.as_slice();
         let local = self.local();
         let head = local.head_id().map_err(|e| GitError::Read {
             what: "HEAD".to_string(),
@@ -377,7 +433,7 @@ impl Repo {
     pub fn blame_file(
         &self,
         suspect_sha: &str,
-        path: &str,
+        path: &crate::path::RelPath,
         line_range: Option<(u32, u32)>,
     ) -> Result<BlameResult, GitError> {
         use gix::bstr::BStr;
@@ -394,7 +450,7 @@ impl Repo {
         let max_lines = blame_max_lines_from_env();
         if size_bytes > max_bytes || line_count > max_lines {
             return Err(GitError::BlameTooLarge {
-                path: path.to_string(),
+                path: path.clone(),
                 bytes: size_bytes,
                 lines: line_count,
             });
@@ -427,7 +483,7 @@ impl Repo {
                 // (MCP) reports `truncated_reason` so the agent knows what happened.
                 if self.is_shallow && looks_like_shallow_blame_error(&e) {
                     return Ok(BlameResult {
-                        path: path.to_string(),
+                        path: path.clone(),
                         suspect_sha: suspect_sha.to_string(),
                         hunks: Vec::new(),
                         truncated_reason: Some("shallow_clone".to_string()),
@@ -476,7 +532,7 @@ impl Repo {
             let source_path = entry
                 .source_file_name
                 .as_ref()
-                .and_then(|b| std::str::from_utf8(b).ok().map(|s| s.to_string()));
+                .map(|b| crate::path::RelPath::from(b.as_slice()));
             hunks.push(BlameHunk {
                 commit_sha: sha,
                 short_sha,
@@ -492,7 +548,7 @@ impl Repo {
         hunks.sort_by_key(|h| h.start_line);
 
         Ok(BlameResult {
-            path: path.to_string(),
+            path: path.clone(),
             suspect_sha: suspect_sha.to_string(),
             hunks,
             truncated_reason: None,
@@ -507,10 +563,11 @@ impl Repo {
         &self,
         rev_old: &str,
         rev_new: &str,
-        path: &str,
+        path: impl AsRef<Path>,
     ) -> Result<Option<(Vec<Hunk>, bool, bool)>, GitError> {
-        let old_bytes = self.read_blob_at_rev(rev_old, path)?;
-        let new_bytes = self.read_blob_at_rev(rev_new, path)?;
+        let path_ref = path.as_ref();
+        let old_bytes = self.read_blob_at_rev(rev_old, path_ref)?;
+        let new_bytes = self.read_blob_at_rev(rev_new, path_ref)?;
         if old_bytes.is_none() && new_bytes.is_none() {
             return Ok(None);
         }
@@ -526,7 +583,7 @@ impl Repo {
     pub fn commit_files_uncached(
         &self,
         commit_sha: &str,
-    ) -> Result<Vec<(String, ChangeKind)>, GitError> {
+    ) -> Result<Vec<(crate::path::RelPath, ChangeKind)>, GitError> {
         let local = self.local();
         let id = local
             .rev_parse_single(commit_sha)
@@ -581,7 +638,11 @@ fn blame_max_lines_from_env() -> u64 {
 
 /// Read the suspect-rev blob and compute `(bytes, lines)` for the size-cap pre-check.
 /// Failure is non-fatal — we return `None` and let the blame call fail with its own error.
-fn blob_size_and_line_count(local: &gix::Repository, rev: &str, path: &str) -> Option<(u64, u64)> {
+fn blob_size_and_line_count(
+    local: &gix::Repository,
+    rev: &str,
+    path: &crate::path::RelPath,
+) -> Option<(u64, u64)> {
     let id = local.rev_parse_single(rev).ok()?.detach();
     let tree = local.find_commit(id).ok()?.tree().ok()?;
     let entry = tree.lookup_entry_by_path(path).ok()??;
@@ -682,7 +743,7 @@ fn build_commit_info(
 fn commit_files(
     local: &gix::Repository,
     commit_id: gix::ObjectId,
-) -> Option<Vec<(String, ChangeKind)>> {
+) -> Option<Vec<(crate::path::RelPath, ChangeKind)>> {
     let commit = local.find_commit(commit_id).ok()?;
     let tree = commit.tree().ok()?;
     let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
@@ -692,15 +753,16 @@ fn commit_files(
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
         let mut out = Vec::with_capacity(recorder.len());
         for e in recorder {
-            if let Ok(p) = std::str::from_utf8(&e.filepath) {
-                out.push((p.to_string(), ChangeKind::Added));
-            }
+            out.push((
+                crate::path::RelPath::from(e.filepath.as_slice()),
+                ChangeKind::Added,
+            ));
         }
         return Some(out);
     }
 
     // path → strongest ChangeKind seen across all parent diffs.
-    let mut union: ahash::AHashMap<String, ChangeKind> = ahash::AHashMap::new();
+    let mut union: ahash::AHashMap<crate::path::RelPath, ChangeKind> = ahash::AHashMap::new();
     for pid in parents {
         let Ok(parent_commit) = local.find_commit(pid) else {
             continue;
@@ -728,7 +790,7 @@ fn commit_files(
             Ok::<_, std::convert::Infallible>(gix::object::tree::diff::Action::Continue(()))
         });
     }
-    let mut out: Vec<(String, ChangeKind)> = union.into_iter().collect();
+    let mut out: Vec<(crate::path::RelPath, ChangeKind)> = union.into_iter().collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Some(out)
 }
@@ -744,11 +806,11 @@ fn change_severity(k: ChangeKind) -> u8 {
     }
 }
 
-fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &str) -> bool {
+fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &[u8]) -> bool {
     let Some(files) = commit_files(local, commit_id) else {
         return false;
     };
-    files.iter().any(|(p, _)| p == rel)
+    files.iter().any(|(p, _)| p.as_bytes() == rel)
 }
 
 /// Line-diff between two byte buffers using the histogram algorithm + slider heuristics.
@@ -837,7 +899,7 @@ fn line_byte_offsets(buf: &[u8]) -> Vec<(u32, u32)> {
 
 fn classify_tree_change(
     change: &gix::object::tree::diff::Change<'_, '_, '_>,
-) -> Option<(String, ChangeKind)> {
+) -> Option<(crate::path::RelPath, ChangeKind)> {
     use gix::object::tree::diff::Change::*;
     match change {
         Addition { location, .. } => Some((decode_path(location)?, ChangeKind::Added)),
@@ -847,8 +909,12 @@ fn classify_tree_change(
     }
 }
 
-fn decode_path(bstr: &gix::bstr::BStr) -> Option<String> {
-    std::str::from_utf8(bstr).ok().map(|s| s.to_string())
+fn decode_path(bstr: &gix::bstr::BStr) -> Option<crate::path::RelPath> {
+    // Preserve raw bytes — gix hands us paths in the on-disk byte form. The discriminated
+    // serde wire format on RelPath round-trips non-UTF-8 bytes losslessly to MCP clients.
+    Some(crate::path::RelPath::from(<gix::bstr::BStr as AsRef<
+        [u8],
+    >>::as_ref(bstr)))
 }
 
 fn classify_status_item(item: &gix::status::Item, out: &mut WorkingTreeStatus) {
@@ -863,23 +929,21 @@ fn classify_index_worktree(item: &gix::status::index_worktree::Item, out: &mut W
     use gix::status::index_worktree::Item as I;
     match item {
         I::Modification { rela_path, .. } => {
-            if let Ok(p) = std::str::from_utf8(rela_path) {
-                out.modified.push(p.to_string());
-            }
+            out.modified
+                .push(crate::path::RelPath::from(rela_path.as_slice()));
         }
         I::DirectoryContents { entry, .. } => {
-            if let Ok(p) = std::str::from_utf8(&entry.rela_path) {
-                out.untracked.push(p.to_string());
-            }
+            out.untracked
+                .push(crate::path::RelPath::from(entry.rela_path.as_slice()));
         }
         I::Rewrite {
             source,
             dirwalk_entry,
             ..
         } => {
-            if let Ok(p) = std::str::from_utf8(&dirwalk_entry.rela_path) {
-                out.modified.push(p.to_string());
-            }
+            out.modified.push(crate::path::RelPath::from(
+                dirwalk_entry.rela_path.as_slice(),
+            ));
             let _ = source;
         }
     }

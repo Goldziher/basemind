@@ -140,10 +140,28 @@ Modern-JS patterns covered: arrow-function `const` declarations
 rather than `const`, so a `search_symbols("Foo")` finds them. TSX has its own
 query file (`src/queries/tsx.scm`); the dedupe pass in `extract/l1.rs` resolves
 overlapping query matches by keeping the most specific kind. Rust `impl` blocks
-are surfaced as kind `impl` (the captured name is the implementing type).
+surface as kind `impl` (the captured name is the implementing type).
 
-Known gaps (intentional, queued for follow-up): TS namespaces, TS getters/setters,
-generic-typed signature strings, Python decorator metadata on the decorated symbol.
+TypeScript adds: `namespace Foo {…}` and ambient `module "foo" {…}` surface as
+kind `namespace`; class accessors `get x()` and `set x(v)` surface as kinds
+`getter` / `setter` (detected from the source bytes — promoting at extract time
+from the generic `method` capture, since matching the `kind` keyword in a
+tree-sitter predicate proved fragile across grammar versions).
+
+Multi-line generic signature strings round-trip: the extracted signature walks
+forward to the first `{` or `;` and collapses internal whitespace, so a
+declaration like `function foo<\n  T extends Bar,\n  U extends Baz,\n>(x: T): U`
+becomes `function foo< T extends Bar, U extends Baz, >(x: T): U` instead of being
+truncated at the first newline.
+
+Python decorator metadata travels with the decorated symbol: `@dataclass`,
+`@property`, `@total_ordering`, etc. land on `Symbol.decorators` (empty `Vec`
+when absent; serde skips serialization to keep responses tidy).
+
+Known gaps (intentional, queued for follow-up): TS getter/setter discrimination
+via tree-sitter query predicates (instead of the byte-level pre-check we ship),
+generic type parameters on classes/interfaces, advanced `infer`/conditional-type
+captures.
 
 ### Robustness knobs
 
@@ -185,11 +203,50 @@ file shows up with different kinds across parents.
 
 ### `symbol_history` stability
 
-`find_symbol_bytes` runs each symbol's bytes through
-`mcp::helpers::normalize_for_history` before equality comparison: line + block
-comments stripped per language, whitespace runs collapsed to one space. Kills
-the dominant false-positive (autoformat / prettier / black / gofmt churn) at
-the cost of treating string-literal whitespace as non-significant.
+The `symbol_history` tool ships with three fingerprint modes — pick via the
+`hash_mode` request param, defaulting to `normalized`:
+
+- **`normalized`** (default) — byte compare after `normalize_for_history` strips
+  line + block comments per language and collapses whitespace runs to a single
+  space. Cheap, language-aware, kills the dominant false-positive (autoformat /
+  prettier / black / gofmt churn) at the cost of treating string-literal
+  whitespace as non-significant.
+- **`structural`** — AST-shape fingerprint built by walking the symbol's
+  tree-sitter subtree and hashing `(node_kind, identifier_or_literal_text)`
+  pairs. Comments and anonymous tokens contribute nothing — formatter-stable,
+  comment-stable, _literal-sensitive_. A docstring rewrite still registers as a
+  body change.
+- **`structural_loose`** — same as `structural` but ignores literal _contents_
+  (strings, numbers, booleans contribute only their node kind). Use when i18n
+  string churn or numeric-constant tweaks dominate the noise.
+
+All modes are accelerated by a `(blob_oid, lang) → FileMapL1` LRU cache on the
+server: repeated visits to the same blob across commits skip the tree-sitter
+parse entirely. The response echoes the mode that produced it.
+
+### Submodules
+
+`.gitmodules` is read at scan time and submodule roots are pre-filtered out of
+the walk by default (`scan.skip_submodules = true`). The `status` tool surfaces
+the list of detected submodules regardless of the knob, so clients can see the
+boundary the scanner respects.
+
+### Non-UTF-8 paths
+
+Path fields use a `RelPath` (BString-backed) end to end. Paths with bytes that
+aren't valid UTF-8 — common on Linux ext4 with deliberately exotic filenames,
+rare elsewhere — survive scan → store → MCP without a lossy round-trip:
+
+- **Wire format**: valid UTF-8 paths serialize as plain JSON / msgpack strings
+  (no change for the typical case). Paths with invalid bytes fall back to
+  `{"bytes": [u8...]}`. Deserialization accepts either shape plus raw msgpack
+  `bin` blobs.
+- **On-disk index**: `BTreeMap<RelPath, FileEntry>` — schema bumped to v4. v3
+  caches auto-wipe on first read and re-scan.
+- **Windows**: `OsStr::as_encoded_bytes()` yields WTF-8 (a UTF-8 superset that
+  losslessly round-trips ill-formed UTF-16 such as unpaired surrogates).
+  `RelPath` stores those bytes as-is; `Display` renders unpaired surrogates as
+  `\u{NNNN}` escapes. Filesystem ops go through `OsStr::from_encoded_bytes`.
 
 ## Config
 

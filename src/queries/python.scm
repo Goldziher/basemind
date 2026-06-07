@@ -1,8 +1,26 @@
 ;; section: symbols
+;;
+;; The plain `function_definition` / `class_definition` patterns match BOTH bare definitions
+;; and the inner definition of a `decorated_definition`. To capture decorator metadata we add
+;; a second pair of patterns that target `decorated_definition` and capture each decorator
+;; AND the inner symbol node — using the inner node so the (start_byte, name) dedupe key
+;; aligns with the plain pattern. The dedupe pass in extract/l1.rs merges decorators across
+;; the two matches.
 
 (function_definition name: (identifier) @symbol.name) @symbol.function
 
 (class_definition name: (identifier) @symbol.name) @symbol.class
+
+;; Decorated function — `@symbol.function` capture is on the inner function_definition so
+;; start_byte matches the bare pattern above; decorators are surfaced as a separate capture.
+(decorated_definition
+  (decorator) @symbol.decorator
+  definition: (function_definition name: (identifier) @symbol.name) @symbol.function)
+
+;; Decorated class — same shape.
+(decorated_definition
+  (decorator) @symbol.decorator
+  definition: (class_definition name: (identifier) @symbol.name) @symbol.class)
 
 (assignment
   left: (identifier) @symbol.name

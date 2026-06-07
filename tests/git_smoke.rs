@@ -151,3 +151,81 @@ fn legacy_dotgitmind_index_is_migrated_into_working_view() {
             .exists()
     );
 }
+
+#[test]
+fn scan_skips_submodule_paths_by_default() {
+    // Build a parent repo with a submodule pointing at a sibling tempdir repo. With
+    // `skip_submodules: true` (default), files under the submodule root should not appear
+    // in the parent's index. With it disabled, they should.
+
+    // Inner repo — the one we'll mount as a submodule.
+    let inner = tempfile::tempdir().expect("inner tempdir");
+    run(inner.path(), &["init", "-q"]);
+    run(inner.path(), &["config", "commit.gpgsign", "false"]);
+    fs::write(inner.path().join("inner.rs"), b"pub fn inner_fn() {}\n").unwrap();
+    run(inner.path(), &["add", "inner.rs"]);
+    run(inner.path(), &["commit", "-qm", "init inner"]);
+
+    // Parent repo with one bare file at the top.
+    let (parent, cfg) = init_repo();
+    let root = parent.path();
+    fs::write(root.join("top.rs"), b"pub fn top_fn() {}\n").unwrap();
+    run(root, &["add", "top.rs"]);
+    run(root, &["commit", "-qm", "init parent"]);
+
+    // Wire the submodule using the system git CLI — the modern git complains about
+    // file:// transports for security; -c works around that for local fixtures.
+    let url = format!("file://{}", inner.path().display());
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            &url,
+            "vendored",
+        ])
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git submodule add failed");
+    run(root, &["commit", "-qm", "add submodule"]);
+
+    // gix should see the submodule via .gitmodules.
+    let repo = Repo::discover(root).expect("discover parent");
+    let subs = repo.submodule_paths();
+    assert_eq!(
+        subs,
+        vec![gitmind::path::RelPath::from("vendored")],
+        "got {subs:?}"
+    );
+
+    // Default scan should NOT index the submodule's inner.rs.
+    {
+        let mut store = Store::open(root, VIEW_WORKING).unwrap();
+        scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("scan default");
+        assert!(
+            store.lookup("top.rs").is_some(),
+            "parent file should be indexed"
+        );
+        assert!(
+            store.lookup("vendored/inner.rs").is_none(),
+            "submodule file should be skipped by default"
+        );
+    }
+
+    // Flip the knob → inner.rs reappears.
+    let mut cfg2 = ConfigV1::with_defaults();
+    cfg2.scan.skip_submodules = false;
+    let mut store2 = Store::open(root, VIEW_STAGED).unwrap();
+    scan(root, &mut store2, &cfg2, ScanSource::WorkingTree).expect("scan opt-in");
+    assert!(
+        store2.lookup("vendored/inner.rs").is_some(),
+        "submodule file should be indexed when skip_submodules=false"
+    );
+}

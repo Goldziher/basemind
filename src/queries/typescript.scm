@@ -10,7 +10,15 @@
 
 (enum_declaration name: (identifier) @symbol.name) @symbol.enum
 
+;; All methods captured as `method`. Getter/setter accessors are detected from the source
+;; bytes in extract/l1.rs::detect_accessor (querying the `kind` keyword via tree-sitter
+;; query predicates proved unreliable across grammar versions).
 (method_definition name: (property_identifier) @symbol.name) @symbol.method
+
+;; TypeScript namespaces. `namespace Foo {…}` lowers to `internal_module`; ambient
+;; `module "foo" {…}` (in .d.ts files) lowers to `module`.
+(internal_module name: (identifier) @symbol.name) @symbol.namespace
+(module name: (identifier) @symbol.name) @symbol.namespace
 
 ;; Generic `const X = …` capture — kind `const`. The more specific arrow/function-expression
 ;; pattern below also fires and is promoted by the dedupe pass in `extract/l1.rs` to kind

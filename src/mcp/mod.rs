@@ -11,10 +11,12 @@ mod tools;
 mod types;
 
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
+use lru::LruCache;
 use rmcp::ServerHandler;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{ServerCapabilities, ServerInfo};
@@ -22,7 +24,25 @@ use rmcp::tool_handler;
 use tokio::sync::RwLock;
 
 use crate::extract::{FileMapL1, Import};
+use crate::lang::Lang;
 use crate::store::Store;
+
+/// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
+/// language we'd extract with, hold onto the parsed `FileMapL1` and the source bytes so
+/// repeated visits to the same blob (across commits, modes, or tool calls) skip the
+/// tree-sitter parse entirely. Memory-only — blob OIDs are content-addressed and immutable,
+/// so cache invalidation is implicit (a new blob = a new key).
+///
+/// Cap chosen to bound steady-state memory at a few MB for typical repositories: 512
+/// entries × ~few KiB per `FileMapL1` + Arc'd source = on the order of 1–10 MiB.
+pub(crate) const OUTLINE_CACHE_CAP: usize = 512;
+
+pub(crate) struct OutlineEntry {
+    pub map: Arc<FileMapL1>,
+    pub source: Arc<Vec<u8>>,
+}
+
+pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, Lang), Arc<OutlineEntry>>>;
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
@@ -51,11 +71,14 @@ pub(crate) struct ServerState {
     pub(crate) repo: Option<Arc<crate::git::Repo>>,
     /// Sha-keyed cache for commit-files diffs, log walks, and blame results.
     pub(crate) git_cache: Arc<crate::git_cache::GitCache>,
+    /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
+    /// hot files even when the symbol's source blob shows up in many adjacent commits.
+    pub(crate) outline_cache: Arc<OutlineCache>,
 }
 
 pub(crate) struct MapCache {
     /// path → L1 (kept sorted by path; iteration order matches `list_files`)
-    pub(crate) by_path: BTreeMap<String, FileMapL1>,
+    pub(crate) by_path: BTreeMap<crate::path::RelPath, FileMapL1>,
     /// Pre-flattened `(path, imports)` view used by the `dependents` tool. Without this,
     /// every `dependents` call rebuilds the same `HashMap<PathBuf, Vec<Import>>` from
     /// scratch. Precomputing once at server boot drops that to pure pointer-chase.
@@ -75,7 +98,7 @@ impl MapCache {
         }
         let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
             .iter()
-            .map(|(p, l1)| (PathBuf::from(p), l1.imports.clone()))
+            .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
             .collect();
         Self {
             by_path,
@@ -97,12 +120,16 @@ impl GitmindServer {
             git = repo.is_some(),
             "preloaded code map into RAM for MCP server"
         );
+        let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
+            NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
+        )));
         let state = Arc::new(ServerState {
             store: RwLock::new(store),
             root,
             cache: ArcSwap::from(cache),
             repo,
             git_cache,
+            outline_cache,
         });
         spawn_view_watcher(Arc::clone(&state));
         Self {

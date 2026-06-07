@@ -120,16 +120,30 @@ struct Filters {
     include: globset::GlobSet,
     exclude: globset::GlobSet,
     max_file_bytes: u64,
+    /// Submodule root prefixes (forward-slash, no trailing `/`). When `config.scan
+    /// .skip_submodules` is true, any candidate path under one of these prefixes is filtered
+    /// out before extraction. Empty when there are no submodules or the knob is disabled.
+    submodule_roots: Vec<String>,
 }
 
 impl Filters {
-    fn build(config: &Config) -> Result<Self, ScanError> {
+    fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
         let include = compile_globs(&config.scan.include)?;
         let exclude = compile_globs(&config.scan.exclude)?;
+        let submodule_roots = if config.scan.skip_submodules {
+            submodule_roots
+                .into_iter()
+                .map(|s| s.trim_end_matches('/').to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             include,
             exclude,
             max_file_bytes: config.scan.max_file_bytes,
+            submodule_roots,
         })
     }
 
@@ -137,8 +151,33 @@ impl Filters {
         if self.exclude.is_match(rel) {
             return false;
         }
+        for root in &self.submodule_roots {
+            if rel == root || rel.starts_with(&format!("{root}/")) {
+                return false;
+            }
+        }
         self.include.is_match(rel)
     }
+}
+
+/// Pull submodule roots for the active scan source. WorkingTree opens a fresh `Repo` on the
+/// root (cheap; fails silently when the directory isn't a repo). Staged/Rev reuses the
+/// repo handle already carried by `ScanSource`. Failures degrade to an empty Vec so a
+/// missing or malformed `.gitmodules` never blocks the scan.
+fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -> Vec<String> {
+    let paths = match source {
+        ScanSource::Staged(repo) | ScanSource::Rev { repo, .. } => repo.submodule_paths(),
+        ScanSource::WorkingTree => match Repo::discover(root) {
+            Ok(r) => r.submodule_paths(),
+            Err(_) => Vec::new(),
+        },
+    };
+    // Filters work on forward-slash strings; non-UTF-8 submodule roots are extremely rare
+    // and lossy here only affects which paths the scanner *skips* (still indexed if lossy).
+    paths
+        .into_iter()
+        .map(|p| p.to_str_lossy().into_owned())
+        .collect()
 }
 
 fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ScanError> {
@@ -162,7 +201,8 @@ pub fn scan(
     config: &Config,
     source: ScanSource<'_>,
 ) -> Result<ScanReport, ScanError> {
-    let filters = Filters::build(config)?;
+    let submodule_roots = submodule_roots_for_source(root, &source);
+    let filters = Filters::build(config, submodule_roots)?;
     let candidates = candidates_for_source(root, config, &filters, &source)?;
     debug!(
         count = candidates.len(),
@@ -186,13 +226,15 @@ pub fn scan(
     let mut report = ScanReport::default();
     apply_outcomes(store, &mut report, outcomes);
 
-    // Purge index entries for files no longer present / no longer allowed.
+    // Purge index entries for files no longer present / no longer allowed. Compare keys
+    // via lossy UTF-8 — `seen` is populated from `FileResult.path: String` which itself
+    // came through `to_string_lossy` during enumeration, so the round-trip is consistent.
     let stale: Vec<String> = store
         .index
         .files
         .keys()
-        .filter(|k| !seen.contains(k.as_str()))
-        .cloned()
+        .filter(|k| !seen.contains(k.to_str_lossy().as_ref()))
+        .map(|k| k.to_str_lossy().into_owned())
         .collect();
     for k in &stale {
         store.remove(k);
@@ -220,8 +262,9 @@ pub fn scan_paths(
     config: &Config,
     paths: &[PathBuf],
 ) -> Result<ScanReport, ScanError> {
-    let filters = Filters::build(config)?;
     let source = ScanSource::WorkingTree;
+    let submodule_roots = submodule_roots_for_source(root, &source);
+    let filters = Filters::build(config, submodule_roots)?;
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
