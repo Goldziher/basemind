@@ -31,7 +31,7 @@ Walker (gitignore-aware)
 - **`scan_paths` removal mirror**: when a file disappears between scans, `scan_paths` calls `IndexWriter::remove_file` so secondary indexes don't leak stale entries.
 - **No `tokio::spawn`** on the scanner path — rayon `par_iter` is the parallelization unit.
 
-## Where to extend
+### Where to extend
 
 - New language → add a tree-sitter parser registration in `extract::l1::extract` and `extract::l2::extract`, plus the file extension in the scanner glob.
 - New extraction tier (e.g. `l4` semantic types) → mirror the `l1`/`l2` shape: `extract/l4.rs`, blob suffix `.l4.msgpack`, optional eager toggle in `ScanConfig`.

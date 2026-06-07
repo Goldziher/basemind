@@ -27,19 +27,19 @@ Gitmind is a single Rust crate that builds a CLI binary (`gitmind`) and exposes 
 - `path.rs` — `RelPath` byte-precise repo-relative paths.
 - `render.rs`, `hashing.rs`, `lang.rs`, `queries/`, `watcher.rs`, `config/` — supporting modules.
 
-## `tests/`
+### `tests/`
 
 - `mcp_smoke.rs` — synthetic-fixture MCP contract.
 - `harden.rs` — clones 8 real OSS repos and exercises the full tool sweep with canary assertions.
 - `git_smoke.rs` / `git_cache_smoke.rs` / `scan_smoke.rs` / `schema_bump.rs` / `config_schema.rs` — focused smoke tests.
 - `fixtures/` — small synthetic repos for unit tests.
 
-## `.gitmind/` (created at scan time)
+#### `.gitmind/` (created at scan time)
 
 - `blobs/<hash>.{l1,l2,l3}.msgpack` — content-addressed extraction blobs (dedup across files / views).
 - `views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs).
 
-## Other
+#### Other
 
 - `schema/` — JSON Schemas (e.g. `gitmind-config-v1.schema.json`). Hand-edited; `build.rs` validates round-trip with the Rust types.
 - `build.rs` — code generation (schema-derived types, tree-sitter query bundles).

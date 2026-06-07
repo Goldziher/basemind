@@ -19,13 +19,13 @@ Lives at `.gitmind/views/<view>/index.fjall/`. Source: `src/index/{mod,keys,writ
 | `imports_by_module` | Future fast-path for `dependents`. |
 | `embeddings` | Reserved for vector search; empty today. |
 
-## Key shape
+### Key shape
 
 All composite keys are length-prefixed (`u16:len ‖ bytes`). Length prefixes guarantee that a `Foo`
 prefix never spills into `Foobar`. Concrete shapes live in `src/index/keys.rs` with `*_prefix` +
 `parse_*` companions for every encoder.
 
-## Operational invariants
+#### Operational invariants
 
 - **Schema version**: `INDEX_SCHEMA_VER` constant in `src/index/mod.rs`; persisted in the `meta` keyspace.
   On mismatch, open wipes `index.fjall/` and the next scan rebuilds from the msgpack blobs.
@@ -37,7 +37,7 @@ prefix never spills into `Foobar`. Concrete shapes live in `src/index/keys.rs` w
 - **`SymbolKind` ordinals are stable**: `symbol_kind_byte()` in `keys.rs` maps each variant to a
   fixed `u8`. Reordering would silently miscategorize cached entries; new variants extend the tail.
 
-## Vector search
+#### Vector search
 
 The `embeddings` partition is reserved for future use. Planned backend: `usearch` (HNSW + SIMD)
 for KNN; `fastembed-rs` or an external API for embedding generation. Not implemented this
