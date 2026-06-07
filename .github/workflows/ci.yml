@@ -1,0 +1,84 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Nightly run of the hardening harness — gated by the `hardening` job's `if:` below.
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref — fresher pushes win.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Differentiate caches per-OS so the cache key is stable across runs.
+          key: ${{ matrix.os }}
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --tests -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --quiet
+
+      - name: cargo build --release
+        run: cargo build --release --quiet --bin gitmind
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Uses deny.toml at the repo root.
+          command: check
+
+  # Real-OSS hardening harness. Clones large upstream repos and exercises every MCP tool
+  # against them — too heavy for per-PR but ideal as a nightly canary. Runs on manual
+  # dispatch and once a day.
+  hardening:
+    name: hardening harness (nightly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: run harden.sh
+        run: ./scripts/harden.sh
+      - name: upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harden-results
+          path: /tmp/gitmind-harden/results.ndjson

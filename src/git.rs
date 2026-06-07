@@ -18,6 +18,14 @@ pub enum GitError {
     RevParse { rev: String, msg: String },
     #[error("git error reading {what}: {msg}")]
     Read { what: String, msg: String },
+    /// Blame refused: the file exceeds the configured byte/line cap. Tunable via
+    /// `GITMIND_BLAME_MAX_BYTES` (default 1 MiB) and `GITMIND_BLAME_MAX_LINES` (default 5 000).
+    #[error("blame skipped: {path} is too large ({bytes} bytes, {lines} lines)")]
+    BlameTooLarge {
+        path: String,
+        bytes: u64,
+        lines: u64,
+    },
     #[error("git error: {0}")]
     Other(String),
 }
@@ -32,6 +40,10 @@ pub enum GitError {
 pub struct Repo {
     inner: gix::ThreadSafeRepository,
     workdir: PathBuf,
+    /// True if `.git/shallow` exists — history walks may terminate at the boundary, and
+    /// blame/diff_outline can hit "tree iterator" errors near the cut. Surfaced through
+    /// `Repo::is_shallow()` so MCP tools can flag responses as truncated rather than fail.
+    is_shallow: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -127,6 +139,13 @@ pub struct BlameResult {
     pub path: String,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunk>,
+    /// Set when blame was cut short — currently only fires for shallow clones where gix
+    /// hits its "could not find existing iterator over a tree" error walking past the
+    /// shallow boundary. Hunks contain whatever was resolvable before the cut. `String`
+    /// (not `&'static str`) because this struct is round-tripped through the on-disk
+    /// blame cache via serde.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,11 +165,23 @@ impl Repo {
             .work_dir()
             .ok_or_else(|| GitError::Other("bare repositories are not supported".to_string()))?
             .to_path_buf();
-        Ok(Self { inner, workdir })
+        let is_shallow = inner.path().join("shallow").exists();
+        Ok(Self {
+            inner,
+            workdir,
+            is_shallow,
+        })
     }
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// True when the underlying clone is shallow (`.git/shallow` exists). History walks may
+    /// terminate at the shallow boundary; MCP tools mark responses as `truncated` instead
+    /// of erroring.
+    pub fn is_shallow(&self) -> bool {
+        self.is_shallow
     }
 
     /// Borrow a per-thread `Repository` view of the wrapped thread-safe repo.
@@ -352,6 +383,23 @@ impl Repo {
         use gix::bstr::BStr;
 
         let local = self.local();
+
+        // Size cap: blame's per-line work is O(history); a 100k-line lockfile blame swamps
+        // the worker. Reject up front with a typed error the caller can surface cleanly.
+        // We peek at the suspect-rev blob (not the working tree) because that's what gets
+        // blamed; for HEAD this is what's on disk anyway.
+        let (size_bytes, line_count) =
+            blob_size_and_line_count(&local, suspect_sha, path).unwrap_or((0, 0));
+        let max_bytes = blame_max_bytes_from_env();
+        let max_lines = blame_max_lines_from_env();
+        if size_bytes > max_bytes || line_count > max_lines {
+            return Err(GitError::BlameTooLarge {
+                path: path.to_string(),
+                bytes: size_bytes,
+                lines: line_count,
+            });
+        }
+
         let suspect = local
             .rev_parse_single(suspect_sha)
             .map_err(|e| GitError::RevParse {
@@ -371,12 +419,26 @@ impl Repo {
                 .map_err(|e| GitError::Other(format!("invalid blame range {lo}..={hi}: {e}")))?;
         }
 
-        let outcome = local
-            .blame_file(BStr::new(path.as_bytes()), suspect, options)
-            .map_err(|e| GitError::Read {
-                what: format!("blame {suspect_sha}:{path}"),
-                msg: e.to_string(),
-            })?;
+        let outcome = match local.blame_file(BStr::new(path.as_bytes()), suspect, options) {
+            Ok(o) => o,
+            Err(e) => {
+                // Shallow clones routinely trip gix's history walk near the cut. Surface a
+                // graceful truncated result rather than failing the whole call — the caller
+                // (MCP) reports `truncated_reason` so the agent knows what happened.
+                if self.is_shallow && looks_like_shallow_blame_error(&e) {
+                    return Ok(BlameResult {
+                        path: path.to_string(),
+                        suspect_sha: suspect_sha.to_string(),
+                        hunks: Vec::new(),
+                        truncated_reason: Some("shallow_clone".to_string()),
+                    });
+                }
+                return Err(GitError::Read {
+                    what: format!("blame {suspect_sha}:{path}"),
+                    msg: e.to_string(),
+                });
+            }
+        };
 
         // Resolve author info per unique commit id, then map each hunk.
         let mut author_cache: ahash::AHashMap<gix::ObjectId, (String, i64, String)> =
@@ -433,6 +495,7 @@ impl Repo {
             path: path.to_string(),
             suspect_sha: suspect_sha.to_string(),
             hunks,
+            truncated_reason: None,
         })
     }
 
@@ -496,6 +559,60 @@ impl Repo {
 
 // ─── module-level helpers — operate on a per-thread Repository ──────────────────
 
+/// Default blame size cap in bytes (1 MiB) — protects against vendored bundles + lockfiles.
+const BLAME_DEFAULT_MAX_BYTES: u64 = 1 << 20;
+/// Default blame line cap (5 000) — protects against generated single-line monsters that
+/// pass the byte cap.
+const BLAME_DEFAULT_MAX_LINES: u64 = 5_000;
+
+fn blame_max_bytes_from_env() -> u64 {
+    std::env::var("GITMIND_BLAME_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(BLAME_DEFAULT_MAX_BYTES)
+}
+
+fn blame_max_lines_from_env() -> u64 {
+    std::env::var("GITMIND_BLAME_MAX_LINES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(BLAME_DEFAULT_MAX_LINES)
+}
+
+/// Read the suspect-rev blob and compute `(bytes, lines)` for the size-cap pre-check.
+/// Failure is non-fatal — we return `None` and let the blame call fail with its own error.
+fn blob_size_and_line_count(local: &gix::Repository, rev: &str, path: &str) -> Option<(u64, u64)> {
+    let id = local.rev_parse_single(rev).ok()?.detach();
+    let tree = local.find_commit(id).ok()?.tree().ok()?;
+    let entry = tree.lookup_entry_by_path(path).ok()??;
+    let obj = entry.object().ok()?;
+    if obj.kind != gix::object::Kind::Blob {
+        return None;
+    }
+    let data = &obj.data;
+    let bytes = data.len() as u64;
+    // memchr is already a dep; line count = (NL count) + (1 if no trailing NL && non-empty).
+    let nls = memchr::memchr_iter(b'\n', data).count() as u64;
+    let lines = if bytes == 0 {
+        0
+    } else if data.last() == Some(&b'\n') {
+        nls
+    } else {
+        nls + 1
+    };
+    Some((bytes, lines))
+}
+
+/// Heuristic match for gix's shallow-related blame failures. The exact wording lives in
+/// gix internals and could change between versions; we match on the symptom phrase rather
+/// than a typed error to stay resilient across point releases.
+fn looks_like_shallow_blame_error<E: std::fmt::Display>(err: &E) -> bool {
+    let msg = err.to_string();
+    msg.contains("Could not find existing iterator over a tree")
+        || msg.contains("Could not find commit")
+        || msg.contains("shallow")
+}
+
 fn resolve_tree<'r>(local: &'r gix::Repository, rev_sha: &str) -> Result<gix::Tree<'r>, GitError> {
     let object = local
         .rev_parse_single(rev_sha)
@@ -555,19 +672,21 @@ fn build_commit_info(
     })
 }
 
-/// Diff `commit_id`'s tree against its first parent and return (path, change-kind) pairs.
+/// Diff `commit_id`'s tree against its parent(s) and return (path, change-kind) pairs.
+///
+/// For commits with multiple parents (merges, including octopus merges with ≥3 parents) we
+/// **union** the diffs against every parent so files changed on a non-first branch leg
+/// still surface — `git log -m`-style semantics rather than first-parent default. When a
+/// file is reported with different statuses against different parents, the higher-severity
+/// kind wins (Added > Modified ≈ Renamed > Deleted).
 fn commit_files(
     local: &gix::Repository,
     commit_id: gix::ObjectId,
 ) -> Option<Vec<(String, ChangeKind)>> {
     let commit = local.find_commit(commit_id).ok()?;
     let tree = commit.tree().ok()?;
-    let parent_tree = commit
-        .parent_ids()
-        .next()
-        .and_then(|pid| local.find_commit(pid).ok())
-        .and_then(|c| c.tree().ok());
-    let Some(parent_tree) = parent_tree else {
+    let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
+    if parents.is_empty() {
         // Initial commit — every entry is "added".
         let mut recorder = tree.traverse().breadthfirst.files().ok()?;
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
@@ -578,21 +697,51 @@ fn commit_files(
             }
         }
         return Some(out);
-    };
+    }
 
-    // `for_each_to_obtain_tree(other, ..)` walks the changes needed to convert `self` →
-    // `other`. To describe commit-relative-to-parent we run it from parent → commit.
-    let mut out: Vec<(String, ChangeKind)> = Vec::new();
-    let mut platform = parent_tree.changes().ok()?;
-    platform
-        .for_each_to_obtain_tree(&tree, |change| {
+    // path → strongest ChangeKind seen across all parent diffs.
+    let mut union: ahash::AHashMap<String, ChangeKind> = ahash::AHashMap::new();
+    for pid in parents {
+        let Ok(parent_commit) = local.find_commit(pid) else {
+            continue;
+        };
+        let Ok(parent_tree) = parent_commit.tree() else {
+            continue;
+        };
+        let mut platform = match parent_tree.changes() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        // `for_each_to_obtain_tree(other, ..)` walks the changes needed to convert `self` →
+        // `other`. From parent → commit gives us commit-relative-to-this-parent.
+        let _ = platform.for_each_to_obtain_tree(&tree, |change| {
             if let Some((path, kind)) = classify_tree_change(&change) {
-                out.push((path, kind));
+                union
+                    .entry(path)
+                    .and_modify(|existing| {
+                        if change_severity(kind) > change_severity(*existing) {
+                            *existing = kind;
+                        }
+                    })
+                    .or_insert(kind);
             }
             Ok::<_, std::convert::Infallible>(gix::object::tree::diff::Action::Continue(()))
-        })
-        .ok()?;
+        });
+    }
+    let mut out: Vec<(String, ChangeKind)> = union.into_iter().collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     Some(out)
+}
+
+/// Priority ordering used when the same file shows up with different kinds across multiple
+/// parent diffs. Higher number = takes precedence. Added beats Modified because the file is
+/// genuinely new from at least one merge leg's perspective.
+fn change_severity(k: ChangeKind) -> u8 {
+    match k {
+        ChangeKind::Added => 3,
+        ChangeKind::Renamed | ChangeKind::Modified => 2,
+        ChangeKind::Deleted => 1,
+    }
 }
 
 fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &str) -> bool {

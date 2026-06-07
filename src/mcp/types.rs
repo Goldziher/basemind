@@ -277,12 +277,22 @@ pub(super) struct WorkingTreeStatusView {
 #[derive(Debug, Serialize)]
 pub(super) struct RecentChangesResponse {
     pub commits: Vec<CommitView>,
+    /// `true` when the walk may have stopped early (today: shallow clone). Agents should
+    /// treat the absence of an expected commit as inconclusive when this is set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct CommitsTouchingResponse {
     pub path: String,
     pub commits: Vec<CommitView>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -321,6 +331,10 @@ pub(super) struct BlameResponse {
     pub path: String,
     pub suspect_sha: String,
     pub hunks: Vec<BlameHunkView>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -332,6 +346,10 @@ pub(super) struct BlameSymbolResponse {
     pub line_start: u32,
     pub line_end: u32,
     pub hunks: Vec<BlameHunkView>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -394,6 +412,10 @@ pub(super) struct SymbolHistoryResponse {
     pub kind: Option<String>,
     pub commits_inspected: u32,
     pub history: Vec<SymbolHistoryEntry>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

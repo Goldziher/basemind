@@ -440,6 +440,7 @@ fn parse_kind(s: &str) -> Result<SymbolKind> {
         "const" => SymbolKind::Const,
         "module" => SymbolKind::Module,
         "macro" => SymbolKind::Macro,
+        "impl" => SymbolKind::Impl,
         other => anyhow::bail!("unknown symbol kind: {other}"),
     })
 }

@@ -48,6 +48,10 @@ tree-sitter-language-pack = "=1.9.0-rc.22"
 
 [dev-dependencies]
 insta = "1"
+# Client-side rmcp used by the `harden` integration test to drive `gitmind serve`
+# over a stdio child-process transport. Composes with the [dependencies] entry
+# above — features are union-merged by cargo.
+rmcp = { version = "1.7", features = ["client", "transport-child-process"] }
 tempfile = "3"
 
 [profile.release]

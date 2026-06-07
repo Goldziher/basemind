@@ -6,8 +6,20 @@
 
 (method_definition name: (property_identifier) @symbol.name) @symbol.method
 
+;; See typescript.scm — same dedupe trick promotes arrow / function-expression `const`s
+;; from kind=const to kind=function via `extract/l1.rs`.
 (lexical_declaration
   (variable_declarator name: (identifier) @symbol.name)) @symbol.const
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (arrow_function))) @symbol.function
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @symbol.name
+    value: (function_expression))) @symbol.function
 
 ;; section: imports
 

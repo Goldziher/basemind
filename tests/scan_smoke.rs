@@ -310,6 +310,155 @@ fn scan_paths_only_touches_listed_files() {
     assert_eq!(hits.len(), 1);
 }
 
+// ─── Stage 2: query coverage gaps (TSX, arrow functions, Rust impl) ────────────
+
+/// `const Foo = () => { … }` should surface as kind `function`, not `const`. The dedupe
+/// pass in `extract/l1.rs` promotes the generic-`@symbol.const` match to function when the
+/// more specific arrow-function pattern also fires.
+#[test]
+fn ts_arrow_function_const_is_function_kind() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("a.ts"),
+        b"export const Greet = (name: string) => `hi ${name}`;\nexport const N: number = 1;\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "Greet", None).unwrap();
+    assert_eq!(hits.len(), 1, "arrow-fn const should produce one symbol");
+    assert_eq!(
+        hits[0].symbol.kind,
+        SymbolKind::Function,
+        "arrow-fn const should be kind=function"
+    );
+
+    let hits = gitmind::query::search_symbols(&store, "N", None).unwrap();
+    assert_eq!(hits.len(), 1, "non-function const stays as one symbol");
+    assert_eq!(
+        hits[0].symbol.kind,
+        SymbolKind::Const,
+        "regular const stays kind=const"
+    );
+}
+
+#[test]
+fn js_function_expression_const_is_function_kind() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("a.js"),
+        b"const Greet = function(name) { return 'hi ' + name; };\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let hits = gitmind::query::search_symbols(&store, "Greet", None).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
+}
+
+#[test]
+fn rust_impl_block_is_impl_kind() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("a.rs"),
+        b"pub struct Foo;\nimpl Foo { pub fn bar(&self) {} }\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let impls = gitmind::query::search_symbols(&store, "Foo", Some(SymbolKind::Impl)).unwrap();
+    assert_eq!(impls.len(), 1, "expected an impl block for Foo");
+    assert_eq!(impls[0].symbol.kind, SymbolKind::Impl);
+
+    // The struct itself coexists, not replaced by the impl.
+    let structs = gitmind::query::search_symbols(&store, "Foo", Some(SymbolKind::Struct)).unwrap();
+    assert_eq!(structs.len(), 1);
+}
+
+// ─── Stage 3: tree-sitter robustness ──────────────────────────────────────────
+
+/// A binary-shaped file masquerading as TypeScript via its extension should be skipped
+/// before the parser is invoked, not turned into an empty-symbols entry.
+#[test]
+fn binary_file_with_source_extension_is_skipped() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    // Synthetic content with a NUL in the first few bytes — looks_binary catches it.
+    let mut payload = vec![0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x03];
+    payload.extend_from_slice(&[0u8; 64]);
+    fs::write(root.join("not_really.ts"), &payload).unwrap();
+
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    assert_eq!(
+        report.stats.skipped_binary, 1,
+        "expected the .ts-named binary to be classified as binary"
+    );
+    assert!(
+        store.lookup("not_really.ts").is_none(),
+        "binary should not be indexed"
+    );
+}
+
+/// `.tsx` files route to the dedicated tsx query (which mirrors typescript today but lives
+/// in its own file so future JSX-specific captures don't disturb plain-TS files).
+#[test]
+fn tsx_file_uses_tsx_query() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("App.tsx"),
+        b"export const App = () => (<div>hello</div>);\n",
+    )
+    .unwrap();
+    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        gitmind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let entry = store.lookup("App.tsx").expect("App.tsx indexed");
+    assert_eq!(entry.language, "tsx");
+    let hits = gitmind::query::search_symbols(&store, "App", None).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
+}
+
 #[test]
 fn scan_paths_purges_removed_files() {
     let (dir, cfg) = fresh_repo();

@@ -8,7 +8,7 @@ use rmcp::model::{CallToolResult, Content};
 use serde::Serialize;
 
 use super::ServerState;
-use super::types::{BlameHunkView, CommitFileView, CommitView};
+use super::types::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
 use crate::extract::SymbolKind;
 
 pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
@@ -31,6 +31,7 @@ pub(super) fn kind_to_str(k: SymbolKind) -> &'static str {
         SymbolKind::Const => "const",
         SymbolKind::Module => "module",
         SymbolKind::Macro => "macro",
+        SymbolKind::Impl => "impl",
         SymbolKind::Unknown => "unknown",
     }
 }
@@ -48,6 +49,7 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
         "const" => SymbolKind::Const,
         "module" => SymbolKind::Module,
         "macro" => SymbolKind::Macro,
+        "impl" => SymbolKind::Impl,
         other => {
             return Err(McpError::invalid_params(
                 format!("unknown symbol kind: {other}"),
@@ -96,8 +98,16 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
     })
 }
 
-/// Extract a single symbol's bytes from a file revision. Used by `symbol_history` to
-/// fingerprint the symbol's body at a given commit so we can diff successive revisions.
+/// Extract a single symbol's bytes from a file revision and normalize them for stable
+/// equality comparison across commits. Used by `symbol_history` to fingerprint the symbol's
+/// body so we can diff successive revisions without false positives from auto-formatter
+/// churn (prettier, black, gofmt, rustfmt) or comment-only edits.
+///
+/// Normalization strips line + block comments per language and collapses ASCII whitespace
+/// runs to a single space. Caveat: whitespace inside string literals is also collapsed —
+/// an acceptable false-negative rate vs the AST-structural alternative, which would couple
+/// `symbol_history` stability to grammar/query evolution.
+///
 /// Returns `None` if extraction fails or the named symbol isn't in the file's outline.
 pub(super) fn find_symbol_bytes(
     lang: crate::lang::Lang,
@@ -115,7 +125,70 @@ pub(super) fn find_symbol_bytes(
     if s >= e {
         return None;
     }
-    Some(file_bytes[s..e].to_vec())
+    Some(normalize_for_history(lang, &file_bytes[s..e]))
+}
+
+/// Byte-level normalization for symbol-history fingerprints. See `find_symbol_bytes` doc
+/// for rationale and caveats. Pulled out so the unit tests below can target it directly.
+pub(crate) fn normalize_for_history(lang: crate::lang::Lang, raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        // Line comment: skip from marker through (and including) the trailing newline.
+        // We don't emit anything — the surrounding-newline collapse below produces the
+        // separator if needed.
+        let lc_marker = line_comment_marker(lang);
+        if !lc_marker.is_empty() && raw[i..].starts_with(lc_marker) {
+            i += lc_marker.len();
+            while i < raw.len() && raw[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment: skip to `*/`. Languages without block comments (Python) report
+        // `has_block_comments() == false` and we never enter this branch.
+        if has_block_comments(lang) && raw[i..].starts_with(b"/*") {
+            i += 2;
+            while i + 1 < raw.len() && !(raw[i] == b'*' && raw[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(raw.len());
+            continue;
+        }
+        // Whitespace run → single space (suppressed at the very start).
+        if raw[i].is_ascii_whitespace() {
+            if !out.is_empty() && out.last() != Some(&b' ') {
+                out.push(b' ');
+            }
+            while i < raw.len() && raw[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(raw[i]);
+        i += 1;
+    }
+    // Trim trailing space introduced by a trailing whitespace run.
+    while out.last() == Some(&b' ') {
+        out.pop();
+    }
+    out
+}
+
+fn line_comment_marker(lang: crate::lang::Lang) -> &'static [u8] {
+    use crate::lang::Lang;
+    match lang {
+        Lang::Python => b"#",
+        Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Go => b"//",
+    }
+}
+
+fn has_block_comments(lang: crate::lang::Lang) -> bool {
+    use crate::lang::Lang;
+    match lang {
+        Lang::Python => false,
+        Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Go => true,
+    }
 }
 
 pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
@@ -155,6 +228,59 @@ pub(super) fn symbol_line_range(
     (start_line, end_line)
 }
 
+/// If `err` is a wrapped `GitError::BlameTooLarge`, return a graceful empty response
+/// with `truncated_reason="too_large"` so the caller can ship it as a normal MCP success
+/// instead of a server-side error. Returns `None` for any other error.
+pub(super) fn blame_too_large_response(
+    path: &str,
+    suspect_sha: &str,
+    err: &crate::git_cache::CacheError,
+) -> Option<BlameResponse> {
+    if matches!(
+        err,
+        crate::git_cache::CacheError::Git(crate::git::GitError::BlameTooLarge { .. })
+    ) {
+        Some(BlameResponse {
+            path: path.to_string(),
+            suspect_sha: suspect_sha.to_string(),
+            hunks: Vec::new(),
+            truncated: true,
+            truncated_reason: Some("too_large"),
+        })
+    } else {
+        None
+    }
+}
+
+/// Same logic for `blame_symbol`, which carries symbol identity in its response shape.
+pub(super) fn blame_symbol_too_large_response(
+    path: &str,
+    suspect_sha: &str,
+    sym: &crate::extract::Symbol,
+    line_start: u32,
+    line_end: u32,
+    err: &crate::git_cache::CacheError,
+) -> Option<BlameSymbolResponse> {
+    if matches!(
+        err,
+        crate::git_cache::CacheError::Git(crate::git::GitError::BlameTooLarge { .. })
+    ) {
+        Some(BlameSymbolResponse {
+            path: path.to_string(),
+            suspect_sha: suspect_sha.to_string(),
+            name: sym.name.clone(),
+            kind: kind_to_str(sym.kind).to_string(),
+            line_start,
+            line_end,
+            hunks: Vec::new(),
+            truncated: true,
+            truncated_reason: Some("too_large"),
+        })
+    } else {
+        None
+    }
+}
+
 /// Resolve the current HEAD sha string — keys every HEAD-anchored cache entry.
 pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
     let info = repo
@@ -162,4 +288,64 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
         .map_err(|e| McpError::internal_error(format!("HEAD: {e}"), None))?;
     info.head_sha
         .ok_or_else(|| McpError::internal_error("repository has no HEAD", None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_for_history;
+    use crate::lang::Lang;
+
+    #[test]
+    fn rust_whitespace_only_changes_normalize_equal() {
+        let a = b"fn foo() {\n    let x = 1;\n}";
+        let b = b"fn foo() {\r\n  let   x = 1;\n   }\n";
+        assert_eq!(
+            normalize_for_history(Lang::Rust, a),
+            normalize_for_history(Lang::Rust, b),
+            "autoformat-style whitespace changes should normalize to the same bytes"
+        );
+    }
+
+    #[test]
+    fn rust_line_comment_changes_normalize_equal() {
+        let a = b"fn foo() { let x = 1; }";
+        let b = b"fn foo() {\n    // explain x\n    let x = 1; // trailing\n}";
+        assert_eq!(
+            normalize_for_history(Lang::Rust, a),
+            normalize_for_history(Lang::Rust, b),
+            "adding line comments should not register as a symbol-body change"
+        );
+    }
+
+    #[test]
+    fn rust_block_comment_changes_normalize_equal() {
+        let a = b"fn foo() { let x = 1; }";
+        let b = b"fn foo() { /* docs */ let x = 1; /* trailing */ }";
+        assert_eq!(
+            normalize_for_history(Lang::Rust, a),
+            normalize_for_history(Lang::Rust, b),
+            "adding block comments should not register as a symbol-body change"
+        );
+    }
+
+    #[test]
+    fn semantic_change_still_differs() {
+        let a = b"fn foo() { let x = 1; }";
+        let b = b"fn foo() { let x = 2; }";
+        assert_ne!(
+            normalize_for_history(Lang::Rust, a),
+            normalize_for_history(Lang::Rust, b),
+            "a literal value change must still register as different"
+        );
+    }
+
+    #[test]
+    fn python_uses_hash_comments() {
+        let a = b"def foo():\n    return 1";
+        let b = b"def foo():\n    # comment\n    return 1";
+        assert_eq!(
+            normalize_for_history(Lang::Python, a),
+            normalize_for_history(Lang::Python, b),
+        );
+    }
 }

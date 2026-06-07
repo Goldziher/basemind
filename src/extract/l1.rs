@@ -2,12 +2,24 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
 use super::{ExtractError, FileMapL1, Import, SCHEMA_VER, Symbol, SymbolKind};
-use crate::lang::{Lang, QueryKind, get_query, with_parser};
+use crate::lang::{
+    Lang, ParseOutcome, QueryKind, get_query, parse_with_default_timeout, with_parser,
+};
 
 pub fn extract_l1(lang: Lang, source: &[u8]) -> Result<FileMapL1, ExtractError> {
-    // tree-sitter recovers from syntax errors and returns a partial Tree;
-    // we expect `has_error()` may be true and still extract what we can.
-    let tree = with_parser(lang, |p| p.parse(source, None))?.ok_or(ExtractError::ParseFailure)?;
+    // tree-sitter recovers from syntax errors and returns a partial Tree; we expect
+    // `has_error()` may be true and still extract what we can. The timeout guards against
+    // inputs that hang the parser's error-recovery loop.
+    let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
+    let tree = match outcome {
+        ParseOutcome::Ok(t) => t,
+        ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
+        ParseOutcome::TimedOut => {
+            return Err(ExtractError::ParseTimeout(
+                crate::lang::DEFAULT_PARSE_TIMEOUT,
+            ));
+        }
+    };
     let root = tree.root_node();
 
     let (had_errors, error_count) = if root.has_error() {
@@ -61,7 +73,33 @@ fn run_symbols(
             out.push(sym);
         }
     }
-    Ok(out)
+    Ok(dedupe_symbols(out))
+}
+
+/// Merge query matches that hit the same (`start_byte`, `name`) — happens when a generic
+/// pattern (e.g. `const X = …` → `Const`) and a specific pattern (e.g. `const X = () => …`
+/// → `Function`) both fire on one declaration. Higher `specificity()` wins; document
+/// order is preserved.
+fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
+    let mut keep: Vec<Symbol> = Vec::with_capacity(syms.len());
+    for sym in syms {
+        if let Some(existing) = keep
+            .iter_mut()
+            .find(|s| s.start_byte == sym.start_byte && s.name == sym.name)
+        {
+            if sym.kind.specificity() > existing.kind.specificity() {
+                existing.kind = sym.kind;
+                // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
+                // captures the whole `const F = (x) => …` line, which is the useful signature.
+                if sym.signature.is_some() {
+                    existing.signature = sym.signature;
+                }
+            }
+        } else {
+            keep.push(sym);
+        }
+    }
+    keep
 }
 
 fn run_imports(

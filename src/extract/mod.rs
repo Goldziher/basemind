@@ -18,6 +18,8 @@ pub enum ExtractError {
     NonUtf8,
     #[error("tree-sitter parse failure")]
     ParseFailure,
+    #[error("tree-sitter parse timed out (> {0:?}) — file likely pathological")]
+    ParseTimeout(std::time::Duration),
     #[error(transparent)]
     Lang(#[from] LangError),
 }
@@ -60,6 +62,9 @@ pub enum SymbolKind {
     Const,
     Module,
     Macro,
+    /// Rust `impl` blocks. The captured name is the type the impl is for (e.g. `Foo` in
+    /// `impl Foo { ... }`), trait impls show the trait + type concatenated by the query.
+    Impl,
     Unknown,
 }
 
@@ -77,7 +82,24 @@ impl SymbolKind {
             "const" => Self::Const,
             "module" => Self::Module,
             "macro" => Self::Macro,
+            "impl" => Self::Impl,
             _ => Self::Unknown,
+        }
+    }
+
+    /// Rank used to break ties when two query patterns capture the same `(start_byte, name)`
+    /// pair — the higher-scoring kind wins (e.g. `function` beats `const` for `const foo = () => …`).
+    /// Bump scores carefully; tests assert kinds directly.
+    pub(crate) fn specificity(self) -> u8 {
+        use SymbolKind::*;
+        match self {
+            Unknown => 0,
+            Const => 1,
+            // Everything below is "concrete": one specific shape of declaration.
+            // Same score — first-seen wins among them, which keeps document order intact
+            // when the same symbol is captured twice as e.g. both function and method.
+            Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module
+            | Macro | Impl => 2,
         }
     }
 }

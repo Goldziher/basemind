@@ -1,10 +1,28 @@
 use std::cell::RefCell;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use thiserror::Error;
-use tree_sitter::{Language, Parser, Query};
+use tree_sitter::{Language, ParseOptions, Parser, Query, Tree};
+
+/// Hard ceiling on a single tree-sitter parse. Defends against pathological inputs that
+/// hang the recovery loop (e.g. multi-megabyte minified bundles with deep arrow chains).
+///
+/// Override per-process with `GITMIND_PARSE_TIMEOUT_MS`. The default — 5 seconds — sits
+/// well above any well-formed file's parse time on the supported languages (sub-second
+/// for the TypeScript compiler's biggest files) but reliably aborts known hangers.
+pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
+
+fn parse_timeout_from_env() -> Duration {
+    std::env::var("GITMIND_PARSE_TIMEOUT_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(DEFAULT_PARSE_TIMEOUT)
+}
 
 #[derive(Debug, Error)]
 pub enum LangError {
@@ -140,6 +158,17 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 }
             }
             if !missing.is_empty() {
+                // Offline mode: don't reach the network. If grammars are missing, surface a
+                // clean typed error so MCP clients / CLI users see a useful message instead of
+                // silent empty parses. Set `GITMIND_GRAMMAR_OFFLINE=1` to opt in (e.g. CI
+                // environments where the cache is pre-warmed and outbound traffic is blocked).
+                if std::env::var("GITMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty())
+                {
+                    return Err(Arc::new(LangError::Download(format!(
+                        "offline mode: missing grammars {missing:?} and \
+                         GITMIND_GRAMMAR_OFFLINE is set",
+                    ))));
+                }
                 dm.ensure_languages(&missing)
                     .map_err(|e| Arc::new(LangError::Download(format!("{e}"))))?;
             }
@@ -210,6 +239,49 @@ where
     })
 }
 
+/// Outcome of a single bounded parse.
+#[derive(Debug)]
+pub enum ParseOutcome {
+    Ok(Tree),
+    /// Parser returned `None` for a reason other than timeout (rare — typically a malformed
+    /// input the grammar can't even start on).
+    Failed,
+    /// Progress callback aborted because `timeout` elapsed.
+    TimedOut,
+}
+
+/// Run `parser.parse_with_options` with a progress callback that aborts after `timeout`.
+///
+/// tree-sitter 0.26 removed the C-side `ts_parser_set_timeout_micros` shortcut in favor of
+/// progress-callback-driven cancellation — this helper reinstates the ergonomics. Uses a
+/// monotonic clock so it's robust against wall-clock jumps.
+pub fn parse_timed(parser: &mut Parser, source: &[u8], timeout: Duration) -> ParseOutcome {
+    let started = Instant::now();
+    let mut timed_out = false;
+    let len = source.len();
+    let mut input = |i: usize, _| -> &[u8] { if i < len { &source[i..] } else { &[] } };
+    let mut progress = |_state: &tree_sitter::ParseState| -> ControlFlow<()> {
+        if started.elapsed() > timeout {
+            timed_out = true;
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let opts = ParseOptions::new().progress_callback(&mut progress);
+    let tree = parser.parse_with_options(&mut input, None, Some(opts));
+    match (tree, timed_out) {
+        (Some(t), _) => ParseOutcome::Ok(t),
+        (None, true) => ParseOutcome::TimedOut,
+        (None, false) => ParseOutcome::Failed,
+    }
+}
+
+/// Convenience: `parse_timed` with the env-configurable default timeout.
+pub fn parse_with_default_timeout(parser: &mut Parser, source: &[u8]) -> ParseOutcome {
+    parse_timed(parser, source, parse_timeout_from_env())
+}
+
 // ─── Query pool ───────────────────────────────────────────────────────────────
 //
 // Query is Send + Sync and not Clone; one Arc<Query> per (lang, kind) globally.
@@ -237,14 +309,15 @@ impl QueryKind {
     }
 }
 
-static QUERIES: OnceLock<RwLock<AHashMap<(Lang, QueryKind), Arc<Query>>>> = OnceLock::new();
+type QueryMap = AHashMap<(Lang, QueryKind), Arc<Query>>;
+static QUERIES: OnceLock<RwLock<QueryMap>> = OnceLock::new();
 
 fn query_source(lang: Lang) -> &'static str {
     match lang {
         Lang::Rust => include_str!("queries/rust.scm"),
         Lang::Python => include_str!("queries/python.scm"),
         Lang::TypeScript => include_str!("queries/typescript.scm"),
-        Lang::Tsx => include_str!("queries/typescript.scm"),
+        Lang::Tsx => include_str!("queries/tsx.scm"),
         Lang::JavaScript => include_str!("queries/javascript.scm"),
         Lang::Go => include_str!("queries/go.scm"),
     }

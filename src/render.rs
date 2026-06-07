@@ -341,6 +341,24 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
                 None
             }
         }
+        FileStatus::SkippedBinary => {
+            if v == Verbosity::Verbose {
+                Some(Row {
+                    symbol: '·',
+                    label: "skip",
+                    style: Style::new().dimmed(),
+                    detail: "(binary)".to_string(),
+                })
+            } else {
+                None
+            }
+        }
+        FileStatus::ParseTimedOut => Some(Row {
+            symbol: '✗',
+            label: "fail",
+            style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))),
+            detail: "(parse timed out — file likely pathological)".to_string(),
+        }),
         FileStatus::ReadFailed { msg, .. } => Some(Row {
             symbol: '✗',
             label: "fail",

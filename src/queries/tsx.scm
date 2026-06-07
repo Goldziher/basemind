@@ -1,3 +1,9 @@
+;; TSX captures. Mirrors typescript.scm because tree-sitter-typescript ships TSX as a
+;; grammar superset — the same node names (function_declaration, class_declaration, …)
+;; exist plus JSX nodes. Lives in its own file so JSX-specific symbol patterns
+;; (`(jsx_element …)`, custom-component recognition, etc.) can be layered in without
+;; touching the plain-TS captures used by `.ts` files.
+
 ;; section: symbols
 
 (function_declaration name: (identifier) @symbol.name) @symbol.function
@@ -12,10 +18,6 @@
 
 (method_definition name: (property_identifier) @symbol.name) @symbol.method
 
-;; Generic `const X = …` capture — kind `const`. The more specific arrow/function-expression
-;; pattern below also fires and is promoted by the dedupe pass in `extract/l1.rs` to kind
-;; `function`, so `const Foo = () => …` and `const Bar = function() {…}` end up searchable
-;; as functions rather than constants.
 (lexical_declaration
   (variable_declarator name: (identifier) @symbol.name)) @symbol.const
 

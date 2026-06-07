@@ -60,9 +60,13 @@ pub struct ScanStats {
     pub skipped_too_large: usize,
     pub skipped_non_utf8: usize,
     pub skipped_no_lang: usize,
+    pub skipped_binary: usize,
     pub removed: usize,
     pub read_failed: usize,
     pub extract_failed: usize,
+    /// Parse-timeout subset of `extract_failed`. Distinguished so users can spot pathological
+    /// files separately from "actual" grammar errors.
+    pub parse_timeouts: usize,
 }
 
 /// Per-file result. Every file the scanner *considered* shows up here.
@@ -91,6 +95,10 @@ pub enum FileStatus {
     },
     SkippedNonUtf8,
     SkippedNoLang,
+    /// Pre-flight NUL-byte scan flagged this as binary even though the extension claimed a
+    /// supported language (e.g. a vendored PNG saved as `image.ts`). Cheap to detect and avoids
+    /// the cost of running the grammar over noise.
+    SkippedBinary,
     ReadFailed {
         kind: std::io::ErrorKind,
         msg: String,
@@ -98,6 +106,8 @@ pub enum FileStatus {
     ExtractFailed {
         msg: String,
     },
+    /// Subset of ExtractFailed: parse exceeded the configured timeout.
+    ParseTimedOut,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -279,9 +289,14 @@ fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<File
             FileStatus::SkippedTooLarge { .. } => report.stats.skipped_too_large += 1,
             FileStatus::SkippedNonUtf8 => report.stats.skipped_non_utf8 += 1,
             FileStatus::SkippedNoLang => report.stats.skipped_no_lang += 1,
+            FileStatus::SkippedBinary => report.stats.skipped_binary += 1,
             FileStatus::Removed => report.stats.removed += 1,
             FileStatus::ReadFailed { .. } => report.stats.read_failed += 1,
             FileStatus::ExtractFailed { .. } => report.stats.extract_failed += 1,
+            FileStatus::ParseTimedOut => {
+                report.stats.extract_failed += 1;
+                report.stats.parse_timeouts += 1;
+            }
         }
         // Pull buffered entry off the result, if any, and upsert it into the index.
         if let Some(entry) = o.upsert.clone() {
@@ -406,6 +421,18 @@ fn process_file(
         }
     };
 
+    // Cheap NUL-byte scan in the first 8 KiB — anything that's actually binary (ONGs,
+    // .wasm, sourcemaps with embedded base64+NULs, etc.) is filtered before tree-sitter
+    // ever sees it. Faster than the SIMD UTF-8 validator and gives a clearer diagnostic
+    // (`skipped_binary` vs `skipped_non_utf8`) when the file passes UTF-8 by coincidence.
+    if looks_binary(&bytes) {
+        return FileResult {
+            path: rel.to_string(),
+            status: FileStatus::SkippedBinary,
+            upsert: None,
+        };
+    }
+
     if std::str::from_utf8(&bytes).is_err() {
         return FileResult {
             path: rel.to_string(),
@@ -430,6 +457,13 @@ fn process_file(
 
     let l1: FileMapL1 = match l1::extract_l1(lang, &bytes) {
         Ok(m) => m,
+        Err(ExtractError::ParseTimeout(_)) => {
+            return FileResult {
+                path: rel.to_string(),
+                status: FileStatus::ParseTimedOut,
+                upsert: None,
+            };
+        }
         Err(source) => {
             return FileResult {
                 path: rel.to_string(),
@@ -523,4 +557,40 @@ fn format_extract_err(e: &ExtractError) -> String {
 
 fn lang_name(l: Lang) -> &'static str {
     l.name()
+}
+
+/// First-byte heuristic for "definitely not source code": a NUL byte in the first 8 KiB.
+/// PNG, ELF, Mach-O, .so/.dylib, .wasm, compiled .pyc/.class, and most archive formats hit
+/// this within the first 16 bytes. Source code never contains a NUL byte legitimately. The
+/// scan is bounded so we never traverse a multi-megabyte binary just to classify it.
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    let probe = &bytes[..bytes.len().min(8 * 1024)];
+    memchr::memchr(0, probe).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn looks_binary_detects_nul_in_first_kib() {
+        // Synthetic "PNG-like" prefix.
+        let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        data.extend_from_slice(&[0; 32]);
+        assert!(looks_binary(&data));
+    }
+
+    #[test]
+    fn looks_binary_accepts_plain_source() {
+        assert!(!looks_binary(b"pub fn hello() {}\n"));
+        assert!(!looks_binary(b"")); // empty is fine, downstream UTF-8 step decides
+    }
+
+    #[test]
+    fn looks_binary_ignores_nul_past_probe_window() {
+        // 8 KiB of clean source, then a NUL — outside the probe window, should not flip.
+        let mut data = vec![b'/'; 8 * 1024];
+        data.push(0);
+        assert!(!looks_binary(&data));
+    }
 }

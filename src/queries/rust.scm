@@ -20,6 +20,13 @@
 
 (macro_definition name: (identifier) @symbol.name) @symbol.macro
 
+;; `impl Foo { … }` — the captured @symbol.name is the type identifier; for trait impls
+;; (`impl Trait for Foo`) tree-sitter's `type:` field still points at `Foo`, so the name is
+;; the implementing type. Agents looking for "where is Foo implemented" find it here.
+(impl_item type: (type_identifier) @symbol.name) @symbol.impl
+(impl_item type: (scoped_type_identifier name: (type_identifier) @symbol.name)) @symbol.impl
+(impl_item type: (generic_type type: (type_identifier) @symbol.name)) @symbol.impl
+
 ;; section: imports
 
 (use_declaration) @import.range

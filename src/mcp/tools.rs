@@ -320,7 +320,12 @@ impl GitmindServer {
             .cloned()
             .map(|c| commit_to_view(c, params.include_files))
             .collect();
-        json_result(&RecentChangesResponse { commits: view })
+        let truncated = repo.is_shallow();
+        json_result(&RecentChangesResponse {
+            commits: view,
+            truncated,
+            truncated_reason: truncated.then_some("shallow_clone"),
+        })
     }
 
     /// Filter the log to commits whose tree differs from the parent at `path`.
@@ -346,9 +351,12 @@ impl GitmindServer {
             .cloned()
             .map(|c| commit_to_view(c, false))
             .collect();
+        let truncated = repo.is_shallow();
         json_result(&CommitsTouchingResponse {
             path: params.path,
             commits: view,
+            truncated,
+            truncated_reason: truncated.then_some("shallow_clone"),
         })
     }
 
@@ -699,12 +707,15 @@ impl GitmindServer {
         history.reverse();
         history.truncate(limit);
 
+        let truncated = repo.is_shallow();
         json_result(&SymbolHistoryResponse {
             path: params.path,
             name: params.name,
             kind: kind.map(|k| kind_to_str(k).to_string()),
             commits_inspected: inspected,
             history,
+            truncated,
+            truncated_reason: truncated.then_some("shallow_clone"),
         })
     }
 
@@ -737,16 +748,37 @@ impl GitmindServer {
                 ));
             }
         };
-        let result = self
+        let result = match self
             .state
             .git_cache
             .blame(repo, &suspect_sha, &params.path, range)
-            .map_err(|e| McpError::internal_error(format!("blame: {e}"), None))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Size-cap rejections are not server errors — return an empty truncated
+                // response so the agent can fall back to a smaller line range or skip.
+                if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e) {
+                    return json_result(&too_large);
+                }
+                return Err(McpError::internal_error(format!("blame: {e}"), None));
+            }
+        };
         let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+        // Even when blame succeeded, a shallow clone may have silently truncated the
+        // history walk — surface the flag so the agent treats hunks attributed to the
+        // shallow boundary's pseudo-root commit appropriately.
+        let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
+            Some("shallow_clone") => Some("shallow_clone"),
+            Some(_) => Some("truncated"),
+            None if repo.is_shallow() => Some("shallow_clone"),
+            None => None,
+        };
         json_result(&BlameResponse {
             path: result.path.clone(),
             suspect_sha: result.suspect_sha.clone(),
             hunks,
+            truncated: truncated_reason.is_some(),
+            truncated_reason,
         })
     }
 
@@ -793,17 +825,34 @@ impl GitmindServer {
                 .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
             None => head_sha(repo)?,
         };
-        let result = self
-            .state
-            .git_cache
-            .blame(
-                repo,
-                &suspect_sha,
-                &params.path,
-                Some((line_start, line_end)),
-            )
-            .map_err(|e| McpError::internal_error(format!("blame: {e}"), None))?;
+        let result = match self.state.git_cache.blame(
+            repo,
+            &suspect_sha,
+            &params.path,
+            Some((line_start, line_end)),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(too_large) = blame_symbol_too_large_response(
+                    &params.path,
+                    &suspect_sha,
+                    sym,
+                    line_start,
+                    line_end,
+                    &e,
+                ) {
+                    return json_result(&too_large);
+                }
+                return Err(McpError::internal_error(format!("blame: {e}"), None));
+            }
+        };
         let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+        let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
+            Some("shallow_clone") => Some("shallow_clone"),
+            Some(_) => Some("truncated"),
+            None if repo.is_shallow() => Some("shallow_clone"),
+            None => None,
+        };
         json_result(&BlameSymbolResponse {
             path: result.path.clone(),
             suspect_sha: result.suspect_sha.clone(),
@@ -812,6 +861,8 @@ impl GitmindServer {
             line_start,
             line_end,
             hunks,
+            truncated: truncated_reason.is_some(),
+            truncated_reason,
         })
     }
 

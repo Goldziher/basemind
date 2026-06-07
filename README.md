@@ -135,6 +135,62 @@ dynamically downloaded via
 (1.9.0-rc.22) on first use and cached at
 `~/Library/Caches/tree-sitter-language-pack/`.
 
+Modern-JS patterns covered: arrow-function `const` declarations
+(`const Foo = () => …`) and function-expression consts surface as kind `function`
+rather than `const`, so a `search_symbols("Foo")` finds them. TSX has its own
+query file (`src/queries/tsx.scm`); the dedupe pass in `extract/l1.rs` resolves
+overlapping query matches by keeping the most specific kind. Rust `impl` blocks
+are surfaced as kind `impl` (the captured name is the implementing type).
+
+Known gaps (intentional, queued for follow-up): TS namespaces, TS getters/setters,
+generic-typed signature strings, Python decorator metadata on the decorated symbol.
+
+### Robustness knobs
+
+- **`GITMIND_PARSE_TIMEOUT_MS`** (default `5000`) — tree-sitter parse timeout
+  per file. Tunes the progress-callback abort in `lang::parse_timed`.
+- **`GITMIND_GRAMMAR_OFFLINE`** (default unset) — when set to any non-empty
+  non-`0` value, `lang::ensure_grammars` skips network downloads and returns
+  a typed error if anything is missing. Pre-warm the cache first.
+- **`GITMIND_BLAME_MAX_BYTES`** (default `1048576`, 1 MiB) — per-file blame
+  size cap. Larger files return `GitError::BlameTooLarge`, which the MCP
+  layer surfaces as a `truncated_reason: "too_large"` response.
+- **`GITMIND_BLAME_MAX_LINES`** (default `5000`) — per-file blame line cap;
+  guards against generated single-line monsters that pass the byte cap.
+- **`GITMIND_GIT_CACHE_LOG_MAX_BYTES`** (default `268435456`, 256 MiB) — one-
+  shot LRU sweep budget for `.gitmind/git-cache/log/` at server start.
+  `0` disables eviction.
+
+### Shallow clones
+
+`Repo::is_shallow()` is true when `.git/shallow` exists. History-walking MCP
+tools (`recent_changes`, `commits_touching`, `blame_file`, `blame_symbol`,
+`symbol_history`) add `"truncated": true, "truncated_reason": "shallow_clone"`
+to their response. Blame additionally recovers from gix's "could not find
+existing iterator over a tree" error at the shallow boundary by returning an
+empty hunk list with the same truncated flag, instead of a hard MCP error.
+
+### Binary files
+
+Pre-flight NUL-byte scan in the first 8 KiB skips binaries that masquerade as
+source via a `.ts`/`.py`/etc. extension — counted as `skipped_binary` rather
+than `skipped_non_utf8`. See `scanner::looks_binary`.
+
+### Merge commits
+
+`commit_files` now unions diffs against every parent (not just the first), so
+octopus merges no longer drop changes from non-first-parent legs. Per-path
+status uses max severity (`Added > Modified ≈ Renamed > Deleted`) when the same
+file shows up with different kinds across parents.
+
+### `symbol_history` stability
+
+`find_symbol_bytes` runs each symbol's bytes through
+`mcp::helpers::normalize_for_history` before equality comparison: line + block
+comments stripped per language, whitespace runs collapsed to one space. Kills
+the dominant false-positive (autoformat / prettier / black / gofmt churn) at
+the cost of treating string-literal whitespace as non-significant.
+
 ## Config
 
 Lives at `.gitmind/gitmind.toml`. Shape is defined by
@@ -157,6 +213,25 @@ instead of "missing field" stack traces.
   identical content share the same blob.
 - **Schema bump auto-wipe** — when `SCHEMA_VER` increments, `Store::open`
   clears the cache automatically.
+
+## Hardening harness
+
+`./scripts/harden.sh` clones a diverse set of upstream repos into
+`/tmp/gitmind-harden/` (ripgrep, tokio, microsoft/TypeScript, facebook/react,
+django, requests, gin, plus a shallow ripgrep variant) and runs
+`tests/harden.rs` against each. The harness drives every MCP tool over the
+stdio transport via `rmcp`'s child-process client, records per-call latency to
+`/tmp/gitmind-harden/results.ndjson`, and asserts pass/fail criteria including:
+
+- no tool exceeds the 90 s wall-clock ceiling,
+- React canary: `search_symbols("useState")` returns ≥ 1 hit,
+- shallow ripgrep canary: at least one history-walking tool surfaces
+  `truncated: true`,
+- no tool errors except documented "not found"-class outcomes.
+
+It's the gating artifact for the hardening track — `#[ignore]`'d so it doesn't
+run in normal `cargo test`. Invoked nightly + on-dispatch from CI
+(`.github/workflows/ci.yml`'s `hardening` job).
 
 ## Bench
 
@@ -182,8 +257,15 @@ siblings queryable.
 ## Tests
 
 ```sh
-cargo test           # 23 tests: 5 unit + 6 config schema + 11 scan_smoke + 1 schema_bump
+cargo test           # 46 tests across 9 suites
+cargo test --test harden -- --ignored   # gating real-OSS harness (see Hardening harness)
 ```
+
+Suite breakdown: 13 lib unit tests + 6 config schema + 5 git_cache + 4 git_smoke
+
+- 16 scan_smoke + 1 schema_bump + 1 mcp_smoke (end-to-end stdio MCP against a
+tiny synthetic repo, runs in ~1.3 s). The MCP smoke is the cargo-test-time
+counterpart to the heavier `harden.rs` gating harness.
 
 ## Development
 

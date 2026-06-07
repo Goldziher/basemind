@@ -86,8 +86,11 @@ pub struct LogKey {
 
 // ─── main cache ──────────────────────────────────────────────────────────────
 
+/// `(path, change_kind)` for one file in a commit's tree-against-parent diff.
+type CommitFileChange = (String, ChangeKind);
+
 pub struct GitCache {
-    commit_files: Mutex<LruCache<String /* sha40 */, Arc<Vec<(String, ChangeKind)>>>>,
+    commit_files: Mutex<LruCache<String /* sha40 */, Arc<Vec<CommitFileChange>>>>,
     log: Mutex<LruCache<LogKey, Arc<Vec<CommitInfo>>>>,
     blame: Mutex<LruCache<BlameKey, Arc<BlameResult>>>,
     disk: Option<PathBuf>,
@@ -106,6 +109,11 @@ impl GitCache {
             ensure_subdir(&root, "commit_files")?;
             ensure_subdir(&root, "log")?;
             ensure_subdir(&root, "blame")?;
+            // One-shot LRU sweep of the HEAD-anchored log cache. New `head_sha` after
+            // every rebase/pull would otherwise grow this directory without bound. Sized
+            // to fit comfortably in a typical project's `.gitmind/` budget; tune via
+            // `GITMIND_GIT_CACHE_LOG_MAX_BYTES` (in bytes).
+            evict_log_cache(&root, log_cache_max_bytes_from_env());
             Some(root)
         } else {
             None
@@ -384,4 +392,54 @@ fn count_files(dir: &Path) -> usize {
         }
     }
     count
+}
+
+/// Default disk budget for the HEAD-keyed log subdirectory (256 MiB). Tuneable via
+/// `GITMIND_GIT_CACHE_LOG_MAX_BYTES`; setting it to 0 disables eviction.
+const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+fn log_cache_max_bytes_from_env() -> u64 {
+    std::env::var("GITMIND_GIT_CACHE_LOG_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(LOG_CACHE_DEFAULT_MAX_BYTES)
+}
+
+/// Mtime-LRU sweep of `<git-cache>/log/`. Cheap one-shot pass at process start: stat every
+/// file, sum sizes, and if over budget delete the oldest until under. The log subdir is the
+/// only one with HEAD-derived keys (commit_files + blame are sha-derived and immortal).
+/// Errors during traversal/removal are swallowed — cache size is best-effort, not load-bearing.
+pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
+    if max_bytes == 0 {
+        return;
+    }
+    let log_dir = cache_root.join("log");
+    let mut entries: Vec<(PathBuf, u64, std::time::SystemTime)> = Vec::new();
+    let mut total: u64 = 0;
+    if let Ok(rd) = fs::read_dir(&log_dir) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(md) = entry.metadata() else { continue };
+            if !md.is_file() {
+                continue;
+            }
+            let size = md.len();
+            let mtime = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            total = total.saturating_add(size);
+            entries.push((path, size, mtime));
+        }
+    }
+    if total <= max_bytes {
+        return;
+    }
+    entries.sort_by_key(|(_, _, mtime)| *mtime); // oldest first
+    let mut over = total - max_bytes;
+    for (path, size, _) in entries {
+        if over == 0 {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            over = over.saturating_sub(size);
+        }
+    }
 }
