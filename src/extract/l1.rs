@@ -3,10 +3,10 @@ use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
 use super::{ExtractError, FileMapL1, Import, SCHEMA_VER, Symbol, SymbolKind};
 use crate::lang::{
-    Lang, ParseOutcome, QueryKind, get_query, parse_with_default_timeout, with_parser,
+    LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser,
 };
 
-pub fn extract_l1(lang: Lang, source: &[u8]) -> Result<FileMapL1, ExtractError> {
+pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError> {
     // tree-sitter recovers from syntax errors and returns a partial Tree; we expect
     // `has_error()` may be true and still extract what we can. The timeout guards against
     // inputs that hang the parser's error-recovery loop.
@@ -33,7 +33,7 @@ pub fn extract_l1(lang: Lang, source: &[u8]) -> Result<FileMapL1, ExtractError> 
 
     Ok(FileMapL1 {
         schema_ver: SCHEMA_VER,
-        language: lang.name().to_string(),
+        language: lang.to_string(),
         size_bytes: source.len() as u64,
         had_errors,
         error_count,
@@ -60,11 +60,13 @@ fn count_error_nodes(root: Node) -> u32 {
 }
 
 fn run_symbols(
-    lang: Lang,
+    lang: LangId,
     root: tree_sitter::Node,
     source: &[u8],
 ) -> Result<Vec<Symbol>, ExtractError> {
-    let q = get_query(lang, QueryKind::Symbols)?;
+    let Some(q) = try_get_query(lang, QueryKind::Symbols)? else {
+        return Ok(Vec::new());
+    };
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();
@@ -112,11 +114,13 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
 }
 
 fn run_imports(
-    lang: Lang,
+    lang: LangId,
     root: tree_sitter::Node,
     source: &[u8],
 ) -> Result<Vec<Import>, ExtractError> {
-    let q = get_query(lang, QueryKind::Imports)?;
+    let Some(q) = try_get_query(lang, QueryKind::Imports)? else {
+        return Ok(Vec::new());
+    };
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();
@@ -272,7 +276,7 @@ use std::collections::HashMap;
 
 const N: u32 = 42;
 "#;
-        let map = extract_l1(Lang::Rust, src).expect("extract");
+        let map = extract_l1("rust", src).expect("extract");
         let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"hello"));
         assert!(names.contains(&"Foo"));
@@ -294,7 +298,7 @@ pub fn broken( {
 
 pub fn good_two() {}
 "#;
-        let map = extract_l1(Lang::Rust, src).expect("extract should not fail on partial parse");
+        let map = extract_l1("rust", src).expect("extract should not fail on partial parse");
         assert!(
             map.had_errors,
             "had_errors should be true for syntax errors"

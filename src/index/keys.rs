@@ -179,6 +179,12 @@ fn symbol_kind_byte(k: SymbolKind) -> u8 {
         SymbolKind::Namespace => 13,
         SymbolKind::Getter => 14,
         SymbolKind::Setter => 15,
+        // Append-only past this line — see `index-keyspace-evolution` skill.
+        SymbolKind::Field => 16,
+        SymbolKind::Variable => 17,
+        SymbolKind::EnumVariant => 18,
+        SymbolKind::Constructor => 19,
+        SymbolKind::Decorator => 20,
     }
 }
 
@@ -199,6 +205,11 @@ fn symbol_kind_from_byte(b: u8) -> SymbolKind {
         13 => SymbolKind::Namespace,
         14 => SymbolKind::Getter,
         15 => SymbolKind::Setter,
+        16 => SymbolKind::Field,
+        17 => SymbolKind::Variable,
+        18 => SymbolKind::EnumVariant,
+        19 => SymbolKind::Constructor,
+        20 => SymbolKind::Decorator,
         _ => SymbolKind::Unknown,
     }
 }

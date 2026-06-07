@@ -25,7 +25,9 @@ Gitmind is a single Rust crate that builds a CLI binary (`gitmind`) and exposes 
 - `query.rs` — read-side helpers shared between MCP tools and the CLI.
 - `git.rs` + `git_cache.rs` — `gix`-backed history / blame / churn.
 - `path.rs` — `RelPath` byte-precise repo-relative paths.
-- `render.rs`, `hashing.rs`, `lang.rs`, `queries/`, `watcher.rs`, `config/` — supporting modules.
+- `lang.rs` — `LangId = &'static str` (the tree-sitter-language-pack pack name), parser pool, query cache, override-then-TSLP-fallback `try_get_query`.
+- `queries/<pack-name>.scm` — hand-written extraction queries (`;; section: symbols / imports / calls / docs`) that win over the upstream `tags.scm` fallback.
+- `render.rs`, `hashing.rs`, `watcher.rs`, `config/` — supporting modules.
 
 ### `tests/`
 

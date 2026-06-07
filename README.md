@@ -131,11 +131,18 @@ Wire into Claude Code (`~/.claude.json`) or any MCP client:
 
 ## Languages
 
-Queries ship for **Rust, Python, TypeScript, TSX, JavaScript, Go**. Grammars are
-dynamically downloaded via
+Any of the 300+ grammars shipped by
 [tree-sitter-language-pack](https://github.com/kreuzberg-dev/tree-sitter-language-pack)
-(1.9.0-rc.22) on first use and cached at
+is eligible — grammars are dynamically downloaded on first use and cached at
 `~/Library/Caches/tree-sitter-language-pack/`.
+
+Hand-written extraction queries ship for **Rust, Python, TypeScript, TSX,
+JavaScript, Go**: these get full outlines (signatures, kinds, decorators), call
+sites, imports, and doc comments. Other languages parse through tree-sitter and
+land in the index by path + language tag; symbol/call extraction is empty for them
+until either a hand-written `src/queries/<lang>.scm` override is added or the
+upstream `get_tags_query` accessor lands in tree-sitter-language-pack and the
+fallback adapter wires in.
 
 Modern-JS patterns covered: arrow-function `const` declarations
 (`const Foo = () => …`) and function-expression consts surface as kind `function`

@@ -83,6 +83,27 @@ pub enum SymbolKind {
     Getter,
     Setter,
     Unknown,
+    // ─── Tail-only additions ──────────────────────────────────────────────────
+    //
+    // Variants below this line are appended to keep `symbol_kind_byte()` ordinals in
+    // `src/index/keys.rs` stable. Append-only is the contract — reordering would silently
+    // miscategorize cached entries. See the `index-keyspace-evolution` skill.
+    //
+    /// Struct / class field. Captured by TSLP `tags.scm` under `@definition.field` in many
+    /// languages; surfaced so symbol search can target data members.
+    Field,
+    /// Local or top-level binding — `let`/`var`/`const` in JS, Python `x = …` at module scope,
+    /// `var` in Go, etc. Anything outside the override set lands here when TSLP tags it.
+    Variable,
+    /// Enum case / variant. Distinct from the parent `Enum` so callers can disambiguate.
+    EnumVariant,
+    /// Constructor / `__init__` / Rust `Self::new`-style associated fn marked as constructor
+    /// by the grammar. Useful for "find all constructors" navigation.
+    Constructor,
+    /// Decorator / annotation symbol (`@Component`, `@dataclass`, Java `@Override`). We already
+    /// surface decorator *strings* on `Symbol.decorators`; this kind covers grammars whose
+    /// `tags.scm` emits the decorator as a standalone definition.
+    Decorator,
 }
 
 impl SymbolKind {
@@ -103,6 +124,11 @@ impl SymbolKind {
             "namespace" => Self::Namespace,
             "getter" => Self::Getter,
             "setter" => Self::Setter,
+            "field" => Self::Field,
+            "variable" | "var" => Self::Variable,
+            "enum_variant" | "variant" => Self::EnumVariant,
+            "constructor" => Self::Constructor,
+            "decorator" => Self::Decorator,
             _ => Self::Unknown,
         }
     }
@@ -114,12 +140,12 @@ impl SymbolKind {
         use SymbolKind::*;
         match self {
             Unknown => 0,
-            Const => 1,
+            Const | Variable | Field | Decorator => 1,
             // Everything below is "concrete": one specific shape of declaration.
             // Same score — first-seen wins among them, which keeps document order intact
             // when the same symbol is captured twice as e.g. both function and method.
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module
-            | Macro | Impl | Namespace | Getter | Setter => 2,
+            | Macro | Impl | Namespace | Getter | Setter | EnumVariant | Constructor => 2,
         }
     }
 }

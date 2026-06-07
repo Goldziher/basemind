@@ -11,7 +11,7 @@ use crate::config::Config;
 use crate::extract::{ExtractError, FileMapL1, FileMapL2, l1, l2};
 use crate::git::{GitError, Repo};
 use crate::hashing;
-use crate::lang::{self, Lang};
+use crate::lang;
 use crate::path::RelPath;
 use crate::store::{FileEntry, Store, StoreError};
 
@@ -579,7 +579,7 @@ fn process_file(
 
     let entry = FileEntry {
         hash_hex,
-        language: lang_name(lang).to_string(),
+        language: lang.to_string(),
         size_bytes,
         mtime,
     };
@@ -647,10 +647,6 @@ fn read_via_git(
 
 fn format_extract_err(e: &ExtractError) -> String {
     e.to_string()
-}
-
-fn lang_name(l: Lang) -> &'static str {
-    l.name()
 }
 
 /// First-byte heuristic for "definitely not source code": a NUL byte in the first 8 KiB.

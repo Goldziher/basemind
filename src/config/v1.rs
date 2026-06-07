@@ -44,12 +44,11 @@ pub struct ScanConfig {
 
 impl ScanConfig {
     fn default_include() -> Vec<String> {
-        [
-            "**/*.rs", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.go",
-        ]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
+        // The language gate is `lang::detect()` (the tree-sitter-language-pack registry),
+        // not a hand-curated glob list. Default to "any file" and let the scanner's
+        // per-file detect + binary check + size cap filter the long tail. Users who want
+        // to narrow can still override `[scan.include]` in their `.gitmind/gitmind.toml`.
+        vec!["**/*".to_string()]
     }
     fn default_exclude() -> Vec<String> {
         [

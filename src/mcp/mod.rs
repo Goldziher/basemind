@@ -24,7 +24,7 @@ use rmcp::tool_handler;
 use tokio::sync::RwLock;
 
 use crate::extract::{FileMapL1, Import};
-use crate::lang::Lang;
+use crate::lang::LangId;
 use crate::store::Store;
 
 /// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
@@ -42,7 +42,7 @@ pub(crate) struct OutlineEntry {
     pub source: Arc<Vec<u8>>,
 }
 
-pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, Lang), Arc<OutlineEntry>>>;
+pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, LangId), Arc<OutlineEntry>>>;
 
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.

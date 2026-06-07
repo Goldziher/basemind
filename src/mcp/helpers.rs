@@ -10,7 +10,7 @@ use serde::Serialize;
 use super::types::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
 use super::{OutlineCache, OutlineEntry, ServerState};
 use crate::extract::SymbolKind;
-use crate::lang::{Lang, ParseOutcome, parse_with_default_timeout, with_parser};
+use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
 pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
 pub(super) const SEARCH_LIMIT_MAX: u32 = 1000;
@@ -36,6 +36,11 @@ pub(super) fn kind_to_str(k: SymbolKind) -> &'static str {
         SymbolKind::Namespace => "namespace",
         SymbolKind::Getter => "getter",
         SymbolKind::Setter => "setter",
+        SymbolKind::Field => "field",
+        SymbolKind::Variable => "variable",
+        SymbolKind::EnumVariant => "enum_variant",
+        SymbolKind::Constructor => "constructor",
+        SymbolKind::Decorator => "decorator",
         SymbolKind::Unknown => "unknown",
     }
 }
@@ -57,6 +62,11 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
         "namespace" => SymbolKind::Namespace,
         "getter" => SymbolKind::Getter,
         "setter" => SymbolKind::Setter,
+        "field" => SymbolKind::Field,
+        "variable" => SymbolKind::Variable,
+        "enum_variant" | "variant" => SymbolKind::EnumVariant,
+        "constructor" => SymbolKind::Constructor,
+        "decorator" => SymbolKind::Decorator,
         other => {
             return Err(McpError::invalid_params(
                 format!("unknown symbol kind: {other}"),
@@ -109,7 +119,7 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
 /// per language and collapses ASCII whitespace runs to a single space. Caveat: whitespace
 /// inside string literals is also collapsed — accepted trade-off for the `Normalized`
 /// hash mode. The AST-structural modes (`structural_hash_of_symbol`) avoid the issue.
-pub(crate) fn normalize_for_history(lang: crate::lang::Lang, raw: &[u8]) -> Vec<u8> {
+pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {
@@ -154,20 +164,39 @@ pub(crate) fn normalize_for_history(lang: crate::lang::Lang, raw: &[u8]) -> Vec<
     out
 }
 
-fn line_comment_marker(lang: crate::lang::Lang) -> &'static [u8] {
-    use crate::lang::Lang;
+/// Line-comment marker for symbol-history normalization. Returns `b""` for languages we
+/// don't model — the caller's check `!lc_marker.is_empty()` then short-circuits the
+/// line-stripping branch and the raw bytes flow through, which is the right behavior for
+/// languages outside the override set (we don't know their comment syntax).
+fn line_comment_marker(lang: LangId) -> &'static [u8] {
     match lang {
-        Lang::Python => b"#",
-        Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Go => b"//",
+        "python" | "ruby" | "shell" | "bash" | "yaml" | "toml" | "make" => b"#",
+        "rust" | "typescript" | "tsx" | "javascript" | "go" | "cpp" | "c" | "java" | "csharp"
+        | "kotlin" | "swift" | "scala" | "zig" => b"//",
+        _ => b"",
     }
 }
 
-fn has_block_comments(lang: crate::lang::Lang) -> bool {
-    use crate::lang::Lang;
-    match lang {
-        Lang::Python => false,
-        Lang::Rust | Lang::TypeScript | Lang::Tsx | Lang::JavaScript | Lang::Go => true,
-    }
+/// Whether `/* … */` block comments apply. Returns `false` conservatively for languages
+/// we haven't enumerated — the normalizer then leaves block-comment-looking byte runs alone.
+fn has_block_comments(lang: LangId) -> bool {
+    matches!(
+        lang,
+        "rust"
+            | "typescript"
+            | "tsx"
+            | "javascript"
+            | "go"
+            | "cpp"
+            | "c"
+            | "java"
+            | "csharp"
+            | "kotlin"
+            | "swift"
+            | "scala"
+            | "css"
+            | "json"
+    )
 }
 
 pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
@@ -313,7 +342,7 @@ pub(super) fn parse_hash_mode(s: &str) -> Result<HashMode, McpError> {
 pub(super) fn outline_entry_for_blob(
     cache: &OutlineCache,
     oid: gix::ObjectId,
-    lang: Lang,
+    lang: LangId,
     source: Vec<u8>,
 ) -> Option<Arc<OutlineEntry>> {
     let key = (oid, lang);
@@ -341,7 +370,7 @@ pub(super) fn symbol_fingerprint(
     entry: &OutlineEntry,
     name: &str,
     kind: Option<SymbolKind>,
-    lang: Lang,
+    lang: LangId,
     mode: HashMode,
 ) -> Option<Vec<u8>> {
     let sym = entry
@@ -376,7 +405,7 @@ pub(super) fn symbol_fingerprint(
 /// contribute only their kind name, not their text. Identifiers always contribute their
 /// text — renaming a local variable always moves the hash.
 fn structural_hash_of_symbol(
-    lang: Lang,
+    lang: LangId,
     source: &[u8],
     range: (usize, usize),
     include_literals: bool,
@@ -428,7 +457,7 @@ fn walk_structural(
     node: tree_sitter::Node,
     source: &[u8],
     include_literals: bool,
-    lang: Lang,
+    lang: LangId,
     hasher: &mut blake3::Hasher,
 ) {
     if node.is_extra() {
@@ -478,7 +507,7 @@ fn is_identifier_kind(kind: &str) -> bool {
     )
 }
 
-fn is_literal_kind(lang: Lang, kind: &str) -> bool {
+fn is_literal_kind(lang: LangId, kind: &str) -> bool {
     // Cross-language literal node names. Strings dominate.
     if matches!(
         kind,
@@ -498,7 +527,7 @@ fn is_literal_kind(lang: Lang, kind: &str) -> bool {
         return true;
     }
     match lang {
-        Lang::Rust => matches!(
+        "rust" => matches!(
             kind,
             "char_literal"
                 | "string_literal"
@@ -508,7 +537,7 @@ fn is_literal_kind(lang: Lang, kind: &str) -> bool {
                 | "float_literal"
                 | "boolean_literal"
         ),
-        Lang::Go => matches!(
+        "go" => matches!(
             kind,
             "interpreted_string_literal"
                 | "raw_string_literal"
@@ -517,7 +546,11 @@ fn is_literal_kind(lang: Lang, kind: &str) -> bool {
                 | "float_literal"
                 | "imaginary_literal"
         ),
-        Lang::Python | Lang::TypeScript | Lang::Tsx | Lang::JavaScript => false,
+        // Conservative default for languages we haven't enumerated: rely on the cross-language
+        // literal table above. Adding a language to the override set is the right way to
+        // extend this — gitmind-style structural hashing is meaningless without per-grammar
+        // knowledge of literal node names anyway.
+        _ => false,
     }
 }
 
@@ -668,15 +701,17 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
 #[cfg(test)]
 mod tests {
     use super::normalize_for_history;
-    use crate::lang::Lang;
+    use crate::lang::LangId;
+    const RUST: LangId = "rust";
+    const PYTHON: LangId = "python";
 
     #[test]
     fn rust_whitespace_only_changes_normalize_equal() {
         let a = b"fn foo() {\n    let x = 1;\n}";
         let b = b"fn foo() {\r\n  let   x = 1;\n   }\n";
         assert_eq!(
-            normalize_for_history(Lang::Rust, a),
-            normalize_for_history(Lang::Rust, b),
+            normalize_for_history(RUST, a),
+            normalize_for_history(RUST, b),
             "autoformat-style whitespace changes should normalize to the same bytes"
         );
     }
@@ -686,8 +721,8 @@ mod tests {
         let a = b"fn foo() { let x = 1; }";
         let b = b"fn foo() {\n    // explain x\n    let x = 1; // trailing\n}";
         assert_eq!(
-            normalize_for_history(Lang::Rust, a),
-            normalize_for_history(Lang::Rust, b),
+            normalize_for_history(RUST, a),
+            normalize_for_history(RUST, b),
             "adding line comments should not register as a symbol-body change"
         );
     }
@@ -697,8 +732,8 @@ mod tests {
         let a = b"fn foo() { let x = 1; }";
         let b = b"fn foo() { /* docs */ let x = 1; /* trailing */ }";
         assert_eq!(
-            normalize_for_history(Lang::Rust, a),
-            normalize_for_history(Lang::Rust, b),
+            normalize_for_history(RUST, a),
+            normalize_for_history(RUST, b),
             "adding block comments should not register as a symbol-body change"
         );
     }
@@ -708,8 +743,8 @@ mod tests {
         let a = b"fn foo() { let x = 1; }";
         let b = b"fn foo() { let x = 2; }";
         assert_ne!(
-            normalize_for_history(Lang::Rust, a),
-            normalize_for_history(Lang::Rust, b),
+            normalize_for_history(RUST, a),
+            normalize_for_history(RUST, b),
             "a literal value change must still register as different"
         );
     }
@@ -719,8 +754,8 @@ mod tests {
         let a = b"def foo():\n    return 1";
         let b = b"def foo():\n    # comment\n    return 1";
         assert_eq!(
-            normalize_for_history(Lang::Python, a),
-            normalize_for_history(Lang::Python, b),
+            normalize_for_history(PYTHON, a),
+            normalize_for_history(PYTHON, b),
         );
     }
 
@@ -734,7 +769,7 @@ mod tests {
         Mutex::new(lru::LruCache::new(NonZeroUsize::new(8).unwrap()))
     }
 
-    fn fingerprint_for(source: &[u8], lang: Lang, mode: HashMode) -> Vec<u8> {
+    fn fingerprint_for(source: &[u8], lang: LangId, mode: HashMode) -> Vec<u8> {
         let cache = fresh_cache();
         // Synthetic OID — we just need *a* key; real gix::ObjectId from a known sha.
         let oid: gix::ObjectId = "0000000000000000000000000000000000000001"
@@ -750,8 +785,8 @@ mod tests {
         let a = b"pub fn alpha() {\n    let x = 1;\n    x + 1\n}\n";
         let b = b"pub fn   alpha() { /* doc */\n    let  x  =  1;  // explain\n    x + 1\n}\n";
         assert_eq!(
-            fingerprint_for(a, Lang::Rust, HashMode::Structural),
-            fingerprint_for(b, Lang::Rust, HashMode::Structural),
+            fingerprint_for(a, RUST, HashMode::Structural),
+            fingerprint_for(b, RUST, HashMode::Structural),
             "structural hash must be stable under formatting + comment edits"
         );
     }
@@ -761,8 +796,8 @@ mod tests {
         let a = b"pub fn alpha() {\n    let x = 1;\n    x + 1\n}\n";
         let b = b"pub fn alpha() {\n    let x = 2;\n    x + 1\n}\n";
         assert_ne!(
-            fingerprint_for(a, Lang::Rust, HashMode::Structural),
-            fingerprint_for(b, Lang::Rust, HashMode::Structural),
+            fingerprint_for(a, RUST, HashMode::Structural),
+            fingerprint_for(b, RUST, HashMode::Structural),
             "Structural mode must register a literal value change as a body change"
         );
     }
@@ -772,8 +807,8 @@ mod tests {
         let a = b"pub fn alpha() {\n    let x = 1;\n    x + 1\n}\n";
         let b = b"pub fn alpha() {\n    let x = 2;\n    x + 1\n}\n";
         assert_eq!(
-            fingerprint_for(a, Lang::Rust, HashMode::StructuralLoose),
-            fingerprint_for(b, Lang::Rust, HashMode::StructuralLoose),
+            fingerprint_for(a, RUST, HashMode::StructuralLoose),
+            fingerprint_for(b, RUST, HashMode::StructuralLoose),
             "StructuralLoose must ignore literal value churn"
         );
     }
@@ -783,8 +818,8 @@ mod tests {
         let a = b"pub fn alpha() {\n    let original = 1;\n    original + 1\n}\n";
         let b = b"pub fn alpha() {\n    let renamed = 1;\n    renamed + 1\n}\n";
         assert_ne!(
-            fingerprint_for(a, Lang::Rust, HashMode::StructuralLoose),
-            fingerprint_for(b, Lang::Rust, HashMode::StructuralLoose),
+            fingerprint_for(a, RUST, HashMode::StructuralLoose),
+            fingerprint_for(b, RUST, HashMode::StructuralLoose),
             "StructuralLoose must still catch identifier renames"
         );
     }
@@ -794,8 +829,8 @@ mod tests {
         let cache = fresh_cache();
         let oid: gix::ObjectId = "0000000000000000000000000000000000000002".parse().unwrap();
         let src = b"pub fn alpha() {}\n".to_vec();
-        let a = outline_entry_for_blob(&cache, oid, Lang::Rust, src.clone()).unwrap();
-        let b = outline_entry_for_blob(&cache, oid, Lang::Rust, src).unwrap();
+        let a = outline_entry_for_blob(&cache, oid, RUST, src.clone()).unwrap();
+        let b = outline_entry_for_blob(&cache, oid, RUST, src).unwrap();
         assert!(
             Arc::ptr_eq(&a, &b),
             "second lookup must return the same cached Arc"
