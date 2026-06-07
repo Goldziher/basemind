@@ -24,13 +24,13 @@ cargo test --release --test harden -- --ignored --nocapture
    - **react**: `search_symbols("useState")` returns `>= 20` hits.
    - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces).
 
-## Knobs
+### Knobs
 
 - `GITMIND_HARDEN_NO_BUILD=1` — skip the release rebuild; reuse `target/release/gitmind`. Use this for fast iteration.
 - `GITMIND_HARDEN_REPO=<name>` — restrict to a single repo when debugging.
 - Per-repo metrics land at `/tmp/gitmind-harden-*.log` (full run) and a metrics JSON next to it.
 
-## Performance baselines
+#### Performance baselines
 
 | Repo | Files | Scan time | Notes |
 |---|---|---|---|
@@ -40,7 +40,7 @@ cargo test --release --test harden -- --ignored --nocapture
 
 Regressions beyond ~20% on these baselines should be investigated before merge.
 
-## Canary authoring
+#### Canary authoring
 
 See the `harness-canary-authoring` skill. Canaries must be lower bounds (`>=`), call-site-dense,
 and stable across repo releases. The `scan_cap = limit * 8` convention bounds work on common names.

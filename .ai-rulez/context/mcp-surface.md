@@ -19,7 +19,7 @@ priority: high
 | `status` / `repo_info` | Repo overview: file count, language breakdown, cache directory. |
 | `symbol_history` | Cross-commit history of a symbol's structural hash via the outline cache + structural-hash machinery. |
 
-## Git tools (require `gitmind serve` inside a git repo)
+### Git tools (require `gitmind serve` inside a git repo)
 
 | Tool | Purpose |
 |---|---|
@@ -31,7 +31,7 @@ priority: high
 | `hot_files` | Churn-ranked files. |
 | `blame_file` / `blame_symbol` | Per-line and per-symbol blame. |
 
-## Contract rules
+#### Contract rules
 
 - All paths are `RelPath` (byte-precise, repo-relative). Do not accept arbitrary `String` paths.
 - Responses are `JsonSchema`-derived and stable; new fields are additive with `#[serde(default)]`.
