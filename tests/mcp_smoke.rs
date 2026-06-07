@@ -54,7 +54,13 @@ fn build_repo() -> TempDir {
         b"export const Greet = (name: string) => `hi ${name}`;\nexport function plain() { return 1; }\n",
     )
     .unwrap();
-    git(root, &["add", "a.rs", "b.ts"]);
+    // c.rs calls alpha() three times so the reference index has something to chew on.
+    std::fs::write(
+        root.join("c.rs"),
+        b"pub fn caller() { alpha(); alpha(); other(); alpha(); }\n",
+    )
+    .unwrap();
+    git(root, &["add", "a.rs", "b.ts", "c.rs"]);
     git(root, &["commit", "-qm", "init"]);
     // Touch a.rs in a second commit so symbol_history has something to chew on.
     std::fs::write(
@@ -267,6 +273,66 @@ async fn mcp_server_exercises_representative_tools() {
         modifieds >= 1,
         "structural mode should also see the 'tweak alpha' literal change: {history:?}"
     );
+
+    // find_references (Stage 3): c.rs calls alpha() three times — index should reflect that.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "alpha", "limit": 100 }),
+            ))
+            .await
+            .expect("find_references"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert_eq!(hits.len(), 3, "expected 3 alpha() call sites: {body}");
+    assert!(
+        hits.iter()
+            .all(|h| h.get("callee").and_then(Value::as_str) == Some("alpha")),
+        "every hit should carry callee=\"alpha\""
+    );
+    assert!(
+        hits.iter()
+            .all(|h| h.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1),
+        "every hit should carry a 1-based line number"
+    );
+    assert!(
+        hits.iter()
+            .all(|h| h.get("path").and_then(Value::as_str) == Some("c.rs")),
+        "every alpha() call site lives in c.rs in this fixture"
+    );
+
+    // find_callers (Stage 3): anchor on the alpha *definition* and confirm the same 3 hits.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_callers",
+                json!({ "path": "a.rs", "name": "alpha" }),
+            ))
+            .await
+            .expect("find_callers"),
+    );
+    let def = body.get("definition").expect("definition echoed");
+    assert_eq!(
+        def.get("name").and_then(Value::as_str),
+        Some("alpha"),
+        "definition should resolve to alpha"
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert_eq!(hits.len(), 3, "find_callers should see the same 3 sites");
+
+    // No false positive: a name that nobody calls should return 0 hits.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "no_such_callee_anywhere" }),
+            ))
+            .await
+            .expect("find_references(missing)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert!(hits.is_empty(), "unknown callee should yield no hits");
 
     // blame_file: should succeed on a non-shallow repo (the gix shallow path doesn't fire).
     let body = decode_text(

@@ -56,6 +56,8 @@ over the canonical MCP
 |------------------|----------------------------------------------------------------|
 | `outline`        | full per-file structure: symbols + line/col + signatures + imports (`l2: true` for calls + docs) |
 | `search_symbols` | substring lookup across every indexed file, with optional kind filter |
+| `find_references`| call sites of any callee whose name matches; index-backed, no scope resolution |
+| `find_callers`   | callers of a specific definition (path + name + kind); resolves def then scans |
 | `list_files`     | enumerate indexed paths, optional `path_contains` + `language` filters |
 | `dependents`     | heuristic reverse-lookup via imports                            |
 | `status`         | repo overview: file count, language breakdown, cache directory  |
@@ -270,6 +272,59 @@ instead of "missing field" stack traces.
   identical content share the same blob.
 - **Schema bump auto-wipe** — when `SCHEMA_VER` increments, `Store::open`
   clears the cache automatically.
+
+## Inverted index
+
+`find_references` and `find_callers` are backed by a pure-Rust
+[Fjall](https://github.com/fjall-rs/fjall) LSM key-value store at
+`.gitmind/views/<view>/index.fjall/`. The store is a _secondary_ index over the
+canonical msgpack blobs — the L1/L2 maps still live in
+`.gitmind/blobs/<hash>.{l1,l2}.msgpack` as the source of truth.
+
+Six Fjall keyspaces (plus a reserved `embeddings` partition for future vector
+search):
+
+| Keyspace            | Purpose                                                |
+|---------------------|--------------------------------------------------------|
+| `symbols_by_path`   | per-file outline lookups                               |
+| `symbols_by_name`   | `name`-prefix range scans for symbol search            |
+| `calls_by_path`     | per-file call lookups                                  |
+| `calls_by_callee`   | `callee`-prefix range scans — drives `find_references` |
+| `imports_by_module` | future fast-path for `dependents`                      |
+| `embeddings`        | reserved for vector search; empty today                |
+
+Key shapes (length-prefixed components — see `src/index/keys.rs`):
+
+```text
+symbols_by_path     u16:len(rel) ‖ rel ‖ start_byte:u32_be
+symbols_by_name     u16:len(name) ‖ name ‖ kind:u8 ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
+calls_by_path       u16:len(rel) ‖ rel ‖ start_byte:u32_be
+calls_by_callee     u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
+imports_by_module   u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be
+embeddings          symbol_id:u64_be
+```
+
+Length-prefixed components guarantee prefix-scan isolation: a `Foo` prefix
+never spills into `Foobar`. Schema version is stamped in the `meta` keyspace;
+mismatch on open drops the whole `index.fjall/` directory and the next scan
+rebuilds it.
+
+### `eager_l2`
+
+`find_references` only works when the index has been populated with L2 calls.
+By default the scanner runs L2 extraction inline with L1
+(`scan.eager_l2 = true`) — this roughly doubles scan time on large repos.
+Flip it off if you don't need reference search and want the fastest scan
+possible; `find_references` will return empty results until a foreground L2
+pass is triggered.
+
+### Vector search — deferred
+
+The `embeddings` keyspace is reserved but unpopulated. Future iteration will
+add an embedding hook (default candidates: `fastembed-rs` for local models, or
+a pluggable HTTP endpoint) plus KNN lookup via [`usearch`](https://github.com/unum-cloud/usearch)
+in-process (SIMD-accelerated HNSW, 2.25.x in 2026). The
+`semantic_search` MCP tool ships with that work, not before.
 
 ## Hardening harness
 

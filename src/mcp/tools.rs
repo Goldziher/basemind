@@ -886,6 +886,46 @@ impl GitmindServer {
         })
     }
 
+    /// Incoming call sites for any callee whose identifier matches `name`.
+    #[tool(
+        description = "List call sites of any function/method whose callee identifier matches \
+                       `name`. Backed by the Fjall inverted index over L2 call captures — \
+                       returns hits as (path, line, column, exact callee). Best-effort: no \
+                       scope-aware resolution, so `Foo::bar()` and `bar()` both match \
+                       name=\"bar\". Returns up to `limit` results (default 100, max 1000). \
+                       Requires the index to have been populated by a scan with `eager_l2=true` \
+                       (the default); returns an empty hit list otherwise."
+    )]
+    async fn find_references(
+        &self,
+        Parameters(params): Parameters<FindReferencesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = self.state.store.read().await;
+        let idx = store.index_db.as_ref().cloned();
+        drop(store);
+        run_find_references(idx.as_ref(), params)
+    }
+
+    /// Callers of a specific definition (path + name + optional kind).
+    #[tool(
+        description = "Given a definition (path + name + optional kind), list every call site \
+                       whose callee identifier matches. Resolves the definition via the symbols \
+                       index first (echoed back in `definition`), then does the same name-based \
+                       scan as `find_references`. Useful when you need to anchor the search on a \
+                       specific symbol rather than a bare name. Same scope-resolution caveat \
+                       applies. Default limit 100, max 1000."
+    )]
+    async fn find_callers(
+        &self,
+        Parameters(params): Parameters<FindCallersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let store = self.state.store.read().await;
+        let idx = store.index_db.as_ref().cloned();
+        drop(store);
+        let cache = self.state.cache.load_full();
+        run_find_callers(idx.as_ref(), params, &cache)
+    }
+
     /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch name (if HEAD is on one), \

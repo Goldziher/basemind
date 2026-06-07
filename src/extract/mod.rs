@@ -146,6 +146,13 @@ pub struct Call {
     pub callee: String,
     pub start_byte: u32,
     pub end_byte: u32,
+    /// 0-based row. Older L2 blobs predating this field deserialize to 0 — readers should
+    /// treat (0, 0) as "unknown" and fall back to byte offsets when precise location matters.
+    #[serde(default)]
+    pub start_row: u32,
+    /// 0-based byte column.
+    #[serde(default)]
+    pub start_col: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

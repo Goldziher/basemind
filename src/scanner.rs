@@ -8,10 +8,11 @@ use thiserror::Error;
 use tracing::debug;
 
 use crate::config::Config;
-use crate::extract::{ExtractError, FileMapL1, l1};
+use crate::extract::{ExtractError, FileMapL1, FileMapL2, l1, l2};
 use crate::git::{GitError, Repo};
 use crate::hashing;
 use crate::lang::{self, Lang};
+use crate::path::RelPath;
 use crate::store::{FileEntry, Store, StoreError};
 
 /// What state of the repository the scanner indexes from.
@@ -124,6 +125,10 @@ struct Filters {
     /// .skip_submodules` is true, any candidate path under one of these prefixes is filtered
     /// out before extraction. Empty when there are no submodules or the knob is disabled.
     submodule_roots: Vec<String>,
+    /// Mirror of `config.scan.eager_l2`. When true the scanner runs L2 extraction inline
+    /// with L1 and pushes calls to the Fjall index. Off → calls index stays stale until
+    /// the on-demand lazy path runs.
+    eager_l2: bool,
 }
 
 impl Filters {
@@ -144,6 +149,7 @@ impl Filters {
             exclude,
             max_file_bytes: config.scan.max_file_bytes,
             submodule_roots,
+            eager_l2: config.scan.eager_l2,
         })
     }
 
@@ -238,6 +244,12 @@ pub fn scan(
         .collect();
     for k in &stale {
         store.remove(k);
+        if let Some(idx) = store.index_db.as_ref() {
+            let mut w = idx.writer();
+            let _ = w
+                .remove_file(&RelPath::from(k.as_str()))
+                .and_then(|()| w.commit());
+        }
         report.results.push(FileResult {
             path: k.clone(),
             status: FileStatus::Removed,
@@ -300,6 +312,12 @@ pub fn scan_paths(
 
     for rel in removed {
         store.remove(&rel);
+        if let Some(idx) = store.index_db.as_ref() {
+            let mut w = idx.writer();
+            let _ = w
+                .remove_file(&RelPath::from(rel.as_str()))
+                .and_then(|()| w.commit());
+        }
         report.results.push(FileResult {
             path: rel,
             status: FileStatus::Removed,
@@ -498,6 +516,7 @@ fn process_file(
         };
     }
 
+    let want_l2 = filters.eager_l2 && store.index_db.is_some();
     let l1: FileMapL1 = match l1::extract_l1(lang, &bytes) {
         Ok(m) => m,
         Err(ExtractError::ParseTimeout(_)) => {
@@ -524,6 +543,38 @@ fn process_file(
             status: FileStatus::ExtractFailed { msg: e.to_string() },
             upsert: None,
         };
+    }
+
+    // Eager L2 (calls + docs). Failure here is non-fatal — we still index L1 so the file
+    // is searchable; the calls index just stays empty for this file until the lazy path
+    // populates it (or the next scan retries).
+    let l2: Option<FileMapL2> = if want_l2 {
+        match l2::extract_l2(lang, &bytes) {
+            Ok(map) => {
+                let _ = store.write_l2(&hash, &map);
+                Some(map)
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    // Push the file's symbols / calls / imports into the Fjall inverted index. We open a
+    // fresh `IndexWriter` per worker; Fjall serializes the underlying writes internally.
+    if let Some(idx) = store.index_db.as_ref() {
+        let rel_path = RelPath::from(rel);
+        let mut w = idx.writer();
+        let upsert_ok = w
+            .upsert_file(&rel_path, &l1, l2.as_ref())
+            .and_then(|()| w.commit())
+            .is_ok();
+        if !upsert_ok {
+            tracing::warn!(
+                rel,
+                "index upsert failed; reference search may be incomplete"
+            );
+        }
     }
 
     let entry = FileEntry {

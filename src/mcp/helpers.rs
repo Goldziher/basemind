@@ -521,6 +521,141 @@ fn is_literal_kind(lang: Lang, kind: &str) -> bool {
     }
 }
 
+/// Point-lookup a `Call` value in the index by `(path, start_byte)` and return its
+/// `(line, column)` as 1-based / 0-based respectively. Falls back to `(0, 0)` when the
+/// row/col fields aren't populated (older L2 blobs predating the field's introduction).
+pub(super) fn resolve_call_line_col(
+    idx: &crate::index::IndexDb,
+    rel: &crate::path::RelPath,
+    start_byte: u32,
+) -> (u32, u32) {
+    let key = crate::index::keys::call_by_path(rel, start_byte);
+    let value = match idx.calls_by_path.get(key) {
+        Ok(Some(v)) => v,
+        _ => return (0, 0),
+    };
+    let call: crate::extract::Call = match rmp_serde::from_slice(&value) {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    // `start_row` is 0-based; emit 1-based for line numbers per editor convention.
+    (call.start_row + 1, call.start_col)
+}
+
+/// Body of the `find_references` MCP tool — pulled out so the `#[tool]` wrapper in
+/// `tools.rs` stays small. Takes a snapshot of the IndexDb (cheap clone) so the caller
+/// can release the store lock before iterating.
+pub(super) fn run_find_references(
+    idx: Option<&crate::index::IndexDb>,
+    params: super::types::FindReferencesParams,
+) -> Result<CallToolResult, McpError> {
+    use super::types::FindReferencesResponse;
+    let limit = params
+        .limit
+        .unwrap_or(SEARCH_LIMIT_DEFAULT)
+        .min(SEARCH_LIMIT_MAX) as usize;
+    let Some(idx) = idx else {
+        return json_result(&FindReferencesResponse {
+            name: params.name,
+            total: 0,
+            total_is_partial: false,
+            hits: Vec::new(),
+        });
+    };
+    let (total, total_is_partial, hits) = scan_calls_by_name(idx, &params.name, limit)?;
+    json_result(&FindReferencesResponse {
+        name: params.name,
+        total,
+        total_is_partial,
+        hits,
+    })
+}
+
+/// Body of the `find_callers` MCP tool. Resolves the definition via the in-RAM cache (the
+/// same source `outline` uses) for context, then delegates to the same callee-prefix scan.
+pub(super) fn run_find_callers(
+    idx: Option<&crate::index::IndexDb>,
+    params: super::types::FindCallersParams,
+    cache: &super::MapCache,
+) -> Result<CallToolResult, McpError> {
+    use super::types::{DefinitionView, FindCallersResponse};
+    let limit = params
+        .limit
+        .unwrap_or(SEARCH_LIMIT_DEFAULT)
+        .min(SEARCH_LIMIT_MAX) as usize;
+    let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
+    let Some(idx) = idx else {
+        return json_result(&FindCallersResponse {
+            definition: None,
+            total: 0,
+            total_is_partial: false,
+            hits: Vec::new(),
+        });
+    };
+    let definition: Option<DefinitionView> = cache
+        .by_path
+        .get(&params.path)
+        .and_then(|l1| {
+            l1.symbols
+                .iter()
+                .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
+        })
+        .map(|sym| DefinitionView {
+            path: params.path.clone(),
+            name: sym.name.clone(),
+            kind: kind_to_str(sym.kind),
+            start_row: sym.start_row,
+            start_col: sym.start_col,
+        });
+    let (total, total_is_partial, hits) = scan_calls_by_name(idx, &params.name, limit)?;
+    json_result(&FindCallersResponse {
+        definition,
+        total,
+        total_is_partial,
+        hits,
+    })
+}
+
+/// Shared inner loop for `find_references` / `find_callers`: range-scan the
+/// `calls_by_callee` partition with a `name`-prefix, materialize up to `limit` hits, and
+/// track the `total` count separately. Caps the scan at `limit * 8` to bound work on
+/// extremely common names.
+fn scan_calls_by_name(
+    idx: &crate::index::IndexDb,
+    name: &str,
+    limit: usize,
+) -> Result<(u32, bool, Vec<super::types::ReferenceHit>), McpError> {
+    use super::types::ReferenceHit;
+    let prefix = crate::index::keys::calls_by_callee_prefix(name);
+    let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
+    let mut total: u32 = 0;
+    let mut total_is_partial = false;
+    let scan_cap = limit.saturating_mul(8).max(2_000);
+    for guard in idx.calls_by_callee.prefix(prefix) {
+        let (k, _) = guard
+            .into_inner()
+            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+        let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
+            continue;
+        };
+        total += 1;
+        if hits.len() < limit {
+            let (line, column) = resolve_call_line_col(idx, &rel, start);
+            hits.push(ReferenceHit {
+                path: rel,
+                line,
+                column,
+                callee,
+            });
+        }
+        if total as usize >= scan_cap {
+            total_is_partial = true;
+            break;
+        }
+    }
+    Ok((total, total_is_partial, hits))
+}
+
 /// Resolve the current HEAD sha string — keys every HEAD-anchored cache entry.
 pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
     let info = repo

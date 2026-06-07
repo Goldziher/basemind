@@ -372,6 +372,16 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "path": &sample.path, "name": sym, "limit": 20 }),
             )
             .await;
+            // Stage 3 canary: reference search on the sampled symbol. Just confirm the
+            // call succeeds — hit count varies wildly per repo (a `pub fn` in Rust vs an
+            // `export const` in TS), so the bare-success is the only stable assertion.
+            call(
+                svc,
+                &mut records,
+                "find_references",
+                json!({ "name": sym, "limit": 100 }),
+            )
+            .await;
         }
     }
 
@@ -442,6 +452,34 @@ fn assert_passing(
                     .push("shallow canary: no history-walking tool reported truncated=true".into());
             }
         }
+        "tokio" => {
+            // Iteration-3 canary: tokio is the canonical async-call corpus. `spawn` is
+            // called in dozens of places throughout the runtime; ≥ 50 is conservative.
+            let hits = repo_record
+                .canaries
+                .get("spawn_hits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if hits < 50 {
+                failures.push(format!(
+                    "tokio canary: find_references(\"spawn\") returned {hits} hits (expected ≥ 50)"
+                ));
+            }
+        }
+        "django" => {
+            // Iteration-3 canary: `get` is overloaded in Django (ORM queryset method, view
+            // dispatch, dict access). Should saturate the limit easily.
+            let hits = repo_record
+                .canaries
+                .get("get_hits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if hits < 50 {
+                failures.push(format!(
+                    "django canary: find_references(\"get\") returned {hits} hits (expected ≥ 50)"
+                ));
+            }
+        }
         _ => {}
     }
 
@@ -496,6 +534,40 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
             record
                 .canaries
                 .insert("any_truncated".into(), json!(truncated));
+        }
+        "tokio" => {
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "find_references",
+                    &json!({ "name": "spawn", "limit": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record.canaries.insert("spawn_hits".into(), json!(hits));
+            }
+        }
+        "django" => {
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "find_references",
+                    &json!({ "name": "get", "limit": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record.canaries.insert("get_hits".into(), json!(hits));
+            }
         }
         _ => {}
     }

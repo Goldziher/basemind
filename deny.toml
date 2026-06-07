@@ -24,6 +24,7 @@ allow = [
   "CC0-1.0",
   "Unicode-3.0",
   "BSL-1.0",
+  "0BSD",
 ]
 confidence-threshold = 0.8
 

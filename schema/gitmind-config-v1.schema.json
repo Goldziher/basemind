@@ -54,6 +54,11 @@
           "type": "boolean",
           "description": "Skip paths under any submodule root listed in .gitmodules. Set false to fold submodule sources into the parent's index.",
           "default": true
+        },
+        "eager_l2": {
+          "type": "boolean",
+          "description": "Run L2 extraction (calls + docs) inline with L1. Required for `find_references` to return non-empty results. Disable to halve scan time on large repos when reference search isn't needed.",
+          "default": true
         }
       },
       "default": {}

@@ -143,6 +143,31 @@ pub struct SymbolHistoryParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct FindReferencesParams {
+    /// The callee identifier to look up. Substring match — case-sensitive, no scope
+    /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
+    /// caution on common names like `new` or `get`.
+    pub name: String,
+    /// Cap on results returned. Default 100, max 1000.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct FindCallersParams {
+    /// Repository-relative path of the definition file.
+    pub path: RelPath,
+    /// Name of the definition.
+    pub name: String,
+    /// Optional kind filter for resolving the definition (function/method/class/...).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Cap on results returned. Default 100, max 1000.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BlameSymbolParams {
     pub path: RelPath,
     pub name: String,
@@ -435,6 +460,46 @@ pub(super) struct SymbolHistoryResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ReferenceHit {
+    pub path: RelPath,
+    /// 1-based.
+    pub line: u32,
+    /// 0-based byte column from the start of the line.
+    pub column: u32,
+    /// The exact callee identifier the index captured.
+    pub callee: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FindReferencesResponse {
+    pub name: String,
+    pub total: u32,
+    /// True when `total` was capped at `limit` and more matches exist on disk.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub total_is_partial: bool,
+    pub hits: Vec<ReferenceHit>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FindCallersResponse {
+    /// Echo of the definition we resolved before scanning for callers.
+    pub definition: Option<DefinitionView>,
+    pub total: u32,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub total_is_partial: bool,
+    pub hits: Vec<ReferenceHit>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct DefinitionView {
+    pub path: RelPath,
+    pub name: String,
+    pub kind: &'static str,
+    pub start_row: u32,
+    pub start_col: u32,
 }
 
 #[derive(Debug, Serialize)]

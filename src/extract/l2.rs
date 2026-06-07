@@ -71,10 +71,13 @@ fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
         }
     }
     let node = range_node?;
+    let pos = node.start_position();
     Some(Call {
         callee: callee?,
         start_byte: node.start_byte() as u32,
         end_byte: node.end_byte() as u32,
+        start_row: pos.row as u32,
+        start_col: pos.column as u32,
     })
 }
 

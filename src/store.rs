@@ -9,6 +9,7 @@ use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::hashing::{self, Hash};
+use crate::index::{IndexDb, IndexError};
 use crate::path::RelPath;
 
 pub const INDEX_FILE: &str = "index.msgpack";
@@ -42,6 +43,8 @@ pub enum StoreError {
     SchemaMismatch { found: u16, expected: u16 },
     #[error("another gitmind process holds the lock on {0} (likely `gitmind watch` is running)")]
     Locked(PathBuf),
+    #[error("inverted index error: {0}")]
+    Index(#[from] IndexError),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +80,11 @@ pub struct Store {
     pub view_dir: PathBuf,
     pub view: String,
     pub index: Index,
+    /// Fjall-backed inverted index over symbols / calls / imports. Lives under
+    /// `view_dir/index.fjall/`. Reads + writes from any caller go through `IndexDb`,
+    /// which is cheap to clone (internally Arc'd). `None` in read-only mode when the
+    /// directory doesn't exist yet — callers must handle the absence.
+    pub index_db: Option<IndexDb>,
     _lock: Option<File>,
 }
 
@@ -110,12 +118,14 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
+        let index_db = Some(IndexDb::open(&view_dir)?);
         Ok(Self {
             root: root.to_path_buf(),
             gitmind_dir,
             view_dir,
             view: view.to_string(),
             index,
+            index_db,
             _lock: Some(lock),
         })
     }
@@ -129,12 +139,21 @@ impl Store {
         }
         let view_dir = gitmind_dir.join(VIEWS_DIR).join(view);
         let index = read_index(&view_dir)?.unwrap_or_else(Index::empty);
+        // The MCP server runs read-only; we still need to *read* from the Fjall index for
+        // find_references etc. Opening it here is harmless — Fjall handles concurrent
+        // readers fine via internal snapshots.
+        let index_db = if view_dir.exists() {
+            IndexDb::open(&view_dir).ok()
+        } else {
+            None
+        };
         Ok(Self {
             root: root.to_path_buf(),
             gitmind_dir,
             view_dir,
             view: view.to_string(),
             index,
+            index_db,
             _lock: None,
         })
     }
