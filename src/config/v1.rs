@@ -47,7 +47,7 @@ impl ScanConfig {
         // The language gate is `lang::detect()` (the tree-sitter-language-pack registry),
         // not a hand-curated glob list. Default to "any file" and let the scanner's
         // per-file detect + binary check + size cap filter the long tail. Users who want
-        // to narrow can still override `[scan.include]` in their `.gitmind/gitmind.toml`.
+        // to narrow can still override `[scan.include]` in their `.basemind/basemind.toml`.
         vec!["**/*".to_string()]
     }
     fn default_exclude() -> Vec<String> {
@@ -56,7 +56,7 @@ impl ScanConfig {
             "**/node_modules/**",
             "**/dist/**",
             "**/.venv/**",
-            "**/.gitmind/**",
+            "**/.basemind/**",
             "**/.git/**",
         ]
         .iter()

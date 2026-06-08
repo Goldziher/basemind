@@ -5,11 +5,11 @@ description: "Adding tree-sitter language coverage"
 
 # Language Support
 
-Use this to add a new language to gitmind's extraction. Supported languages today include Rust, Python, TypeScript/JSX, JavaScript, Go.
+Use this to add a new language to basemind's extraction. Supported languages today include Rust, Python, TypeScript/JSX, JavaScript, Go.
 
 ## Inputs needed
 
-- A tree-sitter grammar crate (e.g. `tree-sitter-elixir`) reachable via the `tree-sitter-language-pack` umbrella crate gitmind already depends on, or as a direct dep.
+- A tree-sitter grammar crate (e.g. `tree-sitter-elixir`) reachable via the `tree-sitter-language-pack` umbrella crate basemind already depends on, or as a direct dep.
 - The grammar's upstream `queries/tags.scm` from the tree-sitter org repo — it's the canonical starting point for symbol + reference extraction.
 
 ## Steps
@@ -19,7 +19,7 @@ Use this to add a new language to gitmind's extraction. Supported languages toda
    - Add the extensions to the scanner's accepted-extension set in `src/scanner.rs` (or the central glob if one exists).
 
 2. **L1 (outline) queries**
-   - Adapt the upstream `tags.scm` to gitmind's L1 capture shape: `@symbol.function`, `@symbol.method`, `@symbol.class`, etc. mapped to `extract::SymbolKind`.
+   - Adapt the upstream `tags.scm` to basemind's L1 capture shape: `@symbol.function`, `@symbol.method`, `@symbol.class`, etc. mapped to `extract::SymbolKind`.
    - Place query string in `src/queries/<lang>.rs` (or under `src/extract/queries/`, matching the existing layout).
    - Wire into `extract::l1::extract`'s language dispatch.
 

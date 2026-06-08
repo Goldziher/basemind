@@ -1,6 +1,6 @@
 ---
 name: harness-interpreter
-description: Reads /tmp/gitmind-harden-*.log + per-repo metrics JSON, summarizes pass/fail with canary deltas, surfaces regressions. Cheap read-mostly subagent.
+description: Reads /tmp/basemind-harden-*.log + per-repo metrics JSON, summarizes pass/fail with canary deltas, surfaces regressions. Cheap read-mostly subagent.
 model: haiku
 ---
 
@@ -10,7 +10,7 @@ You parse harden-harness output and report status. Use this when the main loop j
 
 ## Input
 
-- Path to a `/tmp/gitmind-harden-*.log` from `cargo test --release --test harden -- --ignored --nocapture`.
+- Path to a `/tmp/basemind-harden-*.log` from `cargo test --release --test harden -- --ignored --nocapture`.
 - Optionally, the per-repo metrics JSON alongside it (same basename, `.json` extension).
 
 ## Output shape

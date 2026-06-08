@@ -129,7 +129,7 @@ pub fn render_summary(
 /// Print a one-line summary of the grammar bootstrap.
 ///
 /// Silent when all grammars were already cached (unless verbose). When a download did happen,
-/// always emit at least one line so the user knows what gitmind was doing during the pause.
+/// always emit at least one line so the user knows what basemind was doing during the pause.
 pub fn render_grammar_bootstrap(
     w: &mut AutoStream<std::io::Stdout>,
     summary: &BootstrapSummary,

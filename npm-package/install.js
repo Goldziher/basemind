@@ -34,9 +34,9 @@ function getPlatformTriple() {
 
 function getBinaryUrl() {
   const platform = getPlatformTriple();
-  const baseUrl = `https://github.com/Goldziher/gitmind/releases/download/v${version}`;
+  const baseUrl = `https://github.com/Goldziher/basemind/releases/download/v${version}`;
   const ext = platform.includes("windows") ? "zip" : "tar.gz";
-  return `${baseUrl}/gitmind-${platform}.${ext}`;
+  return `${baseUrl}/basemind-${platform}.${ext}`;
 }
 
 function downloadWithRedirects(url, dest, maxRedirects = 5) {
@@ -52,7 +52,7 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
       url,
       {
         headers: {
-          "User-Agent": "gitmind-npm-wrapper",
+          "User-Agent": "basemind-npm-wrapper",
         },
       },
       (res) => {
@@ -94,8 +94,8 @@ async function installBinary() {
     const url = getBinaryUrl();
     const isZip = url.endsWith(".zip");
     const binDir = path.join(__dirname, "bin");
-    const archivePath = path.join(binDir, isZip ? "gitmind.zip" : "gitmind.tar.gz");
-    const binaryName = os.type() === "Windows_NT" ? "gitmind.exe" : "gitmind";
+    const archivePath = path.join(binDir, isZip ? "basemind.zip" : "basemind.tar.gz");
+    const binaryName = os.type() === "Windows_NT" ? "basemind.exe" : "basemind";
     const binaryPath = path.join(binDir, binaryName);
 
     if (!fs.existsSync(binDir)) {
@@ -106,7 +106,7 @@ async function installBinary() {
       return;
     }
 
-    console.log(`Downloading gitmind binary from ${url}...`);
+    console.log(`Downloading basemind binary from ${url}...`);
 
     await downloadWithRedirects(url, archivePath);
 
@@ -133,9 +133,9 @@ async function installBinary() {
       fs.chmodSync(binaryPath, 0o755);
     }
 
-    console.log("gitmind binary installed successfully!");
+    console.log("basemind binary installed successfully!");
   } catch (error) {
-    console.error("Error installing gitmind binary:", error.message);
+    console.error("Error installing basemind binary:", error.message);
     process.exit(1);
   }
 }

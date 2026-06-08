@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::ConfigError;
 
-const SCHEMA_V1: &str = include_str!("../../schema/gitmind-config-v1.schema.json");
+const SCHEMA_V1: &str = include_str!("../../schema/basemind-config-v1.schema.json");
 
 static VALIDATOR_V1: OnceLock<Validator> = OnceLock::new();
 

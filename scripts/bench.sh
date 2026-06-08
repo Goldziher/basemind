@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Bench gitmind against a handful of real-world OSS repos.
-# Clones into /tmp/gitmind-bench/ (skips if already present) and runs cold + cached scans.
+# Bench basemind against a handful of real-world OSS repos.
+# Clones into /tmp/basemind-bench/ (skips if already present) and runs cold + cached scans.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT_DIR/target/release/gitmind"
-BENCH_DIR="${GITMIND_BENCH_DIR:-/tmp/gitmind-bench}"
+BIN="$ROOT_DIR/target/release/basemind"
+BENCH_DIR="${BASEMIND_BENCH_DIR:-/tmp/basemind-bench}"
 
 if [[ ! -x "$BIN" ]]; then
   echo "building release binary..."
-  (cd "$ROOT_DIR" && cargo build --release --bin gitmind)
+  (cd "$ROOT_DIR" && cargo build --release --bin basemind)
 fi
 
 mkdir -p "$BENCH_DIR"
@@ -30,7 +30,7 @@ for entry in "${REPOS[@]}"; do
     git clone --depth 1 -q "$url" "$name"
   fi
   cd "$name"
-  rm -rf .gitmind
+  rm -rf .basemind
   "$BIN" init >/dev/null
 
   echo
@@ -40,8 +40,8 @@ for entry in "${REPOS[@]}"; do
   echo "==> $name — cached scan"
   /usr/bin/time -p "$BIN" scan 2>&1 | tail -5
 
-  blob_count="$(find .gitmind/blobs -type f -name '*.l1.msgpack' | wc -l | tr -d ' ')"
-  idx_bytes="$(wc -c <.gitmind/index.msgpack | tr -d ' ')"
+  blob_count="$(find .basemind/blobs -type f -name '*.l1.msgpack' | wc -l | tr -d ' ')"
+  idx_bytes="$(wc -c <.basemind/index.msgpack | tr -d ' ')"
   echo "    blobs=$blob_count  index_bytes=$idx_bytes"
 
   cd "$BENCH_DIR"

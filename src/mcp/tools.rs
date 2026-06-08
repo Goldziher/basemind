@@ -1,4 +1,4 @@
-//! `#[tool_router]` impl block for `GitmindServer`.
+//! `#[tool_router]` impl block for `BasemindServer`.
 //!
 //! Every `#[tool]`-annotated method below becomes a dispatchable MCP tool. Helpers live
 //! in `super::helpers`; param/response shapes in `super::types`.
@@ -10,13 +10,13 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::tool;
 
-use super::GitmindServer;
+use super::BasemindServer;
 use super::helpers::*;
 use super::types::*;
 use crate::query;
 
 #[rmcp::tool_router(vis = "pub(super)")]
-impl GitmindServer {
+impl BasemindServer {
     /// File outline: symbols + imports (L1), optionally calls + docs (L2).
     #[tool(
         description = "Return the structural outline of a file: every symbol with name, kind, \
@@ -96,7 +96,7 @@ impl GitmindServer {
                 }
                 Ok(None) => {
                     response.l2_status =
-                        Some("missing — run `gitmind query outline <path> --l2` to materialize");
+                        Some("missing — run `basemind query outline <path> --l2` to materialize");
                 }
                 Err(e) => {
                     response.l2_status = Some("error");
@@ -240,7 +240,7 @@ impl GitmindServer {
 
     /// High-level repo + cache state.
     #[tool(
-        description = "Quick report on the repo gitmind has indexed: file count, total bytes, \
+        description = "Quick report on the repo basemind has indexed: file count, total bytes, \
                        per-language breakdown, root path, grammar cache directory, schema version."
     )]
     async fn status(
@@ -278,7 +278,7 @@ impl GitmindServer {
     #[tool(
         description = "Return what's dirty in the working tree: staged adds/modifies/deletes, \
                        working-tree modifications, and untracked files. `is_clean: true` if all five \
-                       buckets are empty. Requires `gitmind serve` to be run inside a git repository."
+                       buckets are empty. Requires `basemind serve` to be run inside a git repository."
     )]
     async fn working_tree_status(
         &self,

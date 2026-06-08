@@ -13,7 +13,7 @@ use crate::path::RelPath;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct OutlineParams {
-    /// Repository-relative path (forward-slash). Must be a file gitmind has scanned.
+    /// Repository-relative path (forward-slash). Must be a file basemind has scanned.
     pub path: RelPath,
     /// When true, also include calls + doc comments (L2). Falls back to empty
     /// arrays if no L2 blob exists for the file's current content.

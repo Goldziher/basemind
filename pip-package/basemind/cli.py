@@ -1,14 +1,14 @@
-"""CLI entry point for gitmind."""
+"""CLI entry point for basemind."""
 
 import sys
 
-from .downloader import run_gitmind
+from .downloader import run_basemind
 
 
 def main():
     """Main entry point for the CLI."""
     args = sys.argv[1:]
-    run_gitmind(args)
+    run_basemind(args)
 
 
 if __name__ == "__main__":

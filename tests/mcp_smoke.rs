@@ -1,7 +1,7 @@
 //! End-to-end smoke test for the MCP server.
 //!
 //! Builds a tiny throwaway git repo with the system `git` (same pattern as `git_smoke.rs`),
-//! scans it via the gitmind library, spawns `gitmind serve` as a subprocess, and exercises
+//! scans it via the basemind library, spawns `basemind serve` as a subprocess, and exercises
 //! a representative slice of MCP tools through the rmcp child-process transport. The goal
 //! is to keep the entire MCP integration path green in normal `cargo test` runs without
 //! waiting for the heavier real-OSS hardening harness (`tests/harden.rs`, `#[ignore]`'d).
@@ -10,7 +10,7 @@
 //! * stdio JSON-RPC framing through `rmcp`
 //! * tool dispatch + parameter deserialization
 //! * `Repo::is_shallow()` plumbing → `truncated` flag on history-walking responses
-//! * the in-process scan → on-disk `.gitmind/` → MCP server preload chain
+//! * the in-process scan → on-disk `.basemind/` → MCP server preload chain
 //!
 //! Runs in < 5 s on a warm-build machine.
 
@@ -73,15 +73,15 @@ fn build_repo() -> TempDir {
 }
 
 fn run_scan(root: &Path) {
-    let cfg = gitmind::config::default_for_root(root);
-    let _ = gitmind::lang::ensure_grammars().expect("grammar bootstrap");
+    let cfg = basemind::config::default_for_root(root);
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
     let mut store =
-        gitmind::store::Store::open(root, gitmind::store::VIEW_WORKING).expect("open store");
-    gitmind::scanner::scan(
+        basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+    basemind::scanner::scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .expect("scan");
 }
@@ -115,7 +115,7 @@ async fn mcp_server_exercises_representative_tools() {
     let root = dir.path();
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_gitmind");
+    let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
         c.arg("--root")
             .arg(root)
@@ -123,7 +123,7 @@ async fn mcp_server_exercises_representative_tools() {
             .arg("--view")
             .arg("working");
     });
-    let transport = TokioChildProcess::new(cmd).expect("spawn gitmind serve");
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     // status: file_count > 0, languages includes rust + typescript

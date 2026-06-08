@@ -11,13 +11,13 @@ use tree_sitter::{Language, ParseOptions, Parser, Query, Tree};
 /// Hard ceiling on a single tree-sitter parse. Defends against pathological inputs that
 /// hang the recovery loop (e.g. multi-megabyte minified bundles with deep arrow chains).
 ///
-/// Override per-process with `GITMIND_PARSE_TIMEOUT_MS`. The default — 5 seconds — sits
+/// Override per-process with `BASEMIND_PARSE_TIMEOUT_MS`. The default — 5 seconds — sits
 /// well above any well-formed file's parse time on the supported languages (sub-second
 /// for the TypeScript compiler's biggest files) but reliably aborts known hangers.
 pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
 fn parse_timeout_from_env() -> Duration {
-    std::env::var("GITMIND_PARSE_TIMEOUT_MS")
+    std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .map(Duration::from_millis)
@@ -55,7 +55,7 @@ pub type LangId = &'static str;
 pub const OVERRIDE_LANGUAGES: &[LangId] =
     &["rust", "python", "typescript", "tsx", "javascript", "go"];
 
-/// Back-compat alias used by `gitmind lang install` and tests that pre-warm the cache.
+/// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
 pub const SUPPORTED_LANGUAGES: &[LangId] = OVERRIDE_LANGUAGES;
 
 /// Static map of override `(LangId, .scm source)` pairs. Tail of the lookup chain in
@@ -73,7 +73,7 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
     })
 }
 
-/// Whether gitmind ships a hand-written override `.scm` file for this language.
+/// Whether basemind ships a hand-written override `.scm` file for this language.
 pub fn has_override(lang: LangId) -> bool {
     override_query_source(lang).is_some()
 }
@@ -187,13 +187,14 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
             if !missing.is_empty() {
                 // Offline mode: don't reach the network. If grammars are missing, surface a
                 // clean typed error so MCP clients / CLI users see a useful message instead of
-                // silent empty parses. Set `GITMIND_GRAMMAR_OFFLINE=1` to opt in (e.g. CI
+                // silent empty parses. Set `BASEMIND_GRAMMAR_OFFLINE=1` to opt in (e.g. CI
                 // environments where the cache is pre-warmed and outbound traffic is blocked).
-                if std::env::var("GITMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty())
+                if std::env::var("BASEMIND_GRAMMAR_OFFLINE")
+                    .is_ok_and(|v| v != "0" && !v.is_empty())
                 {
                     return Err(Arc::new(LangError::Download(format!(
                         "offline mode: missing grammars {missing:?} and \
-                         GITMIND_GRAMMAR_OFFLINE is set",
+                         BASEMIND_GRAMMAR_OFFLINE is set",
                     ))));
                 }
                 dm.ensure_languages(&missing)
@@ -369,17 +370,17 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
     }
 }
 
-/// Adapt an upstream TSLP `tags.scm` source into gitmind's override-shaped section convention.
+/// Adapt an upstream TSLP `tags.scm` source into basemind's override-shaped section convention.
 ///
 /// TSLP's `tags.scm` uses the GitHub-standard capture names `@definition.<kind>` / `@reference.call`
-/// with the identifier name captured as `@name`. Gitmind's extractors look for
+/// with the identifier name captured as `@name`. Basemind's extractors look for
 /// `@symbol.<kind>` / `@symbol.name` (l1) and `@call.range` / `@call.callee` (l2). This walks
 /// top-level S-expression patterns, classifies each by its root capture, and emits the
 /// rewritten pattern into either the `;; section: symbols` or `;; section: calls` block.
 ///
 /// Patterns whose root capture is neither `@definition.*` nor `@reference.call` (e.g.
 /// `@reference.class`, `@reference.interface`, `@reference.send`, `@reference.type`,
-/// `@reference.implementation`) are dropped — gitmind has no consumer for them today.
+/// `@reference.implementation`) are dropped — basemind has no consumer for them today.
 fn adapt_tslp_tags(source: &str) -> String {
     let mut sym_buf = String::new();
     let mut call_buf = String::new();
@@ -517,7 +518,7 @@ fn classify_capture(cap: &str) -> PatternKind {
     }
 }
 
-/// Rewrite a pattern's capture names from TSLP convention to gitmind convention. The trailing
+/// Rewrite a pattern's capture names from TSLP convention to basemind convention. The trailing
 /// `\n` is included so consecutive patterns stay separated in the emitted section.
 fn rewrite_pattern(pattern: &str, kind: PatternKind) -> String {
     let mut out = String::with_capacity(pattern.len() + 16);
@@ -708,7 +709,7 @@ mod tests {
     #[test]
     fn adapt_tslp_tags_drops_reference_class() {
         // `@reference.class` (kotlin constructor invocation, rust impl_item) has no consumer
-        // in gitmind today — must be excluded from both sections.
+        // in basemind today — must be excluded from both sections.
         let src = "(impl_item trait: (type_identifier) @name) @reference.implementation\n\
                    (call_expression function: (identifier) @name) @reference.call\n";
         let out = adapt_tslp_tags(src);

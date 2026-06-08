@@ -1,15 +1,15 @@
 //! Real-OSS hardening harness — Stage 1 of the hardening iteration.
 //!
-//! Drives `gitmind serve` against a previously-cloned repository (typically under
-//! `/tmp/gitmind-harden/`), exercises every MCP tool, asserts pass/fail criteria,
+//! Drives `basemind serve` against a previously-cloned repository (typically under
+//! `/tmp/basemind-harden/`), exercises every MCP tool, asserts pass/fail criteria,
 //! and emits an NDJSON record per repo for the orchestrator.
 //!
 //! Invocation (orchestrated by `scripts/harden.sh`):
 //!
 //! ```sh
-//! GITMIND_HARDEN_REPO=/tmp/gitmind-harden/react \
-//! GITMIND_HARDEN_REPO_NAME=react \
-//! GITMIND_HARDEN_RESULTS=/tmp/gitmind-harden/results.ndjson \
+//! BASEMIND_HARDEN_REPO=/tmp/basemind-harden/react \
+//! BASEMIND_HARDEN_REPO_NAME=react \
+//! BASEMIND_HARDEN_RESULTS=/tmp/basemind-harden/results.ndjson \
 //! cargo test --release --test harden -- --ignored --nocapture --exact harden_repo
 //! ```
 //!
@@ -79,12 +79,12 @@ struct RepoRecord {
 
 type ServiceHandle = RunningService<RoleClient, ()>;
 
-fn gitmind_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_gitmind")
+fn basemind_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_basemind")
 }
 
 async fn connect(repo_root: &Path) -> ServiceHandle {
-    let bin = gitmind_bin();
+    let bin = basemind_bin();
     let root = repo_root.to_path_buf();
     let cmd = Command::new(bin).configure(|c| {
         c.arg("--root")
@@ -93,10 +93,10 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
             .arg("--view")
             .arg("working");
     });
-    let transport = TokioChildProcess::new(cmd).expect("spawn gitmind serve");
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     ().serve(transport)
         .await
-        .expect("rmcp handshake with gitmind serve")
+        .expect("rmcp handshake with basemind serve")
 }
 
 /// Decode the first text-content item from a `CallToolResult` as JSON.
@@ -178,13 +178,13 @@ async fn call(
 
 struct ScanOutcome {
     elapsed: Duration,
-    stats: gitmind::scanner::ScanStats,
+    stats: basemind::scanner::ScanStats,
     sample_file: Option<SampleFile>,
 }
 
 struct SampleFile {
     /// repo-relative forward-slash path
-    path: gitmind::path::RelPath,
+    path: basemind::path::RelPath,
     /// non-empty when the file has at least one indexed symbol
     sample_symbol: Option<String>,
     /// non-empty when the file has at least one import with a resolved module
@@ -194,20 +194,20 @@ struct SampleFile {
 fn run_scan(repo_root: &Path) -> ScanOutcome {
     // Ensure grammars are present before the scan — main.rs's `bootstrap_grammars`
     // wraps the same call with progress UI; tests don't need the UI.
-    let _ = gitmind::lang::ensure_grammars().expect("grammar bootstrap");
+    let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
 
-    let config = match gitmind::config::load(repo_root) {
+    let config = match basemind::config::load(repo_root) {
         Ok(c) => c,
-        Err(_) => gitmind::config::default_for_root(repo_root),
+        Err(_) => basemind::config::default_for_root(repo_root),
     };
     let mut store =
-        gitmind::store::Store::open(repo_root, gitmind::store::VIEW_WORKING).expect("open store");
+        basemind::store::Store::open(repo_root, basemind::store::VIEW_WORKING).expect("open store");
     let t0 = Instant::now();
-    let report = gitmind::scanner::scan(
+    let report = basemind::scanner::scan(
         repo_root,
         &mut store,
         &config,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .expect("scan");
     let elapsed = t0.elapsed();
@@ -223,7 +223,7 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
     }
 }
 
-fn pick_sample(store: &gitmind::store::Store) -> Option<SampleFile> {
+fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
     // Iterate path → entry, read L1, pick the first file with ≥1 symbol; capture an
     // import module from anywhere in the index. Keeps the scan-time cost bounded.
     let mut sample: Option<SampleFile> = None;
@@ -576,7 +576,7 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
 // ─── NDJSON output ──────────────────────────────────────────────────────────
 
 fn append_results(record: &RepoRecord) {
-    let Ok(path) = std::env::var("GITMIND_HARDEN_RESULTS") else {
+    let Ok(path) = std::env::var("BASEMIND_HARDEN_RESULTS") else {
         return;
     };
     let Ok(line) = serde_json::to_string(record) else {
@@ -591,19 +591,19 @@ fn append_results(record: &RepoRecord) {
 
 /// Single ignored test that exercises one repo per invocation. Spawn via the
 /// orchestrator script — it iterates the configured repo set and runs `cargo
-/// test` once per clone with a different `GITMIND_HARDEN_REPO`.
+/// test` once per clone with a different `BASEMIND_HARDEN_REPO`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "real-OSS hardening harness; invoke via scripts/harden.sh"]
 async fn harden_repo() {
-    let repo = std::env::var("GITMIND_HARDEN_REPO")
+    let repo = std::env::var("BASEMIND_HARDEN_REPO")
         .map(PathBuf::from)
-        .expect("GITMIND_HARDEN_REPO must point at a cloned repository");
+        .expect("BASEMIND_HARDEN_REPO must point at a cloned repository");
     assert!(
         repo.is_dir(),
-        "GITMIND_HARDEN_REPO does not exist or is not a directory: {}",
+        "BASEMIND_HARDEN_REPO does not exist or is not a directory: {}",
         repo.display()
     );
-    let repo_name = std::env::var("GITMIND_HARDEN_REPO_NAME").unwrap_or_else(|_| {
+    let repo_name = std::env::var("BASEMIND_HARDEN_REPO_NAME").unwrap_or_else(|_| {
         repo.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown")
@@ -623,7 +623,7 @@ async fn harden_repo() {
         scan.stats.extract_failed
     );
 
-    // 2. Spawn `gitmind serve` and connect via rmcp's child-process transport.
+    // 2. Spawn `basemind serve` and connect via rmcp's child-process transport.
     let boot_start = Instant::now();
     let svc = connect(&repo).await;
     let server_boot_ms = boot_start.elapsed().as_millis();

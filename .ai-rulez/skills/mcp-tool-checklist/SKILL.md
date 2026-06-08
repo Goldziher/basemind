@@ -5,7 +5,7 @@ description: "End-to-end checklist for adding a new MCP tool"
 
 # MCP Tool Checklist
 
-Use this when adding a new `#[tool]` to gitmind's MCP server. Skipping a step leaves the tool half-wired.
+Use this when adding a new `#[tool]` to basemind's MCP server. Skipping a step leaves the tool half-wired.
 
 ## Steps
 
@@ -41,4 +41,4 @@ Use this when adding a new `#[tool]` to gitmind's MCP server. Skipping a step le
 - `cargo test --workspace` — green.
 - `cargo clippy --workspace --all-targets --tests -- -D warnings` — clean.
 - `prek run -a` — clean.
-- `GITMIND_HARDEN_NO_BUILD=1 cargo test --release --test harden -- --ignored --nocapture` — 8/8 green; new canary passes.
+- `BASEMIND_HARDEN_NO_BUILD=1 cargo test --release --test harden -- --ignored --nocapture` — 8/8 green; new canary passes.

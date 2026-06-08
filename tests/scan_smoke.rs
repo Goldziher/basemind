@@ -1,9 +1,9 @@
 use std::fs;
 
-use gitmind::config::ConfigV1;
-use gitmind::extract::SymbolKind;
-use gitmind::scanner::{FileStatus, scan, scan_paths};
-use gitmind::store::Store;
+use basemind::config::ConfigV1;
+use basemind::extract::SymbolKind;
+use basemind::scanner::{FileStatus, scan, scan_paths};
+use basemind::store::Store;
 use tempfile::TempDir;
 
 fn fresh_repo() -> (TempDir, ConfigV1) {
@@ -23,12 +23,12 @@ fn scan_extracts_rust_symbols() {
     )
     .unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -37,18 +37,18 @@ fn scan_extracts_rust_symbols() {
     let entry = store.lookup("a.rs").expect("a.rs indexed");
     assert_eq!(entry.language, "rust");
 
-    let hits = gitmind::query::search_symbols(&store, "alpha", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "alpha", None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
     assert_eq!(hits[0].path.as_str(), Some("a.rs"));
 
-    let hits = gitmind::query::search_symbols(&store, "Beta", Some(SymbolKind::Struct)).unwrap();
+    let hits = basemind::query::search_symbols(&store, "Beta", Some(SymbolKind::Struct)).unwrap();
     assert_eq!(hits.len(), 1);
 }
 
 #[test]
 fn scan_indexes_dynamic_language_without_override_queries() {
-    // A file in a TSLP-supported language for which gitmind ships no hand-written `.scm`
+    // A file in a TSLP-supported language for which basemind ships no hand-written `.scm`
     // override now resolves through the TSLP `tags.scm` fallback (where one exists). For
     // formats with no tags.scm (e.g. JSON / YAML), the file still indexes but symbols stay
     // empty — exercised here with a `.json` file to keep the test focused on the negative
@@ -58,12 +58,12 @@ fn scan_indexes_dynamic_language_without_override_queries() {
 
     fs::write(root.join("data.json"), b"{ \"alpha\": 1 }\n").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1, "json file should be processed");
@@ -74,7 +74,7 @@ fn scan_indexes_dynamic_language_without_override_queries() {
 
     // No tags.scm for JSON in TSLP — fallback misses, symbols stay empty, lookup chain
     // doesn't error.
-    let hits = gitmind::query::search_symbols(&store, "alpha", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "alpha", None).unwrap();
     assert!(hits.is_empty(), "json has no tags.scm; symbols stay empty");
 }
 
@@ -85,23 +85,23 @@ fn rescan_is_idempotent_and_uses_cache() {
 
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let first = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(first.stats.updated, 1);
     drop(store);
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let second = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(second.stats.updated, 0);
@@ -115,29 +115,29 @@ fn modifying_a_file_triggers_reextract() {
 
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     {
-        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
         scan(
             root,
             &mut store,
             &cfg,
-            gitmind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::ScanSource::WorkingTree,
         )
         .unwrap();
     }
     fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
     {
-        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
         let s = scan(
             root,
             &mut store,
             &cfg,
-            gitmind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::ScanSource::WorkingTree,
         )
         .unwrap();
         assert_eq!(s.stats.updated, 1);
-        let hits = gitmind::query::search_symbols(&store, "gamma", None).unwrap();
+        let hits = basemind::query::search_symbols(&store, "gamma", None).unwrap();
         assert_eq!(hits.len(), 1);
-        let hits = gitmind::query::search_symbols(&store, "alpha", None).unwrap();
+        let hits = basemind::query::search_symbols(&store, "alpha", None).unwrap();
         assert!(hits.is_empty(), "old symbol should be gone");
     }
 }
@@ -150,23 +150,23 @@ fn removed_files_get_purged_from_index() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
     {
-        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
         scan(
             root,
             &mut store,
             &cfg,
-            gitmind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::ScanSource::WorkingTree,
         )
         .unwrap();
     }
     fs::remove_file(root.join("b.rs")).unwrap();
     {
-        let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+        let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
         let s = scan(
             root,
             &mut store,
             &cfg,
-            gitmind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::ScanSource::WorkingTree,
         )
         .unwrap();
         assert_eq!(s.stats.removed, 1);
@@ -184,12 +184,12 @@ fn skips_large_files() {
     let big = vec![b'x'; 4096];
     fs::write(root.join("big.rs"), &big).unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let s = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(s.stats.skipped_too_large, 1);
@@ -202,12 +202,12 @@ fn ignores_unknown_languages() {
     let root = dir.path();
     fs::write(root.join("weird.xyz"), b"data").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let s = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     // `.xyz` is not in the tree-sitter-language-pack registry, so `lang::detect()` returns
@@ -226,16 +226,16 @@ fn extracts_python() {
     )
     .unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let outline = gitmind::query::file_outline(&store, "m.py").unwrap();
+    let outline = basemind::query::file_outline(&store, "m.py").unwrap();
     assert_eq!(outline.language, "python");
     let names: Vec<&str> = outline.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"foo"));
@@ -247,14 +247,14 @@ fn extracts_python() {
 fn store_lock_prevents_concurrent_open() {
     let (dir, _cfg) = fresh_repo();
     let root = dir.path();
-    let first = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
-    let err = Store::open(root, gitmind::store::VIEW_WORKING)
+    let first = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let err = Store::open(root, basemind::store::VIEW_WORKING)
         .err()
         .expect("second open must fail");
-    assert!(matches!(err, gitmind::store::StoreError::Locked(_)));
+    assert!(matches!(err, basemind::store::StoreError::Locked(_)));
     drop(first);
     // After dropping, open succeeds again.
-    Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    Store::open(root, basemind::store::VIEW_WORKING).unwrap();
 }
 
 #[test]
@@ -268,12 +268,12 @@ fn scan_flags_files_with_syntax_errors() {
     )
     .unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert_eq!(report.stats.updated, 1);
@@ -299,7 +299,7 @@ fn scan_flags_files_with_syntax_errors() {
     }
 
     // Recovered symbols are still queryable.
-    let outline = gitmind::query::file_outline(&store, "broken.rs").unwrap();
+    let outline = basemind::query::file_outline(&store, "broken.rs").unwrap();
     assert!(outline.had_errors);
     let names: Vec<&str> = outline.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(
@@ -316,12 +316,12 @@ fn scan_paths_only_touches_listed_files() {
     fs::write(root.join("b.rs"), b"pub fn b() {}\n").unwrap();
     fs::write(root.join("c.rs"), b"pub fn c() {}\n").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
@@ -340,7 +340,7 @@ fn scan_paths_only_touches_listed_files() {
     assert_eq!(store.lookup("c.rs").unwrap().hash_hex, hash_c_before);
 
     // The mutated file's symbol has changed.
-    let hits = gitmind::query::search_symbols(&store, "a_changed", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "a_changed", None).unwrap();
     assert_eq!(hits.len(), 1);
 }
 
@@ -358,16 +358,16 @@ fn ts_arrow_function_const_is_function_kind() {
         b"export const Greet = (name: string) => `hi ${name}`;\nexport const N: number = 1;\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "Greet", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "Greet", None).unwrap();
     assert_eq!(hits.len(), 1, "arrow-fn const should produce one symbol");
     assert_eq!(
         hits[0].symbol.kind,
@@ -375,7 +375,7 @@ fn ts_arrow_function_const_is_function_kind() {
         "arrow-fn const should be kind=function"
     );
 
-    let hits = gitmind::query::search_symbols(&store, "N", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "N", None).unwrap();
     assert_eq!(hits.len(), 1, "non-function const stays as one symbol");
     assert_eq!(
         hits[0].symbol.kind,
@@ -393,16 +393,16 @@ fn js_function_expression_const_is_function_kind() {
         b"const Greet = function(name) { return 'hi ' + name; };\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "Greet", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "Greet", None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
 }
@@ -416,21 +416,21 @@ fn rust_impl_block_is_impl_kind() {
         b"pub struct Foo;\nimpl Foo { pub fn bar(&self) {} }\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let impls = gitmind::query::search_symbols(&store, "Foo", Some(SymbolKind::Impl)).unwrap();
+    let impls = basemind::query::search_symbols(&store, "Foo", Some(SymbolKind::Impl)).unwrap();
     assert_eq!(impls.len(), 1, "expected an impl block for Foo");
     assert_eq!(impls[0].symbol.kind, SymbolKind::Impl);
 
     // The struct itself coexists, not replaced by the impl.
-    let structs = gitmind::query::search_symbols(&store, "Foo", Some(SymbolKind::Struct)).unwrap();
+    let structs = basemind::query::search_symbols(&store, "Foo", Some(SymbolKind::Struct)).unwrap();
     assert_eq!(structs.len(), 1);
 }
 
@@ -447,12 +447,12 @@ fn binary_file_with_source_extension_is_skipped() {
     payload.extend_from_slice(&[0u8; 64]);
     fs::write(root.join("not_really.ts"), &payload).unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
@@ -477,18 +477,18 @@ fn tsx_file_uses_tsx_query() {
         b"export const App = () => (<div>hello</div>);\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
     let entry = store.lookup("App.tsx").expect("App.tsx indexed");
     assert_eq!(entry.language, "tsx");
-    let hits = gitmind::query::search_symbols(&store, "App", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "App", None).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].symbol.kind, SymbolKind::Function);
 }
@@ -499,12 +499,12 @@ fn scan_paths_purges_removed_files() {
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert!(store.lookup("a.rs").is_some());
@@ -524,16 +524,16 @@ fn ts_namespace_is_namespace_kind() {
         b"namespace Outer {\n  export const x: number = 1;\n}\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "Outer", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "Outer", None).unwrap();
     assert_eq!(hits.len(), 1, "expected one Outer namespace hit");
     assert_eq!(
         hits[0].symbol.kind,
@@ -551,16 +551,16 @@ fn ts_getter_and_setter_kinds() {
         b"class Box {\n  private _x: number = 0;\n  get x(): number { return this._x; }\n  set x(v: number) { this._x = v; }\n}\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "x", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "x", None).unwrap();
     let getter = hits
         .iter()
         .find(|h| h.symbol.kind == SymbolKind::Getter)
@@ -582,16 +582,16 @@ fn python_decorators_attach_to_symbol() {
         b"@dataclass\n@total_ordering\nclass Point:\n    x: int\n    y: int\n\n@property\ndef name(self):\n    return self._name\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "Point", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "Point", None).unwrap();
     let point = hits
         .iter()
         .find(|h| h.symbol.kind == SymbolKind::Class)
@@ -610,7 +610,7 @@ fn python_decorators_attach_to_symbol() {
         point.symbol.decorators
     );
 
-    let hits = gitmind::query::search_symbols(&store, "name", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "name", None).unwrap();
     let name = hits
         .iter()
         .find(|h| h.symbol.kind == SymbolKind::Function)
@@ -638,12 +638,12 @@ fn scanner_preserves_non_utf8_filename_bytes() {
     let bad_name = std::ffi::OsStr::from_bytes(raw_bytes);
     fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
     assert!(
@@ -652,7 +652,7 @@ fn scanner_preserves_non_utf8_filename_bytes() {
         report.stats.updated
     );
     // The path should round-trip through the on-disk index as raw bytes.
-    let key = gitmind::path::RelPath::from(raw_bytes);
+    let key = basemind::path::RelPath::from(raw_bytes);
     let entry = store
         .lookup(&key)
         .expect("non-UTF-8 path should be in index");
@@ -668,16 +668,16 @@ fn ts_multiline_generic_signature_is_collapsed() {
         b"function foo<\n  T extends Bar,\n  U extends Baz,\n>(x: T): U {\n  return x as unknown as U;\n}\n",
     )
     .unwrap();
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
         root,
         &mut store,
         &cfg,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
 
-    let hits = gitmind::query::search_symbols(&store, "foo", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "foo", None).unwrap();
     assert_eq!(hits.len(), 1);
     let sig = hits[0]
         .symbol

@@ -1,8 +1,8 @@
 //! Integration tests for the git-aware scanner sources.
 //!
 //! These tests spin up real git repositories on tempdirs (via the `git` CLI) and drive
-//! `gitmind::scanner::scan` against them with `ScanSource::Staged` and `ScanSource::Rev`.
-//! Using the system `git` to set up the fixtures is intentional — gitmind itself never
+//! `basemind::scanner::scan` against them with `ScanSource::Staged` and `ScanSource::Rev`.
+//! Using the system `git` to set up the fixtures is intentional — basemind itself never
 //! writes to a repo, so going through `git` is the most representative way to test the
 //! contract from the developer's perspective.
 
@@ -10,10 +10,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use gitmind::config::ConfigV1;
-use gitmind::git::Repo;
-use gitmind::scanner::{ScanSource, scan};
-use gitmind::store::{Store, VIEW_STAGED, VIEW_WORKING};
+use basemind::config::ConfigV1;
+use basemind::git::Repo;
+use basemind::scanner::{ScanSource, scan};
+use basemind::store::{Store, VIEW_STAGED, VIEW_WORKING};
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {
@@ -58,7 +58,7 @@ fn scan_staged_uses_index_blobs_not_working_tree() {
     let entry = store.lookup("a.rs").expect("a.rs indexed");
     assert_eq!(entry.language, "rust");
     // The committed blob has no parse errors — only the WT version does.
-    let hits = gitmind::query::search_symbols(&store, "clean_one", None).unwrap();
+    let hits = basemind::query::search_symbols(&store, "clean_one", None).unwrap();
     assert_eq!(hits.len(), 1, "staged scan saw committed symbols");
 }
 
@@ -101,7 +101,7 @@ fn scan_rev_at_head_matches_clean_working_tree() {
 }
 
 #[test]
-fn views_live_in_separate_subdirs_under_dotgitmind() {
+fn views_live_in_separate_subdirs_under_dotbasemind() {
     let (dir, cfg) = init_repo();
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn here() {}\n").unwrap();
@@ -118,33 +118,33 @@ fn views_live_in_separate_subdirs_under_dotgitmind() {
     scan(root, &mut staged, &cfg, ScanSource::Staged(&repo)).unwrap();
     drop(staged);
 
-    let views_dir = root.join(".gitmind").join("views");
+    let views_dir = root.join(".basemind").join("views");
     assert!(views_dir.join(VIEW_WORKING).join("index.msgpack").exists());
     assert!(views_dir.join(VIEW_STAGED).join("index.msgpack").exists());
     // No legacy file left behind.
-    assert!(!root.join(".gitmind").join("index.msgpack").exists());
+    assert!(!root.join(".basemind").join("index.msgpack").exists());
 }
 
 #[test]
-fn legacy_dotgitmind_index_is_migrated_into_working_view() {
-    // Simulate a pre-views install: write a top-level `.gitmind/index.msgpack` and confirm
+fn legacy_dotbasemind_index_is_migrated_into_working_view() {
+    // Simulate a pre-views install: write a top-level `.basemind/index.msgpack` and confirm
     // `Store::open(.., "working")` quietly moves it into `views/working/index.msgpack`.
     let (dir, _cfg) = init_repo();
     let root = dir.path();
-    fs::create_dir_all(root.join(".gitmind").join("blobs")).unwrap();
+    fs::create_dir_all(root.join(".basemind").join("blobs")).unwrap();
 
     // A valid, current-schema empty index. Use the public Index type via rmp_serde so the
     // schema_ver matches whatever SCHEMA_VER currently is — that way the migration test is
     // about *moving the file*, not about schema mismatch.
-    let empty = gitmind::store::Index::empty();
+    let empty = basemind::store::Index::empty();
     let bytes = rmp_serde::to_vec_named(&empty).unwrap();
-    fs::write(root.join(".gitmind").join("index.msgpack"), &bytes).unwrap();
+    fs::write(root.join(".basemind").join("index.msgpack"), &bytes).unwrap();
 
     let store = Store::open(root, VIEW_WORKING).expect("open should migrate");
     assert_eq!(store.index.files.len(), 0);
-    assert!(!root.join(".gitmind").join("index.msgpack").exists());
+    assert!(!root.join(".basemind").join("index.msgpack").exists());
     assert!(
-        root.join(".gitmind")
+        root.join(".basemind")
             .join("views")
             .join(VIEW_WORKING)
             .join("index.msgpack")
@@ -201,7 +201,7 @@ fn scan_skips_submodule_paths_by_default() {
     let subs = repo.submodule_paths();
     assert_eq!(
         subs,
-        vec![gitmind::path::RelPath::from("vendored")],
+        vec![basemind::path::RelPath::from("vendored")],
         "got {subs:?}"
     );
 

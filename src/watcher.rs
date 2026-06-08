@@ -73,7 +73,7 @@ pub fn watch(
     })?;
     debouncer.watch(root, RecursiveMode::Recursive)?;
 
-    let gitmind_subpath = root.join(crate::config::GITMIND_DIR);
+    let basemind_subpath = root.join(crate::config::BASEMIND_DIR);
 
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
@@ -84,7 +84,7 @@ pub fn watch(
                         continue;
                     }
                     for p in &ev.event.paths {
-                        if p.starts_with(&gitmind_subpath) {
+                        if p.starts_with(&basemind_subpath) {
                             continue;
                         }
                         touched.push(p.clone());

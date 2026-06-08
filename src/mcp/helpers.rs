@@ -109,7 +109,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
 pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::Repo>, McpError> {
     state.repo.as_ref().ok_or_else(|| {
         McpError::invalid_request(
-            "this tool requires `gitmind serve` to be run inside a git repository",
+            "this tool requires `basemind serve` to be run inside a git repository",
             None,
         )
     })
@@ -548,7 +548,7 @@ fn is_literal_kind(lang: LangId, kind: &str) -> bool {
         ),
         // Conservative default for languages we haven't enumerated: rely on the cross-language
         // literal table above. Adding a language to the override set is the right way to
-        // extend this — gitmind-style structural hashing is meaningless without per-grammar
+        // extend this — basemind-style structural hashing is meaningless without per-grammar
         // knowledge of literal node names anyway.
         _ => false,
     }

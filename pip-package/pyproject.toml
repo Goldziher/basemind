@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gitmind"
-version = "0.1.0"
+name = "basemind"
+version = "0.0.1"
 description = "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
 readme = "README.md"
 license = {text = "MIT"}
@@ -26,19 +26,19 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Environment :: Console"
 ]
-keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer", "gitmind"]
+keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer", "basemind"]
 requires-python = ">=3.8"
 dependencies = [
     "certifi>=2024.7.4"
 ]
 
 [project.urls]
-Homepage = "https://github.com/Goldziher/gitmind"
-Repository = "https://github.com/Goldziher/gitmind.git"
-Issues = "https://github.com/Goldziher/gitmind/issues"
+Homepage = "https://github.com/Goldziher/basemind"
+Repository = "https://github.com/Goldziher/basemind.git"
+Issues = "https://github.com/Goldziher/basemind/issues"
 
 [project.scripts]
-gitmind = "gitmind.cli:main"
+basemind = "basemind.cli:main"
 
 [tool.setuptools]
-packages = ["gitmind"]
+packages = ["basemind"]

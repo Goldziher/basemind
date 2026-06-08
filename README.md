@@ -1,37 +1,37 @@
-# gitmind
+# basemind
 
 Code-map MCP server + scanner using tree-sitter. Maintains a queryable map of a repository
-in `.gitmind/`, refreshed on file changes. The single `gitmind` binary is both a CLI
-(`gitmind scan`, `lang …`) and an MCP stdio server (`gitmind serve`) for AI agents.
+in `.basemind/`, refreshed on file changes. The single `basemind` binary is both a CLI
+(`basemind scan`, `lang …`) and an MCP stdio server (`basemind serve`) for AI agents.
 
 ## Install
 
 ```bash
-brew install Goldziher/tap/gitmind   # macOS, Linux
-npm install -g gitmind               # any Node 14+ platform
-pip install gitmind                  # any Python 3.8+ platform
-cargo install gitmind --locked       # build from source
+brew install Goldziher/tap/basemind   # macOS, Linux
+npm install -g basemind               # any Node 14+ platform
+pip install basemind                  # any Python 3.8+ platform
+cargo install basemind --locked       # build from source
 ```
 
 Pre-compiled binaries for `{x86_64,aarch64}-{linux-gnu,apple-darwin}` and
-`x86_64-pc-windows-gnu` ship on [GitHub Releases](https://github.com/Goldziher/gitmind/releases).
+`x86_64-pc-windows-gnu` ship on [GitHub Releases](https://github.com/Goldziher/basemind/releases).
 The `npm` and `pip` packages download the right binary on install / first run.
 
 ## Subcommands
 
 ```text
-gitmind init                              # write .gitmind/gitmind.toml with defaults
-gitmind scan                              # working-tree scan (default)
-gitmind scan --staged                     # index what's in the git staging area
-gitmind scan --rev <REV>                  # index a commit / branch / sha
-gitmind watch                             # long-running working-tree watcher
-gitmind serve [--view <name>]             # MCP server (stdio) for AI agents
-gitmind query outline <path> [--l2]       # symbols, imports (+ docs/calls with --l2)
-gitmind query symbol <needle> [--kind K]  # substring search across symbols
-gitmind query dependents <module>         # heuristic reverse-lookup
-gitmind hook install                      # install git pre-commit hook (uses --staged)
-gitmind lang {list, install, clean}       # manage downloaded tree-sitter grammars
-gitmind cache clear                       # drop .gitmind/git-cache/
+basemind init                              # write .basemind/basemind.toml with defaults
+basemind scan                              # working-tree scan (default)
+basemind scan --staged                     # index what's in the git staging area
+basemind scan --rev <REV>                  # index a commit / branch / sha
+basemind watch                             # long-running working-tree watcher
+basemind serve [--view <name>]             # MCP server (stdio) for AI agents
+basemind query outline <path> [--l2]       # symbols, imports (+ docs/calls with --l2)
+basemind query symbol <needle> [--kind K]  # substring search across symbols
+basemind query dependents <module>         # heuristic reverse-lookup
+basemind hook install                      # install git pre-commit hook (uses --staged)
+basemind lang {list, install, clean}       # manage downloaded tree-sitter grammars
+basemind cache clear                       # drop .basemind/git-cache/
 ```
 
 Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color`
@@ -40,23 +40,23 @@ Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color`
 ## Git views
 
 A "view" is a code map for a specific snapshot of the repo. Each view has its own
-index file under `.gitmind/views/<view>/`; blobs are shared in `.gitmind/blobs/`.
+index file under `.basemind/views/<view>/`; blobs are shared in `.basemind/blobs/`.
 
 - **`working`** (default) — the on-disk working tree
 - **`staged`** — the git staging area; what's about to be committed
-- **`rev-<sha7>`** — whatever you scanned with `gitmind scan --rev <REV>`
+- **`rev-<sha7>`** — whatever you scanned with `basemind scan --rev <REV>`
 
-`gitmind scan` (no flags) builds the `working` view. `gitmind scan --staged` builds
-`staged`. `gitmind scan --rev HEAD~5` resolves to a 7-char sha and builds
+`basemind scan` (no flags) builds the `working` view. `basemind scan --staged` builds
+`staged`. `basemind scan --rev HEAD~5` resolves to a 7-char sha and builds
 `rev-<sha7>`. They coexist — running one doesn't clobber the others.
 
-The pre-commit hook installed by `gitmind hook install` runs `gitmind scan --staged
+The pre-commit hook installed by `basemind hook install` runs `basemind scan --staged
 --quiet`, so the hook indexes what's actually being committed rather than whatever
 half-finished work is sitting in the working tree.
 
 ## MCP server
 
-`gitmind serve [--view <name>]` exposes the code map and git context to AI agents
+`basemind serve [--view <name>]` exposes the code map and git context to AI agents
 over the canonical MCP
 [stdio transport](https://modelcontextprotocol.io/specification/2025-11-25).
 `--view` picks which scan to serve (default: `working`). All tools return JSON.
@@ -73,7 +73,7 @@ over the canonical MCP
 | `dependents`     | heuristic reverse-lookup via imports                            |
 | `status`         | repo overview: file count, language breakdown, cache directory  |
 
-### Git tools (require `gitmind serve` inside a git repo)
+### Git tools (require `basemind serve` inside a git repo)
 
 | Tool                    | Use                                                                                  |
 |-------------------------|--------------------------------------------------------------------------------------|
@@ -91,27 +91,27 @@ over the canonical MCP
 
 ### Git cache
 
-Sha-keyed git artifacts persist under `.gitmind/git-cache/`. The cache has two tiers:
+Sha-keyed git artifacts persist under `.basemind/git-cache/`. The cache has two tiers:
 an in-process LRU (1024 entries per category by default, tune via
-`gitmind serve --git-cache-mem`) and a sha-keyed disk store
+`basemind serve --git-cache-mem`) and a sha-keyed disk store
 (`commit_files/<sha>.msgpack`, `log/<head_sha>__<scope>.msgpack`,
 `blame/<sha>__<path_hash>.msgpack`).
 
 Commits are immutable, so once an entry is on disk it's valid forever — the next
-`gitmind serve` reads it back without touching git. HEAD-keyed entries like `log`
+`basemind serve` reads it back without touching git. HEAD-keyed entries like `log`
 naturally roll off when HEAD moves (the new sha defines a new key).
 
-Drop the disk cache with `gitmind cache clear`. Disable persistence per-run with
-`gitmind serve --no-git-cache-disk`.
+Drop the disk cache with `basemind cache clear`. Disable persistence per-run with
+`basemind serve --no-git-cache-disk`.
 
 ### Live refresh
 
-The MCP server watches its view's `index.msgpack`. When `gitmind watch` rewrites
+The MCP server watches its view's `index.msgpack`. When `basemind watch` rewrites
 the index in another terminal, the server rebuilds its in-RAM code map off-thread
 and atomically swaps. `search_symbols` and `dependents` reflect the new index
 within ~150 ms; no `serve` restart needed.
 
-The server opens the store **read-only** so it coexists with `gitmind watch`.
+The server opens the store **read-only** so it coexists with `basemind watch`.
 On startup it preloads every L1 blob into RAM so cross-file queries are
 sub-millisecond. Trade: startup time scales with file count.
 
@@ -131,8 +131,8 @@ Wire into Claude Code (`~/.claude.json`) or any MCP client:
 ```json
 {
   "mcpServers": {
-    "gitmind": {
-      "command": "gitmind",
+    "basemind": {
+      "command": "basemind",
       "args": ["serve"],
       "cwd": "/abs/path/to/your/repo"
     }
@@ -153,7 +153,7 @@ sites, imports, and doc comments. Any other language for which TSLP ships a
 vendored `tags.scm` (kotlin, csharp, swift, cpp, scala, solidity, lua, …
 ~100 grammars in the published bundle) gets best-effort symbol + call
 extraction via the fallback adapter in `lang::adapt_tslp_tags`, which rewrites
-the GitHub-standard `@definition.*` / `@reference.call` captures into gitmind's
+the GitHub-standard `@definition.*` / `@reference.call` captures into basemind's
 `@symbol.*` / `@call.*` shape. Languages with neither an override nor an
 upstream `tags.scm` (JSON, YAML, TOML, …) still parse and land in `list_files`;
 symbol/call extraction yields empty vectors for them.
@@ -188,18 +188,18 @@ captures.
 
 ### Robustness knobs
 
-- **`GITMIND_PARSE_TIMEOUT_MS`** (default `5000`) — tree-sitter parse timeout
+- **`BASEMIND_PARSE_TIMEOUT_MS`** (default `5000`) — tree-sitter parse timeout
   per file. Tunes the progress-callback abort in `lang::parse_timed`.
-- **`GITMIND_GRAMMAR_OFFLINE`** (default unset) — when set to any non-empty
+- **`BASEMIND_GRAMMAR_OFFLINE`** (default unset) — when set to any non-empty
   non-`0` value, `lang::ensure_grammars` skips network downloads and returns
   a typed error if anything is missing. Pre-warm the cache first.
-- **`GITMIND_BLAME_MAX_BYTES`** (default `1048576`, 1 MiB) — per-file blame
+- **`BASEMIND_BLAME_MAX_BYTES`** (default `1048576`, 1 MiB) — per-file blame
   size cap. Larger files return `GitError::BlameTooLarge`, which the MCP
   layer surfaces as a `truncated_reason: "too_large"` response.
-- **`GITMIND_BLAME_MAX_LINES`** (default `5000`) — per-file blame line cap;
+- **`BASEMIND_BLAME_MAX_LINES`** (default `5000`) — per-file blame line cap;
   guards against generated single-line monsters that pass the byte cap.
-- **`GITMIND_GIT_CACHE_LOG_MAX_BYTES`** (default `268435456`, 256 MiB) — one-
-  shot LRU sweep budget for `.gitmind/git-cache/log/` at server start.
+- **`BASEMIND_GIT_CACHE_LOG_MAX_BYTES`** (default `268435456`, 256 MiB) — one-
+  shot LRU sweep budget for `.basemind/git-cache/log/` at server start.
   `0` disables eviction.
 
 ### Shallow clones
@@ -273,12 +273,12 @@ rare elsewhere — survive scan → store → MCP without a lossy round-trip:
 
 ## Config
 
-Lives at `.gitmind/gitmind.toml`. Shape is defined by
-`schema/gitmind-config-v1.schema.json` — the schema is the contract, Rust types
+Lives at `.basemind/basemind.toml`. Shape is defined by
+`schema/basemind-config-v1.schema.json` — the schema is the contract, Rust types
 follow. Every TOML must declare its schema version:
 
 ```toml
-"$schema" = "https://gitmind.dev/schema/v1.json"
+"$schema" = "https://basemind.dev/schema/v1.json"
 ```
 
 The loader validates the TOML against the JSON Schema (Draft 2020-12) before
@@ -288,7 +288,7 @@ instead of "missing field" stack traces.
 ## Cache layers
 
 - **blake3 file hash** — skip re-extract when content is unchanged.
-- **Content-addressed msgpack blobs** at `.gitmind/blobs/<hash>.l1.msgpack`
+- **Content-addressed msgpack blobs** at `.basemind/blobs/<hash>.l1.msgpack`
   (symbols + imports) and `.l2.msgpack` (docs + calls). Two source files with
   identical content share the same blob.
 - **Schema bump auto-wipe** — when `SCHEMA_VER` increments, `Store::open`
@@ -298,9 +298,9 @@ instead of "missing field" stack traces.
 
 `find_references` and `find_callers` are backed by a pure-Rust
 [Fjall](https://github.com/fjall-rs/fjall) LSM key-value store at
-`.gitmind/views/<view>/index.fjall/`. The store is a _secondary_ index over the
+`.basemind/views/<view>/index.fjall/`. The store is a _secondary_ index over the
 canonical msgpack blobs — the L1/L2 maps still live in
-`.gitmind/blobs/<hash>.{l1,l2}.msgpack` as the source of truth.
+`.basemind/blobs/<hash>.{l1,l2}.msgpack` as the source of truth.
 
 Six Fjall keyspaces (plus a reserved `embeddings` partition for future vector
 search):
@@ -350,11 +350,11 @@ in-process (SIMD-accelerated HNSW, 2.25.x in 2026). The
 ## Hardening harness
 
 `./scripts/harden.sh` clones a diverse set of upstream repos into
-`/tmp/gitmind-harden/` (ripgrep, tokio, microsoft/TypeScript, facebook/react,
+`/tmp/basemind-harden/` (ripgrep, tokio, microsoft/TypeScript, facebook/react,
 django, requests, gin, plus a shallow ripgrep variant) and runs
 `tests/harden.rs` against each. The harness drives every MCP tool over the
 stdio transport via `rmcp`'s child-process client, records per-call latency to
-`/tmp/gitmind-harden/results.ndjson`, and asserts pass/fail criteria including:
+`/tmp/basemind-harden/results.ndjson`, and asserts pass/fail criteria including:
 
 - no tool exceeds the 90 s wall-clock ceiling,
 - React canary: `search_symbols("useState")` returns ≥ 1 hit,
@@ -369,7 +369,7 @@ run in normal `cargo test`. Invoked nightly + on-dispatch from CI
 ## Bench
 
 ```sh
-# clones a handful of OSS repos into /tmp/gitmind-bench/ and times cold/cached scans
+# clones a handful of OSS repos into /tmp/basemind-bench/ and times cold/cached scans
 ./scripts/bench.sh
 ```
 

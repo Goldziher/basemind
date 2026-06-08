@@ -1,4 +1,4 @@
-namespace GitMind.Fixtures
+namespace Basemind.Fixtures
 {
     public class Greeter
     {

@@ -4,7 +4,7 @@ priority: high
 
 # MCP Surface
 
-`gitmind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
+`basemind serve` exposes a stdio MCP server (`rmcp`). The live contract is `tests/mcp_smoke.rs` — read it before changing any tool's response shape.
 
 ## Code-map tools
 
@@ -19,7 +19,7 @@ priority: high
 | `status` / `repo_info` | Repo overview: file count, language breakdown, cache directory. |
 | `symbol_history` | Cross-commit history of a symbol's structural hash via the outline cache + structural-hash machinery. |
 
-### Git tools (require `gitmind serve` inside a git repo)
+### Git tools (require `basemind serve` inside a git repo)
 
 | Tool | Purpose |
 |---|---|

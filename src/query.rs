@@ -12,7 +12,7 @@ pub enum QueryError {
     Store(#[from] StoreError),
     #[error("file not indexed: {0}")]
     NotIndexed(String),
-    #[error("blob missing for indexed file (likely .gitmind/blobs/ was cleaned): {0}")]
+    #[error("blob missing for indexed file (likely .basemind/blobs/ was cleaned): {0}")]
     BlobMissing(String),
     #[error("invalid hash in index for {0}")]
     BadHash(String),

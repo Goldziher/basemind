@@ -5,15 +5,15 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use gitmind::config::{self, Config};
-use gitmind::extract::SymbolKind;
-use gitmind::render::{self, Verbosity};
-use gitmind::store::Store;
-use gitmind::watcher::{BatchKind, WatchBatch};
+use basemind::config::{self, Config};
+use basemind::extract::SymbolKind;
+use basemind::render::{self, Verbosity};
+use basemind::store::Store;
+use basemind::watcher::{BatchKind, WatchBatch};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "gitmind",
+    name = "basemind",
     version,
     about = "File-watcher and code-map generator using tree-sitter",
     long_about = None
@@ -41,7 +41,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Initialize a new .gitmind/ folder with a default config.
+    /// Initialize a new .basemind/ folder with a default config.
     Init,
     /// Run a one-shot scan over the repository and write the code map.
     Scan(ScanArgs),
@@ -50,7 +50,7 @@ enum Cmd {
     /// Query the code map.
     #[command(subcommand)]
     Query(QueryCmd),
-    /// Install a pre-commit hook that runs `gitmind scan --staged`.
+    /// Install a pre-commit hook that runs `basemind scan --staged`.
     Hook {
         #[command(subcommand)]
         action: HookCmd,
@@ -62,7 +62,7 @@ enum Cmd {
     },
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
-    /// Manage the sha-keyed git cache at .gitmind/git-cache/.
+    /// Manage the sha-keyed git cache at .basemind/git-cache/.
     Cache {
         #[command(subcommand)]
         action: CacheCmd,
@@ -83,7 +83,7 @@ struct ScanArgs {
     #[arg(long, conflicts_with = "rev")]
     staged: bool,
     /// Index the tree at the given revision (HEAD, branch name, sha, HEAD~3).
-    /// Writes under .gitmind/views/rev-<sha7>/ — separate from the working-tree view.
+    /// Writes under .basemind/views/rev-<sha7>/ — separate from the working-tree view.
     #[arg(long, value_name = "REV")]
     rev: Option<String>,
 }
@@ -92,14 +92,14 @@ struct ScanArgs {
 struct ServeArgs {
     /// Which view to serve. "working" (default) is the on-disk tree; "staged" is
     /// the git index; "rev-<sha7>" is whatever you previously scanned with
-    /// `gitmind scan --rev <REV>`.
-    #[arg(long, default_value_t = gitmind::store::VIEW_WORKING.to_string())]
+    /// `basemind scan --rev <REV>`.
+    #[arg(long, default_value_t = basemind::store::VIEW_WORKING.to_string())]
     view: String,
     /// LRU capacity per category for the in-process git cache (commit_files, log, blame).
     #[arg(long, default_value_t = 1024)]
     git_cache_mem: usize,
     /// Disable the on-disk git cache. RAM LRU still applies but nothing persists between
-    /// `gitmind serve` runs.
+    /// `basemind serve` runs.
     #[arg(long)]
     no_git_cache_disk: bool,
 }
@@ -137,7 +137,7 @@ enum QueryCmd {
 
 #[derive(Subcommand, Debug)]
 enum HookCmd {
-    /// Write .git/hooks/pre-commit that invokes `gitmind scan`.
+    /// Write .git/hooks/pre-commit that invokes `basemind scan`.
     Install,
 }
 
@@ -160,9 +160,9 @@ fn main() -> Result<()> {
         .clone()
         .map(|p| p.canonicalize().unwrap_or(p))
         .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
-    // Prefer the discovered git workdir so `gitmind` invoked from a subdirectory still
+    // Prefer the discovered git workdir so `basemind` invoked from a subdirectory still
     // operates against the repo root. Outside a git repo, fall back to CWD.
-    let root = match gitmind::git::Repo::discover(&start) {
+    let root = match basemind::git::Repo::discover(&start) {
         Ok(repo) => repo.workdir().to_path_buf(),
         Err(_) => start,
     };
@@ -188,15 +188,16 @@ fn main() -> Result<()> {
 }
 
 fn cmd_cache_clear(root: &std::path::Path) -> Result<()> {
-    let gitmind_dir = root.join(gitmind::config::GITMIND_DIR);
-    let cache = gitmind::git_cache::GitCache::open(&gitmind_dir, 1, true).context("open cache")?;
+    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    let cache =
+        basemind::git_cache::GitCache::open(&basemind_dir, 1, true).context("open cache")?;
     let removed = cache.clear().context("clear cache")?;
     println!("cleared git-cache ({removed} files removed)");
     Ok(())
 }
 
 fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
-    let summary = gitmind::lang::ensure_grammars()
+    let summary = basemind::lang::ensure_grammars()
         .map_err(|e| anyhow::anyhow!("grammar bootstrap failed: {e}"))?;
     let mut out = render::stdout(no_color);
     render::render_grammar_bootstrap(&mut out, &summary, verbosity);
@@ -204,7 +205,7 @@ fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
 }
 
 fn cmd_init(root: &std::path::Path) -> Result<()> {
-    let dir = root.join(config::GITMIND_DIR);
+    let dir = root.join(config::BASEMIND_DIR);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = config::config_path(root);
     if path.exists() {
@@ -214,7 +215,7 @@ fn cmd_init(root: &std::path::Path) -> Result<()> {
 
 [scan]
 include = ["**/*.rs", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.go"]
-exclude = ["**/target/**", "**/node_modules/**", "**/dist/**", "**/.venv/**", "**/.gitmind/**", "**/.git/**"]
+exclude = ["**/target/**", "**/node_modules/**", "**/dist/**", "**/.venv/**", "**/.basemind/**", "**/.git/**"]
 respect_gitignore = true
 max_file_bytes = 2097152
 
@@ -236,7 +237,7 @@ fn load_or_default(root: &std::path::Path) -> Result<Config> {
     match config::load(root) {
         Ok(c) => Ok(c),
         Err(config::ConfigError::NotFound(_)) => {
-            tracing::info!("no .gitmind/gitmind.toml; using defaults");
+            tracing::info!("no .basemind/basemind.toml; using defaults");
             Ok(config::default_for_root(root))
         }
         Err(e) => Err(anyhow::anyhow!(e)),
@@ -256,16 +257,16 @@ fn cmd_scan(
     // here. WorkingTree doesn't need a repo at all.
     let mut out = render::stdout(no_color);
     if args.staged {
-        let repo = gitmind::git::Repo::discover(root)
+        let repo = basemind::git::Repo::discover(root)
             .context("`--staged` requires being inside a git repository")?;
         let mut store =
-            Store::open(root, gitmind::store::VIEW_STAGED).context("open store (staged)")?;
+            Store::open(root, basemind::store::VIEW_STAGED).context("open store (staged)")?;
         render::render_scan_header(&mut out, "staged index", verbosity);
-        let report = gitmind::scanner::scan(
+        let report = basemind::scanner::scan(
             root,
             &mut store,
             &config,
-            gitmind::scanner::ScanSource::Staged(&repo),
+            basemind::scanner::ScanSource::Staged(&repo),
         )
         .context("scan staged")?;
         render::render_report(&mut out, &report, verbosity);
@@ -275,18 +276,18 @@ fn cmd_scan(
         return Ok(());
     }
     if let Some(rev_spec) = &args.rev {
-        let repo = gitmind::git::Repo::discover(root)
+        let repo = basemind::git::Repo::discover(root)
             .context("`--rev` requires being inside a git repository")?;
         let sha = repo.resolve_rev(rev_spec).context("resolve rev")?;
         let short = &sha[..7.min(sha.len())];
-        let view = gitmind::store::view_name_for_rev(short);
+        let view = basemind::store::view_name_for_rev(short);
         let mut store = Store::open(root, &view).context("open store (rev)")?;
         render::render_scan_header(&mut out, &format!("rev {short}"), verbosity);
-        let report = gitmind::scanner::scan(
+        let report = basemind::scanner::scan(
             root,
             &mut store,
             &config,
-            gitmind::scanner::ScanSource::Rev {
+            basemind::scanner::ScanSource::Rev {
                 repo: &repo,
                 sha: sha.clone(),
             },
@@ -299,12 +300,12 @@ fn cmd_scan(
         return Ok(());
     }
 
-    let mut store = Store::open(root, gitmind::store::VIEW_WORKING).context("open store")?;
-    let report = gitmind::scanner::scan(
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).context("open store")?;
+    let report = basemind::scanner::scan(
         root,
         &mut store,
         &config,
-        gitmind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::ScanSource::WorkingTree,
     )
     .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
@@ -318,7 +319,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     bootstrap_grammars(verbosity, no_color)?;
     let config = Arc::new(load_or_default(root)?);
     let store = Arc::new(Mutex::new(
-        Store::open(root, gitmind::store::VIEW_WORKING).context("open store")?,
+        Store::open(root, basemind::store::VIEW_WORKING).context("open store")?,
     ));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -332,7 +333,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     let root_buf = root.to_path_buf();
     let watcher_handle = std::thread::spawn(move || {
         let mut stdout = render::stdout(no_color);
-        let cb: gitmind::watcher::BatchCallback =
+        let cb: basemind::watcher::BatchCallback =
             Box::new(move |batch: WatchBatch<'_>| match batch.kind {
                 BatchKind::InitialScan => {
                     render::render_report(&mut stdout, batch.report, verbosity);
@@ -342,7 +343,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
                     render::render_lines(&mut stdout, batch.report, verbosity);
                 }
             });
-        gitmind::watcher::watch(&root_buf, store_w, config_w, shutdown_rx, cb)
+        basemind::watcher::watch(&root_buf, store_w, config_w, shutdown_rx, cb)
     });
 
     runtime.block_on(async {
@@ -360,12 +361,12 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
     // Query reads cached extracts; grammars are not strictly needed, but the L2 escalation
     // path falls back to live extraction. Bootstrap quietly so first-time L2 doesn't stall.
-    let _ = gitmind::lang::ensure_grammars();
+    let _ = basemind::lang::ensure_grammars();
     let store =
-        Store::open_read_only(root, gitmind::store::VIEW_WORKING).context("open store (ro)")?;
+        Store::open_read_only(root, basemind::store::VIEW_WORKING).context("open store (ro)")?;
     match q {
         QueryCmd::Outline { path, l2 } => {
-            let outline = gitmind::query::file_outline(&store, &path)?;
+            let outline = basemind::query::file_outline(&store, &path)?;
             println!("# {} ({})", path, outline.language);
             if outline.had_errors {
                 println!(
@@ -393,7 +394,7 @@ fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
                 }
             }
             if l2 {
-                let l2 = gitmind::query::file_outline_l2(&store, &path, root)?;
+                let l2 = basemind::query::file_outline_l2(&store, &path, root)?;
                 println!("\n## calls ({})", l2.calls.len());
                 for c in &l2.calls {
                     println!("  {}", c.callee);
@@ -404,7 +405,7 @@ fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
         }
         QueryCmd::Symbol { needle, kind } => {
             let k = kind.as_deref().map(parse_kind).transpose()?;
-            let hits = gitmind::query::search_symbols(&store, &needle, k)?;
+            let hits = basemind::query::search_symbols(&store, &needle, k)?;
             for h in hits {
                 println!(
                     "{}:{}:{} {} {:?}",
@@ -418,7 +419,7 @@ fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
             Ok(())
         }
         QueryCmd::Dependents { module } => {
-            let hits = gitmind::query::dependents_of(&store, &module)?;
+            let hits = basemind::query::dependents_of(&store, &module)?;
             for h in hits {
                 println!("{h}");
             }
@@ -449,10 +450,10 @@ fn parse_kind(s: &str) -> Result<SymbolKind> {
 }
 
 fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
-    // Open the store in read-only mode so we don't conflict with a concurrent `gitmind watch`.
+    // Open the store in read-only mode so we don't conflict with a concurrent `basemind watch`.
     // The MCP server is purely a query surface.
     let store = Store::open_read_only(root, &args.view).context("open store (ro)")?;
-    let gitmind_dir = root.join(gitmind::config::GITMIND_DIR);
+    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -462,10 +463,10 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
 
     // Open the git repo once if we're inside one; pass it to the server so the git-aware
     // tools (`working_tree_status`, `recent_changes`, …) work without re-discovering.
-    let repo = gitmind::git::Repo::discover(root).ok().map(Arc::new);
+    let repo = basemind::git::Repo::discover(root).ok().map(Arc::new);
     let git_cache = Arc::new(
-        gitmind::git_cache::GitCache::open(
-            &gitmind_dir,
+        basemind::git_cache::GitCache::open(
+            &basemind_dir,
             args.git_cache_mem,
             !args.no_git_cache_disk,
         )
@@ -474,7 +475,7 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
 
     runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = gitmind::mcp::GitmindServer::new(store, root_buf, repo, git_cache);
+        let server = basemind::mcp::BasemindServer::new(store, root_buf, repo, git_cache);
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)
@@ -493,9 +494,11 @@ fn cmd_lang_list(no_color: bool) -> Result<()> {
     use anstyle::{AnsiColor, Color, Reset, Style};
     use std::io::Write;
     let mut out = render::stdout(no_color);
-    let installed = gitmind::lang::downloaded_languages();
-    let supported: std::collections::HashSet<&str> =
-        gitmind::lang::SUPPORTED_LANGUAGES.iter().copied().collect();
+    let installed = basemind::lang::downloaded_languages();
+    let supported: std::collections::HashSet<&str> = basemind::lang::SUPPORTED_LANGUAGES
+        .iter()
+        .copied()
+        .collect();
     let installed_set: std::collections::HashSet<&str> =
         installed.iter().map(String::as_str).collect();
 
@@ -503,8 +506,8 @@ fn cmd_lang_list(no_color: bool) -> Result<()> {
     let warn = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow)));
     let dim = Style::new().dimmed();
 
-    let _ = writeln!(out, "supported by gitmind (queries shipped):");
-    for &name in gitmind::lang::SUPPORTED_LANGUAGES {
+    let _ = writeln!(out, "supported by basemind (queries shipped):");
+    for &name in basemind::lang::SUPPORTED_LANGUAGES {
         let (sym, label, style) = if installed_set.contains(name) {
             ('✓', "ready", ok)
         } else {
@@ -530,7 +533,7 @@ fn cmd_lang_list(no_color: bool) -> Result<()> {
         let _ = writeln!(out);
         let _ = writeln!(
             out,
-            "{d}also cached (no gitmind queries, parse-only):{r}",
+            "{d}also cached (no basemind queries, parse-only):{r}",
             d = dim.render(),
             r = Reset.render(),
         );
@@ -545,7 +548,7 @@ fn cmd_lang_list(no_color: bool) -> Result<()> {
         }
     }
 
-    if let Some(dir) = gitmind::lang::grammar_cache_dir() {
+    if let Some(dir) = basemind::lang::grammar_cache_dir() {
         let _ = writeln!(out);
         let _ = writeln!(
             out,
@@ -561,7 +564,7 @@ fn cmd_lang_list(no_color: bool) -> Result<()> {
 fn cmd_lang_install(verbosity: Verbosity, no_color: bool) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     if verbosity != Verbosity::Quiet {
-        let summary = gitmind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("{e}"))?;
         if !summary.did_download() {
             println!(
                 "all {} supported grammars already cached",
@@ -573,7 +576,7 @@ fn cmd_lang_install(verbosity: Verbosity, no_color: bool) -> Result<()> {
 }
 
 fn cmd_lang_clean() -> Result<()> {
-    gitmind::lang::clean_grammar_cache().map_err(|e| anyhow::anyhow!("{e}"))?;
+    basemind::lang::clean_grammar_cache().map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("grammar cache cleared");
     Ok(())
 }
@@ -588,9 +591,9 @@ fn cmd_hook_install(root: &std::path::Path) -> Result<()> {
     // whatever messy state the working tree might be in. --quiet keeps successful commits
     // free of noise.
     let body = r#"#!/usr/bin/env sh
-# Installed by gitmind hook install.
+# Installed by basemind hook install.
 set -e
-exec gitmind scan --staged --quiet
+exec basemind scan --staged --quiet
 "#;
     std::fs::write(&hook_path, body)?;
     #[cfg(unix)]

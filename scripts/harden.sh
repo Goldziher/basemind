@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Real-OSS hardening harness orchestrator.
 #
-# Clones a diverse set of upstream repos into /tmp/gitmind-harden/, then runs
+# Clones a diverse set of upstream repos into /tmp/basemind-harden/, then runs
 # `tests/harden.rs` against each one. The harness exits non-zero if any repo
 # trips its per-repo or generic assertions.
 #
@@ -13,13 +13,13 @@
 #   ./scripts/harden.sh react ripgrep   # subset (logical names below)
 #
 # Env overrides:
-#   GITMIND_HARDEN_ROOT     base dir for clones (default /tmp/gitmind-harden)
-#   GITMIND_HARDEN_KEEP=1   keep .gitmind/ from prior runs (default: wipe between repos)
-#   GITMIND_HARDEN_NO_BUILD=1   skip the up-front `cargo build --release`
+#   BASEMIND_HARDEN_ROOT     base dir for clones (default /tmp/basemind-harden)
+#   BASEMIND_HARDEN_KEEP=1   keep .basemind/ from prior runs (default: wipe between repos)
+#   BASEMIND_HARDEN_NO_BUILD=1   skip the up-front `cargo build --release`
 
 set -euo pipefail
 
-ROOT="${GITMIND_HARDEN_ROOT:-/tmp/gitmind-harden}"
+ROOT="${BASEMIND_HARDEN_ROOT:-/tmp/basemind-harden}"
 RESULTS="${ROOT}/results.ndjson"
 mkdir -p "${ROOT}"
 : >"${RESULTS}"
@@ -47,9 +47,9 @@ should_run() {
   return 1
 }
 
-if [ -z "${GITMIND_HARDEN_NO_BUILD:-}" ]; then
-  echo "==> building gitmind (release)"
-  cargo build --release --quiet --bin gitmind
+if [ -z "${BASEMIND_HARDEN_NO_BUILD:-}" ]; then
+  echo "==> building basemind (release)"
+  cargo build --release --quiet --bin basemind
 fi
 
 # Track overall outcome
@@ -74,16 +74,16 @@ for entry in "${REPOS[@]}"; do
     echo "==> reusing existing clone at ${dest}"
   fi
 
-  if [ -z "${GITMIND_HARDEN_KEEP:-}" ] && [ -d "${dest}/.gitmind" ]; then
-    echo "==> wiping prior .gitmind/ index"
-    rm -rf "${dest}/.gitmind"
+  if [ -z "${BASEMIND_HARDEN_KEEP:-}" ] && [ -d "${dest}/.basemind" ]; then
+    echo "==> wiping prior .basemind/ index"
+    rm -rf "${dest}/.basemind"
   fi
 
   # Run the harness against this repo. `--test-threads=1` keeps the per-repo
   # output legible; the test itself doesn't care about parallelism.
-  if GITMIND_HARDEN_REPO="${dest}" \
-    GITMIND_HARDEN_REPO_NAME="${name}" \
-    GITMIND_HARDEN_RESULTS="${RESULTS}" \
+  if BASEMIND_HARDEN_REPO="${dest}" \
+    BASEMIND_HARDEN_REPO_NAME="${name}" \
+    BASEMIND_HARDEN_RESULTS="${RESULTS}" \
     cargo test --release --test harden -- \
     --ignored --nocapture --test-threads=1 --exact harden_repo; then
     passed+=("${name}")

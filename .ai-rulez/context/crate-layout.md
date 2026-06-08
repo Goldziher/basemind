@@ -4,14 +4,14 @@ priority: high
 
 # Crate Layout
 
-Gitmind is a single Rust crate that builds a CLI binary (`gitmind`) and exposes its internals as a library. Two binaries-in-one: `gitmind scan` indexes a workspace into `.gitmind/`; `gitmind serve` runs the MCP stdio server.
+Basemind is a single Rust crate that builds a CLI binary (`basemind`) and exposes its internals as a library. Two binaries-in-one: `basemind scan` indexes a workspace into `.basemind/`; `basemind serve` runs the MCP stdio server.
 
 ## `src/`
 
 - `lib.rs` — public re-exports.
 - `main.rs` — CLI entry (`scan`, `serve`).
 - `scanner.rs` — rayon-parallel file walker; orchestrates per-file extraction and writes blobs + index.
-- `store.rs` — content-addressed msgpack blob store at `.gitmind/blobs/<hash>.{l1,l2,l3}.msgpack`. Holds the `IndexDb` handle.
+- `store.rs` — content-addressed msgpack blob store at `.basemind/blobs/<hash>.{l1,l2,l3}.msgpack`. Holds the `IndexDb` handle.
 - `index/` — Fjall-backed secondary index (`mod.rs`, `keys.rs`, `writer.rs`).
 - `extract/` — tree-sitter extraction tiers:
   - `l1.rs` — outlines (symbols, signatures, imports, docs).
@@ -36,14 +36,14 @@ Gitmind is a single Rust crate that builds a CLI binary (`gitmind`) and exposes 
 - `git_smoke.rs` / `git_cache_smoke.rs` / `scan_smoke.rs` / `schema_bump.rs` / `config_schema.rs` — focused smoke tests.
 - `fixtures/` — small synthetic repos for unit tests.
 
-#### `.gitmind/` (created at scan time)
+#### `.basemind/` (created at scan time)
 
 - `blobs/<hash>.{l1,l2,l3}.msgpack` — content-addressed extraction blobs (dedup across files / views).
 - `views/<view>/index.fjall/` — Fjall LSM tree (the secondary index over those blobs).
 
 #### Other
 
-- `schema/` — JSON Schemas (e.g. `gitmind-config-v1.schema.json`). Hand-edited; `build.rs` validates round-trip with the Rust types.
+- `schema/` — JSON Schemas (e.g. `basemind-config-v1.schema.json`). Hand-edited; `build.rs` validates round-trip with the Rust types.
 - `build.rs` — code generation (schema-derived types, tree-sitter query bundles).
 - `.pre-commit-config.yaml` — prek hooks: typos, markdown, cargo fmt/clippy/sort/machete/deny, rustdoc-lint, rust-max-lines (1000-line cap).
 - `deny.toml` — cargo-deny license / source allow-list.

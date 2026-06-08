@@ -19,7 +19,7 @@ pub enum GitError {
     #[error("git error reading {what}: {msg}")]
     Read { what: String, msg: String },
     /// Blame refused: the file exceeds the configured byte/line cap. Tunable via
-    /// `GITMIND_BLAME_MAX_BYTES` (default 1 MiB) and `GITMIND_BLAME_MAX_LINES` (default 5 000).
+    /// `BASEMIND_BLAME_MAX_BYTES` (default 1 MiB) and `BASEMIND_BLAME_MAX_LINES` (default 5 000).
     #[error("blame skipped: {path} is too large ({bytes} bytes, {lines} lines)")]
     BlameTooLarge {
         path: crate::path::RelPath,
@@ -623,14 +623,14 @@ const BLAME_DEFAULT_MAX_BYTES: u64 = 1 << 20;
 const BLAME_DEFAULT_MAX_LINES: u64 = 5_000;
 
 fn blame_max_bytes_from_env() -> u64 {
-    std::env::var("GITMIND_BLAME_MAX_BYTES")
+    std::env::var("BASEMIND_BLAME_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(BLAME_DEFAULT_MAX_BYTES)
 }
 
 fn blame_max_lines_from_env() -> u64 {
-    std::env::var("GITMIND_BLAME_MAX_LINES")
+    std::env::var("BASEMIND_BLAME_MAX_LINES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(BLAME_DEFAULT_MAX_LINES)

@@ -12,11 +12,11 @@ cargo test --release --test harden -- --ignored --nocapture
 
 ## What it does
 
-1. Clones (or refreshes) 8 real OSS repos under `/tmp/gitmind-harden/`:
+1. Clones (or refreshes) 8 real OSS repos under `/tmp/basemind-harden/`:
 
    `ripgrep` (Rust), `tokio` (Rust), `typescript` (TS/JS), `react` (TS/JSX), `django` (Python),
    `requests` (Python), `gin` (Go), `ripgrep-shallow` (shallow clone smoke).
-2. For each repo: `gitmind scan` then sweeps every MCP code-map tool plus a representative subset
+2. For each repo: `basemind scan` then sweeps every MCP code-map tool plus a representative subset
    of the git tools, capturing per-tool latency + result shapes.
 3. Asserts canaries (lower bounds, scan-resistant to upstream churn):
    - **tokio**: `find_references("spawn")` returns `>= 200` hits (capped at limit).
@@ -26,9 +26,9 @@ cargo test --release --test harden -- --ignored --nocapture
 
 ### Knobs
 
-- `GITMIND_HARDEN_NO_BUILD=1` — skip the release rebuild; reuse `target/release/gitmind`. Use this for fast iteration.
-- `GITMIND_HARDEN_REPO=<name>` — restrict to a single repo when debugging.
-- Per-repo metrics land at `/tmp/gitmind-harden-*.log` (full run) and a metrics JSON next to it.
+- `BASEMIND_HARDEN_NO_BUILD=1` — skip the release rebuild; reuse `target/release/basemind`. Use this for fast iteration.
+- `BASEMIND_HARDEN_REPO=<name>` — restrict to a single repo when debugging.
+- Per-repo metrics land at `/tmp/basemind-harden-*.log` (full run) and a metrics JSON next to it.
 
 #### Performance baselines
 

@@ -1,10 +1,10 @@
 {
-  "name": "gitmind",
-  "version": "0.1.0",
+  "name": "basemind",
+  "version": "0.0.1",
   "description": "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines",
   "main": "index.js",
   "bin": {
-    "gitmind": "bin/gitmind"
+    "basemind": "bin/basemind"
   },
   "scripts": {
     "postinstall": "node install.js"
@@ -15,17 +15,17 @@
     "code-map",
     "scanner",
     "indexer",
-    "gitmind"
+    "basemind"
   ],
   "author": "Na'aman Hirschfeld",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Goldziher/gitmind.git"
+    "url": "https://github.com/Goldziher/basemind.git"
   },
-  "homepage": "https://github.com/Goldziher/gitmind#readme",
+  "homepage": "https://github.com/Goldziher/basemind#readme",
   "bugs": {
-    "url": "https://github.com/Goldziher/gitmind/issues"
+    "url": "https://github.com/Goldziher/basemind/issues"
   },
   "dependencies": {
     "adm-zip": "^0.5.12",

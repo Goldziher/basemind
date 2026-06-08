@@ -1,6 +1,6 @@
 //! `RelPath` — repository-relative path that survives non-UTF-8 bytes end to end.
 //!
-//! gitmind started life with `String` path fields throughout. That works for ~99% of OSS
+//! basemind started life with `String` path fields throughout. That works for ~99% of OSS
 //! repositories but silently drops files on filesystems that store non-UTF-8 path bytes
 //! (Linux ext4 with deliberately exotic names, archives extracted with mixed encodings,
 //! etc.). This module replaces `String` at the path boundary with a typed wrapper around

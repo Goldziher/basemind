@@ -9,9 +9,9 @@
 //! Two layers:
 //! - **RAM** — `lru::LruCache` per category, behind a `Mutex`. Bounded by
 //!   capacity from `ServeArgs`.
-//! - **Disk** — sha-keyed `.msgpack` files under `.gitmind/git-cache/`. Optional;
+//! - **Disk** — sha-keyed `.msgpack` files under `.basemind/git-cache/`. Optional;
 //!   `GitCache::open(.., persist=false)` skips disk altogether for ephemeral
-//!   `gitmind cache` operations.
+//!   `basemind cache` operations.
 //!
 //! Both layers are content-addressed by the inputs the agent passed; we never
 //! invalidate, only roll off via LRU. The schema version is baked into every
@@ -97,22 +97,22 @@ pub struct GitCache {
 }
 
 impl GitCache {
-    /// Open the cache. When `persist=true`, the disk dir is created under `gitmind_dir`;
+    /// Open the cache. When `persist=true`, the disk dir is created under `basemind_dir`;
     /// when `false`, only the RAM layer is used.
     pub fn open(
-        gitmind_dir: &Path,
+        basemind_dir: &Path,
         mem_capacity: usize,
         persist: bool,
     ) -> Result<Self, CacheError> {
         let disk = if persist {
-            let root = gitmind_dir.join(GIT_CACHE_DIR);
+            let root = basemind_dir.join(GIT_CACHE_DIR);
             ensure_subdir(&root, "commit_files")?;
             ensure_subdir(&root, "log")?;
             ensure_subdir(&root, "blame")?;
             // One-shot LRU sweep of the HEAD-anchored log cache. New `head_sha` after
             // every rebase/pull would otherwise grow this directory without bound. Sized
-            // to fit comfortably in a typical project's `.gitmind/` budget; tune via
-            // `GITMIND_GIT_CACHE_LOG_MAX_BYTES` (in bytes).
+            // to fit comfortably in a typical project's `.basemind/` budget; tune via
+            // `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (in bytes).
             evict_log_cache(&root, log_cache_max_bytes_from_env());
             Some(root)
         } else {
@@ -395,11 +395,11 @@ fn count_files(dir: &Path) -> usize {
 }
 
 /// Default disk budget for the HEAD-keyed log subdirectory (256 MiB). Tuneable via
-/// `GITMIND_GIT_CACHE_LOG_MAX_BYTES`; setting it to 0 disables eviction.
+/// `BASEMIND_GIT_CACHE_LOG_MAX_BYTES`; setting it to 0 disables eviction.
 const LOG_CACHE_DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
 fn log_cache_max_bytes_from_env() -> u64 {
-    std::env::var("GITMIND_GIT_CACHE_LOG_MAX_BYTES")
+    std::env::var("BASEMIND_GIT_CACHE_LOG_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(LOG_CACHE_DEFAULT_MAX_BYTES)

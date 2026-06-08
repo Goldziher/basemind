@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://gitmind.dev/schema/v1.json",
-  "title": "GitmindConfigV1",
-  "description": "Configuration for the gitmind file-watcher and code-map generator.",
+  "$id": "https://basemind.dev/schema/v1.json",
+  "title": "BasemindConfigV1",
+  "description": "Configuration for the basemind file-watcher and code-map generator.",
   "type": "object",
   "additionalProperties": false,
   "required": ["$schema"],
@@ -11,7 +11,7 @@
       "type": "string",
       "description": "URL or short tag identifying the config schema version. Must match one of the known versions.",
       "enum": [
-        "https://gitmind.dev/schema/v1.json",
+        "https://basemind.dev/schema/v1.json",
         "v1"
       ]
     },
@@ -35,7 +35,7 @@
             "**/node_modules/**",
             "**/dist/**",
             "**/.venv/**",
-            "**/.gitmind/**",
+            "**/.basemind/**",
             "**/.git/**"
           ]
         },

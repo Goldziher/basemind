@@ -10,8 +10,8 @@ pub use v1::ConfigV1;
 
 pub type Config = ConfigV1;
 
-pub const CONFIG_FILE_NAME: &str = "gitmind.toml";
-pub const GITMIND_DIR: &str = ".gitmind";
+pub const CONFIG_FILE_NAME: &str = "basemind.toml";
+pub const BASEMIND_DIR: &str = ".basemind";
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -52,7 +52,7 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
 }
 
 pub fn config_path(root: &Path) -> PathBuf {
-    root.join(GITMIND_DIR).join(CONFIG_FILE_NAME)
+    root.join(BASEMIND_DIR).join(CONFIG_FILE_NAME)
 }
 
 pub fn parse_str(raw: &str) -> Result<Config, ConfigError> {
@@ -70,7 +70,7 @@ pub fn parse_str(raw: &str) -> Result<Config, ConfigError> {
         .ok_or(ConfigError::MissingSchema)?;
 
     match schema_tag {
-        "v1" | "https://gitmind.dev/schema/v1.json" => {
+        "v1" | "https://basemind.dev/schema/v1.json" => {
             validate::validate_v1(&json_value)?;
             serde_json::from_value::<ConfigV1>(json_value).map_err(ConfigError::Deserialize)
         }

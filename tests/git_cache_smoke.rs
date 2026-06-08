@@ -4,8 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use gitmind::git::Repo;
-use gitmind::git_cache::{GIT_CACHE_DIR, GitCache};
+use basemind::git::Repo;
+use basemind::git_cache::{GIT_CACHE_DIR, GitCache};
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {
@@ -38,9 +38,9 @@ fn three_commit_repo() -> TempDir {
 fn commit_files_cache_round_trip() {
     let dir = three_commit_repo();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    fs::create_dir_all(&gitmind_dir).unwrap();
-    let cache = GitCache::open(&gitmind_dir, 8, true).unwrap();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
 
@@ -49,7 +49,7 @@ fn commit_files_cache_round_trip() {
     assert!(!first.is_empty(), "expected commit_files to be non-empty");
 
     // Disk artifact exists at the sha-keyed path.
-    let on_disk = gitmind_dir
+    let on_disk = basemind_dir
         .join(GIT_CACHE_DIR)
         .join("commit_files")
         .join(format!("{head}.msgpack"));
@@ -67,9 +67,9 @@ fn commit_files_cache_round_trip() {
 fn log_cache_round_trip() {
     let dir = three_commit_repo();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    fs::create_dir_all(&gitmind_dir).unwrap();
-    let cache = GitCache::open(&gitmind_dir, 8, true).unwrap();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
 
@@ -83,7 +83,7 @@ fn log_cache_round_trip() {
     );
 
     // Disk persists.
-    let log_dir = gitmind_dir.join(GIT_CACHE_DIR).join("log");
+    let log_dir = basemind_dir.join(GIT_CACHE_DIR).join("log");
     let entries: Vec<_> = fs::read_dir(&log_dir).unwrap().flatten().collect();
     assert_eq!(entries.len(), 1, "exactly one log disk entry expected");
 }
@@ -92,17 +92,17 @@ fn log_cache_round_trip() {
 fn disk_persistence_survives_reopen() {
     let dir = three_commit_repo();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    fs::create_dir_all(&gitmind_dir).unwrap();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
 
     {
-        let cache = GitCache::open(&gitmind_dir, 8, true).unwrap();
+        let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
         cache.commit_files(&repo, &head).unwrap();
     }
     // New cache instance — RAM is empty, but disk should still hit.
-    let cache = GitCache::open(&gitmind_dir, 8, true).unwrap();
+    let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
     let arc = cache.commit_files(&repo, &head).unwrap();
     assert!(!arc.is_empty(), "second cache should populate from disk");
 }
@@ -111,9 +111,9 @@ fn disk_persistence_survives_reopen() {
 fn clear_removes_disk_files() {
     let dir = three_commit_repo();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    fs::create_dir_all(&gitmind_dir).unwrap();
-    let cache = GitCache::open(&gitmind_dir, 8, true).unwrap();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
     cache.commit_files(&repo, &head).unwrap();
@@ -133,14 +133,14 @@ fn clear_removes_disk_files() {
 fn ram_only_mode_skips_disk_writes() {
     let dir = three_commit_repo();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    fs::create_dir_all(&gitmind_dir).unwrap();
-    let cache = GitCache::open(&gitmind_dir, 8, false).unwrap();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    let cache = GitCache::open(&basemind_dir, 8, false).unwrap();
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
     cache.commit_files(&repo, &head).unwrap();
 
-    let on_disk = gitmind_dir.join(GIT_CACHE_DIR);
+    let on_disk = basemind_dir.join(GIT_CACHE_DIR);
     assert!(
         !on_disk.exists(),
         "persist=false must not create the cache dir"

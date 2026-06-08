@@ -1,5 +1,5 @@
 version = "4.0"
-name = "gitmind"
+name = "basemind"
 description = "Code-map MCP server + scanner — pure-Rust, content-addressed, Fjall-backed inverted index."
 gitignore = true
 
@@ -27,9 +27,9 @@ builtins = [
 ]
 
 [[mcp_servers]]
-name = "gitmind"
-description = "Gitmind code-map MCP — outlines, reference search, symbol history, blame, churn."
-command = "gitmind"
+name = "basemind"
+description = "Basemind code-map MCP — outlines, reference search, symbol history, blame, churn."
+command = "basemind"
 args = ["serve"]
 
 [[mcp_servers]]

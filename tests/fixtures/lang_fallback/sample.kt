@@ -1,4 +1,4 @@
-package gitmind.fixtures
+package basemind.fixtures
 
 class Greeter(val name: String) {
     fun hello(): String {

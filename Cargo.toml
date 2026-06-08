@@ -1,23 +1,23 @@
 [package]
-name = "gitmind"
-version = "0.1.0"
+name = "basemind"
+version = "0.0.1"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
 readme = "README.md"
 license = "MIT"
-repository = "https://github.com/Goldziher/gitmind"
-documentation = "https://docs.rs/gitmind"
-homepage = "https://github.com/Goldziher/gitmind"
+repository = "https://github.com/Goldziher/basemind"
+documentation = "https://docs.rs/basemind"
+homepage = "https://github.com/Goldziher/basemind"
 keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer"]
 categories = ["command-line-utilities", "development-tools"]
 
 [lib]
-name = "gitmind"
+name = "basemind"
 path = "src/lib.rs"
 
 [[bin]]
-name = "gitmind"
+name = "basemind"
 path = "src/main.rs"
 
 [dependencies]
@@ -57,7 +57,7 @@ tree-sitter-language-pack = { git = "https://github.com/kreuzberg-dev/tree-sitte
 
 [dev-dependencies]
 insta = "1"
-# Client-side rmcp used by the `harden` integration test to drive `gitmind serve`
+# Client-side rmcp used by the `harden` integration test to drive `basemind serve`
 # over a stdio child-process transport. Composes with the [dependencies] entry
 # above — features are union-merged by cargo.
 rmcp = { version = "1.7", features = ["client", "transport-child-process"] }

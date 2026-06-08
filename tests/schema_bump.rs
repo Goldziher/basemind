@@ -27,8 +27,8 @@ struct LegacyEntry {
 fn opening_against_stale_schema_index_wipes_cache() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let gitmind_dir = root.join(".gitmind");
-    let blobs_dir = gitmind_dir.join("blobs");
+    let basemind_dir = root.join(".basemind");
+    let blobs_dir = basemind_dir.join("blobs");
     fs::create_dir_all(&blobs_dir).unwrap();
 
     // Drop a fake blob and a v1-shaped index.
@@ -50,10 +50,10 @@ fn opening_against_stale_schema_index_wipes_cache() {
         files,
     };
     let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
-    fs::write(gitmind_dir.join("index.msgpack"), bytes).unwrap();
+    fs::write(basemind_dir.join("index.msgpack"), bytes).unwrap();
 
     // Opening the store must detect the mismatch and wipe.
-    let store = gitmind::store::Store::open(root, gitmind::store::VIEW_WORKING)
+    let store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING)
         .expect("open should succeed via auto-wipe");
     assert!(
         store.index.files.is_empty(),

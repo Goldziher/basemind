@@ -15,7 +15,7 @@ tasks:
       - echo "Setup complete"
 
   build:
-    desc: Build the gitmind binary
+    desc: Build the basemind binary
     cmds:
       - cargo build --release
 

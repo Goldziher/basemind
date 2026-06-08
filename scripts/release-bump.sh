@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atomically bump the gitmind version across every shipped surface.
+# Atomically bump the basemind version across every shipped surface.
 #
 # Usage: ./scripts/release-bump.sh <version>
 # Example: ./scripts/release-bump.sh 0.1.0
@@ -9,7 +9,7 @@
 #   Cargo.toml                            [package] version
 #   npm-package/package.json              "version"
 #   pip-package/pyproject.toml            version (PyPI form: 0.1.0-rc.1 → 0.1.0rc1)
-#   pip-package/gitmind/__init__.py       __version__
+#   pip-package/basemind/__init__.py       __version__
 #   src/version.rs                        RELEASE_MINOR (if minor changed)
 #
 # If the minor component changed, RELEASE_MINOR is also bumped to track. Patch-only
@@ -59,9 +59,9 @@ if [[ -f pip-package/pyproject.toml ]]; then
   rm pip-package/pyproject.toml.bak
 fi
 
-if [[ -f pip-package/gitmind/__init__.py ]]; then
-  sed -i.bak -E "s/^__version__ = \"[^\"]+\"$/__version__ = \"$PY_VERSION\"/" pip-package/gitmind/__init__.py
-  rm pip-package/gitmind/__init__.py.bak
+if [[ -f pip-package/basemind/__init__.py ]]; then
+  sed -i.bak -E "s/^__version__ = \"[^\"]+\"$/__version__ = \"$PY_VERSION\"/" pip-package/basemind/__init__.py
+  rm pip-package/basemind/__init__.py.bak
 fi
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then

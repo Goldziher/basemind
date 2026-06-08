@@ -265,7 +265,7 @@ pub fn scan(
 /// Incremental scan: process only the given absolute paths. Used by the watcher
 /// where the debouncer already told us which files changed.
 ///
-/// Paths outside `root`, inside `.gitmind/`, or not matching the include globs are
+/// Paths outside `root`, inside `.basemind/`, or not matching the include globs are
 /// silently dropped (the watcher pre-filters but we re-check defensively).
 /// Removed files (path no longer exists) are purged from the index.
 pub fn scan_paths(
@@ -285,7 +285,7 @@ pub fn scan_paths(
             Ok(p) => p.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        if rel.is_empty() || rel.starts_with(crate::config::GITMIND_DIR) {
+        if rel.is_empty() || rel.starts_with(crate::config::BASEMIND_DIR) {
             continue;
         }
         if !abs.exists() {
@@ -384,13 +384,13 @@ fn candidates_for_source(
         ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
     };
     // For git sources we still apply the configured include/exclude filters so the user can
-    // turn things off via `.gitmind/gitmind.toml`.
+    // turn things off via `.basemind/basemind.toml`.
     let mut out: Vec<String> = match source {
         ScanSource::WorkingTree => raw,
         _ => raw
             .into_iter()
             .filter(|rel| filters.allows(rel))
-            .filter(|rel| !rel.starts_with(crate::config::GITMIND_DIR))
+            .filter(|rel| !rel.starts_with(crate::config::BASEMIND_DIR))
             .collect(),
     };
     out.sort();

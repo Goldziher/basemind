@@ -13,7 +13,7 @@ A canary symbol or query must be:
 
 - **Call-site-dense in the target repo** — at least 50× the threshold. If you assert `>= 200` hits, pick a callee with ≥ 1000 actual call sites in the repo. Headroom absorbs upstream churn.
 - **Stable across releases** — pick a fundamental API (`tokio::spawn`, Django's `get`), not a freshly renamed one.
-- **Unambiguous by name alone** — gitmind's reference search is name-only. `get` is fine inside Django (many call sites, all the same semantic). Inside React, `get` would match too many unrelated callees; pick `useState` instead.
+- **Unambiguous by name alone** — basemind's reference search is name-only. `get` is fine inside Django (many call sites, all the same semantic). Inside React, `get` would match too many unrelated callees; pick `useState` instead.
 - **Cheap to scan** — `scan_cap = limit * 8` bounds work, but a hit-dense canary still has the lowest overhead.
 
 ## Assertion shape
@@ -25,7 +25,7 @@ A canary symbol or query must be:
 ## Steps
 
 1. Pick the target repo + symbol per the criteria above.
-2. Confirm the count locally: clone the repo, run `gitmind scan`, call `find_references` via the MCP, note the actual count.
+2. Confirm the count locally: clone the repo, run `basemind scan`, call `find_references` via the MCP, note the actual count.
 3. Set the threshold to `actual / 2` rounded down — survives ~50% churn.
 4. Add to `tests/harden.rs`:
    - The canary call in the per-repo sweep.

@@ -9,7 +9,7 @@ Use this when adding a new Fjall keyspace, extending an existing key encoding, o
 
 ## Decide if you need a schema bump
 
-Bumping `INDEX_SCHEMA_VER` triggers auto-wipe of `.gitmind/views/<view>/index.fjall/` on the user's next scan. The next scan rebuilds from the msgpack blobs — no data loss, but a one-time scan cost. Bump when:
+Bumping `INDEX_SCHEMA_VER` triggers auto-wipe of `.basemind/views/<view>/index.fjall/` on the user's next scan. The next scan rebuilds from the msgpack blobs — no data loss, but a one-time scan cost. Bump when:
 
 - The byte layout of an existing key changes.
 - A `SymbolKind` ordinal would shift (you reordered the enum — don't).
@@ -43,7 +43,7 @@ Do **not** bump when:
    - Apply `scan_cap = limit * 8`.
 
 5. **Bump `INDEX_SCHEMA_VER`** (if needed) and verify the auto-wipe path by:
-   - Pointing `gitmind scan` at an existing `.gitmind/` from a prior version.
+   - Pointing `basemind scan` at an existing `.basemind/` from a prior version.
    - Confirming the wipe + rebuild completes without panic.
 
 ## Verification

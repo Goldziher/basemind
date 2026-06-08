@@ -28,12 +28,12 @@ Why this order:
 After the local loop passes:
 
 ```bash
-GITMIND_HARDEN_NO_BUILD=1 \
+BASEMIND_HARDEN_NO_BUILD=1 \
   cargo test --release --test harden -- --ignored --nocapture \
-  2>&1 | tee /tmp/gitmind-harden-$(date +%s).log
+  2>&1 | tee /tmp/basemind-harden-$(date +%s).log
 ```
 
-- `GITMIND_HARDEN_NO_BUILD=1` reuses `target/release/gitmind` — saves ~30s per run. Drop it when you're suspicious the binary is stale.
+- `BASEMIND_HARDEN_NO_BUILD=1` reuses `target/release/basemind` — saves ~30s per run. Drop it when you're suspicious the binary is stale.
 - Expect 8/8 green: ripgrep, tokio, typescript, react, django, requests, gin, ripgrep-shallow.
 - Canaries: tokio `spawn_hits >= 200`, django `get_hits >= 200`, react `useState_hits >= 20`, ripgrep-shallow `any_truncated == true`.
 

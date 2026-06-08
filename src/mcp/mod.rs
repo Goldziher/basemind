@@ -1,10 +1,10 @@
-//! MCP server exposing the gitmind code map + git context to AI agents.
+//! MCP server exposing the basemind code map + git context to AI agents.
 //!
 //! The server is read-only and opens the store without taking the exclusive lock so it can
-//! coexist with `gitmind watch` running in another terminal. Tools return JSON so the agent
+//! coexist with `basemind watch` running in another terminal. Tools return JSON so the agent
 //! can navigate by file path + line numbers without opening source files.
 //!
-//! Transport: stdio (the canonical MCP transport). Spawn via `gitmind serve`.
+//! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
 mod helpers;
 mod tools;
@@ -47,7 +47,7 @@ pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, LangId), Arc<Outli
 /// Shared MCP server state. `ToolRouter<Self>` is Clone (Arc inside), so we hold it directly
 /// on the struct as the `#[tool_handler]` macro expects.
 #[derive(Clone)]
-pub struct GitmindServer {
+pub struct BasemindServer {
     pub(crate) state: Arc<ServerState>,
     // Touched by macro-generated dispatch; dead_code can't see that.
     #[allow(dead_code)]
@@ -107,7 +107,7 @@ impl MapCache {
     }
 }
 
-impl GitmindServer {
+impl BasemindServer {
     pub fn new(
         store: Store,
         root: PathBuf,
@@ -140,18 +140,18 @@ impl GitmindServer {
 }
 
 fn spawn_view_watcher(state: Arc<ServerState>) {
-    let (gitmind_dir, view) = {
+    let (basemind_dir, view) = {
         let store = match state.store.try_read() {
             Ok(g) => g,
             Err(_) => return,
         };
-        (store.gitmind_dir.clone(), store.view.clone())
+        (store.basemind_dir.clone(), store.view.clone())
     };
-    let view_dir = gitmind_dir.join(crate::store::VIEWS_DIR).join(&view);
+    let view_dir = basemind_dir.join(crate::store::VIEWS_DIR).join(&view);
     let target = view_dir.join(crate::store::INDEX_FILE);
 
     std::thread::Builder::new()
-        .name("gitmind-mcp-view-watcher".to_string())
+        .name("basemind-mcp-view-watcher".to_string())
         .spawn(move || {
             use notify_debouncer_full::new_debouncer;
             use std::time::Duration;
@@ -208,10 +208,10 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
 }
 
 #[tool_handler]
-impl ServerHandler for GitmindServer {
+impl ServerHandler for BasemindServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "gitmind exposes a tree-sitter-backed code map plus git context. \
+            "basemind exposes a tree-sitter-backed code map plus git context. \
              Code-map tools: `outline`, `search_symbols`, `list_files`, `dependents`, `status`. \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \
              `find_commits_by_path`, `hot_files`, `diff_outline`, `diff_file`, `blame_file`, \
