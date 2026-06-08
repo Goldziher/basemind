@@ -51,8 +51,15 @@ tasks:
       - cargo clean
 
   update:
-    desc: Update dependencies
+    desc: Update dependencies (compatible versions only — no Cargo.toml edits)
     cmds:
+      - cargo update
+      - prek autoupdate
+
+  upgrade:
+    desc: Upgrade dependencies to latest, including incompatible bumps (rewrites Cargo.toml)
+    cmds:
+      - cargo upgrade --incompatible
       - cargo update
       - prek autoupdate
 
