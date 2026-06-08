@@ -53,7 +53,7 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
-tree-sitter-language-pack = { git = "https://github.com/kreuzberg-dev/tree-sitter-language-pack", rev = "f72760495a376eed570f41a0ccf8e068c29d815b" }
+tree-sitter-language-pack = "=1.9.0-rc.27"
 
 [dev-dependencies]
 insta = "1"
