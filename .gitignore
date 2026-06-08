@@ -1,12 +1,12 @@
 /target
-/.gitmind
+/.basemind
 *.swp
 
 # Release build artifacts
 /dist
 /pip-package/build
 /pip-package/dist
-/pip-package/gitmind.egg-info
+/pip-package/basemind.egg-info
 /npm-package/bin
 /npm-package/node_modules
 /npm-package/*.tgz
