@@ -25,7 +25,10 @@ use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
 /// Bumped whenever the on-disk key layout changes. Mismatch on open → wipe + rebuild.
-pub const INDEX_SCHEMA_VER: u32 = 1;
+/// Synced to [`crate::version::RELEASE_MINOR`] so the minor-release bump is the single
+/// authority for "is the persisted shape still readable" across both this partitioned
+/// index and the msgpack blob store.
+pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 

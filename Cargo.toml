@@ -1,9 +1,16 @@
 [package]
 name = "gitmind"
 version = "0.1.0"
+authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
-description = "File-watcher and code-map generator using tree-sitter"
+description = "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
+readme = "README.md"
 license = "MIT"
+repository = "https://github.com/Goldziher/gitmind"
+documentation = "https://docs.rs/gitmind"
+homepage = "https://github.com/Goldziher/gitmind"
+keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer"]
+categories = ["command-line-utilities", "development-tools"]
 
 [lib]
 name = "gitmind"

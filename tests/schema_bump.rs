@@ -1,8 +1,9 @@
 //! Verifies that opening a Store against a stale-schema index auto-wipes the cache.
 //!
-//! We synthesize a v1-shaped index by serializing a struct with `schema_ver = 1` and
-//! the legacy `FileEntry` layout. `Store::open` should detect the mismatch, remove
-//! `index.msgpack` and `blobs/`, and return an empty in-memory index.
+//! We synthesize a stale-schema-shaped index by serializing a struct with
+//! `schema_ver = 99` (a value distinct from any current or near-future
+//! `RELEASE_MINOR`) and the legacy `FileEntry` layout. `Store::open` should detect the
+//! mismatch, remove `index.msgpack` and `blobs/`, and return an empty in-memory index.
 
 use std::fs;
 
@@ -23,7 +24,7 @@ struct LegacyEntry {
 }
 
 #[test]
-fn opening_against_v1_index_wipes_cache() {
+fn opening_against_stale_schema_index_wipes_cache() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let gitmind_dir = root.join(".gitmind");
@@ -45,7 +46,7 @@ fn opening_against_v1_index_wipes_cache() {
         },
     );
     let legacy = LegacyIndex {
-        schema_ver: 1,
+        schema_ver: 99,
         files,
     };
     let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
