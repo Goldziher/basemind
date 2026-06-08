@@ -5,7 +5,7 @@
 //! without rewriting half of the codebase.
 
 mod remote;
-pub use remote::normalize_remote_url;
+pub use remote::{normalize_remote_url, scope_key};
 
 use std::path::{Path, PathBuf};
 

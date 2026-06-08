@@ -18,6 +18,18 @@ impl Repo {
     }
 }
 
+/// Derive the per-repo "scope" key used by the LanceDB tables and shared agent memory.
+///
+/// Prefers the normalised `origin` remote URL — stable across clones, machines, and
+/// directory moves. Falls back to `path:<workdir-realpath>` when no remote is configured
+/// (e.g. local-only experiments).
+pub fn scope_key(repo: &Repo) -> String {
+    match repo.remote_url() {
+        Some(url) => normalize_remote_url(&url),
+        None => format!("path:{}", repo.workdir().display()),
+    }
+}
+
 /// Normalise a git remote URL to a stable key suitable for memory-scope lookups.
 ///
 /// Drops the `.git` suffix, trims trailing slashes, and lowercases the host portion
