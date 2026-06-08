@@ -13,6 +13,10 @@ use crate::git::{GitError, Repo};
 use crate::hashing;
 use crate::lang;
 use crate::path::RelPath;
+#[cfg(feature = "documents")]
+use crate::scanner_docs::{
+    PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document,
+};
 use crate::store::{FileEntry, Store, StoreError};
 
 /// What state of the repository the scanner indexes from.
@@ -68,6 +72,10 @@ pub struct ScanStats {
     /// Parse-timeout subset of `extract_failed`. Distinguished so users can spot pathological
     /// files separately from "actual" grammar errors.
     pub parse_timeouts: usize,
+    /// Documents (non-source files) successfully extracted via kreuzberg and (when embeddings
+    /// were configured) pushed to LanceDB. Always present in `ScanStats` so callers that don't
+    /// compile the `documents` feature still get a stable struct shape; stays `0` in that mode.
+    pub docs_indexed: usize,
 }
 
 /// Per-file result. Every file the scanner *considered* shows up here.
@@ -81,6 +89,24 @@ pub struct FileResult {
     /// stashes the entry here; the single-threaded apply loop drains it into the store.
     /// Not part of the public surface — always `None` once `apply_outcomes` returns.
     pub(crate) upsert: Option<FileEntry>,
+    /// Internal: buffered document batch when this file went through the kreuzberg branch.
+    /// Drained by the single-threaded `flush_document_batches` pass into LanceDB.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_batch: Option<PendingDocBatch>,
+}
+
+impl FileResult {
+    /// Construct a minimal result with no buffered side-channel data. Helper used by every
+    /// `process_file` exit point so we only edit one site when the carrier shape grows.
+    fn bare(path: String, status: FileStatus) -> Self {
+        Self {
+            path,
+            status,
+            upsert: None,
+            #[cfg(feature = "documents")]
+            doc_batch: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +135,14 @@ pub enum FileStatus {
     },
     /// Subset of ExtractFailed: parse exceeded the configured timeout.
     ParseTimedOut,
+    /// File was non-source but went through the kreuzberg document tier instead of being
+    /// dropped at `SkippedNoLang`. `chunk_count` reflects how many chunks were extracted;
+    /// `embedding_dim` is the vector dimension (zero when embeddings were disabled).
+    #[cfg(feature = "documents")]
+    DocIndexed {
+        chunk_count: usize,
+        embedding_dim: u16,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -216,9 +250,11 @@ pub fn scan(
         "scan candidates"
     );
 
+    let scope = derive_scope(root, &source);
+
     let outcomes: Vec<FileResult> = candidates
         .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store, &source))
+        .map(|rel| process_file(root, rel, &filters, store, &source, config, &scope))
         .collect();
 
     let seen: ahash::AHashSet<String> = outcomes
@@ -230,7 +266,7 @@ pub fn scan(
         .collect();
 
     let mut report = ScanReport::default();
-    apply_outcomes(store, &mut report, outcomes);
+    let doc_batches = apply_outcomes(store, &mut report, outcomes);
 
     // Purge index entries for files no longer present / no longer allowed. Compare keys
     // via lossy UTF-8 — `seen` is populated from `FileResult.path: String` which itself
@@ -250,14 +286,13 @@ pub fn scan(
                 .remove_file(&RelPath::from(k.as_str()))
                 .and_then(|()| w.commit());
         }
-        report.results.push(FileResult {
-            path: k.clone(),
-            status: FileStatus::Removed,
-            upsert: None,
-        });
+        report
+            .results
+            .push(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
+    flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
     Ok(report)
 }
@@ -302,13 +337,14 @@ pub fn scan_paths(
     rels.sort();
     rels.dedup();
 
+    let scope = derive_scope(root, &source);
     let outcomes: Vec<FileResult> = rels
         .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store, &source))
+        .map(|rel| process_file(root, rel, &filters, store, &source, config, &scope))
         .collect();
 
     let mut report = ScanReport::default();
-    apply_outcomes(store, &mut report, outcomes);
+    let doc_batches = apply_outcomes(store, &mut report, outcomes);
 
     for rel in removed {
         store.remove(&rel);
@@ -318,19 +354,28 @@ pub fn scan_paths(
                 .remove_file(&RelPath::from(rel.as_str()))
                 .and_then(|()| w.commit());
         }
-        report.results.push(FileResult {
-            path: rel,
-            status: FileStatus::Removed,
-            upsert: None,
-        });
+        report
+            .results
+            .push(FileResult::bare(rel, FileStatus::Removed));
         report.stats.removed += 1;
     }
 
+    flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
     Ok(report)
 }
 
-fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<FileResult>) {
+/// Drain the parallel-map results back into the single-threaded store + report. Returns the
+/// list of buffered document batches so the caller can flush them into LanceDB after the
+/// index is consistent.
+#[cfg_attr(not(feature = "documents"), allow(clippy::needless_pass_by_ref_mut))]
+fn apply_outcomes(
+    store: &mut Store,
+    report: &mut ScanReport,
+    outcomes: Vec<FileResult>,
+) -> Vec<PendingDocBatchOpt> {
+    #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
+    let mut doc_batches: Vec<PendingDocBatchOpt> = Vec::new();
     for o in outcomes {
         report.stats.scanned += 1;
         match &o.status {
@@ -358,19 +403,32 @@ fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<File
                 report.stats.extract_failed += 1;
                 report.stats.parse_timeouts += 1;
             }
+            #[cfg(feature = "documents")]
+            FileStatus::DocIndexed { .. } => {
+                report.stats.docs_indexed += 1;
+            }
         }
         // Pull buffered entry off the result, if any, and upsert it into the index.
         if let Some(entry) = o.upsert.clone() {
             store.upsert(&o.path, entry);
         }
-        let cleared = FileResult {
-            path: o.path,
-            status: o.status,
-            upsert: None,
-        };
+        #[cfg(feature = "documents")]
+        if let Some(batch) = o.doc_batch.clone() {
+            doc_batches.push(batch);
+        }
+        let cleared = FileResult::bare(o.path, o.status);
         report.results.push(cleared);
     }
+    doc_batches
 }
+
+/// Alias that's `PendingDocBatch` under the `documents` feature and `()` otherwise. Lets
+/// `apply_outcomes` keep one signature while still returning real values when the feature
+/// is on.
+#[cfg(feature = "documents")]
+type PendingDocBatchOpt = PendingDocBatch;
+#[cfg(not(feature = "documents"))]
+type PendingDocBatchOpt = ();
 
 fn candidates_for_source(
     root: &Path,
@@ -434,15 +492,24 @@ fn process_file(
     filters: &Filters,
     store: &Store,
     source: &ScanSource<'_>,
+    config: &Config,
+    scope: &str,
 ) -> FileResult {
+    // No-op marker to keep the `scope`/`config` params in use when the feature is off.
+    #[cfg(not(feature = "documents"))]
+    {
+        let _ = (config, scope);
+    }
     let lang = match lang::detect(Path::new(rel)) {
         Some(l) => l,
         None => {
-            return FileResult {
-                path: rel.to_string(),
-                status: FileStatus::SkippedNoLang,
-                upsert: None,
-            };
+            #[cfg(feature = "documents")]
+            {
+                if matches!(source, ScanSource::WorkingTree) {
+                    return process_doc(root, rel, filters, store, config, scope);
+                }
+            }
+            return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
         }
     };
 
@@ -451,32 +518,20 @@ fn process_file(
         ScanSource::WorkingTree => match read_working_tree(root, rel, filters) {
             Ok(triple) => triple,
             Err(status) => {
-                return FileResult {
-                    path: rel.to_string(),
-                    status,
-                    upsert: None,
-                };
+                return FileResult::bare(rel.to_string(), status);
             }
         },
         ScanSource::Staged(repo) => match read_via_git(filters, repo.read_blob_staged(rel)) {
             Ok(triple) => triple,
             Err(status) => {
-                return FileResult {
-                    path: rel.to_string(),
-                    status,
-                    upsert: None,
-                };
+                return FileResult::bare(rel.to_string(), status);
             }
         },
         ScanSource::Rev { repo, sha } => {
             match read_via_git(filters, repo.read_blob_at_rev(sha, rel)) {
                 Ok(triple) => triple,
                 Err(status) => {
-                    return FileResult {
-                        path: rel.to_string(),
-                        status,
-                        upsert: None,
-                    };
+                    return FileResult::bare(rel.to_string(), status);
                 }
             }
         }
@@ -487,19 +542,11 @@ fn process_file(
     // ever sees it. Faster than the SIMD UTF-8 validator and gives a clearer diagnostic
     // (`skipped_binary` vs `skipped_non_utf8`) when the file passes UTF-8 by coincidence.
     if looks_binary(&bytes) {
-        return FileResult {
-            path: rel.to_string(),
-            status: FileStatus::SkippedBinary,
-            upsert: None,
-        };
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedBinary);
     }
 
     if std::str::from_utf8(&bytes).is_err() {
-        return FileResult {
-            path: rel.to_string(),
-            status: FileStatus::SkippedNonUtf8,
-            upsert: None,
-        };
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedNonUtf8);
     }
 
     let hash = hashing::hash_bytes(&bytes);
@@ -509,40 +556,30 @@ fn process_file(
         && existing.hash_hex == hash_hex
         && store.blob_path_l1(&hash).exists()
     {
-        return FileResult {
-            path: rel.to_string(),
-            status: FileStatus::Unchanged,
-            upsert: None,
-        };
+        return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
     let l1: FileMapL1 = match l1::extract_l1(lang, &bytes) {
         Ok(m) => m,
         Err(ExtractError::ParseTimeout(_)) => {
-            return FileResult {
-                path: rel.to_string(),
-                status: FileStatus::ParseTimedOut,
-                upsert: None,
-            };
+            return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
         }
         Err(source) => {
-            return FileResult {
-                path: rel.to_string(),
-                status: FileStatus::ExtractFailed {
+            return FileResult::bare(
+                rel.to_string(),
+                FileStatus::ExtractFailed {
                     msg: format_extract_err(&source),
                 },
-                upsert: None,
-            };
+            );
         }
     };
 
     if let Err(e) = store.write_l1(&hash, &l1) {
-        return FileResult {
-            path: rel.to_string(),
-            status: FileStatus::ExtractFailed { msg: e.to_string() },
-            upsert: None,
-        };
+        return FileResult::bare(
+            rel.to_string(),
+            FileStatus::ExtractFailed { msg: e.to_string() },
+        );
     }
 
     // Eager L2 (calls + docs). Failure here is non-fatal — we still index L1 so the file
@@ -590,6 +627,59 @@ fn process_file(
             error_count: l1.error_count,
         },
         upsert: Some(entry),
+        #[cfg(feature = "documents")]
+        doc_batch: None,
+    }
+}
+
+/// Document-tier branch: file had no tree-sitter language; check `[documents]` config and
+/// route through kreuzberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
+/// when documents are disabled or the MIME type is filtered out.
+#[cfg(feature = "documents")]
+fn process_doc(
+    root: &Path,
+    rel: &str,
+    filters: &Filters,
+    store: &Store,
+    config: &Config,
+    scope: &str,
+) -> FileResult {
+    let abs = root.join(rel);
+    let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
+        return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
+    };
+    let (bytes, _size_bytes, _mtime) = match read_working_tree(root, rel, filters) {
+        Ok(triple) => triple,
+        Err(status) => return FileResult::bare(rel.to_string(), status),
+    };
+    match extract_and_persist_doc(
+        store,
+        rel,
+        &abs,
+        &bytes,
+        &mime_type,
+        &config.documents,
+        scope,
+    ) {
+        Ok(Some(batch)) => {
+            let status = FileStatus::DocIndexed {
+                chunk_count: batch.chunk_count,
+                embedding_dim: batch.embedding_dim,
+            };
+            FileResult {
+                path: rel.to_string(),
+                status,
+                upsert: None,
+                doc_batch: Some(batch),
+            }
+        }
+        Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
+        Err(error) => FileResult::bare(
+            rel.to_string(),
+            FileStatus::ExtractFailed {
+                msg: format!("document extract: {error:#}"),
+            },
+        ),
     }
 }
 
@@ -656,6 +746,42 @@ fn format_extract_err(e: &ExtractError) -> String {
 pub fn looks_binary(bytes: &[u8]) -> bool {
     let probe = &bytes[..bytes.len().min(8 * 1024)];
     memchr::memchr(0, probe).is_some()
+}
+
+/// Compute the LanceDB scope key for this scan. Git sources reuse the existing remote-URL
+/// scope derivation; the working-tree path falls back to a workdir-rooted key when there's
+/// no git remote (or no git repo at all).
+fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
+    match source {
+        ScanSource::Staged(repo) | ScanSource::Rev { repo, .. } => crate::git::scope_key(repo),
+        ScanSource::WorkingTree => match Repo::discover(root) {
+            Ok(repo) => crate::git::scope_key(&repo),
+            Err(_) => format!("path:{}", root.display()),
+        },
+    }
+}
+
+/// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
+#[cfg(feature = "documents")]
+fn flush_doc_batches_if_any(
+    store: &mut Store,
+    config: &Config,
+    scope: &str,
+    batches: Vec<PendingDocBatchOpt>,
+) {
+    if batches.is_empty() {
+        return;
+    }
+    let _ = flush_document_batches(store, scope, batches, &config.documents.embedding_preset);
+}
+
+#[cfg(not(feature = "documents"))]
+fn flush_doc_batches_if_any(
+    _store: &mut Store,
+    _config: &Config,
+    _scope: &str,
+    _batches: Vec<PendingDocBatchOpt>,
+) {
 }
 
 #[cfg(test)]

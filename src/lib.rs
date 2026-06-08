@@ -16,6 +16,8 @@ pub mod path;
 pub mod query;
 pub mod render;
 pub mod scanner;
+#[cfg(feature = "documents")]
+pub mod scanner_docs;
 pub mod store;
 pub mod version;
 pub mod watcher;

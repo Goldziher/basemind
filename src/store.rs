@@ -10,12 +10,17 @@ use thiserror::Error;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::hashing::{self, Hash};
 use crate::index::{IndexDb, IndexError};
+#[cfg(feature = "intelligence")]
+use crate::lance::LanceStore;
 use crate::path::RelPath;
 
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
 pub const VIEWS_DIR: &str = "views";
+/// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
+#[cfg(feature = "intelligence")]
+pub const LANCE_DIR: &str = "lance";
 
 /// View name used for the working-tree index. Also the default for `basemind serve`.
 pub const VIEW_WORKING: &str = "working";
@@ -85,6 +90,10 @@ pub struct Store {
     /// which is cheap to clone (internally Arc'd). `None` in read-only mode when the
     /// directory doesn't exist yet — callers must handle the absence.
     pub index_db: Option<IndexDb>,
+    /// LanceDB-backed vector store. Lazy-opened on first document insert so a
+    /// vanilla code-only scan doesn't pay the LanceDB startup cost.
+    #[cfg(feature = "intelligence")]
+    pub lance: Option<LanceStore>,
     _lock: Option<File>,
 }
 
@@ -126,6 +135,8 @@ impl Store {
             view: view.to_string(),
             index,
             index_db,
+            #[cfg(feature = "intelligence")]
+            lance: None,
             _lock: Some(lock),
         })
     }
@@ -154,8 +165,31 @@ impl Store {
             view: view.to_string(),
             index,
             index_db,
+            #[cfg(feature = "intelligence")]
+            lance: None,
             _lock: None,
         })
+    }
+
+    /// Lazy-open the LanceDB store at `.basemind/lance/`. Subsequent calls return
+    /// the cached handle; the first call pays the connection + table-init cost.
+    ///
+    /// A mismatch between the stored `(dim, embedding_model)` and the values
+    /// passed here wipes the whole `.basemind/lance/` directory and rebuilds —
+    /// the standard schema-bump migration story for the vector store.
+    #[cfg(feature = "intelligence")]
+    pub fn lance_or_open(
+        &mut self,
+        dim: u16,
+        embedding_model: &str,
+    ) -> Result<&LanceStore, anyhow::Error> {
+        if self.lance.is_none() {
+            let dir = self.basemind_dir.join(LANCE_DIR);
+            let store = LanceStore::open(&dir, dim, embedding_model)?;
+            self.lance = Some(store);
+        }
+        // SAFETY of unwrap: we just populated it on the line above when None.
+        Ok(self.lance.as_ref().expect("lance store just populated"))
     }
 
     pub fn blob_path_l1(&self, hash: &Hash) -> PathBuf {

@@ -124,6 +124,10 @@ pub fn render_summary(
         removed = pair("removed", stats.removed, style_warn),
     );
     let _ = writeln!(w, "{line}");
+    if stats.docs_indexed > 0 {
+        let docs_line = pair("docs_indexed", stats.docs_indexed, style_ok);
+        let _ = writeln!(w, "{docs_line}");
+    }
 }
 
 /// Print a one-line summary of the grammar bootstrap.
@@ -371,6 +375,22 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
             style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::Red))),
             detail: format!("(extract failed: {msg})"),
         }),
+        #[cfg(feature = "documents")]
+        FileStatus::DocIndexed {
+            chunk_count,
+            embedding_dim,
+        } => {
+            if v == Verbosity::Quiet {
+                None
+            } else {
+                Some(Row {
+                    symbol: '✓',
+                    label: "doc",
+                    style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
+                    detail: format!("({chunk_count} chunks, dim={embedding_dim})"),
+                })
+            }
+        }
     }
 }
 

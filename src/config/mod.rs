@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-pub use v1::ConfigV1;
+pub use v1::{ConfigV1, DocumentsConfig};
 
 pub type Config = ConfigV1;
 
