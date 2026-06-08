@@ -138,11 +138,14 @@ is eligible — grammars are dynamically downloaded on first use and cached at
 
 Hand-written extraction queries ship for **Rust, Python, TypeScript, TSX,
 JavaScript, Go**: these get full outlines (signatures, kinds, decorators), call
-sites, imports, and doc comments. Other languages parse through tree-sitter and
-land in the index by path + language tag; symbol/call extraction is empty for them
-until either a hand-written `src/queries/<lang>.scm` override is added or the
-upstream `get_tags_query` accessor lands in tree-sitter-language-pack and the
-fallback adapter wires in.
+sites, imports, and doc comments. Any other language for which TSLP ships a
+vendored `tags.scm` (kotlin, csharp, swift, cpp, scala, solidity, lua, …
+~100 grammars in the published bundle) gets best-effort symbol + call
+extraction via the fallback adapter in `lang::adapt_tslp_tags`, which rewrites
+the GitHub-standard `@definition.*` / `@reference.call` captures into gitmind's
+`@symbol.*` / `@call.*` shape. Languages with neither an override nor an
+upstream `tags.scm` (JSON, YAML, TOML, …) still parse and land in `list_files`;
+symbol/call extraction yields empty vectors for them.
 
 Modern-JS patterns covered: arrow-function `const` declarations
 (`const Foo = () => …`) and function-expression consts surface as kind `function`

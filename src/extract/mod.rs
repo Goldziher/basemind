@@ -117,7 +117,7 @@ impl SymbolKind {
             "interface" => Self::Interface,
             "trait" => Self::Trait,
             "type" => Self::Type,
-            "const" => Self::Const,
+            "const" | "constant" => Self::Const,
             "module" => Self::Module,
             "macro" => Self::Macro,
             "impl" => Self::Impl,

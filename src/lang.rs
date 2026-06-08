@@ -369,14 +369,229 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
     }
 }
 
+/// Adapt an upstream TSLP `tags.scm` source into gitmind's override-shaped section convention.
+///
+/// TSLP's `tags.scm` uses the GitHub-standard capture names `@definition.<kind>` / `@reference.call`
+/// with the identifier name captured as `@name`. Gitmind's extractors look for
+/// `@symbol.<kind>` / `@symbol.name` (l1) and `@call.range` / `@call.callee` (l2). This walks
+/// top-level S-expression patterns, classifies each by its root capture, and emits the
+/// rewritten pattern into either the `;; section: symbols` or `;; section: calls` block.
+///
+/// Patterns whose root capture is neither `@definition.*` nor `@reference.call` (e.g.
+/// `@reference.class`, `@reference.interface`, `@reference.send`, `@reference.type`,
+/// `@reference.implementation`) are dropped — gitmind has no consumer for them today.
+fn adapt_tslp_tags(source: &str) -> String {
+    let mut sym_buf = String::new();
+    let mut call_buf = String::new();
+    for pattern in split_top_level_patterns(source) {
+        let kind = classify_pattern(pattern);
+        match kind {
+            PatternKind::Definition => sym_buf.push_str(&rewrite_pattern(pattern, kind)),
+            PatternKind::ReferenceCall => call_buf.push_str(&rewrite_pattern(pattern, kind)),
+            PatternKind::Other => {}
+        }
+    }
+    let mut out = String::with_capacity(sym_buf.len() + call_buf.len() + 64);
+    out.push_str(";; section: symbols\n");
+    out.push_str(&sym_buf);
+    out.push_str("\n;; section: calls\n");
+    out.push_str(&call_buf);
+    out
+}
+
+#[derive(Clone, Copy)]
+enum PatternKind {
+    Definition,
+    ReferenceCall,
+    Other,
+}
+
+/// Yield each top-level S-expression pattern from the source as a `&str` slice.
+///
+/// Walks paren depth char-by-char, skipping `;`-to-EOL comments and `"..."` string literals
+/// where parens carry no structural meaning. A "pattern" is the substring from a depth-0
+/// `(` (along with any trailing `@root.capture` annotation) to the next paren that lands
+/// back at depth 0. Free-standing comments and whitespace between patterns are skipped.
+fn split_top_level_patterns(source: &str) -> Vec<&str> {
+    let bytes = source.as_bytes();
+    let mut patterns: Vec<&str> = Vec::new();
+    let mut i = 0;
+    let mut start: Option<usize> = None;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b';' => {
+                // Comment to end of line, regardless of depth.
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                // Skip string literal — escapes preserved minimally.
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'(' => {
+                if depth == 0 && start.is_none() {
+                    start = Some(i);
+                }
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                i += 1;
+                if depth == 0 {
+                    // Consume any trailing `@root.capture` annotation that belongs to the
+                    // just-closed pattern, including whitespace/newlines between `)` and `@`.
+                    let mut j = i;
+                    while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b'@' {
+                        // Skip `@capture.name` token.
+                        j += 1;
+                        while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
+                            j += 1;
+                        }
+                        i = j;
+                    }
+                    if let Some(s) = start {
+                        patterns.push(&source[s..i]);
+                    }
+                    start = None;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    patterns
+}
+
+fn is_capture_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'.' || b == b'?' || b == b'!'
+}
+
+/// Find the root capture of a pattern: the rightmost `@<root>.<sub>` at the outermost
+/// closing paren (or top level). Returns `Definition` if root is `definition.*`,
+/// `ReferenceCall` if root is `reference.call`, `Other` otherwise.
+fn classify_pattern(pattern: &str) -> PatternKind {
+    // The root capture is the LAST `@...` token in the pattern. Scan from the end.
+    let bytes = pattern.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'@' {
+            // Found a `@` — read forward to extract the capture name.
+            let cap_start = i + 1;
+            let mut j = cap_start;
+            while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
+                j += 1;
+            }
+            let cap = &pattern[cap_start..j];
+            return classify_capture(cap);
+        }
+    }
+    PatternKind::Other
+}
+
+fn classify_capture(cap: &str) -> PatternKind {
+    if let Some(suffix) = cap.strip_prefix("definition.") {
+        let _ = suffix;
+        PatternKind::Definition
+    } else if cap == "reference.call" {
+        PatternKind::ReferenceCall
+    } else {
+        PatternKind::Other
+    }
+}
+
+/// Rewrite a pattern's capture names from TSLP convention to gitmind convention. The trailing
+/// `\n` is included so consecutive patterns stay separated in the emitted section.
+fn rewrite_pattern(pattern: &str, kind: PatternKind) -> String {
+    let mut out = String::with_capacity(pattern.len() + 16);
+    let bytes = pattern.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'@' {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        // Found `@`. Read the capture name.
+        let cap_start = i + 1;
+        let mut j = cap_start;
+        while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
+            j += 1;
+        }
+        let cap = &pattern[cap_start..j];
+        let rewritten = rewrite_capture(cap, kind);
+        out.push('@');
+        out.push_str(&rewritten);
+        i = j;
+    }
+    out.push('\n');
+    out
+}
+
+fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
+    // `@name` is the identifier sub-capture; remap by section.
+    if cap == "name" {
+        return match kind {
+            PatternKind::Definition => "symbol.name".to_string(),
+            PatternKind::ReferenceCall => "call.callee".to_string(),
+            PatternKind::Other => "name".to_string(),
+        };
+    }
+    if let Some(suffix) = cap.strip_prefix("definition.") {
+        return format!("symbol.{suffix}");
+    }
+    if cap == "reference.call" {
+        return "call.range".to_string();
+    }
+    // Predicates like `@cap (#match? ...)` keep their original name in the pattern they
+    // came from — leave untouched.
+    cap.to_string()
+}
+
+/// Per-language cache of the adapted `tags.scm` string. Populated on first lookup;
+/// stays for process lifetime. Bound is the size of TSLP's registry — small.
+type AdaptedTagsMap = AHashMap<LangId, Arc<str>>;
+static ADAPTED_TAGS: OnceLock<RwLock<AdaptedTagsMap>> = OnceLock::new();
+
+fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
+    let lock = ADAPTED_TAGS.get_or_init(|| RwLock::new(AHashMap::new()));
+    if let Some(cached) = lock.read().expect("adapted tags pool poisoned").get(&lang) {
+        return Some(Arc::clone(cached));
+    }
+    let raw = tree_sitter_language_pack::get_tags_query(lang)?;
+    let adapted: Arc<str> = Arc::from(adapt_tslp_tags(raw));
+    lock.write()
+        .expect("adapted tags pool poisoned")
+        .insert(lang, Arc::clone(&adapted));
+    Some(adapted)
+}
+
 /// Look up a `(lang, kind)` query, returning `Ok(Some(arc))` when one exists,
 /// `Ok(None)` when neither the override file nor the TSLP fallback provides this section,
 /// and `Err` only on a compile error in source we do have.
 ///
 /// Lookup chain:
 /// 1. Local override — `src/queries/<lang>.scm` `;; section: <kind>`.
-/// 2. TSLP `tags.scm` — for Symbols/Calls only, gated on the upstream `get_tags_query`
-///    accessor (not yet wired; placeholder branch returns `None`).
+/// 2. TSLP `tags.scm` via [`adapt_tslp_tags`] — covers the 14 languages that ship a vendored
+///    `tags.scm` upstream (kotlin, csharp, swift, gleam, gap, al, enforce, gdshader, roc,
+///    cfml, ql, tact, sourcepawn, mojo).
 /// 3. None — file is still detected and indexed, but symbol/import/call extraction yields
 ///    empty vectors for this language.
 pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangError> {
@@ -385,10 +600,13 @@ pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangE
         return Ok(slot.as_ref().map(Arc::clone));
     }
 
-    let source = override_query_source(lang).and_then(|raw| extract_section(raw, kind.name()));
-    // Future: when TSLP exposes `get_tags_query`, plug it in here for Symbols/Calls under
-    // languages without an override. The adapter rewrites @definition.*/@reference.call
-    // captures into our @symbol.*/@call.* shape before compiling.
+    let source: Option<String> = if let Some(raw) = override_query_source(lang) {
+        extract_section(raw, kind.name())
+    } else if matches!(kind, QueryKind::Symbols | QueryKind::Calls) {
+        tslp_tags_adapted(lang).and_then(|adapted| extract_section(&adapted, kind.name()))
+    } else {
+        None
+    };
 
     let cached = match source {
         Some(src) => {
@@ -466,9 +684,59 @@ mod tests {
 
     #[test]
     fn try_get_query_returns_none_for_unsupported_lang() {
-        // C++ has no override and the TSLP-fallback branch is not yet wired, so the lookup
-        // returns `None`. When `get_tags_query` lands upstream this becomes `Some(...)`.
-        let res = try_get_query("cpp", QueryKind::Symbols).expect("query lookup must not error");
+        // `json` ships in TSLP but has no override AND no upstream `tags.scm`, so both
+        // lookup branches miss and the cache stores `None`. (Previously `cpp` — which now
+        // resolves through the TSLP tags fallback; data-only formats like JSON / YAML /
+        // TOML reliably ship no tags query.)
+        let res = try_get_query("json", QueryKind::Symbols).expect("query lookup must not error");
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn adapt_tslp_tags_emits_two_sections() {
+        let src = "(function_item name: (identifier) @name) @definition.function\n\
+                   (call_expression function: (identifier) @name) @reference.call\n";
+        let out = adapt_tslp_tags(src);
+        assert!(out.contains(";; section: symbols"));
+        assert!(out.contains(";; section: calls"));
+        assert!(out.contains("@symbol.function"));
+        assert!(out.contains("@symbol.name"));
+        assert!(out.contains("@call.range"));
+        assert!(out.contains("@call.callee"));
+    }
+
+    #[test]
+    fn adapt_tslp_tags_drops_reference_class() {
+        // `@reference.class` (kotlin constructor invocation, rust impl_item) has no consumer
+        // in gitmind today — must be excluded from both sections.
+        let src = "(impl_item trait: (type_identifier) @name) @reference.implementation\n\
+                   (call_expression function: (identifier) @name) @reference.call\n";
+        let out = adapt_tslp_tags(src);
+        // `reference.implementation` lacks a section, so its `@name` does NOT become
+        // `@call.callee` — the whole pattern is dropped.
+        assert!(!out.contains("@reference"));
+        assert!(out.contains("@call.range"));
+        assert!(out.contains("@call.callee"));
+    }
+
+    #[test]
+    fn adapt_tslp_tags_handles_multiline_patterns() {
+        let src = "(struct_item\n    name: (type_identifier) @name) @definition.class\n";
+        let out = adapt_tslp_tags(src);
+        assert!(out.contains("@symbol.class"));
+        assert!(out.contains("@symbol.name"));
+    }
+
+    #[test]
+    fn adapt_tslp_tags_real_rust_compiles() {
+        // The rust tags.scm from TSLP must produce a query string that tree-sitter compiles
+        // against the rust grammar — guards against ever drifting capture rewrites.
+        let raw = tree_sitter_language_pack::get_tags_query("rust").expect("rust ships tags.scm");
+        let adapted = adapt_tslp_tags(raw);
+        let sym = extract_section(&adapted, "symbols").expect("symbols section");
+        let calls = extract_section(&adapted, "calls").expect("calls section");
+        let ts_lang = language("rust").expect("rust language resolves");
+        Query::new(&ts_lang, &sym).expect("adapted symbols query compiles");
+        Query::new(&ts_lang, &calls).expect("adapted calls query compiles");
     }
 }

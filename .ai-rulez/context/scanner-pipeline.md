@@ -36,6 +36,6 @@ Walker (gitignore-aware)
 
 - Language detection is fully dynamic via `tree_sitter_language_pack::detect_language` → `LangId = &'static str` (the pack name). All ~300 TSLP grammars dispatch on first sight; the scanner does no per-extension special-casing.
 - Richer outlines for a new language → drop a `src/queries/<pack-name>.scm` override with `;; section: symbols / imports / calls / docs` sections. See the `language-support` skill.
-- Languages without an override still parse (via TSLP) and land in `list_files`; symbol/call extraction stays empty until either an override lands or the upstream TSLP `get_tags_query` accessor is wired into `lang::try_get_query`.
+- Languages without an override fall through to the TSLP `tags.scm` fallback in `lang::try_get_query`: `tree_sitter_language_pack::get_tags_query(lang)` → `lang::adapt_tslp_tags` rewrites `@definition.*` / `@reference.call` captures into gitmind's `@symbol.*` / `@call.*` shape, the result is cached per-lang and per-`(lang, kind)`. Covers ~100 grammars in the published TSLP bundle today (kotlin, csharp, swift, cpp, scala, solidity, …). Languages with neither an override nor an upstream `tags.scm` (JSON, YAML, TOML, …) still parse and land in `list_files`; symbol/call extraction yields empty vectors.
 - New extraction tier (e.g. `l4` semantic types) → mirror the `l1`/`l2` shape: `extract/l4.rs`, blob suffix `.l4.msgpack`, optional eager toggle in `ScanConfig`.
 - New index partition → see the `index-keyspace-evolution` skill.
