@@ -1,10 +1,21 @@
 # gitmind
 
-File-watcher and code-map generator using tree-sitter. Maintains a queryable
-map of a repository in `.gitmind/`, refreshed on file changes.
+Code-map MCP server + scanner using tree-sitter. Maintains a queryable map of a repository
+in `.gitmind/`, refreshed on file changes. The single `gitmind` binary is both a CLI
+(`gitmind scan`, `lang …`) and an MCP stdio server (`gitmind serve`) for AI agents.
 
-Prototype. See `/Users/naamanhirschfeld/.claude/plans/we-are-prototyping-a-frolicking-wozniak.md`
-for the iteration plan.
+## Install
+
+```bash
+brew install Goldziher/tap/gitmind   # macOS, Linux
+npm install -g gitmind               # any Node 14+ platform
+pip install gitmind                  # any Python 3.8+ platform
+cargo install gitmind --locked       # build from source
+```
+
+Pre-compiled binaries for `{x86_64,aarch64}-{linux-gnu,apple-darwin}` and
+`x86_64-pc-windows-gnu` ship on [GitHub Releases](https://github.com/Goldziher/gitmind/releases).
+The `npm` and `pip` packages download the right binary on install / first run.
 
 ## Subcommands
 

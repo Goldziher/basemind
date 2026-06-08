@@ -15,6 +15,7 @@ pub mod query;
 pub mod render;
 pub mod scanner;
 pub mod store;
+pub mod version;
 pub mod watcher;
 
 pub use config::Config;

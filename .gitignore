@@ -2,6 +2,15 @@
 /.gitmind
 *.swp
 
+# Release build artifacts
+/dist
+/pip-package/build
+/pip-package/dist
+/pip-package/gitmind.egg-info
+/npm-package/bin
+/npm-package/node_modules
+/npm-package/*.tgz
+
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
 .agents/
 .ai-rulez/.generated-manifest.json

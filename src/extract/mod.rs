@@ -15,7 +15,7 @@ use crate::lang::LangError;
 /// - v4: path keys in the index and msgpack store became `RelPath` (BString) — the wire
 ///   format is identical for ASCII/UTF-8 paths but non-UTF-8 paths now round-trip via a
 ///   discriminated `{"bytes": [u8...]}` object.
-pub const SCHEMA_VER: u16 = 4;
+pub const SCHEMA_VER: u16 = crate::version::RELEASE_MINOR;
 
 #[derive(Debug, Error)]
 pub enum ExtractError {

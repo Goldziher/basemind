@@ -1,0 +1,42 @@
+{
+  "name": "gitmind",
+  "version": "0.1.0",
+  "description": "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines",
+  "main": "index.js",
+  "bin": {
+    "gitmind": "bin/gitmind"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "keywords": [
+    "mcp",
+    "tree-sitter",
+    "code-map",
+    "scanner",
+    "indexer",
+    "gitmind"
+  ],
+  "author": "Na'aman Hirschfeld",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Goldziher/gitmind.git"
+  },
+  "homepage": "https://github.com/Goldziher/gitmind#readme",
+  "bugs": {
+    "url": "https://github.com/Goldziher/gitmind/issues"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.12",
+    "tar": "^6.0.0"
+  },
+  "files": [
+    "index.js",
+    "install.js",
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}

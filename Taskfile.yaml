@@ -1,0 +1,74 @@
+version: "3"
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  setup:
+    desc: "Install all dependencies and initialize project. Idempotent."
+    cmds:
+      - cargo fetch
+      - prek install
+      - prek install --hook-type commit-msg
+      - echo "Setup complete"
+
+  build:
+    desc: Build the gitmind binary
+    cmds:
+      - cargo build --release
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test --workspace
+
+  test:verbose:
+    desc: Run tests with verbose output
+    cmds:
+      - cargo test --workspace -- --nocapture
+
+  lint:
+    desc: Run all linters and formatters via prek
+    cmds:
+      - prek run --all-files
+
+  format:
+    desc: Format code
+    cmds:
+      - cargo fmt --all
+
+  check:
+    desc: Run all checks (lint + test)
+    cmds:
+      - task: lint
+      - task: test
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+
+  update:
+    desc: Update dependencies
+    cmds:
+      - cargo update
+      - prek autoupdate
+
+  harden:
+    desc: Run the real-OSS hardening harness against all canary repos
+    cmds:
+      - ./scripts/harden.sh
+
+  release:bump:
+    desc: 'Bump version across all surfaces. Usage: task release:bump VERSION=0.1.0'
+    cmds:
+      - ./scripts/release-bump.sh "{{.VERSION}}"
+    requires:
+      vars: [VERSION]
+
+  release:dry-run:
+    desc: GoReleaser snapshot build — produces dist/ archives without uploading
+    cmds:
+      - goreleaser release --snapshot --clean --skip=publish
