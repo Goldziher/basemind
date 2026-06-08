@@ -4,6 +4,9 @@
 //! `String` / `PathBuf` / small structs so we can swap the underlying git library later
 //! without rewriting half of the codebase.
 
+mod remote;
+pub use remote::normalize_remote_url;
+
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -185,7 +188,7 @@ impl Repo {
     }
 
     /// Borrow a per-thread `Repository` view of the wrapped thread-safe repo.
-    fn local(&self) -> gix::Repository {
+    pub(super) fn local(&self) -> gix::Repository {
         self.inner.to_thread_local()
     }
 

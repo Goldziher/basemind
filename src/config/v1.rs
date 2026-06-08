@@ -15,6 +15,10 @@ pub struct ConfigV1 {
     pub mcp: McpConfig,
     #[serde(default)]
     pub languages: std::collections::BTreeMap<String, LanguageConfig>,
+    #[serde(default)]
+    pub documents: DocumentsConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,6 +187,98 @@ impl Default for LanguageConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentsConfig {
+    /// Master switch. Only meaningful when the `documents` cargo feature is compiled in.
+    #[serde(default = "DocumentsConfig::default_enabled")]
+    pub enabled: bool,
+    /// MIME-type allowlist. Empty = accept anything kreuzberg can handle.
+    #[serde(default)]
+    pub mime_allowlist: Vec<String>,
+    /// Maximum chunk size in characters.
+    #[serde(default = "DocumentsConfig::default_max_characters")]
+    pub max_characters: usize,
+    /// Overlap between chunks in characters.
+    #[serde(default = "DocumentsConfig::default_overlap")]
+    pub overlap: usize,
+    /// Kreuzberg embedding preset name. Defaults to "balanced".
+    #[serde(default = "DocumentsConfig::default_embedding_preset")]
+    pub embedding_preset: String,
+    /// Generate embeddings (`true`) or skip vector storage entirely (`false`).
+    #[serde(default = "DocumentsConfig::default_embed")]
+    pub embed: bool,
+}
+
+impl DocumentsConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+    fn default_max_characters() -> usize {
+        1000
+    }
+    fn default_overlap() -> usize {
+        200
+    }
+    fn default_embedding_preset() -> String {
+        "balanced".to_string()
+    }
+    fn default_embed() -> bool {
+        true
+    }
+}
+
+impl Default for DocumentsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            mime_allowlist: Vec::new(),
+            max_characters: Self::default_max_characters(),
+            overlap: Self::default_overlap(),
+            embedding_preset: Self::default_embedding_preset(),
+            embed: Self::default_embed(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryConfig {
+    /// Master switch. Only meaningful when the `memory` cargo feature is compiled in.
+    #[serde(default = "MemoryConfig::default_enabled")]
+    pub enabled: bool,
+    /// How to derive the scope key for an opened repository.
+    #[serde(default)]
+    pub scope_strategy: MemoryScopeStrategy,
+}
+
+impl MemoryConfig {
+    fn default_enabled() -> bool {
+        true
+    }
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            scope_strategy: MemoryScopeStrategy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryScopeStrategy {
+    /// Use normalized `origin` remote URL when available, else fall back to the
+    /// workdir realpath. This is the recommended default — clones of the same
+    /// repo share memory across machines.
+    #[default]
+    GitRemoteWithFallback,
+    /// Always use the workdir realpath. Separates clones of the same repo.
+    WorkdirOnly,
+}
+
 impl ConfigV1 {
     pub fn with_defaults() -> Self {
         Self {
@@ -192,6 +288,8 @@ impl ConfigV1 {
             cache: CacheConfig::default(),
             mcp: McpConfig::default(),
             languages: Default::default(),
+            documents: DocumentsConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }

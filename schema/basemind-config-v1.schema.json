@@ -126,6 +126,66 @@
         }
       },
       "default": {}
+    },
+    "documents": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Document tier (PDFs, Office docs, emails, images via OCR). Only honored when basemind is built with the `documents` cargo feature.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for the document tier.",
+          "default": true
+        },
+        "mime_allowlist": {
+          "type": "array",
+          "description": "Restrict document ingestion to these IANA MIME types. Empty = accept anything kreuzberg can handle.",
+          "items": { "type": "string", "minLength": 1 },
+          "default": []
+        },
+        "max_characters": {
+          "type": "integer",
+          "description": "Maximum chunk size in characters.",
+          "minimum": 64,
+          "default": 1000
+        },
+        "overlap": {
+          "type": "integer",
+          "description": "Overlap between adjacent chunks in characters.",
+          "minimum": 0,
+          "default": 200
+        },
+        "embedding_preset": {
+          "type": "string",
+          "description": "Kreuzberg embedding preset name (controls model + dim).",
+          "default": "balanced"
+        },
+        "embed": {
+          "type": "boolean",
+          "description": "Generate embeddings for each chunk and write to LanceDB. Disable to skip vector storage entirely.",
+          "default": true
+        }
+      },
+      "default": {}
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Shared agent memory tools. Only honored when basemind is built with the `memory` cargo feature.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for the memory tier.",
+          "default": true
+        },
+        "scope_strategy": {
+          "type": "string",
+          "description": "How to derive the scope key. `git_remote_with_fallback` uses the normalised origin remote URL when present, else the workdir realpath. `workdir_only` always uses the workdir.",
+          "enum": ["git_remote_with_fallback", "workdir_only"],
+          "default": "git_remote_with_fallback"
+        }
+      },
+      "default": {}
     }
   }
 }
