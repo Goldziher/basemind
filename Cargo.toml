@@ -20,22 +20,86 @@ path = "src/lib.rs"
 name = "basemind"
 path = "src/main.rs"
 
+[features]
+# Document intelligence + vector storage + shared agent memory.
+# Off by default so a vanilla `cargo install basemind` stays MIT-only, builds
+# fast, and doesn't pull in ONNX Runtime. Opt in with --features documents,memory
+# (or just one of them).
+default = []
+
+# Base infrastructure: kreuzberg (Elastic-2.0) + LanceDB + Arrow. Pulled in by
+# both `documents` and `memory`; doesn't activate any extraction backends by
+# itself.
+intelligence = ["dep:kreuzberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+
+# Document tier: ingest PDFs, Office docs, emails, HTML, etc. via kreuzberg,
+# plus the full RAG-supporting analysis stack (chunking, keywords, NER, layout,
+# OCR, summarization, redaction). `embeddings` already implies `chunking` and
+# bundles ORT binaries (ort-bundled) so no system onnxruntime install is
+# required. LLM-driven features (liter-llm, ner-llm, summarization-llm,
+# translation, classification, captioning, redaction-ml) are intentionally
+# excluded — they require an external API key and would force runtime config
+# on every basemind user.
+documents = [
+    "intelligence",
+    "kreuzberg/formats",
+    # pdf, excel, office, hwp, hwpx, iwork, email, html, xml, archives, mdx
+    "kreuzberg/analysis",
+    # language-detection, chunking, quality, keywords, diff
+    "kreuzberg/chunking-tokenizers",
+    # token-aware chunk boundaries
+    "kreuzberg/embeddings",
+    # ORT-bundled embedding generation
+    "kreuzberg/ocr",
+    # Tesseract OCR
+    "kreuzberg/paddle-ocr",
+    # PaddleOCR (multilingual)
+    "kreuzberg/layout-detection",
+    # YOLO/RT-DETR page layout
+    "kreuzberg/auto-rotate",
+    # page orientation correction
+    "kreuzberg/ner-onnx",
+    # local NER (gline-rs)
+    "kreuzberg/summarization",
+    # TextRank extractive (no LLM)
+    "kreuzberg/redaction",
+    # pattern-based PII (no LLM)
+    # QR decode from images
+    "kreuzberg/qr-codes",
+]
+
+# Shared agent memory: needs the embedding engine + LanceDB, plus the bits of
+# RAG infrastructure that make memory search useful (keywords for hybrid rank,
+# NER for entity-anchored retrieval). No document parsing backends.
+memory = [
+    "intelligence",
+    "kreuzberg/embeddings",
+    "kreuzberg/keywords",
+    "kreuzberg/ner-onnx",
+]
+
 [dependencies]
 ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.1"
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
-fjall = "3.1.4"
+fjall = "3.1.5"
 fs2 = "0.4"
 gix = { version = "0.84.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
+# Kreuzberg powers the document tier + the embedding engine. Pin to the rc
+# until 5.0.0 stable lands (mirrors the tree-sitter-language-pack pin).
+kreuzberg = { version = "=5.0.0-rc.7", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+lancedb = { version = "0.30", optional = true }
 lru = "0.18.0"
 memchr = "2"
 notify = "8"
