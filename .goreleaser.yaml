@@ -2,7 +2,7 @@
 
 version: 2
 
-project_name: gitmind
+project_name: basemind
 
 before:
   hooks:
@@ -43,9 +43,9 @@ release:
     Released by [GoReleaser](https://github.com/goreleaser/goreleaser).
 
 brews:
-  - name: gitmind
+  - name: basemind
     description: "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
-    homepage: "https://github.com/Goldziher/gitmind"
+    homepage: "https://github.com/Goldziher/basemind"
     license: "MIT"
     repository:
       owner: Goldziher

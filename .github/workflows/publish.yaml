@@ -72,17 +72,17 @@ jobs:
           python_version="${{ steps.version.outputs.python_version }}"
 
           crates_exists=false
-          if curl -fsS "https://crates.io/api/v1/crates/gitmind/${version}" >/dev/null; then
+          if curl -fsS "https://crates.io/api/v1/crates/basemind/${version}" >/dev/null; then
             crates_exists=true
           fi
 
           npm_exists=false
-          if npm view "gitmind@${version}" version >/dev/null 2>&1; then
+          if npm view "basemind@${version}" version >/dev/null 2>&1; then
             npm_exists=true
           fi
 
           pypi_exists=false
-          if curl -fsS "https://pypi.org/pypi/gitmind/${python_version}/json" >/dev/null; then
+          if curl -fsS "https://pypi.org/pypi/basemind/${python_version}/json" >/dev/null; then
             pypi_exists=true
           fi
 
