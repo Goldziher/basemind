@@ -668,6 +668,7 @@ dependencies = [
  "clap",
  "fjall",
  "fs2",
+ "futures",
  "gix",
  "globset",
  "hex",

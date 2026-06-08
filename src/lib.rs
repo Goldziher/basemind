@@ -8,6 +8,8 @@ pub mod git;
 pub mod git_cache;
 pub mod hashing;
 pub mod index;
+#[cfg(feature = "intelligence")]
+pub mod lance;
 pub mod lang;
 pub mod mcp;
 pub mod path;

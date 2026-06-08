@@ -182,6 +182,19 @@ impl Store {
             .join(format!("{hash_hex}.l2.msgpack"))
     }
 
+    #[cfg(feature = "documents")]
+    pub fn blob_path_doc(&self, hash: &Hash) -> PathBuf {
+        let buf = hashing::hex_buf(hash);
+        self.blob_path_doc_hex(hashing::hex_str(&buf))
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn blob_path_doc_hex(&self, hash_hex: &str) -> PathBuf {
+        self.basemind_dir
+            .join(BLOBS_DIR)
+            .join(format!("{hash_hex}.doc.msgpack"))
+    }
+
     pub fn read_l1(&self, hash: &Hash) -> Result<Option<FileMapL1>, StoreError> {
         let buf = hashing::hex_buf(hash);
         self.read_l1_by_hex(hashing::hex_str(&buf))
@@ -229,6 +242,33 @@ impl Store {
 
     pub fn write_l2(&self, hash: &Hash, map: &FileMapL2) -> Result<(), StoreError> {
         write_blob(self.blob_path_l2(hash), map)
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn write_doc(
+        &self,
+        hash: &Hash,
+        map: &crate::extract::doc::FileMapDoc,
+    ) -> Result<(), StoreError> {
+        write_blob(self.blob_path_doc(hash), map)
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn read_doc_by_hex(
+        &self,
+        hash_hex: &str,
+    ) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
+        let path = self.blob_path_doc_hex(hash_hex);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&bytes)?;
+        check_schema(map.schema_ver)?;
+        Ok(Some(map))
     }
 
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
