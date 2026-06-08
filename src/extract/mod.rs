@@ -1,3 +1,5 @@
+#[cfg(feature = "documents")]
+pub mod doc;
 pub mod l1;
 pub mod l2;
 pub mod l3;
@@ -27,6 +29,11 @@ pub enum ExtractError {
     ParseTimeout(std::time::Duration),
     #[error(transparent)]
     Lang(#[from] LangError),
+    /// Document-tier extraction failure (kreuzberg). Only constructable when the
+    /// `documents` feature is enabled.
+    #[cfg(feature = "documents")]
+    #[error("kreuzberg extraction failed: {0}")]
+    Document(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

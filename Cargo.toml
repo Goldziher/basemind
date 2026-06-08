@@ -30,7 +30,13 @@ default = []
 # Base infrastructure: kreuzberg (Elastic-2.0) + LanceDB + Arrow. Pulled in by
 # both `documents` and `memory`; doesn't activate any extraction backends by
 # itself.
-intelligence = ["dep:kreuzberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+intelligence = [
+    "dep:kreuzberg",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:futures",
+]
 
 # Document tier: ingest PDFs, Office docs, emails, HTML, etc. via kreuzberg,
 # plus the full RAG-supporting analysis stack (chunking, keywords, NER, layout,
@@ -91,6 +97,7 @@ bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 fjall = "3.1.5"
 fs2 = "0.4"
+futures = { version = "0.3", optional = true }
 gix = { version = "0.84.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
 globset = "0.4"
 hex = "0.4"
