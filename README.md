@@ -51,25 +51,41 @@ cd /path/to/your/repo
 basemind scan
 ```
 
-**Wire it into Claude Code** — drop this into `~/.claude.json` (or your project's
-`.mcp.json`):
+**Wire it into Claude Code** — install as a plugin:
+
+```text
+/plugin marketplace add Goldziher/basemind
+/plugin install basemind@basemind
+```
+
+This registers basemind as an MCP server plus a `basemind` skill that tells
+the model when to reach for code-map tools (instead of grepping or reading
+files one by one). Restart the session and the agent has all the tools listed
+below.
+
+**Codex** — install via Codex's plugin / marketplace UI from the same repo
+(the `.codex-plugin/plugin.json` manifest is shipped alongside Claude's), then
+add the MCP server entry to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.basemind]
+command = "basemind"
+args = ["serve"]
+```
+
+**Other MCP clients** (Cursor, Continue, Cline, …) — drop the standard
+`mcpServers` entry into the client's MCP config:
 
 ```json
 {
   "mcpServers": {
     "basemind": {
       "command": "basemind",
-      "args": ["serve"],
-      "cwd": "/abs/path/to/your/repo"
+      "args": ["serve"]
     }
   }
 }
 ```
-
-Done. Restart Claude Code, and your agent has eight code-map tools and twelve
-git tools at its fingertips.
-
-> Same JSON shape works for Cursor, Continue, Cline, and any other MCP client.
 
 ---
 
