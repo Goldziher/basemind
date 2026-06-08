@@ -1,10 +1,16 @@
 # basemind
 
-[![npm version](https://badge.fury.io/js/basemind.svg)](https://www.npmjs.com/package/basemind)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Goldziher/basemind/blob/main/LICENSE)
+**Give your AI coding agent a brain for your repo.**
 
-Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over
-tree-sitter outlines.
+basemind is a code-map MCP server: it indexes your codebase into a queryable map
+so AI coding agents — Claude Code, Cursor, Continue, anything that speaks
+[MCP](https://modelcontextprotocol.io) — get instant semantic answers about your
+code. Where is this defined? Who calls it? When did it change? What's churning?
+
+Sub-millisecond queries. 300+ languages out of the box. Local-only. Built in Rust.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Goldziher/basemind/blob/main/LICENSE)
+[![npm](https://img.shields.io/npm/v/basemind.svg)](https://www.npmjs.com/package/basemind)
 
 ## Install
 
@@ -12,25 +18,38 @@ tree-sitter outlines.
 npm install -g basemind
 ```
 
-The installer downloads the appropriate pre-compiled Rust binary for your platform
-(macOS, Linux, Windows; x86_64 + arm64) from
-[GitHub Releases](https://github.com/Goldziher/basemind/releases) on first install.
+The installer downloads the appropriate pre-compiled Rust binary for your
+platform (macOS, Linux, Windows; x86_64 + arm64) from
+[GitHub Releases](https://github.com/Goldziher/basemind/releases) on first
+install.
 
-## Use
+## Quickstart
 
 ```bash
-basemind scan        # index the current repo into .basemind/
+cd /path/to/your/repo
+basemind scan        # index the working tree
 basemind serve       # run the MCP stdio server
-basemind lang list   # show downloaded tree-sitter grammars
 ```
 
-Wire `basemind serve` into an MCP client (Claude Desktop, Cursor, etc.) per their
-config — basemind exposes the full code-map and git tool surface over stdio.
+Wire `basemind serve` into Claude Code (`~/.claude.json`) or any MCP client:
+
+```json
+{
+  "mcpServers": {
+    "basemind": {
+      "command": "basemind",
+      "args": ["serve"],
+      "cwd": "/abs/path/to/your/repo"
+    }
+  }
+}
+```
 
 ## Documentation
 
-Full docs at [github.com/Goldziher/basemind](https://github.com/Goldziher/basemind).
+Full docs, architecture, and the complete MCP tool table at
+[github.com/Goldziher/basemind](https://github.com/Goldziher/basemind).
 
 ## License
 
-MIT.
+[MIT](https://github.com/Goldziher/basemind/blob/main/LICENSE).
