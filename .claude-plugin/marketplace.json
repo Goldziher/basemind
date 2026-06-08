@@ -1,0 +1,21 @@
+{
+  "name": "basemind",
+  "description": "basemind code-map MCP server, as a Claude Code plugin",
+  "owner": {
+    "name": "Na'aman Hirschfeld",
+    "email": "nhirschfeld@gmail.com",
+    "url": "https://github.com/Goldziher"
+  },
+  "plugins": [
+    {
+      "name": "basemind",
+      "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases.",
+      "version": "0.0.1",
+      "source": "./",
+      "author": {
+        "name": "Na'aman Hirschfeld",
+        "email": "nhirschfeld@gmail.com"
+      }
+    }
+  ]
+}

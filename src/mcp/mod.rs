@@ -211,12 +211,21 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
 impl ServerHandler for BasemindServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "basemind exposes a tree-sitter-backed code map plus git context. \
-             Code-map tools: `outline`, `search_symbols`, `list_files`, `dependents`, `status`. \
+            "basemind is a tree-sitter-backed code map + git context. Prefer these tools over \
+             reading files when navigating large or unfamiliar codebases.\n\
+             Routing: \
+             \"where is X defined?\" → `search_symbols`; \
+             \"what calls X?\" → `find_references` (any name) or `find_callers` (specific def); \
+             \"shape of this file?\" → `outline` (add `l2: true` for calls + docs); \
+             \"what changed recently?\" → `recent_changes`, `commits_touching`, `symbol_history`; \
+             \"who last touched this?\" → `blame_file` / `blame_symbol`; \
+             \"where's the churn?\" → `hot_files`.\n\
+             Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
+             `list_files`, `dependents`, `status`, `repo_info`, `symbol_history`. \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \
              `find_commits_by_path`, `hot_files`, `diff_outline`, `diff_file`, `blame_file`, \
-             `blame_symbol`, `symbol_history`, `repo_info`. All paths are repository-relative \
-             with forward-slash separators.",
+             `blame_symbol`. All paths are repository-relative with forward-slash separators. \
+             If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )
     }
 }

@@ -1,0 +1,19 @@
+{
+  "name": "basemind",
+  "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level.",
+  "version": "0.0.1",
+  "author": {
+    "name": "Na'aman Hirschfeld",
+    "email": "nhirschfeld@gmail.com"
+  },
+  "homepage": "https://github.com/Goldziher/basemind",
+  "repository": "https://github.com/Goldziher/basemind",
+  "license": "MIT",
+  "keywords": ["mcp", "code-map", "tree-sitter", "scanner", "indexer"],
+  "mcpServers": {
+    "basemind": {
+      "command": "basemind",
+      "args": ["serve"]
+    }
+  }
+}
