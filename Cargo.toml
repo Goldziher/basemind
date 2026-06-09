@@ -84,6 +84,11 @@ memory = [
     "kreuzberg/ner-onnx",
 ]
 
+# Convenience meta-feature: everything basemind exposes today. Equivalent to
+# `--features documents,memory`. Use this when you want one flag that always
+# pulls in the full intelligence surface as we add tiers in the future.
+full = ["documents", "memory"]
+
 [dependencies]
 ahash = "0.8"
 anstream = "1.0"
