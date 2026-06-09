@@ -7,7 +7,10 @@
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
 mod helpers;
+#[cfg(any(feature = "memory", feature = "documents"))]
+mod memory;
 mod tools;
+mod tools_memory;
 mod types;
 
 use std::collections::BTreeMap;
@@ -74,6 +77,16 @@ pub(crate) struct ServerState {
     /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
     /// hot files even when the symbol's source blob shows up in many adjacent commits.
     pub(crate) outline_cache: Arc<OutlineCache>,
+    /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
+    /// Computed once at boot. Do NOT recompute per-call.
+    #[allow(dead_code)] // used by memory / documents feature tools
+    pub(crate) scope: String,
+    /// LanceDB vector store. Lazy-init on first memory/document call.
+    #[cfg(any(feature = "memory", feature = "documents"))]
+    pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
+    /// Shared embedding engine. Lazy-init on first embed call.
+    #[cfg(feature = "intelligence")]
+    pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
 }
 
 pub(crate) struct MapCache {
@@ -114,10 +127,15 @@ impl BasemindServer {
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
     ) -> Self {
+        let scope = repo
+            .as_ref()
+            .map(|r| crate::git::scope_key(r))
+            .unwrap_or_else(|| format!("path:{}", root.display()));
         let cache = Arc::new(MapCache::build(&store));
         tracing::info!(
             files = cache.by_path.len(),
             git = repo.is_some(),
+            scope = %scope,
             "preloaded code map into RAM for MCP server"
         );
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
@@ -130,11 +148,16 @@ impl BasemindServer {
             repo,
             git_cache,
             outline_cache,
+            scope,
+            #[cfg(any(feature = "memory", feature = "documents"))]
+            lance: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "intelligence")]
+            embedder: tokio::sync::OnceCell::new(),
         });
         spawn_view_watcher(Arc::clone(&state));
         Self {
             state,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router_core() + Self::tool_router_memory(),
         }
     }
 }
@@ -207,7 +230,7 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
         .ok();
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for BasemindServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
@@ -219,12 +242,19 @@ impl ServerHandler for BasemindServer {
              \"shape of this file?\" → `outline` (add `l2: true` for calls + docs); \
              \"what changed recently?\" → `recent_changes`, `commits_touching`, `symbol_history`; \
              \"who last touched this?\" → `blame_file` / `blame_symbol`; \
-             \"where's the churn?\" → `hot_files`.\n\
+             \"where's the churn?\" → `hot_files`; \
+             \"semantic search across PDFs/docs in the repo?\" → `search_documents`; \
+             \"recall something the agent remembered earlier?\" → `memory_get` / `memory_list` / \
+             `memory_search`; \
+             \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`).\n\
              Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
              `list_files`, `dependents`, `status`, `repo_info`, `symbol_history`. \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \
              `find_commits_by_path`, `hot_files`, `diff_outline`, `diff_file`, `blame_file`, \
-             `blame_symbol`. All paths are repository-relative with forward-slash separators. \
+             `blame_symbol`. \
+             Intelligence tools (require build with `--features documents,memory`): \
+             `search_documents`, `memory_put`, `memory_get`, `memory_list`, `memory_search`, \
+             `memory_delete`. All paths are repository-relative with forward-slash separators. \
              If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )
     }

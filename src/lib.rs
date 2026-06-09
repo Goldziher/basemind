@@ -3,6 +3,8 @@
 #![allow(missing_docs)]
 
 pub mod config;
+#[cfg(feature = "intelligence")]
+pub mod embeddings;
 pub mod extract;
 pub mod git;
 pub mod git_cache;

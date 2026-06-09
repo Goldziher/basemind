@@ -347,5 +347,27 @@ async fn mcp_server_exercises_representative_tools() {
         "blame should return hunks on a real file"
     );
 
+    // memory_put / memory_get / memory_list / memory_delete / search_documents:
+    // Feature-gated — without `--features memory`/`--features documents` they return an
+    // MCP-level error. The smoke test confirms they dispatch without crashing.
+    let _ = service
+        .call_tool(call_params(
+            "memory_put",
+            json!({ "key": "smoke_key", "value": "hello", "embed": false }),
+        ))
+        .await;
+    let _ = service
+        .call_tool(call_params("memory_get", json!({ "key": "smoke_key" })))
+        .await;
+    let _ = service
+        .call_tool(call_params("memory_list", json!({})))
+        .await;
+    let _ = service
+        .call_tool(call_params("memory_delete", json!({ "key": "smoke_key" })))
+        .await;
+    let _ = service
+        .call_tool(call_params("search_documents", json!({ "query": "hello" })))
+        .await;
+
     let _ = service.cancel().await;
 }

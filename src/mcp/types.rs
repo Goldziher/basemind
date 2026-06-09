@@ -509,3 +509,129 @@ pub(super) struct RepoInfoResponse {
     pub head_short_sha: Option<String>,
     pub branch: Option<String>,
 }
+
+// ─── Memory + document-search shapes ─────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemoryPutParams {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    pub embed: bool,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(super) struct MemoryPutResponse {
+    pub key: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemoryGetParams {
+    pub key: String,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct MemoryEntry {
+    pub key: String,
+    pub value: String,
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemoryListParams {
+    #[serde(default)]
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(super) struct MemoryListResponse {
+    pub total: usize,
+    pub truncated: bool,
+    pub entries: Vec<MemoryEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemorySearchParams {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(super) struct MemorySearchHit {
+    pub key: String,
+    pub value: String,
+    pub tags: Vec<String>,
+    pub distance: f32,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(super) struct MemorySearchResponse {
+    pub query: String,
+    pub hits: Vec<MemorySearchHit>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemoryDeleteParams {
+    pub key: String,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize)]
+pub(super) struct MemoryDeleteResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SearchDocumentsParams {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+}
+
+#[cfg(feature = "documents")]
+#[derive(Debug, Serialize)]
+pub(super) struct DocumentSearchHit {
+    pub path: String,
+    pub chunk_idx: u32,
+    pub text: String,
+    pub mime_type: String,
+    pub byte_start: u32,
+    pub byte_end: u32,
+    pub distance: f32,
+}
+
+#[cfg(feature = "documents")]
+#[derive(Debug, Serialize)]
+pub(super) struct SearchDocumentsResponse {
+    pub query: String,
+    pub hits: Vec<DocumentSearchHit>,
+}
+
+#[cfg(feature = "memory")]
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct MemoryRecord {
+    pub value: String,
+    pub tags: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}

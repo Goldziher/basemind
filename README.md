@@ -44,6 +44,17 @@ pip install basemind                    # any Python 3.8+ platform
 cargo install basemind --locked         # build from source
 ```
 
+Opt-in **intelligence build** (PDF/Office ingestion, semantic doc search, shared
+agent memory backed by LanceDB):
+
+```bash
+cargo install basemind --locked --features documents,memory
+```
+
+This pulls in `kreuzberg` (document parsing + bundled ONNX embeddings) and
+`lancedb` (embedded vector store). First scan after enabling downloads the
+embedding model into the kreuzberg cache; subsequent scans are warm.
+
 **Index your repo:**
 
 ```bash
@@ -116,6 +127,19 @@ args = ["serve"]
 | `diff_outline` | "What symbols differ between `main` and `HEAD`?" — structural diff. |
 | `diff_file` | "Give me the unified diff for `auth.rs` across these revs." |
 | `working_tree_status` | "What's staged / unstaged / untracked right now?" |
+
+### Intelligence tools (opt-in: `--features documents,memory`)
+
+| Tool | What the agent can finally do |
+|---|---|
+| `search_documents` | "Find the auth design doc" — semantic KNN over PDFs / Office / HTML / emails. |
+| `memory_put` / `memory_get` / `memory_list` | Persist scoped notes — exact-key store and prefix / tag scans. |
+| `memory_search` | Semantic recall across stored memory entries — KNN over the LanceDB memory table. |
+| `memory_delete` | Drop an entry from both Fjall and LanceDB. |
+
+Memory is scoped by the repo's normalised `origin` URL so clones share entries.
+A repo with no remote falls back to a workdir-keyed scope (configurable via
+`[memory].scope_strategy` in `.basemind/basemind.toml`).
 
 Every tool returns JSON. Responses are capped (`limit`, default 100, max 1000) so
 the agent's context doesn't explode.

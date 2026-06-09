@@ -15,7 +15,7 @@ use super::helpers::*;
 use super::types::*;
 use crate::query;
 
-#[rmcp::tool_router(vis = "pub(super)")]
+#[rmcp::tool_router(vis = "pub(super)", router = "tool_router_core")]
 impl BasemindServer {
     /// File outline: symbols + imports (L1), optionally calls + docs (L2).
     #[tool(

@@ -64,6 +64,10 @@ pub struct IndexDb {
     pub(crate) imports_by_module: Keyspace,
     #[allow(dead_code)] // reserved for the future vector iteration
     pub(crate) embeddings: Keyspace,
+    /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
+    /// Always created for DB stability; used by `memory` feature tools.
+    #[allow(dead_code)]
+    pub(crate) memory_by_key: Keyspace,
 }
 
 impl IndexDb {
@@ -95,6 +99,7 @@ impl IndexDb {
         let calls_by_callee = db.keyspace("calls_by_callee", KeyspaceCreateOptions::default)?;
         let imports_by_module = db.keyspace("imports_by_module", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
+        let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
 
         // Stamp the version on a fresh open. We do this every time because rewriting one
         // 4-byte row is essentially free and saves us from a "was it really empty?" race.
@@ -109,6 +114,7 @@ impl IndexDb {
             calls_by_callee,
             imports_by_module,
             embeddings,
+            memory_by_key,
         })
     }
 

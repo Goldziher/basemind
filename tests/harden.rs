@@ -385,6 +385,37 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
     }
 
+    // Memory + document tools: sweep unconditionally (MCP error when features off is ok).
+    call(
+        svc,
+        &mut records,
+        "memory_put",
+        json!({ "key": "harden_probe", "value": "basemind harden probe", "embed": false }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "memory_get",
+        json!({ "key": "harden_probe" }),
+    )
+    .await;
+    call(svc, &mut records, "memory_list", json!({})).await;
+    call(
+        svc,
+        &mut records,
+        "memory_delete",
+        json!({ "key": "harden_probe" }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "search_documents",
+        json!({ "query": "code map scanner" }),
+    )
+    .await;
+
     records
 }
 

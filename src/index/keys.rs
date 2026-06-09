@@ -158,6 +158,37 @@ pub fn parse_import_by_module(key: &[u8]) -> Option<(String, RelPath, u32)> {
     Some((module, RelPath::from(rel.as_slice()), start))
 }
 
+// ─── memory_by_key ───────────────────────────────────────────────────────────
+
+/// `memory_by_key`: `u16:scope_len ‖ scope ‖ NUL ‖ u16:key_len ‖ key`.
+pub fn memory_by_key(scope: &str, key: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 2 + key.len());
+    write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    write_len_prefixed(&mut out, key.as_bytes());
+    out
+}
+
+/// Prefix bytes for "all memory entries in this scope" — feed to `keyspace.prefix(..)`.
+pub fn memory_by_key_scope_prefix(scope: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1);
+    write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out
+}
+
+/// Decode `scope` and `key` from a raw `memory_by_key` key buffer.
+pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, String)> {
+    let mut c = 0;
+    let scope = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
+    if buf.len() <= c {
+        return None;
+    }
+    c += 1; // skip NUL separator
+    let key = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
+    Some((scope, key))
+}
+
 /// One-byte ordinal for a `SymbolKind`. Stable across releases so existing keys stay valid;
 /// new variants extend the tail. Keep the explicit assignments — accidentally reordering
 /// would silently miscategorize cached entries.

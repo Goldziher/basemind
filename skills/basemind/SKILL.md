@@ -47,6 +47,9 @@ once you know exactly which span you need.
 | "What's HEAD / branch?" | `repo_info` |
 | "Show diff between revs for file F" | `diff_file`, `diff_outline` |
 | "What's indexed?" | `status` |
+| "Semantic search over PDFs / Office docs in the repo?" | `search_documents` (requires `--features documents`) |
+| "Recall something the agent stored earlier?" | `memory_get` exact, `memory_list` prefix, `memory_search` KNN |
+| "Remember this for future sessions?" | `memory_put` (delete with `memory_delete`) |
 
 ## Setup (one-time per repo)
 
@@ -110,3 +113,8 @@ A 1000-line file becomes a 30-line table of contents.
   and `bar()` alike. There is no scope resolution; cross-check with `outline` if
   disambiguation matters.
 - Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
+- Intelligence tools (`search_documents`, `memory_*`) require basemind to be built with
+  `--features documents,memory`. Without them the tools dispatch but return an MCP error.
+  Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
+  `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
+  share memory; unrelated repos do not see each other's entries.
