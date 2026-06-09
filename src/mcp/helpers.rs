@@ -2,10 +2,12 @@
 //! block stays focused on dispatch logic. Everything here is `pub(super)`.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, Content, RawContent};
 use serde::Serialize;
+use serde_json::Value;
 
 use super::types::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
 use super::{OutlineCache, OutlineEntry, ServerState};
@@ -18,6 +20,29 @@ pub(super) const LIST_LIMIT_DEFAULT: u32 = 200;
 pub(super) const LIST_LIMIT_MAX: u32 = 5000;
 pub(super) const LOG_LIMIT_DEFAULT: u32 = 20;
 pub(super) const LOG_LIMIT_MAX: u32 = 100;
+
+/// Wrap a tool-shim body with telemetry instrumentation.
+///
+/// Captures `Instant::now()` before the body runs, serializes the params for a deterministic
+/// hash, awaits the body, then records the resulting `CallToolResult` (or skips on `Err`) via
+/// [`record_call`]. Each tool's shim becomes a one-liner.
+///
+/// Usage from `tools.rs` / `tools_memory.rs` / `tools_admin.rs`:
+/// ```ignore
+/// async fn outline(...) -> Result<CallToolResult, McpError> {
+///     instrument_tool!(&self.state, "outline", params, run_outline(&self.state, params).await)
+/// }
+/// ```
+#[macro_export]
+macro_rules! instrument_tool {
+    ($state:expr, $tool:literal, $params:expr, $body:expr) => {{
+        let __started = ::std::time::Instant::now();
+        let __params_json = ::serde_json::to_value(&$params).unwrap_or(::serde_json::Value::Null);
+        let __result = $body;
+        $crate::mcp::helpers::record_call($state, $tool, &__params_json, __started, &__result);
+        __result
+    }};
+}
 
 pub(super) fn kind_to_str(k: SymbolKind) -> &'static str {
     match k {
@@ -80,6 +105,41 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
     let content = Content::json(value)
         .map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
     Ok(CallToolResult::success(vec![content]))
+}
+
+/// Sum the byte length of every `Content::text` / `Content::json` field on the result.
+/// Image / resource / link content is skipped — basemind tools only ever return text.
+fn result_text_bytes(result: &CallToolResult) -> u64 {
+    let mut total: u64 = 0;
+    for c in &result.content {
+        if let RawContent::Text(t) = &c.raw {
+            total = total.saturating_add(t.text.len() as u64);
+        }
+    }
+    total
+}
+
+/// Record one tool-call row to `.basemind/telemetry.jsonl`. Best-effort:
+/// errors are logged via `tracing::warn!` and swallowed so a misbehaving
+/// telemetry write can never break a tool response. Only successful calls
+/// produce rows — error responses don't carry a meaningful "saved" number.
+pub(super) fn record_call(
+    state: &ServerState,
+    tool: &'static str,
+    params: &Value,
+    started: Instant,
+    result: &Result<CallToolResult, McpError>,
+) {
+    let Ok(r) = result else { return };
+    let elapsed_ms: u64 = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let resp_bytes = result_text_bytes(r);
+    let corpus = state
+        .corpus_bytes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let savings = super::savings::estimate(tool, corpus, resp_bytes);
+    state
+        .telemetry
+        .record(tool, params, resp_bytes, elapsed_ms, &savings);
 }
 
 pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
@@ -736,7 +796,16 @@ pub(super) async fn run_rescan(
     // Rebuild the in-RAM MapCache immediately so the next query sees fresh data.
     // The view-watcher would do this too on the index.msgpack mtime change, but
     // we don't want to race the watcher debounce window.
-    let new_cache = std::sync::Arc::new(super::MapCache::build(&*state.store.read().await));
+    let new_cache = {
+        let store = state.store.read().await;
+        // Refresh the corpus-bytes counter that feeds the savings estimator. Cheap — a
+        // single pass over the in-RAM index map.
+        let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
+        state
+            .corpus_bytes
+            .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
+        std::sync::Arc::new(super::MapCache::build(&store))
+    };
     state.cache.store(new_cache);
 
     json_result(&super::types::RescanResponse {
@@ -749,6 +818,16 @@ pub(super) async fn run_rescan(
         elapsed_ms: started.elapsed().as_millis(),
         root: state.root.display().to_string(),
     })
+}
+
+/// Body for the `telemetry_summary` MCP tool. Thin wrapper — the aggregation logic
+/// lives in [`super::telemetry::summarize`] so this module stays under the line cap.
+pub(super) async fn run_telemetry_summary(
+    state: &ServerState,
+    params: super::types::TelemetrySummaryParams,
+) -> Result<CallToolResult, McpError> {
+    let response = super::telemetry::summarize(state.telemetry.path(), params).await?;
+    json_result(&response)
 }
 
 #[cfg(test)]

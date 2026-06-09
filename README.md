@@ -148,6 +148,39 @@ the agent's context doesn't explode.
 
 ---
 
+## Visual integration: live stats in Claude Code
+
+basemind writes one row per MCP tool call to `.basemind/telemetry.jsonl` (always on,
+best-effort, ~200 bytes per row). Two surfaces consume it:
+
+**Live statusline** — three lines in `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
+    "refreshInterval": 5
+  }
+}
+```
+
+Renders `bm ~103f · scan 2m ago · 47 calls · ~14k tok saved` at the bottom of the
+Claude Code terminal. Refreshes every 5 seconds. The script is shipped in the
+plugin tree; Claude Code cannot auto-install statusline scripts so the wiring is
+manual (one-time).
+
+**On-demand dashboard** — the new `telemetry_summary` MCP tool returns the full
+breakdown (per-tool histogram, per-baseline savings, last 10 calls). The
+`/basemind-stats` skill renders it as markdown in the conversation.
+
+The `est_tokens_saved` numbers are **heuristics** vs a disclosed grep+Read baseline.
+Every row carries a `saved_baseline` label so the model is auditable. Tools without
+a realistic baseline (`memory_*`, `search_documents`, git wrappers) record their
+calls but report zero savings — we don't claim what we can't honestly measure.
+
+---
+
 ## Performance
 
 A 39 270-file TypeScript repo. Apple Silicon, release build:

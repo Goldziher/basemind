@@ -8,8 +8,10 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::tool;
+use serde_json::Value;
 
 use super::BasemindServer;
+use super::helpers::record_call;
 use super::types::{
     MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
     SearchDocumentsParams,
@@ -33,17 +35,30 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<MemoryPutParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "memory")]
-        {
-            return super::memory::run_memory_put(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "memory")]
+            {
+                return super::memory::run_memory_put(&self.state, p).await;
+            }
+            #[cfg(not(feature = "memory"))]
+            {
+                let _ = p;
+                return not_enabled("memory");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("memory")
         }
-        #[cfg(not(feature = "memory"))]
-        {
-            let _ = p;
-            return not_enabled("memory");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("memory")
+        .await;
+        record_call(
+            &self.state,
+            "memory_put",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 
     #[tool(description = "Exact-key lookup in scoped memory. Returns entry \
@@ -53,17 +68,30 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<MemoryGetParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "memory")]
-        {
-            return super::memory::run_memory_get(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "memory")]
+            {
+                return super::memory::run_memory_get(&self.state, p).await;
+            }
+            #[cfg(not(feature = "memory"))]
+            {
+                let _ = p;
+                return not_enabled("memory");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("memory")
         }
-        #[cfg(not(feature = "memory"))]
-        {
-            let _ = p;
-            return not_enabled("memory");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("memory")
+        .await;
+        record_call(
+            &self.state,
+            "memory_get",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 
     #[tool(
@@ -75,17 +103,30 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<MemoryListParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "memory")]
-        {
-            return super::memory::run_memory_list(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "memory")]
+            {
+                return super::memory::run_memory_list(&self.state, p).await;
+            }
+            #[cfg(not(feature = "memory"))]
+            {
+                let _ = p;
+                return not_enabled("memory");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("memory")
         }
-        #[cfg(not(feature = "memory"))]
-        {
-            let _ = p;
-            return not_enabled("memory");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("memory")
+        .await;
+        record_call(
+            &self.state,
+            "memory_list",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 
     #[tool(
@@ -97,17 +138,30 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<MemorySearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "memory")]
-        {
-            return super::memory::run_memory_search(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "memory")]
+            {
+                return super::memory::run_memory_search(&self.state, p).await;
+            }
+            #[cfg(not(feature = "memory"))]
+            {
+                let _ = p;
+                return not_enabled("memory");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("memory")
         }
-        #[cfg(not(feature = "memory"))]
-        {
-            let _ = p;
-            return not_enabled("memory");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("memory")
+        .await;
+        record_call(
+            &self.state,
+            "memory_search",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 
     #[tool(
@@ -118,17 +172,30 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<MemoryDeleteParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "memory")]
-        {
-            return super::memory::run_memory_delete(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "memory")]
+            {
+                return super::memory::run_memory_delete(&self.state, p).await;
+            }
+            #[cfg(not(feature = "memory"))]
+            {
+                let _ = p;
+                return not_enabled("memory");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("memory")
         }
-        #[cfg(not(feature = "memory"))]
-        {
-            let _ = p;
-            return not_enabled("memory");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("memory")
+        .await;
+        record_call(
+            &self.state,
+            "memory_delete",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 
     #[tool(
@@ -140,16 +207,29 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<SearchDocumentsParams>,
     ) -> Result<CallToolResult, McpError> {
-        #[cfg(feature = "documents")]
-        {
-            return super::memory::run_search_documents(&self.state, p).await;
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            #[cfg(feature = "documents")]
+            {
+                return super::memory::run_search_documents(&self.state, p).await;
+            }
+            #[cfg(not(feature = "documents"))]
+            {
+                let _ = p;
+                return not_enabled("documents");
+            }
+            #[allow(unreachable_code)]
+            not_enabled("documents")
         }
-        #[cfg(not(feature = "documents"))]
-        {
-            let _ = p;
-            return not_enabled("documents");
-        }
-        #[allow(unreachable_code)]
-        not_enabled("documents")
+        .await;
+        record_call(
+            &self.state,
+            "search_documents",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 }

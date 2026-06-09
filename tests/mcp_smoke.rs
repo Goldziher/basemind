@@ -384,5 +384,36 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("scanned");
     assert!(scanned > 0, "rescan should walk at least the fixture files");
 
+    // telemetry_summary: every successful tool call we've fired in this test should be
+    // recorded. Don't assert an exact count (the smoke test evolves), just that the
+    // dashboard sees the activity and the per-tool breakdown isn't empty.
+    let body = decode_text(
+        &service
+            .call_tool(call_params("telemetry_summary", json!({ "window": "all" })))
+            .await
+            .expect("telemetry_summary"),
+    );
+    let total_calls = body
+        .get("total_calls")
+        .and_then(Value::as_u64)
+        .expect("total_calls");
+    assert!(
+        total_calls >= 4,
+        "telemetry_summary should see at least the prior fixture calls (status/outline/search_symbols/recent_changes), got {total_calls}"
+    );
+    let per_tool = body
+        .get("per_tool")
+        .and_then(Value::as_array)
+        .expect("per_tool array");
+    assert!(!per_tool.is_empty(), "per_tool histogram must not be empty");
+    let savings_note = body
+        .get("savings_note")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        savings_note.contains("estimate") || savings_note.contains("heuristic"),
+        "savings_note must disclose the heuristic nature: {savings_note:?}"
+    );
+
     let _ = service.cancel().await;
 }
