@@ -766,7 +766,7 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
 /// tools block while it runs (acceptable for small/medium repos; rescan is
 /// agent-triggered, not on every request).
 pub(super) async fn run_rescan(
-    state: &ServerState,
+    state: Arc<ServerState>,
     params: super::types::RescanParams,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
@@ -776,22 +776,27 @@ pub(super) async fn run_rescan(
         .paths
         .map(|v| v.into_iter().map(std::path::PathBuf::from).collect());
 
-    let report = {
-        let mut store = state.store.write().await;
-        tokio::task::block_in_place(|| {
-            if let Some(paths) = scoped_paths {
-                crate::scanner::scan_paths(&root, &mut store, &config, &paths)
-            } else {
-                crate::scanner::scan(
-                    &root,
-                    &mut store,
-                    &config,
-                    crate::scanner::ScanSource::WorkingTree,
-                )
-            }
-        })
-        .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?
-    };
+    // Run the scanner on a blocking thread — fully isolated from the MCP server
+    // runtime's TLS so LanceStore's owned tokio runtime can `block_on` without
+    // tripping tokio's "runtime within a runtime" check. Kreuzberg + rayon handle
+    // their own parallelism here; tokio is intentionally out of this hot path.
+    let state_for_scan = Arc::clone(&state);
+    let report = tokio::task::spawn_blocking(move || {
+        let mut store = state_for_scan.store.blocking_write();
+        if let Some(paths) = scoped_paths {
+            crate::scanner::scan_paths(&root, &mut store, &config, &paths)
+        } else {
+            crate::scanner::scan(
+                &root,
+                &mut store,
+                &config,
+                crate::scanner::ScanSource::WorkingTree,
+            )
+        }
+    })
+    .await
+    .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
+    .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
 
     // Rebuild the in-RAM MapCache immediately so the next query sees fresh data.
     // The view-watcher would do this too on the index.msgpack mtime change, but
