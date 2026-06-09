@@ -210,8 +210,12 @@ fn ignores_unknown_languages() {
         basemind::scanner::ScanSource::WorkingTree,
     )
     .unwrap();
-    // `.xyz` is not in the tree-sitter-language-pack registry, so `lang::detect()` returns
-    // `None` and the file is counted as `skipped_no_lang` without ever reaching extraction.
+    // `.xyz` is not in the tree-sitter-language-pack registry. Without the documents
+    // feature it's counted as `skipped_no_lang`; with documents enabled the scanner
+    // hands it to the doc tier where mime sniffing + chunking decide its fate (typically
+    // `extract_failed` or `doc_indexed` with zero chunks). The invariant that holds in
+    // both modes is that the file never lands in the code-tier index.
+    #[cfg(not(feature = "documents"))]
     assert_eq!(s.stats.skipped_no_lang, 1);
     assert!(store.lookup("weird.xyz").is_none());
 }
