@@ -51,6 +51,7 @@ once you know exactly which span you need.
 | "Recall something the agent stored earlier?" | `memory_get` exact, `memory_list` prefix, `memory_search` KNN |
 | "Remember this for future sessions?" | `memory_put` (delete with `memory_delete`) |
 | "Refresh the index after editing code?" | `rescan` — no MCP disconnect needed; optional `paths` arg |
+| "How much has basemind helped today?" | `telemetry_summary` — per-tool histogram + estimated tokens saved |
 
 ## Setup (one-time per repo)
 

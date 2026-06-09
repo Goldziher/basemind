@@ -9,8 +9,11 @@
 mod helpers;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
+mod savings;
+mod telemetry;
 mod tools;
 mod tools_admin;
+mod tools_git;
 mod tools_memory;
 mod types;
 
@@ -82,6 +85,14 @@ pub(crate) struct ServerState {
     /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
     /// without re-reading `.basemind/basemind.toml`.
     pub(crate) config: Arc<crate::config::Config>,
+    /// Per-tool-call telemetry writer; appends to `.basemind/telemetry.jsonl`.
+    /// Always present (best-effort writes); the dashboard surfaces / statusline
+    /// read from the same file.
+    pub(crate) telemetry: Arc<telemetry::Telemetry>,
+    /// Sum of `size_bytes` across every indexed file. Captured at boot and
+    /// after each `rescan`. Feeds the corpus-baseline cost in
+    /// [`super::savings::estimate`].
+    pub(crate) corpus_bytes: std::sync::atomic::AtomicU64,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)] // used by memory / documents feature tools
@@ -138,8 +149,10 @@ impl BasemindServer {
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
         let cache = Arc::new(MapCache::build(&store));
+        let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         tracing::info!(
             files = cache.by_path.len(),
+            corpus_bytes,
             git = repo.is_some(),
             scope = %scope,
             "preloaded code map into RAM for MCP server"
@@ -147,6 +160,7 @@ impl BasemindServer {
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
         )));
+        let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
         let state = Arc::new(ServerState {
             store: RwLock::new(store),
             root,
@@ -155,6 +169,8 @@ impl BasemindServer {
             git_cache,
             outline_cache,
             config,
+            telemetry: telemetry_handle,
+            corpus_bytes: std::sync::atomic::AtomicU64::new(corpus_bytes),
             scope,
             #[cfg(any(feature = "memory", feature = "documents"))]
             lance: tokio::sync::OnceCell::new(),
@@ -165,6 +181,7 @@ impl BasemindServer {
         Self {
             state,
             tool_router: Self::tool_router_core()
+                + Self::tool_router_git()
                 + Self::tool_router_memory()
                 + Self::tool_router_admin(),
         }

@@ -8,9 +8,11 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::tool;
+use serde_json::Value;
 
 use super::BasemindServer;
-use super::types::RescanParams;
+use super::helpers::record_call;
+use super::types::{RescanParams, TelemetrySummaryParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
@@ -27,6 +29,38 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<RescanParams>,
     ) -> Result<CallToolResult, McpError> {
-        super::helpers::run_rescan(&self.state, p).await
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            async { super::helpers::run_rescan(&self.state, p).await }.await;
+        record_call(&self.state, "rescan", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Aggregate `.basemind/telemetry.jsonl` into a usage summary: \
+            total tool calls, per-tool histogram, total response bytes, and \
+            estimated tokens saved vs the disclosed grep+Read baseline. Optional \
+            `window` (`today` default, `1h`, `24h`, `all`) and `tool` filter. \
+            The `est_tokens_saved` numbers are heuristics — every row carries a \
+            `saved_baseline` label disclosing the assumption. Pairs with the \
+            shipped `plugins/basemind/statusline.sh` and the `/basemind-stats` skill."
+    )]
+    async fn telemetry_summary(
+        &self,
+        Parameters(p): Parameters<TelemetrySummaryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            async { super::helpers::run_telemetry_summary(&self.state, p).await }.await;
+        record_call(
+            &self.state,
+            "telemetry_summary",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
     }
 }
