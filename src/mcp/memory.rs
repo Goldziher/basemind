@@ -54,9 +54,18 @@ pub(super) async fn lance_store(
             let dim = embedder.dim();
             let model = embedder.model().to_string();
             let lance_dir = state.store.read().await.basemind_dir.join("lance");
-            crate::lance::LanceStore::open(&lance_dir, dim, &model)
-                .map(Arc::new)
-                .map_err(|e| format!("open LanceStore: {e}"))
+            // LanceStore::open builds its own current-thread tokio runtime and
+            // calls `block_on`, which panics when invoked from inside the live
+            // server runtime. Offload to a blocking thread so the inner runtime
+            // owns its own thread.
+            let model_for_open = model.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open)
+            })
+            .await
+            .map_err(|e| format!("lance open join: {e}"))?
+            .map(Arc::new)
+            .map_err(|e| format!("open LanceStore: {e}"))
         })
         .await
         .cloned()
