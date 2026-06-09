@@ -203,7 +203,7 @@ fn ignores_unknown_languages() {
     fs::write(root.join("weird.xyz"), b"data").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let s = scan(
+    let _report = scan(
         root,
         &mut store,
         &cfg,
@@ -216,7 +216,7 @@ fn ignores_unknown_languages() {
     // `extract_failed` or `doc_indexed` with zero chunks). The invariant that holds in
     // both modes is that the file never lands in the code-tier index.
     #[cfg(not(feature = "documents"))]
-    assert_eq!(s.stats.skipped_no_lang, 1);
+    assert_eq!(_report.stats.skipped_no_lang, 1);
     assert!(store.lookup("weird.xyz").is_none());
 }
 
