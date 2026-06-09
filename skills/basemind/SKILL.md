@@ -114,7 +114,8 @@ A 1000-line file becomes a 30-line table of contents.
   disambiguation matters.
 - Git tools require `basemind serve` to be running inside a git repository. Outside a git repo they return a clear error.
 - Intelligence tools (`search_documents`, `memory_*`) require basemind to be built with
-  `--features documents,memory`. Without them the tools dispatch but return an MCP error.
+  `--features full` (or the individual `documents` / `memory` flags). Without them the
+  tools dispatch but return an MCP error.
   Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
   share memory; unrelated repos do not see each other's entries.

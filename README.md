@@ -48,11 +48,13 @@ Opt-in **intelligence build** (PDF/Office ingestion, semantic doc search, shared
 agent memory backed by LanceDB):
 
 ```bash
-cargo install basemind --locked --features documents,memory
+cargo install basemind --locked --features full
 ```
 
-This pulls in `kreuzberg` (document parsing + bundled ONNX embeddings) and
-`lancedb` (embedded vector store). First scan after enabling downloads the
+`full` is the meta-feature that turns on both `documents` (PDF / Office / HTML
+ingestion + OCR + layout) and `memory` (shared agent memory + vector search).
+Pulls in `kreuzberg` (Elastic-2.0; document parsing + bundled ONNX embeddings)
+and `lancedb` (embedded vector store). First scan after enabling downloads the
 embedding model into the kreuzberg cache; subsequent scans are warm.
 
 **Index your repo:**
@@ -128,7 +130,7 @@ args = ["serve"]
 | `diff_file` | "Give me the unified diff for `auth.rs` across these revs." |
 | `working_tree_status` | "What's staged / unstaged / untracked right now?" |
 
-### Intelligence tools (opt-in: `--features documents,memory`)
+### Intelligence tools (opt-in: `--features full`)
 
 | Tool | What the agent can finally do |
 |---|---|
