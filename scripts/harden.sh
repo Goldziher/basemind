@@ -48,8 +48,8 @@ should_run() {
 }
 
 if [ -z "${BASEMIND_HARDEN_NO_BUILD:-}" ]; then
-  echo "==> building basemind (release)"
-  cargo build --release --quiet --bin basemind
+  echo "==> building basemind (release, --features full)"
+  cargo build --release --quiet --features full --bin basemind
 fi
 
 # Track overall outcome
@@ -84,7 +84,7 @@ for entry in "${REPOS[@]}"; do
   if BASEMIND_HARDEN_REPO="${dest}" \
     BASEMIND_HARDEN_REPO_NAME="${name}" \
     BASEMIND_HARDEN_RESULTS="${RESULTS}" \
-    cargo test --release --test harden -- \
+    cargo test --release --features full --test harden -- \
     --ignored --nocapture --test-threads=1 --exact harden_repo; then
     passed+=("${name}")
   else

@@ -196,10 +196,14 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
     // wraps the same call with progress UI; tests don't need the UI.
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
 
-    let config = match basemind::config::load(repo_root) {
+    let mut config = match basemind::config::load(repo_root) {
         Ok(c) => c,
         Err(_) => basemind::config::default_for_root(repo_root),
     };
+    // The harness exercises the MCP surface; document-tier indexing adds
+    // kreuzberg + embedding cost that has nothing to do with the canaries.
+    // Disable it so per-repo scan ceilings stay meaningful.
+    config.documents.enabled = false;
     let mut store =
         basemind::store::Store::open(repo_root, basemind::store::VIEW_WORKING).expect("open store");
     let t0 = Instant::now();
@@ -643,8 +647,16 @@ async fn harden_repo() {
 
     eprintln!("[harden] repo={} ({})", repo_name, repo.display());
 
-    // 1. Scan in-process — cheaper than spawning a second process for it.
-    let scan = run_scan(&repo);
+    // 1. Scan in-process on a blocking thread — the scanner is sync and may
+    // reach the doc tier, which opens a LanceStore that owns its own tokio
+    // runtime. Running it under spawn_blocking strips the test's tokio TLS so
+    // LanceStore's `block_on` is safe.
+    let scan = {
+        let repo = repo.clone();
+        tokio::task::spawn_blocking(move || run_scan(&repo))
+            .await
+            .expect("scan join")
+    };
     eprintln!(
         "[harden] scan: {} files in {:.1}s ({} updated, {} read_failed, {} extract_failed)",
         scan.stats.scanned,
