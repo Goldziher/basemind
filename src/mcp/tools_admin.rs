@@ -32,7 +32,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> =
-            async { super::helpers::run_rescan(&self.state, p).await }.await;
+            async { super::helpers::run_rescan(std::sync::Arc::clone(&self.state), p).await }.await;
         record_call(&self.state, "rescan", &__params_json, __started, &__result);
         __result
     }
