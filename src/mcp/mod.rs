@@ -10,6 +10,7 @@ mod helpers;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
 mod tools;
+mod tools_admin;
 mod tools_memory;
 mod types;
 
@@ -77,6 +78,10 @@ pub(crate) struct ServerState {
     /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
     /// hot files even when the symbol's source blob shows up in many adjacent commits.
     pub(crate) outline_cache: Arc<OutlineCache>,
+    /// Scanner config (include / exclude globs, eager_l2, document tier knobs, …).
+    /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
+    /// without re-reading `.basemind/basemind.toml`.
+    pub(crate) config: Arc<crate::config::Config>,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)] // used by memory / documents feature tools
@@ -124,6 +129,7 @@ impl BasemindServer {
     pub fn new(
         store: Store,
         root: PathBuf,
+        config: Arc<crate::config::Config>,
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
     ) -> Self {
@@ -148,6 +154,7 @@ impl BasemindServer {
             repo,
             git_cache,
             outline_cache,
+            config,
             scope,
             #[cfg(any(feature = "memory", feature = "documents"))]
             lance: tokio::sync::OnceCell::new(),
@@ -157,7 +164,9 @@ impl BasemindServer {
         spawn_view_watcher(Arc::clone(&state));
         Self {
             state,
-            tool_router: Self::tool_router_core() + Self::tool_router_memory(),
+            tool_router: Self::tool_router_core()
+                + Self::tool_router_memory()
+                + Self::tool_router_admin(),
         }
     }
 }
@@ -246,7 +255,9 @@ impl ServerHandler for BasemindServer {
              \"semantic search across PDFs/docs in the repo?\" → `search_documents`; \
              \"recall something the agent remembered earlier?\" → `memory_get` / `memory_list` / \
              `memory_search`; \
-             \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`).\n\
+             \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`); \
+             \"refresh the index after editing code?\" → `rescan` (or `rescan { paths: [...] }` \
+             to limit to changed files).\n\
              Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
              `list_files`, `dependents`, `status`, `repo_info`, `symbol_history`. \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \

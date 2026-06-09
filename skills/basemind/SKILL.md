@@ -50,6 +50,7 @@ once you know exactly which span you need.
 | "Semantic search over PDFs / Office docs in the repo?" | `search_documents` (requires `--features documents`) |
 | "Recall something the agent stored earlier?" | `memory_get` exact, `memory_list` prefix, `memory_search` KNN |
 | "Remember this for future sessions?" | `memory_put` (delete with `memory_delete`) |
+| "Refresh the index after editing code?" | `rescan` — no MCP disconnect needed; optional `paths` arg |
 
 ## Setup (one-time per repo)
 

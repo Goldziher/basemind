@@ -450,11 +450,14 @@ fn parse_kind(s: &str) -> Result<SymbolKind> {
 }
 
 fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
-    // Open the store in read-only mode so we don't conflict with a concurrent `basemind watch`.
-    // The MCP server is purely a query surface.
-    let store = Store::open_read_only(root, &args.view).context("open store (ro)")?;
+    // Open the store in writable mode so the `rescan` MCP tool can run the
+    // scanner in-process. The MCP server is the canonical Fjall owner; the
+    // standalone `basemind scan` / `basemind watch` CLIs intentionally fail
+    // with a lock error when a server is already running against the repo.
+    let store = Store::open(root, &args.view).context("open store")?;
     let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
+    let config = Arc::new(load_or_default(root)?);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -475,7 +478,7 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
 
     runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = basemind::mcp::BasemindServer::new(store, root_buf, repo, git_cache);
+        let server = basemind::mcp::BasemindServer::new(store, root_buf, config, repo, git_cache);
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)

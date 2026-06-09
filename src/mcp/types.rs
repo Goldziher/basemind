@@ -635,3 +635,25 @@ pub(super) struct MemoryRecord {
     pub created_at: i64,
     pub updated_at: i64,
 }
+
+// ─── rescan ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct RescanParams {
+    /// Optional list of repo-relative paths to scope the rescan. When omitted
+    /// the full repo is walked. Paths are forward-slash with no leading `/`.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct RescanResponse {
+    pub scanned: usize,
+    pub updated: usize,
+    pub removed: usize,
+    pub skipped_unchanged: usize,
+    pub skipped_no_lang: usize,
+    pub extract_failed: usize,
+    pub elapsed_ms: u128,
+    pub root: String,
+}

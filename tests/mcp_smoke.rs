@@ -369,5 +369,20 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("search_documents", json!({ "query": "hello" })))
         .await;
 
+    // rescan: trigger an in-process scan via MCP. With no working-tree changes
+    // since the smoke fixture was built, expectation is scanned > 0 and
+    // updated == 0 (everything matched the existing blob hashes).
+    let body = decode_text(
+        &service
+            .call_tool(call_params("rescan", json!({})))
+            .await
+            .expect("rescan"),
+    );
+    let scanned = body
+        .get("scanned")
+        .and_then(Value::as_u64)
+        .expect("scanned");
+    assert!(scanned > 0, "rescan should walk at least the fixture files");
+
     let _ = service.cancel().await;
 }

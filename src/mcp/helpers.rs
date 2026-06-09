@@ -698,6 +698,59 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
         .ok_or_else(|| McpError::internal_error("repository has no HEAD", None))
 }
 
+/// Body for the `rescan` MCP tool. Runs the scanner in-process against the
+/// server's own `Store` so we never need to release the Fjall lock — and so
+/// the agent can refresh the index without disconnecting MCP.
+///
+/// Holds the `state.store` write lock for the duration of the scan. MCP query
+/// tools block while it runs (acceptable for small/medium repos; rescan is
+/// agent-triggered, not on every request).
+pub(super) async fn run_rescan(
+    state: &ServerState,
+    params: super::types::RescanParams,
+) -> Result<CallToolResult, McpError> {
+    let started = std::time::Instant::now();
+    let root = state.root.clone();
+    let config = Arc::clone(&state.config);
+    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
+        .paths
+        .map(|v| v.into_iter().map(std::path::PathBuf::from).collect());
+
+    let report = {
+        let mut store = state.store.write().await;
+        tokio::task::block_in_place(|| {
+            if let Some(paths) = scoped_paths {
+                crate::scanner::scan_paths(&root, &mut store, &config, &paths)
+            } else {
+                crate::scanner::scan(
+                    &root,
+                    &mut store,
+                    &config,
+                    crate::scanner::ScanSource::WorkingTree,
+                )
+            }
+        })
+        .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?
+    };
+
+    // Rebuild the in-RAM MapCache immediately so the next query sees fresh data.
+    // The view-watcher would do this too on the index.msgpack mtime change, but
+    // we don't want to race the watcher debounce window.
+    let new_cache = std::sync::Arc::new(super::MapCache::build(&*state.store.read().await));
+    state.cache.store(new_cache);
+
+    json_result(&super::types::RescanResponse {
+        scanned: report.stats.scanned,
+        updated: report.stats.updated,
+        removed: report.stats.removed,
+        skipped_unchanged: report.stats.skipped_unchanged,
+        skipped_no_lang: report.stats.skipped_no_lang,
+        extract_failed: report.stats.extract_failed,
+        elapsed_ms: started.elapsed().as_millis(),
+        root: state.root.display().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::normalize_for_history;
