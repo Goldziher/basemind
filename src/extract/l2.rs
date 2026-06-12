@@ -2,10 +2,34 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, QueryMatch};
 
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER};
-use crate::lang::{LangId, QueryKind, try_get_query, with_parser};
+use crate::lang::{
+    LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser,
+};
 
 pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
-    let tree = with_parser(lang, |p| p.parse(source, None))?.ok_or(ExtractError::ParseFailure)?;
+    // Use the timeout-bounded parse so L2 gets the same protection as L1 against
+    // pathological inputs that spin the parser's error-recovery loop indefinitely.
+    let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
+    let tree = match outcome {
+        ParseOutcome::Ok(t) => t,
+        ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
+        ParseOutcome::TimedOut => {
+            return Err(ExtractError::ParseTimeout(
+                crate::lang::DEFAULT_PARSE_TIMEOUT,
+            ));
+        }
+    };
+    extract_l2_from_tree(lang, &tree, source)
+}
+
+/// Extract L2 data (calls + docs) from a pre-parsed tree-sitter `Tree`. Separated from
+/// `extract_l2` so the scanner can share one parse between L1 and L2 when eager L2 is
+/// enabled, avoiding a second full parse per file on the hot path.
+pub(crate) fn extract_l2_from_tree(
+    lang: LangId,
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+) -> Result<FileMapL2, ExtractError> {
     let root = tree.root_node();
 
     let calls = run_calls(lang, root, source)?;

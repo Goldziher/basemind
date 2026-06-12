@@ -7,7 +7,45 @@ pub mod l3;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::lang::LangError;
+use crate::lang::{LangError, LangId, ParseOutcome, parse_with_default_timeout, with_parser};
+
+use l1::extract_l1_from_tree;
+use l2::extract_l2_from_tree;
+
+/// Parse once with the default timeout and run both L1 and (optionally) L2 extraction against
+/// the shared tree. Eliminates the duplicate parse that the scanner previously paid when
+/// `eager_l2` was enabled — one `with_parser` call instead of two.
+///
+/// When `eager_l2` is `false` the function returns `(l1, None)` and pays only for the single
+/// parse + L1 query walk. When `eager_l2` is `true` an L2 failure is non-fatal: the function
+/// returns `(l1, None)` rather than propagating the error, matching the scanner's existing
+/// tolerance for L2 failures.
+pub fn extract_l1_l2(
+    lang: LangId,
+    source: &[u8],
+    eager_l2: bool,
+) -> Result<(FileMapL1, Option<FileMapL2>), ExtractError> {
+    let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
+    let tree = match outcome {
+        ParseOutcome::Ok(t) => t,
+        ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
+        ParseOutcome::TimedOut => {
+            return Err(ExtractError::ParseTimeout(
+                crate::lang::DEFAULT_PARSE_TIMEOUT,
+            ));
+        }
+    };
+    let l1 = extract_l1_from_tree(lang, &tree, source)?;
+    let l2 = if eager_l2 {
+        // L2 failure is non-fatal: log nothing here (scanner already warns at the call site)
+        // and let L1 stand on its own. The calls index stays empty for this file until the
+        // lazy path populates it or the next scan retries.
+        extract_l2_from_tree(lang, &tree, source).ok()
+    } else {
+        None
+    };
+    Ok((l1, l2))
+}
 
 /// Bumped any time the FileMap layout changes in an incompatible way OR the on-disk
 /// directory shape changes. Stored in every serialized FileMap. Mismatch on read =

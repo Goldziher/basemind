@@ -20,6 +20,17 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
             ));
         }
     };
+    extract_l1_from_tree(lang, &tree, source)
+}
+
+/// Extract L1 data from a pre-parsed tree-sitter `Tree`. Separated from `extract_l1` so the
+/// scanner can share one parse between L1 and L2 when eager L2 is enabled, avoiding a second
+/// full parse per file on the hot path.
+pub(crate) fn extract_l1_from_tree(
+    lang: LangId,
+    tree: &tree_sitter::Tree,
+    source: &[u8],
+) -> Result<FileMapL1, ExtractError> {
     let root = tree.root_node();
 
     let (had_errors, error_count) = if root.has_error() {

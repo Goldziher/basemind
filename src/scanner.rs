@@ -8,7 +8,7 @@ use thiserror::Error;
 use tracing::debug;
 
 use crate::config::Config;
-use crate::extract::{ExtractError, FileMapL1, FileMapL2, l1, l2};
+use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::{GitError, Repo};
 use crate::hashing;
 use crate::lang;
@@ -563,20 +563,25 @@ fn process_file(
     }
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
-    let l1: FileMapL1 = match l1::extract_l1(lang, &bytes) {
-        Ok(m) => m,
-        Err(ExtractError::ParseTimeout(_)) => {
-            return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
-        }
-        Err(source) => {
-            return FileResult::bare(
-                rel.to_string(),
-                FileStatus::ExtractFailed {
-                    msg: format_extract_err(&source),
-                },
-            );
-        }
-    };
+
+    // Parse once and run both tiers against the shared tree. When eager_l2 is off only L1
+    // runs; when it's on L2 runs against the same Tree with no second parse. L2 failure is
+    // non-fatal (extract_l1_l2 returns None for the L2 slot rather than propagating).
+    let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) =
+        match extract::extract_l1_l2(lang, &bytes, want_l2) {
+            Ok(pair) => pair,
+            Err(ExtractError::ParseTimeout(_)) => {
+                return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
+            }
+            Err(source) => {
+                return FileResult::bare(
+                    rel.to_string(),
+                    FileStatus::ExtractFailed {
+                        msg: format_extract_err(&source),
+                    },
+                );
+            }
+        };
 
     if let Err(e) = store.write_l1(&hash, &l1) {
         return FileResult::bare(
@@ -585,17 +590,10 @@ fn process_file(
         );
     }
 
-    // Eager L2 (calls + docs). Failure here is non-fatal — we still index L1 so the file
-    // is searchable; the calls index just stays empty for this file until the lazy path
-    // populates it (or the next scan retries).
-    let l2: Option<FileMapL2> = if want_l2 {
-        match l2::extract_l2(lang, &bytes) {
-            Ok(map) => {
-                let _ = store.write_l2(&hash, &map);
-                Some(map)
-            }
-            Err(_) => None,
-        }
+    // Persist L2 blob when we extracted it eagerly.
+    let l2: Option<FileMapL2> = if let Some(map) = l2_opt {
+        let _ = store.write_l2(&hash, &map);
+        Some(map)
     } else {
         None
     };
