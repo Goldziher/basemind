@@ -393,6 +393,15 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "name": sym, "limit": 100 }),
             )
             .await;
+            // Iteration-4 sweep: shallow call_graph walk on the same sampled symbol.
+            // Bare-success assertion only; node count varies per repo.
+            call(
+                svc,
+                &mut records,
+                "call_graph",
+                json!({ "name": sym, "direction": "callers", "max_depth": 2 }),
+            )
+            .await;
         }
     }
 
@@ -541,6 +550,19 @@ fn assert_passing(
                     "tokio canary: find_implementations(\"Future\") returned {future_hits} hits (expected ≥ 20)"
                 ));
             }
+            // Iteration-4 canary: call_graph upward from `spawn` (depth=2) must surface
+            // at least 5 nodes. Conservative lower bound — `spawn` is invoked from dozens
+            // of helpers/spawners.
+            let cg_nodes = repo_record
+                .canaries
+                .get("spawn_call_graph_nodes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if cg_nodes < 5 {
+                failures.push(format!(
+                    "tokio canary: call_graph(\"spawn\", callers, depth=2) returned {cg_nodes} nodes (expected ≥ 5)"
+                ));
+            }
         }
         "django" => {
             // Iteration-3 canary: `get` is overloaded in Django (ORM queryset method, view
@@ -644,6 +666,26 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                 record
                     .canaries
                     .insert("future_impl_hits".into(), json!(hits));
+            }
+            // Iteration-4 canary: call_graph callers from `spawn`, max_depth=2. tokio has
+            // dense indirection around its runtime spawn helpers, so the BFS should pull
+            // in well more than a handful of nodes even at depth 2.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "call_graph",
+                    &json!({ "name": "spawn", "direction": "callers", "max_depth": 2, "max_nodes": 500 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let nodes = body
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record
+                    .canaries
+                    .insert("spawn_call_graph_nodes".into(), json!(nodes));
             }
             // workspace_grep canary for tokio: count "fn spawn" across source files.
             if let Ok(out) = svc

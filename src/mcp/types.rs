@@ -995,3 +995,6 @@ pub(super) struct WebMapEntry {
 // ─── find_implementations (params live in types_impls.rs; re-exported for the tool shim) ───
 
 pub use super::types_impls::FindImplementationsParams;
+
+// ─── call_graph params (defined in types_graph.rs; re-exported here) ─────────
+pub use super::types_graph::CallGraphParams;

@@ -75,7 +75,16 @@ fn build_repo() -> TempDir {
         b"class Foo: pass\nclass Bar(Foo): pass\n",
     )
     .unwrap();
-    git(root, &["add", "a.rs", "b.ts", "c.rs", "d.py"]);
+    // e.rs: caller chain `outer -> middle -> inner` so the call_graph BFS has
+    // something multi-hop to chew on.
+    std::fs::write(
+        root.join("e.rs"),
+        b"pub fn inner() {}\n\
+          pub fn middle() { inner(); }\n\
+          pub fn outer() { middle(); }\n",
+    )
+    .unwrap();
+    git(root, &["add", "a.rs", "b.ts", "c.rs", "d.py", "e.rs"]);
     git(root, &["commit", "-qm", "init"]);
     // Touch a.rs in a second commit so symbol_history has something to chew on.
     std::fs::write(
@@ -438,6 +447,73 @@ async fn mcp_server_exercises_representative_tools() {
         "find_callers second page must NOT have next_cursor: {page2}"
     );
 
+    // call_graph (Iteration 4): walk the e.rs caller chain `outer -> middle -> inner`.
+    // direction="callers" from `inner` with max_depth=2 must surface inner, middle, outer.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "call_graph",
+                json!({ "name": "inner", "direction": "callers", "max_depth": 2 }),
+            ))
+            .await
+            .expect("call_graph callers"),
+    );
+    let nodes = body.get("nodes").and_then(Value::as_array).expect("nodes");
+    let names: Vec<String> = nodes
+        .iter()
+        .filter_map(|n| n.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    assert!(
+        names.contains(&"inner".to_string()),
+        "call_graph callers must surface root `inner`: {names:?}"
+    );
+    assert!(
+        names.contains(&"middle".to_string()),
+        "call_graph callers must surface depth-1 `middle`: {names:?}"
+    );
+    assert!(
+        names.contains(&"outer".to_string()),
+        "call_graph callers must surface depth-2 `outer`: {names:?}"
+    );
+    // Root is always nodes[0].
+    assert_eq!(
+        nodes[0].get("name").and_then(Value::as_str),
+        Some("inner"),
+        "nodes[0] is the root"
+    );
+    // `middle` points at `inner` (parent → current in callers direction).
+    let middle_idx = nodes
+        .iter()
+        .position(|n| n.get("name").and_then(Value::as_str) == Some("middle"))
+        .expect("middle node present");
+    let middle_edges: Vec<u64> = nodes[middle_idx]
+        .get("edges_to")
+        .and_then(Value::as_array)
+        .expect("middle.edges_to")
+        .iter()
+        .filter_map(Value::as_u64)
+        .collect();
+    assert!(
+        middle_edges.contains(&0),
+        "middle.edges_to should reference the root inner (index 0): got {middle_edges:?}"
+    );
+    // `outer` points at `middle` (parent → current).
+    let outer_idx = nodes
+        .iter()
+        .position(|n| n.get("name").and_then(Value::as_str) == Some("outer"))
+        .expect("outer node present");
+    let outer_edges: Vec<u64> = nodes[outer_idx]
+        .get("edges_to")
+        .and_then(Value::as_array)
+        .expect("outer.edges_to")
+        .iter()
+        .filter_map(Value::as_u64)
+        .collect();
+    assert!(
+        outer_edges.contains(&(middle_idx as u64)),
+        "outer.edges_to should reference middle (index {middle_idx}): got {outer_edges:?}"
+    );
+
     // search_symbols pagination (Phase 5): "a" matches alpha, Beta, caller, plain — well
     // above the limit=1 page size, so we can validate the two-page round trip.
     let page1 = decode_text(
@@ -496,10 +572,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
-    // list_files pagination (Phase 5): fixture has 4 files; limit=3 paginates (3+1).
+    // list_files pagination (Phase 5): fixture has 5 files; limit=4 paginates (4+1).
     let page1 = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 3 })))
+            .call_tool(call_params("list_files", json!({ "limit": 4 })))
             .await
             .expect("list_files page1"),
     );
@@ -507,7 +583,7 @@ async fn mcp_server_exercises_representative_tools() {
         .get("files")
         .and_then(Value::as_array)
         .expect("page1 files");
-    assert_eq!(page1_files.len(), 3, "list_files limit=3 → 3 files");
+    assert_eq!(page1_files.len(), 4, "list_files limit=4 → 4 files");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
@@ -517,7 +593,7 @@ async fn mcp_server_exercises_representative_tools() {
         &service
             .call_tool(call_params(
                 "list_files",
-                json!({ "limit": 3, "cursor": cursor1 }),
+                json!({ "limit": 4, "cursor": cursor1 }),
             ))
             .await
             .expect("list_files page2"),

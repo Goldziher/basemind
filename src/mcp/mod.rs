@@ -9,6 +9,7 @@
 pub(crate) mod cursor;
 mod helpers;
 mod helpers_calls;
+mod helpers_graph;
 mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "crawl")]
@@ -24,6 +25,7 @@ mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod types;
+mod types_graph;
 mod types_impls;
 
 use std::collections::BTreeMap;

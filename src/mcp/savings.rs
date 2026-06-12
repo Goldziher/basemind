@@ -84,6 +84,12 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
         // comparable in size, so no honest savings number. Record but don't claim.
         "workspace_grep" => (actual, "no_baseline"),
 
+        // call_graph: alternative is many manual `find_references` / `find_callers`
+        // calls plus building the DAG in the agent's head. There's no clean grep
+        // baseline — substring-grepping for a callee leaves the "who calls *that*"
+        // step to the agent. Record the call, claim zero savings.
+        "call_graph" => (actual, "no_baseline"),
+
         // Tools where basemind is the only practical path — no honest grep+read
         // baseline. Record the call but don't claim savings.
         "memory_get"

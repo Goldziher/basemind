@@ -548,6 +548,41 @@ impl BasemindServer {
         __result
     }
 
+    /// Transitive call-graph walk from a root function.
+    #[tool(
+        description = "Walk the call graph from a function. `direction=\"callers\"` (default) \
+                       BFS-walks who calls into `name` up to `max_depth` levels; \
+                       `direction=\"callees\"` walks what `name` itself calls. Returns a DAG \
+                       (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
+                       and `max_nodes` (default 100, max 500). Substring-aware? No — `name` is \
+                       an exact match against captured call-site identifiers. Use `path` to \
+                       disambiguate overloaded names. Cycles detected via name-visited set; \
+                       recursive functions surface as a self-edge on the root."
+    )]
+    async fn call_graph(
+        &self,
+        Parameters(params): Parameters<CallGraphParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            let store = self.state.store.read().await;
+            let idx = store.index_db.as_ref().cloned();
+            drop(store);
+            let cache = self.state.cache.load_full();
+            run_call_graph(idx.as_ref(), params, &cache)
+        }
+        .await;
+        record_call(
+            &self.state,
+            "call_graph",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
     /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch name (if HEAD is on one), \

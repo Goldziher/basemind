@@ -15,6 +15,7 @@ use crate::extract::SymbolKind;
 use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
 pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
+pub(super) use super::helpers_graph::run_call_graph;
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
 

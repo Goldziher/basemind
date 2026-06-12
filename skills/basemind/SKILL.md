@@ -37,6 +37,7 @@ once you know exactly which span you need.
 | "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) |
 | "What calls X?" (any name) | `find_references` |
 | "What calls this specific definition?" | `find_callers` (path + name + optional kind) |
+| "Trace the call graph from a function?" | `call_graph` (BFS up or down, bounded by `max_depth` / `max_nodes`) |
 | "What implements / extends / inherits from X?" | `find_implementations` (Rust, Python, TS/TSX, JS) |
 | "What imports module M?" | `dependents` |
 | "What files are indexed?" | `list_files` (filter by `language` or `path_contains`) |
