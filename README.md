@@ -119,6 +119,7 @@ args = ["serve"]
 | `list_files` | "What files are in `src/auth/`?" — indexed path + language filters. |
 | `status` | "What languages does this repo use?" — file count + language breakdown. |
 | `repo_info` | Branch, HEAD, workdir at a glance. |
+| `rescan` | Re-index after the agent edits code — full or `paths: [...]` for changed files only. |
 
 ### Git-aware tools
 
@@ -174,22 +175,25 @@ the agent's context doesn't explode.
 
 ### Pagination
 
-Five tools support cursor-based pagination: `find_references`, `find_callers`,
-`memory_list` (Fjall-backed), and `search_symbols`, `list_files` (in-memory).
-When a response includes `truncated: true` and a `next_cursor` field, pass that
-cursor back as the `cursor` param on the next call to fetch the next page.
+Twelve tools support cursor-based pagination. When a response includes a
+`next_cursor` field, pass it back as the `cursor` param on the next call to
+fetch the next page. Callers that omit `cursor` see no behaviour change.
 
-The two backends have different stability guarantees:
+Three cursor backends, each with its own stability contract:
 
-- **Fjall-backed** (`find_references`, `find_callers`, `memory_list`): cursors
-  remain valid across rescans because keys are content-addressed.
-- **In-memory** (`search_symbols`, `list_files`): cursors are invalidated if the
-  cache rebuilds (a rescan happens between calls). If a response carries
-  `cursor_invalidated: true`, the caller must restart pagination from the
-  beginning.
-
-Callers that omit `cursor` see no behaviour change; they receive the first page
-of results as before.
+- **Fjall-backed** — `find_references`, `find_callers`, `find_implementations`,
+  `memory_list`. Cursors remain valid across rescans because the underlying
+  keys are content-addressed.
+- **In-memory** — `search_symbols`, `list_files`. Cursors are invalidated if
+  the cache rebuilds between calls. Responses carry `cursor_invalidated: true`
+  in that case; the caller restarts pagination from the beginning.
+- **Git-iterator** — `recent_changes`, `commits_touching`,
+  `find_commits_by_path`, `symbol_history`. Cursors are bound to the HEAD sha
+  at mint time. If HEAD moves between calls the response carries
+  `cursor_invalidated: true` and the caller re-starts.
+- **Deterministic blame** — `blame_file`, `blame_symbol`. Cursors encode the
+  last-returned hunk's `start_line` and resume immediately after; no
+  invalidation flag because the `(suspect_sha, path)` blame is deterministic.
 
 ---
 
@@ -228,21 +232,59 @@ calls but report zero savings — we don't claim what we can't honestly measure.
 
 ## Performance
 
-A 39 270-file TypeScript repo. Apple Silicon, release build:
+Measured by the in-repo hardening harness — Apple Silicon, release build,
+`--features full`, default `eager_l2 = true`. Numbers are warm steady-state
+(cold filesystem cache adds ~50% to scan time on the first run of a session).
 
-| What | Time |
+### Scan throughput
+
+| Repo | Files | Language mix | Cold scan |
+|---|---|---|---|
+| basemind (this repo) | 136 | Rust | < 1 s |
+| tokio | 856 | Rust | 0.2 s |
+| TypeScript compiler | 81 324 | TS / JS / JSON | 17–18 s |
+
+The TypeScript clone is the worst case in the in-repo hardening harness. Most
+real repos sit between these two extremes. Re-scans skip files whose content
+hash is unchanged, so warm scans on edited working trees are typically
+dominated by the changed-set size, not the repo size. The harness covers 8
+upstream repos in total — see [§ Hardening](#hardening) for the full list.
+
+### Per-tool MCP latency
+
+Walk over the full code-map tool set against the TypeScript-compiler index
+(81 324 files):
+
+| Latency | Tools |
 |---|---|
-| Cold scan (full index) | 12.4 s |
-| Cached scan (no changes) | 1.6 s |
-| MCP server startup | 3.1 s, 77 MB RSS |
-| `status` query | 1.2 ms |
-| `outline` (1571 symbols) | 1.9 ms |
-| `search_symbols` | 1–3 ms |
-| `find_references("spawn")` (tokio) | < 5 ms |
+| < 1 ms | `outline`, `list_files`, `find_references`, `find_callers` |
+| < 1 ms | `find_implementations`, `hot_files`, `repo_info` |
+| 3–6 ms | `search_symbols`, `call_graph` |
+| 4–10 ms | `recent_changes`, `commits_touching`, `find_commits_by_path` |
+| 4–10 ms | `symbol_history`, `diff_outline`, `diff_file` |
+| 20–25 ms | `status` (cross-file language breakdown) |
+| 30–40 ms | `blame_file`, `blame_symbol` |
+| 40–200 ms | `workspace_grep` (in-RAM regex over indexed files) |
+| ~200 ms | `search_documents` (LanceDB KNN, opt-in) |
+| 350–600 ms | `working_tree_status` (full `git status` walk) |
 
-basemind preloads L1 outlines into RAM on `serve` start, so cross-file queries
-are sub-millisecond. The Fjall LSM inverted index handles ref/caller lookups
-without scanning blobs.
+basemind preloads L1 outlines into RAM on `serve` start, so the code-map
+queries are sub-millisecond — there's no per-call disk hit. The Fjall LSM
+inverted index handles ref / caller / impl lookups without scanning blobs.
+Git-tool latency tracks `gix` walk cost and dominates only on the largest
+histories.
+
+### What the query / parse consolidation bought
+
+The L1 walk fuses symbols, imports, and implementations into one combined
+tree-sitter query — one `QueryCursor`, one tree walk per file. The eager-L2
+path then runs L2's calls + docs queries against the same parsed tree
+instead of re-parsing. Two measurements against the consolidation:
+
+| Repo | Before | After | Delta |
+|---|---|---|---|
+| tokio | 535 ms | **212 ms** | −60% |
+| TypeScript compiler | 25.9 s | **17.5 s** | −32% |
 
 ---
 
@@ -252,16 +294,23 @@ without scanning blobs.
 [tree-sitter-language-pack](https://github.com/kreuzberg-dev/tree-sitter-language-pack).
 basemind dynamically loads them on first use and caches them locally.
 
-**First-class outlines** — full signatures, kinds, decorators, calls, imports,
-docstrings — ship for:
+Three tiers of coverage:
 
-> **Rust · Python · TypeScript · TSX · JavaScript · Go**
+- **First-class** — hand-written `.scm` overrides in `src/queries/`. Full
+  outlines (symbols, imports, calls, docs) **plus `find_implementations`**.
+  Languages: Rust, Python, TypeScript, TSX, JavaScript.
+- **First-class minus implementations** — full outlines, but
+  `find_implementations` returns empty results by design. Go interface
+  satisfaction is structural rather than syntactic, so there's nothing to
+  capture. Languages: Go.
+- **Best-effort** — TSLP `tags.scm` fallback, capture-renamed to basemind's
+  shape by `adapt_tslp_tags`. Symbols and calls always work;
+  `find_implementations` lights up for any TSLP grammar whose upstream
+  `tags.scm` emits `@reference.implementation`. Covers ~100 grammars
+  including Kotlin, C#, Swift, C++, Scala, Solidity, Lua, Ruby, PHP, Java.
 
-**Best-effort outlines** via the TSLP `tags.scm` fallback — covers ~100 grammars
-including **Kotlin, C#, Swift, C++, Scala, Solidity, Lua, Ruby, PHP, Java**, …
-
-Languages without an upstream `tags.scm` (JSON, YAML, TOML) still parse and
-appear in `list_files`; they just don't expose symbols.
+Languages without an upstream `tags.scm` (JSON, YAML, TOML, plain `.properties`)
+still parse and appear in `list_files`; they just don't expose symbols.
 
 ---
 
@@ -312,14 +361,19 @@ A short tour. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the long
 version.
 
 - **Scanner** (`src/scanner.rs`) — rayon-parallel walker over the gitignore-aware
-  file set. Extracts L1 (symbols + imports), L2 (calls + docs), L3 (structural
-  hashes) per file.
+  file set. Extracts L1 (symbols + imports + implementations), L2 (calls +
+  docs), L3 (structural hashes) per file. One combined tree-sitter query per
+  language drives the L1 walk; the parsed tree is shared between L1 and L2 on
+  the eager-L2 path so each file is parsed exactly once.
 - **Content-addressed blobs** (`src/store.rs`) — msgpack at
   `.basemind/blobs/<blake3>.{l1,l2,l3}.msgpack`. Two files with identical content
   share the same blob. Re-scan skips unchanged hashes.
 - **Inverted index** (`src/index/`) — pure-Rust [Fjall](https://github.com/fjall-rs/fjall)
-  LSM keyspace at `.basemind/views/<view>/index.fjall/`. Six keyspaces drive
-  symbol search, reference lookup, dependents.
+  LSM keyspace at `.basemind/views/<view>/index.fjall/`. Nine partitions
+  (`symbols_by_path`, `symbols_by_name`, `calls_by_path`, `calls_by_callee`,
+  `imports_by_module`, `imports_by_path`, `implementations_by_trait`,
+  `implementations_by_path`, `embeddings`) drive symbol search, references,
+  implementations, and dependents.
 - **MCP surface** (`src/mcp/`) — stdio JSON-RPC via `rmcp`. Tool descriptions are
   the routing surface for agents; semantics (substring vs prefix, scope-aware vs
   name-only, capped) are stated honestly.
