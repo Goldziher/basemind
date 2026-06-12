@@ -6,7 +6,7 @@
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
-mod cursor;
+pub(crate) mod cursor;
 mod helpers;
 mod helpers_calls;
 mod helpers_grep;

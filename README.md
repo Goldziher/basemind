@@ -122,14 +122,21 @@ args = ["serve"]
 
 | Tool | What the agent can finally do |
 |---|---|
-| `symbol_history` | "When did `validateToken` actually change?" — tree-sitter × git, comment/format-stable diffs. |
-| `blame_file` / `blame_symbol` | "Who wrote this and why?" — line-range or symbol-scoped blame. |
+| `symbol_history` \* | "When did `validateToken` actually change?" — tree-sitter × git, comment/format-stable diffs. |
+| `blame_file` \* / `blame_symbol` \* | "Who wrote this and why?" — line-range or symbol-scoped blame. |
 | `hot_files` | "What's been churning?" — top-K most-changed files in the last N commits. |
-| `recent_changes` | "What changed recently on this branch?" |
-| `commits_touching` | "Show me every commit that touched `auth.rs`." |
+| `recent_changes` \* | "What changed recently on this branch?" |
+| `commits_touching` \* | "Show me every commit that touched `auth.rs`." |
+| `find_commits_by_path` \* | "Pickaxe: every commit whose changed-files match this regex." |
 | `diff_outline` | "What symbols differ between `main` and `HEAD`?" — structural diff. |
 | `diff_file` | "Give me the unified diff for `auth.rs` across these revs." |
 | `working_tree_status` | "What's staged / unstaged / untracked right now?" |
+
+\* Accepts `cursor` for pagination. Commit-iterator cursors (`recent_changes`,
+`commits_touching`, `find_commits_by_path`, `symbol_history`) are bound to the HEAD sha at
+mint time and surface `cursor_invalidated: true` if HEAD moves between calls. Blame cursors
+(`blame_file`, `blame_symbol`) encode the last-returned hunk's `start_line` and resume
+immediately after it.
 
 ### Intelligence tools (opt-in: `--features full`)
 
