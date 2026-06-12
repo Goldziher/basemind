@@ -21,12 +21,13 @@ env:
 
 jobs:
   test:
-    name: test / ${{ matrix.os }}
+    name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        features: ['', 'memory', 'documents', 'crawl', 'full']
     steps:
       - uses: actions/checkout@v4
 
@@ -36,20 +37,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Differentiate caches per-OS so the cache key is stable across runs.
-          key: ${{ matrix.os }}
+          # Differentiate caches per-OS and features so the cache key is stable across runs.
+          key: ${{ matrix.os }}-${{ matrix.features }}
 
       - name: cargo fmt
         run: cargo fmt --all --check
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets --tests -- -D warnings
+        run: cargo clippy --workspace --all-targets --tests --features "${{ matrix.features }}" -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace --quiet
+        run: cargo test --workspace --features "${{ matrix.features }}" --quiet
 
       - name: cargo build --release
-        run: cargo build --release --quiet --bin gitmind
+        run: cargo build --release --quiet --bin basemind --features "${{ matrix.features }}"
 
   deny:
     name: cargo-deny
@@ -81,4 +82,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: harden-results
-          path: /tmp/gitmind-harden/results.ndjson
+          path: /tmp/basemind-harden/results.ndjson
