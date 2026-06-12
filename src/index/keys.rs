@@ -33,6 +33,24 @@ fn read_len_prefixed(buf: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Zero-copy variant of `read_len_prefixed` — returns a borrowed slice into `buf` instead
+/// of allocating a `Vec<u8>`. Use this on the parse path when the next consumer (e.g.
+/// `RelPath::from(&[u8])`) copies the bytes internally; the intermediate `Vec` would be
+/// a wasted allocation.
+fn read_len_prefixed_ref<'buf>(buf: &'buf [u8], cursor: &mut usize) -> Option<&'buf [u8]> {
+    if buf.len() < *cursor + 2 {
+        return None;
+    }
+    let len = u16::from_be_bytes([buf[*cursor], buf[*cursor + 1]]) as usize;
+    *cursor += 2;
+    if buf.len() < *cursor + len {
+        return None;
+    }
+    let out = &buf[*cursor..*cursor + len];
+    *cursor += len;
+    Some(out)
+}
+
 /// `symbols_by_path`: `u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
 pub fn symbol_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 4);
@@ -50,12 +68,12 @@ pub fn symbols_by_path_prefix(rel: &RelPath) -> Vec<u8> {
 
 pub fn parse_symbol_by_path(key: &[u8]) -> Option<(RelPath, u32)> {
     let mut c = 0;
-    let rel = read_len_prefixed(key, &mut c)?;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
     if key.len() < c + 4 {
         return None;
     }
     let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((RelPath::from(rel.as_slice()), start))
+    Some((RelPath::from(rel), start))
 }
 
 /// `symbols_by_name`: `u16:len(name) ‖ name ‖ kind:u8 ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
@@ -83,12 +101,12 @@ pub fn parse_symbol_by_name(key: &[u8]) -> Option<(String, SymbolKind, RelPath, 
     }
     let kind = symbol_kind_from_byte(key[c]);
     c += 1;
-    let rel = read_len_prefixed(key, &mut c)?;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
     if key.len() < c + 4 {
         return None;
     }
     let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((name, kind, RelPath::from(rel.as_slice()), start))
+    Some((name, kind, RelPath::from(rel), start))
 }
 
 /// `calls_by_callee`: `u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
@@ -109,12 +127,12 @@ pub fn calls_by_callee_prefix(callee: &str) -> Vec<u8> {
 pub fn parse_call_by_callee(key: &[u8]) -> Option<(String, RelPath, u32)> {
     let mut c = 0;
     let callee = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
-    let rel = read_len_prefixed(key, &mut c)?;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
     if key.len() < c + 4 {
         return None;
     }
     let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((callee, RelPath::from(rel.as_slice()), start))
+    Some((callee, RelPath::from(rel), start))
 }
 
 /// `calls_by_path`: same shape as `symbols_by_path` so iterating "all calls in this file"
@@ -150,12 +168,40 @@ pub fn imports_by_module_prefix(module: &str) -> Vec<u8> {
 pub fn parse_import_by_module(key: &[u8]) -> Option<(String, RelPath, u32)> {
     let mut c = 0;
     let module = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
-    let rel = read_len_prefixed(key, &mut c)?;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
     if key.len() < c + 4 {
         return None;
     }
     let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
-    Some((module, RelPath::from(rel.as_slice()), start))
+    Some((module, RelPath::from(rel), start))
+}
+
+/// `imports_by_path`: same role as `symbols_by_path` for the imports keyspace —
+/// gives O(prefix) deletion when re-upserting a file. Shape:
+/// `u16:len(rel) ‖ rel ‖ u16:len(module) ‖ module ‖ start_byte:u32_be`.
+pub fn import_by_path(rel: &RelPath, module: &str, start_byte: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 2 + module.len() + 4);
+    write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, module.as_bytes());
+    out.extend_from_slice(&start_byte.to_be_bytes());
+    out
+}
+
+pub fn imports_by_path_prefix(rel: &RelPath) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
+    write_len_prefixed(&mut out, rel.as_bytes());
+    out
+}
+
+pub fn parse_import_by_path(key: &[u8]) -> Option<(RelPath, String, u32)> {
+    let mut c = 0;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
+    let module = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    Some((RelPath::from(rel), module, start))
 }
 
 // ─── memory_by_key ───────────────────────────────────────────────────────────
@@ -305,6 +351,35 @@ mod tests {
         assert!(
             !key_foobar.starts_with(&prefix_foo),
             "Foobar's key must NOT match the Foo prefix"
+        );
+    }
+
+    #[test]
+    fn import_by_path_roundtrips() {
+        let rel = RelPath::from("src/foo.py");
+        let key = import_by_path(&rel, "os.path", 42);
+        let (back_rel, module, start) = parse_import_by_path(&key).unwrap();
+        assert_eq!(back_rel, rel);
+        assert_eq!(module, "os.path");
+        assert_eq!(start, 42);
+    }
+
+    /// `imports_by_path` prefix scan must isolate one file's entries from another file
+    /// whose path shares a leading substring (e.g. `src/foo.py` vs `src/foo.py.bak`).
+    #[test]
+    fn prefix_scan_isolates_imports_by_path() {
+        let rel_a = RelPath::from("src/foo.py");
+        let rel_b = RelPath::from("src/foo.py.bak");
+        let key_a = import_by_path(&rel_a, "os", 0);
+        let key_b = import_by_path(&rel_b, "os", 0);
+        let prefix_a = imports_by_path_prefix(&rel_a);
+        assert!(
+            key_a.starts_with(&prefix_a),
+            "rel_a's key must extend rel_a's prefix"
+        );
+        assert!(
+            !key_b.starts_with(&prefix_a),
+            "rel_b's key must NOT match rel_a's prefix"
         );
     }
 
