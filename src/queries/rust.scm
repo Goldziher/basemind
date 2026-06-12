@@ -42,6 +42,26 @@
   function: (scoped_identifier name: (identifier) @call.callee)) @call.range
 (macro_invocation macro: (identifier) @call.callee) @call.range
 
+;; section: implementations
+;;
+;; Captures `impl Trait for Type` (trait impls) and `impl Type { … }` (inherent impls).
+;; For trait impls both @impl.trait_name and @impl.implementor are captured from a single
+;; match so `build_implementation` does not need to walk ancestors.
+;; Inherent impls (`impl Foo { … }`) have no trait — we emit only the type as @impl.implementor
+;; and omit the trait_name so `build_implementation` skips the match (trait_name is required).
+
+(impl_item
+  trait: (type_identifier) @impl.trait_name
+  type: (type_identifier) @impl.implementor) @impl.range
+
+(impl_item
+  trait: (type_identifier) @impl.trait_name
+  type: (scoped_type_identifier name: (type_identifier) @impl.implementor)) @impl.range
+
+(impl_item
+  trait: (type_identifier) @impl.trait_name
+  type: (generic_type type: (type_identifier) @impl.implementor)) @impl.range
+
 ;; section: docs
 
 ((line_comment) @doc.text

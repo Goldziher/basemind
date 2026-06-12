@@ -511,6 +511,43 @@ impl BasemindServer {
         __result
     }
 
+    /// Types / classes that implement, extend, or inherit from a given name.
+    #[tool(
+        description = "Find types that implement, extend, or inherit from a given trait / interface \
+                       / base class. Returns each (trait, implementor, file, line, column) pair. \
+                       Substring-aware? No — `trait_name` is an exact-prefix match against \
+                       captured identifiers. Covers Rust (`impl Trait for Type`), Python \
+                       (`class Foo(Bar):`), TypeScript / TSX (`class X extends Y`, \
+                       `class X implements Y`, `interface X extends Y`), and JavaScript \
+                       (`class X extends Y`). Go interface satisfaction is structural and not \
+                       detected. Bounded by `scan_cap = limit * 8` — pass `cursor` from a \
+                       previous response to fetch the next page; cursors remain stable across \
+                       rescans (Fjall-backed)."
+    )]
+    async fn find_implementations(
+        &self,
+        Parameters(params): Parameters<FindImplementationsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            let store = self.state.store.read().await;
+            let idx = store.index_db.as_ref().cloned();
+            drop(store);
+            let cache = self.state.cache.load_full();
+            run_find_implementations(idx.as_ref(), params, &cache)
+        }
+        .await;
+        record_call(
+            &self.state,
+            "find_implementations",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
     /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch name (if HEAD is on one), \

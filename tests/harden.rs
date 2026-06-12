@@ -396,6 +396,16 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
     }
 
+    // find_implementations: sweep with a common trait name. Use "Future" as a universally
+    // present trait in Rust repos; falls back gracefully to 0 hits for non-Rust repos.
+    call(
+        svc,
+        &mut records,
+        "find_implementations",
+        json!({ "trait_name": "Future", "limit": 100 }),
+    )
+    .await;
+
     // Memory + document tools: sweep unconditionally (MCP error when features off is ok).
     call(
         svc,
@@ -520,6 +530,17 @@ fn assert_passing(
                     "tokio canary: workspace_grep(\"fn spawn\") returned {grep_hits} hits (expected ≥ 20)"
                 ));
             }
+            // find_implementations canary: tokio's `Future` trait has many implementors.
+            let future_hits = repo_record
+                .canaries
+                .get("future_impl_hits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if future_hits < 20 {
+                failures.push(format!(
+                    "tokio canary: find_implementations(\"Future\") returned {future_hits} hits (expected ≥ 20)"
+                ));
+            }
         }
         "django" => {
             // Iteration-3 canary: `get` is overloaded in Django (ORM queryset method, view
@@ -605,6 +626,24 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("spawn_hits".into(), json!(hits));
+            }
+            // find_implementations canary: tokio implements `Future` in many places.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "find_implementations",
+                    &json!({ "trait_name": "Future", "limit": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record
+                    .canaries
+                    .insert("future_impl_hits".into(), json!(hits));
             }
             // workspace_grep canary for tokio: count "fn spawn" across source files.
             if let Ok(out) = svc

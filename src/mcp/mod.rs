@@ -10,6 +10,7 @@ pub(crate) mod cursor;
 mod helpers;
 mod helpers_calls;
 mod helpers_grep;
+mod helpers_impls;
 #[cfg(feature = "crawl")]
 mod helpers_web;
 #[cfg(any(feature = "memory", feature = "documents"))]
@@ -23,6 +24,7 @@ mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod types;
+mod types_impls;
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;

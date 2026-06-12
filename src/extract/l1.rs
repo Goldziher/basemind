@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
-use super::{ExtractError, FileMapL1, Import, SCHEMA_VER, Symbol, SymbolKind};
+use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind};
 use crate::lang::{
     LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser,
 };
@@ -30,6 +30,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
 
     let symbols = run_symbols(lang, root, source)?;
     let imports = run_imports(lang, root, source)?;
+    let implementations = run_implementations(lang, root, source)?;
 
     Ok(FileMapL1 {
         schema_ver: SCHEMA_VER,
@@ -39,6 +40,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
         error_count,
         symbols,
         imports,
+        implementations,
     })
 }
 
@@ -243,6 +245,115 @@ fn signature_slice(text: &str) -> Option<String> {
     }
 }
 
+fn run_implementations(
+    lang: LangId,
+    root: tree_sitter::Node,
+    source: &[u8],
+) -> Result<Vec<Implementation>, ExtractError> {
+    let Some(q) = try_get_query(lang, QueryKind::Implementations)? else {
+        return Ok(Vec::new());
+    };
+    let mut cursor = QueryCursor::new();
+    let mut iter = cursor.matches(&q, root, source);
+    let mut out = Vec::new();
+    while let Some(m) = iter.next() {
+        if let Some(imp) = build_implementation(&q, m, source) {
+            out.push(imp);
+        }
+    }
+    Ok(out)
+}
+
+/// Build an `Implementation` from a query match that contains:
+/// - `@impl.trait_name` — the parent / trait / interface identifier node.
+/// - `@impl.implementor` (optional) — the implementing type identifier node.
+///   When absent (TSLP-adapted patterns), the implementor is inferred by walking
+///   the `@impl.range` node's named ancestors to find the nearest identifier.
+/// - `@impl.range` (optional) — the containing declaration node; used for position
+///   when `@impl.trait_name` itself carries no useful start position.
+fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Implementation> {
+    let mut trait_name: Option<String> = None;
+    let mut impl_type: Option<String> = None;
+    let mut range_node: Option<Node> = None;
+    let mut trait_node: Option<Node> = None;
+
+    for cap in m.captures {
+        let cname = capture_name(q, cap.index);
+        match cname {
+            "impl.trait_name" => {
+                trait_name = cap.node.utf8_text(source).ok().map(|s| s.to_string());
+                trait_node = Some(cap.node);
+            }
+            "impl.implementor" => {
+                impl_type = cap.node.utf8_text(source).ok().map(|s| s.to_string());
+            }
+            "impl.range" => {
+                range_node = Some(cap.node);
+            }
+            _ => {}
+        }
+    }
+
+    let trait_name = trait_name?;
+
+    // If the query didn't provide an explicit @impl.implementor, walk up the
+    // @impl.range (or @impl.trait_name node's parent) to find the nearest named
+    // identifier that looks like a type name. This is the TSLP-adapted fallback.
+    let impl_type = impl_type.or_else(|| {
+        let anchor = range_node.or(trait_node)?;
+        implementor_from_ancestor(anchor, source)
+    })?;
+
+    // Position: prefer the range node, fall back to the trait_name node.
+    let pos_node = range_node.or(trait_node)?;
+    let p = pos_node.start_position();
+
+    Some(Implementation {
+        trait_name,
+        impl_type,
+        start_byte: pos_node.start_byte() as u32,
+        start_row: p.row as u32,
+        start_col: p.column as u32,
+    })
+}
+
+/// Walk up the tree from `node` to find the nearest named ancestor that has an
+/// identifier / type-identifier child in the `name` field. Returns the text of
+/// that identifier. Used to infer the implementing type from TSLP patterns that
+/// only capture the trait name and the whole expression node.
+fn implementor_from_ancestor(node: Node, source: &[u8]) -> Option<String> {
+    /// Extract non-empty text from a node field, returning `None` if absent or empty.
+    fn field_text<'a>(parent: Node<'a>, field: &str, src: &'a [u8]) -> Option<&'a str> {
+        let n = parent.child_by_field_name(field)?;
+        let t = n.utf8_text(src).ok()?;
+        if t.is_empty() { None } else { Some(t) }
+    }
+
+    // Walk up at most 8 levels to bound work on pathological trees.
+    let mut current = node;
+    for _ in 0..8 {
+        let parent = current.parent()?;
+        // Try `name:` field first — present on class_declaration, struct_item, etc.
+        if let Some(text) = field_text(parent, "name", source) {
+            return Some(text.to_string());
+        }
+        // Try `type:` field — present on impl_item (Rust). Only use leaf-like nodes
+        // (type_identifier, identifier) to avoid capturing the full type expression.
+        if let Some(type_node) = parent.child_by_field_name("type") {
+            // `child_count() == 0` guards against complex type expressions.
+            let leaf_text = (type_node.child_count() == 0)
+                .then(|| type_node.utf8_text(source).ok())
+                .flatten()
+                .filter(|t| !t.is_empty());
+            if let Some(text) = leaf_text {
+                return Some(text.to_string());
+            }
+        }
+        current = parent;
+    }
+    None
+}
+
 fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
     let mut range_node = None;
     let mut module: Option<String> = None;
@@ -271,6 +382,37 @@ fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_implementation_rust_trait_impl() {
+        // `impl Drawable for Beta` must produce one Implementation record.
+        let src = br#"
+trait Drawable {
+    fn draw(&self);
+}
+
+struct Beta {
+    x: i32,
+}
+
+impl Drawable for Beta {
+    fn draw(&self) {}
+}
+"#;
+        let map = extract_l1("rust", src).expect("extract");
+        let impls = &map.implementations;
+        assert!(
+            !impls.is_empty(),
+            "expected at least one Implementation; got none"
+        );
+        let found = impls
+            .iter()
+            .find(|i| i.trait_name == "Drawable" && i.impl_type == "Beta");
+        assert!(
+            found.is_some(),
+            "expected Implementation {{ trait_name: \"Drawable\", impl_type: \"Beta\" }}; got {impls:?}"
+        );
+    }
 
     #[test]
     fn extract_basic_rust() {

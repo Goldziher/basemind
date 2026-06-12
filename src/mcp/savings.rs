@@ -56,6 +56,13 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
             (bytes_to_tokens(corpus_bytes / 20), "grep_across_corpus")
         }
 
+        // Implementation lookups: alternative is `rg 'impl.*Trait'` / `grep class.*extends`
+        // plus manual filtering across languages. Same grep ratio as find_references — the
+        // corpus scan cost dominates and the response is already the filtered result.
+        "find_implementations" => {
+            (bytes_to_tokens(corpus_bytes / 20), "grep_across_corpus")
+        }
+
         // Dependents = grep imports across the corpus. Imports are sparse so
         // the grep ratio is lower than for name search.
         "dependents" => (

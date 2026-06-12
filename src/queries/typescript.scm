@@ -37,6 +37,33 @@
     name: (identifier) @symbol.name
     value: (function_expression))) @symbol.function
 
+;; section: implementations
+;;
+;; `class Foo extends Bar` — extends_clause.value is the parent expression.
+;; `class Foo implements Bar, Baz` — implements_clause children are type nodes.
+;; `interface Foo extends Bar` — extends_type_clause.type children.
+;; One @impl.trait_name per parent yields one Implementation record per inheritance edge.
+
+;; class extends
+(class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (extends_clause
+      value: (identifier) @impl.trait_name))) @impl.range
+
+;; class implements (one pattern per implemented type)
+(class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (implements_clause
+      (type_identifier) @impl.trait_name))) @impl.range
+
+;; interface extends
+(interface_declaration
+  name: (type_identifier) @impl.implementor
+  (extends_type_clause
+    (type_identifier) @impl.trait_name)) @impl.range
+
 ;; section: imports
 
 (import_statement) @import.range

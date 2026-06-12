@@ -44,14 +44,23 @@ fn build_repo() -> TempDir {
     let root = dir.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
+    // a.rs: symbols + an impl Drawable for Beta so find_implementations has a Rust hit.
     std::fs::write(
         root.join("a.rs"),
-        b"pub fn alpha() {}\npub struct Beta { x: i32 }\nimpl Beta {\n  pub fn doit(&self) {}\n}\n",
+        b"pub fn alpha() {}\n\
+          pub struct Beta { x: i32 }\n\
+          impl Beta {\n  pub fn doit(&self) {}\n}\n\
+          pub trait Drawable { fn draw(&self); }\n\
+          impl Drawable for Beta { fn draw(&self) {} }\n",
     )
     .unwrap();
+    // b.ts: TypeScript with `class Rectangle implements Drawable`.
     std::fs::write(
         root.join("b.ts"),
-        b"export const Greet = (name: string) => `hi ${name}`;\nexport function plain() { return 1; }\n",
+        b"export const Greet = (name: string) => `hi ${name}`;\n\
+          export function plain() { return 1; }\n\
+          interface Drawable { draw(): void; }\n\
+          class Rectangle implements Drawable { draw() {} }\n",
     )
     .unwrap();
     // c.rs calls alpha() three times so the reference index has something to chew on.
@@ -60,12 +69,22 @@ fn build_repo() -> TempDir {
         b"pub fn caller() { alpha(); alpha(); other(); alpha(); }\n",
     )
     .unwrap();
-    git(root, &["add", "a.rs", "b.ts", "c.rs"]);
+    // d.py: Python subclass so find_implementations has a Python hit.
+    std::fs::write(
+        root.join("d.py"),
+        b"class Foo: pass\nclass Bar(Foo): pass\n",
+    )
+    .unwrap();
+    git(root, &["add", "a.rs", "b.ts", "c.rs", "d.py"]);
     git(root, &["commit", "-qm", "init"]);
     // Touch a.rs in a second commit so symbol_history has something to chew on.
     std::fs::write(
         root.join("a.rs"),
-        b"pub fn alpha() { let _ = 1; }\npub struct Beta { x: i32 }\nimpl Beta {\n  pub fn doit(&self) {}\n}\n",
+        b"pub fn alpha() { let _ = 1; }\n\
+          pub struct Beta { x: i32 }\n\
+          impl Beta {\n  pub fn doit(&self) {}\n}\n\
+          pub trait Drawable { fn draw(&self); }\n\
+          impl Drawable for Beta { fn draw(&self) {} }\n",
     )
     .unwrap();
     git(root, &["commit", "-aqm", "tweak alpha"]);
@@ -477,10 +496,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
-    // list_files pagination (Phase 5): fixture has 3 files; limit=2 paginates.
+    // list_files pagination (Phase 5): fixture has 4 files; limit=3 paginates (3+1).
     let page1 = decode_text(
         &service
-            .call_tool(call_params("list_files", json!({ "limit": 2 })))
+            .call_tool(call_params("list_files", json!({ "limit": 3 })))
             .await
             .expect("list_files page1"),
     );
@@ -488,7 +507,7 @@ async fn mcp_server_exercises_representative_tools() {
         .get("files")
         .and_then(Value::as_array)
         .expect("page1 files");
-    assert_eq!(page1_files.len(), 2, "list_files limit=2 → 2 files");
+    assert_eq!(page1_files.len(), 3, "list_files limit=3 → 3 files");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
@@ -498,7 +517,7 @@ async fn mcp_server_exercises_representative_tools() {
         &service
             .call_tool(call_params(
                 "list_files",
-                json!({ "limit": 2, "cursor": cursor1 }),
+                json!({ "limit": 3, "cursor": cursor1 }),
             ))
             .await
             .expect("list_files page2"),
@@ -814,6 +833,139 @@ async fn mcp_server_exercises_representative_tools() {
     assert!(
         savings_note.contains("estimate") || savings_note.contains("heuristic"),
         "savings_note must disclose the heuristic nature: {savings_note:?}"
+    );
+
+    // find_implementations: `Drawable` should return Beta (a.rs, Rust) and Rectangle (b.ts, TS).
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "Drawable", "limit": 100 }),
+            ))
+            .await
+            .expect("find_implementations(Drawable)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let impl_types: Vec<&str> = hits
+        .iter()
+        .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
+        .collect();
+    assert!(
+        impl_types.contains(&"Beta"),
+        "find_implementations(Drawable) must include Beta from a.rs: {impl_types:?}"
+    );
+    assert!(
+        impl_types.contains(&"Rectangle"),
+        "find_implementations(Drawable) must include Rectangle from b.ts: {impl_types:?}"
+    );
+    assert!(
+        hits.iter()
+            .all(|h| h.get("start_row").and_then(Value::as_u64).unwrap_or(0) >= 1),
+        "every find_implementations hit must carry a 1-based start_row"
+    );
+
+    // find_implementations: Python subclass Bar(Foo).
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "Foo", "limit": 100 }),
+            ))
+            .await
+            .expect("find_implementations(Foo)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let impl_types: Vec<&str> = hits
+        .iter()
+        .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
+        .collect();
+    assert!(
+        impl_types.contains(&"Bar"),
+        "find_implementations(Foo) must include Bar from d.py: {impl_types:?}"
+    );
+
+    // find_implementations pagination: limit=1 → next_cursor; second page no overlap.
+    let impl_page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "Drawable", "limit": 1 }),
+            ))
+            .await
+            .expect("find_implementations page1"),
+    );
+    let impl_page1_hits = impl_page1
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("impl page1 hits");
+    assert_eq!(
+        impl_page1_hits.len(),
+        1,
+        "limit=1 must return exactly 1 implementation hit"
+    );
+    let impl_cursor1 = impl_page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("find_implementations first page must carry next_cursor when ≥2 implementors exist")
+        .to_string();
+    let impl_page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "Drawable", "limit": 1, "cursor": impl_cursor1 }),
+            ))
+            .await
+            .expect("find_implementations page2"),
+    );
+    let impl_page2_hits = impl_page2
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("impl page2 hits");
+    assert_eq!(
+        impl_page2_hits.len(),
+        1,
+        "find_implementations page2 must return the remaining hit"
+    );
+    let impl_key_of = |h: &Value| -> (String, String) {
+        (
+            h.get("impl_type")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            h.get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        )
+    };
+    assert_ne!(
+        impl_key_of(&impl_page1_hits[0]),
+        impl_key_of(&impl_page2_hits[0]),
+        "find_implementations pages must not overlap"
+    );
+
+    // find_implementations language filter: Drawable restricted to rust → only Beta.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "Drawable", "language": "rust", "limit": 100 }),
+            ))
+            .await
+            .expect("find_implementations(language=rust)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let impl_types: Vec<&str> = hits
+        .iter()
+        .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
+        .collect();
+    assert!(
+        impl_types.contains(&"Beta"),
+        "rust-filtered Drawable must include Beta: {impl_types:?}"
+    );
+    assert!(
+        !impl_types.contains(&"Rectangle"),
+        "rust-filtered Drawable must not include Rectangle (TypeScript): {impl_types:?}"
     );
 
     let _ = service.cancel().await;

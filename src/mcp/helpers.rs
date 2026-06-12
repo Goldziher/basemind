@@ -16,6 +16,7 @@ use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser}
 
 pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
 pub(super) use super::helpers_grep::run_workspace_grep;
+pub(super) use super::helpers_impls::run_find_implementations;
 
 pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
 pub(super) const SEARCH_LIMIT_MAX: u32 = 1000;

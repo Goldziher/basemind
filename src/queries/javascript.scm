@@ -21,6 +21,16 @@
     name: (identifier) @symbol.name
     value: (function_expression))) @symbol.function
 
+;; section: implementations
+;;
+;; `class Foo extends Bar` — JavaScript only supports single inheritance via extends.
+;; No implements keyword in JS. One pattern captures the parent identifier.
+
+(class_declaration
+  name: (identifier) @impl.implementor
+  (class_heritage
+    (identifier) @impl.trait_name)) @impl.range
+
 ;; section: imports
 
 (import_statement) @import.range

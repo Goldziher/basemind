@@ -991,3 +991,7 @@ pub(super) struct WebMapEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
+
+// ─── find_implementations (params live in types_impls.rs; re-exported for the tool shim) ───
+
+pub use super::types_impls::FindImplementationsParams;

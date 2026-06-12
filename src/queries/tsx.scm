@@ -36,6 +36,30 @@
     name: (identifier) @symbol.name
     value: (function_expression))) @symbol.function
 
+;; section: implementations
+;;
+;; Mirrors typescript.scm — TSX shares the same grammar node names for class heritage.
+
+;; class extends
+(class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (extends_clause
+      value: (identifier) @impl.trait_name))) @impl.range
+
+;; class implements
+(class_declaration
+  name: (type_identifier) @impl.implementor
+  (class_heritage
+    (implements_clause
+      (type_identifier) @impl.trait_name))) @impl.range
+
+;; interface extends
+(interface_declaration
+  name: (type_identifier) @impl.implementor
+  (extends_type_clause
+    (type_identifier) @impl.trait_name)) @impl.range
+
 ;; section: imports
 
 (import_statement) @import.range

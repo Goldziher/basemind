@@ -92,6 +92,25 @@ impl IndexWriter {
             self.batch.remove(&self.db.imports_by_path, path_key);
             self.batch.remove(&self.db.imports_by_module, module_key);
         }
+
+        // Implementations: prefix-scan implementations_by_path for this file, derive the
+        // implementations_by_trait key from each entry, stage both deletes. Mirrors the
+        // imports dual-partition pattern.
+        let impl_path_prefix = keys::impls_by_path_prefix(rel);
+        let mut found_impls: Vec<(Vec<u8>, String, String, u32)> = Vec::new();
+        for guard in self.db.implementations_by_path.prefix(impl_path_prefix) {
+            let (k, _) = guard.into_inner()?;
+            if let Some((_, trait_name, impl_type, start_byte)) = keys::parse_impl_by_path(&k) {
+                found_impls.push(((*k).to_vec(), trait_name, impl_type, start_byte));
+            }
+        }
+        for (path_key, trait_name, impl_type, start_byte) in found_impls {
+            let trait_key = keys::impl_by_trait(&trait_name, &impl_type, rel, start_byte);
+            self.batch
+                .remove(&self.db.implementations_by_path, path_key);
+            self.batch
+                .remove(&self.db.implementations_by_trait, trait_key);
+        }
         Ok(())
     }
 
@@ -128,6 +147,18 @@ impl IndexWriter {
                 self.batch
                     .insert(&self.db.calls_by_callee, callee_key, Vec::<u8>::new());
             }
+        }
+        for imp in &l1.implementations {
+            let trait_key =
+                keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte);
+            let path_key = keys::impl_by_path(rel, &imp.trait_name, &imp.impl_type, imp.start_byte);
+            self.batch.insert(
+                &self.db.implementations_by_trait,
+                trait_key,
+                Vec::<u8>::new(),
+            );
+            self.batch
+                .insert(&self.db.implementations_by_path, path_key, Vec::<u8>::new());
         }
         Ok(())
     }
@@ -166,6 +197,7 @@ mod tests {
                 })
                 .collect(),
             imports: Vec::new(),
+            implementations: Vec::new(),
         }
     }
 
@@ -296,6 +328,80 @@ mod tests {
             os_hits += 1;
         }
         assert_eq!(os_hits, 1, "prefix scan must isolate `os` from `os.path`");
+    }
+
+    fn synthetic_l1_with_impls(impls: &[(&str, &str, u32)]) -> FileMapL1 {
+        let mut l1 = synthetic_l1(&[]);
+        l1.implementations = impls
+            .iter()
+            .map(|(t, i, sb)| crate::extract::Implementation {
+                trait_name: t.to_string(),
+                impl_type: i.to_string(),
+                start_byte: *sb,
+                start_row: 0,
+                start_col: 0,
+            })
+            .collect();
+        l1
+    }
+
+    /// Iteration-3 dual-partition test for implementations. Mirrors
+    /// `imports_by_path_roundtrip_and_dual_partition_consistency`: upsert two rows, verify
+    /// both partitions have 2 entries; re-upsert with one row dropped, verify both
+    /// partitions have 1 entry; remove the file, verify both partitions empty.
+    #[test]
+    fn implementations_dual_partition_consistency() {
+        let (_d, db) = fresh_db();
+        let rel = RelPath::from("src/foo.rs");
+
+        // Initial upsert with two impls.
+        let mut w = db.writer();
+        w.upsert_file(
+            &rel,
+            &synthetic_l1_with_impls(&[("Display", "Foo", 0), ("Debug", "Foo", 10)]),
+            None,
+        )
+        .unwrap();
+        w.commit().unwrap();
+
+        assert_eq!(db.implementations_by_trait.iter().count(), 2);
+        assert_eq!(db.implementations_by_path.iter().count(), 2);
+
+        // Prefix scan for `Display` returns exactly one hit (length-prefix isolates Display
+        // from any future DisplayFmt-style longer-name impls).
+        let prefix = keys::impls_by_trait_prefix("Display");
+        let mut display_hits = 0;
+        for guard in db.implementations_by_trait.prefix(prefix) {
+            let (k, _) = guard.into_inner().unwrap();
+            let (trait_name, impl_type, back_rel, _) = keys::parse_impl_by_trait(&k).unwrap();
+            assert_eq!(trait_name, "Display");
+            assert_eq!(impl_type, "Foo");
+            assert_eq!(back_rel, rel);
+            display_hits += 1;
+        }
+        assert_eq!(display_hits, 1);
+
+        // Re-upsert with the Debug impl dropped — upsert_file stages deletes for the
+        // existing rows then inserts the fresh set in one batch.
+        let mut w = db.writer();
+        w.upsert_file(
+            &rel,
+            &synthetic_l1_with_impls(&[("Display", "Foo", 0)]),
+            None,
+        )
+        .unwrap();
+        w.commit().unwrap();
+
+        assert_eq!(db.implementations_by_trait.iter().count(), 1);
+        assert_eq!(db.implementations_by_path.iter().count(), 1);
+
+        // Remove the file → both partitions empty.
+        let mut w = db.writer();
+        w.remove_file(&rel).unwrap();
+        w.commit().unwrap();
+
+        assert!(db.implementations_by_trait.iter().next().is_none());
+        assert!(db.implementations_by_path.iter().next().is_none());
     }
 
     #[test]

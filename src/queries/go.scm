@@ -10,6 +10,13 @@
 
 (var_declaration (var_spec name: (identifier) @symbol.name)) @symbol.const
 
+;; section: implementations
+;;
+;; Go uses structural typing — interface satisfaction is implicit and not encoded in syntax.
+;; Struct embedding (`type Foo struct { Bar }`) is composition, not inheritance, and is
+;; excluded from the Implementation model to avoid false positives. This section is
+;; intentionally empty; the query returns no results for Go source files.
+
 ;; section: imports
 
 (import_declaration) @import.range

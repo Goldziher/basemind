@@ -321,6 +321,12 @@ pub enum QueryKind {
     Calls,
     /// Captures: @doc.text, @doc.target  (L2)
     Docs,
+    /// Captures: @impl.trait_name, @impl.implementor
+    ///
+    /// Populated from the `;; section: implementations` block in hand-written `.scm` overrides,
+    /// or from `@reference.implementation` captures in TSLP `tags.scm` files adapted by
+    /// [`adapt_tslp_tags`]. One `(trait_name, implementor)` pair per inheritance edge.
+    Implementations,
 }
 
 impl QueryKind {
@@ -330,6 +336,7 @@ impl QueryKind {
             QueryKind::Imports => "imports",
             QueryKind::Calls => "calls",
             QueryKind::Docs => "docs",
+            QueryKind::Implementations => "implementations",
         }
     }
 }
@@ -373,27 +380,40 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
 /// with the identifier name captured as `@name`. Basemind's extractors look for
 /// `@symbol.<kind>` / `@symbol.name` (l1) and `@call.range` / `@call.callee` (l2). This walks
 /// top-level S-expression patterns, classifies each by its root capture, and emits the
-/// rewritten pattern into either the `;; section: symbols` or `;; section: calls` block.
+/// rewritten pattern into the appropriate section block.
 ///
-/// Patterns whose root capture is neither `@definition.*` nor `@reference.call` (e.g.
-/// `@reference.class`, `@reference.interface`, `@reference.send`, `@reference.type`,
-/// `@reference.implementation`) are dropped — basemind has no consumer for them today.
+/// Patterns whose root capture is neither `@definition.*`, `@reference.call`, nor
+/// `@reference.implementation` (e.g. `@reference.class`, `@reference.interface`,
+/// `@reference.send`, `@reference.type`) are dropped — basemind has no consumer for them.
+///
+/// `@reference.implementation` patterns are rewritten into the `;; section: implementations`
+/// block where each `@name` capture becomes `@impl.trait_name`. The `;; section: symbols`
+/// block emits a corresponding `@impl.implementor` capture for the surrounding definition
+/// node when the grammar allows it — but since TSLP patterns typically expose only the
+/// parent identifier node, the implementor is extracted from the match context in
+/// `src/extract/l1.rs::build_implementation` by walking to the nearest named ancestor.
 fn adapt_tslp_tags(source: &str) -> String {
     let mut sym_buf = String::new();
     let mut call_buf = String::new();
+    let mut impl_buf = String::new();
     for pattern in split_top_level_patterns(source) {
         let kind = classify_pattern(pattern);
         match kind {
             PatternKind::Definition => sym_buf.push_str(&rewrite_pattern(pattern, kind)),
             PatternKind::ReferenceCall => call_buf.push_str(&rewrite_pattern(pattern, kind)),
+            PatternKind::ReferenceImplementation => {
+                impl_buf.push_str(&rewrite_pattern(pattern, kind));
+            }
             PatternKind::Other => {}
         }
     }
-    let mut out = String::with_capacity(sym_buf.len() + call_buf.len() + 64);
+    let mut out = String::with_capacity(sym_buf.len() + call_buf.len() + impl_buf.len() + 96);
     out.push_str(";; section: symbols\n");
     out.push_str(&sym_buf);
     out.push_str("\n;; section: calls\n");
     out.push_str(&call_buf);
+    out.push_str("\n;; section: implementations\n");
+    out.push_str(&impl_buf);
     out
 }
 
@@ -401,6 +421,7 @@ fn adapt_tslp_tags(source: &str) -> String {
 enum PatternKind {
     Definition,
     ReferenceCall,
+    ReferenceImplementation,
     Other,
 }
 
@@ -510,6 +531,8 @@ fn classify_capture(cap: &str) -> PatternKind {
         PatternKind::Definition
     } else if cap == "reference.call" {
         PatternKind::ReferenceCall
+    } else if cap == "reference.implementation" {
+        PatternKind::ReferenceImplementation
     } else {
         PatternKind::Other
     }
@@ -549,6 +572,7 @@ fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
         return match kind {
             PatternKind::Definition => "symbol.name".to_string(),
             PatternKind::ReferenceCall => "call.callee".to_string(),
+            PatternKind::ReferenceImplementation => "impl.trait_name".to_string(),
             PatternKind::Other => "name".to_string(),
         };
     }
@@ -557,6 +581,9 @@ fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
     }
     if cap == "reference.call" {
         return "call.range".to_string();
+    }
+    if cap == "reference.implementation" {
+        return "impl.range".to_string();
     }
     // Predicates like `@cap (#match? ...)` keep their original name in the pattern they
     // came from — leave untouched.
@@ -600,7 +627,10 @@ pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangE
 
     let source: Option<String> = if let Some(raw) = override_query_source(lang) {
         extract_section(raw, kind.name())
-    } else if matches!(kind, QueryKind::Symbols | QueryKind::Calls) {
+    } else if matches!(
+        kind,
+        QueryKind::Symbols | QueryKind::Calls | QueryKind::Implementations
+    ) {
         tslp_tags_adapted(lang).and_then(|adapted| extract_section(&adapted, kind.name()))
     } else {
         None
@@ -704,15 +734,34 @@ mod tests {
     }
 
     #[test]
-    fn adapt_tslp_tags_drops_reference_class() {
-        // `@reference.class` (kotlin constructor invocation, rust impl_item) has no consumer
-        // in basemind today — must be excluded from both sections.
+    fn adapt_tslp_tags_routes_reference_implementation() {
+        // `@reference.implementation` (rust impl_item trait, csharp base_list) must land in the
+        // implementations section, not the calls section.
         let src = "(impl_item trait: (type_identifier) @name) @reference.implementation\n\
                    (call_expression function: (identifier) @name) @reference.call\n";
         let out = adapt_tslp_tags(src);
-        // `reference.implementation` lacks a section, so its `@name` does NOT become
-        // `@call.callee` — the whole pattern is dropped.
-        assert!(!out.contains("@reference"));
+        // @reference.implementation pattern must be in the implementations section.
+        assert!(out.contains(";; section: implementations"));
+        assert!(out.contains("@impl.trait_name"));
+        assert!(out.contains("@impl.range"));
+        // Calls section must still work.
+        assert!(out.contains("@call.range"));
+        assert!(out.contains("@call.callee"));
+        // No raw @reference.* captures should leak out.
+        assert!(!out.contains("@reference.implementation"));
+        assert!(!out.contains("@reference.call"));
+    }
+
+    #[test]
+    fn adapt_tslp_tags_drops_reference_class() {
+        // `@reference.class` (kotlin constructor invocations, csharp type refs) are generic
+        // type-reference captures — not inheritance. They must be dropped entirely.
+        let src = "(object_creation_expression type: (identifier) @name) @reference.class\n\
+                   (call_expression function: (identifier) @name) @reference.call\n";
+        let out = adapt_tslp_tags(src);
+        // @reference.class has no basemind section, so the pattern must be absent.
+        assert!(!out.contains("@reference.class"));
+        // Calls section must still work.
         assert!(out.contains("@call.range"));
         assert!(out.contains("@call.callee"));
     }
@@ -733,8 +782,37 @@ mod tests {
         let adapted = adapt_tslp_tags(raw);
         let sym = extract_section(&adapted, "symbols").expect("symbols section");
         let calls = extract_section(&adapted, "calls").expect("calls section");
+        let impls = extract_section(&adapted, "implementations").expect("implementations section");
         let ts_lang = language("rust").expect("rust language resolves");
         Query::new(&ts_lang, &sym).expect("adapted symbols query compiles");
         Query::new(&ts_lang, &calls).expect("adapted calls query compiles");
+        Query::new(&ts_lang, &impls).expect("adapted implementations query compiles");
+    }
+
+    #[test]
+    fn implementations_query_compiles_for_all_override_languages() {
+        // Verify that the `;; section: implementations` block in each hand-written .scm
+        // override compiles against the respective tree-sitter grammar. Go is excluded
+        // because its implementations section is intentionally empty (structural typing).
+        let langs_with_impls = &["rust", "python", "typescript", "tsx", "javascript"];
+        for &lang in langs_with_impls {
+            let q = try_get_query(lang, QueryKind::Implementations)
+                .unwrap_or_else(|e| panic!("{lang} implementations query compile error: {e}"));
+            assert!(
+                q.is_some(),
+                "{lang} implementations section must exist in override .scm"
+            );
+            // Validate the compiled query has our expected captures.
+            let q = q.unwrap();
+            let names = q.capture_names();
+            assert!(
+                names.contains(&"impl.trait_name"),
+                "{lang} implementations query must capture @impl.trait_name; captures: {names:?}"
+            );
+            assert!(
+                names.contains(&"impl.implementor"),
+                "{lang} implementations query must capture @impl.implementor; captures: {names:?}"
+            );
+        }
     }
 }

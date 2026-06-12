@@ -24,14 +24,15 @@ use std::path::{Path, PathBuf};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
-/// Bumped whenever the on-disk key layout changes. Offset by +1 from the release minor
-/// because the index format gained `imports_by_path` ahead of the next minor cut. The
-/// offset is monotonic: `RELEASE_MINOR = 0` → `INDEX_SCHEMA_VER = 1`. When RELEASE_MINOR
-/// next bumps, both move together (`RELEASE_MINOR = 1` → `INDEX_SCHEMA_VER = 2`).
-/// Decoupled from blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied to
-/// `RELEASE_MINOR` — blobs remain valid across this index revision; only the secondary
+/// Bumped whenever the on-disk key layout changes. Offset by +2 from the release minor:
+/// +1 was the `imports_by_path` companion partition added ahead of the next minor cut;
+/// +2 is this revision, which adds `implementations_by_trait` + `implementations_by_path`
+/// for the iteration-3 `find_implementations` query path. The offset is monotonic:
+/// `RELEASE_MINOR = 0` → `INDEX_SCHEMA_VER = 2`. When RELEASE_MINOR next bumps, both move
+/// together. Decoupled from blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied
+/// to `RELEASE_MINOR` — blobs remain valid across this index revision; only the secondary
 /// index rebuilds on next open via the wipe-on-mismatch flow in [`IndexDb::open`].
-pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + 1;
+pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + 2;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
@@ -66,6 +67,10 @@ pub struct IndexDb {
     pub(crate) calls_by_callee: Keyspace,
     pub(crate) imports_by_module: Keyspace,
     pub(crate) imports_by_path: Keyspace,
+    /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.
+    pub(crate) implementations_by_trait: Keyspace,
+    /// `implementations_by_path`: companion to keep the per-file delete on upsert O(prefix).
+    pub(crate) implementations_by_path: Keyspace,
     #[allow(dead_code)] // reserved for the future vector iteration
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
@@ -103,6 +108,10 @@ impl IndexDb {
         let calls_by_callee = db.keyspace("calls_by_callee", KeyspaceCreateOptions::default)?;
         let imports_by_module = db.keyspace("imports_by_module", KeyspaceCreateOptions::default)?;
         let imports_by_path = db.keyspace("imports_by_path", KeyspaceCreateOptions::default)?;
+        let implementations_by_trait =
+            db.keyspace("implementations_by_trait", KeyspaceCreateOptions::default)?;
+        let implementations_by_path =
+            db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
         let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
 
@@ -119,6 +128,8 @@ impl IndexDb {
             calls_by_callee,
             imports_by_module,
             imports_by_path,
+            implementations_by_trait,
+            implementations_by_path,
             embeddings,
             memory_by_key,
         })

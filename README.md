@@ -113,6 +113,7 @@ args = ["serve"]
 | `workspace_grep` | Regex search across indexed files — returns line + column + matched text. |
 | `find_references` | "Where is `parseQuery` called?" — indexed call-site lookup. No regex noise. |
 | `find_callers` | "Who calls `User.save()`?" — resolves the definition first, then scans. |
+| `find_implementations` | "What implements `Drawable`?" — Fjall-backed trait/interface/base-class lookup. |
 | `dependents` | "What imports this module?" — reverse import lookup. |
 | `list_files` | "What files are in `src/auth/`?" — indexed path + language filters. |
 | `status` | "What languages does this repo use?" — file count + language breakdown. |

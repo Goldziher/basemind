@@ -204,6 +204,71 @@ pub fn parse_import_by_path(key: &[u8]) -> Option<(RelPath, String, u32)> {
     Some((RelPath::from(rel), module, start))
 }
 
+/// `implementations_by_trait`: prefix-scan keyspace for `find_implementations`. Shape:
+/// `u16:len(trait_name) ‖ trait_name ‖ u16:len(impl_type) ‖ impl_type ‖
+/// u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
+pub fn impl_by_trait(trait_name: &str, impl_type: &str, rel: &RelPath, start_byte: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        2 + trait_name.len() + 2 + impl_type.len() + 2 + rel.as_bytes().len() + 4,
+    );
+    write_len_prefixed(&mut out, trait_name.as_bytes());
+    write_len_prefixed(&mut out, impl_type.as_bytes());
+    write_len_prefixed(&mut out, rel.as_bytes());
+    out.extend_from_slice(&start_byte.to_be_bytes());
+    out
+}
+
+pub fn impls_by_trait_prefix(trait_name: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + trait_name.len());
+    write_len_prefixed(&mut out, trait_name.as_bytes());
+    out
+}
+
+pub fn parse_impl_by_trait(key: &[u8]) -> Option<(String, String, RelPath, u32)> {
+    let mut c = 0;
+    let trait_name = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    let impl_type = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    Some((trait_name, impl_type, RelPath::from(rel), start))
+}
+
+/// `implementations_by_path`: companion partition keyed by file so the per-file delete on
+/// upsert is O(prefix) instead of a full-iter scan. Shape:
+/// `u16:len(rel) ‖ rel ‖ u16:len(trait_name) ‖ trait_name ‖
+/// u16:len(impl_type) ‖ impl_type ‖ start_byte:u32_be`.
+pub fn impl_by_path(rel: &RelPath, trait_name: &str, impl_type: &str, start_byte: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        2 + rel.as_bytes().len() + 2 + trait_name.len() + 2 + impl_type.len() + 4,
+    );
+    write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, trait_name.as_bytes());
+    write_len_prefixed(&mut out, impl_type.as_bytes());
+    out.extend_from_slice(&start_byte.to_be_bytes());
+    out
+}
+
+pub fn impls_by_path_prefix(rel: &RelPath) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
+    write_len_prefixed(&mut out, rel.as_bytes());
+    out
+}
+
+pub fn parse_impl_by_path(key: &[u8]) -> Option<(RelPath, String, String, u32)> {
+    let mut c = 0;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
+    let trait_name = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    let impl_type = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    Some((RelPath::from(rel), trait_name, impl_type, start))
+}
+
 // ─── memory_by_key ───────────────────────────────────────────────────────────
 
 /// `memory_by_key`: `u16:scope_len ‖ scope ‖ NUL ‖ u16:key_len ‖ key`.
@@ -373,6 +438,64 @@ mod tests {
         let key_a = import_by_path(&rel_a, "os", 0);
         let key_b = import_by_path(&rel_b, "os", 0);
         let prefix_a = imports_by_path_prefix(&rel_a);
+        assert!(
+            key_a.starts_with(&prefix_a),
+            "rel_a's key must extend rel_a's prefix"
+        );
+        assert!(
+            !key_b.starts_with(&prefix_a),
+            "rel_b's key must NOT match rel_a's prefix"
+        );
+    }
+
+    #[test]
+    fn impl_by_trait_roundtrips() {
+        let rel = RelPath::from("src/foo.rs");
+        let key = impl_by_trait("Display", "Foo", &rel, 42);
+        let (trait_name, impl_type, back_rel, start) = parse_impl_by_trait(&key).unwrap();
+        assert_eq!(trait_name, "Display");
+        assert_eq!(impl_type, "Foo");
+        assert_eq!(back_rel, rel);
+        assert_eq!(start, 42);
+    }
+
+    #[test]
+    fn impl_by_path_roundtrips() {
+        let rel = RelPath::from("src/foo.rs");
+        let key = impl_by_path(&rel, "Display", "Foo", 42);
+        let (back_rel, trait_name, impl_type, start) = parse_impl_by_path(&key).unwrap();
+        assert_eq!(back_rel, rel);
+        assert_eq!(trait_name, "Display");
+        assert_eq!(impl_type, "Foo");
+        assert_eq!(start, 42);
+    }
+
+    /// Prefix scan for `Display` must not bleed into `DisplayFmt`.
+    #[test]
+    fn prefix_scan_isolates_impls_by_trait() {
+        let rel = RelPath::from("a.rs");
+        let key_a = impl_by_trait("Display", "Foo", &rel, 1);
+        let key_b = impl_by_trait("DisplayFmt", "Foo", &rel, 1);
+        let prefix = impls_by_trait_prefix("Display");
+        assert!(
+            key_a.starts_with(&prefix),
+            "Display's key must extend the Display prefix"
+        );
+        assert!(
+            !key_b.starts_with(&prefix),
+            "DisplayFmt's key must NOT match the Display prefix"
+        );
+    }
+
+    /// `impls_by_path` prefix scan must isolate one file's entries from another file whose
+    /// path shares a leading substring (e.g. `src/foo.rs` vs `src/foo.rs.bak`).
+    #[test]
+    fn prefix_scan_isolates_impls_by_path() {
+        let rel_a = RelPath::from("src/foo.rs");
+        let rel_b = RelPath::from("src/foo.rs.bak");
+        let key_a = impl_by_path(&rel_a, "Display", "Foo", 0);
+        let key_b = impl_by_path(&rel_b, "Display", "Foo", 0);
+        let prefix_a = impls_by_path_prefix(&rel_a);
         assert!(
             key_a.starts_with(&prefix_a),
             "rel_a's key must extend rel_a's prefix"

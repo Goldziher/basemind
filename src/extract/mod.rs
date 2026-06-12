@@ -47,6 +47,31 @@ pub struct FileMapL1 {
     pub error_count: u32,
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
+    /// Inheritance / interface-implementation relationships detected in this file.
+    /// Populated from the `;; section: implementations` query in each language's
+    /// `.scm` override (or from `@reference.implementation` captures in TSLP's
+    /// `tags.scm` adapted by `adapt_tslp_tags`). `#[serde(default)]` keeps existing
+    /// L1 blobs without this field deserializable — no `SCHEMA_VER` bump needed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub implementations: Vec<Implementation>,
+}
+
+/// A single inheritance or interface-implementation relationship found in a source file.
+///
+/// Examples by language:
+/// - Rust: `impl Drawable for Circle` → `trait_name = "Drawable"`, `impl_type = "Circle"`
+/// - Python: `class Circle(Drawable):` → `trait_name = "Drawable"`, `impl_type = "Circle"`
+/// - TypeScript: `class Circle extends Shape` → `trait_name = "Shape"`, `impl_type = "Circle"`
+/// - Java: `class Circle implements Drawable` → `trait_name = "Drawable"`, `impl_type = "Circle"`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Implementation {
+    /// The parent / trait / interface name (e.g. `Drawable` in `impl Drawable for Circle`).
+    pub trait_name: String,
+    /// The implementing type / subclass name (e.g. `Circle`).
+    pub impl_type: String,
+    pub start_byte: u32,
+    pub start_row: u32,
+    pub start_col: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

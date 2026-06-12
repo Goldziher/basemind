@@ -31,6 +31,22 @@
 (import_statement) @import.range
 (import_from_statement) @import.range
 
+;; section: implementations
+;;
+;; `class Foo(Bar, Baz):` — one match per base class. The @impl.implementor capture
+;; is on the class_definition node's name field and @impl.trait_name on each argument.
+
+(class_definition
+  name: (identifier) @impl.implementor
+  superclasses: (argument_list
+    (identifier) @impl.trait_name)) @impl.range
+
+;; Dotted base: `class Foo(some.Bar):`
+(class_definition
+  name: (identifier) @impl.implementor
+  superclasses: (argument_list
+    (attribute attribute: (identifier) @impl.trait_name))) @impl.range
+
 ;; section: calls
 
 (call function: (identifier) @call.callee) @call.range
