@@ -19,6 +19,8 @@ pub struct ConfigV1 {
     pub documents: DocumentsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub crawl: CrawlConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -279,6 +281,63 @@ pub enum MemoryScopeStrategy {
     WorkdirOnly,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CrawlConfig {
+    /// Honour `robots.txt` when fetching pages. Default `true`. Override only
+    /// for hosts you control — flipping this off violates `robots.txt`
+    /// directives for every domain the crawler touches.
+    #[serde(default = "CrawlConfig::default_respect_robots_txt")]
+    pub respect_robots_txt: bool,
+    /// Hard cap on pages visited in a single `web_crawl` call.
+    #[serde(default = "CrawlConfig::default_max_pages")]
+    pub max_pages: u32,
+    /// Maximum link-following depth from the seed URL during `web_crawl`.
+    #[serde(default = "CrawlConfig::default_max_depth")]
+    pub max_depth: u32,
+    /// Truncate response bodies above this many bytes before parsing.
+    #[serde(default = "CrawlConfig::default_max_body_size")]
+    pub max_body_size: u64,
+    /// User-Agent header sent with every request. Override to identify your
+    /// crawler to operators; the default includes the basemind release
+    /// version + the upstream repo URL so site operators can trace traffic.
+    #[serde(default = "CrawlConfig::default_user_agent")]
+    pub user_agent: String,
+}
+
+impl CrawlConfig {
+    fn default_respect_robots_txt() -> bool {
+        true
+    }
+    fn default_max_pages() -> u32 {
+        32
+    }
+    fn default_max_depth() -> u32 {
+        2
+    }
+    fn default_max_body_size() -> u64 {
+        4 * 1024 * 1024
+    }
+    fn default_user_agent() -> String {
+        format!(
+            "basemind/{} (+https://github.com/Goldziher/basemind)",
+            env!("CARGO_PKG_VERSION")
+        )
+    }
+}
+
+impl Default for CrawlConfig {
+    fn default() -> Self {
+        Self {
+            respect_robots_txt: Self::default_respect_robots_txt(),
+            max_pages: Self::default_max_pages(),
+            max_depth: Self::default_max_depth(),
+            max_body_size: Self::default_max_body_size(),
+            user_agent: Self::default_user_agent(),
+        }
+    }
+}
+
 impl ConfigV1 {
     pub fn with_defaults() -> Self {
         Self {
@@ -290,6 +349,7 @@ impl ConfigV1 {
             languages: Default::default(),
             documents: DocumentsConfig::default(),
             memory: MemoryConfig::default(),
+            crawl: CrawlConfig::default(),
         }
     }
 }

@@ -84,10 +84,16 @@ memory = [
     "kreuzberg/ner-onnx",
 ]
 
+# On-demand web crawling. Pulls kreuzcrawl as an HTTP-only crawler (no chromium,
+# no LLM extraction) and routes scrape/crawl results through the documents
+# pipeline (chunk → embed → LanceDB). Implies `documents` because the doc tier
+# IS the indexing sink for crawled pages.
+crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
+
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
-# `--features documents,memory`. Use this when you want one flag that always
-# pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory"]
+# `--features documents,memory,crawl`. Use this when you want one flag that
+# always pulls in the full intelligence surface as we add tiers in the future.
+full = ["documents", "memory", "crawl"]
 
 [dependencies]
 ahash = "0.8"
@@ -111,6 +117,10 @@ jsonschema = "0.46"
 # Kreuzberg powers the document tier + the embedding engine. Pin to the rc
 # until 5.0.0 stable lands (mirrors the tree-sitter-language-pack pin).
 kreuzberg = { version = "=5.0.0-rc.7", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+# kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
+# same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
+# we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
+kreuzcrawl = { version = "=0.3.0-rc.55", default-features = false, features = ["native-runtime"], optional = true }
 lancedb = { version = "0.30", optional = true }
 lru = "0.18.0"
 memchr = "2"
@@ -130,6 +140,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.9.0-rc.27"
+url = { version = "2", features = ["serde"], optional = true }
 
 [dev-dependencies]
 insta = "1"
@@ -140,6 +151,9 @@ proptest = "1"
 rmcp = { version = "1.7", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# wiremock spins up an in-process HTTP server for the `crawl` smoke test so we
+# never hit the live network. Pulled in only at test time.
+wiremock = "0.6"
 
 [profile.release]
 lto = "thin"

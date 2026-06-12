@@ -14,6 +14,9 @@ use super::{OutlineCache, OutlineEntry, ServerState};
 use crate::extract::SymbolKind;
 use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
+pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
+pub(super) use super::helpers_grep::run_workspace_grep;
+
 pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
 pub(super) const SEARCH_LIMIT_MAX: u32 = 1000;
 pub(super) const LIST_LIMIT_DEFAULT: u32 = 200;
@@ -179,29 +182,46 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
 /// per language and collapses ASCII whitespace runs to a single space. Caveat: whitespace
 /// inside string literals is also collapsed — accepted trade-off for the `Normalized`
 /// hash mode. The AST-structural modes (`structural_hash_of_symbol`) avoid the issue.
+///
+/// Hot loop: the per-language `lc_marker` / `has_block_comments` lookups are hoisted out of
+/// the byte loop (they depend on `lang` only). Once we hit a comment-opening token we use
+/// `memchr` (line comments → next `\n`) and `memmem::find` (block comments → next `*/`) to
+/// skip the body in one cache-friendly call rather than walking a byte at a time. On warm
+/// bodies of a few KiB this turns a per-byte branch loop into a SIMD-able scan.
 pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
+    let lc_marker = line_comment_marker(lang);
+    let block_open: &[u8] = b"/*";
+    let block_close: &[u8] = b"*/";
+    let has_block = has_block_comments(lang);
+    let block_close_finder = if has_block {
+        Some(memchr::memmem::Finder::new(block_close))
+    } else {
+        None
+    };
+
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {
         // Line comment: skip from marker through (and including) the trailing newline.
-        // We don't emit anything — the surrounding-newline collapse below produces the
-        // separator if needed.
-        let lc_marker = line_comment_marker(lang);
         if !lc_marker.is_empty() && raw[i..].starts_with(lc_marker) {
             i += lc_marker.len();
-            while i < raw.len() && raw[i] != b'\n' {
-                i += 1;
-            }
+            i = memchr::memchr(b'\n', &raw[i..])
+                .map(|off| i + off) // stop at the newline; the whitespace branch consumes it next
+                .unwrap_or(raw.len());
             continue;
         }
-        // Block comment: skip to `*/`. Languages without block comments (Python) report
-        // `has_block_comments() == false` and we never enter this branch.
-        if has_block_comments(lang) && raw[i..].starts_with(b"/*") {
-            i += 2;
-            while i + 1 < raw.len() && !(raw[i] == b'*' && raw[i + 1] == b'/') {
-                i += 1;
+        // Block comment: skip to `*/` via memmem.
+        if has_block && raw[i..].starts_with(block_open) {
+            i += block_open.len();
+            if let Some(finder) = &block_close_finder
+                && let Some(off) = finder.find(&raw[i..])
+            {
+                i = (i + off + block_close.len()).min(raw.len());
+            } else {
+                // Unterminated block comment — consume the rest of the buffer, matching the
+                // original "walk to EOF then bump past the close marker" semantics.
+                i = raw.len();
             }
-            i = (i + 2).min(raw.len());
             continue;
         }
         // Whitespace run → single space (suppressed at the very start).
@@ -614,141 +634,6 @@ fn is_literal_kind(lang: LangId, kind: &str) -> bool {
     }
 }
 
-/// Point-lookup a `Call` value in the index by `(path, start_byte)` and return its
-/// `(line, column)` as 1-based / 0-based respectively. Falls back to `(0, 0)` when the
-/// row/col fields aren't populated (older L2 blobs predating the field's introduction).
-pub(super) fn resolve_call_line_col(
-    idx: &crate::index::IndexDb,
-    rel: &crate::path::RelPath,
-    start_byte: u32,
-) -> (u32, u32) {
-    let key = crate::index::keys::call_by_path(rel, start_byte);
-    let value = match idx.calls_by_path.get(key) {
-        Ok(Some(v)) => v,
-        _ => return (0, 0),
-    };
-    let call: crate::extract::Call = match rmp_serde::from_slice(&value) {
-        Ok(c) => c,
-        Err(_) => return (0, 0),
-    };
-    // `start_row` is 0-based; emit 1-based for line numbers per editor convention.
-    (call.start_row + 1, call.start_col)
-}
-
-/// Body of the `find_references` MCP tool — pulled out so the `#[tool]` wrapper in
-/// `tools.rs` stays small. Takes a snapshot of the IndexDb (cheap clone) so the caller
-/// can release the store lock before iterating.
-pub(super) fn run_find_references(
-    idx: Option<&crate::index::IndexDb>,
-    params: super::types::FindReferencesParams,
-) -> Result<CallToolResult, McpError> {
-    use super::types::FindReferencesResponse;
-    let limit = params
-        .limit
-        .unwrap_or(SEARCH_LIMIT_DEFAULT)
-        .min(SEARCH_LIMIT_MAX) as usize;
-    let Some(idx) = idx else {
-        return json_result(&FindReferencesResponse {
-            name: params.name,
-            total: 0,
-            total_is_partial: false,
-            hits: Vec::new(),
-        });
-    };
-    let (total, total_is_partial, hits) = scan_calls_by_name(idx, &params.name, limit)?;
-    json_result(&FindReferencesResponse {
-        name: params.name,
-        total,
-        total_is_partial,
-        hits,
-    })
-}
-
-/// Body of the `find_callers` MCP tool. Resolves the definition via the in-RAM cache (the
-/// same source `outline` uses) for context, then delegates to the same callee-prefix scan.
-pub(super) fn run_find_callers(
-    idx: Option<&crate::index::IndexDb>,
-    params: super::types::FindCallersParams,
-    cache: &super::MapCache,
-) -> Result<CallToolResult, McpError> {
-    use super::types::{DefinitionView, FindCallersResponse};
-    let limit = params
-        .limit
-        .unwrap_or(SEARCH_LIMIT_DEFAULT)
-        .min(SEARCH_LIMIT_MAX) as usize;
-    let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
-    let Some(idx) = idx else {
-        return json_result(&FindCallersResponse {
-            definition: None,
-            total: 0,
-            total_is_partial: false,
-            hits: Vec::new(),
-        });
-    };
-    let definition: Option<DefinitionView> = cache
-        .by_path
-        .get(&params.path)
-        .and_then(|l1| {
-            l1.symbols
-                .iter()
-                .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
-        })
-        .map(|sym| DefinitionView {
-            path: params.path.clone(),
-            name: sym.name.clone(),
-            kind: kind_to_str(sym.kind),
-            start_row: sym.start_row,
-            start_col: sym.start_col,
-        });
-    let (total, total_is_partial, hits) = scan_calls_by_name(idx, &params.name, limit)?;
-    json_result(&FindCallersResponse {
-        definition,
-        total,
-        total_is_partial,
-        hits,
-    })
-}
-
-/// Shared inner loop for `find_references` / `find_callers`: range-scan the
-/// `calls_by_callee` partition with a `name`-prefix, materialize up to `limit` hits, and
-/// track the `total` count separately. Caps the scan at `limit * 8` to bound work on
-/// extremely common names.
-fn scan_calls_by_name(
-    idx: &crate::index::IndexDb,
-    name: &str,
-    limit: usize,
-) -> Result<(u32, bool, Vec<super::types::ReferenceHit>), McpError> {
-    use super::types::ReferenceHit;
-    let prefix = crate::index::keys::calls_by_callee_prefix(name);
-    let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
-    let mut total: u32 = 0;
-    let mut total_is_partial = false;
-    let scan_cap = limit.saturating_mul(8).max(2_000);
-    for guard in idx.calls_by_callee.prefix(prefix) {
-        let (k, _) = guard
-            .into_inner()
-            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-        let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
-            continue;
-        };
-        total += 1;
-        if hits.len() < limit {
-            let (line, column) = resolve_call_line_col(idx, &rel, start);
-            hits.push(ReferenceHit {
-                path: rel,
-                line,
-                column,
-                callee,
-            });
-        }
-        if total as usize >= scan_cap {
-            total_is_partial = true;
-            break;
-        }
-    }
-    Ok((total, total_is_partial, hits))
-}
-
 /// Resolve the current HEAD sha string — keys every HEAD-anchored cache entry.
 pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
     let info = repo
@@ -812,6 +697,9 @@ pub(super) async fn run_rescan(
         std::sync::Arc::new(super::MapCache::build(&store))
     };
     state.cache.store(new_cache);
+    state
+        .cache_generation
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     json_result(&super::types::RescanResponse {
         scanned: report.stats.scanned,

@@ -293,6 +293,13 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "needle": "test", "limit": 50 }),
     )
     .await;
+    call(
+        svc,
+        &mut records,
+        "workspace_grep",
+        json!({ "pattern": "fn ", "limit": 50, "include_context": false }),
+    )
+    .await;
 
     if let Some(sample) = sample {
         call(
@@ -500,6 +507,19 @@ fn assert_passing(
                     "tokio canary: find_references(\"spawn\") returned {hits} hits (expected ≥ 50)"
                 ));
             }
+            // workspace_grep canary: `fn spawn` appears in many source files in tokio.
+            // The pattern matches both function definitions and call-like patterns — at
+            // least 20 hits is a very conservative lower bound for a repo this size.
+            let grep_hits = repo_record
+                .canaries
+                .get("grep_fn_spawn_hits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if grep_hits < 20 {
+                failures.push(format!(
+                    "tokio canary: workspace_grep(\"fn spawn\") returned {grep_hits} hits (expected ≥ 20)"
+                ));
+            }
         }
         "django" => {
             // Iteration-3 canary: `get` is overloaded in Django (ORM queryset method, view
@@ -585,6 +605,23 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("spawn_hits".into(), json!(hits));
+            }
+            // workspace_grep canary for tokio: count "fn spawn" across source files.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "workspace_grep",
+                    &json!({ "pattern": "fn spawn", "limit": 200, "include_context": false }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("total_matches")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                record
+                    .canaries
+                    .insert("grep_fn_spawn_hits".into(), json!(hits));
             }
         }
         "django" => {

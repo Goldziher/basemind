@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use super::cursor::Cursor;
 use crate::path::RelPath;
 
 // ─── Parameter shapes ────────────────────────────────────────────────────────
@@ -32,6 +33,10 @@ pub struct SearchSymbolsParams {
     /// Cap the number of results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the in-RAM index snapshot and invalidate on rescan.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -45,6 +50,10 @@ pub struct ListFilesParams {
     /// Cap. Default 200, max 5000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the in-RAM index snapshot and invalidate on rescan.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -151,6 +160,10 @@ pub struct FindReferencesParams {
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
+    /// because the underlying Fjall keys are content-addressed.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -165,6 +178,10 @@ pub struct FindCallersParams {
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
+    /// because the underlying Fjall keys are content-addressed.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -248,6 +265,13 @@ pub(super) struct SearchResponse {
     pub total: usize,
     pub truncated: bool,
     pub results: Vec<SearchHitView>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
+    /// (a rescan happened between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -263,6 +287,13 @@ pub(super) struct ListFilesResponse {
     pub returned: usize,
     pub truncated: bool,
     pub files: Vec<ListFilesEntry>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
+    /// (a rescan happened between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -481,6 +512,10 @@ pub(super) struct FindReferencesResponse {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    /// Stable across rescans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -491,6 +526,10 @@ pub(super) struct FindCallersResponse {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    /// Stable across rescans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -553,6 +592,10 @@ pub struct MemoryListParams {
     pub tag: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
+    /// because the underlying Fjall keys are content-addressed.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[cfg(feature = "memory")]
@@ -561,6 +604,10 @@ pub(super) struct MemoryListResponse {
     pub total: usize,
     pub truncated: bool,
     pub entries: Vec<MemoryEntry>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    /// Stable across rescans.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -636,6 +683,58 @@ pub(super) struct MemoryRecord {
     pub updated_at: i64,
 }
 
+// ─── workspace_grep ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WorkspaceGrepParams {
+    /// Rust regex syntax (`regex` crate). Required.
+    pub pattern: String,
+    /// Optional language filter (e.g. `"rust"`, `"typescript"`). Same ID convention as
+    /// `list_files`.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Optional substring filter on path. Same convention as `list_files`.
+    #[serde(default)]
+    pub path_contains: Option<String>,
+    /// Max number of hits returned. Default 100, max 1000. Files visited are bounded
+    /// by `scan_cap = limit * 8`.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Include 1 line of context before + after each hit. Default true.
+    #[serde(default = "default_true")]
+    pub include_context: bool,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct GrepHit {
+    pub path: RelPath,
+    /// 1-based line number of the match.
+    pub line_num: u32,
+    /// 0-based byte column within the line.
+    pub column: u32,
+    /// The exact matched substring from the source.
+    pub matched_text: String,
+    /// The line immediately before the match, when `include_context` is true and line > 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_before: Option<String>,
+    /// The line immediately after the match, when `include_context` is true and line < EOF.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct WorkspaceGrepResponse {
+    /// Echoed pattern from the request.
+    pub pattern: String,
+    /// Number of files that had at least one match.
+    pub total_files_matched: usize,
+    /// Total hit count across all visited files (may exceed `hits.len()` when truncated).
+    pub total_matches: u32,
+    /// True when the result was cut short by `limit` or `scan_cap`.
+    pub truncated: bool,
+    pub hits: Vec<GrepHit>,
+}
+
 // ─── rescan ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -709,4 +808,114 @@ pub(super) struct RecentCallView {
     pub resp_bytes: u64,
     pub elapsed_ms: u64,
     pub est_tokens_saved: u64,
+}
+
+// ─── web_scrape / web_crawl / web_map ────────────────────────────────────────
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WebScrapeParams {
+    /// Absolute http or https URL to fetch.
+    pub url: crate::url::Url,
+    /// When true (default), chunk + embed + write to LanceDB so the page is
+    /// reachable via `search_documents`. When false, fetch and return metadata
+    /// only — useful for previewing a URL before paying the embedding cost.
+    #[serde(default = "WebScrapeParams::default_index")]
+    pub index: bool,
+    /// LanceDB `scope` tag. Default `"web:<host>"`. Override to share a scope
+    /// across many hosts or to namespace per project.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+#[cfg(feature = "crawl")]
+impl WebScrapeParams {
+    fn default_index() -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Serialize)]
+pub(super) struct WebScrapeResponse {
+    pub url: String,
+    pub final_url: String,
+    pub status_code: u16,
+    pub content_type: String,
+    pub bytes: usize,
+    pub chunks_indexed: usize,
+    pub indexed: bool,
+    pub scope: String,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WebCrawlParams {
+    /// Seed URL. The crawler follows links breadth-first from this page.
+    pub url: crate::url::Url,
+    /// Override the global `[crawl].max_pages` cap for this call.
+    #[serde(default)]
+    pub max_pages: Option<u32>,
+    /// Override the global `[crawl].max_depth` cap for this call.
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+    /// LanceDB `scope` tag. Default `"web:<host>"` derived from the seed URL's
+    /// host. Every page indexed by this crawl uses the same scope so
+    /// `search_documents { scope: ... }` retrieves them together.
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Serialize)]
+pub(super) struct WebCrawlResponse {
+    pub seed_url: String,
+    pub pages_visited: usize,
+    pub pages_indexed: usize,
+    pub total_chunks: usize,
+    pub scope: String,
+    /// Per-page indexing outcomes — surfaced so an agent can tell which URLs
+    /// landed in LanceDB vs which were skipped (binary content, empty body).
+    pub pages: Vec<WebCrawlPageOutcome>,
+    /// Crawl-level error, if any (e.g. seed URL unreachable). Per-page errors
+    /// land in `pages[*].error` instead.
+    pub error: Option<String>,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Serialize)]
+pub(super) struct WebCrawlPageOutcome {
+    pub url: String,
+    pub status_code: u16,
+    pub chunks_indexed: usize,
+    pub indexed: bool,
+    pub error: Option<String>,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WebMapParams {
+    /// Site to discover. Returns sitemap entries + linked URLs without
+    /// fetching their bodies.
+    pub url: crate::url::Url,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Serialize)]
+pub(super) struct WebMapResponse {
+    pub url: String,
+    pub total_urls: usize,
+    pub urls: Vec<WebMapEntry>,
+}
+
+#[cfg(feature = "crawl")]
+#[derive(Debug, Serialize)]
+pub(super) struct WebMapEntry {
+    pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lastmod: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changefreq: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<String>,
 }

@@ -72,6 +72,11 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
         // order of magnitude as outline savings.
         "symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
 
+        // workspace_grep: alternative is shelling out to `rg`/`grep`. The agent
+        // would spend tokens reading grep output from stdout; the MCP response is
+        // comparable in size, so no honest savings number. Record but don't claim.
+        "workspace_grep" => (actual, "no_baseline"),
+
         // Tools where basemind is the only practical path — no honest grep+read
         // baseline. Record the call but don't claim savings.
         "memory_get"
@@ -92,7 +97,13 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
         | "diff_file"
         | "diff_outline"
         | "blame_file"
-        | "blame_symbol" => (actual, "no_baseline"),
+        | "blame_symbol"
+        // Web ingestion: the alternative ("agent browses + copies the text in")
+        // isn't a tokenizable baseline. Surface the calls in telemetry but
+        // claim no savings.
+        | "web_scrape"
+        | "web_crawl"
+        | "web_map" => (actual, "no_baseline"),
 
         // Unknown tool name (e.g. an upstream addition we haven't classified
         // yet) — be conservative.
@@ -140,7 +151,16 @@ mod tests {
 
     #[test]
     fn no_baseline_tools_claim_zero_savings() {
-        for tool in ["memory_get", "memory_put", "search_documents", "status"] {
+        for tool in [
+            "memory_get",
+            "memory_put",
+            "search_documents",
+            "status",
+            "web_scrape",
+            "web_crawl",
+            "web_map",
+            "workspace_grep",
+        ] {
             let s = estimate(tool, 1_000_000, 500);
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
             assert_eq!(s.baseline, "no_baseline", "{tool} must label no_baseline");

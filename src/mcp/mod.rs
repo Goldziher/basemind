@@ -6,7 +6,12 @@
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
+mod cursor;
 mod helpers;
+mod helpers_calls;
+mod helpers_grep;
+#[cfg(feature = "crawl")]
+mod helpers_web;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
 mod savings;
@@ -15,6 +20,8 @@ mod tools;
 mod tools_admin;
 mod tools_git;
 mod tools_memory;
+#[cfg(feature = "crawl")]
+mod tools_web;
 mod types;
 
 use std::collections::BTreeMap;
@@ -93,6 +100,11 @@ pub(crate) struct ServerState {
     /// after each `rescan`. Feeds the corpus-baseline cost in
     /// [`super::savings::estimate`].
     pub(crate) corpus_bytes: std::sync::atomic::AtomicU64,
+    /// Monotonic counter bumped every time `cache` is swapped (boot, rescan, view watcher).
+    /// In-memory pagination cursors embed this value as a snapshot id so a resume call
+    /// against a stale generation can be detected and reported back as
+    /// `cursor_invalidated = true`.
+    pub(crate) cache_generation: std::sync::atomic::AtomicU32,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)] // used by memory / documents feature tools
@@ -103,6 +115,11 @@ pub(crate) struct ServerState {
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(feature = "intelligence")]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
+    /// Shared kreuzcrawl engine. Initialised at server boot from the `[crawl]`
+    /// config section; `None` if engine construction failed (the web_* tools
+    /// will return an MCP error rather than crash).
+    #[cfg(feature = "crawl")]
+    pub(crate) crawl_engine: Option<kreuzcrawl::CrawlEngineHandle>,
 }
 
 pub(crate) struct MapCache {
@@ -161,6 +178,17 @@ impl BasemindServer {
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
         )));
         let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
+        #[cfg(feature = "crawl")]
+        let crawl_engine = match crate::web::build_engine(&config.crawl) {
+            Ok(e) => Some(e),
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    "crawl engine init failed; web_* tools will report errors"
+                );
+                None
+            }
+        };
         let state = Arc::new(ServerState {
             store: RwLock::new(store),
             root,
@@ -171,19 +199,28 @@ impl BasemindServer {
             config,
             telemetry: telemetry_handle,
             corpus_bytes: std::sync::atomic::AtomicU64::new(corpus_bytes),
+            cache_generation: std::sync::atomic::AtomicU32::new(1),
             scope,
             #[cfg(any(feature = "memory", feature = "documents"))]
             lance: tokio::sync::OnceCell::new(),
             #[cfg(feature = "intelligence")]
             embedder: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "crawl")]
+            crawl_engine,
         });
         spawn_view_watcher(Arc::clone(&state));
+        #[allow(unused_mut)]
+        let mut router = Self::tool_router_core()
+            + Self::tool_router_git()
+            + Self::tool_router_memory()
+            + Self::tool_router_admin();
+        #[cfg(feature = "crawl")]
+        {
+            router += Self::tool_router_web();
+        }
         Self {
             state,
-            tool_router: Self::tool_router_core()
-                + Self::tool_router_git()
-                + Self::tool_router_memory()
-                + Self::tool_router_admin(),
+            tool_router: router,
         }
     }
 }
@@ -250,6 +287,9 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
                     "view watcher: rebuilt MapCache from refreshed index"
                 );
                 state.cache.store(new_cache);
+                state
+                    .cache_generation
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             tracing::info!("view watcher: channel closed; exiting");
         })
@@ -275,14 +315,21 @@ impl ServerHandler for BasemindServer {
              \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`); \
              \"refresh the index after editing code?\" → `rescan` (or `rescan { paths: [...] }` \
              to limit to changed files).\n\
+             \"need regex over file contents?\" → `workspace_grep`.\n\
              Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
-             `list_files`, `dependents`, `status`, `repo_info`, `symbol_history`. \
+             `list_files`, `workspace_grep`, `dependents`, `status`, `repo_info`, \
+             `symbol_history`. \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \
              `find_commits_by_path`, `hot_files`, `diff_outline`, `diff_file`, `blame_file`, \
              `blame_symbol`. \
              Intelligence tools (require build with `--features documents,memory`): \
              `search_documents`, `memory_put`, `memory_get`, `memory_list`, `memory_search`, \
-             `memory_delete`. All paths are repository-relative with forward-slash separators. \
+             `memory_delete`. \
+             Web tools (require build with `--features crawl`): `web_scrape` (one URL), \
+             `web_crawl` (follow links from a seed URL), `web_map` (sitemap-only discovery). \
+             Crawled pages land in the same LanceDB documents table as on-disk docs, scoped \
+             under `web:<host>` — find them later with `search_documents`. \
+             All paths are repository-relative with forward-slash separators. \
              If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )
     }

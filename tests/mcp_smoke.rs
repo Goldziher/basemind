@@ -302,6 +302,60 @@ async fn mcp_server_exercises_representative_tools() {
         "every alpha() call site lives in c.rs in this fixture"
     );
 
+    // find_references pagination (Phase 5): limit=2 → expect next_cursor; second page
+    // should contain the 3rd alpha() hit with no overlap, then next_cursor=None.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "alpha", "limit": 2 }),
+            ))
+            .await
+            .expect("find_references page1"),
+    );
+    let page1_hits = page1
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("page1 hits");
+    assert_eq!(page1_hits.len(), 2, "limit=2 → 2 hits on first page");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("first page must carry a next_cursor when more remain")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "alpha", "limit": 2, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("find_references page2"),
+    );
+    let page2_hits = page2
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("page2 hits");
+    assert_eq!(page2_hits.len(), 1, "remaining single hit on second page");
+    assert!(
+        page2.get("next_cursor").is_none(),
+        "second page must NOT carry a next_cursor: {page2}"
+    );
+    // No overlap between the two pages — compare by (line, column) tuples since the
+    // fixture's three alpha() call sites all sit on c.rs line 1.
+    let pos = |h: &Value| -> (u64, u64) {
+        (
+            h.get("line").and_then(Value::as_u64).unwrap_or(0),
+            h.get("column").and_then(Value::as_u64).unwrap_or(0),
+        )
+    };
+    let p1_pos: Vec<(u64, u64)> = page1_hits.iter().map(pos).collect();
+    let p2_pos: Vec<(u64, u64)> = page2_hits.iter().map(pos).collect();
+    assert!(
+        p2_pos.iter().all(|p| !p1_pos.contains(p)),
+        "page2 must not overlap page1: {p1_pos:?} vs {p2_pos:?}"
+    );
+
     // find_callers (Stage 3): anchor on the alpha *definition* and confirm the same 3 hits.
     let body = decode_text(
         &service
@@ -320,6 +374,226 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(hits.len(), 3, "find_callers should see the same 3 sites");
+
+    // find_callers pagination (Phase 5): same 3 alpha hits, paginated.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_callers",
+                json!({ "path": "a.rs", "name": "alpha", "limit": 2 }),
+            ))
+            .await
+            .expect("find_callers page1"),
+    );
+    let page1_hits = page1
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("page1 hits");
+    assert_eq!(page1_hits.len(), 2, "find_callers limit=2 → 2 hits");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("find_callers first page must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_callers",
+                json!({
+                    "path": "a.rs",
+                    "name": "alpha",
+                    "limit": 2,
+                    "cursor": cursor1,
+                }),
+            ))
+            .await
+            .expect("find_callers page2"),
+    );
+    let page2_hits = page2
+        .get("hits")
+        .and_then(Value::as_array)
+        .expect("page2 hits");
+    assert_eq!(page2_hits.len(), 1, "find_callers tail page → 1 hit");
+    assert!(
+        page2.get("next_cursor").is_none(),
+        "find_callers second page must NOT have next_cursor: {page2}"
+    );
+
+    // search_symbols pagination (Phase 5): "a" matches alpha, Beta, caller, plain — well
+    // above the limit=1 page size, so we can validate the two-page round trip.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 1 }),
+            ))
+            .await
+            .expect("search_symbols page1"),
+    );
+    let page1_results = page1
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("page1 results");
+    assert_eq!(page1_results.len(), 1, "search_symbols limit=1 → 1 result");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("first page must carry next_cursor when more remain")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 1, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("search_symbols page2"),
+    );
+    let page2_results = page2
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("page2 results");
+    assert_eq!(page2_results.len(), 1, "page2 must also have 1 result");
+    // Verify the two pages don't return the same symbol (path,name pair).
+    let key1 = (
+        page1_results[0]
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        page1_results[0]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    let key2 = (
+        page2_results[0]
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+        page2_results[0]
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    );
+    assert_ne!(key1, key2, "page2 must not repeat page1's entry");
+
+    // list_files pagination (Phase 5): fixture has 3 files; limit=2 paginates.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params("list_files", json!({ "limit": 2 })))
+            .await
+            .expect("list_files page1"),
+    );
+    let page1_files = page1
+        .get("files")
+        .and_then(Value::as_array)
+        .expect("page1 files");
+    assert_eq!(page1_files.len(), 2, "list_files limit=2 → 2 files");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("list_files first page must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "list_files",
+                json!({ "limit": 2, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("list_files page2"),
+    );
+    let page2_files = page2
+        .get("files")
+        .and_then(Value::as_array)
+        .expect("page2 files");
+    assert_eq!(
+        page2_files.len(),
+        1,
+        "list_files page2 → 1 remaining file: {page2}"
+    );
+    assert!(
+        page2.get("next_cursor").is_none(),
+        "list_files page2 must NOT carry next_cursor"
+    );
+    let p1_paths: Vec<&str> = page1_files
+        .iter()
+        .filter_map(|f| f.get("path").and_then(Value::as_str))
+        .collect();
+    let p2_paths: Vec<&str> = page2_files
+        .iter()
+        .filter_map(|f| f.get("path").and_then(Value::as_str))
+        .collect();
+    assert!(
+        p2_paths.iter().all(|p| !p1_paths.contains(p)),
+        "list_files pages must not overlap: {p1_paths:?} vs {p2_paths:?}"
+    );
+
+    // search_symbols cursor invalidation (Phase 5): after a rescan the snapshot id moves
+    // and the previously-minted cursor must surface cursor_invalidated=true.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 1 }),
+            ))
+            .await
+            .expect("search_symbols pre-rescan"),
+    );
+    let stale_cursor = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("pre-rescan cursor")
+        .to_string();
+    let _ = service
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan");
+    let stale_response = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 1, "cursor": stale_cursor }),
+            ))
+            .await
+            .expect("search_symbols with stale cursor"),
+    );
+    assert_eq!(
+        stale_response.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "rescan must invalidate in-memory search_symbols cursors: {stale_response}"
+    );
+
+    // list_files cursor invalidation (Phase 5): same story.
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params("list_files", json!({ "limit": 1 })))
+            .await
+            .expect("list_files pre-rescan"),
+    );
+    let stale_cursor = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("list_files pre-rescan cursor")
+        .to_string();
+    let _ = service
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan");
+    let stale_response = decode_text(
+        &service
+            .call_tool(call_params(
+                "list_files",
+                json!({ "limit": 1, "cursor": stale_cursor }),
+            ))
+            .await
+            .expect("list_files with stale cursor"),
+    );
+    assert_eq!(
+        stale_response.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "rescan must invalidate in-memory list_files cursors: {stale_response}"
+    );
 
     // No false positive: a name that nobody calls should return 0 hits.
     let body = decode_text(
@@ -347,6 +621,74 @@ async fn mcp_server_exercises_representative_tools() {
         "blame should return hunks on a real file"
     );
 
+    // workspace_grep: pattern "pub fn" should find hits in a.rs and c.rs.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "workspace_grep",
+                json!({ "pattern": "pub fn", "include_context": false }),
+            ))
+            .await
+            .expect("workspace_grep"),
+    );
+    let grep_hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert!(
+        !grep_hits.is_empty(),
+        "workspace_grep for 'pub fn' should find hits in the fixture"
+    );
+    assert!(
+        grep_hits
+            .iter()
+            .all(|h| h.get("line_num").and_then(Value::as_u64).unwrap_or(0) >= 1),
+        "every grep hit must carry a 1-based line_num"
+    );
+    let total_matches = body
+        .get("total_matches")
+        .and_then(Value::as_u64)
+        .expect("total_matches");
+    assert!(
+        total_matches >= 3,
+        "fixture has alpha + doit + caller = 3+ 'pub fn' occurrences, got {total_matches}"
+    );
+
+    // workspace_grep with a tiny limit should truncate.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "workspace_grep",
+                json!({ "pattern": "pub fn", "limit": 1, "include_context": false }),
+            ))
+            .await
+            .expect("workspace_grep(limit=1)"),
+    );
+    let truncated = body
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let hits_with_limit = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert_eq!(
+        hits_with_limit.len(),
+        1,
+        "limit=1 should return exactly 1 hit"
+    );
+    assert!(
+        truncated,
+        "limit=1 with multiple matches should set truncated=true"
+    );
+
+    // workspace_grep with an invalid regex should return an MCP protocol error (invalid_params).
+    // rmcp surfaces this as Err(McpError) from call_tool, not as Ok with is_error=true.
+    let invalid_result = service
+        .call_tool(call_params(
+            "workspace_grep",
+            json!({ "pattern": "[invalid_regex(" }),
+        ))
+        .await;
+    assert!(
+        invalid_result.is_err(),
+        "invalid regex should produce a protocol-level MCP error"
+    );
+
     // memory_put / memory_get / memory_list / memory_delete / search_documents:
     // Feature-gated — without `--features memory`/`--features documents` they return an
     // MCP-level error. The smoke test confirms they dispatch without crashing.
@@ -368,6 +710,65 @@ async fn mcp_server_exercises_representative_tools() {
     let _ = service
         .call_tool(call_params("search_documents", json!({ "query": "hello" })))
         .await;
+
+    // memory_list pagination (Phase 5) — only meaningful with the memory feature wired.
+    #[cfg(feature = "memory")]
+    {
+        for i in 0..3 {
+            let _ = service
+                .call_tool(call_params(
+                    "memory_put",
+                    json!({
+                        "key": format!("paging_key_{i}"),
+                        "value": format!("v{i}"),
+                        "embed": false,
+                    }),
+                ))
+                .await
+                .expect("memory_put");
+        }
+        let page1 = decode_text(
+            &service
+                .call_tool(call_params(
+                    "memory_list",
+                    json!({ "prefix": "paging_key_", "limit": 2 }),
+                ))
+                .await
+                .expect("memory_list page1"),
+        );
+        let page1_entries = page1
+            .get("entries")
+            .and_then(Value::as_array)
+            .expect("page1 entries");
+        assert_eq!(page1_entries.len(), 2, "memory_list limit=2 → 2 entries");
+        let cursor1 = page1
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .expect("memory_list first page must carry next_cursor")
+            .to_string();
+        let page2 = decode_text(
+            &service
+                .call_tool(call_params(
+                    "memory_list",
+                    json!({
+                        "prefix": "paging_key_",
+                        "limit": 2,
+                        "cursor": cursor1,
+                    }),
+                ))
+                .await
+                .expect("memory_list page2"),
+        );
+        let page2_entries = page2
+            .get("entries")
+            .and_then(Value::as_array)
+            .expect("page2 entries");
+        assert_eq!(page2_entries.len(), 1, "memory_list page2 → 1 remaining");
+        assert!(
+            page2.get("next_cursor").is_none(),
+            "memory_list page2 must NOT carry next_cursor: {page2}"
+        );
+    }
 
     // rescan: trigger an in-process scan via MCP. With no working-tree changes
     // since the smoke fixture was built, expectation is scanned > 0 and
