@@ -186,6 +186,42 @@
         }
       },
       "default": {}
+    },
+    "crawl": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "On-demand web crawling via kreuzcrawl. Only honored when basemind is built with the `crawl` cargo feature.",
+      "properties": {
+        "respect_robots_txt": {
+          "type": "boolean",
+          "description": "Honour robots.txt for every fetched URL. Flip off only for hosts you control.",
+          "default": true
+        },
+        "max_pages": {
+          "type": "integer",
+          "description": "Hard cap on pages visited in a single web_crawl call.",
+          "minimum": 1,
+          "default": 32
+        },
+        "max_depth": {
+          "type": "integer",
+          "description": "Maximum link-following depth from the seed URL during web_crawl.",
+          "minimum": 0,
+          "default": 2
+        },
+        "max_body_size": {
+          "type": "integer",
+          "description": "Truncate response bodies above this many bytes before parsing.",
+          "minimum": 1024,
+          "default": 4194304
+        },
+        "user_agent": {
+          "type": "string",
+          "description": "User-Agent header sent with every request.",
+          "minLength": 1
+        }
+      },
+      "default": {}
     }
   }
 }

@@ -182,6 +182,7 @@ pub(super) async fn run_memory_get(
     json_result(&entry)
 }
 
+#[cfg(feature = "memory")]
 const MEMORY_PREVIEW_CHARS: usize = 200;
 
 #[cfg(feature = "memory")]
@@ -189,6 +190,9 @@ pub(super) async fn run_memory_list(
     state: &ServerState,
     params: MemoryListParams,
 ) -> Result<CallToolResult, McpError> {
+    use std::ops::Bound;
+
+    use super::cursor::{Cursor, prefix_upper_bound};
     let limit = params
         .limit
         .unwrap_or(super::helpers::SEARCH_LIMIT_DEFAULT)
@@ -199,11 +203,27 @@ pub(super) async fn run_memory_list(
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     let scope_prefix = crate::index::keys::memory_by_key_scope_prefix(&state.scope);
+    let upper = prefix_upper_bound(&scope_prefix);
+    let cursor_bytes = params
+        .cursor
+        .as_ref()
+        .map(|c| c.decode_fjall())
+        .transpose()?;
+    let lower: Bound<Vec<u8>> = match cursor_bytes.as_deref() {
+        Some(k) => Bound::Excluded(k.to_vec()),
+        None => Bound::Included(scope_prefix.clone()),
+    };
+    let upper_bound: Bound<Vec<u8>> = match upper {
+        Some(b) => Bound::Excluded(b),
+        None => Bound::Unbounded,
+    };
     let key_prefix_filter = params.prefix.as_deref().unwrap_or("");
     let tag_filter = params.tag.as_deref();
     let mut entries: Vec<MemoryEntry> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
-    for guard in idx.memory_by_key.prefix(scope_prefix) {
+    let mut last_emitted_key: Option<Vec<u8>> = None;
+    let mut has_more = false;
+    for guard in idx.memory_by_key.range::<Vec<u8>, _>((lower, upper_bound)) {
         let (raw_key, raw_val) = guard
             .into_inner()
             .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
@@ -243,12 +263,21 @@ pub(super) async fn run_memory_list(
                 created_at: record.created_at,
                 updated_at: record.updated_at,
             });
+            last_emitted_key = Some(raw_key.to_vec());
+        } else {
+            has_more = true;
         }
     }
+    let next_cursor = if has_more {
+        last_emitted_key.as_deref().map(Cursor::encode_fjall)
+    } else {
+        None
+    };
     json_result(&MemoryListResponse {
         total,
         truncated: total > limit,
         entries,
+        next_cursor,
     })
 }
 

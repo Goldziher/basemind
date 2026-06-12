@@ -110,6 +110,7 @@ args = ["serve"]
 |---|---|
 | `outline` | "Give me this file's structure" — symbols, line/col, signatures, imports. One call replaces five Reads. |
 | `search_symbols` | "Find anything named `useAuth`" — substring match across every indexed symbol, kind-filterable. |
+| `workspace_grep` | Regex search across indexed files — returns line + column + matched text. |
 | `find_references` | "Where is `parseQuery` called?" — indexed call-site lookup. No regex noise. |
 | `find_callers` | "Who calls `User.save()`?" — resolves the definition first, then scans. |
 | `dependents` | "What imports this module?" — reverse import lookup. |
@@ -142,6 +143,22 @@ args = ["serve"]
 Memory is scoped by the repo's normalised `origin` URL so clones share entries.
 A repo with no remote falls back to a workdir-keyed scope (configurable via
 `[memory].scope_strategy` in `.basemind/basemind.toml`).
+
+### Web ingestion (opt-in: `--features crawl` or `--features full`)
+
+| Tool | What the agent can finally do |
+|---|---|
+| `web_scrape` | Fetch one URL, extract markdown, chunk + embed, write to the documents store. |
+| `web_crawl` | Follow links from a seed up to `[crawl].max_depth`, index each page. |
+| `web_map` | "What URLs exist on this site?" — sitemap + link discovery without fetching bodies. |
+
+Crawled pages land in the same LanceDB `documents` table as on-disk docs; the
+default scope tag is `web:<host>` so `search_documents { scope: "web:docs.rs" }`
+retrieves them together. `robots.txt` is honoured by default — flip it off only
+via `[crawl].respect_robots_txt = false` in `.basemind/basemind.toml` (and only
+for hosts you control). The crawler is HTTP-only; the browser, AI extraction,
+and WARC archive features of the upstream `kreuzcrawl` engine are deliberately
+not exposed.
 
 Every tool returns JSON. Responses are capped (`limit`, default 100, max 1000) so
 the agent's context doesn't explode.

@@ -97,7 +97,8 @@ impl BasemindServer {
     #[tool(
         description = "List scoped memory entries. prefix is key-prefix filter \
         (not substring). tag is exact. Values truncated ~200 chars. \
-        Default 100 max 1000. Needs --features memory."
+        Default 100 max 1000. Pass `cursor` from a previous response to fetch the \
+        next page; absent means no more results. Needs --features memory."
     )]
     async fn memory_list(
         &self,

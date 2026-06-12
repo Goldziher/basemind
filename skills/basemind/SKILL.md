@@ -51,6 +51,9 @@ once you know exactly which span you need.
 | "Recall something the agent stored earlier?" | `memory_get` exact, `memory_list` prefix, `memory_search` KNN |
 | "Remember this for future sessions?" | `memory_put` (delete with `memory_delete`) |
 | "Refresh the index after editing code?" | `rescan` — no MCP disconnect needed; optional `paths` arg |
+| "Pull this URL into RAG?" | `web_scrape` (requires `--features crawl`) — single page, robots-aware |
+| "Ingest a docs site section?" | `web_crawl` — link-following from a seed URL |
+| "What URLs exist on this site?" | `web_map` — sitemap + link discovery, no bodies fetched |
 | "How much has basemind helped today?" | `telemetry_summary` — per-tool histogram + estimated tokens saved |
 
 ## Setup (one-time per repo)
@@ -121,3 +124,9 @@ A 1000-line file becomes a 30-line table of contents.
   Memory is scoped by the normalised `origin` remote URL (`git@github.com:Foo/bar.git` and
   `https://github.com/Foo/bar/` collapse to the same scope key) — clones of the same repo
   share memory; unrelated repos do not see each other's entries.
+- Web ingestion tools (`web_scrape`, `web_crawl`, `web_map`) require `--features crawl`.
+  When that feature is off they are NOT registered on the server at all — agents will simply
+  not see them in the tool list. Crawled pages land in the `documents` LanceDB table under
+  scope `web:<host>`; `search_documents { query: ..., scope: "web:<host>" }` retrieves them.
+  robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
+  `.basemind/basemind.toml` (config-file-only) disables it.

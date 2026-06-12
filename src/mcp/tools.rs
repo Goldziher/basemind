@@ -121,7 +121,10 @@ impl BasemindServer {
     #[tool(
         description = "Search every indexed file for symbols whose name contains `needle`. \
                        Optional `kind` filter (function/struct/class/...). Returns up to `limit` \
-                       (default 100, max 1000) results, each with path + line/column + signature."
+                       (default 100, max 1000) results, each with path + line/column + signature. \
+                       Pass `cursor` from a previous response to fetch the next page; absent \
+                       means no more results. Cursors invalidate on rescan — caller must \
+                       restart when `cursor_invalidated` is set."
     )]
     async fn search_symbols(
         &self,
@@ -130,16 +133,42 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            use std::sync::atomic::Ordering;
+
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params
                 .limit
                 .unwrap_or(SEARCH_LIMIT_DEFAULT)
                 .min(SEARCH_LIMIT_MAX) as usize;
+            let generation = self.state.cache_generation.load(Ordering::Relaxed);
+
+            // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
+            // cursor_invalidated=true so the caller can restart.
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != generation {
+                        return json_result(&SearchResponse {
+                            total: 0,
+                            truncated: false,
+                            results: Vec::new(),
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
 
             let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
             let max_total = limit.saturating_mul(64).max(2_000);
             let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
             let mut total: usize = 0;
+            // `seen` tracks how many *matching* entries we've walked past, including the
+            // first `skip` we discard. The `total` counter only includes the entries that
+            // make it into / past this page.
+            let mut seen: usize = 0;
             let mut total_is_partial = false;
             let cache = self.state.cache.load_full();
             'outer: for (path, l1) in &cache.by_path {
@@ -152,6 +181,11 @@ impl BasemindServer {
                     {
                         continue;
                     }
+                    if seen < skip {
+                        seen += 1;
+                        continue;
+                    }
+                    seen += 1;
                     total += 1;
                     if results.len() < limit {
                         results.push(SearchHitView {
@@ -170,10 +204,21 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit || total_is_partial;
+            // `next_cursor` advances by the page size (results.len()) past the skip offset.
+            let next_cursor = if total > results.len() {
+                Some(super::cursor::Cursor::encode_in_memory(
+                    (skip + results.len()) as u64,
+                    generation,
+                ))
+            } else {
+                None
+            };
             json_result(&SearchResponse {
                 total,
                 truncated,
                 results,
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -191,7 +236,9 @@ impl BasemindServer {
     #[tool(
         description = "List indexed files with their language and size. Optional `path_contains` \
                        substring filter and `language` filter (rust/python/typescript/tsx/javascript/go). \
-                       Default limit 200, max 5000."
+                       Default limit 200, max 5000. Pass `cursor` from a previous response to \
+                       fetch the next page; absent means no more results. Cursors invalidate on \
+                       rescan — caller must restart when `cursor_invalidated` is set."
     )]
     async fn list_files(
         &self,
@@ -200,10 +247,34 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            use std::sync::atomic::Ordering;
+
             let limit = params
                 .limit
                 .unwrap_or(LIST_LIMIT_DEFAULT)
                 .min(LIST_LIMIT_MAX) as usize;
+            let generation = self.state.cache_generation.load(Ordering::Relaxed);
+
+            // List uses the underlying `store.index.files` BTreeMap which is also rebuilt
+            // on rescan — treat the same `cache_generation` as the snapshot id, since
+            // `cache.store` always happens after a store mutation.
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != generation {
+                        return json_result(&ListFilesResponse {
+                            total: 0,
+                            returned: 0,
+                            truncated: false,
+                            files: Vec::new(),
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
             let store = self.state.store.read().await;
 
             let path_finder = params
@@ -214,6 +285,7 @@ impl BasemindServer {
 
             let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
             let mut total: usize = 0;
+            let mut seen: usize = 0;
             for (p, e) in &store.index.files {
                 let path_ok = path_finder
                     .as_ref()
@@ -222,6 +294,11 @@ impl BasemindServer {
                 if !(path_ok && lang_ok) {
                     continue;
                 }
+                if seen < skip {
+                    seen += 1;
+                    continue;
+                }
+                seen += 1;
                 total += 1;
                 if files.len() < limit {
                     files.push(ListFilesEntry {
@@ -232,12 +309,22 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit;
+            let next_cursor = if total > files.len() {
+                Some(super::cursor::Cursor::encode_in_memory(
+                    (skip + files.len()) as u64,
+                    generation,
+                ))
+            } else {
+                None
+            };
 
             json_result(&ListFilesResponse {
                 total,
                 returned: files.len(),
                 truncated,
                 files,
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -337,7 +424,8 @@ impl BasemindServer {
                        scope-aware resolution, so `Foo::bar()` and `bar()` both match \
                        name=\"bar\". Returns up to `limit` results (default 100, max 1000). \
                        Requires the index to have been populated by a scan with `eager_l2=true` \
-                       (the default); returns an empty hit list otherwise."
+                       (the default); returns an empty hit list otherwise. Pass `cursor` from a \
+                       previous response to fetch the next page; absent means no more results."
     )]
     async fn find_references(
         &self,
@@ -369,7 +457,8 @@ impl BasemindServer {
                        index first (echoed back in `definition`), then does the same name-based \
                        scan as `find_references`. Useful when you need to anchor the search on a \
                        specific symbol rather than a bare name. Same scope-resolution caveat \
-                       applies. Default limit 100, max 1000."
+                       applies. Default limit 100, max 1000. Pass `cursor` from a previous \
+                       response to fetch the next page; absent means no more results."
     )]
     async fn find_callers(
         &self,
@@ -388,6 +477,33 @@ impl BasemindServer {
         record_call(
             &self.state,
             "find_callers",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    /// Regex content search across indexed files.
+    #[tool(
+        description = "Regex search across indexed files (Rust regex syntax). Returns line + \
+                       column + matched text plus optional 1-line context. Prefer \
+                       `search_symbols` when the pattern is a plain substring identifier — \
+                       that's index-backed and faster. Bounded by `scan_cap = limit * 8` files; \
+                       pass `language` or `path_contains` to narrow the scan. Default limit 100, \
+                       max 1000."
+    )]
+    async fn workspace_grep(
+        &self,
+        Parameters(params): Parameters<WorkspaceGrepParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            async { run_workspace_grep(&self.state, params) }.await;
+        record_call(
+            &self.state,
+            "workspace_grep",
             &__params_json,
             __started,
             &__result,
