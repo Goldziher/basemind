@@ -53,9 +53,10 @@ cargo install basemind --locked --features full
 
 `full` is the meta-feature that turns on both `documents` (PDF / Office / HTML
 ingestion + OCR + layout) and `memory` (shared agent memory + vector search).
-Pulls in `kreuzberg` (Elastic-2.0; document parsing + bundled ONNX embeddings)
-and `lancedb` (embedded vector store). First scan after enabling downloads the
-embedding model into the kreuzberg cache; subsequent scans are warm.
+Pulls in [`kreuzberg`](https://github.com/kreuzberg-dev/kreuzberg) (Elastic-2.0;
+document parsing + bundled ONNX embeddings) and `lancedb` (embedded vector
+store). First scan after enabling downloads the embedding model into the
+kreuzberg cache; subsequent scans are warm.
 
 **Index your repo:**
 
@@ -167,8 +168,9 @@ default scope tag is `web:<host>` so `search_documents { scope: "web:docs.rs" }`
 retrieves them together. `robots.txt` is honoured by default — flip it off only
 via `[crawl].respect_robots_txt = false` in `.basemind/basemind.toml` (and only
 for hosts you control). The crawler is HTTP-only; the browser, AI extraction,
-and WARC archive features of the upstream `kreuzcrawl` engine are deliberately
-not exposed.
+and WARC archive features of the upstream
+[`kreuzcrawl`](https://github.com/kreuzberg-dev/kreuzcrawl) engine are
+deliberately not exposed.
 
 Every tool returns JSON. Responses are capped (`limit`, default 100, max 1000) so
 the agent's context doesn't explode.
@@ -433,6 +435,31 @@ JSON/YAML/TOML, file-safety basics, and commit-message linting via
 [gitfluff](https://github.com/Goldziher/gitfluff).
 
 Contributing guidelines: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+---
+
+## Built on
+
+basemind stands on three sibling crates from the
+[kreuzberg-dev](https://github.com/kreuzberg-dev) family and the rest of the
+Rust ecosystem:
+
+- **[kreuzberg](https://github.com/kreuzberg-dev/kreuzberg)** — Elastic-2.0
+  document parsing engine. Powers PDF / Office / HTML / email ingestion, OCR,
+  layout detection, and the bundled ONNX embedding pipeline behind
+  `search_documents`. Enabled via `--features documents` / `--features full`.
+- **[kreuzcrawl](https://github.com/kreuzberg-dev/kreuzcrawl)** — HTTP-first
+  web crawling engine. Powers `web_scrape`, `web_crawl`, and `web_map`.
+  Enabled via `--features crawl` / `--features full`.
+- **[tree-sitter-language-pack](https://github.com/kreuzberg-dev/tree-sitter-language-pack)**
+  — the bundle of ~300 tree-sitter grammars + their `tags.scm` queries that
+  drives every parser in basemind. The `adapt_tslp_tags` adapter in
+  `src/lang.rs` rewrites upstream captures into basemind's shape so a single
+  override surface covers all of them.
+
+Plus [Fjall](https://github.com/fjall-rs/fjall) (pure-Rust LSM), `rmcp` (MCP
+server / client), `gix` (pure-Rust git), `rayon` (data parallelism),
+`tree-sitter`, and `lancedb`.
 
 ---
 
