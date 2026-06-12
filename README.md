@@ -163,6 +163,25 @@ not exposed.
 Every tool returns JSON. Responses are capped (`limit`, default 100, max 1000) so
 the agent's context doesn't explode.
 
+### Pagination
+
+Five tools support cursor-based pagination: `find_references`, `find_callers`,
+`memory_list` (Fjall-backed), and `search_symbols`, `list_files` (in-memory).
+When a response includes `truncated: true` and a `next_cursor` field, pass that
+cursor back as the `cursor` param on the next call to fetch the next page.
+
+The two backends have different stability guarantees:
+
+- **Fjall-backed** (`find_references`, `find_callers`, `memory_list`): cursors
+  remain valid across rescans because keys are content-addressed.
+- **In-memory** (`search_symbols`, `list_files`): cursors are invalidated if the
+  cache rebuilds (a rescan happens between calls). If a response carries
+  `cursor_invalidated: true`, the caller must restart pagination from the
+  beginning.
+
+Callers that omit `cursor` see no behaviour change; they receive the first page
+of results as before.
+
 ---
 
 ## Visual integration: live stats in Claude Code

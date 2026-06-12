@@ -315,6 +315,8 @@ impl ServerHandler for BasemindServer {
              \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`); \
              \"refresh the index after editing code?\" → `rescan` (or `rescan { paths: [...] }` \
              to limit to changed files).\n\
+             \"got a truncated result? fetch the next page?\" → pass `next_cursor` from the prior \
+             response back as `cursor`.\n\
              \"need regex over file contents?\" → `workspace_grep`.\n\
              Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
              `list_files`, `workspace_grep`, `dependents`, `status`, `repo_info`, \
