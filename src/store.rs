@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use ahash::AHashMap;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -58,14 +58,14 @@ pub struct Index {
     /// Relative path → FileEntry. Keyed by `RelPath` so paths with non-UTF-8 bytes
     /// round-trip losslessly through the msgpack store; valid UTF-8 paths serialize as
     /// plain strings (zero wire-format churn for the common case).
-    pub files: BTreeMap<RelPath, FileEntry>,
+    pub files: AHashMap<RelPath, FileEntry>,
 }
 
 impl Index {
     pub fn empty() -> Self {
         Self {
             schema_ver: SCHEMA_VER,
-            files: BTreeMap::new(),
+            files: AHashMap::new(),
         }
     }
 }

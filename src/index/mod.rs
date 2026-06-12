@@ -24,11 +24,14 @@ use std::path::{Path, PathBuf};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
-/// Bumped whenever the on-disk key layout changes. Mismatch on open → wipe + rebuild.
-/// Synced to [`crate::version::RELEASE_MINOR`] so the minor-release bump is the single
-/// authority for "is the persisted shape still readable" across both this partitioned
-/// index and the msgpack blob store.
-pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
+/// Bumped whenever the on-disk key layout changes. Offset by +1 from the release minor
+/// because the index format gained `imports_by_path` ahead of the next minor cut. The
+/// offset is monotonic: `RELEASE_MINOR = 0` → `INDEX_SCHEMA_VER = 1`. When RELEASE_MINOR
+/// next bumps, both move together (`RELEASE_MINOR = 1` → `INDEX_SCHEMA_VER = 2`).
+/// Decoupled from blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied to
+/// `RELEASE_MINOR` — blobs remain valid across this index revision; only the secondary
+/// index rebuilds on next open via the wipe-on-mismatch flow in [`IndexDb::open`].
+pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + 1;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
@@ -62,6 +65,7 @@ pub struct IndexDb {
     pub(crate) calls_by_path: Keyspace,
     pub(crate) calls_by_callee: Keyspace,
     pub(crate) imports_by_module: Keyspace,
+    pub(crate) imports_by_path: Keyspace,
     #[allow(dead_code)] // reserved for the future vector iteration
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
@@ -98,6 +102,7 @@ impl IndexDb {
         let calls_by_path = db.keyspace("calls_by_path", KeyspaceCreateOptions::default)?;
         let calls_by_callee = db.keyspace("calls_by_callee", KeyspaceCreateOptions::default)?;
         let imports_by_module = db.keyspace("imports_by_module", KeyspaceCreateOptions::default)?;
+        let imports_by_path = db.keyspace("imports_by_path", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
         let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
 
@@ -113,6 +118,7 @@ impl IndexDb {
             calls_by_path,
             calls_by_callee,
             imports_by_module,
+            imports_by_path,
             embeddings,
             memory_by_key,
         })
