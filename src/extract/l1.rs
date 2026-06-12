@@ -3,7 +3,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
 use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind};
 use crate::lang::{
-    LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser,
+    LangId, ParseOutcome, parse_with_default_timeout, try_get_combined_l1_query, with_parser,
 };
 
 pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError> {
@@ -28,9 +28,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
         (false, 0)
     };
 
-    let symbols = run_symbols(lang, root, source)?;
-    let imports = run_imports(lang, root, source)?;
-    let implementations = run_implementations(lang, root, source)?;
+    let (symbols, imports, implementations) = run_combined(lang, root, source)?;
 
     Ok(FileMapL1 {
         schema_ver: SCHEMA_VER,
@@ -61,23 +59,51 @@ fn count_error_nodes(root: Node) -> u32 {
     count
 }
 
-fn run_symbols(
+/// Output triple of `run_combined`: symbols, imports, and implementations extracted in one pass.
+type CombinedL1 = (Vec<Symbol>, Vec<Import>, Vec<Implementation>);
+
+/// Walk the combined L1 query (symbols + imports + implementations) once, dispatching each
+/// match by capture name prefix. Allocates one `QueryCursor` instead of three, cutting the
+/// per-file tree-walk cost to one pass.
+fn run_combined(
     lang: LangId,
     root: tree_sitter::Node,
     source: &[u8],
-) -> Result<Vec<Symbol>, ExtractError> {
-    let Some(q) = try_get_query(lang, QueryKind::Symbols)? else {
-        return Ok(Vec::new());
+) -> Result<CombinedL1, ExtractError> {
+    let Some(q) = try_get_combined_l1_query(lang)? else {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
     let mut cursor = QueryCursor::new();
     let mut iter = cursor.matches(&q, root, source);
-    let mut out = Vec::new();
+    let mut symbols = Vec::new();
+    let mut imports = Vec::new();
+    let mut implementations = Vec::new();
     while let Some(m) = iter.next() {
-        if let Some(sym) = build_symbol(&q, m, source) {
-            out.push(sym);
+        // Dispatch by the name of the first capture in this match.
+        let Some(first_cap) = m.captures.first() else {
+            continue;
+        };
+        let first_name = capture_name(&q, first_cap.index);
+        if first_name.starts_with("symbol.") {
+            if let Some(sym) = build_symbol(&q, m, source) {
+                symbols.push(sym);
+            }
+        } else if first_name.starts_with("import.") {
+            if let Some(imp) = build_import(&q, m, source) {
+                imports.push(imp);
+            }
+        } else if first_name.starts_with("impl.") {
+            if let Some(imp) = build_implementation(&q, m, source) {
+                implementations.push(imp);
+            }
+        } else {
+            debug_assert!(
+                false,
+                "unexpected capture prefix in combined L1 query: {first_name}"
+            );
         }
     }
-    Ok(dedupe_symbols(out))
+    Ok((dedupe_symbols(symbols), imports, implementations))
 }
 
 /// Merge query matches that hit the same (`start_byte`, `name`) — happens when a generic
@@ -122,25 +148,6 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
         }
     }
     keep
-}
-
-fn run_imports(
-    lang: LangId,
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Result<Vec<Import>, ExtractError> {
-    let Some(q) = try_get_query(lang, QueryKind::Imports)? else {
-        return Ok(Vec::new());
-    };
-    let mut cursor = QueryCursor::new();
-    let mut iter = cursor.matches(&q, root, source);
-    let mut out = Vec::new();
-    while let Some(m) = iter.next() {
-        if let Some(imp) = build_import(&q, m, source) {
-            out.push(imp);
-        }
-    }
-    Ok(out)
 }
 
 fn capture_name(q: &Query, index: u32) -> &str {
@@ -243,25 +250,6 @@ fn signature_slice(text: &str) -> Option<String> {
     } else {
         Some(collapsed)
     }
-}
-
-fn run_implementations(
-    lang: LangId,
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Result<Vec<Implementation>, ExtractError> {
-    let Some(q) = try_get_query(lang, QueryKind::Implementations)? else {
-        return Ok(Vec::new());
-    };
-    let mut cursor = QueryCursor::new();
-    let mut iter = cursor.matches(&q, root, source);
-    let mut out = Vec::new();
-    while let Some(m) = iter.next() {
-        if let Some(imp) = build_implementation(&q, m, source) {
-            out.push(imp);
-        }
-    }
-    Ok(out)
 }
 
 /// Build an `Implementation` from a query match that contains:

@@ -348,6 +348,12 @@ type CachedQuery = Option<Arc<Query>>;
 type QueryMap = AHashMap<(LangId, QueryKind), CachedQuery>;
 static QUERIES: OnceLock<RwLock<QueryMap>> = OnceLock::new();
 
+/// Per-language cache for the combined L1 query (symbols + imports + implementations in one
+/// `Arc<Query>`). Keyed by `LangId` alone — cheaper to look up than the per-`(lang, kind)` map
+/// and avoids three separate lock acquisitions per file.
+type CombinedL1Map = AHashMap<LangId, CachedQuery>;
+static COMBINED_L1_QUERIES: OnceLock<RwLock<CombinedL1Map>> = OnceLock::new();
+
 /// Extract a single named query (S-expression `;; @section name`) from the .scm source.
 ///
 /// Convention: each .scm file is divided into sections marked by `;; section: <name>` lines.
@@ -606,6 +612,73 @@ fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
         .expect("adapted tags pool poisoned")
         .insert(lang, Arc::clone(&adapted));
     Some(adapted)
+}
+
+/// Look up the combined L1 query for a language, fusing the `symbols`, `imports`, and
+/// `implementations` sections into a single compiled `Arc<Query>`.
+///
+/// One combined query lets `extract_l1` allocate one `QueryCursor` and walk the tree once
+/// instead of three times. Capture namespacing (`@symbol.*`, `@import.*`, `@impl.*`) is
+/// already enforced by the hand-written `.scm` overrides and `adapt_tslp_tags`, so the
+/// patterns from the three sections compose without conflict.
+///
+/// Returns `Ok(None)` when the language has no L1 content at all (no symbols, no imports,
+/// no implementations from either the override path or TSLP). Returns `Err` only when a
+/// section source is present but fails to compile.
+pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError> {
+    let lock = COMBINED_L1_QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
+    if let Some(slot) = lock
+        .read()
+        .expect("combined L1 query pool poisoned")
+        .get(&lang)
+    {
+        return Ok(slot.as_ref().map(Arc::clone));
+    }
+
+    // Build the concatenated source from the three L1 sections.
+    let combined_src: Option<String> = if let Some(raw) = override_query_source(lang) {
+        // Override path: extract the three relevant sections and concatenate.
+        let sym = extract_section(raw, "symbols").unwrap_or_default();
+        let imp = extract_section(raw, "imports").unwrap_or_default();
+        let imp_l = extract_section(raw, "implementations").unwrap_or_default();
+        let combined = format!("{sym}\n{imp}\n{imp_l}");
+        if combined.trim().is_empty() {
+            None
+        } else {
+            Some(combined)
+        }
+    } else {
+        // TSLP fallback path: symbols + implementations come from the adapted source;
+        // imports are not produced by `adapt_tslp_tags` (only Symbols/Calls/Implementations).
+        tslp_tags_adapted(lang).and_then(|adapted| {
+            let sym = extract_section(&adapted, "symbols").unwrap_or_default();
+            let imp_l = extract_section(&adapted, "implementations").unwrap_or_default();
+            let combined = format!("{sym}\n{imp_l}");
+            if combined.trim().is_empty() {
+                None
+            } else {
+                Some(combined)
+            }
+        })
+    };
+
+    let cached = match combined_src {
+        Some(src) => {
+            let ts_lang = language(lang)?;
+            let query = Query::new(&ts_lang, &src).map_err(|e| LangError::QueryCompile {
+                lang,
+                kind: "combined_l1",
+                msg: format!("{e}"),
+            })?;
+            Some(Arc::new(query))
+        }
+        None => None,
+    };
+
+    lock.write()
+        .expect("combined L1 query pool poisoned")
+        .insert(lang, cached.as_ref().map(Arc::clone));
+    Ok(cached)
 }
 
 /// Look up a `(lang, kind)` query, returning `Ok(Some(arc))` when one exists,
