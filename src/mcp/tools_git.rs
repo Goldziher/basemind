@@ -63,7 +63,9 @@ impl BasemindServer {
         description = "Last N commits on the current branch, newest first. Each commit comes with \
                        sha, summary (first line of message), author, unix timestamp, and — when \
                        `include_files=true` (default) — the per-file change list relative to its first \
-                       parent. Default 20 commits, max 100. Cached by HEAD sha."
+                       parent. `limit` is the page size (default 20, max 100). Pass `cursor` from a \
+                       previous response to fetch the next page; cursors invalidate when HEAD moves \
+                       (caller restarts on `cursor_invalidated`). Cached by HEAD sha."
     )]
     async fn recent_changes(
         &self,
@@ -73,23 +75,55 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
-            let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX);
+            let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
             let head = head_sha(repo)?;
+            let snapshot = head_snapshot_id(&head);
+
+            // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
+            // cursor_invalidated=true so the caller can restart.
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != snapshot {
+                        return json_result(&RecentChangesResponse {
+                            commits: Vec::new(),
+                            truncated: false,
+                            truncated_reason: None,
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
+
+            // Walk one extra commit past the page so we can tell whether more remain.
+            let walk_depth =
+                (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
             let commits = self
                 .state
                 .git_cache
-                .log(repo, &head, None, limit, params.include_files)
+                .log(repo, &head, None, walk_depth, params.include_files)
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
-            let view = commits
+            let page: Vec<CommitView> = commits
                 .iter()
+                .skip(skip)
+                .take(limit)
                 .cloned()
                 .map(|c| commit_to_view(c, params.include_files))
                 .collect();
+            let has_more = commits.len() > skip + page.len();
+            let next_cursor = has_more.then(|| {
+                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
+            });
             let truncated = repo.is_shallow();
             json_result(&RecentChangesResponse {
-                commits: view,
+                commits: page,
                 truncated,
                 truncated_reason: truncated.then_some("shallow_clone"),
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -107,7 +141,8 @@ impl BasemindServer {
     #[tool(
         description = "Commits that modified `path`, newest first. Returns the same per-commit \
                        shape as `recent_changes` without the per-file list (the path is implicit). \
-                       Default 20 commits, max 100."
+                       `limit` is the page size (default 20, max 100). Pass `cursor` from a previous \
+                       response to fetch the next page; cursors invalidate when HEAD moves."
     )]
     async fn commits_touching(
         &self,
@@ -117,24 +152,54 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
-            let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX);
+            let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
             let head = head_sha(repo)?;
+            let snapshot = head_snapshot_id(&head);
+
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != snapshot {
+                        return json_result(&CommitsTouchingResponse {
+                            path: params.path,
+                            commits: Vec::new(),
+                            truncated: false,
+                            truncated_reason: None,
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
+
+            let walk_depth =
+                (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
             let commits = self
                 .state
                 .git_cache
-                .log(repo, &head, Some(&params.path), limit, false)
+                .log(repo, &head, Some(&params.path), walk_depth, false)
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
-            let view = commits
+            let page: Vec<CommitView> = commits
                 .iter()
+                .skip(skip)
+                .take(limit)
                 .cloned()
                 .map(|c| commit_to_view(c, false))
                 .collect();
+            let has_more = commits.len() > skip + page.len();
+            let next_cursor = has_more.then(|| {
+                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
+            });
             let truncated = repo.is_shallow();
             json_result(&CommitsTouchingResponse {
                 path: params.path,
-                commits: view,
+                commits: page,
                 truncated,
                 truncated_reason: truncated.then_some("shallow_clone"),
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -301,7 +366,9 @@ impl BasemindServer {
     #[tool(
         description = "Walk recent commits (default last 200, max 1000) and return those whose \
                        changed-file list contains any path matching the regex `pattern`. Cheaper \
-                       than `git log -G` because we only match paths, not patch text. Cached via \
+                       than `git log -G` because we only match paths, not patch text. `limit` is \
+                       the page size (default 50, max 500). Pass `cursor` from a previous response \
+                       to fetch the next page; cursors invalidate when HEAD moves. Cached via \
                        the same `commit_files` cache as `recent_changes`."
     )]
     async fn find_commits_by_path(
@@ -315,9 +382,30 @@ impl BasemindServer {
             let re = regex::Regex::new(&params.pattern)
                 .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
             let window = params.window.unwrap_or(200).min(1000);
-            let limit = params.limit.unwrap_or(50).min(500);
+            let limit = params.limit.unwrap_or(50).min(500) as usize;
 
             let head = head_sha(repo)?;
+            let snapshot = head_snapshot_id(&head);
+
+            // Cursor encodes the offset into the *filtered* hit stream — re-walk the same
+            // window, filter, then skip the first N matches.
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != snapshot {
+                        return json_result(&FindCommitsByPathResponse {
+                            pattern: params.pattern,
+                            window_inspected: window,
+                            commits: Vec::new(),
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
+
             let commits = self
                 .state
                 .git_cache
@@ -325,18 +413,32 @@ impl BasemindServer {
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
 
             let mut hits: Vec<CommitView> = Vec::new();
+            let mut seen: usize = 0;
+            let mut has_more = false;
             for c in commits.iter() {
-                if hits.len() >= limit as usize {
+                if !c.files.iter().any(|(p, _)| re.is_match(&p.to_str_lossy())) {
+                    continue;
+                }
+                if seen < skip {
+                    seen += 1;
+                    continue;
+                }
+                if hits.len() >= limit {
+                    has_more = true;
                     break;
                 }
-                if c.files.iter().any(|(p, _)| re.is_match(&p.to_str_lossy())) {
-                    hits.push(commit_to_view(c.clone(), true));
-                }
+                seen += 1;
+                hits.push(commit_to_view(c.clone(), true));
             }
+            let next_cursor = has_more.then(|| {
+                super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot)
+            });
             json_result(&FindCommitsByPathResponse {
                 pattern: params.pattern,
                 window_inspected: window,
                 commits: hits,
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -485,7 +587,8 @@ impl BasemindServer {
         description = "List commits where the named symbol's body bytes changed (or where it was \
                        added/removed). Combines tree-sitter outline extraction with the commit log: \
                        a `recent_changes` filtered by symbol identity rather than file identity. \
-                       Up to `limit` commits returned (default 20, max 100)."
+                       `limit` is the page size (default 20, max 100). Pass `cursor` from a \
+                       previous response to fetch the next page; cursors invalidate when HEAD moves."
     )]
     async fn symbol_history(
         &self,
@@ -507,10 +610,41 @@ impl BasemindServer {
             };
 
             let head = head_sha(repo)?;
+            let snapshot = head_snapshot_id(&head);
+
+            // Cursor offset is over the produced `history` entries (newest-first). Walk
+            // enough commits to cover skip+limit+1; bounded by LOG_WALK_MAX.
+            let skip = match params.cursor.as_ref() {
+                Some(c) => {
+                    let (offset, snapshot_id) = c.decode_in_memory()?;
+                    if snapshot_id != snapshot {
+                        return json_result(&SymbolHistoryResponse {
+                            path: params.path,
+                            name: params.name,
+                            kind: kind.map(|k| kind_to_str(k).to_string()),
+                            commits_inspected: 0,
+                            history: Vec::new(),
+                            hash_mode: hash_mode.as_str(),
+                            truncated: false,
+                            truncated_reason: None,
+                            next_cursor: None,
+                            cursor_invalidated: true,
+                        });
+                    }
+                    offset as usize
+                }
+                None => 0,
+            };
+
+            let walk_depth = (skip
+                .saturating_add(limit)
+                .saturating_add(1)
+                .saturating_mul(4))
+            .min(LOG_WALK_MAX) as u32;
             let commits = self
                 .state
                 .git_cache
-                .log(repo, &head, Some(&params.path), limit as u32 * 4, false)
+                .log(repo, &head, Some(&params.path), walk_depth, false)
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
 
             let chronological: Vec<crate::git::CommitInfo> =
@@ -560,7 +694,14 @@ impl BasemindServer {
                 prev_fp = fingerprint;
             }
             history.reverse();
-            history.truncate(limit);
+
+            let total_history = history.len();
+            let page: Vec<SymbolHistoryEntry> =
+                history.into_iter().skip(skip).take(limit).collect();
+            let has_more = total_history > skip + page.len();
+            let next_cursor = has_more.then(|| {
+                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
+            });
 
             let truncated = repo.is_shallow();
             json_result(&SymbolHistoryResponse {
@@ -568,10 +709,12 @@ impl BasemindServer {
                 name: params.name,
                 kind: kind.map(|k| kind_to_str(k).to_string()),
                 commits_inspected: inspected,
-                history,
+                history: page,
                 hash_mode: hash_mode.as_str(),
                 truncated,
                 truncated_reason: truncated.then_some("shallow_clone"),
+                next_cursor,
+                cursor_invalidated: false,
             })
         }
         .await;
@@ -591,7 +734,9 @@ impl BasemindServer {
                        consecutive run of lines that share a source commit. Optional 1-based \
                        `line_start`/`line_end` clamp to a range. Each hunk carries commit sha, \
                        author, unix time, summary, and the renamed source path if applicable. \
-                       Results are cached forever by (suspect_sha, path, range)."
+                       Pass `limit` (default unbounded, max 1000) to page through hunks; the \
+                       returned `next_cursor` encodes the last hunk's `start_line`. Cached \
+                       forever by (suspect_sha, path, range)."
     )]
     async fn blame_file(
         &self,
@@ -617,6 +762,12 @@ impl BasemindServer {
                     ));
                 }
             };
+            // Blame cursor: snapshot_id = 0, offset = last-returned hunk's start_line.
+            // On resume we skip hunks whose start_line <= offset.
+            let resume_after: u32 = match params.cursor.as_ref() {
+                Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
+                None => 0,
+            };
             let result = match self
                 .state
                 .git_cache
@@ -632,7 +783,8 @@ impl BasemindServer {
                     return Err(McpError::internal_error(format!("blame: {e}"), None));
                 }
             };
-            let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+            let (hunks, next_cursor) =
+                paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
             let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
                 Some("shallow_clone") => Some("shallow_clone"),
                 Some(_) => Some("truncated"),
@@ -645,6 +797,7 @@ impl BasemindServer {
                 hunks,
                 truncated: truncated_reason.is_some(),
                 truncated_reason,
+                next_cursor,
             })
         }
         .await;
@@ -663,7 +816,9 @@ impl BasemindServer {
         description = "Blame only the lines that belong to a named symbol in a file. Resolves the \
                        symbol via the cached L1 outline (must be indexed in the current view) and \
                        feeds its line range to `blame_file`. `kind` disambiguates same-named \
-                       symbols of different kinds."
+                       symbols of different kinds. Pass `limit` (default unbounded, max 1000) \
+                       to page through hunks; the returned `next_cursor` encodes the last hunk's \
+                       `start_line`."
     )]
     async fn blame_symbol(
         &self,
@@ -704,6 +859,10 @@ impl BasemindServer {
                 })?,
                 None => head_sha(repo)?,
             };
+            let resume_after: u32 = match params.cursor.as_ref() {
+                Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
+                None => 0,
+            };
             let result = match self.state.git_cache.blame(
                 repo,
                 &suspect_sha,
@@ -725,7 +884,8 @@ impl BasemindServer {
                     return Err(McpError::internal_error(format!("blame: {e}"), None));
                 }
             };
-            let hunks = result.hunks.iter().map(blame_hunk_view).collect();
+            let (hunks, next_cursor) =
+                paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
             let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
                 Some("shallow_clone") => Some("shallow_clone"),
                 Some(_) => Some("truncated"),
@@ -742,6 +902,7 @@ impl BasemindServer {
                 hunks,
                 truncated: truncated_reason.is_some(),
                 truncated_reason,
+                next_cursor,
             })
         }
         .await;

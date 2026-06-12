@@ -29,3 +29,15 @@ pub mod watcher;
 pub mod web;
 
 pub use config::Config;
+
+/// Test-only helpers exposed from the library so integration tests can mint cursors
+/// without re-implementing the base64url + msgpack encoding. Not part of the stable API.
+#[doc(hidden)]
+pub mod testing {
+    /// Build an in-memory cursor with the given `(offset, snapshot_id)`, returning the
+    /// opaque base64url string an MCP client would receive in `next_cursor`. Used by
+    /// the smoke tests to forge stale cursors and verify `cursor_invalidated` plumbing.
+    pub fn encode_in_memory_cursor(offset: u64, snapshot_id: u32) -> String {
+        crate::mcp::cursor::Cursor::encode_in_memory(offset, snapshot_id).0
+    }
+}

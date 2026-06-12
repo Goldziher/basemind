@@ -818,3 +818,433 @@ async fn mcp_server_exercises_representative_tools() {
 
     let _ = service.cancel().await;
 }
+
+// ─── git-iterator pagination smoke tests ─────────────────────────────────────
+
+/// Build a multi-commit fixture used by the git-iterator pagination tests.
+///
+/// Layout: a single `paged.rs` file rewritten across 5 commits, each modifying the
+/// body of `paged()`. That gives `recent_changes` and `commits_touching` ≥ 5
+/// commits to page over, `find_commits_by_path` ≥ 5 matches, and `symbol_history`
+/// ≥ 5 "modified" entries. The last commit in the helper rewrites only line 1 so
+/// `paged.rs` blame partitions into ≥ 2 distinct hunks.
+fn build_paging_repo() -> TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    for i in 0..5u32 {
+        std::fs::write(
+            root.join("paged.rs"),
+            format!("pub fn paged() {{ let _ = {i}; }}\npub fn other() {{ let _ = {i}; }}\n"),
+        )
+        .unwrap();
+        git(root, &["add", "paged.rs"]);
+        git(root, &["commit", "-qm", &format!("step {i}")]);
+    }
+    dir
+}
+
+/// Spin up an MCP server against the paging fixture and return both halves.
+async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::RoleClient, ()>) {
+    let dir = build_paging_repo();
+    let root = dir.path();
+    run_scan(root);
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let cmd = AsyncCommand::new(bin).configure(|c| {
+        c.arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+    (dir, service)
+}
+
+fn commit_shas(body: &Value) -> Vec<String> {
+    body.get("commits")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| c.get("sha").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recent_changes_paginates_with_stable_cursor() {
+    let (_dir, service) = spawn_paging_server().await;
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .await
+            .expect("recent_changes page1"),
+    );
+    let p1_shas = commit_shas(&page1);
+    assert_eq!(p1_shas.len(), 2, "recent_changes limit=2 → 2 commits");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("recent_changes page1 must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "recent_changes",
+                json!({ "limit": 2, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("recent_changes page2"),
+    );
+    let p2_shas = commit_shas(&page2);
+    assert_eq!(p2_shas.len(), 2, "recent_changes page2 → 2 more commits");
+    assert!(
+        p2_shas.iter().all(|s| !p1_shas.contains(s)),
+        "recent_changes pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+    );
+    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
+    let stale = decode_text(
+        &service
+            .call_tool(call_params(
+                "recent_changes",
+                json!({ "limit": 2, "cursor": bogus }),
+            ))
+            .await
+            .expect("recent_changes stale"),
+    );
+    assert_eq!(
+        stale.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "bogus snapshot must surface cursor_invalidated: {stale}"
+    );
+    let _ = service.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commits_touching_paginates_with_stable_cursor() {
+    let (_dir, service) = spawn_paging_server().await;
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "commits_touching",
+                json!({ "path": "paged.rs", "limit": 2 }),
+            ))
+            .await
+            .expect("commits_touching page1"),
+    );
+    let p1_shas = commit_shas(&page1);
+    assert_eq!(p1_shas.len(), 2, "commits_touching page1 → 2 commits");
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("commits_touching must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "commits_touching",
+                json!({ "path": "paged.rs", "limit": 2, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("commits_touching page2"),
+    );
+    let p2_shas = commit_shas(&page2);
+    assert_eq!(p2_shas.len(), 2, "commits_touching page2 → 2 more commits");
+    assert!(
+        p2_shas.iter().all(|s| !p1_shas.contains(s)),
+        "commits_touching pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+    );
+    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
+    let stale = decode_text(
+        &service
+            .call_tool(call_params(
+                "commits_touching",
+                json!({ "path": "paged.rs", "limit": 2, "cursor": bogus }),
+            ))
+            .await
+            .expect("commits_touching stale"),
+    );
+    assert_eq!(
+        stale.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "bogus snapshot must surface cursor_invalidated: {stale}"
+    );
+    let _ = service.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn find_commits_by_path_paginates_with_stable_cursor() {
+    let (_dir, service) = spawn_paging_server().await;
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_commits_by_path",
+                json!({ "pattern": "paged\\.rs", "window": 50, "limit": 2 }),
+            ))
+            .await
+            .expect("find_commits_by_path page1"),
+    );
+    let p1_shas = commit_shas(&page1);
+    assert_eq!(
+        p1_shas.len(),
+        2,
+        "find_commits_by_path page1 → 2 commits: {page1}"
+    );
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("find_commits_by_path must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_commits_by_path",
+                json!({
+                    "pattern": "paged\\.rs",
+                    "window": 50,
+                    "limit": 2,
+                    "cursor": cursor1,
+                }),
+            ))
+            .await
+            .expect("find_commits_by_path page2"),
+    );
+    let p2_shas = commit_shas(&page2);
+    assert!(
+        !p2_shas.is_empty(),
+        "find_commits_by_path page2 must have ≥ 1 commit: {page2}"
+    );
+    assert!(
+        p2_shas.iter().all(|s| !p1_shas.contains(s)),
+        "find_commits_by_path pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+    );
+    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
+    let stale = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_commits_by_path",
+                json!({
+                    "pattern": "paged\\.rs",
+                    "window": 50,
+                    "limit": 2,
+                    "cursor": bogus,
+                }),
+            ))
+            .await
+            .expect("find_commits_by_path stale"),
+    );
+    assert_eq!(
+        stale.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "bogus snapshot must surface cursor_invalidated: {stale}"
+    );
+    let _ = service.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn symbol_history_paginates_with_stable_cursor() {
+    let (_dir, service) = spawn_paging_server().await;
+    let history_shas = |body: &Value| -> Vec<String> {
+        body.get("history")
+            .and_then(Value::as_array)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.get("sha").and_then(Value::as_str).map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "symbol_history",
+                json!({ "path": "paged.rs", "name": "paged", "limit": 2 }),
+            ))
+            .await
+            .expect("symbol_history page1"),
+    );
+    let p1_shas = history_shas(&page1);
+    assert_eq!(
+        p1_shas.len(),
+        2,
+        "symbol_history page1 → 2 entries: {page1}"
+    );
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("symbol_history must carry next_cursor")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "symbol_history",
+                json!({
+                    "path": "paged.rs",
+                    "name": "paged",
+                    "limit": 2,
+                    "cursor": cursor1,
+                }),
+            ))
+            .await
+            .expect("symbol_history page2"),
+    );
+    let p2_shas = history_shas(&page2);
+    assert!(
+        !p2_shas.is_empty(),
+        "symbol_history page2 must have ≥ 1 entry: {page2}"
+    );
+    assert!(
+        p2_shas.iter().all(|s| !p1_shas.contains(s)),
+        "symbol_history pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+    );
+    let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
+    let stale = decode_text(
+        &service
+            .call_tool(call_params(
+                "symbol_history",
+                json!({
+                    "path": "paged.rs",
+                    "name": "paged",
+                    "limit": 2,
+                    "cursor": bogus,
+                }),
+            ))
+            .await
+            .expect("symbol_history stale"),
+    );
+    assert_eq!(
+        stale.get("cursor_invalidated"),
+        Some(&Value::Bool(true)),
+        "bogus snapshot must surface cursor_invalidated: {stale}"
+    );
+    let _ = service.cancel().await;
+}
+
+/// Add one more commit that rewrites only line 1 so blame partitions paged.rs into
+/// ≥ 2 hunks. Used by the two blame tests below.
+fn split_blame_lines(root: &std::path::Path) {
+    let prior = std::fs::read_to_string(root.join("paged.rs")).unwrap();
+    let mut lines: Vec<&str> = prior.lines().collect();
+    lines[0] = "pub fn paged() { let _ = 999; }";
+    let new = lines.join("\n") + "\n";
+    std::fs::write(root.join("paged.rs"), new).unwrap();
+    git(root, &["commit", "-aqm", "split line ownership"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blame_file_paginates_by_start_line() {
+    let (dir, service) = spawn_paging_server().await;
+    split_blame_lines(dir.path());
+    let _ = service.call_tool(call_params("rescan", json!({}))).await;
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "blame_file",
+                json!({ "path": "paged.rs", "limit": 1 }),
+            ))
+            .await
+            .expect("blame_file page1"),
+    );
+    let p1_hunks = page1
+        .get("hunks")
+        .and_then(Value::as_array)
+        .expect("blame_file page1 hunks");
+    assert_eq!(p1_hunks.len(), 1, "blame_file limit=1 → 1 hunk: {page1}");
+    let p1_start: Vec<u64> = p1_hunks
+        .iter()
+        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .collect();
+    let cursor1 = page1
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .expect("blame_file must carry next_cursor when more hunks remain")
+        .to_string();
+    let page2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "blame_file",
+                json!({ "path": "paged.rs", "limit": 1, "cursor": cursor1 }),
+            ))
+            .await
+            .expect("blame_file page2"),
+    );
+    let p2_hunks = page2
+        .get("hunks")
+        .and_then(Value::as_array)
+        .expect("blame_file page2 hunks");
+    assert!(
+        !p2_hunks.is_empty(),
+        "blame_file page2 must have ≥ 1 hunk: {page2}"
+    );
+    let p2_start: Vec<u64> = p2_hunks
+        .iter()
+        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .collect();
+    assert!(
+        p2_start.iter().all(|s| !p1_start.contains(s)),
+        "blame_file pages must not overlap by start_line: {p1_start:?} vs {p2_start:?}"
+    );
+    let _ = service.cancel().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn blame_symbol_paginates_by_start_line() {
+    let (dir, service) = spawn_paging_server().await;
+    split_blame_lines(dir.path());
+    let _ = service.call_tool(call_params("rescan", json!({}))).await;
+    let page1 = decode_text(
+        &service
+            .call_tool(call_params(
+                "blame_symbol",
+                json!({ "path": "paged.rs", "name": "paged", "limit": 1 }),
+            ))
+            .await
+            .expect("blame_symbol page1"),
+    );
+    let p1_hunks = page1
+        .get("hunks")
+        .and_then(Value::as_array)
+        .expect("blame_symbol page1 hunks");
+    assert_eq!(p1_hunks.len(), 1, "blame_symbol limit=1 → 1 hunk: {page1}");
+    let p1_start = p1_hunks
+        .iter()
+        .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
+        .next()
+        .expect("blame_symbol page1 start_line");
+    assert!(
+        p1_start >= 1,
+        "blame_symbol start_line should be 1-based, got {p1_start}"
+    );
+    // Cursor past EOF → empty page + no next_cursor (the "natural restart" semantic).
+    let huge_cursor = basemind::testing::encode_in_memory_cursor(9_999, 0);
+    let page_empty = decode_text(
+        &service
+            .call_tool(call_params(
+                "blame_symbol",
+                json!({
+                    "path": "paged.rs",
+                    "name": "paged",
+                    "limit": 1,
+                    "cursor": huge_cursor,
+                }),
+            ))
+            .await
+            .expect("blame_symbol cursor past end"),
+    );
+    let empty_hunks = page_empty
+        .get("hunks")
+        .and_then(Value::as_array)
+        .expect("blame_symbol empty page hunks");
+    assert!(
+        empty_hunks.is_empty(),
+        "blame_symbol with cursor past end should be empty: {page_empty}"
+    );
+    assert!(
+        page_empty.get("next_cursor").is_none(),
+        "blame_symbol exhausted page must NOT carry next_cursor"
+    );
+    let _ = service.cancel().await;
+}

@@ -6,11 +6,16 @@
 //!   range-scans `(Excluded(last_key)..Excluded(prefix_upper_bound))` so the next page
 //!   picks up immediately after the previous one. Stable across rescans because Fjall
 //!   keys are content-addressed.
-//! * **In-memory** cursors hold a `{ offset, snapshot_id }` pair. `snapshot_id` is the
-//!   server's monotonic `cache_generation` at the time the cursor was minted. On resume
-//!   the helper checks that `snapshot_id` still matches the current generation; on a
-//!   mismatch the response carries `cursor_invalidated = true` and the caller must
-//!   restart pagination from the top.
+//! * **In-memory** cursors hold a `{ offset, snapshot_id }` pair. `snapshot_id` is whatever
+//!   the calling tool uses to detect that its view changed between pages — the source-index
+//!   tools use the `cache_generation` AtomicU32, the git-iterator tools derive it from the
+//!   first 4 bytes of the HEAD sha. On resume the helper checks the decoded `snapshot_id`
+//!   against the current one; on mismatch the response carries `cursor_invalidated = true`
+//!   and the caller must restart pagination from the top.
+//!
+//! Blame tools reuse the in-memory encoder with `snapshot_id = 0` because blame is
+//! deterministic per `(suspect_sha, path)` — the `offset` field carries the last returned
+//! hunk's `start_line` and there is no invalidation flag.
 //!
 //! Both encodings are wrapped in a base64url-without-padding `String` so the wire shape
 //! is always a single opaque field on the response — clients never look inside.
@@ -44,8 +49,10 @@ impl Cursor {
             .map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))
     }
 
-    /// Encode an in-memory (offset, snapshot_id) cursor.
-    pub(super) fn encode_in_memory(offset: u64, snapshot_id: u32) -> Self {
+    /// Encode an in-memory (offset, snapshot_id) cursor. `pub(crate)` so the
+    /// integration-test scaffolding in `lib.rs::testing` can forge cursors with arbitrary
+    /// `snapshot_id` values to exercise the `cursor_invalidated` path.
+    pub(crate) fn encode_in_memory(offset: u64, snapshot_id: u32) -> Self {
         let payload = InMemCursor {
             o: offset,
             s: snapshot_id,

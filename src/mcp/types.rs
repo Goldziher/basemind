@@ -76,6 +76,11 @@ pub struct RecentChangesParams {
     /// When true, include the per-file change list for each commit. Default true.
     #[serde(default = "default_true")]
     pub include_files: bool,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the repo's HEAD sha at mint time; on HEAD movement the response carries
+    /// `cursor_invalidated: true` and the caller must restart.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -85,6 +90,11 @@ pub struct CommitsTouchingParams {
     /// Number of commits returned, newest first. Default 20, max 100.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the repo's HEAD sha at mint time; on HEAD movement the response carries
+    /// `cursor_invalidated: true` and the caller must restart.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -108,6 +118,14 @@ pub struct BlameFileParams {
     pub line_end: Option<u32>,
     #[serde(default)]
     pub rev: Option<String>,
+    /// Cap on hunks returned per page. Default 100, max 1000. When omitted, all hunks are
+    /// returned (existing behaviour) and `next_cursor` is never set.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
+    /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -117,6 +135,11 @@ pub struct FindCommitsByPathParams {
     pub window: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the repo's HEAD sha at mint time; on HEAD movement the response carries
+    /// `cursor_invalidated: true` and the caller must restart.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -149,6 +172,11 @@ pub struct SymbolHistoryParams {
     /// useful when i18n string churn dominates).
     #[serde(default)]
     pub hash_mode: Option<String>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the repo's HEAD sha at mint time; on HEAD movement the response carries
+    /// `cursor_invalidated: true` and the caller must restart.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -192,6 +220,14 @@ pub struct BlameSymbolParams {
     pub kind: Option<String>,
     #[serde(default)]
     pub rev: Option<String>,
+    /// Cap on hunks returned per page. Default 100, max 1000. When omitted, all hunks are
+    /// returned (existing behaviour) and `next_cursor` is never set.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Encodes the last-returned
+    /// hunk's `start_line`; on resume the helper skips hunks whose `start_line <= offset`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 fn default_true() -> bool {
@@ -354,6 +390,13 @@ pub(super) struct RecentChangesResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
+    /// moved between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -364,6 +407,13 @@ pub(super) struct CommitsTouchingResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
+    /// moved between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -406,6 +456,10 @@ pub(super) struct BlameResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Opaque cursor to pass back on the next call when more hunks are available. Encodes
+    /// the last-returned hunk's `start_line` so the next page resumes immediately after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -421,6 +475,10 @@ pub(super) struct BlameSymbolResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Opaque cursor to pass back on the next call when more hunks are available. Encodes
+    /// the last-returned hunk's `start_line` so the next page resumes immediately after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Serialize)]
@@ -428,6 +486,13 @@ pub(super) struct FindCommitsByPathResponse {
     pub pattern: String,
     pub window_inspected: u32,
     pub commits: Vec<CommitView>,
+    /// Opaque cursor to pass back on the next call when more matches are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
+    /// moved between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -491,6 +556,13 @@ pub(super) struct SymbolHistoryResponse {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated_reason: Option<&'static str>,
+    /// Opaque cursor to pass back on the next call when more history entries are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different HEAD sha (HEAD
+    /// moved between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]

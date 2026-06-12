@@ -23,6 +23,14 @@ pub(super) const LIST_LIMIT_DEFAULT: u32 = 200;
 pub(super) const LIST_LIMIT_MAX: u32 = 5000;
 pub(super) const LOG_LIMIT_DEFAULT: u32 = 20;
 pub(super) const LOG_LIMIT_MAX: u32 = 100;
+/// Hard ceiling on the underlying commit walk depth when paginating commit-iterator tools.
+/// `limit` (page size) ≤ `LOG_LIMIT_MAX` and the cursor offset is bounded by this constant
+/// minus one page, so an agent cannot drive the walk arbitrarily deep through pagination.
+pub(super) const LOG_WALK_MAX: usize = 10_000;
+/// Default page size for the blame helpers. Selected to fit a screenful of hunks while
+/// keeping the response under ~32 KiB. Opt-in: blame tools only paginate when `limit` is
+/// explicitly set.
+pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
 
 /// Wrap a tool-shim body with telemetry instrumentation.
 ///
@@ -178,6 +186,31 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
     })
 }
 
+/// Derive a stable 32-bit snapshot id from a HEAD sha. Used as the in-memory cursor's
+/// `snapshot_id` for git-iterator tools — mismatch on resume means HEAD moved between
+/// pages, so the caller must restart pagination.
+///
+/// Reads the first 4 bytes of the hex-encoded sha as a big-endian `u32`. Any non-hex or
+/// short sha falls back to 0; the worst-case collision rate on a real sha space is
+/// ~1/2^32, well below the noise floor of "rescan happened between calls".
+pub(super) fn head_snapshot_id(head_sha: &str) -> u32 {
+    let bytes = head_sha.as_bytes();
+    if bytes.len() < 8 {
+        return 0;
+    }
+    let mut out: u32 = 0;
+    for &b in &bytes[..8] {
+        let nibble = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => return 0,
+        };
+        out = (out << 4) | (nibble as u32);
+    }
+    out
+}
+
 /// Byte-level normalization for symbol-history fingerprints. Strips line + block comments
 /// per language and collapses ASCII whitespace runs to a single space. Caveat: whitespace
 /// inside string literals is also collapsed — accepted trade-off for the `Normalized`
@@ -293,6 +326,44 @@ pub(super) fn blame_hunk_view(h: &crate::git::BlameHunk) -> BlameHunkView {
     }
 }
 
+/// Page a slice of blame hunks. Skips any hunk whose `start_line <= resume_after` (so the
+/// cursor encodes the *last returned* `start_line` — the next page picks up strictly
+/// after it). When `limit` is `None` returns every remaining hunk with no cursor (the
+/// legacy un-paginated shape). When the page fills exactly at the limit and more hunks
+/// follow, returns a cursor with `snapshot_id = 0`.
+pub(super) fn paginate_blame_hunks<'a, I>(
+    iter: I,
+    resume_after: u32,
+    limit: Option<u32>,
+) -> (Vec<BlameHunkView>, Option<super::cursor::Cursor>)
+where
+    I: IntoIterator<Item = &'a crate::git::BlameHunk>,
+{
+    let cap = limit.map(|n| n.min(BLAME_LIMIT_MAX) as usize);
+    let mut out: Vec<BlameHunkView> = Vec::new();
+    let mut last_line: u32 = 0;
+    let mut has_more = false;
+    for h in iter {
+        if h.start_line <= resume_after {
+            continue;
+        }
+        if let Some(c) = cap
+            && out.len() >= c
+        {
+            has_more = true;
+            break;
+        }
+        last_line = h.start_line;
+        out.push(blame_hunk_view(h));
+    }
+    let next_cursor = if has_more {
+        Some(super::cursor::Cursor::encode_in_memory(last_line as u64, 0))
+    } else {
+        None
+    };
+    (out, next_cursor)
+}
+
 /// Translate a tree-sitter symbol's byte range into a 1-based inclusive
 /// `(start_line, end_line)` pair. We start from L1's `start_row` (0-based row) and
 /// add the count of newlines in `(start_byte..end_byte)` for the end. Cheap: one
@@ -337,6 +408,7 @@ pub(super) fn blame_too_large_response(
             hunks: Vec::new(),
             truncated: true,
             truncated_reason: Some("too_large"),
+            next_cursor: None,
         })
     } else {
         None
@@ -366,6 +438,7 @@ pub(super) fn blame_symbol_too_large_response(
             hunks: Vec::new(),
             truncated: true,
             truncated_reason: Some("too_large"),
+            next_cursor: None,
         })
     } else {
         None
