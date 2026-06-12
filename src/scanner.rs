@@ -376,7 +376,7 @@ fn apply_outcomes(
 ) -> Vec<PendingDocBatchOpt> {
     #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
     let mut doc_batches: Vec<PendingDocBatchOpt> = Vec::new();
-    for o in outcomes {
+    for mut o in outcomes {
         report.stats.scanned += 1;
         match &o.status {
             FileStatus::Updated {
@@ -409,11 +409,14 @@ fn apply_outcomes(
             }
         }
         // Pull buffered entry off the result, if any, and upsert it into the index.
-        if let Some(entry) = o.upsert.clone() {
+        // `.take()` moves the owned `FileEntry` / `PendingDocBatch` out of `o` without the
+        // heap clone of `FileEntry.hash_hex` / `FileEntry.language` that a `.clone()` would
+        // do — runs once per scanned file, so trimming the alloc adds up across 39 k files.
+        if let Some(entry) = o.upsert.take() {
             store.upsert(&o.path, entry);
         }
         #[cfg(feature = "documents")]
-        if let Some(batch) = o.doc_batch.clone() {
+        if let Some(batch) = o.doc_batch.take() {
             doc_batches.push(batch);
         }
         let cleared = FileResult::bare(o.path, o.status);

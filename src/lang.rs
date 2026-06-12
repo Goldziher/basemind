@@ -96,14 +96,11 @@ pub fn intern(name: &str) -> Option<LangId> {
             return Some(lid);
         }
     }
-    // Already interned? Fast read path.
+    // Already interned? Fast read path — `AHashSet::get` runs a single hash + probe instead
+    // of a linear scan. `<&'static str as Borrow<str>>` lets us look up by `&str` without
+    // allocating; the slot returned is the cached `&'static str` we hand back.
     let lock = INTERNED.get_or_init(|| RwLock::new(AHashSet::new()));
-    if let Some(&existing) = lock
-        .read()
-        .expect("intern pool poisoned")
-        .iter()
-        .find(|s| **s == name)
-    {
+    if let Some(&existing) = lock.read().expect("intern pool poisoned").get(name) {
         return Some(existing);
     }
     // Cold path: validate against TSLP's registry before leaking the bytes. Unknown names
