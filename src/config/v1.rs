@@ -1,6 +1,9 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use super::documents::{DocumentsConfig, LlmConfig};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigV1 {
     #[serde(rename = "$schema")]
@@ -21,18 +24,27 @@ pub struct ConfigV1 {
     pub memory: MemoryConfig,
     #[serde(default)]
     pub crawl: CrawlConfig,
+    /// Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,
+    /// VLM OCR, and any future LLM-backed capability. Off by default — leaving
+    /// `api_key` `Unset` short-circuits any LLM-backed feature.
+    #[serde(default)]
+    pub llm: LlmConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ScanConfig {
     #[serde(default = "ScanConfig::default_include")]
+    #[schemars(inner(length(min = 1)))]
     pub include: Vec<String>,
     #[serde(default = "ScanConfig::default_exclude")]
+    #[schemars(inner(length(min = 1)))]
     pub exclude: Vec<String>,
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
+    /// Skip files larger than this. Prevents minified-bundle stalls.
     #[serde(default = "ScanConfig::default_max_file_bytes")]
+    #[schemars(range(min = 1024))]
     pub max_file_bytes: u64,
     /// When true (default), the scanner skips paths under any submodule root listed in
     /// `.gitmodules`. Set to false to recurse into submodule working trees — useful only
@@ -96,10 +108,12 @@ impl Default for ScanConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WatchConfig {
+    /// Coalesce file events within this window (milliseconds).
     #[serde(default = "WatchConfig::default_debounce_ms")]
+    #[schemars(range(min = 0, max = 60000))]
     pub debounce_ms: u64,
     #[serde(default)]
     pub live_l2: bool,
@@ -120,10 +134,12 @@ impl Default for WatchConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CacheConfig {
+    /// Maximum number of extracted FileMaps to keep hot in memory.
     #[serde(default = "CacheConfig::default_file_map_lru")]
+    #[schemars(range(min = 0))]
     pub file_map_lru: usize,
 }
 
@@ -141,7 +157,7 @@ impl Default for CacheConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
     #[serde(default = "McpConfig::default_transport")]
@@ -162,13 +178,13 @@ impl Default for McpConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum McpTransport {
     Stdio,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LanguageConfig {
     #[serde(default = "LanguageConfig::default_enabled")]
@@ -189,61 +205,7 @@ impl Default for LanguageConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DocumentsConfig {
-    /// Master switch. Only meaningful when the `documents` cargo feature is compiled in.
-    #[serde(default = "DocumentsConfig::default_enabled")]
-    pub enabled: bool,
-    /// MIME-type allowlist. Empty = accept anything kreuzberg can handle.
-    #[serde(default)]
-    pub mime_allowlist: Vec<String>,
-    /// Maximum chunk size in characters.
-    #[serde(default = "DocumentsConfig::default_max_characters")]
-    pub max_characters: usize,
-    /// Overlap between chunks in characters.
-    #[serde(default = "DocumentsConfig::default_overlap")]
-    pub overlap: usize,
-    /// Kreuzberg embedding preset name. Defaults to "balanced".
-    #[serde(default = "DocumentsConfig::default_embedding_preset")]
-    pub embedding_preset: String,
-    /// Generate embeddings (`true`) or skip vector storage entirely (`false`).
-    #[serde(default = "DocumentsConfig::default_embed")]
-    pub embed: bool,
-}
-
-impl DocumentsConfig {
-    fn default_enabled() -> bool {
-        true
-    }
-    fn default_max_characters() -> usize {
-        1000
-    }
-    fn default_overlap() -> usize {
-        200
-    }
-    fn default_embedding_preset() -> String {
-        "balanced".to_string()
-    }
-    fn default_embed() -> bool {
-        true
-    }
-}
-
-impl Default for DocumentsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: Self::default_enabled(),
-            mime_allowlist: Vec::new(),
-            max_characters: Self::default_max_characters(),
-            overlap: Self::default_overlap(),
-            embedding_preset: Self::default_embedding_preset(),
-            embed: Self::default_embed(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
     /// Master switch. Only meaningful when the `memory` cargo feature is compiled in.
@@ -269,7 +231,7 @@ impl Default for MemoryConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryScopeStrategy {
     /// Use normalized `origin` remote URL when available, else fall back to the
@@ -281,9 +243,11 @@ pub enum MemoryScopeStrategy {
     WorkdirOnly,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CrawlConfig {
+    // Field-level schema validation kept in sync with the hand-rolled bounds in
+    // the previous schema: bytes minima, depth minima, etc.
     /// Honour `robots.txt` when fetching pages. Default `true`. Override only
     /// for hosts you control — flipping this off violates `robots.txt`
     /// directives for every domain the crawler touches.
@@ -291,17 +255,21 @@ pub struct CrawlConfig {
     pub respect_robots_txt: bool,
     /// Hard cap on pages visited in a single `web_crawl` call.
     #[serde(default = "CrawlConfig::default_max_pages")]
+    #[schemars(range(min = 1))]
     pub max_pages: u32,
     /// Maximum link-following depth from the seed URL during `web_crawl`.
     #[serde(default = "CrawlConfig::default_max_depth")]
+    #[schemars(range(min = 0))]
     pub max_depth: u32,
     /// Truncate response bodies above this many bytes before parsing.
     #[serde(default = "CrawlConfig::default_max_body_size")]
+    #[schemars(range(min = 1024))]
     pub max_body_size: u64,
     /// User-Agent header sent with every request. Override to identify your
     /// crawler to operators; the default includes the basemind release
     /// version + the upstream repo URL so site operators can trace traffic.
     #[serde(default = "CrawlConfig::default_user_agent")]
+    #[schemars(length(min = 1))]
     pub user_agent: String,
 }
 
@@ -350,6 +318,7 @@ impl ConfigV1 {
             documents: DocumentsConfig::default(),
             memory: MemoryConfig::default(),
             crawl: CrawlConfig::default(),
+            llm: LlmConfig::default(),
         }
     }
 }

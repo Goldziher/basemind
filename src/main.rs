@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
-use basemind::config::{self, Config};
+use basemind::config::{self, Config, DocumentsCliOverrides};
 use basemind::extract::SymbolKind;
 use basemind::render::{self, Verbosity};
 use basemind::store::Store;
@@ -86,6 +86,10 @@ struct ScanArgs {
     /// Writes under .basemind/views/rev-<sha7>/ — separate from the working-tree view.
     #[arg(long, value_name = "REV")]
     rev: Option<String>,
+    /// Document-tier overrides. Every flag in this group corresponds to a
+    /// `[documents.…]` TOML key and a `BASEMIND_DOCUMENTS_…` env var.
+    #[command(flatten)]
+    documents: DocumentsCliOverrides,
 }
 
 #[derive(clap::Args, Debug)]
@@ -102,6 +106,10 @@ struct ServeArgs {
     /// `basemind serve` runs.
     #[arg(long)]
     no_git_cache_disk: bool,
+    /// Document-tier overrides. Every flag in this group corresponds to a
+    /// `[documents.…]` TOML key and a `BASEMIND_DOCUMENTS_…` env var.
+    #[command(flatten)]
+    documents: DocumentsCliOverrides,
 }
 
 #[derive(Subcommand, Debug)]
@@ -234,9 +242,21 @@ transport = "stdio"
 }
 
 fn load_or_default(root: &std::path::Path) -> Result<Config> {
-    match config::load(root) {
-        Ok(c) => Ok(c),
+    load_or_default_with(root, None)
+}
+
+/// Variant of [`load_or_default`] that also applies a CLI override layer through
+/// the layered merger. Used by `scan` / `serve` to flow `#[command(flatten)]`
+/// flags down to the resolved config.
+fn load_or_default_with(
+    root: &std::path::Path,
+    cli: Option<DocumentsCliOverrides>,
+) -> Result<Config> {
+    match config::load_with_overrides(root, None, cli) {
+        Ok(loaded) => Ok(loaded.config),
         Err(config::ConfigError::NotFound(_)) => {
+            // load_with_overrides already treats NotFound as "no toml file" via load(),
+            // so this branch is reached only if a downstream call surfaces it again.
             tracing::info!("no .basemind/basemind.toml; using defaults");
             Ok(config::default_for_root(root))
         }
@@ -251,7 +271,7 @@ fn cmd_scan(
     no_color: bool,
 ) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
-    let config = load_or_default(root)?;
+    let config = load_or_default_with(root, Some(args.documents.clone()))?;
 
     // Decide view + source up front; we need the source to outlive scan, so the Repo lives
     // here. WorkingTree doesn't need a repo at all.
@@ -457,7 +477,7 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
     let store = Store::open(root, &args.view).context("open store")?;
     let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
-    let config = Arc::new(load_or_default(root)?);
+    let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

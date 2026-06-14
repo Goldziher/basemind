@@ -1,4 +1,8 @@
+mod documents;
+mod layered;
 mod migrate;
+mod overrides;
+mod source;
 mod v1;
 mod validate;
 
@@ -6,7 +10,15 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-pub use v1::{ConfigV1, CrawlConfig, DocumentsConfig};
+pub use documents::{
+    ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig,
+    NerBackend, NerConfig, OcrBackend, OcrConfig, OutputConfig, OutputFormat, RerankerConfig,
+    SecretString, SummarizationConfig, SummarizationStrategy,
+};
+pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
+pub use overrides::DocumentsCliOverrides;
+pub use source::{ConfigSource, ProvenanceMap};
+pub use v1::{ConfigV1, CrawlConfig};
 
 pub type Config = ConfigV1;
 
@@ -39,6 +51,9 @@ pub enum ConfigError {
     Deserialize(#[source] serde_json::Error),
 }
 
+/// Load the TOML config (no overrides). Existing call sites use this — the
+/// layered merger is reached via [`load_with_overrides`] when CLI flags or
+/// env vars are involved.
 pub fn load(root: &Path) -> Result<Config, ConfigError> {
     let path = config_path(root);
     if !path.exists() {
@@ -49,6 +64,34 @@ pub fn load(root: &Path) -> Result<Config, ConfigError> {
         source,
     })?;
     parse_str(&raw).map_err(|e| annotate_path(e, &path))
+}
+
+/// Load the TOML config (if present) plus optional env / CLI override layers,
+/// produce a fully-resolved `LoadedConfig` with provenance.
+///
+/// `env_overrides` and `cli_overrides` are accepted separately so future
+/// tooling can report "this came from `BASEMIND_*`" vs "this came from
+/// `--flag`" distinctly. Today clap collapses both into a single
+/// `DocumentsCliOverrides` per command — callers typically pass the parsed
+/// `args.documents` as `cli_overrides` and `None` as `env_overrides`.
+pub fn load_with_overrides(
+    root: &Path,
+    env_overrides: Option<DocumentsCliOverrides>,
+    cli_overrides: Option<DocumentsCliOverrides>,
+) -> Result<LoadedConfig, ConfigError> {
+    let toml_file = match load(root) {
+        Ok(cfg) => Some(cfg),
+        Err(ConfigError::NotFound(_)) => None,
+        Err(e) => return Err(e),
+    };
+    Ok(merge_layers(
+        ConfigV1::with_defaults(),
+        ConfigLayers {
+            toml_file,
+            env: env_overrides,
+            cli: cli_overrides,
+        },
+    ))
 }
 
 pub fn config_path(root: &Path) -> PathBuf {

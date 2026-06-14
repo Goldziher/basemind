@@ -105,7 +105,7 @@ arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 fjall = "3.1.5"
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
@@ -130,6 +130,10 @@ rayon = "1"
 regex = "1.12.4"
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
+# Drives the schema-first config: every config struct in src/config/v1.rs derives
+# JsonSchema so the committed JSON schema can be regenerated from the Rust types.
+# Pinned to 1.2 to match the transitive version rmcp already pulls in.
+schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 streaming-iterator = "0.1"
