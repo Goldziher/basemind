@@ -123,7 +123,7 @@ pub struct DocLanguageConfig {
     /// instead of just the top match. Off by default to match kreuzberg.
     #[serde(default)]
     pub detect_multiple: bool,
-    /// Reserved — accepts ISO 639-1 codes (e.g. `"fr"`, `"de"`) for future use.
+    /// Reserved — accepts ISO 639-3 codes (e.g. `"fra"`, `"deu"`) for future use.
     /// Kreuzberg rc.10 does not honor a preferred-language hint, but the field
     /// is kept on the schema so users can populate it without a config break.
     #[serde(default)]

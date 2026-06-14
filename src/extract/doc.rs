@@ -12,8 +12,8 @@
 
 use std::path::Path;
 
+use kreuzberg::LanguageDetectionConfig;
 use kreuzberg::core::config::ExtractionConfig;
-use kreuzberg::core::config::extraction::LanguageDetectionConfig;
 use kreuzberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
 use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,8 @@ impl DocConfig {
         // a tokenizer keyed on language. Only `LanguageDetectionConfig` is
         // wired here; an iter 5+ change can revisit chunker selection if
         // upstream gains a language hint.
+        // kreuzberg gates detection on Option::is_some at features.rs:311; `None`
+        // is the "off" signal, not Some { enabled: false }.
         let language_detection = if self.language.auto_detect {
             Some(LanguageDetectionConfig {
                 enabled: true,

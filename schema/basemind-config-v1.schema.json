@@ -378,7 +378,7 @@
           "default": false
         },
         "preferred_languages": {
-          "description": "Reserved — accepts ISO 639-1 codes (e.g. `\"fr\"`, `\"de\"`) for future use.\nKreuzberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
+          "description": "Reserved — accepts ISO 639-3 codes (e.g. `\"fra\"`, `\"deu\"`) for future use.\nKreuzberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
           "type": "array",
           "items": {
             "type": "string"

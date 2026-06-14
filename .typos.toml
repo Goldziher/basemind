@@ -2,3 +2,6 @@
 # Without this exception the typos hook rewrites it to `real_path` and we no longer compile.
 [default.extend-identifiers]
 rela_path = "rela_path"
+
+[files]
+extend-exclude = ["tests/fixtures/**"]
