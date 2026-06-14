@@ -725,6 +725,10 @@ pub struct SearchDocumentsParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub mime_type: Option<String>,
+    /// Per-query overrides for any `documents.*` config knob. Takes precedence over
+    /// serve-time config and CLI flags. Unknown fields are rejected.
+    #[serde(flatten, default)]
+    pub overrides: crate::config::DocumentsCliOverrides,
 }
 
 #[cfg(feature = "documents")]
@@ -754,8 +758,6 @@ pub(super) struct MemoryRecord {
     pub created_at: i64,
     pub updated_at: i64,
 }
-
-// ─── workspace_grep ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceGrepParams {
@@ -992,9 +994,5 @@ pub(super) struct WebMapEntry {
     pub priority: Option<String>,
 }
 
-// ─── find_implementations (params live in types_impls.rs; re-exported for the tool shim) ───
-
-pub use super::types_impls::FindImplementationsParams;
-
-// ─── call_graph params (defined in types_graph.rs; re-exported here) ─────────
 pub use super::types_graph::CallGraphParams;
+pub use super::types_impls::FindImplementationsParams;

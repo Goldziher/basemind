@@ -6,6 +6,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
+#[cfg(feature = "documents")]
+use super::helpers::format_response;
 use super::helpers::json_result;
 #[cfg(feature = "documents")]
 use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResponse};
@@ -342,6 +344,19 @@ pub(super) async fn run_search_documents(
     state: &ServerState,
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
+    // Resolve effective config: serve-time base, then layer per-query overrides.
+    let mut effective = (*state.config).clone();
+    if params.overrides.any() {
+        let mut prov = crate::config::ProvenanceMap::new();
+        crate::config::layered::apply_documents_overrides(
+            &mut effective,
+            &params.overrides,
+            crate::config::ConfigSource::Mcp,
+            &mut prov,
+        );
+    }
+    let output_format = effective.documents.output.format;
+
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
@@ -365,8 +380,11 @@ pub(super) async fn run_search_documents(
             distance: h.distance,
         })
         .collect();
-    json_result(&SearchDocumentsResponse {
-        query: params.query,
-        hits,
-    })
+    format_response(
+        &SearchDocumentsResponse {
+            query: params.query,
+            hits,
+        },
+        output_format,
+    )
 }

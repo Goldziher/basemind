@@ -96,7 +96,7 @@ const DOCUMENT_LEAVES: &[&str] = &[
     "documents.output.format",
 ];
 
-fn apply_documents_overrides(
+pub(crate) fn apply_documents_overrides(
     config: &mut ConfigV1,
     overrides: &DocumentsCliOverrides,
     source: ConfigSource,
