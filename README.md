@@ -146,7 +146,7 @@ immediately after it.
 
 | Tool | What the agent can finally do |
 |---|---|
-| `search_documents` | "Find the auth design doc" — semantic KNN over PDFs / Office / HTML / emails. |
+| `search_documents` | Semantic KNN over PDFs / HTML / emails. Per-query overrides; JSON or TOON output. |
 | `memory_put` / `memory_get` / `memory_list` | Persist scoped notes — exact-key store and prefix / tag scans. |
 | `memory_search` | Semantic recall across stored memory entries — KNN over the LanceDB memory table. |
 | `memory_delete` | Drop an entry from both Fjall and LanceDB. |
