@@ -116,7 +116,7 @@ ignore = "0.4"
 jsonschema = "0.46"
 # Kreuzberg powers the document tier + the embedding engine. Pin to the rc
 # until 5.0.0 stable lands (mirrors the tree-sitter-language-pack pin).
-kreuzberg = { version = "=5.0.0-rc.7", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+kreuzberg = { version = "=5.0.0-rc.10", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 # kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
 # same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
 # we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
@@ -127,7 +127,7 @@ memchr = "2"
 notify = "8"
 notify-debouncer-full = "0.7"
 rayon = "1"
-regex = "1.12.3"
+regex = "1.12.4"
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
 serde = { version = "1", features = ["derive"] }
@@ -139,7 +139,7 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
-tree-sitter-language-pack = "=1.9.0-rc.27"
+tree-sitter-language-pack = "=1.9.0-rc.45"
 url = { version = "2", features = ["serde"], optional = true }
 
 [dev-dependencies]
