@@ -270,6 +270,24 @@ mod tests {
     }
 
     #[test]
+    fn doc_config_from_propagates_language_settings() {
+        use crate::config::DocLanguageConfig;
+        let cfg = DocumentsConfig {
+            language: DocLanguageConfig {
+                auto_detect: true,
+                min_confidence: 0.5,
+                detect_multiple: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let doc_cfg = doc_config_from(&cfg);
+        assert!(doc_cfg.language.auto_detect);
+        assert_eq!(doc_cfg.language.min_confidence, 0.5);
+        assert!(doc_cfg.language.detect_multiple);
+    }
+
+    #[test]
     fn should_extract_document_respects_disabled_flag() {
         let cfg = DocumentsConfig {
             enabled: false,
