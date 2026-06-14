@@ -93,9 +93,20 @@ impl Default for DocumentsConfig {
     }
 }
 
-/// Language detection + preferred-language list for the document tier. Named
-/// `DocLanguageConfig` to avoid colliding with the per-tree-sitter-language
-/// `LanguageConfig` (which is the scanner's per-grammar override map).
+/// Language detection knobs for the document tier. Named `DocLanguageConfig` to
+/// avoid colliding with the per-tree-sitter-language `LanguageConfig` (which is
+/// the scanner's per-grammar override map).
+///
+/// Kreuzberg drives language detection through the `whatlang` crate and reports
+/// ISO 639-3 codes (three letters, e.g. `"fra"`, `"deu"`) — kreuzberg's own
+/// `ExtractionResult.detected_languages` doc-comment mislabels them as ISO
+/// 639-1 in rc.10, but the wrapper at `kreuzberg::language_detection` normalises
+/// every `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,
+/// `min_confidence`, and `detect_multiple` knobs map straight through to
+/// kreuzberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for
+/// future use — kreuzberg rc.10 does not honor a preferred-language hint, so
+/// the field is plumbed but inert today; we keep it on the schema so callers
+/// can start populating it without a config break when support lands.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocLanguageConfig {
@@ -103,15 +114,28 @@ pub struct DocLanguageConfig {
     /// in the corpus is the same known language.
     #[serde(default = "DocLanguageConfig::default_auto_detect")]
     pub auto_detect: bool,
-    /// User-specified preferred languages (ISO 639-3, e.g. `"fra"`, `"deu"`).
-    /// Drives chunking-tokenizer choice and biases the detector.
+    /// Minimum detector confidence (0.0–1.0). Detections below this threshold
+    /// are dropped. Matches kreuzberg's default of 0.8.
+    #[serde(default = "DocLanguageConfig::default_min_confidence")]
+    #[schemars(range(min = 0.0, max = 1.0))]
+    pub min_confidence: f64,
+    /// When true, kreuzberg reports every language detected in the document
+    /// instead of just the top match. Off by default to match kreuzberg.
     #[serde(default)]
-    pub detected_languages: Vec<String>,
+    pub detect_multiple: bool,
+    /// Reserved — accepts ISO 639-1 codes (e.g. `"fr"`, `"de"`) for future use.
+    /// Kreuzberg rc.10 does not honor a preferred-language hint, but the field
+    /// is kept on the schema so users can populate it without a config break.
+    #[serde(default)]
+    pub preferred_languages: Vec<String>,
 }
 
 impl DocLanguageConfig {
     fn default_auto_detect() -> bool {
         true
+    }
+    fn default_min_confidence() -> f64 {
+        0.8
     }
 }
 
@@ -119,7 +143,9 @@ impl Default for DocLanguageConfig {
     fn default() -> Self {
         Self {
             auto_detect: Self::default_auto_detect(),
-            detected_languages: Vec::new(),
+            min_confidence: Self::default_min_confidence(),
+            detect_multiple: false,
+            preferred_languages: Vec::new(),
         }
     }
 }

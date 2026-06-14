@@ -13,11 +13,13 @@
 use std::path::Path;
 
 use kreuzberg::core::config::ExtractionConfig;
+use kreuzberg::core::config::extraction::LanguageDetectionConfig;
 use kreuzberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
 use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
 
 use super::{ExtractError, SCHEMA_VER};
+use crate::config::DocLanguageConfig;
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
 /// `schema_ver` for migration, plus the structured kreuzberg output we care
@@ -33,8 +35,10 @@ pub struct FileMapDoc {
     /// Document-level metadata (author, title, dates, format-specific keys).
     /// Flattened to `String -> String` so the on-disk shape stays stable.
     pub metadata: Vec<(String, String)>,
-    /// ISO 639-1 language codes detected in the content, when language
-    /// detection succeeded.
+    /// ISO 639-3 language codes detected in the content, when language
+    /// detection succeeded. (Kreuzberg's wrapper around `whatlang` normalises
+    /// every detected variant to its three-letter ISO 639-3 code — see
+    /// `kreuzberg::language_detection::lang_to_iso639_3`.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detected_languages: Vec<String>,
     /// Chunks, each with its embedding vector inline. Empty when chunking is
@@ -74,6 +78,7 @@ pub struct DocConfig {
     pub overlap: usize,
     pub embedding_preset: Option<String>,
     pub embed: bool,
+    pub language: DocLanguageConfig,
 }
 
 impl Default for DocConfig {
@@ -83,6 +88,7 @@ impl Default for DocConfig {
             overlap: 200,
             embedding_preset: Some("balanced".to_string()),
             embed: true,
+            language: DocLanguageConfig::default(),
         }
     }
 }
@@ -101,8 +107,23 @@ impl DocConfig {
             preset: self.embedding_preset.clone(),
             ..Default::default()
         };
+        // Kreuzberg rc.10's `ChunkingConfig` has no language input — sentence /
+        // word boundaries fall out of `ChunkerType` + `ChunkSizing` rather than
+        // a tokenizer keyed on language. Only `LanguageDetectionConfig` is
+        // wired here; an iter 5+ change can revisit chunker selection if
+        // upstream gains a language hint.
+        let language_detection = if self.language.auto_detect {
+            Some(LanguageDetectionConfig {
+                enabled: true,
+                min_confidence: self.language.min_confidence,
+                detect_multiple: self.language.detect_multiple,
+            })
+        } else {
+            None
+        };
         ExtractionConfig {
             chunking: Some(chunking),
+            language_detection,
             ..Default::default()
         }
     }

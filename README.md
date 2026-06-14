@@ -151,6 +151,12 @@ immediately after it.
 | `memory_search` | Semantic recall across stored memory entries — KNN over the LanceDB memory table. |
 | `memory_delete` | Drop an entry from both Fjall and LanceDB. |
 
+`search_documents` returns ISO 639-3 language codes per document (via
+`whatlang`); tune detection through
+`documents.language.{auto_detect,min_confidence,detect_multiple}` in TOML, the
+matching `--documents-language-*` flags, or `BASEMIND_DOCUMENTS_LANGUAGE_*` env
+vars.
+
 Memory is scoped by the repo's normalised `origin` URL so clones share entries.
 A repo with no remote falls back to a workdir-keyed scope (configurable via
 `[memory].scope_strategy` in `.basemind/basemind.toml`).

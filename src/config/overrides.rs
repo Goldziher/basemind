@@ -52,6 +52,20 @@ pub struct DocumentsCliOverrides {
     )]
     pub language_auto_detect: Option<bool>,
 
+    /// Override `documents.language.min_confidence` (0.0–1.0).
+    #[arg(
+        long = "documents-language-min-confidence",
+        env = "BASEMIND_DOCUMENTS_LANGUAGE_MIN_CONFIDENCE"
+    )]
+    pub language_min_confidence: Option<f64>,
+
+    /// Override `documents.language.detect_multiple`.
+    #[arg(
+        long = "documents-language-detect-multiple",
+        env = "BASEMIND_DOCUMENTS_LANGUAGE_DETECT_MULTIPLE"
+    )]
+    pub language_detect_multiple: Option<bool>,
+
     /// Override `documents.reranker.enabled`.
     #[arg(
         long = "documents-reranker-enabled",
@@ -129,6 +143,8 @@ impl DocumentsCliOverrides {
             || self.embedding_preset.is_some()
             || self.embed.is_some()
             || self.language_auto_detect.is_some()
+            || self.language_min_confidence.is_some()
+            || self.language_detect_multiple.is_some()
             || self.reranker_enabled.is_some()
             || self.reranker_preset.is_some()
             || self.reranker_top_k.is_some()

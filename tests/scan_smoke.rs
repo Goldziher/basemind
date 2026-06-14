@@ -663,6 +663,46 @@ fn scanner_preserves_non_utf8_filename_bytes() {
     assert_eq!(entry.language, "rust");
 }
 
+/// End-to-end check that kreuzberg's `whatlang`-backed language detector is
+/// wired through `DocConfig::to_kreuzberg`. The fixture is a short French
+/// paragraph; with `auto_detect = true` and the default 0.8 confidence floor,
+/// `FileMapDoc.detected_languages` should carry the ISO 639-3 code `"fra"`.
+/// (Kreuzberg's `ExtractionResult.detected_languages` doc-comment mislabels
+/// the codes as ISO 639-1, but the wrapper normalises every variant to its
+/// three-letter ISO 639-3 form before populating the field.)
+#[cfg(feature = "documents")]
+#[test]
+fn scan_detects_french_in_markdown_fixture() {
+    use std::fs;
+
+    use basemind::config::DocLanguageConfig;
+    use basemind::extract::doc::{DocConfig, extract_doc};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dst = dir.path().join("sample.md");
+    let src = std::path::Path::new("tests/fixtures/french_doc/sample.md");
+    fs::copy(src, &dst).expect("copy french fixture");
+
+    let cfg = DocConfig {
+        // Embeddings are expensive (model download) and unrelated to language
+        // detection; skip them so the test stays offline-friendly.
+        embed: false,
+        embedding_preset: None,
+        language: DocLanguageConfig {
+            auto_detect: true,
+            ..DocLanguageConfig::default()
+        },
+        ..DocConfig::default()
+    };
+
+    let doc = extract_doc(&dst, Some("text/markdown"), &cfg).expect("extract french doc");
+    assert!(
+        doc.detected_languages.iter().any(|l| l == "fra"),
+        "expected ISO 639-3 'fra' in detected_languages; got {:?}",
+        doc.detected_languages
+    );
+}
+
 #[test]
 fn ts_multiline_generic_signature_is_collapsed() {
     let (dir, cfg) = fresh_repo();

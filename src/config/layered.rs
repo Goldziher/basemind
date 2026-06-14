@@ -85,6 +85,8 @@ const DOCUMENT_LEAVES: &[&str] = &[
     "documents.embedding_preset",
     "documents.embed",
     "documents.language.auto_detect",
+    "documents.language.min_confidence",
+    "documents.language.detect_multiple",
     "documents.reranker.enabled",
     "documents.reranker.preset",
     "documents.reranker.top_k",
@@ -141,6 +143,18 @@ pub(crate) fn apply_documents_overrides(
         d.language.auto_detect = v;
         if let Some(p) = provenance.as_mut() {
             p.insert("documents.language.auto_detect", source);
+        }
+    }
+    if let Some(v) = overrides.language_min_confidence {
+        d.language.min_confidence = v;
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.language.min_confidence", source);
+        }
+    }
+    if let Some(v) = overrides.language_detect_multiple {
+        d.language.detect_multiple = v;
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.language.detect_multiple", source);
         }
     }
     if let Some(v) = overrides.reranker_enabled {
