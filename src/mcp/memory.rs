@@ -344,18 +344,21 @@ pub(super) async fn run_search_documents(
     state: &ServerState,
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve effective config: serve-time base, then layer per-query overrides.
-    let mut effective = (*state.config).clone();
-    if params.overrides.any() {
-        let mut prov = crate::config::ProvenanceMap::new();
+    // Resolve effective output format. The common case has no overrides — skip the
+    // `ConfigV1` deep clone (`BTreeMap<String, LanguageConfig>` + several `Vec<String>`)
+    // entirely. Only pay the clone when overrides actually need to be layered.
+    let output_format = if params.overrides.any() {
+        let mut effective = (*state.config).clone();
         crate::config::layered::apply_documents_overrides(
             &mut effective,
             &params.overrides,
             crate::config::ConfigSource::Mcp,
-            &mut prov,
+            None,
         );
-    }
-    let output_format = effective.documents.output.format;
+        effective.documents.output.format
+    } else {
+        state.config.documents.output.format
+    };
 
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;

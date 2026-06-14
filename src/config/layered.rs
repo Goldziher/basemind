@@ -59,12 +59,12 @@ pub fn merge_layers(defaults: ConfigV1, layers: ConfigLayers) -> LoadedConfig {
 
     // 2. Env layer.
     if let Some(env) = layers.env.as_ref() {
-        apply_documents_overrides(&mut config, env, ConfigSource::Env, &mut provenance);
+        apply_documents_overrides(&mut config, env, ConfigSource::Env, Some(&mut provenance));
     }
 
     // 3. CLI layer (highest in this iter; MCP is layered later inside the tool).
     if let Some(cli) = layers.cli.as_ref() {
-        apply_documents_overrides(&mut config, cli, ConfigSource::Cli, &mut provenance);
+        apply_documents_overrides(&mut config, cli, ConfigSource::Cli, Some(&mut provenance));
     }
 
     LoadedConfig { config, provenance }
@@ -96,68 +96,100 @@ const DOCUMENT_LEAVES: &[&str] = &[
     "documents.output.format",
 ];
 
+/// Apply a `DocumentsCliOverrides` layer onto `config`, optionally recording per-field
+/// provenance into `provenance`. Pass `None` for `provenance` when the caller does not
+/// care about the ledger (e.g. the MCP per-query override path, which throws the ledger
+/// away — skipping the [`ProvenanceMap`] allocation entirely on the common path).
 pub(crate) fn apply_documents_overrides(
     config: &mut ConfigV1,
     overrides: &DocumentsCliOverrides,
     source: ConfigSource,
-    provenance: &mut ProvenanceMap,
+    mut provenance: Option<&mut ProvenanceMap>,
 ) {
     let d = &mut config.documents;
     if let Some(v) = overrides.enabled {
         d.enabled = v;
-        provenance.insert("documents.enabled", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.enabled", source);
+        }
     }
     if let Some(v) = overrides.max_characters {
         d.max_characters = v;
-        provenance.insert("documents.max_characters", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.max_characters", source);
+        }
     }
     if let Some(v) = overrides.overlap {
         d.overlap = v;
-        provenance.insert("documents.overlap", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.overlap", source);
+        }
     }
     if let Some(v) = overrides.embedding_preset.clone() {
         d.embedding_preset = v;
-        provenance.insert("documents.embedding_preset", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.embedding_preset", source);
+        }
     }
     if let Some(v) = overrides.embed {
         d.embed = v;
-        provenance.insert("documents.embed", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.embed", source);
+        }
     }
     if let Some(v) = overrides.language_auto_detect {
         d.language.auto_detect = v;
-        provenance.insert("documents.language.auto_detect", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.language.auto_detect", source);
+        }
     }
     if let Some(v) = overrides.reranker_enabled {
         d.reranker.enabled = v;
-        provenance.insert("documents.reranker.enabled", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.reranker.enabled", source);
+        }
     }
     if let Some(v) = overrides.reranker_preset.clone() {
         d.reranker.preset = v;
-        provenance.insert("documents.reranker.preset", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.reranker.preset", source);
+        }
     }
     if let Some(v) = overrides.reranker_top_k {
         d.reranker.top_k = v;
-        provenance.insert("documents.reranker.top_k", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.reranker.top_k", source);
+        }
     }
     if let Some(v) = overrides.keywords_enabled {
         d.keywords.enabled = v;
-        provenance.insert("documents.keywords.enabled", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.keywords.enabled", source);
+        }
     }
     if let Some(v) = overrides.keywords_count {
         d.keywords.count = v;
-        provenance.insert("documents.keywords.count", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.keywords.count", source);
+        }
     }
     if let Some(v) = overrides.ner_enabled {
         d.ner.enabled = v;
-        provenance.insert("documents.ner.enabled", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.ner.enabled", source);
+        }
     }
     if let Some(v) = overrides.summarization_enabled {
         d.summarization.enabled = v;
-        provenance.insert("documents.summarization.enabled", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.summarization.enabled", source);
+        }
     }
     if let Some(v) = overrides.summarization_max_chars {
         d.summarization.max_chars = v;
-        provenance.insert("documents.summarization.max_chars", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.summarization.max_chars", source);
+        }
     }
     if let Some(v) = overrides.output_format.as_deref() {
         match v.to_ascii_lowercase().as_str() {
@@ -168,6 +200,8 @@ pub(crate) fn apply_documents_overrides(
             // permissive so smoke tests can exercise the path.
             _ => return,
         }
-        provenance.insert("documents.output.format", source);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.output.format", source);
+        }
     }
 }

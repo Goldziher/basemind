@@ -718,38 +718,6 @@ pub(super) struct MemoryDeleteResponse {
     pub deleted: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct SearchDocumentsParams {
-    pub query: String,
-    #[serde(default)]
-    pub limit: Option<u32>,
-    #[serde(default)]
-    pub mime_type: Option<String>,
-    /// Per-query overrides for any `documents.*` config knob. Takes precedence over
-    /// serve-time config and CLI flags. Unknown fields are rejected.
-    #[serde(flatten, default)]
-    pub overrides: crate::config::DocumentsCliOverrides,
-}
-
-#[cfg(feature = "documents")]
-#[derive(Debug, Serialize)]
-pub(super) struct DocumentSearchHit {
-    pub path: String,
-    pub chunk_idx: u32,
-    pub text: String,
-    pub mime_type: String,
-    pub byte_start: u32,
-    pub byte_end: u32,
-    pub distance: f32,
-}
-
-#[cfg(feature = "documents")]
-#[derive(Debug, Serialize)]
-pub(super) struct SearchDocumentsResponse {
-    pub query: String,
-    pub hits: Vec<DocumentSearchHit>,
-}
-
 #[cfg(feature = "memory")]
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct MemoryRecord {
@@ -994,5 +962,8 @@ pub(super) struct WebMapEntry {
     pub priority: Option<String>,
 }
 
+pub use super::types_documents::SearchDocumentsParams;
+#[cfg(feature = "documents")]
+pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_graph::CallGraphParams;
 pub use super::types_impls::FindImplementationsParams;
