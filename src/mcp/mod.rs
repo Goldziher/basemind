@@ -9,6 +9,8 @@
 pub(crate) mod cursor;
 mod helpers;
 mod helpers_calls;
+#[cfg(feature = "documents")]
+mod helpers_documents;
 mod helpers_graph;
 mod helpers_grep;
 mod helpers_impls;
@@ -25,6 +27,7 @@ mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod types;
+mod types_documents;
 mod types_graph;
 mod types_impls;
 

@@ -829,15 +829,76 @@ async fn mcp_server_exercises_representative_tools() {
         }
     }
 
-    // TOON output format override: same leniency — the important invariant is that
-    // `output_format = "toon"` is accepted as a valid field, not rejected.
-    let toon_result = service
-        .call_tool(call_params(
-            "search_documents",
-            json!({ "query": "hello", "output_format": "toon" }),
-        ))
-        .await;
-    let _ = toon_result; // accepted means no invalid_params error on the field itself
+    // TOON output format round-trip: pull the same query in JSON and TOON and confirm
+    // the two payloads carry the same `query` field and `hits` length. This proves the
+    // TOON serializer is wired end-to-end (not just that the override field is
+    // accepted). The fixture has no LanceDB store, so we only enforce the assertion
+    // when both calls succeed at the protocol level — feature-gated builds still
+    // exercise the dispatch path even when the bodies are empty.
+    //
+    // Gated on `documents` because `serde_toon` is only linked when the documents
+    // feature is active (it's an `optional = true` workspace dep).
+    #[cfg(feature = "documents")]
+    {
+        let json_result = service
+            .call_tool(call_params("search_documents", json!({ "query": "hello" })))
+            .await;
+        let toon_result = service
+            .call_tool(call_params(
+                "search_documents",
+                json!({ "query": "hello", "output_format": "toon" }),
+            ))
+            .await;
+        if let (Ok(json_resp), Ok(toon_resp)) = (&json_result, &toon_result) {
+            // Extract the raw text payload from each tool call. JSON deserializes via
+            // `decode_text`; TOON uses `serde_toon::from_str` to a `serde_json::Value`
+            // tree so we can compare structurally without leaking crate-internal types
+            // into the integration test.
+            let json_body = decode_text(json_resp);
+            if json_body != Value::Null {
+                let toon_raw = toon_resp
+                    .content
+                    .iter()
+                    .find_map(|c| match &c.raw {
+                        rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let toon_body: Value =
+                    serde_toon::from_str(&toon_raw).expect("toon body deserializes to JSON value");
+                assert_eq!(
+                    json_body.get("query"),
+                    toon_body.get("query"),
+                    "TOON and JSON responses must echo the same query field"
+                );
+                let json_hits = json_body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                let toon_hits = toon_body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                assert_eq!(
+                    json_hits, toon_hits,
+                    "TOON and JSON responses must carry the same hit count"
+                );
+            }
+        }
+    }
+    // Even when the documents feature is off, smoke-check that the field is accepted
+    // at param-deserialization time (no protocol-level invalid_params error).
+    #[cfg(not(feature = "documents"))]
+    {
+        let _ = service
+            .call_tool(call_params(
+                "search_documents",
+                json!({ "query": "hello", "output_format": "toon" }),
+            ))
+            .await;
+    }
 
     // memory_list pagination (Phase 5) — only meaningful with the memory feature wired.
     #[cfg(feature = "memory")]

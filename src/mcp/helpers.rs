@@ -15,6 +15,8 @@ use crate::extract::SymbolKind;
 use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
 pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
+#[cfg(feature = "documents")]
+pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_graph::run_call_graph;
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
@@ -796,32 +798,6 @@ pub(super) async fn run_telemetry_summary(
 ) -> Result<CallToolResult, McpError> {
     let response = super::telemetry::summarize(state.telemetry.path(), params).await?;
     json_result(&response)
-}
-
-// ─── documents-tier format helper ─────────────────────────────────────────────
-
-/// Serialize `value` into a `CallToolResult` using the requested wire format.
-///
-/// `Json` delegates to the existing [`json_result`] helper (Content-type json).
-/// `Toon` serializes with `serde_toon::to_string` and wraps the body in a plain
-/// `Content::text` item so agents receive human-readable TOON on the wire.
-///
-/// Feature-gated behind `documents` because TOON output is only meaningful for
-/// document-tier tools; the gate also ensures `serde_toon` is only pulled in
-/// when the `documents` feature is active.
-#[cfg(feature = "documents")]
-pub(super) fn format_response<T: serde::Serialize>(
-    value: &T,
-    fmt: crate::config::OutputFormat,
-) -> Result<CallToolResult, McpError> {
-    match fmt {
-        crate::config::OutputFormat::Json => json_result(value),
-        crate::config::OutputFormat::Toon => {
-            let body = serde_toon::to_string(value)
-                .map_err(|e| McpError::internal_error(format!("toon: {e}"), None))?;
-            Ok(CallToolResult::success(vec![Content::text(body)]))
-        }
-    }
 }
 
 #[cfg(test)]
