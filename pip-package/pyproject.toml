@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "basemind"
 version = "0.0.1"
-description = "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
+description = "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -26,7 +26,7 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
     "Environment :: Console"
 ]
-keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer", "basemind"]
+keywords = ["mcp", "tree-sitter", "code-map", "scanner", "indexer"]
 requires-python = ">=3.8"
 dependencies = [
     "certifi>=2024.7.4"
