@@ -190,26 +190,51 @@ impl Default for RerankerConfig {
 #[serde(deny_unknown_fields)]
 pub struct KeywordsConfig {
     /// Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.
+    /// Maps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;
+    /// kreuzberg's own `KeywordConfig` has no `enabled` field — gating is via
+    /// the wrapping `Option`.
     #[serde(default)]
     pub enabled: bool,
     /// Algorithm: YAKE (statistical, multi-language) or RAKE (rapid automatic
     /// keyword extraction).
     #[serde(default)]
     pub algorithm: KeywordAlgorithm,
-    /// Maximum keywords to extract per document.
-    #[serde(default = "KeywordsConfig::default_count")]
-    pub count: usize,
-    /// Optional YAKE tuning (passed through to kreuzberg unchanged).
+    /// Maximum keywords to extract per document. Matches kreuzberg's
+    /// `KeywordConfig.max_keywords` default of 10.
+    #[serde(default = "KeywordsConfig::default_max_keywords")]
+    pub max_keywords: usize,
+    /// Minimum score threshold. Matches kreuzberg's `KeywordConfig.min_score`
+    /// default of 0.0 (i.e. surface every candidate). Score ranges differ
+    /// between YAKE (lower = better) and RAKE (higher = better) — see
+    /// `kreuzberg::keywords::config::KeywordConfig.min_score`.
+    #[serde(default)]
+    #[schemars(range(min = 0.0))]
+    pub min_score: f32,
+    /// N-gram range as `[min, max]`. Matches kreuzberg's
+    /// `KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of
+    /// length 2 so the JSON Schema stays human-readable; values map back to a
+    /// `(usize, usize)` tuple at the boundary.
+    #[serde(default = "KeywordsConfig::default_ngram_range")]
+    #[schemars(length(min = 2, max = 2))]
+    pub ngram_range: Vec<usize>,
+    /// Optional YAKE tuning (passed through to kreuzberg unchanged). Shape
+    /// matches `kreuzberg::keywords::YakeParams`; bad JSON is logged and
+    /// kreuzberg's defaults are used instead of failing the scan.
     #[serde(default)]
     pub yake_params: Option<serde_json::Value>,
-    /// Optional RAKE tuning (passed through to kreuzberg unchanged).
+    /// Optional RAKE tuning (passed through to kreuzberg unchanged). Shape
+    /// matches `kreuzberg::keywords::RakeParams`; bad JSON is logged and
+    /// kreuzberg's defaults are used instead of failing the scan.
     #[serde(default)]
     pub rake_params: Option<serde_json::Value>,
 }
 
 impl KeywordsConfig {
-    fn default_count() -> usize {
+    fn default_max_keywords() -> usize {
         10
+    }
+    fn default_ngram_range() -> Vec<usize> {
+        vec![1, 3]
     }
 }
 
@@ -218,7 +243,9 @@ impl Default for KeywordsConfig {
         Self {
             enabled: false,
             algorithm: KeywordAlgorithm::default(),
-            count: Self::default_count(),
+            max_keywords: Self::default_max_keywords(),
+            min_score: 0.0,
+            ngram_range: Self::default_ngram_range(),
             yake_params: None,
             rake_params: None,
         }
@@ -237,7 +264,8 @@ pub enum KeywordAlgorithm {
 #[serde(deny_unknown_fields)]
 pub struct NerConfig {
     /// Master switch — off by default; ONNX backend downloads gline-rs weights on
-    /// first use, LLM backend costs API tokens.
+    /// first use, LLM backend costs API tokens. Maps to `Some(NerConfig)` /
+    /// `None` on `ExtractionConfig.ner`.
     #[serde(default)]
     pub enabled: bool,
     /// Backend selection. `onnx` uses gline-rs locally; `llm` routes through the
@@ -247,10 +275,20 @@ pub struct NerConfig {
     /// Override the ONNX model name (kreuzberg has a default catalogue when unset).
     #[serde(default)]
     pub model: Option<String>,
-    /// Whitelist of entity types to surface (`PERSON`, `LOC`, `ORG`, …). Empty
-    /// means "use the backend default".
+    /// Categories to surface — matches kreuzberg's `NerConfig.categories`.
+    /// Accepted values are the lowercase forms `"person"`, `"organization"`,
+    /// `"location"`, `"date"`, `"time"`, `"money"`, `"percent"`, `"email"`,
+    /// `"phone"`, `"url"`; anything else becomes a `Custom(_)` category at the
+    /// boundary. Empty means "use the backend default".
     #[serde(default)]
-    pub entity_types: Vec<String>,
+    pub categories: Vec<String>,
+    /// Arbitrary user-supplied entity labels for gline-rs zero-shot inference
+    /// (and the LLM backend's structured-output schema). Matches kreuzberg's
+    /// `NerConfig.custom_labels`. Useful for domain-specific types like
+    /// `"Treatment"`, `"Vessel"` without forking GLiNER's taxonomy. Custom
+    /// labels surface as `EntityCategory::Custom(_)` in the entity stream.
+    #[serde(default)]
+    pub custom_labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]

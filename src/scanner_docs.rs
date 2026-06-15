@@ -73,6 +73,8 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig) -> DocConfig {
         embedding_preset: Some(cfg.embedding_preset.clone()),
         embed: cfg.embed,
         language: cfg.language.clone(),
+        keywords: cfg.keywords.clone(),
+        ner: cfg.ner.clone(),
     }
 }
 

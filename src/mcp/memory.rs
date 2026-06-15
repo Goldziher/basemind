@@ -17,6 +17,8 @@ use super::types::{
     MemoryListResponse, MemoryPutParams, MemoryPutResponse, MemoryRecord, MemorySearchHit,
     MemorySearchParams, MemorySearchResponse,
 };
+#[cfg(feature = "documents")]
+use crate::extract::doc::{DocEntity, DocKeyword};
 
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
@@ -397,8 +399,22 @@ pub(super) async fn run_search_documents(
             byte_end: h.byte_end,
             distance: h.distance,
             rerank_score: None,
+            keywords: Vec::new(),
+            entities: Vec::new(),
         })
         .collect();
+
+    // Attach keywords + entities from each hit's parent doc blob (if extraction
+    // ran them at scan time) and optionally post-filter by `entity_category` /
+    // `keywords_contains`. We dedupe by `path` first so we only read each blob
+    // once even when several chunks of the same doc landed in the result set.
+    attach_doc_metadata(
+        state,
+        &mut hits,
+        params.entity_category.as_deref(),
+        params.keywords_contains.as_deref(),
+    )
+    .await?;
 
     // Reranker post-step: cross-encoder rescores and reorders the candidate hits.
     // Default OFF — first call downloads ONNX weights (~100 MB) into
@@ -473,4 +489,88 @@ pub(super) async fn run_search_documents(
         },
         output_format,
     )
+}
+
+/// Load the parent doc blob for each unique hit path, copy its keywords +
+/// entities onto every hit pointing at that path, and (optionally) drop hits
+/// whose parent fails an `entity_category` / `keywords_contains` filter.
+///
+/// We deliberately do this BEFORE the reranker so the cross-encoder only
+/// rescores survivors. Per-blob cost is bounded by the result-set size (at
+/// most `limit` distinct paths); blobs are skipped silently when the path is
+/// no longer in the working-tree index (e.g. file deleted between scan and
+/// query) — a missing blob is not an error.
+#[cfg(feature = "documents")]
+async fn attach_doc_metadata(
+    state: &ServerState,
+    hits: &mut Vec<DocumentSearchHit>,
+    entity_category: Option<&str>,
+    keywords_contains: Option<&str>,
+) -> Result<(), McpError> {
+    if hits.is_empty() {
+        return Ok(());
+    }
+    // Collect distinct paths once so we don't re-read the same blob for every chunk.
+    let mut unique_paths: Vec<String> = Vec::with_capacity(hits.len());
+    {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for h in hits.iter() {
+            if seen.insert(h.path.as_str()) {
+                unique_paths.push(h.path.clone());
+            }
+        }
+    }
+
+    // Resolve path → (keywords, entities) under a single read guard.
+    let mut meta: std::collections::HashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
+        std::collections::HashMap::with_capacity(unique_paths.len());
+    {
+        let store = state.store.read().await;
+        for path in &unique_paths {
+            let Some(entry) = store.lookup(path.as_str()) else {
+                continue;
+            };
+            let hash_hex = entry.hash_hex.clone();
+            match store.read_doc_by_hex(&hash_hex) {
+                Ok(Some(doc)) => {
+                    meta.insert(path.clone(), (doc.keywords, doc.entities));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
+                }
+            }
+        }
+    }
+
+    // Pre-lowercase filter substrings once.
+    let cat_needle = entity_category.map(|s| s.to_lowercase());
+    let kw_needle = keywords_contains.map(|s| s.to_lowercase());
+
+    hits.retain_mut(|hit| {
+        let (kws, ents) = meta
+            .get(&hit.path)
+            .cloned()
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+
+        // Apply filters first; if a filter is set and the parent doc has no
+        // matching metadata, drop the hit before paying the clone cost.
+        if let Some(needle) = cat_needle.as_deref()
+            && !ents
+                .iter()
+                .any(|e| e.category.to_lowercase().contains(needle))
+        {
+            return false;
+        }
+        if let Some(needle) = kw_needle.as_deref()
+            && !kws.iter().any(|k| k.text.to_lowercase().contains(needle))
+        {
+            return false;
+        }
+
+        hit.keywords = kws;
+        hit.entities = ents;
+        true
+    });
+    Ok(())
 }

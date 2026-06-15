@@ -19,7 +19,7 @@ use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
 
 use super::{ExtractError, SCHEMA_VER};
-use crate::config::DocLanguageConfig;
+use crate::config::{DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, NerBackend, NerConfig};
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
 /// `schema_ver` for migration, plus the structured kreuzberg output we care
@@ -51,6 +51,54 @@ pub struct FileMapDoc {
     pub embedding_model: String,
     /// Length of each chunk embedding vector. 0 when no embeddings.
     pub embedding_dim: u16,
+    /// Keywords extracted from `content` when keyword analysis is enabled.
+    ///
+    /// Appended at the TAIL of the struct so msgpack positional decoding stays
+    /// backward-compatible: older `.doc.msgpack` blobs deserialize via
+    /// `#[serde(default)]`, surfacing an empty vec without forcing a schema bump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<DocKeyword>,
+    /// Named entities detected in `content` by the NER backend (or empty when NER is off).
+    ///
+    /// TAIL field for the same reason as `keywords` — additive within the
+    /// minor-version schema policy.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<DocEntity>,
+}
+
+/// Mirror of `kreuzberg::keywords::Keyword`, narrowed to the fields we persist.
+/// We do not re-export kreuzberg's `Keyword` directly because we control the
+/// on-disk blob shape and want a forward-compatible string for `algorithm`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocKeyword {
+    /// Verbatim keyword span.
+    pub text: String,
+    /// Backend-reported score. YAKE scores lower-is-better; RAKE higher-is-better.
+    pub score: f32,
+    /// `"yake"` or `"rake"` — the kreuzberg `KeywordAlgorithm` variant stringified
+    /// so consumers don't need to depend on the kreuzberg enum.
+    pub algorithm: String,
+}
+
+/// Mirror of `kreuzberg::types::entity::Entity` with `EntityCategory` flattened
+/// to a string. Flattening keeps the blob shape forward-compatible: kreuzberg
+/// can add `EntityCategory` variants without invalidating our cached blobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocEntity {
+    /// Lowercase category name — `"person"`, `"organization"`, `"location"`,
+    /// `"date"`, `"time"`, `"money"`, `"percent"`, `"email"`, `"phone"`,
+    /// `"url"`, or any caller-supplied custom label.
+    pub category: String,
+    /// Raw mention text exactly as it appeared in `content`.
+    pub text: String,
+    /// Byte-offset span start in `content`.
+    pub start: u32,
+    /// Byte-offset span end in `content` (exclusive).
+    pub end: u32,
+    /// Backend-reported confidence in `[0.0, 1.0]`. `None` when the backend does
+    /// not expose confidence scores (e.g. some LLM modes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
 }
 
 /// A single chunked region of a document.
@@ -79,6 +127,8 @@ pub struct DocConfig {
     pub embedding_preset: Option<String>,
     pub embed: bool,
     pub language: DocLanguageConfig,
+    pub keywords: KeywordsConfig,
+    pub ner: NerConfig,
 }
 
 impl Default for DocConfig {
@@ -89,6 +139,8 @@ impl Default for DocConfig {
             embedding_preset: Some("balanced".to_string()),
             embed: true,
             language: DocLanguageConfig::default(),
+            keywords: KeywordsConfig::default(),
+            ner: NerConfig::default(),
         }
     }
 }
@@ -123,11 +175,90 @@ impl DocConfig {
         } else {
             None
         };
+        let keywords = self.kreuzberg_keywords();
+        let ner = self.kreuzberg_ner();
         ExtractionConfig {
             chunking: Some(chunking),
             language_detection,
+            keywords,
+            ner,
             ..Default::default()
         }
+    }
+
+    /// Translate the basemind-side `KeywordsConfig` into kreuzberg's
+    /// `KeywordConfig`. Returns `None` when keyword extraction is gated off —
+    /// kreuzberg treats `ExtractionConfig.keywords == None` as "do not run".
+    ///
+    /// `yake_params` / `rake_params` are typed pass-through: bad JSON is logged
+    /// and dropped (kreuzberg defaults take over) instead of failing the scan.
+    fn kreuzberg_keywords(&self) -> Option<kreuzberg::KeywordConfig> {
+        if !self.keywords.enabled {
+            return None;
+        }
+        // Defend against `ngram_range` not being length-2 (schema constraint enforces
+        // it; the runtime fallback keeps a malformed in-memory config from panicking).
+        let ngram = if self.keywords.ngram_range.len() == 2 {
+            (self.keywords.ngram_range[0], self.keywords.ngram_range[1])
+        } else {
+            (1, 3)
+        };
+        let mut kc = kreuzberg::KeywordConfig {
+            algorithm: match self.keywords.algorithm {
+                KeywordAlgorithm::Yake => kreuzberg::KeywordAlgorithm::Yake,
+                KeywordAlgorithm::Rake => kreuzberg::KeywordAlgorithm::Rake,
+            },
+            max_keywords: self.keywords.max_keywords,
+            min_score: self.keywords.min_score,
+            ngram_range: ngram,
+            language: None,
+            yake_params: None,
+            rake_params: None,
+        };
+        if let Some(v) = self.keywords.yake_params.as_ref() {
+            match serde_json::from_value::<kreuzberg::keywords::YakeParams>(v.clone()) {
+                Ok(p) => kc.yake_params = Some(p),
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid yake_params; using kreuzberg defaults")
+                }
+            }
+        }
+        if let Some(v) = self.keywords.rake_params.as_ref() {
+            match serde_json::from_value::<kreuzberg::keywords::RakeParams>(v.clone()) {
+                Ok(p) => kc.rake_params = Some(p),
+                Err(e) => {
+                    tracing::warn!(error = %e, "invalid rake_params; using kreuzberg defaults")
+                }
+            }
+        }
+        Some(kc)
+    }
+
+    /// Translate the basemind-side `NerConfig` into kreuzberg's
+    /// `core::config::NerConfig`. `None` when NER is gated off.
+    ///
+    /// String category names round-trip via `EntityCategory::from(String)` —
+    /// unknown names land in the `Custom(_)` variant rather than failing.
+    /// `llm` is left `None`; iter 7 wires it from the shared `LlmConfig`.
+    fn kreuzberg_ner(&self) -> Option<kreuzberg::core::config::ner::NerConfig> {
+        if !self.ner.enabled {
+            return None;
+        }
+        Some(kreuzberg::core::config::ner::NerConfig {
+            backend: match self.ner.backend {
+                NerBackend::Onnx => kreuzberg::core::config::ner::NerBackendKind::Onnx,
+                NerBackend::Llm => kreuzberg::core::config::ner::NerBackendKind::Llm,
+            },
+            categories: self
+                .ner
+                .categories
+                .iter()
+                .map(|s| kreuzberg::types::entity::EntityCategory::from(s.clone()))
+                .collect(),
+            model: self.ner.model.clone(),
+            llm: None,
+            custom_labels: self.ner.custom_labels.clone(),
+        })
     }
 }
 
@@ -172,6 +303,30 @@ pub fn extract_doc(
 
     let metadata = metadata_pairs(&result.metadata);
 
+    let keywords: Vec<DocKeyword> = result
+        .extracted_keywords
+        .unwrap_or_default()
+        .into_iter()
+        .map(|k| DocKeyword {
+            text: k.text,
+            score: k.score,
+            algorithm: keyword_algorithm_str(&k.algorithm).to_string(),
+        })
+        .collect();
+
+    let entities: Vec<DocEntity> = result
+        .entities
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| DocEntity {
+            category: entity_category_str(&e.category),
+            text: e.text,
+            start: e.start,
+            end: e.end,
+            confidence: e.confidence,
+        })
+        .collect();
+
     Ok(FileMapDoc {
         schema_ver: SCHEMA_VER,
         mime_type: result.mime_type.into_owned(),
@@ -181,7 +336,39 @@ pub fn extract_doc(
         chunks,
         embedding_model,
         embedding_dim,
+        keywords,
+        entities,
     })
+}
+
+/// Stable lowercase tag for kreuzberg's `KeywordAlgorithm`. We avoid `Display`
+/// because the enum doesn't derive it; matching every variant keeps the
+/// translation explicit and the compiler honest if kreuzberg adds variants.
+fn keyword_algorithm_str(alg: &kreuzberg::KeywordAlgorithm) -> &'static str {
+    match alg {
+        kreuzberg::KeywordAlgorithm::Yake => "yake",
+        kreuzberg::KeywordAlgorithm::Rake => "rake",
+    }
+}
+
+/// Flatten kreuzberg's `EntityCategory` (a closed enum with a `Custom(String)`
+/// tail variant) to a lowercase string. Standard variants use the lowercase
+/// canonical name; `Custom(s)` passes the user-supplied label through verbatim.
+fn entity_category_str(category: &kreuzberg::types::entity::EntityCategory) -> String {
+    use kreuzberg::types::entity::EntityCategory::*;
+    match category {
+        Person => "person".to_string(),
+        Organization => "organization".to_string(),
+        Location => "location".to_string(),
+        Date => "date".to_string(),
+        Time => "time".to_string(),
+        Money => "money".to_string(),
+        Percent => "percent".to_string(),
+        Email => "email".to_string(),
+        Phone => "phone".to_string(),
+        Url => "url".to_string(),
+        Custom(s) => s.clone(),
+    }
 }
 
 fn metadata_pairs(metadata: &kreuzberg::types::Metadata) -> Vec<(String, String)> {

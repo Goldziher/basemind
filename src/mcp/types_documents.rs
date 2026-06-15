@@ -14,6 +14,17 @@ pub struct SearchDocumentsParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub mime_type: Option<String>,
+    /// Optional case-insensitive substring match against `DocEntity.category`.
+    /// When set, only hits whose parent document carries at least one entity
+    /// in that category are returned. Combined with `keywords_contains` via
+    /// AND semantics (both must match when both are set).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<String>,
+    /// Optional case-insensitive substring match against `DocKeyword.text`.
+    /// When set, only hits whose parent document carries at least one keyword
+    /// containing the substring are returned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_contains: Option<String>,
     /// Per-query overrides for any `documents.*` config knob. Takes precedence over
     /// serve-time config and CLI flags. Known override fields (mirroring `[documents]`)
     /// are applied; unrecognized fields are silently ignored — flatten semantics
@@ -21,6 +32,9 @@ pub struct SearchDocumentsParams {
     #[serde(flatten, default)]
     pub overrides: crate::config::DocumentsCliOverrides,
 }
+
+#[cfg(feature = "documents")]
+pub(crate) use crate::extract::doc::{DocEntity, DocKeyword};
 
 #[cfg(feature = "documents")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +50,14 @@ pub(crate) struct DocumentSearchHit {
     /// enabled on the call; absent (`null` / omitted) when reranker is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank_score: Option<f32>,
+    /// Keywords from the parent document, when keyword extraction was enabled
+    /// at scan time. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<DocKeyword>,
+    /// Named entities from the parent document, when NER was enabled at scan time.
+    /// Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entities: Vec<DocEntity>,
 }
 
 #[cfg(feature = "documents")]
