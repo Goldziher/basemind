@@ -11,12 +11,22 @@
  * regardless of which convention its plugin loader resolves first.
  */
 
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "..");
-const skillsDir = path.join(repoRoot, "skills");
+
+// Resolve the skills directory across both install modes:
+//   - npm install: skills/ sits next to basemind.js inside
+//     node_modules/basemind-opencode/ (the prepack hook copies it in).
+//   - git+URL / monorepo dev: skills/ lives at the repo root, one level above
+//     opencode-plugin/.
+// Whichever exists wins; this keeps both install paths working without
+// duplicating the dev tree.
+const bundledSkillsDir = path.join(__dirname, "skills");
+const repoSkillsDir = path.join(__dirname, "..", "skills");
+const skillsDir = fs.existsSync(bundledSkillsDir) ? bundledSkillsDir : repoSkillsDir;
 
 const hooks = () => ({
   config: async (config) => {

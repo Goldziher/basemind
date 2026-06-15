@@ -3,8 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Tree-sitter code-map + git context MCP server (OpenCode plugin entry — published copy lives in npm-package/).",
-  "main": "opencode-plugin/basemind.js",
+  "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin).",
   "homepage": "https://github.com/Goldziher/basemind",
   "repository": {
     "type": "git",

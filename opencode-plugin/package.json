@@ -1,0 +1,40 @@
+{
+  "name": "basemind-opencode",
+  "version": "0.0.1",
+  "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level.",
+  "type": "module",
+  "main": "basemind.js",
+  "keywords": [
+    "mcp",
+    "tree-sitter",
+    "code-map",
+    "scanner",
+    "indexer"
+  ],
+  "author": {
+    "name": "Na'aman Hirschfeld",
+    "email": "nhirschfeld@gmail.com"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Goldziher/basemind.git",
+    "directory": "opencode-plugin"
+  },
+  "homepage": "https://github.com/Goldziher/basemind#opencode",
+  "bugs": {
+    "url": "https://github.com/Goldziher/basemind/issues"
+  },
+  "scripts": {
+    "prepack": "rm -rf skills && cp -R ../skills skills",
+    "postpack": "rm -rf skills"
+  },
+  "files": [
+    "basemind.js",
+    "skills/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

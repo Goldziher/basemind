@@ -11,7 +11,8 @@
 #   pip-package/pyproject.toml            version (PyPI form: 0.1.0-rc.1 → 0.1.0rc1)
 #   pip-package/basemind/__init__.py       __version__
 #   src/version.rs                        RELEASE_MINOR (if minor changed)
-#   package.json                          "version" (root, OpenCode plugin entry)
+#   package.json                          "version" (root, workspace marker)
+#   opencode-plugin/package.json          "version" (basemind-opencode npm pkg)
 #   .claude-plugin/plugin.json            "version"
 #   .claude-plugin/marketplace.json       plugins[0].version
 #   .codex-plugin/plugin.json             "version"
@@ -80,6 +81,7 @@ bump_json_top_version() {
 }
 
 bump_json_top_version package.json
+bump_json_top_version opencode-plugin/package.json
 bump_json_top_version .claude-plugin/plugin.json
 bump_json_top_version .codex-plugin/plugin.json
 bump_json_top_version .cursor-plugin/plugin.json
