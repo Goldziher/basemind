@@ -1,78 +1,66 @@
 #!/usr/bin/env bash
 # basemind statusline — one-line live summary of the indexed code map.
 #
-# Wire it into Claude Code by adding to ~/.claude/settings.json:
+# Auto-wired by .claude-plugin/plugin.json via Claude Code's plugin `statusLine`
+# field; no hand-editing of ~/.claude/settings.json required.
 #
-#   {
-#     "statusLine": {
-#       "type": "command",
-#       "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
-#       "refreshInterval": 5
-#     }
-#   }
+# Claude Code feeds the script a JSON payload on stdin; we extract
+# `workspace.current_dir` (or fall back to PWD) and look for `.basemind/` under it.
+# Missing `.basemind/` → silent empty line so the script never breaks repos that
+# don't use basemind.
 #
-# Claude Code feeds the script a JSON payload on stdin; we extract `workspace.current_dir`
-# (or fall back to PWD) and look for `.basemind/` under it. Missing `.basemind/` → silent
-# empty line so the script never breaks repos that don't use basemind.
-#
-# All filesystem reads are bounded (`tail -n 1000`) so the script stays cheap even at
-# `refreshInterval: 1`. `jq` is required.
+# All filesystem reads are bounded (`tail -n 1000`) so the script stays cheap even
+# at `refreshInterval: 1`. `jq` is required.
 
 set -euo pipefail
 
-# Pull the workspace cwd from Claude Code's stdin payload. Fall back to $PWD when
-# the script is run standalone (e.g. manual testing).
+# ─── Workspace ─────────────────────────────────────────────────────────────────
 input="$(cat 2>/dev/null || true)"
 cwd=""
 if [[ -n "$input" ]] && command -v jq >/dev/null 2>&1; then
   cwd="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // empty' 2>/dev/null || true)"
 fi
-if [[ -z "$cwd" ]]; then
-  cwd="${PWD}"
-fi
+[[ -z "$cwd" ]] && cwd="${PWD}"
 
 bm_dir="${cwd}/.basemind"
 if [[ ! -d "$bm_dir" ]]; then
-  # No basemind in this repo — print nothing and exit clean. The statusline collapses.
+  # No basemind index — print nothing; the statusline line collapses.
   exit 0
 fi
 
-# File count: pull from the on-disk index manifest. The manifest exposes a `files`
-# array; counting entries is the cheapest signal. Fall back to "?" when the manifest
-# isn't there yet (pre-first-scan).
+# ─── File count from on-disk manifest ──────────────────────────────────────────
 file_count="?"
 view_index="${bm_dir}/views/working/index.msgpack"
 if [[ -f "$view_index" ]]; then
-  # Crude but cheap: count msgpack "fixstr"/"str8/16/32" path keys via grep. Real
-  # parsing would need a msgpack tool; we don't take that dependency for a
-  # statusline. For the precise number, the agent can call `status` via MCP.
-  if file_count_raw="$(wc -c <"$view_index" 2>/dev/null)"; then
-    # Rough estimate: assume 130 bytes per FileEntry. Underestimates large repos
-    # slightly but the prefix is `~` so users know it's approximate.
-    file_count="$((file_count_raw / 130))"
+  # Crude byte→file estimate (~130 bytes per FileEntry). Underestimates large
+  # repos slightly; the `~` prefix signals approximation. Precise count is one
+  # MCP `status` call away.
+  if size="$(wc -c <"$view_index" 2>/dev/null)"; then
+    file_count="$((size / 130))"
     [[ "$file_count" -lt 1 ]] && file_count=1
   fi
 fi
 
-# Scan recency from the index mtime.
+# ─── Scan recency from index mtime ─────────────────────────────────────────────
 scan_age="never"
+scan_delta=999999999
 if [[ -f "$view_index" ]]; then
   if mtime="$(stat -f %m "$view_index" 2>/dev/null || stat -c %Y "$view_index" 2>/dev/null)"; then
     now="$(date +%s)"
-    delta=$((now - mtime))
-    if [[ $delta -lt 60 ]]; then
-      scan_age="${delta}s ago"
-    elif [[ $delta -lt 3600 ]]; then
-      scan_age="$((delta / 60))m ago"
-    elif [[ $delta -lt 86400 ]]; then
-      scan_age="$((delta / 3600))h ago"
+    scan_delta=$((now - mtime))
+    if [[ $scan_delta -lt 60 ]]; then
+      scan_age="${scan_delta}s ago"
+    elif [[ $scan_delta -lt 3600 ]]; then
+      scan_age="$((scan_delta / 60))m ago"
+    elif [[ $scan_delta -lt 86400 ]]; then
+      scan_age="$((scan_delta / 3600))h ago"
     else
-      scan_age="$((delta / 86400))d ago"
+      scan_age="$((scan_delta / 86400))d ago"
     fi
   fi
 fi
 
-# Telemetry aggregates: total calls + estimated tokens saved today. Bounded read.
+# ─── Telemetry: calls + tokens saved today ─────────────────────────────────────
 tel_file="${bm_dir}/telemetry.jsonl"
 calls=0
 saved=0
@@ -88,13 +76,14 @@ if [[ -f "$tel_file" ]] && command -v jq >/dev/null 2>&1; then
   [[ -z "$saved" ]] && saved=0
 fi
 
-# Compact token-saved formatter (1234 → 1.2k, 14200 → 14k).
+# Compact count formatter — 1234 → 1.2k, 14200 → 14k, 1500000 → 1M.
+# Decimal arithmetic done via `n*10/1000 %10` so 1099 → 1.0k (not 1.k).
 fmt_count() {
   local n="$1"
   if [[ "$n" -lt 1000 ]]; then
     printf '%d' "$n"
   elif [[ "$n" -lt 10000 ]]; then
-    printf '%d.%dk' "$((n / 1000))" "$(((n % 1000) / 100))"
+    printf '%d.%dk' "$((n / 1000))" "$(((n * 10 / 1000) % 10))"
   elif [[ "$n" -lt 1000000 ]]; then
     printf '%dk' "$((n / 1000))"
   else
@@ -103,13 +92,31 @@ fmt_count() {
 }
 
 saved_fmt="$(fmt_count "$saved")"
+calls_fmt="$(fmt_count "$calls")"
 
-# ANSI dim color for the prefix so the line doesn't shout.
+# ─── Styling ───────────────────────────────────────────────────────────────────
+# 256-color orange for the brand mark; ANSI bright/dim for hierarchy.
+brand=$'\033[38;5;208m' # orange — matches plugin brandColor #F97316
+bold=$'\033[1m'
 dim=$'\033[2m'
 reset=$'\033[0m'
-printf '%sbm%s %s~%sf · scan %s · %s calls · ~%s tok saved' \
-  "$dim" "$reset" \
+
+# Freshness dot — green < 1h, yellow 1–24h, red > 1d.
+if [[ $scan_delta -lt 3600 ]]; then
+  dot_color=$'\033[32m' # green
+elif [[ $scan_delta -lt 86400 ]]; then
+  dot_color=$'\033[33m' # yellow
+else
+  dot_color=$'\033[31m' # red
+fi
+
+# ─── Render ────────────────────────────────────────────────────────────────────
+# Layout: ▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved
+printf '%s▲%s %s%sbasemind%s  %s%s files · scanned %s%s  %s●%s  %s calls · %s tok saved' \
+  "$brand" "$reset" \
+  "$bold" "" "$reset" \
   "$dim" "$file_count" \
-  "$scan_age" \
-  "$calls" \
+  "$scan_age" "$reset" \
+  "$dot_color" "$reset" \
+  "$calls_fmt" \
   "$saved_fmt"

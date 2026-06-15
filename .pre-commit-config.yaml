@@ -77,3 +77,12 @@ repos:
 
       # JSON formatting
       - id: oxfmt
+
+  - repo: local
+    hooks:
+      - id: statusline-smoke
+        name: statusline smoke test
+        language: system
+        entry: bash tests/statusline_smoke.sh
+        files: ^(\.claude-plugin/statusline\.sh|tests/statusline_smoke\.sh)$
+        pass_filenames: false

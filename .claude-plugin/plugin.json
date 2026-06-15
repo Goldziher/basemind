@@ -15,5 +15,10 @@
       "command": "basemind",
       "args": ["serve"]
     }
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/statusline.sh",
+    "refreshInterval": 5
   }
 }
