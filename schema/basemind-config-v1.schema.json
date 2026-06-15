@@ -93,8 +93,7 @@
         },
         "summarization": {
           "enabled": false,
-          "strategy": "extractive",
-          "max_chars": 500
+          "strategy": "extractive"
         },
         "ocr": {
           "backend": "tesseract",
@@ -128,11 +127,13 @@
       "description": "Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,\nVLM OCR, and any future LLM-backed capability. Off by default — leaving\n`api_key` `Unset` short-circuits any LLM-backed feature.",
       "$ref": "#/$defs/LlmConfig",
       "default": {
-        "provider": null,
-        "model": null,
+        "model": "",
         "api_key": null,
         "base_url": null,
-        "temperature": null
+        "temperature": null,
+        "timeout_secs": null,
+        "max_retries": null,
+        "max_tokens": null
       }
     }
   },
@@ -343,8 +344,7 @@
           "$ref": "#/$defs/SummarizationConfig",
           "default": {
             "enabled": false,
-            "strategy": "extractive",
-            "max_chars": 500
+            "strategy": "extractive"
           }
         },
         "ocr": {
@@ -534,21 +534,23 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Master switch — off by default.",
+          "description": "Master switch — off by default. When true, the boundary code populates\n`ExtractionConfig.summarization`; the resulting `ExtractionResult.summary`\nsurfaces on `FileMapDoc.summary` and `DocumentSearchHit.summary`.",
           "type": "boolean",
           "default": false
         },
         "strategy": {
-          "description": "Strategy: extractive (TextRank, no LLM) or abstractive (routed via `[llm]`).",
+          "description": "Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via\nthe top-level `[llm]` config). When `abstractive` is set but `[llm].model`\nis empty, the boundary falls back to `extractive` with a warning so the\nscan still completes.",
           "$ref": "#/$defs/SummarizationStrategy",
           "default": "extractive"
         },
-        "max_chars": {
-          "description": "Soft cap on summary length in characters.",
-          "type": "integer",
-          "format": "uint",
-          "minimum": 0,
-          "default": 500
+        "max_tokens": {
+          "description": "Soft cap on summary length in tokens. `None` lets kreuzberg pick a default\nsuited to the chosen strategy (the kreuzberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -676,32 +678,21 @@
       "additionalProperties": false
     },
     "LlmConfig": {
-      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).",
+      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing kreuzberg's struct.",
       "type": "object",
       "properties": {
-        "provider": {
-          "description": "Provider name (`openai`, `anthropic`, `vllm`, …). Maps to a kreuzberg\nliter-llm client at the boundary.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
         "model": {
-          "description": "Provider-specific model name (`gpt-4o-mini`, `claude-sonnet-4-5`, …).",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
+          "description": "Combined provider/model string following liter-llm's routing format:\n`\"openai/gpt-4o\"`, `\"anthropic/claude-sonnet-4-20250514\"`,\n`\"groq/llama-3.1-70b-versatile\"`. Empty string ⇒ inert; every LLM-backed\nfeature treats an empty `model` as \"no LLM configured\".",
+          "type": "string",
+          "default": ""
         },
         "api_key": {
-          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` short-circuits any\nLLM-backed feature.",
+          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` lets the underlying\nprovider SDK fall back to its standard environment variable lookup.",
           "$ref": "#/$defs/ApiKey",
           "default": null
         },
         "base_url": {
-          "description": "Override the provider base URL (for self-hosted vLLM, Azure, …).",
+          "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).",
           "type": [
             "string",
             "null"
@@ -714,7 +705,37 @@
             "number",
             "null"
           ],
-          "format": "float",
+          "format": "double",
+          "default": null
+        },
+        "timeout_secs": {
+          "description": "Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "default": null
+        },
+        "max_retries": {
+          "description": "Maximum retry attempts on transient errors. Maps to kreuzberg's\n`max_retries` (default 3).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0,
+          "default": null
+        },
+        "max_tokens": {
+          "description": "Maximum tokens to generate. Provider-default when unset.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
           "default": null
         }
       },

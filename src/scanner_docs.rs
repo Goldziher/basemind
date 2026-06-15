@@ -23,7 +23,7 @@ use anyhow::Context as _;
 use kreuzberg::core::mime;
 use kreuzberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
 
-use crate::config::DocumentsConfig;
+use crate::config::{DocumentsConfig, LlmConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::hashing::{self, Hash};
 use crate::lance::DocumentRow;
@@ -66,7 +66,7 @@ pub(crate) fn preset_dim(name: &str) -> anyhow::Result<u16> {
 /// Translate the project-level `[documents]` config into the kreuzberg-facing
 /// [`DocConfig`] the extractor expects. Pulled out so the wiring in
 /// `process_file` stays a single call.
-pub(crate) fn doc_config_from(cfg: &DocumentsConfig) -> DocConfig {
+pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConfig {
     DocConfig {
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
@@ -75,6 +75,12 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig) -> DocConfig {
         language: cfg.language.clone(),
         keywords: cfg.keywords.clone(),
         ner: cfg.ner.clone(),
+        // Summarisation + LLM ride on the same `DocConfig` because the boundary
+        // code in `DocConfig::to_kreuzberg` resolves abstractive ⇒ LLM lookup
+        // in one place. The top-level `[llm]` block is intentionally shared
+        // across capabilities (ner-llm, summarization-llm, …).
+        summarization: cfg.summarization.clone(),
+        llm: llm.clone(),
     }
 }
 
@@ -114,6 +120,10 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
 /// store, and assemble a [`PendingDocBatch`] for the apply pass. Returns
 /// `Ok(None)` when extraction succeeded but produced no embeddings (we still
 /// persist the blob; the LanceDB side is just a no-op for that file).
+// Eight args sits one above clippy's default seven-arg threshold; collapsing
+// `cfg` + `llm` into a wrapper just to satisfy the lint would obscure the
+// callsite — the scanner already deals in those two structs by reference.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_and_persist_doc(
     store: &Store,
     rel: &str,
@@ -121,9 +131,10 @@ pub(crate) fn extract_and_persist_doc(
     bytes: &[u8],
     mime_type: &str,
     cfg: &DocumentsConfig,
+    llm: &LlmConfig,
     scope: &str,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
-    let doc_config = doc_config_from(cfg);
+    let doc_config = doc_config_from(cfg, llm);
     let doc: FileMapDoc = extract_doc(abs, Some(mime_type), &doc_config)
         .with_context(|| format!("extract document {rel}"))?;
 
@@ -283,10 +294,31 @@ mod tests {
             },
             ..Default::default()
         };
-        let doc_cfg = doc_config_from(&cfg);
+        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default());
         assert!(doc_cfg.language.auto_detect);
         assert_eq!(doc_cfg.language.min_confidence, 0.5);
         assert!(doc_cfg.language.detect_multiple);
+    }
+
+    #[test]
+    fn doc_config_from_propagates_summarization_and_llm() {
+        use crate::config::{SummarizationConfig, SummarizationStrategy};
+        let cfg = DocumentsConfig {
+            summarization: SummarizationConfig {
+                enabled: true,
+                strategy: SummarizationStrategy::Abstractive,
+                max_tokens: Some(150),
+            },
+            ..Default::default()
+        };
+        let llm = LlmConfig {
+            model: "openai/gpt-4o".to_string(),
+            ..Default::default()
+        };
+        let doc_cfg = doc_config_from(&cfg, &llm);
+        assert!(doc_cfg.summarization.enabled);
+        assert_eq!(doc_cfg.summarization.max_tokens, Some(150));
+        assert_eq!(doc_cfg.llm.model, "openai/gpt-4o");
     }
 
     #[test]

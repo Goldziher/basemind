@@ -19,7 +19,10 @@ use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
 
 use super::{ExtractError, SCHEMA_VER};
-use crate::config::{DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, NerBackend, NerConfig};
+use crate::config::{
+    DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
+    SummarizationConfig, SummarizationStrategy,
+};
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
 /// `schema_ver` for migration, plus the structured kreuzberg output we care
@@ -64,6 +67,15 @@ pub struct FileMapDoc {
     /// minor-version schema policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<DocEntity>,
+    /// Document-level summary produced by the summarisation post-processor.
+    /// `None` when summarisation was disabled at scan time or when kreuzberg
+    /// declined to produce one (e.g. empty content, abstractive strategy with
+    /// no LLM model configured).
+    ///
+    /// TAIL field — pre-iter-7 blobs deserialise via `#[serde(default)]` and
+    /// surface as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<DocSummary>,
 }
 
 /// Mirror of `kreuzberg::keywords::Keyword`, narrowed to the fields we persist.
@@ -101,6 +113,22 @@ pub struct DocEntity {
     pub confidence: Option<f32>,
 }
 
+/// Mirror of `kreuzberg::DocumentSummary` with `SummaryStrategy` flattened to
+/// a string. Flattening keeps the blob shape forward-compatible: kreuzberg can
+/// add `SummaryStrategy` variants without invalidating our cached blobs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DocSummary {
+    /// Plain-prose summary text.
+    pub text: String,
+    /// Strategy that produced this summary — `"extractive"` (TextRank) or
+    /// `"abstractive"` (LLM).
+    pub strategy: String,
+    /// Approximate token count of `text`, when the backend reports one. `None`
+    /// when the backend (typically the extractive path) does not measure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_count: Option<u32>,
+}
+
 /// A single chunked region of a document.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocChunk {
@@ -129,6 +157,11 @@ pub struct DocConfig {
     pub language: DocLanguageConfig,
     pub keywords: KeywordsConfig,
     pub ner: NerConfig,
+    /// Summarisation knobs (`enabled`, `strategy`, `max_tokens`).
+    pub summarization: SummarizationConfig,
+    /// Shared LLM credentials reached for when `summarization.strategy = Abstractive`
+    /// (and, in future iters, by `ner.backend = Llm`, VLM OCR, etc.).
+    pub llm: LlmConfig,
 }
 
 impl Default for DocConfig {
@@ -141,6 +174,8 @@ impl Default for DocConfig {
             language: DocLanguageConfig::default(),
             keywords: KeywordsConfig::default(),
             ner: NerConfig::default(),
+            summarization: SummarizationConfig::default(),
+            llm: LlmConfig::default(),
         }
     }
 }
@@ -177,13 +212,50 @@ impl DocConfig {
         };
         let keywords = self.kreuzberg_keywords();
         let ner = self.kreuzberg_ner();
+        let summarization = self.kreuzberg_summarization();
         ExtractionConfig {
             chunking: Some(chunking),
             language_detection,
             keywords,
             ner,
+            summarization,
             ..Default::default()
         }
+    }
+
+    /// Translate the basemind-side `SummarizationConfig` into kreuzberg's
+    /// `SummarizationConfig`. Returns `None` when summarisation is gated off —
+    /// kreuzberg treats `ExtractionConfig.summarization == None` as "do not run".
+    ///
+    /// When `strategy = Abstractive` and `[llm].model` is empty, we fall back to
+    /// `Extractive` (TextRank, no LLM) with a one-time warning. This keeps the
+    /// scan completing instead of failing midway with an opaque liter-llm error
+    /// the agent can't act on.
+    fn kreuzberg_summarization(&self) -> Option<kreuzberg::SummarizationConfig> {
+        if !self.summarization.enabled {
+            return None;
+        }
+        let mut sc = kreuzberg::SummarizationConfig {
+            strategy: match self.summarization.strategy {
+                SummarizationStrategy::Extractive => kreuzberg::SummaryStrategy::Extractive,
+                SummarizationStrategy::Abstractive => kreuzberg::SummaryStrategy::Abstractive,
+            },
+            max_tokens: self.summarization.max_tokens,
+            llm: None,
+        };
+        if matches!(
+            self.summarization.strategy,
+            SummarizationStrategy::Abstractive
+        ) {
+            sc.llm = self.llm.to_kreuzberg();
+            if sc.llm.is_none() {
+                tracing::warn!(
+                    "summarization.strategy = abstractive but llm.model unset; falling back to extractive"
+                );
+                sc.strategy = kreuzberg::SummaryStrategy::Extractive;
+            }
+        }
+        Some(sc)
     }
 
     /// Translate the basemind-side `KeywordsConfig` into kreuzberg's
@@ -345,6 +417,15 @@ pub fn extract_doc(
         })
         .collect();
 
+    // `SummaryStrategy` implements `Display` upstream — formatting it directly
+    // produces the same lowercase tags we'd hand-translate ("extractive" /
+    // "abstractive"), and stays correct if kreuzberg adds variants.
+    let summary = result.summary.map(|s| DocSummary {
+        text: s.text,
+        strategy: s.strategy.to_string(),
+        token_count: s.token_count,
+    });
+
     Ok(FileMapDoc {
         schema_ver: SCHEMA_VER,
         mime_type: result.mime_type.into_owned(),
@@ -356,6 +437,7 @@ pub fn extract_doc(
         embedding_dim,
         keywords,
         entities,
+        summary,
     })
 }
 

@@ -357,6 +357,86 @@ still parse and appear in `list_files`; they just don't expose symbols.
 
 ---
 
+## LLM configuration
+
+LLM-backed capabilities (abstractive summarisation today, ner-llm and VLM OCR
+in future iterations) share one `[llm]` config block. The same knobs flow
+through TOML, CLI flags, environment variables, and per-query MCP overrides —
+each layer wins over the one below it (MCP > CLI > env > TOML > defaults).
+
+The `model` string follows liter-llm's `<provider>/<model>` routing format
+(`openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`, `groq/llama-3.1-70b-versatile`,
+…). An empty `model` (the default) leaves every LLM-backed feature inert;
+summarisation falls back to the pure-Rust extractive path with a warning.
+
+### TOML
+
+```toml
+[llm]
+model = "openai/gpt-4o"
+api_key = { env = "OPENAI_API_KEY" }
+base_url = "https://api.openai.com/v1"
+temperature = 0.2
+
+[documents.summarization]
+enabled = true
+strategy = "abstractive"   # extractive | abstractive
+max_tokens = 200
+```
+
+`api_key` accepts either a literal string (strongly discouraged — keeps the
+secret in version control) or `{ env = "NAME" }` to resolve from an
+environment variable at load time. Resolved keys are wrapped in a
+`SecretString` whose `Debug` impl prints `<redacted>`, so tracing spans and
+panic messages never leak the value.
+
+### CLI flags
+
+```bash
+basemind serve \
+  --llm-model openai/gpt-4o \
+  --llm-api-key "$OPENAI_API_KEY" \
+  --documents-summarization-enabled true \
+  --documents-summarization-strategy abstractive
+```
+
+`--llm-api-key` is annotated `hide_env_values = true`, so `--help` does not
+echo the value when `BASEMIND_LLM_API_KEY` is set.
+
+### Environment
+
+Every CLI flag has a matching env var with a mechanical naming scheme:
+`--llm-model` ↔ `BASEMIND_LLM_MODEL`,
+`--documents-summarization-strategy` ↔ `BASEMIND_DOCUMENTS_SUMMARIZATION_STRATEGY`,
+and so on.
+
+```bash
+export BASEMIND_LLM_MODEL=openai/gpt-4o
+export BASEMIND_LLM_API_KEY=...
+basemind serve
+```
+
+### MCP per-query overrides
+
+Agents can pass an LLM config per `search_documents` call. The same fields as
+the CLI/env layer are accepted, flattened directly onto the request params:
+
+```json
+{
+  "query": "what does kreuzberg do?",
+  "summarization_enabled": true,
+  "summarization_strategy": "abstractive",
+  "llm_model": "anthropic/claude-sonnet-4-20250514"
+}
+```
+
+Per-query LLM args are routed to the on-machine LLM via outbound HTTPS.
+Trust boundary: MCP stdio is local-trust by design, but the resolved api_key
+still travels off-box to the provider — only pass credentials the agent is
+authorised to use.
+
+---
+
 ## CLI
 
 basemind is also a CLI — useful for piping into shell tools, CI checks, or

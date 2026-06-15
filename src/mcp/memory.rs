@@ -18,7 +18,7 @@ use super::types::{
     MemorySearchParams, MemorySearchResponse,
 };
 #[cfg(feature = "documents")]
-use crate::extract::doc::{DocEntity, DocKeyword};
+use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
@@ -401,6 +401,7 @@ pub(super) async fn run_search_documents(
             rerank_score: None,
             keywords: Vec::new(),
             entities: Vec::new(),
+            summary: None,
         })
         .collect();
 
@@ -538,44 +539,44 @@ async fn attach_doc_metadata(
     // Phase 2: read blobs off the async runtime. Each blob is a synchronous
     // `std::fs::read` + msgpack decode — exactly the work `spawn_blocking` is
     // for. The async path keeps making progress while we crunch metadata.
-    let meta: ahash::AHashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
-        tokio::task::spawn_blocking(move || {
-            let mut out: ahash::AHashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
-                ahash::AHashMap::with_capacity(pairs.len());
-            for (path, blob_path) in pairs {
-                if !blob_path.exists() {
+    type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
+    let meta: ahash::AHashMap<String, DocMeta> = tokio::task::spawn_blocking(move || {
+        let mut out: ahash::AHashMap<String, DocMeta> =
+            ahash::AHashMap::with_capacity(pairs.len());
+        for (path, blob_path) in pairs {
+            if !blob_path.exists() {
+                continue;
+            }
+            let bytes = match std::fs::read(&blob_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
                     continue;
                 }
-                let bytes = match std::fs::read(&blob_path) {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
-                        continue;
-                    }
-                };
-                match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
-                    Ok(doc) => {
-                        out.insert(path, (doc.keywords, doc.entities));
-                    }
-                    Err(e) => {
-                        tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
-                    }
+            };
+            match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
+                Ok(doc) => {
+                    out.insert(path, (doc.keywords, doc.entities, doc.summary));
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
                 }
             }
-            out
-        })
-        .await
-        .unwrap_or_default();
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
 
     // Pre-lowercase filter substrings once.
     let cat_needle = entity_category.map(|s| s.to_lowercase());
     let kw_needle = keywords_contains.map(|s| s.to_lowercase());
 
     hits.retain_mut(|hit| {
-        let (kws, ents) = meta
+        let (kws, ents, summary) = meta
             .get(&hit.path)
             .cloned()
-            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+            .unwrap_or_else(|| (Vec::new(), Vec::new(), None));
 
         // Apply filters first; if a filter is set and the parent doc has no
         // matching metadata, drop the hit before paying the clone cost.
@@ -594,6 +595,7 @@ async fn attach_doc_metadata(
 
         hit.keywords = kws;
         hit.entities = ents;
+        hit.summary = summary;
         true
     });
     Ok(())

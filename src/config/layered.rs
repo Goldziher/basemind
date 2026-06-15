@@ -7,6 +7,7 @@
 //! in the provenance ledger.
 
 use super::OutputFormat;
+use super::documents::{ApiKey, SummarizationStrategy};
 use super::overrides::DocumentsCliOverrides;
 use super::source::{ConfigSource, ProvenanceMap};
 use super::v1::ConfigV1;
@@ -95,8 +96,16 @@ const DOCUMENT_LEAVES: &[&str] = &[
     "documents.keywords.min_score",
     "documents.ner.enabled",
     "documents.summarization.enabled",
-    "documents.summarization.max_chars",
+    "documents.summarization.strategy",
+    "documents.summarization.max_tokens",
     "documents.output.format",
+    "llm.model",
+    "llm.api_key",
+    "llm.base_url",
+    "llm.temperature",
+    "llm.timeout_secs",
+    "llm.max_retries",
+    "llm.max_tokens",
 ];
 
 /// Apply a `DocumentsCliOverrides` layer onto `config`, optionally recording per-field
@@ -206,10 +215,24 @@ pub(crate) fn apply_documents_overrides(
             p.insert("documents.summarization.enabled", source);
         }
     }
-    if let Some(v) = overrides.summarization_max_chars {
-        d.summarization.max_chars = v;
+    if let Some(v) = overrides.summarization_strategy.as_deref() {
+        match v.to_ascii_lowercase().as_str() {
+            "extractive" => d.summarization.strategy = SummarizationStrategy::Extractive,
+            "abstractive" => d.summarization.strategy = SummarizationStrategy::Abstractive,
+            // Unknown value: skip rather than poisoning the merger; clap should
+            // reject upstream once we tighten the type.
+            _ => {}
+        }
+        // Always record provenance when the user reached for the flag — even
+        // if the value was unknown the intent was set.
         if let Some(p) = provenance.as_mut() {
-            p.insert("documents.summarization.max_chars", source);
+            p.insert("documents.summarization.strategy", source);
+        }
+    }
+    if let Some(v) = overrides.summarization_max_tokens {
+        d.summarization.max_tokens = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.summarization.max_tokens", source);
         }
     }
     if let Some(v) = overrides.output_format.as_deref() {
@@ -223,6 +246,64 @@ pub(crate) fn apply_documents_overrides(
         }
         if let Some(p) = provenance.as_mut() {
             p.insert("documents.output.format", source);
+        }
+    }
+    apply_llm_overrides(config, overrides, source, provenance);
+}
+
+/// Apply the `llm.*` slice of `DocumentsCliOverrides` onto `config.llm`. Split
+/// out so `apply_documents_overrides` stays readable and the LLM branches are
+/// easy to audit in isolation (api_key carries the secret-handling rule).
+fn apply_llm_overrides(
+    config: &mut ConfigV1,
+    overrides: &DocumentsCliOverrides,
+    source: ConfigSource,
+    mut provenance: Option<&mut ProvenanceMap>,
+) {
+    let llm = &mut config.llm;
+    if let Some(v) = overrides.llm_model.clone() {
+        llm.model = v;
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.model", source);
+        }
+    }
+    if let Some(v) = overrides.llm_api_key.clone() {
+        // Arrives as a literal (env value or `--llm-api-key` argument). Wrap as
+        // `ApiKey::Literal` so the boundary still routes through `resolve()` →
+        // `SecretString`; never log `v` here.
+        llm.api_key = ApiKey::Literal(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.api_key", source);
+        }
+    }
+    if let Some(v) = overrides.llm_base_url.clone() {
+        llm.base_url = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.base_url", source);
+        }
+    }
+    if let Some(v) = overrides.llm_temperature {
+        llm.temperature = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.temperature", source);
+        }
+    }
+    if let Some(v) = overrides.llm_timeout_secs {
+        llm.timeout_secs = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.timeout_secs", source);
+        }
+    }
+    if let Some(v) = overrides.llm_max_retries {
+        llm.max_retries = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.max_retries", source);
+        }
+    }
+    if let Some(v) = overrides.llm_max_tokens {
+        llm.max_tokens = Some(v);
+        if let Some(p) = provenance.as_mut() {
+            p.insert("llm.max_tokens", source);
         }
     }
 }

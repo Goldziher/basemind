@@ -88,6 +88,93 @@ fn pre_iter6_doc_blob_deserialises_into_new_filemap_doc() {
         new_doc.entities.is_empty(),
         "iter-6 `entities` must default to empty on pre-iter-6 blobs"
     );
+    assert!(
+        new_doc.summary.is_none(),
+        "iter-7 `summary` must default to None on pre-iter-6 blobs"
+    );
+}
+
+/// Iter-7 additive `FileMapDoc.summary` must not break pre-iter-7 blobs that
+/// already carry the iter-6 `keywords` + `entities` tail. Same shape as the
+/// iter-6 test but with the iter-6 fields populated so this is a stricter
+/// round-trip than the pre-iter-6 one.
+#[cfg(feature = "documents")]
+#[test]
+fn pre_iter7_doc_blob_deserialises_into_new_filemap_doc() {
+    use basemind::extract::doc::FileMapDoc;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct PreIter7 {
+        schema_ver: u16,
+        mime_type: String,
+        content: String,
+        metadata: Vec<(String, String)>,
+        detected_languages: Vec<String>,
+        chunks: Vec<PreIter7Chunk>,
+        embedding_model: String,
+        embedding_dim: u16,
+        keywords: Vec<PreIter7Keyword>,
+        entities: Vec<PreIter7Entity>,
+        // NOTE: no `summary` — pre-iter-7 layout.
+    }
+    #[derive(Serialize)]
+    struct PreIter7Chunk {
+        byte_start: u32,
+        byte_end: u32,
+        text: String,
+        embedding: Vec<f32>,
+    }
+    #[derive(Serialize)]
+    struct PreIter7Keyword {
+        text: String,
+        score: f32,
+        algorithm: String,
+    }
+    #[derive(Serialize)]
+    struct PreIter7Entity {
+        category: String,
+        text: String,
+        start: u32,
+        end: u32,
+    }
+
+    let old = PreIter7 {
+        schema_ver: 0,
+        mime_type: "text/plain".to_string(),
+        content: "hello world".to_string(),
+        metadata: vec![],
+        detected_languages: vec!["eng".to_string()],
+        chunks: vec![PreIter7Chunk {
+            byte_start: 0,
+            byte_end: 11,
+            text: "hello world".to_string(),
+            embedding: vec![],
+        }],
+        embedding_model: String::new(),
+        embedding_dim: 0,
+        keywords: vec![PreIter7Keyword {
+            text: "hello".to_string(),
+            score: 0.5,
+            algorithm: "yake".to_string(),
+        }],
+        entities: vec![PreIter7Entity {
+            category: "location".to_string(),
+            text: "world".to_string(),
+            start: 6,
+            end: 11,
+        }],
+    };
+    let bytes = rmp_serde::to_vec_named(&old).expect("serialize pre-iter-7 shape");
+    let new_doc: FileMapDoc = rmp_serde::from_slice(&bytes)
+        .expect("pre-iter-7 shape must deserialise via serde(default)");
+
+    assert_eq!(new_doc.keywords.len(), 1, "iter-6 keywords preserved");
+    assert_eq!(new_doc.entities.len(), 1, "iter-6 entities preserved");
+    assert!(
+        new_doc.summary.is_none(),
+        "iter-7 `summary` must default to None on pre-iter-7 blobs"
+    );
 }
 
 #[test]

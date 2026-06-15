@@ -34,7 +34,7 @@ pub struct SearchDocumentsParams {
 }
 
 #[cfg(feature = "documents")]
-pub(crate) use crate::extract::doc::{DocEntity, DocKeyword};
+pub(crate) use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
 #[cfg(feature = "documents")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +58,10 @@ pub(crate) struct DocumentSearchHit {
     /// Empty otherwise.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<DocEntity>,
+    /// Document-level summary from the parent doc blob, when summarisation was
+    /// enabled at scan time. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<DocSummary>,
 }
 
 #[cfg(feature = "documents")]

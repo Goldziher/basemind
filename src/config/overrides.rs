@@ -119,12 +119,19 @@ pub struct DocumentsCliOverrides {
     )]
     pub summarization_enabled: Option<bool>,
 
-    /// Override `documents.summarization.max_chars`.
+    /// Override `documents.summarization.strategy` (`extractive` / `abstractive`).
     #[arg(
-        long = "documents-summarization-max-chars",
-        env = "BASEMIND_DOCUMENTS_SUMMARIZATION_MAX_CHARS"
+        long = "documents-summarization-strategy",
+        env = "BASEMIND_DOCUMENTS_SUMMARIZATION_STRATEGY"
     )]
-    pub summarization_max_chars: Option<usize>,
+    pub summarization_strategy: Option<String>,
+
+    /// Override `documents.summarization.max_tokens`.
+    #[arg(
+        long = "documents-summarization-max-tokens",
+        env = "BASEMIND_DOCUMENTS_SUMMARIZATION_MAX_TOKENS"
+    )]
+    pub summarization_max_tokens: Option<u32>,
 
     /// Override `documents.output.format` (json / toon).
     #[arg(
@@ -132,6 +139,40 @@ pub struct DocumentsCliOverrides {
         env = "BASEMIND_DOCUMENTS_OUTPUT_FORMAT"
     )]
     pub output_format: Option<String>,
+
+    /// Override `llm.model` (liter-llm routing format, e.g. `openai/gpt-4o`).
+    #[arg(long = "llm-model", env = "BASEMIND_LLM_MODEL")]
+    pub llm_model: Option<String>,
+
+    /// Override `llm.api_key` (literal). Use a shell expansion against an env var
+    /// (`--llm-api-key "$OPENAI_API_KEY"`) rather than a hard-coded literal.
+    /// `hide_env_values = true` keeps the resolved value out of `--help` output.
+    #[arg(
+        long = "llm-api-key",
+        env = "BASEMIND_LLM_API_KEY",
+        hide_env_values = true
+    )]
+    pub llm_api_key: Option<String>,
+
+    /// Override `llm.base_url` (for self-hosted vLLM, Azure OpenAI, …).
+    #[arg(long = "llm-base-url", env = "BASEMIND_LLM_BASE_URL")]
+    pub llm_base_url: Option<String>,
+
+    /// Override `llm.temperature` (sampling temperature, provider-default when unset).
+    #[arg(long = "llm-temperature", env = "BASEMIND_LLM_TEMPERATURE")]
+    pub llm_temperature: Option<f64>,
+
+    /// Override `llm.timeout_secs` (per-request timeout in seconds).
+    #[arg(long = "llm-timeout-secs", env = "BASEMIND_LLM_TIMEOUT_SECS")]
+    pub llm_timeout_secs: Option<u64>,
+
+    /// Override `llm.max_retries` (retry budget on transient failures).
+    #[arg(long = "llm-max-retries", env = "BASEMIND_LLM_MAX_RETRIES")]
+    pub llm_max_retries: Option<u32>,
+
+    /// Override `llm.max_tokens` (maximum tokens to generate).
+    #[arg(long = "llm-max-tokens", env = "BASEMIND_LLM_MAX_TOKENS")]
+    pub llm_max_tokens: Option<u64>,
 }
 
 impl DocumentsCliOverrides {
@@ -160,7 +201,15 @@ impl DocumentsCliOverrides {
             || self.keywords_min_score.is_some()
             || self.ner_enabled.is_some()
             || self.summarization_enabled.is_some()
-            || self.summarization_max_chars.is_some()
+            || self.summarization_strategy.is_some()
+            || self.summarization_max_tokens.is_some()
             || self.output_format.is_some()
+            || self.llm_model.is_some()
+            || self.llm_api_key.is_some()
+            || self.llm_base_url.is_some()
+            || self.llm_temperature.is_some()
+            || self.llm_timeout_secs.is_some()
+            || self.llm_max_retries.is_some()
+            || self.llm_max_tokens.is_some()
     }
 }

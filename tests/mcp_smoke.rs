@@ -1672,6 +1672,86 @@ async fn reranks_search_results() {
     let _ = service.cancel().await;
 }
 
+// ─── Summarization smoke test ───────────────────────────────────────────────
+//
+// Iter-7 wires `summarization` + `llm` through the schema-driven config across
+// all four surfaces (TOML / CLI / MCP / env). The synthetic fixture has no
+// LanceDB document store, so we can only verify:
+//   1. `summarization_enabled = true` deserializes (no `unknown field`)
+//   2. The server doesn't crash when summarisation is enabled per-query
+//   3. When hits are returned, every hit carries the optional `summary` slot
+//      (None or Some(...) — either is valid because the fixture has no
+//      pre-summarised doc blob to attach metadata from).
+// The extractive path requires NO model download, so this test is NOT gated
+// behind `#[ignore]`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "documents")]
+async fn summarizes_via_extractive_default() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let cmd = AsyncCommand::new(bin).configure(|c| {
+        c.arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let result = service
+        .call_tool(call_params(
+            "search_documents",
+            json!({
+                "query": "test",
+                "limit": 5,
+                "summarization_enabled": true,
+                "summarization_strategy": "extractive",
+                "summarization_max_tokens": 100,
+            }),
+        ))
+        .await;
+
+    match &result {
+        Ok(resp) => {
+            let body = decode_text(resp);
+            if let Some(hits) = body.get("hits").and_then(Value::as_array) {
+                for hit in hits {
+                    // `summary` is the iter-7 additive field. It may be present
+                    // (Some(...)) or absent — `skip_serializing_if = Option::is_none`
+                    // omits the key when None. The key contract is that, when
+                    // present, it carries a `text` + `strategy` shape.
+                    if let Some(summary) = hit.get("summary") {
+                        assert!(
+                            summary.get("text").is_some(),
+                            "summary must carry a `text` field: {summary}"
+                        );
+                        assert!(
+                            summary.get("strategy").is_some(),
+                            "summary must carry a `strategy` field: {summary}"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // Protocol-level error is acceptable when the docs feature isn't
+            // wired or the LanceDB store is absent. The key assertion is no
+            // `unknown field` rejection on the new per-query params.
+            let msg = format!("{e:?}");
+            assert!(
+                !msg.contains("unknown field"),
+                "summarization params must deserialize: {msg}"
+            );
+        }
+    }
+
+    let _ = service.cancel().await;
+}
+
 // ─── Post-filter smoke test ─────────────────────────────────────────────────
 //
 // `attach_doc_metadata` filters hits by `entity_category` / `keywords_contains`

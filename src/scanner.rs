@@ -660,6 +660,7 @@ fn process_doc(
         &bytes,
         &mime_type,
         &config.documents,
+        &config.llm,
         scope,
     ) {
         Ok(Some(batch)) => {

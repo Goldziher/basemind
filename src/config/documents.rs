@@ -299,34 +299,25 @@ pub enum NerBackend {
     Llm,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SummarizationConfig {
-    /// Master switch — off by default.
+    /// Master switch — off by default. When true, the boundary code populates
+    /// `ExtractionConfig.summarization`; the resulting `ExtractionResult.summary`
+    /// surfaces on `FileMapDoc.summary` and `DocumentSearchHit.summary`.
     #[serde(default)]
     pub enabled: bool,
-    /// Strategy: extractive (TextRank, no LLM) or abstractive (routed via `[llm]`).
+    /// Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via
+    /// the top-level `[llm]` config). When `abstractive` is set but `[llm].model`
+    /// is empty, the boundary falls back to `extractive` with a warning so the
+    /// scan still completes.
     #[serde(default)]
     pub strategy: SummarizationStrategy,
-    /// Soft cap on summary length in characters.
-    #[serde(default = "SummarizationConfig::default_max_chars")]
-    pub max_chars: usize,
-}
-
-impl SummarizationConfig {
-    fn default_max_chars() -> usize {
-        500
-    }
-}
-
-impl Default for SummarizationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            strategy: SummarizationStrategy::default(),
-            max_chars: Self::default_max_chars(),
-        }
-    }
+    /// Soft cap on summary length in tokens. `None` lets kreuzberg pick a default
+    /// suited to the chosen strategy (the kreuzberg-side type uses the same
+    /// `Option<u32>` shape; pass-through with no policy of our own).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
@@ -391,27 +382,67 @@ pub enum OutputFormat {
 
 /// Shared LLM credentials + model selection. Consumed by every LLM-backed
 /// capability (ner-llm, summarization-llm, reranker-llm, VLM OCR).
+///
+/// Mirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:
+/// `api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of
+/// `Option<String>`, so credentials are never stored as bare literals in TOML.
+/// At the boundary the env-ref is resolved into a [`SecretString`] and then
+/// exposed via [`SecretString::expose`] when constructing kreuzberg's struct.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
-    /// Provider name (`openai`, `anthropic`, `vllm`, …). Maps to a kreuzberg
-    /// liter-llm client at the boundary.
+    /// Combined provider/model string following liter-llm's routing format:
+    /// `"openai/gpt-4o"`, `"anthropic/claude-sonnet-4-20250514"`,
+    /// `"groq/llama-3.1-70b-versatile"`. Empty string ⇒ inert; every LLM-backed
+    /// feature treats an empty `model` as "no LLM configured".
     #[serde(default)]
-    pub provider: Option<String>,
-    /// Provider-specific model name (`gpt-4o-mini`, `claude-sonnet-4-5`, …).
-    #[serde(default)]
-    pub model: Option<String>,
+    pub model: String,
     /// API key — either a literal (discouraged; keeps secrets in version control)
-    /// or an `{ env = "OPENAI_API_KEY" }` reference. `Unset` short-circuits any
-    /// LLM-backed feature.
+    /// or an `{ env = "OPENAI_API_KEY" }` reference. `Unset` lets the underlying
+    /// provider SDK fall back to its standard environment variable lookup.
     #[serde(default)]
     pub api_key: ApiKey,
-    /// Override the provider base URL (for self-hosted vLLM, Azure, …).
+    /// Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).
     #[serde(default)]
     pub base_url: Option<String>,
     /// Sampling temperature. Provider-default when unset.
     #[serde(default)]
-    pub temperature: Option<f32>,
+    pub temperature: Option<f64>,
+    /// Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Maximum retry attempts on transient errors. Maps to kreuzberg's
+    /// `max_retries` (default 3).
+    #[serde(default)]
+    pub max_retries: Option<u32>,
+    /// Maximum tokens to generate. Provider-default when unset.
+    #[serde(default)]
+    pub max_tokens: Option<u64>,
+}
+
+#[cfg(feature = "intelligence")]
+impl LlmConfig {
+    /// Translate the basemind-side `LlmConfig` into kreuzberg's `LlmConfig`.
+    ///
+    /// Returns `None` when `model` is empty — every LLM-backed feature treats
+    /// `None` as "no LLM configured" and falls back to the non-LLM path. The
+    /// `ApiKey` enum is resolved here: `Unset` and missing env vars become
+    /// `None` (letting the provider SDK fall back to its own env-var lookup),
+    /// `Literal` and resolved env-refs are exposed via [`SecretString::expose`].
+    pub fn to_kreuzberg(&self) -> Option<kreuzberg::LlmConfig> {
+        if self.model.is_empty() {
+            return None;
+        }
+        Some(kreuzberg::LlmConfig {
+            model: self.model.clone(),
+            api_key: self.api_key.resolve().map(|s| s.expose().to_string()),
+            base_url: self.base_url.clone(),
+            timeout_secs: self.timeout_secs,
+            max_retries: self.max_retries,
+            temperature: self.temperature,
+            max_tokens: self.max_tokens,
+        })
+    }
 }
 
 /// Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain

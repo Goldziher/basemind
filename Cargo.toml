@@ -82,6 +82,8 @@ documents = [
     # RAKE keyword algorithm + RakeParams tuning
     "kreuzberg/summarization",
     # TextRank extractive (no LLM)
+    "kreuzberg/summarization-llm",
+    # liter-llm abstractive summarisation (gated on `[llm]` config)
     "kreuzberg/redaction",
     # pattern-based PII (no LLM)
     # QR decode from images
