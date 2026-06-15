@@ -76,10 +76,27 @@ reach for code-map tools.
 /plugin install basemind@basemind
 ```
 
-Restart the session. The plugin also auto-wires a live statusline:
-`▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`.
-If your statusline shows `0 calls` after install, restart `basemind serve` —
-the telemetry counter is written by the running MCP process.
+Restart the session.
+
+**Live statusline (optional, manual wiring).** Add to `~/.claude/settings.json`
+to get a one-line summary of the indexed map under the prompt — the Claude Code
+plugin manifest doesn't yet expose a `statusLine` field, so this step is still
+manual:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
+    "refreshInterval": 5
+  }
+}
+```
+
+Output: `▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`. The
+freshness dot is green (< 1 h), yellow (1–24 h), or red (> 1 day). If the
+`calls` / `tok saved` counters stay at `0`, restart `basemind serve` — the
+counter is written by the running MCP process.
 
 ### Codex CLI
 
@@ -87,19 +104,14 @@ the telemetry counter is written by the running MCP process.
 /plugins
 ```
 
-Search for `basemind` and select **Install Plugin**.
+Search for `basemind` and select **Install Plugin**. The `.codex-plugin/plugin.json`
+manifest is shipped in this repo and `scripts/sync-to-codex-plugin.sh` mirrors
+it into the OpenAI plugin marketplace when a release ships.
 
 ### Codex App
 
 Open the **Plugins** panel in the Codex sidebar, find **basemind** under the
 **Coding** category, and click `+`.
-
-### Factory Droid
-
-```bash
-droid plugin marketplace add https://github.com/Goldziher/basemind
-droid plugin install basemind@basemind
-```
 
 ### Gemini CLI
 
@@ -107,15 +119,9 @@ droid plugin install basemind@basemind
 gemini extensions install https://github.com/Goldziher/basemind
 ```
 
-Update later with `gemini extensions update basemind`.
-
-### Cursor
-
-```text
-/add-plugin basemind
-```
-
-Or search for "basemind" in the Cursor plugin marketplace.
+Update later with `gemini extensions update basemind`. The
+`gemini-extension.json` at the repo root declares the basemind MCP server, so
+the extension is functional immediately after install.
 
 ### OpenCode
 
@@ -129,12 +135,19 @@ Add to your `opencode.json` (global or project-level):
 
 Restart OpenCode.
 
-### GitHub Copilot CLI
+### Factory Droid, Cursor, GitHub Copilot CLI
 
-```bash
-copilot plugin marketplace add Goldziher/basemind
-copilot plugin install basemind@basemind
-```
+basemind ships a manifest for each (`.cursor-plugin/plugin.json` for Cursor;
+the existing `.claude-plugin/marketplace.json` is reused for Droid and Copilot
+CLI when those harnesses pick it up). The exact install command varies per
+harness and per release — consult the relevant CLI's plugin docs:
+
+- Factory Droid: `droid plugin --help`
+- Cursor: see the Cursor docs for the current plugin install flow
+- GitHub Copilot CLI: `copilot plugin --help`
+
+Until a harness publishes a public plugin marketplace, the **generic MCP
+config** below works in every MCP-aware client.
 
 ### Other MCP clients (Continue, Cline, …)
 

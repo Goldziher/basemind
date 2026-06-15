@@ -211,6 +211,19 @@ command -v python3 >/dev/null || die "python3 not found in PATH"
 
 gh auth status >/dev/null 2>&1 || die "gh not authenticated — run 'gh auth login'"
 
+# The destination fork must already exist on GitHub. We fail loudly here so the
+# user gets a one-line "create the fork first" message instead of an opaque
+# `gh repo clone` failure 30 lines down.
+if [[ -z "$LOCAL_CHECKOUT" ]] && ! gh repo view "$FORK" >/dev/null 2>&1; then
+  die "fork '$FORK' does not exist or you cannot access it.
+
+  Create it once:
+    gh repo fork openai/codex-plugins --clone=false --remote=false --org=Goldziher
+    # then re-run this script.
+
+  If your fork lives elsewhere, edit FORK= at the top of this script."
+fi
+
 [[ -d "$UPSTREAM/.git" ]] || die "upstream '$UPSTREAM' is not a git checkout"
 [[ -f "$UPSTREAM/.codex-plugin/plugin.json" ]] || die "committed Codex manifest missing at $UPSTREAM/.codex-plugin/plugin.json"
 

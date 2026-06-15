@@ -2,5 +2,11 @@
   "name": "basemind",
   "version": "0.0.1",
   "description": "Tree-sitter code-map + git context MCP server for navigating large or unfamiliar codebases.",
-  "contextFileName": "GEMINI.md"
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "basemind": {
+      "command": "basemind",
+      "args": ["serve"]
+    }
+  }
 }

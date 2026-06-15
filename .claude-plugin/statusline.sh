@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # basemind statusline — one-line live summary of the indexed code map.
 #
-# Auto-wired by .claude-plugin/plugin.json via Claude Code's plugin `statusLine`
-# field; no hand-editing of ~/.claude/settings.json required.
+# Wire it into Claude Code by adding to ~/.claude/settings.json (the
+# plugin manifest does not yet support `statusLine`, so this step is
+# manual until Claude Code adds the field to `.claude-plugin/plugin.json`):
+#
+#   {
+#     "statusLine": {
+#       "type": "command",
+#       "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
+#       "refreshInterval": 5
+#     }
+#   }
 #
 # Claude Code feeds the script a JSON payload on stdin; we extract
-# `workspace.current_dir` (or fall back to PWD) and look for `.basemind/` under it.
-# Missing `.basemind/` → silent empty line so the script never breaks repos that
-# don't use basemind.
+# `workspace.current_dir` (or fall back to PWD) and look for `.basemind/` under
+# it. Missing `.basemind/` → silent empty line so the script never breaks repos
+# that don't use basemind.
 #
-# All filesystem reads are bounded (`tail -n 1000`) so the script stays cheap even
-# at `refreshInterval: 1`. `jq` is required.
+# All filesystem reads are bounded (`tail -n 1000`) so the script stays cheap
+# even at `refreshInterval: 1`. `jq` is required.
 
 set -euo pipefail
 
