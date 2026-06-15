@@ -25,6 +25,8 @@ cargo test --test config_schema -- --ignored regenerate_schema
   shipped; v2 lands as `basemind-config-v2.schema.json`.
 - The TOML config carries a top-level `$schema` field. Validation picks the
   matching schema by that value.
-- Migration between versions lives in `src/config/migrate.rs` as
-  `migrate_v1_to_v2(toml: Value) -> Value` functions. `basemind config migrate`
-  runs the chain and rewrites the user's TOML in place.
+- Migration between versions lives in `src/config/migrate.rs`. v1 is the
+  current schema, so the chain is empty (`migrate_to_latest` is a passthrough).
+  When v2 lands, add a `migrate_v1_to_v2(value: Value) -> Result<Value, ConfigError>`
+  step and wire it into the chain — and expose a `basemind config migrate`
+  subcommand that runs the chain and rewrites the user's TOML in place.
