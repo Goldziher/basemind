@@ -1,0 +1,17 @@
+{
+  "name": "basemind",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Tree-sitter code-map + git context MCP server (OpenCode plugin entry).",
+  "main": "opencode-plugin/basemind.js",
+  "homepage": "https://github.com/Goldziher/basemind",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Goldziher/basemind.git"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Na'aman Hirschfeld",
+    "email": "nhirschfeld@gmail.com"
+  }
+}
