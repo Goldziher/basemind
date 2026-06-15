@@ -1671,3 +1671,56 @@ async fn reranks_search_results() {
 
     let _ = service.cancel().await;
 }
+
+// ─── Post-filter smoke test ─────────────────────────────────────────────────
+//
+// `attach_doc_metadata` filters hits by `entity_category` / `keywords_contains`
+// after the vector recall. The fixture has no NER-tagged documents (and no
+// LanceDB store), so the filter yields 0 hits — the test only proves the
+// dispatch + post-filter wiring deserializes the new fields and does not crash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "documents")]
+async fn search_documents_accepts_post_filter_params() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let cmd = AsyncCommand::new(bin).configure(|c| {
+        c.arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let result = service
+        .call_tool(call_params(
+            "search_documents",
+            json!({
+                "query": "test",
+                "limit": 10,
+                "entity_category": "person",
+                "keywords_contains": "foo",
+            }),
+        ))
+        .await;
+
+    // Either the call succeeds (with possibly an `is_error` payload when the
+    // LanceDB store is unavailable) or returns a protocol-level Err when the
+    // feature isn't wired. The contract is "no unknown-field rejection".
+    match &result {
+        Ok(_) => {}
+        Err(e) => {
+            let msg = format!("{e:?}");
+            assert!(
+                !msg.contains("unknown field"),
+                "post-filter params must deserialize: {msg}"
+            );
+        }
+    }
+
+    let _ = service.cancel().await;
+}

@@ -231,6 +231,24 @@ impl DocConfig {
                 }
             }
         }
+        // Surface algorithm/params mismatches loudly — kreuzberg silently ignores
+        // YakeParams when the algorithm is Rake (and vice versa). The user almost
+        // certainly meant for the params to apply; logging once at config-build
+        // time lets them spot the typo without parsing the kreuzberg source.
+        if self.keywords.yake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Yake
+        {
+            tracing::warn!(
+                algorithm = ?self.keywords.algorithm,
+                "yake_params set but algorithm is not Yake; params ignored"
+            );
+        }
+        if self.keywords.rake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Rake
+        {
+            tracing::warn!(
+                algorithm = ?self.keywords.algorithm,
+                "rake_params set but algorithm is not Rake; params ignored"
+            );
+        }
         Some(kc)
     }
 

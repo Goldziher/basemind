@@ -513,7 +513,7 @@ async fn attach_doc_metadata(
     // Collect distinct paths once so we don't re-read the same blob for every chunk.
     let mut unique_paths: Vec<String> = Vec::with_capacity(hits.len());
     {
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut seen: ahash::AHashSet<&str> = ahash::AHashSet::new();
         for h in hits.iter() {
             if seen.insert(h.path.as_str()) {
                 unique_paths.push(h.path.clone());
@@ -521,27 +521,51 @@ async fn attach_doc_metadata(
         }
     }
 
-    // Resolve path → (keywords, entities) under a single read guard.
-    let mut meta: std::collections::HashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
-        std::collections::HashMap::with_capacity(unique_paths.len());
-    {
+    // Phase 1: under the read guard, resolve path → blob filesystem path. We do
+    // NOT touch the filesystem here so the lock window stays trivially short.
+    let pairs: Vec<(String, std::path::PathBuf)> = {
         let store = state.store.read().await;
-        for path in &unique_paths {
-            let Some(entry) = store.lookup(path.as_str()) else {
-                continue;
-            };
-            let hash_hex = entry.hash_hex.clone();
-            match store.read_doc_by_hex(&hash_hex) {
-                Ok(Some(doc)) => {
-                    meta.insert(path.clone(), (doc.keywords, doc.entities));
+        unique_paths
+            .iter()
+            .filter_map(|p| {
+                store
+                    .lookup(p.as_str())
+                    .map(|entry| (p.clone(), store.blob_path_doc_hex(&entry.hash_hex)))
+            })
+            .collect()
+    }; // guard dropped here
+
+    // Phase 2: read blobs off the async runtime. Each blob is a synchronous
+    // `std::fs::read` + msgpack decode — exactly the work `spawn_blocking` is
+    // for. The async path keeps making progress while we crunch metadata.
+    let meta: ahash::AHashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
+        tokio::task::spawn_blocking(move || {
+            let mut out: ahash::AHashMap<String, (Vec<DocKeyword>, Vec<DocEntity>)> =
+                ahash::AHashMap::with_capacity(pairs.len());
+            for (path, blob_path) in pairs {
+                if !blob_path.exists() {
+                    continue;
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
+                let bytes = match std::fs::read(&blob_path) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(path = %path, error = %e, "read doc blob for metadata attach failed");
+                        continue;
+                    }
+                };
+                match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
+                    Ok(doc) => {
+                        out.insert(path, (doc.keywords, doc.entities));
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
+                    }
                 }
             }
-        }
-    }
+            out
+        })
+        .await
+        .unwrap_or_default();
 
     // Pre-lowercase filter substrings once.
     let cat_needle = entity_category.map(|s| s.to_lowercase());
