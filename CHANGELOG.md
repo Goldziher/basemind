@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-06-15
+
+### Fixed
+
+- **`npm-package`** — `npx basemind …` (and equivalent `npm install -g basemind`
+  invocations) used to silently fall through to whatever `basemind` already lived
+  on `$PATH` because npm skipped creating the `node_modules/.bin/basemind`
+  symlink when the `bin:` target was missing at install time (the native binary
+  is downloaded by `postinstall`). The wrapper now ships a Node.js shim at
+  `bin/basemind.js` that `spawnSync`'s the downloaded native binary, so the
+  symlink target exists at install time and npx routes correctly through the
+  wrapper.
+- **`publish.yaml`** — re-enabled the Homebrew tap step now that
+  `HOMEBREW_TOKEN` is on the path to being provisioned. Set the secret on the
+  basemind repo before pushing the next tag; goreleaser will then auto-update
+  `Goldziher/homebrew-tap`'s `Formula/basemind.rb`.
+
 ## [0.1.0] — 2026-06-15
 
 **Initial public release.** First minor wipes the schema (`RELEASE_MINOR=1`)
