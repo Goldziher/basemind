@@ -13,6 +13,12 @@ fn generate_schema_text() -> String {
     s
 }
 
+// Schemars top-level property order is sensitive to the dep graph (kreuzberg's
+// own schemars types shift the visit order). Pin the snapshot check to the
+// `full` feature set — that's the maximal config surface and the version we
+// publish on the website. Other matrix points still exercise the test crate;
+// they just skip this single assertion.
+#[cfg(feature = "full")]
 #[test]
 fn schema_snapshot_matches_derived() {
     let derived = generate_schema_text();
@@ -38,7 +44,9 @@ fn schema_snapshot_matches_derived() {
 }
 
 /// Regenerate the committed snapshot. Gated behind `#[ignore]` so updating the
-/// schema is always an explicit, audited step.
+/// schema is always an explicit, audited step. Same `full`-feature gate as
+/// the assertion above so regen and assert see the same dep graph.
+#[cfg(feature = "full")]
 #[test]
 #[ignore]
 fn regenerate_schema() {

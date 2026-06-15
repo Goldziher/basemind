@@ -6,74 +6,43 @@
     "$schema": {
       "type": "string"
     },
+    "scan": {
+      "$ref": "#/$defs/ScanConfig",
+      "default": {
+        "include": [
+          "**/*"
+        ],
+        "exclude": [
+          "**/target/**",
+          "**/node_modules/**",
+          "**/dist/**",
+          "**/.venv/**",
+          "**/.basemind/**",
+          "**/.git/**"
+        ],
+        "respect_gitignore": true,
+        "max_file_bytes": 2097152,
+        "skip_submodules": true,
+        "eager_l2": true
+      }
+    },
+    "watch": {
+      "$ref": "#/$defs/WatchConfig",
+      "default": {
+        "debounce_ms": 250,
+        "live_l2": false
+      }
+    },
     "cache": {
       "$ref": "#/$defs/CacheConfig",
       "default": {
         "file_map_lru": 256
       }
     },
-    "crawl": {
-      "$ref": "#/$defs/CrawlConfig",
+    "mcp": {
+      "$ref": "#/$defs/McpConfig",
       "default": {
-        "max_body_size": 4194304,
-        "max_depth": 2,
-        "max_pages": 32,
-        "respect_robots_txt": true,
-        "user_agent": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)"
-      }
-    },
-    "documents": {
-      "$ref": "#/$defs/DocumentsConfig",
-      "default": {
-        "embed": true,
-        "embedding_preset": "balanced",
-        "enabled": true,
-        "keywords": {
-          "algorithm": "yake",
-          "enabled": false,
-          "max_keywords": 10,
-          "min_score": 0.0,
-          "ngram_range": [
-            1,
-            3
-          ],
-          "rake_params": null,
-          "yake_params": null
-        },
-        "language": {
-          "auto_detect": true,
-          "detect_multiple": false,
-          "min_confidence": 0.8,
-          "preferred_languages": []
-        },
-        "max_characters": 1000,
-        "mime_allowlist": [],
-        "ner": {
-          "backend": "onnx",
-          "categories": [],
-          "custom_labels": [],
-          "enabled": false,
-          "model": null
-        },
-        "ocr": {
-          "backend": "tesseract",
-          "languages": [
-            "eng"
-          ]
-        },
-        "output": {
-          "format": "json"
-        },
-        "overlap": 200,
-        "reranker": {
-          "enabled": false,
-          "preset": "bge-reranker-base",
-          "top_k": 10
-        },
-        "summarization": {
-          "enabled": false,
-          "strategy": "extractive"
-        }
+        "transport": "stdio"
       }
     },
     "languages": {
@@ -83,23 +52,58 @@
       },
       "default": {}
     },
-    "llm": {
-      "description": "Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,\nVLM OCR, and any future LLM-backed capability. Off by default — leaving\n`api_key` `Unset` short-circuits any LLM-backed feature.",
-      "$ref": "#/$defs/LlmConfig",
+    "documents": {
+      "$ref": "#/$defs/DocumentsConfig",
       "default": {
-        "api_key": null,
-        "base_url": null,
-        "max_retries": null,
-        "max_tokens": null,
-        "model": "",
-        "temperature": null,
-        "timeout_secs": null
-      }
-    },
-    "mcp": {
-      "$ref": "#/$defs/McpConfig",
-      "default": {
-        "transport": "stdio"
+        "enabled": true,
+        "mime_allowlist": [],
+        "max_characters": 1000,
+        "overlap": 200,
+        "embedding_preset": "balanced",
+        "embed": true,
+        "language": {
+          "auto_detect": true,
+          "min_confidence": 0.8,
+          "detect_multiple": false,
+          "preferred_languages": []
+        },
+        "reranker": {
+          "enabled": false,
+          "preset": "bge-reranker-base",
+          "top_k": 10
+        },
+        "keywords": {
+          "enabled": false,
+          "algorithm": "yake",
+          "max_keywords": 10,
+          "min_score": 0.0,
+          "ngram_range": [
+            1,
+            3
+          ],
+          "yake_params": null,
+          "rake_params": null
+        },
+        "ner": {
+          "enabled": false,
+          "backend": "onnx",
+          "model": null,
+          "categories": [],
+          "custom_labels": []
+        },
+        "summarization": {
+          "enabled": false,
+          "strategy": "extractive"
+        },
+        "ocr": {
+          "backend": "tesseract",
+          "languages": [
+            "eng"
+          ]
+        },
+        "output": {
+          "format": "json"
+        }
       }
     },
     "memory": {
@@ -109,31 +113,27 @@
         "scope_strategy": "git_remote_with_fallback"
       }
     },
-    "scan": {
-      "$ref": "#/$defs/ScanConfig",
+    "crawl": {
+      "$ref": "#/$defs/CrawlConfig",
       "default": {
-        "eager_l2": true,
-        "exclude": [
-          "**/target/**",
-          "**/node_modules/**",
-          "**/dist/**",
-          "**/.venv/**",
-          "**/.basemind/**",
-          "**/.git/**"
-        ],
-        "include": [
-          "**/*"
-        ],
-        "max_file_bytes": 2097152,
-        "respect_gitignore": true,
-        "skip_submodules": true
+        "respect_robots_txt": true,
+        "max_pages": 32,
+        "max_depth": 2,
+        "max_body_size": 4194304,
+        "user_agent": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)"
       }
     },
-    "watch": {
-      "$ref": "#/$defs/WatchConfig",
+    "llm": {
+      "description": "Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,\nVLM OCR, and any future LLM-backed capability. Off by default — leaving\n`api_key` `Unset` short-circuits any LLM-backed feature.",
+      "$ref": "#/$defs/LlmConfig",
       "default": {
-        "debounce_ms": 250,
-        "live_l2": false
+        "model": "",
+        "api_key": null,
+        "base_url": null,
+        "temperature": null,
+        "timeout_secs": null,
+        "max_retries": null,
+        "max_tokens": null
       }
     }
   },
@@ -142,30 +142,75 @@
     "$schema"
   ],
   "$defs": {
-    "ApiKey": {
-      "description": "Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain\nstring (`Literal`), or a `{ env = \"NAME\" }` table (`Env`).\n\n`Serialize` is implemented manually — the `Literal` variant NEVER emits its\ncleartext secret. It serialises to the marker string `\"<redacted>\"` so any\ndownstream pipeline that round-trips this enum through JSON / TOML (e.g.\nthe config validator at `src/config/mod.rs`) cannot leak credentials into\nlogs, snapshot tests, or error messages. Deserialisation is unchanged:\nloading a TOML config with a literal `api_key = \"sk-...\"` still produces\n`ApiKey::Literal(...)`. The redaction is one-way by design.",
-      "anyOf": [
-        {
-          "description": "Literal value baked into config. Strongly discouraged for production —\n`Env` keeps secrets out of source control.",
-          "type": "string"
-        },
-        {
-          "description": "`{ env = \"OPENAI_API_KEY\" }` — resolved at load time via `std::env::var`.",
-          "type": "object",
-          "properties": {
-            "env": {
-              "type": "string"
-            }
+    "ScanConfig": {
+      "type": "object",
+      "properties": {
+        "include": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
           },
-          "required": [
-            "env"
+          "default": [
+            "**/*"
           ]
         },
-        {
-          "description": "Missing / `null` — every LLM-backed feature treats this as \"disabled\".",
-          "type": "null"
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [
+            "**/target/**",
+            "**/node_modules/**",
+            "**/dist/**",
+            "**/.venv/**",
+            "**/.basemind/**",
+            "**/.git/**"
+          ]
+        },
+        "respect_gitignore": {
+          "type": "boolean",
+          "default": true
+        },
+        "max_file_bytes": {
+          "description": "Skip files larger than this. Prevents minified-bundle stalls.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 2097152
+        },
+        "skip_submodules": {
+          "description": "When true (default), the scanner skips paths under any submodule root listed in\n`.gitmodules`. Set to false to recurse into submodule working trees — useful only\nif you want one combined index across the parent + its embedded repos.",
+          "type": "boolean",
+          "default": true
+        },
+        "eager_l2": {
+          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `find_references` and\n`find_callers`. Flipping to `false` halves the scan budget on large repos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
+          "type": "boolean",
+          "default": true
         }
-      ]
+      },
+      "additionalProperties": false
+    },
+    "WatchConfig": {
+      "type": "object",
+      "properties": {
+        "debounce_ms": {
+          "description": "Coalesce file events within this window (milliseconds).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "maximum": 60000,
+          "default": 250
+        },
+        "live_l2": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     },
     "CacheConfig": {
       "type": "object",
@@ -174,329 +219,8 @@
           "description": "Maximum number of extracted FileMaps to keep hot in memory.",
           "type": "integer",
           "format": "uint",
-          "default": 256,
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
-    },
-    "CrawlConfig": {
-      "type": "object",
-      "properties": {
-        "max_body_size": {
-          "description": "Truncate response bodies above this many bytes before parsing.",
-          "type": "integer",
-          "format": "uint64",
-          "default": 4194304,
-          "minimum": 1024
-        },
-        "max_depth": {
-          "description": "Maximum link-following depth from the seed URL during `web_crawl`.",
-          "type": "integer",
-          "format": "uint32",
-          "default": 2,
-          "minimum": 0
-        },
-        "max_pages": {
-          "description": "Hard cap on pages visited in a single `web_crawl` call.",
-          "type": "integer",
-          "format": "uint32",
-          "default": 32,
-          "minimum": 1
-        },
-        "respect_robots_txt": {
-          "description": "Honour `robots.txt` when fetching pages. Default `true`. Override only\nfor hosts you control — flipping this off violates `robots.txt`\ndirectives for every domain the crawler touches.",
-          "type": "boolean",
-          "default": true
-        },
-        "user_agent": {
-          "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
-          "type": "string",
-          "default": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)",
-          "minLength": 1
-        }
-      },
-      "additionalProperties": false
-    },
-    "DocLanguageConfig": {
-      "description": "Language detection knobs for the document tier. Named `DocLanguageConfig` to\navoid colliding with the per-tree-sitter-language `LanguageConfig` (which is\nthe scanner's per-grammar override map).\n\nKreuzberg drives language detection through the `whatlang` crate and reports\nISO 639-3 codes (three letters, e.g. `\"fra\"`, `\"deu\"`) — kreuzberg's own\n`ExtractionResult.detected_languages` doc-comment mislabels them as ISO\n639-1 in rc.10, but the wrapper at `kreuzberg::language_detection` normalises\nevery `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,\n`min_confidence`, and `detect_multiple` knobs map straight through to\nkreuzberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for\nfuture use — kreuzberg rc.10 does not honor a preferred-language hint, so\nthe field is plumbed but inert today; we keep it on the schema so callers\ncan start populating it without a config break when support lands.",
-      "type": "object",
-      "properties": {
-        "auto_detect": {
-          "description": "Run kreuzberg's language detector. On by default; flip off when every doc\nin the corpus is the same known language.",
-          "type": "boolean",
-          "default": true
-        },
-        "detect_multiple": {
-          "description": "When true, kreuzberg reports every language detected in the document\ninstead of just the top match. Off by default to match kreuzberg.",
-          "type": "boolean",
-          "default": false
-        },
-        "min_confidence": {
-          "description": "Minimum detector confidence (0.0–1.0). Detections below this threshold\nare dropped. Matches kreuzberg's default of 0.8.",
-          "type": "number",
-          "format": "double",
-          "default": 0.8,
-          "maximum": 1.0,
-          "minimum": 0.0
-        },
-        "preferred_languages": {
-          "description": "Reserved — accepts ISO 639-3 codes (e.g. `\"fra\"`, `\"deu\"`) for future use.\nKreuzberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "DocumentsConfig": {
-      "description": "Top-level `[documents]` table. Each sub-config has `#[serde(default)]` so\nadding a new tier never breaks older TOML files.",
-      "type": "object",
-      "properties": {
-        "embed": {
-          "description": "Generate embeddings (`true`) or skip vector storage entirely (`false`).",
-          "type": "boolean",
-          "default": true
-        },
-        "embedding_preset": {
-          "description": "Kreuzberg embedding preset name. Defaults to \"balanced\".",
-          "type": "string",
-          "default": "balanced"
-        },
-        "enabled": {
-          "description": "Master switch. Only meaningful when the `documents` cargo feature is compiled in.",
-          "type": "boolean",
-          "default": true
-        },
-        "keywords": {
-          "description": "Keyword extraction at ingest time.",
-          "$ref": "#/$defs/KeywordsConfig",
-          "default": {
-            "algorithm": "yake",
-            "enabled": false,
-            "max_keywords": 10,
-            "min_score": 0.0,
-            "ngram_range": [
-              1,
-              3
-            ],
-            "rake_params": null,
-            "yake_params": null
-          }
-        },
-        "language": {
-          "description": "Language detection + preferred languages for chunking / extraction.",
-          "$ref": "#/$defs/DocLanguageConfig",
-          "default": {
-            "auto_detect": true,
-            "detect_multiple": false,
-            "min_confidence": 0.8,
-            "preferred_languages": []
-          }
-        },
-        "max_characters": {
-          "description": "Maximum chunk size in characters.",
-          "type": "integer",
-          "format": "uint",
-          "default": 1000,
-          "minimum": 64
-        },
-        "mime_allowlist": {
-          "description": "MIME-type allowlist. Empty = accept anything kreuzberg can handle.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "ner": {
-          "description": "Named-entity recognition at ingest time.",
-          "$ref": "#/$defs/NerConfig",
-          "default": {
-            "backend": "onnx",
-            "categories": [],
-            "custom_labels": [],
-            "enabled": false,
-            "model": null
-          }
-        },
-        "ocr": {
-          "description": "OCR backend selection for image / scanned-PDF inputs.",
-          "$ref": "#/$defs/OcrConfig",
-          "default": {
-            "backend": "tesseract",
-            "languages": [
-              "eng"
-            ]
-          }
-        },
-        "output": {
-          "description": "Response wire format for the document MCP tools.",
-          "$ref": "#/$defs/OutputConfig",
-          "default": {
-            "format": "json"
-          }
-        },
-        "overlap": {
-          "description": "Overlap between chunks in characters.",
-          "type": "integer",
-          "format": "uint",
-          "default": 200,
-          "minimum": 0
-        },
-        "reranker": {
-          "description": "Cross-encoder reranker applied post-vector-search.",
-          "$ref": "#/$defs/RerankerConfig",
-          "default": {
-            "enabled": false,
-            "preset": "bge-reranker-base",
-            "top_k": 10
-          }
-        },
-        "summarization": {
-          "description": "Document summarization at ingest time.",
-          "$ref": "#/$defs/SummarizationConfig",
-          "default": {
-            "enabled": false,
-            "strategy": "extractive"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "KeywordAlgorithm": {
-      "type": "string",
-      "enum": [
-        "yake",
-        "rake"
-      ]
-    },
-    "KeywordsConfig": {
-      "type": "object",
-      "properties": {
-        "algorithm": {
-          "description": "Algorithm: YAKE (statistical, multi-language) or RAKE (rapid automatic\nkeyword extraction).",
-          "$ref": "#/$defs/KeywordAlgorithm",
-          "default": "yake"
-        },
-        "enabled": {
-          "description": "Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.\nMaps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;\nkreuzberg's own `KeywordConfig` has no `enabled` field — gating is via\nthe wrapping `Option`.",
-          "type": "boolean",
-          "default": false
-        },
-        "max_keywords": {
-          "description": "Maximum keywords to extract per document. Matches kreuzberg's\n`KeywordConfig.max_keywords` default of 10.",
-          "type": "integer",
-          "format": "uint",
-          "default": 10,
-          "minimum": 0
-        },
-        "min_score": {
-          "description": "Minimum score threshold. Matches kreuzberg's `KeywordConfig.min_score`\ndefault of 0.0 (i.e. surface every candidate). Score ranges differ\nbetween YAKE (lower = better) and RAKE (higher = better) — see\n`kreuzberg::keywords::config::KeywordConfig.min_score`.",
-          "type": "number",
-          "format": "float",
-          "default": 0.0,
-          "minimum": 0.0
-        },
-        "ngram_range": {
-          "description": "N-gram range as `[min, max]`. Matches kreuzberg's\n`KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of\nlength 2 so the JSON Schema stays human-readable; values map back to a\n`(usize, usize)` tuple at the boundary.",
-          "type": "array",
-          "default": [
-            1,
-            3
-          ],
-          "items": {
-            "type": "integer",
-            "format": "uint",
-            "minimum": 0
-          },
-          "maxItems": 2,
-          "minItems": 2
-        },
-        "rake_params": {
-          "description": "Optional RAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::RakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
-          "default": null
-        },
-        "yake_params": {
-          "description": "Optional YAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::YakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
-          "default": null
-        }
-      },
-      "additionalProperties": false
-    },
-    "LanguageConfig": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": true
-        }
-      },
-      "additionalProperties": false
-    },
-    "LlmConfig": {
-      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing kreuzberg's struct.",
-      "type": "object",
-      "properties": {
-        "api_key": {
-          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` lets the underlying\nprovider SDK fall back to its standard environment variable lookup.",
-          "$ref": "#/$defs/ApiKey",
-          "default": null
-        },
-        "base_url": {
-          "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null
-        },
-        "max_retries": {
-          "description": "Maximum retry attempts on transient errors. Maps to kreuzberg's\n`max_retries` (default 3).",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "default": null,
-          "minimum": 0
-        },
-        "max_tokens": {
-          "description": "Maximum tokens to generate. Provider-default when unset.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "default": null,
-          "minimum": 0
-        },
-        "model": {
-          "description": "Combined provider/model string following liter-llm's routing format:\n`\"openai/gpt-4o\"`, `\"anthropic/claude-sonnet-4-20250514\"`,\n`\"groq/llama-3.1-70b-versatile\"`. Empty string ⇒ inert; every LLM-backed\nfeature treats an empty `model` as \"no LLM configured\".",
-          "type": "string",
-          "default": ""
-        },
-        "temperature": {
-          "description": "Sampling temperature. Provider-default when unset.",
-          "type": [
-            "number",
-            "null"
-          ],
-          "format": "double",
-          "default": null
-        },
-        "timeout_secs": {
-          "description": "Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint64",
-          "default": null,
-          "minimum": 0
+          "minimum": 0,
+          "default": 256
         }
       },
       "additionalProperties": false
@@ -515,6 +239,374 @@
       "type": "string",
       "enum": [
         "stdio"
+      ]
+    },
+    "LanguageConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "DocumentsConfig": {
+      "description": "Top-level `[documents]` table. Each sub-config has `#[serde(default)]` so\nadding a new tier never breaks older TOML files.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Only meaningful when the `documents` cargo feature is compiled in.",
+          "type": "boolean",
+          "default": true
+        },
+        "mime_allowlist": {
+          "description": "MIME-type allowlist. Empty = accept anything kreuzberg can handle.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "max_characters": {
+          "description": "Maximum chunk size in characters.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 64,
+          "default": 1000
+        },
+        "overlap": {
+          "description": "Overlap between chunks in characters.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 200
+        },
+        "embedding_preset": {
+          "description": "Kreuzberg embedding preset name. Defaults to \"balanced\".",
+          "type": "string",
+          "default": "balanced"
+        },
+        "embed": {
+          "description": "Generate embeddings (`true`) or skip vector storage entirely (`false`).",
+          "type": "boolean",
+          "default": true
+        },
+        "language": {
+          "description": "Language detection + preferred languages for chunking / extraction.",
+          "$ref": "#/$defs/DocLanguageConfig",
+          "default": {
+            "auto_detect": true,
+            "min_confidence": 0.8,
+            "detect_multiple": false,
+            "preferred_languages": []
+          }
+        },
+        "reranker": {
+          "description": "Cross-encoder reranker applied post-vector-search.",
+          "$ref": "#/$defs/RerankerConfig",
+          "default": {
+            "enabled": false,
+            "preset": "bge-reranker-base",
+            "top_k": 10
+          }
+        },
+        "keywords": {
+          "description": "Keyword extraction at ingest time.",
+          "$ref": "#/$defs/KeywordsConfig",
+          "default": {
+            "enabled": false,
+            "algorithm": "yake",
+            "max_keywords": 10,
+            "min_score": 0.0,
+            "ngram_range": [
+              1,
+              3
+            ],
+            "yake_params": null,
+            "rake_params": null
+          }
+        },
+        "ner": {
+          "description": "Named-entity recognition at ingest time.",
+          "$ref": "#/$defs/NerConfig",
+          "default": {
+            "enabled": false,
+            "backend": "onnx",
+            "model": null,
+            "categories": [],
+            "custom_labels": []
+          }
+        },
+        "summarization": {
+          "description": "Document summarization at ingest time.",
+          "$ref": "#/$defs/SummarizationConfig",
+          "default": {
+            "enabled": false,
+            "strategy": "extractive"
+          }
+        },
+        "ocr": {
+          "description": "OCR backend selection for image / scanned-PDF inputs.",
+          "$ref": "#/$defs/OcrConfig",
+          "default": {
+            "backend": "tesseract",
+            "languages": [
+              "eng"
+            ]
+          }
+        },
+        "output": {
+          "description": "Response wire format for the document MCP tools.",
+          "$ref": "#/$defs/OutputConfig",
+          "default": {
+            "format": "json"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DocLanguageConfig": {
+      "description": "Language detection knobs for the document tier. Named `DocLanguageConfig` to\navoid colliding with the per-tree-sitter-language `LanguageConfig` (which is\nthe scanner's per-grammar override map).\n\nKreuzberg drives language detection through the `whatlang` crate and reports\nISO 639-3 codes (three letters, e.g. `\"fra\"`, `\"deu\"`) — kreuzberg's own\n`ExtractionResult.detected_languages` doc-comment mislabels them as ISO\n639-1 in rc.10, but the wrapper at `kreuzberg::language_detection` normalises\nevery `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,\n`min_confidence`, and `detect_multiple` knobs map straight through to\nkreuzberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for\nfuture use — kreuzberg rc.10 does not honor a preferred-language hint, so\nthe field is plumbed but inert today; we keep it on the schema so callers\ncan start populating it without a config break when support lands.",
+      "type": "object",
+      "properties": {
+        "auto_detect": {
+          "description": "Run kreuzberg's language detector. On by default; flip off when every doc\nin the corpus is the same known language.",
+          "type": "boolean",
+          "default": true
+        },
+        "min_confidence": {
+          "description": "Minimum detector confidence (0.0–1.0). Detections below this threshold\nare dropped. Matches kreuzberg's default of 0.8.",
+          "type": "number",
+          "format": "double",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.8
+        },
+        "detect_multiple": {
+          "description": "When true, kreuzberg reports every language detected in the document\ninstead of just the top match. Off by default to match kreuzberg.",
+          "type": "boolean",
+          "default": false
+        },
+        "preferred_languages": {
+          "description": "Reserved — accepts ISO 639-3 codes (e.g. `\"fra\"`, `\"deu\"`) for future use.\nKreuzberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "RerankerConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch — off by default; the reranker model download + per-query\nlatency means users should opt in explicitly.",
+          "type": "boolean",
+          "default": false
+        },
+        "preset": {
+          "description": "Kreuzberg reranker preset name (`bge-reranker-base` is the small default;\n`bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).",
+          "type": "string",
+          "default": "bge-reranker-base"
+        },
+        "top_k": {
+          "description": "How many hits to rerank. The vector search returns `top_k` candidates\nwhich the cross-encoder then reorders.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeywordsConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.\nMaps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;\nkreuzberg's own `KeywordConfig` has no `enabled` field — gating is via\nthe wrapping `Option`.",
+          "type": "boolean",
+          "default": false
+        },
+        "algorithm": {
+          "description": "Algorithm: YAKE (statistical, multi-language) or RAKE (rapid automatic\nkeyword extraction).",
+          "$ref": "#/$defs/KeywordAlgorithm",
+          "default": "yake"
+        },
+        "max_keywords": {
+          "description": "Maximum keywords to extract per document. Matches kreuzberg's\n`KeywordConfig.max_keywords` default of 10.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 10
+        },
+        "min_score": {
+          "description": "Minimum score threshold. Matches kreuzberg's `KeywordConfig.min_score`\ndefault of 0.0 (i.e. surface every candidate). Score ranges differ\nbetween YAKE (lower = better) and RAKE (higher = better) — see\n`kreuzberg::keywords::config::KeywordConfig.min_score`.",
+          "type": "number",
+          "format": "float",
+          "minimum": 0.0,
+          "default": 0.0
+        },
+        "ngram_range": {
+          "description": "N-gram range as `[min, max]`. Matches kreuzberg's\n`KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of\nlength 2 so the JSON Schema stays human-readable; values map back to a\n`(usize, usize)` tuple at the boundary.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "default": [
+            1,
+            3
+          ]
+        },
+        "yake_params": {
+          "description": "Optional YAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::YakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
+          "default": null
+        },
+        "rake_params": {
+          "description": "Optional RAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::RakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "KeywordAlgorithm": {
+      "type": "string",
+      "enum": [
+        "yake",
+        "rake"
+      ]
+    },
+    "NerConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch — off by default; ONNX backend downloads gline-rs weights on\nfirst use, LLM backend costs API tokens. Maps to `Some(NerConfig)` /\n`None` on `ExtractionConfig.ner`.",
+          "type": "boolean",
+          "default": false
+        },
+        "backend": {
+          "description": "Backend selection. `onnx` uses gline-rs locally; `llm` routes through the\nshared `[llm]` config.",
+          "$ref": "#/$defs/NerBackend",
+          "default": "onnx"
+        },
+        "model": {
+          "description": "Override the ONNX model name (kreuzberg has a default catalogue when unset).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "categories": {
+          "description": "Categories to surface — matches kreuzberg's `NerConfig.categories`.\nAccepted values are the lowercase forms `\"person\"`, `\"organization\"`,\n`\"location\"`, `\"date\"`, `\"time\"`, `\"money\"`, `\"percent\"`, `\"email\"`,\n`\"phone\"`, `\"url\"`; anything else becomes a `Custom(_)` category at the\nboundary. Empty means \"use the backend default\".",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "custom_labels": {
+          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference\n(and the LLM backend's structured-output schema). Matches kreuzberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "NerBackend": {
+      "type": "string",
+      "enum": [
+        "onnx",
+        "llm"
+      ]
+    },
+    "SummarizationConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch — off by default. When true, the boundary code populates\n`ExtractionConfig.summarization`; the resulting `ExtractionResult.summary`\nsurfaces on `FileMapDoc.summary` and `DocumentSearchHit.summary`.",
+          "type": "boolean",
+          "default": false
+        },
+        "strategy": {
+          "description": "Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via\nthe top-level `[llm]` config). When `abstractive` is set but `[llm].model`\nis empty, the boundary falls back to `extractive` with a warning so the\nscan still completes.",
+          "$ref": "#/$defs/SummarizationStrategy",
+          "default": "extractive"
+        },
+        "max_tokens": {
+          "description": "Soft cap on summary length in tokens. `None` lets kreuzberg pick a default\nsuited to the chosen strategy (the kreuzberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "SummarizationStrategy": {
+      "type": "string",
+      "enum": [
+        "extractive",
+        "abstractive"
+      ]
+    },
+    "OcrConfig": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "Backend selection. `tesseract` is the default; `paddle` for CJK-heavy\ncorpora; `vlm` routes through `[llm]` for vision-language OCR.",
+          "$ref": "#/$defs/OcrBackend",
+          "default": "tesseract"
+        },
+        "languages": {
+          "description": "Tesseract / PaddleOCR language packs (ISO 639-3 codes like `\"eng\"`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "eng"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "OcrBackend": {
+      "type": "string",
+      "enum": [
+        "tesseract",
+        "paddle",
+        "vlm"
+      ]
+    },
+    "OutputConfig": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "description": "Wire format used by document-tier MCP responses.",
+          "$ref": "#/$defs/OutputFormat",
+          "default": "json"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OutputFormat": {
+      "type": "string",
+      "enum": [
+        "json",
+        "toon"
       ]
     },
     "MemoryConfig": {
@@ -547,224 +639,132 @@
         }
       ]
     },
-    "NerBackend": {
-      "type": "string",
-      "enum": [
-        "onnx",
-        "llm"
-      ]
-    },
-    "NerConfig": {
+    "CrawlConfig": {
       "type": "object",
       "properties": {
-        "backend": {
-          "description": "Backend selection. `onnx` uses gline-rs locally; `llm` routes through the\nshared `[llm]` config.",
-          "$ref": "#/$defs/NerBackend",
-          "default": "onnx"
-        },
-        "categories": {
-          "description": "Categories to surface — matches kreuzberg's `NerConfig.categories`.\nAccepted values are the lowercase forms `\"person\"`, `\"organization\"`,\n`\"location\"`, `\"date\"`, `\"time\"`, `\"money\"`, `\"percent\"`, `\"email\"`,\n`\"phone\"`, `\"url\"`; anything else becomes a `Custom(_)` category at the\nboundary. Empty means \"use the backend default\".",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
-        "custom_labels": {
-          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference\n(and the LLM backend's structured-output schema). Matches kreuzberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
-        },
-        "enabled": {
-          "description": "Master switch — off by default; ONNX backend downloads gline-rs weights on\nfirst use, LLM backend costs API tokens. Maps to `Some(NerConfig)` /\n`None` on `ExtractionConfig.ner`.",
+        "respect_robots_txt": {
+          "description": "Honour `robots.txt` when fetching pages. Default `true`. Override only\nfor hosts you control — flipping this off violates `robots.txt`\ndirectives for every domain the crawler touches.",
           "type": "boolean",
-          "default": false
+          "default": true
         },
+        "max_pages": {
+          "description": "Hard cap on pages visited in a single `web_crawl` call.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 32
+        },
+        "max_depth": {
+          "description": "Maximum link-following depth from the seed URL during `web_crawl`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 2
+        },
+        "max_body_size": {
+          "description": "Truncate response bodies above this many bytes before parsing.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1024,
+          "default": 4194304
+        },
+        "user_agent": {
+          "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
+          "type": "string",
+          "minLength": 1,
+          "default": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LlmConfig": {
+      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing kreuzberg's struct.",
+      "type": "object",
+      "properties": {
         "model": {
-          "description": "Override the ONNX model name (kreuzberg has a default catalogue when unset).",
+          "description": "Combined provider/model string following liter-llm's routing format:\n`\"openai/gpt-4o\"`, `\"anthropic/claude-sonnet-4-20250514\"`,\n`\"groq/llama-3.1-70b-versatile\"`. Empty string ⇒ inert; every LLM-backed\nfeature treats an empty `model` as \"no LLM configured\".",
+          "type": "string",
+          "default": ""
+        },
+        "api_key": {
+          "description": "API key — either a literal (discouraged; keeps secrets in version control)\nor an `{ env = \"OPENAI_API_KEY\" }` reference. `Unset` lets the underlying\nprovider SDK fall back to its standard environment variable lookup.",
+          "$ref": "#/$defs/ApiKey",
+          "default": null
+        },
+        "base_url": {
+          "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).",
           "type": [
             "string",
             "null"
           ],
           "default": null
-        }
-      },
-      "additionalProperties": false
-    },
-    "OcrBackend": {
-      "type": "string",
-      "enum": [
-        "tesseract",
-        "paddle",
-        "vlm"
-      ]
-    },
-    "OcrConfig": {
-      "type": "object",
-      "properties": {
-        "backend": {
-          "description": "Backend selection. `tesseract` is the default; `paddle` for CJK-heavy\ncorpora; `vlm` routes through `[llm]` for vision-language OCR.",
-          "$ref": "#/$defs/OcrBackend",
-          "default": "tesseract"
         },
-        "languages": {
-          "description": "Tesseract / PaddleOCR language packs (ISO 639-3 codes like `\"eng\"`).",
-          "type": "array",
-          "default": [
-            "eng"
+        "temperature": {
+          "description": "Sampling temperature. Provider-default when unset.",
+          "type": [
+            "number",
+            "null"
           ],
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "OutputConfig": {
-      "type": "object",
-      "properties": {
-        "format": {
-          "description": "Wire format used by document-tier MCP responses.",
-          "$ref": "#/$defs/OutputFormat",
-          "default": "json"
-        }
-      },
-      "additionalProperties": false
-    },
-    "OutputFormat": {
-      "type": "string",
-      "enum": [
-        "json",
-        "toon"
-      ]
-    },
-    "RerankerConfig": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "description": "Master switch — off by default; the reranker model download + per-query\nlatency means users should opt in explicitly.",
-          "type": "boolean",
-          "default": false
+          "format": "double",
+          "default": null
         },
-        "preset": {
-          "description": "Kreuzberg reranker preset name (`bge-reranker-base` is the small default;\n`bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).",
-          "type": "string",
-          "default": "bge-reranker-base"
-        },
-        "top_k": {
-          "description": "How many hits to rerank. The vector search returns `top_k` candidates\nwhich the cross-encoder then reorders.",
-          "type": "integer",
-          "format": "uint",
-          "default": 10,
-          "minimum": 0
-        }
-      },
-      "additionalProperties": false
-    },
-    "ScanConfig": {
-      "type": "object",
-      "properties": {
-        "eager_l2": {
-          "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `find_references` and\n`find_callers`. Flipping to `false` halves the scan budget on large repos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
-          "type": "boolean",
-          "default": true
-        },
-        "exclude": {
-          "type": "array",
-          "default": [
-            "**/target/**",
-            "**/node_modules/**",
-            "**/dist/**",
-            "**/.venv/**",
-            "**/.basemind/**",
-            "**/.git/**"
+        "timeout_secs": {
+          "description": "Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).",
+          "type": [
+            "integer",
+            "null"
           ],
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "include": {
-          "type": "array",
-          "default": [
-            "**/*"
-          ],
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "max_file_bytes": {
-          "description": "Skip files larger than this. Prevents minified-bundle stalls.",
-          "type": "integer",
           "format": "uint64",
-          "default": 2097152,
-          "minimum": 1024
+          "minimum": 0,
+          "default": null
         },
-        "respect_gitignore": {
-          "type": "boolean",
-          "default": true
-        },
-        "skip_submodules": {
-          "description": "When true (default), the scanner skips paths under any submodule root listed in\n`.gitmodules`. Set to false to recurse into submodule working trees — useful only\nif you want one combined index across the parent + its embedded repos.",
-          "type": "boolean",
-          "default": true
-        }
-      },
-      "additionalProperties": false
-    },
-    "SummarizationConfig": {
-      "type": "object",
-      "properties": {
-        "enabled": {
-          "description": "Master switch — off by default. When true, the boundary code populates\n`ExtractionConfig.summarization`; the resulting `ExtractionResult.summary`\nsurfaces on `FileMapDoc.summary` and `DocumentSearchHit.summary`.",
-          "type": "boolean",
-          "default": false
-        },
-        "max_tokens": {
-          "description": "Soft cap on summary length in tokens. `None` lets kreuzberg pick a default\nsuited to the chosen strategy (the kreuzberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
+        "max_retries": {
+          "description": "Maximum retry attempts on transient errors. Maps to kreuzberg's\n`max_retries` (default 3).",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
-          "minimum": 0
+          "minimum": 0,
+          "default": null
         },
-        "strategy": {
-          "description": "Strategy: `extractive` (TextRank, no LLM) or `abstractive` (routed via\nthe top-level `[llm]` config). When `abstractive` is set but `[llm].model`\nis empty, the boundary falls back to `extractive` with a warning so the\nscan still completes.",
-          "$ref": "#/$defs/SummarizationStrategy",
-          "default": "extractive"
-        }
-      },
-      "additionalProperties": false
-    },
-    "SummarizationStrategy": {
-      "type": "string",
-      "enum": [
-        "extractive",
-        "abstractive"
-      ]
-    },
-    "WatchConfig": {
-      "type": "object",
-      "properties": {
-        "debounce_ms": {
-          "description": "Coalesce file events within this window (milliseconds).",
-          "type": "integer",
+        "max_tokens": {
+          "description": "Maximum tokens to generate. Provider-default when unset.",
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
-          "default": 250,
-          "maximum": 60000,
-          "minimum": 0
-        },
-        "live_l2": {
-          "type": "boolean",
-          "default": false
+          "minimum": 0,
+          "default": null
         }
       },
       "additionalProperties": false
+    },
+    "ApiKey": {
+      "description": "Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain\nstring (`Literal`), or a `{ env = \"NAME\" }` table (`Env`).\n\n`Serialize` is implemented manually — the `Literal` variant NEVER emits its\ncleartext secret. It serialises to the marker string `\"<redacted>\"` so any\ndownstream pipeline that round-trips this enum through JSON / TOML (e.g.\nthe config validator at `src/config/mod.rs`) cannot leak credentials into\nlogs, snapshot tests, or error messages. Deserialisation is unchanged:\nloading a TOML config with a literal `api_key = \"sk-...\"` still produces\n`ApiKey::Literal(...)`. The redaction is one-way by design.",
+      "anyOf": [
+        {
+          "description": "Literal value baked into config. Strongly discouraged for production —\n`Env` keeps secrets out of source control.",
+          "type": "string"
+        },
+        {
+          "description": "`{ env = \"OPENAI_API_KEY\" }` — resolved at load time via `std::env::var`.",
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "env"
+          ]
+        },
+        {
+          "description": "Missing / `null` — every LLM-backed feature treats this as \"disabled\".",
+          "type": "null"
+        }
+      ]
     }
   }
 }

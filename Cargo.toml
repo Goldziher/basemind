@@ -131,12 +131,13 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
-# Kreuzberg powers the document tier + the embedding engine. Path-dep on the
-# workspace head (rc.14) for the unreleased reranker / future feature surfaces;
-# revert to a `version = "=…"` pin after the next kreuzberg crates.io release.
-# NOTE: this path-dep blocks `cargo publish`. Switch back to `version = "=…"`
-# once kreuzberg rc.13+ ships on crates.io.
-kreuzberg = { path = "../kreuzberg-dev/kreuzberg/crates/kreuzberg", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+# Kreuzberg powers the document tier + the embedding engine. Git-pinned to the
+# v5.0.0-rc.15 tag — that release carries the reranker + summarization-llm
+# surfaces we depend on. Re-pin to `version = "=…"` once kreuzberg rc.15+ ships
+# to crates.io (today crates.io only has up to rc.10, which lacks the reranker).
+# Caveat: git deps block `cargo publish` to crates.io; basemind ships via
+# npm / pypi / brew / GH release binaries until upstream lands.
+kreuzberg = { git = "https://github.com/kreuzberg-dev/kreuzberg", tag = "v5.0.0-rc.15", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 # kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
 # same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
 # we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
