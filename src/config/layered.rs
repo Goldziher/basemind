@@ -91,7 +91,8 @@ const DOCUMENT_LEAVES: &[&str] = &[
     "documents.reranker.preset",
     "documents.reranker.top_k",
     "documents.keywords.enabled",
-    "documents.keywords.count",
+    "documents.keywords.max_keywords",
+    "documents.keywords.min_score",
     "documents.ner.enabled",
     "documents.summarization.enabled",
     "documents.summarization.max_chars",
@@ -181,10 +182,16 @@ pub(crate) fn apply_documents_overrides(
             p.insert("documents.keywords.enabled", source);
         }
     }
-    if let Some(v) = overrides.keywords_count {
-        d.keywords.count = v;
+    if let Some(v) = overrides.keywords_max_keywords {
+        d.keywords.max_keywords = v;
         if let Some(p) = provenance.as_mut() {
-            p.insert("documents.keywords.count", source);
+            p.insert("documents.keywords.max_keywords", source);
+        }
+    }
+    if let Some(v) = overrides.keywords_min_score {
+        d.keywords.min_score = v;
+        if let Some(p) = provenance.as_mut() {
+            p.insert("documents.keywords.min_score", source);
         }
     }
     if let Some(v) = overrides.ner_enabled {

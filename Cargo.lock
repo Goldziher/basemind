@@ -5464,7 +5464,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg"
-version = "5.0.0-rc.14"
+version = "5.0.0-rc.15"
 dependencies = [
  "ahash",
  "async-trait",
@@ -5579,7 +5579,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-libheif"
-version = "5.0.0-rc.14"
+version = "5.0.0-rc.15"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -5601,7 +5601,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.14"
+version = "5.0.0-rc.15"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -5615,7 +5615,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-tesseract"
-version = "5.0.0-rc.14"
+version = "5.0.0-rc.15"
 dependencies = [
  "cc",
  "cmake",

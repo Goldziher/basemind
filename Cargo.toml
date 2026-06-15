@@ -76,6 +76,10 @@ documents = [
     # page orientation correction
     "kreuzberg/ner-onnx",
     # local NER (gline-rs)
+    "kreuzberg/keywords-yake",
+    # YAKE keyword algorithm + YakeParams tuning
+    "kreuzberg/keywords-rake",
+    # RAKE keyword algorithm + RakeParams tuning
     "kreuzberg/summarization",
     # TextRank extractive (no LLM)
     "kreuzberg/redaction",
