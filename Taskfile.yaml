@@ -68,8 +68,8 @@ tasks:
     cmds:
       - ./scripts/harden.sh
 
-  release:bump:
-    desc: 'Bump version across all surfaces. Usage: task release:bump VERSION=0.1.0'
+  release:sync-version:
+    desc: 'Sync version across every shipped surface (Cargo, npm wrappers, PyPI, plugin manifests). Usage: task release:sync-version VERSION=0.1.0'
     cmds:
       - ./scripts/release-bump.sh "{{.VERSION}}"
     requires:

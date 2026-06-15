@@ -664,7 +664,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "basemind"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "ahash",
  "anstream",
@@ -5502,7 +5502,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg"
-version = "5.0.0-rc.15"
+version = "5.0.0-rc.16"
 dependencies = [
  "ahash",
  "async-trait",
@@ -5619,7 +5619,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-libheif"
-version = "5.0.0-rc.15"
+version = "5.0.0-rc.16"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -5641,7 +5641,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.15"
+version = "5.0.0-rc.16"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -5655,7 +5655,7 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-tesseract"
-version = "5.0.0-rc.15"
+version = "5.0.0-rc.16"
 dependencies = [
  "cc",
  "cmake",

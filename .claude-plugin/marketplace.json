@@ -10,7 +10,7 @@
     {
       "name": "basemind",
       "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases.",
-      "version": "0.0.1",
+      "version": "0.1.0",
       "source": "./",
       "author": {
         "name": "Na'aman Hirschfeld",

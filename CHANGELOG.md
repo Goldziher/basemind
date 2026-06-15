@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.0] — 2026-06-15
 
-First feature-complete release. Adds the kreuzberg document tier surface
-(reranker, keywords, NER, summarization, language detection, TOON output) on
-top of the initial code-map server, with schema-driven config across TOML /
-CLI / MCP / env vars.
+**Initial public release.** First minor wipes the schema (`RELEASE_MINOR=1`)
+so any pre-tag `.basemind/` cache rebuilds on next scan — intentional.
+
+Feature-complete code-map server with the kreuzberg document tier surface
+(reranker, keywords, NER, summarization, language detection, TOON output) and
+schema-driven config across TOML / CLI / MCP / env vars, distributed across
+all major coding-agent harnesses (Claude Code, Codex, Cursor, Gemini, Factory
+Droid, OpenCode, Copilot CLI, and the generic MCP path) plus npm / PyPI /
+crates.io.
 
 ### Added
 
@@ -84,6 +89,41 @@ CLI / MCP / env vars.
   `cargo install basemind --locked`. Precompiled binaries on GitHub
   Releases for `{x86_64,aarch64}-{linux-gnu,apple-darwin}` and
   `x86_64-pc-windows-gnu`.
+- **Per-harness install matrix** — manifests + skill bundle for every major
+  coding-agent harness, all bumped in lock-step by
+  `task release:sync-version VERSION=…`:
+  - **Claude Code** — `.claude-plugin/plugin.json` + `marketplace.json` +
+    `statusline.sh` (live one-line summary of the indexed map with true-color
+    brand mark, freshness dot, and call/token-savings telemetry from
+    `.basemind/telemetry.jsonl`). Install via
+    `/plugin marketplace add Goldziher/basemind` then
+    `/plugin install basemind@basemind`.
+  - **Codex CLI / App** — `.codex-plugin/plugin.json` with full `interface`
+    block (`displayName`, category `Developer Tools`, `capabilities`,
+    `defaultPrompt`, `brandColor`). `scripts/sync-to-codex-plugin.sh` mirrors
+    into a fork of the `openai/plugins` marketplace.
+  - **Gemini CLI** — root-level `gemini-extension.json` with `contextFileName`
+    and `mcpServers`. Install via
+    `gemini extensions install https://github.com/Goldziher/basemind`.
+  - **Cursor** — `.cursor-plugin/plugin.json`.
+  - **OpenCode** — published as the
+    [`basemind-opencode`](https://www.npmjs.com/package/basemind-opencode)
+    npm package. Install via
+    `{ "plugin": ["basemind-opencode@latest"] }` in `opencode.json`. Skills
+    are bundled into the tarball; the plugin shim does dual-mode resolution
+    (bundled-path-first, repo-root-fallback) so monorepo dev and npm install
+    both work without duplication.
+  - **Factory Droid / GitHub Copilot CLI** — reuse the existing
+    `.claude-plugin/marketplace.json` per their published patterns.
+  - Every manifest carries the same canonical user-facing description and
+    crates.io-capped 5-keyword set (`mcp`, `tree-sitter`, `code-map`,
+    `scanner`, `indexer`).
+- **Release pipeline** — `.github/workflows/publish.yaml` publishes on
+  every `v*` tag: GitHub release assets (cross-compiled binaries via
+  goreleaser + zig), crates.io, npm × 2 (`basemind` binary wrapper +
+  `basemind-opencode` OpenCode plugin), and PyPI. Per-registry idempotent
+  via existing-version detection; OIDC-driven trusted publishers on all
+  four registries.
 
 ### Changed
 

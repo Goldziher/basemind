@@ -17,4 +17,4 @@
 
 /// Persisted-schema version. Synced to the release minor: `0.X.y` → `X` (and
 /// `M.X.y` → `M * 100 + X` once `1.0` ships).
-pub const RELEASE_MINOR: u16 = 0;
+pub const RELEASE_MINOR: u16 = 1;

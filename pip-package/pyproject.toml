@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "basemind"
-version = "0.0.1"
+version = "0.1.0"
 description = "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level."
 readme = "README.md"
 license = {text = "MIT"}
