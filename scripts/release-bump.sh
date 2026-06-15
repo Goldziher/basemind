@@ -11,6 +11,12 @@
 #   pip-package/pyproject.toml            version (PyPI form: 0.1.0-rc.1 → 0.1.0rc1)
 #   pip-package/basemind/__init__.py       __version__
 #   src/version.rs                        RELEASE_MINOR (if minor changed)
+#   package.json                          "version" (root, OpenCode plugin entry)
+#   .claude-plugin/plugin.json            "version"
+#   .claude-plugin/marketplace.json       plugins[0].version
+#   .codex-plugin/plugin.json             "version"
+#   .cursor-plugin/plugin.json            "version"
+#   gemini-extension.json                 "version"
 #
 # If the minor component changed, RELEASE_MINOR is also bumped to track. Patch-only
 # bumps leave RELEASE_MINOR alone so existing user caches don't wipe on patch upgrade.
@@ -62,6 +68,27 @@ fi
 if [[ -f pip-package/basemind/__init__.py ]]; then
   sed -i.bak -E "s/^__version__ = \"[^\"]+\"$/__version__ = \"$PY_VERSION\"/" pip-package/basemind/__init__.py
   rm pip-package/basemind/__init__.py.bak
+fi
+
+# Plugin manifests (per-harness) — every shipped manifest carries the same
+# Cargo version, no PyPI normalisation. jq rewrites are atomic + format-stable.
+bump_json_top_version() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  echo "→ ${file}        → $VERSION"
+  jq --arg v "$VERSION" '.version = $v' "$file" >"${file}.tmp" && mv "${file}.tmp" "$file"
+}
+
+bump_json_top_version package.json
+bump_json_top_version .claude-plugin/plugin.json
+bump_json_top_version .codex-plugin/plugin.json
+bump_json_top_version .cursor-plugin/plugin.json
+bump_json_top_version gemini-extension.json
+
+if [[ -f .claude-plugin/marketplace.json ]]; then
+  echo "→ .claude-plugin/marketplace.json → $VERSION"
+  jq --arg v "$VERSION" '.plugins[0].version = $v' .claude-plugin/marketplace.json >.claude-plugin/marketplace.json.tmp
+  mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
 fi
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then

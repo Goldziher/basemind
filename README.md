@@ -65,30 +65,80 @@ cd /path/to/your/repo
 basemind scan
 ```
 
-**Wire it into Claude Code** — install as a plugin:
+**Wire it into your agent.** Pick your harness — every install registers the
+basemind MCP server plus the `basemind` skill that teaches the model when to
+reach for code-map tools.
+
+### Claude Code
 
 ```text
 /plugin marketplace add Goldziher/basemind
 /plugin install basemind@basemind
 ```
 
-This registers basemind as an MCP server plus a `basemind` skill that tells
-the model when to reach for code-map tools (instead of grepping or reading
-files one by one). Restart the session and the agent has all the tools listed
-below.
+Restart the session. The plugin also auto-wires a live statusline:
+`▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`.
+If your statusline shows `0 calls` after install, restart `basemind serve` —
+the telemetry counter is written by the running MCP process.
 
-**Codex** — install via Codex's plugin / marketplace UI from the same repo
-(the `.codex-plugin/plugin.json` manifest is shipped alongside Claude's), then
-add the MCP server entry to `~/.codex/config.toml`:
+### Codex CLI
 
-```toml
-[mcp_servers.basemind]
-command = "basemind"
-args = ["serve"]
+```text
+/plugins
 ```
 
-**Other MCP clients** (Cursor, Continue, Cline, …) — drop the standard
-`mcpServers` entry into the client's MCP config:
+Search for `basemind` and select **Install Plugin**.
+
+### Codex App
+
+Open the **Plugins** panel in the Codex sidebar, find **basemind** under the
+**Coding** category, and click `+`.
+
+### Factory Droid
+
+```bash
+droid plugin marketplace add https://github.com/Goldziher/basemind
+droid plugin install basemind@basemind
+```
+
+### Gemini CLI
+
+```bash
+gemini extensions install https://github.com/Goldziher/basemind
+```
+
+Update later with `gemini extensions update basemind`.
+
+### Cursor
+
+```text
+/add-plugin basemind
+```
+
+Or search for "basemind" in the Cursor plugin marketplace.
+
+### OpenCode
+
+Add to your `opencode.json` (global or project-level):
+
+```json
+{
+  "plugin": ["basemind@git+https://github.com/Goldziher/basemind.git"]
+}
+```
+
+Restart OpenCode.
+
+### GitHub Copilot CLI
+
+```bash
+copilot plugin marketplace add Goldziher/basemind
+copilot plugin install basemind@basemind
+```
+
+### Other MCP clients (Continue, Cline, …)
+
+Drop the standard `mcpServers` entry into the client's MCP config:
 
 ```json
 {
