@@ -13,7 +13,7 @@ Sub-millisecond queries. 300+ languages out of the box. Local-only. Built in Rus
 [![crates.io](https://img.shields.io/crates/v/basemind.svg)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind.svg)](https://www.npmjs.com/package/basemind)
 [![PyPI](https://img.shields.io/pypi/v/basemind.svg)](https://pypi.org/project/basemind/)
-[![CI](https://github.com/Goldziher/basemind/actions/workflows/ci.yml/badge.svg)](https://github.com/Goldziher/basemind/actions/workflows/ci.yml)
+[![CI](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml/badge.svg)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 
 ---
 
@@ -129,11 +129,21 @@ Add to your `opencode.json` (global or project-level):
 
 ```json
 {
-  "plugin": ["basemind@git+https://github.com/Goldziher/basemind.git"]
+  "plugin": ["basemind-opencode@latest"]
 }
 ```
 
-Restart OpenCode.
+Restart OpenCode. The plugin is published to npm as
+[`basemind-opencode`](https://www.npmjs.com/package/basemind-opencode); it
+registers the MCP server and the bundled skills directory.
+
+For monorepo development, pin to the git source instead:
+
+```json
+{
+  "plugin": ["basemind-opencode@git+https://github.com/Goldziher/basemind.git#main"]
+}
+```
 
 ### Factory Droid, Cursor, GitHub Copilot CLI
 
