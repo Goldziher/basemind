@@ -344,21 +344,36 @@ pub(super) async fn run_search_documents(
     state: &ServerState,
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve effective output format. The common case has no overrides — skip the
+    // Resolve effective config. The common case has no overrides — skip the
     // `ConfigV1` deep clone (`BTreeMap<String, LanguageConfig>` + several `Vec<String>`)
     // entirely. Only pay the clone when overrides actually need to be layered.
-    let output_format = if params.overrides.any() {
-        let mut effective = (*state.config).clone();
-        crate::config::layered::apply_documents_overrides(
-            &mut effective,
-            &params.overrides,
-            crate::config::ConfigSource::Mcp,
-            None,
-        );
-        effective.documents.output.format
-    } else {
-        state.config.documents.output.format
-    };
+    // We capture both the output format AND the reranker config in one pass so we
+    // only clone once even when the reranker is enabled via TOML (no overrides).
+    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) =
+        if params.overrides.any() {
+            let mut effective = (*state.config).clone();
+            crate::config::layered::apply_documents_overrides(
+                &mut effective,
+                &params.overrides,
+                crate::config::ConfigSource::Mcp,
+                None,
+            );
+            let r = &effective.documents.reranker;
+            (
+                effective.documents.output.format,
+                r.enabled,
+                r.preset.clone(),
+                r.top_k,
+            )
+        } else {
+            let r = &state.config.documents.reranker;
+            (
+                state.config.documents.output.format,
+                r.enabled,
+                r.preset.clone(),
+                r.top_k,
+            )
+        };
 
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;
@@ -371,7 +386,7 @@ pub(super) async fn run_search_documents(
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
-    let hits = hits_raw
+    let mut hits: Vec<DocumentSearchHit> = hits_raw
         .into_iter()
         .map(|h| DocumentSearchHit {
             path: h.path,
@@ -381,8 +396,36 @@ pub(super) async fn run_search_documents(
             byte_start: h.byte_start,
             byte_end: h.byte_end,
             distance: h.distance,
+            rerank_score: None,
         })
         .collect();
+
+    // Reranker post-step: cross-encoder rescores and reorders the candidate hits.
+    // Default OFF — first call downloads ONNX weights (~100 MB) into
+    // `~/.cache/kreuzberg/rerankers/`. Enable via `[documents.reranker] enabled = true`
+    // in TOML or `reranker_enabled = true` as a per-query override.
+    if reranker_enabled && !hits.is_empty() {
+        let krz_config = kreuzberg::core::config::RerankerConfig {
+            model: kreuzberg::core::config::RerankerModelType::Preset {
+                name: reranker_preset,
+            },
+            top_k: Some(reranker_top_k),
+            ..Default::default()
+        };
+        let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
+        let reranked = kreuzberg::rerank_async(params.query.clone(), documents, &krz_config)
+            .await
+            .map_err(|e| McpError::internal_error(format!("rerank: {e}"), None))?;
+        hits = reranked
+            .into_iter()
+            .map(|r| {
+                let mut hit = hits[r.index].clone();
+                hit.rerank_score = Some(r.score);
+                hit
+            })
+            .collect();
+    }
+
     format_response(
         &SearchDocumentsResponse {
             query: params.query,

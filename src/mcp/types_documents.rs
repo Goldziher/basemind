@@ -23,7 +23,7 @@ pub struct SearchDocumentsParams {
 }
 
 #[cfg(feature = "documents")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DocumentSearchHit {
     pub path: String,
     pub chunk_idx: u32,
@@ -32,6 +32,10 @@ pub(crate) struct DocumentSearchHit {
     pub byte_start: u32,
     pub byte_end: u32,
     pub distance: f32,
+    /// Cross-encoder relevance score in `[0, 1]`. Present only when the reranker is
+    /// enabled on the call; absent (`null` / omitted) when reranker is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f32>,
 }
 
 #[cfg(feature = "documents")]
