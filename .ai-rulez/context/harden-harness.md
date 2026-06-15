@@ -34,9 +34,10 @@ cargo test --release --test harden -- --ignored --nocapture
 
 | Repo | Files | Scan time | Notes |
 |---|---|---|---|
-| typescript | ~39 k | 13.5 s (eager L2 off) / ~23 s (eager L2 on) | Largest in the harness. |
-| tokio | ~2 k | < 2 s | Spawn-call canary. |
-| django | ~3 k | < 3 s | Get-call canary. |
+| typescript | ~81 k | ~22 s (eager L2 on, the default) / ~17 s (eager L2 off) | Largest in the harness. |
+| tokio | ~860 | ~0.2 s | Spawn-call canary. |
+| django | ~7 k | ~2.5 s | Get-call canary. |
+| react | ~7 k | ~2.2 s | useState canary. |
 
 Regressions beyond ~20% on these baselines should be investigated before merge.
 

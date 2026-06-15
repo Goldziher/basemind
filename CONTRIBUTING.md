@@ -65,8 +65,9 @@ sections; the override wins over the upstream `tags.scm` fallback.
 ## Adding an MCP tool
 
 See [`.ai-rulez/skills/mcp-tool-checklist/SKILL.md`](.ai-rulez/skills/mcp-tool-checklist/SKILL.md).
-Every new tool needs: a `<Tool>Params` / `<Tool>Response` in `src/mcp/types.rs`,
-a thin shim in `src/mcp/tools.rs`, a helper body in `src/mcp/helpers.rs`, a
+Every new tool needs: a `<Tool>Params` / `<Tool>Response` in `src/mcp/types.rs`
+(or the matching `types_<area>.rs`), a thin shim in `src/mcp/tools.rs` (or
+`tools_<area>.rs`), a helper body in the matching `src/mcp/helpers*.rs`, a
 smoke assertion in `tests/mcp_smoke.rs`, and (when meaningful) a per-repo
 canary in `tests/harden.rs`.
 

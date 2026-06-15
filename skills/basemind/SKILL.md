@@ -69,7 +69,7 @@ basemind scan
 
 This walks the tree, parses with tree-sitter, and writes a content-addressed blob
 store + Fjall inverted index under `.basemind/`. A few seconds for small repos,
-~15 s for a ~40k-file TypeScript monorepo.
+~22 s for an ~80k-file TypeScript monorepo.
 
 The MCP server is launched by the host (`basemind serve` — wired up in
 `.claude-plugin/plugin.json` for you). You do not start it manually.
