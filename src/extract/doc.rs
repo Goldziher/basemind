@@ -329,11 +329,27 @@ impl DocConfig {
     ///
     /// String category names round-trip via `EntityCategory::from(String)` —
     /// unknown names land in the `Custom(_)` variant rather than failing.
-    /// `llm` is left `None`; iter 7 wires it from the shared `LlmConfig`.
+    ///
+    /// When `backend == Llm`, the shared `LlmConfig` is resolved via
+    /// `to_kreuzberg()` and threaded into the kreuzberg-side `NerConfig.llm`.
+    /// If the user selected the LLM backend but left `llm.model` empty, we
+    /// emit a warning — kreuzberg silently falls back to ONNX in that case
+    /// and the user almost certainly wants to know.
     fn kreuzberg_ner(&self) -> Option<kreuzberg::core::config::ner::NerConfig> {
         if !self.ner.enabled {
             return None;
         }
+        let llm = if matches!(self.ner.backend, NerBackend::Llm) {
+            let cfg = self.llm.to_kreuzberg();
+            if cfg.is_none() {
+                tracing::warn!(
+                    "ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside kreuzberg"
+                );
+            }
+            cfg
+        } else {
+            None
+        };
         Some(kreuzberg::core::config::ner::NerConfig {
             backend: match self.ner.backend {
                 NerBackend::Onnx => kreuzberg::core::config::ner::NerBackendKind::Onnx,
@@ -346,7 +362,7 @@ impl DocConfig {
                 .map(|s| kreuzberg::types::entity::EntityCategory::from(s.clone()))
                 .collect(),
             model: self.ner.model.clone(),
-            llm: None,
+            llm,
             custom_labels: self.ner.custom_labels.clone(),
         })
     }

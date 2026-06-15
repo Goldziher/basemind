@@ -388,7 +388,17 @@ max_tokens = 200
 secret in version control) or `{ env = "NAME" }` to resolve from an
 environment variable at load time. Resolved keys are wrapped in a
 `SecretString` whose `Debug` impl prints `<redacted>`, so tracing spans and
-panic messages never leak the value.
+panic messages never leak the value. `ApiKey::Literal` also has a custom
+`serde::Serialize` impl that emits `"<redacted>"` instead of the cleartext —
+config dumps, schema validators, and snapshot tests cannot round-trip the
+secret out to disk.
+
+**Trust boundary.** `SecretString` masks the api_key in basemind's `Debug` /
+`Display` / `serde::Serialize` paths. Once basemind hands the resolved key
+to `kreuzberg::LlmConfig` (which derives a non-redacting `Debug` upstream
+as of rc.14), redaction ends. Treat the kreuzberg crate as a trusted
+dependency for credential transit — review its release notes if you are
+paranoid about logging.
 
 ### CLI flags
 
@@ -401,7 +411,10 @@ basemind serve \
 ```
 
 `--llm-api-key` is annotated `hide_env_values = true`, so `--help` does not
-echo the value when `BASEMIND_LLM_API_KEY` is set.
+echo the value when `BASEMIND_LLM_API_KEY` is set. Prefer
+`BASEMIND_LLM_API_KEY` over `--llm-api-key` for production use:
+command-line arguments appear in `ps aux` output to any local user, while
+env vars are only readable by the owning process.
 
 ### Environment
 

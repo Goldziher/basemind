@@ -447,7 +447,15 @@ impl LlmConfig {
 
 /// Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain
 /// string (`Literal`), or a `{ env = "NAME" }` table (`Env`).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
+///
+/// `Serialize` is implemented manually — the `Literal` variant NEVER emits its
+/// cleartext secret. It serialises to the marker string `"<redacted>"` so any
+/// downstream pipeline that round-trips this enum through JSON / TOML (e.g.
+/// the config validator at `src/config/mod.rs`) cannot leak credentials into
+/// logs, snapshot tests, or error messages. Deserialisation is unchanged:
+/// loading a TOML config with a literal `api_key = "sk-..."` still produces
+/// `ApiKey::Literal(...)`. The redaction is one-way by design.
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
 #[serde(untagged)]
 pub enum ApiKey {
     /// Literal value baked into config. Strongly discouraged for production —
@@ -458,6 +466,34 @@ pub enum ApiKey {
     /// Missing / `null` — every LLM-backed feature treats this as "disabled".
     #[default]
     Unset,
+}
+
+impl PartialEq for ApiKey {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Literal(a), Self::Literal(b)) => a == b,
+            (Self::Env { env: a }, Self::Env { env: b }) => a == b,
+            (Self::Unset, Self::Unset) => true,
+            _ => false,
+        }
+    }
+}
+
+impl serde::Serialize for ApiKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            // Cleartext literals are NEVER emitted — only the redaction marker
+            // is written. See the type-level doc comment for rationale.
+            Self::Literal(_) => serializer.serialize_str("<redacted>"),
+            Self::Env { env } => {
+                use serde::ser::SerializeStruct;
+                let mut s = serializer.serialize_struct("EnvRef", 1)?;
+                s.serialize_field("env", env)?;
+                s.end()
+            }
+            Self::Unset => serializer.serialize_none(),
+        }
+    }
 }
 
 impl ApiKey {
@@ -585,5 +621,37 @@ mod tests {
             ApiKey::Env { env } => assert_eq!(env, "OPENAI_API_KEY"),
             other => panic!("expected Env, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn api_key_literal_never_serializes_cleartext() {
+        let key = ApiKey::Literal("sk-supersecret".to_string());
+        let json = serde_json::to_string(&key).expect("serialize");
+        assert!(
+            !json.contains("sk-supersecret"),
+            "raw secret leaked: {json}"
+        );
+        assert!(
+            json.contains("<redacted>"),
+            "redaction marker missing: {json}"
+        );
+    }
+
+    #[test]
+    fn api_key_env_serializes_env_name_only() {
+        let key = ApiKey::Env {
+            env: "OPENAI_API_KEY".to_string(),
+        };
+        let json = serde_json::to_string(&key).expect("serialize");
+        // The env var NAME is not a secret; only its value would be.
+        assert!(json.contains("OPENAI_API_KEY"), "env name missing: {json}");
+        assert!(json.contains("\"env\""), "env field missing: {json}");
+    }
+
+    #[test]
+    fn api_key_unset_serializes_to_null() {
+        let key = ApiKey::Unset;
+        let json = serde_json::to_string(&key).expect("serialize");
+        assert_eq!(json, "null");
     }
 }

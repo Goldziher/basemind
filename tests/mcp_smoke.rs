@@ -1722,16 +1722,29 @@ async fn summarizes_via_extractive_default() {
                 for hit in hits {
                     // `summary` is the iter-7 additive field. It may be present
                     // (Some(...)) or absent — `skip_serializing_if = Option::is_none`
-                    // omits the key when None. The key contract is that, when
-                    // present, it carries a `text` + `strategy` shape.
+                    // omits the key when None.
+                    //
+                    // LIMITATION: the synthetic fixture's docs are too short
+                    // for TextRank to produce a real summary, so we cannot
+                    // assert `summary.is_some()` here. The tightened contract
+                    // is: when ANY hit has a summary, its strategy must be
+                    // "extractive" — guards against a future-iter abstractive
+                    // bug slipping past the per-query `summarization_strategy`
+                    // override.
                     if let Some(summary) = hit.get("summary") {
                         assert!(
                             summary.get("text").is_some(),
                             "summary must carry a `text` field: {summary}"
                         );
-                        assert!(
-                            summary.get("strategy").is_some(),
-                            "summary must carry a `strategy` field: {summary}"
+                        let strategy = summary
+                            .get("strategy")
+                            .and_then(Value::as_str)
+                            .unwrap_or_else(|| {
+                                panic!("summary must carry `strategy` str: {summary}")
+                            });
+                        assert_eq!(
+                            strategy, "extractive",
+                            "per-query strategy=extractive must round-trip; got {strategy}"
                         );
                     }
                 }

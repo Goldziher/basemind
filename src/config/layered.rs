@@ -216,16 +216,25 @@ pub(crate) fn apply_documents_overrides(
         }
     }
     if let Some(v) = overrides.summarization_strategy.as_deref() {
-        match v.to_ascii_lowercase().as_str() {
-            "extractive" => d.summarization.strategy = SummarizationStrategy::Extractive,
-            "abstractive" => d.summarization.strategy = SummarizationStrategy::Abstractive,
-            // Unknown value: skip rather than poisoning the merger; clap should
-            // reject upstream once we tighten the type.
-            _ => {}
-        }
-        // Always record provenance when the user reached for the flag — even
-        // if the value was unknown the intent was set.
-        if let Some(p) = provenance.as_mut() {
+        // Unknown values are dropped with a warning and DO NOT record
+        // provenance — the override was not applied, so claiming it was would
+        // make `--print-config` misleading. clap should reject these upstream
+        // once we tighten the type.
+        let applied = match v.to_ascii_lowercase().as_str() {
+            "extractive" => {
+                d.summarization.strategy = SummarizationStrategy::Extractive;
+                true
+            }
+            "abstractive" => {
+                d.summarization.strategy = SummarizationStrategy::Abstractive;
+                true
+            }
+            _ => {
+                tracing::warn!(value = %v, "unknown summarization_strategy value; ignoring");
+                false
+            }
+        };
+        if applied && let Some(p) = provenance.as_mut() {
             p.insert("documents.summarization.strategy", source);
         }
     }

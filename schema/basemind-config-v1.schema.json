@@ -742,7 +742,7 @@
       "additionalProperties": false
     },
     "ApiKey": {
-      "description": "Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain\nstring (`Literal`), or a `{ env = \"NAME\" }` table (`Env`).",
+      "description": "Tri-state API key wrapper. Serde-deserialised as `null` (`Unset`), a plain\nstring (`Literal`), or a `{ env = \"NAME\" }` table (`Env`).\n\n`Serialize` is implemented manually — the `Literal` variant NEVER emits its\ncleartext secret. It serialises to the marker string `\"<redacted>\"` so any\ndownstream pipeline that round-trips this enum through JSON / TOML (e.g.\nthe config validator at `src/config/mod.rs`) cannot leak credentials into\nlogs, snapshot tests, or error messages. Deserialisation is unchanged:\nloading a TOML config with a literal `api_key = \"sk-...\"` still produces\n`ApiKey::Literal(...)`. The redaction is one-way by design.",
       "anyOf": [
         {
           "description": "Literal value baked into config. Strongly discouraged for production —\n`Env` keeps secrets out of source control.",
