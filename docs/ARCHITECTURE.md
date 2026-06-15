@@ -42,6 +42,7 @@ src/
 ├── main.rs                 — CLI entry (scan, serve, watch, query, lang, …)
 ├── version.rs              — RELEASE_MINOR — single source of truth for schema versions
 ├── scanner.rs              — rayon-parallel file walker; per-file extraction
+├── scanner_docs.rs         — document-tier scan (PDF/Office/HTML → LanceDB)
 ├── store.rs                — content-addressed msgpack blob store; holds IndexDb handle
 ├── index/
 │   ├── mod.rs              — Fjall-backed secondary index; INDEX_SCHEMA_VER
@@ -50,19 +51,44 @@ src/
 ├── extract/                — tree-sitter extraction tiers
 │   ├── l1.rs               — outlines (symbols, signatures, imports, docs)
 │   ├── l2.rs               — call sites (callee, byte offset, line/col)
-│   └── l3.rs               — structural hash of symbol bodies
+│   ├── l3.rs               — structural hash of symbol bodies
+│   └── doc.rs              — kreuzberg integration; FileMapDoc (+ keywords,
+│                             entities, summary on the documents path)
+├── config/                 — schema-driven config (TOML/CLI/MCP/env)
+│   ├── v1.rs               — top-level ConfigV1, LlmConfig (schemars-derived)
+│   ├── documents.rs        — DocumentsConfig + sub-configs, ApiKey, SecretString
+│   ├── overrides.rs        — DocumentsCliOverrides — backs clap and MCP flatten
+│   ├── layered.rs          — merge_layers (Mcp > Cli > Env > File > Default)
+│   └── source.rs           — ConfigSource + ProvenanceMap ledger
 ├── mcp/                    — MCP server
 │   ├── mod.rs              — server bootstrap
 │   ├── tools.rs            — #[tool] methods (thin wrappers; 1000-line cap)
+│   ├── tools_admin.rs,
+│   │   tools_git.rs,
+│   │   tools_memory.rs,
+│   │   tools_web.rs        — area-sliced tool shims
 │   ├── helpers.rs          — tool bodies; shared scan / decode helpers
-│   └── types.rs            — request / response structs (JsonSchema-derived)
+│   ├── helpers_calls.rs,
+│   │   helpers_documents.rs,
+│   │   helpers_graph.rs,
+│   │   helpers_grep.rs,
+│   │   helpers_impls.rs,
+│   │   helpers_web.rs      — area-sliced helper bodies
+│   ├── memory.rs           — search_documents + memory_* (LanceDB-backed)
+│   ├── types.rs,
+│   │   types_documents.rs,
+│   │   types_graph.rs,
+│   │   types_impls.rs      — JsonSchema-derived request / response structs
+│   ├── cursor.rs           — cursor encoding for paginated tools
+│   ├── savings.rs          — token-savings heuristics for telemetry
+│   └── telemetry.rs        — per-call telemetry.jsonl writer
 ├── query.rs                — read-side helpers shared by MCP tools + CLI
 ├── git.rs + git_cache.rs   — gix-backed history, blame, churn
 ├── path.rs                 — RelPath: byte-precise repo-relative paths
 ├── lang.rs                 — LangId = &'static str (TSLP pack name), parser pool,
 │                             query cache, override-then-TSLP-fallback try_get_query
 ├── queries/<pack-name>.scm — hand-written extraction queries (override TSLP tags.scm)
-├── render.rs, hashing.rs, watcher.rs, config/   — supporting modules
+├── render.rs, hashing.rs, watcher.rs                   — supporting modules
 ```
 
 ## Scan pipeline
@@ -92,9 +118,9 @@ Key invariants:
 - **Atomic upsert** — `IndexWriter::upsert_file` is read-before-write: read
   existing primary entries first to derive secondary-index keys for deletion,
   then stage all deletes + inserts in one batch. No torn state on re-scan.
-- **Eager L2 cost** — scanning TypeScript at 39k files goes 13.5 s → ~23 s with
-  eager L2 on. The `scan.eager_l2 = false` escape hatch trades reference search
-  for fastest scan.
+- **Eager L2 cost** — scanning TypeScript at ~81 k files takes ~22 s with
+  eager L2 on (the default). The `scan.eager_l2 = false` escape hatch trades
+  reference search for fastest scan.
 - **`scan_paths` removal mirror** — when a file disappears between scans,
   `scan_paths` calls `IndexWriter::remove_file` so secondary indexes don't leak
   stale entries.
@@ -111,8 +137,12 @@ A Fjall LSM keyspace at `.basemind/views/<view>/index.fjall/`. Source:
 | `symbols_by_name` | `name`-prefix range scans for symbol search. |
 | `calls_by_path` | Per-file call lookups. |
 | `calls_by_callee` | `callee`-prefix range scans — drives `find_references`. |
-| `imports_by_module` | Future fast-path for `dependents`. |
-| `embeddings` | Reserved for vector search; empty today. |
+| `imports_by_module` | `module`-prefix range scans — drives `dependents`. |
+| `imports_by_path` | Per-file import lookups. |
+| `implementations_by_trait` | `trait`-prefix range scans — drives `find_implementations`. |
+| `implementations_by_path` | Per-file implementation lookups. |
+| `embeddings` | Reserved for in-Fjall vector index; LanceDB owns the live vectors. |
+| `memory_by_key` | Agent memory (`memory_put` / `memory_get`); LanceDB owns the embeddings. |
 
 Key shapes (length-prefixed, see `src/index/keys.rs`):
 
@@ -160,8 +190,10 @@ Conventions:
   `scan_cap = limit * 8` to bound work on common names.
 - Tool descriptions are the routing surface for agents; semantics (substring vs
   prefix, scope-aware vs name-only) are stated honestly.
-- Tool bodies live in `src/mcp/helpers.rs`; `tools.rs` contains `#[tool]` shims
-  only.
+- Tool bodies live in `src/mcp/helpers*.rs` (area-sliced: `helpers_documents.rs`,
+  `helpers_calls.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`,
+  `helpers_web.rs`); `tools.rs` and the `tools_<area>.rs` siblings contain
+  `#[tool]` shims only.
 
 ## Git layer
 

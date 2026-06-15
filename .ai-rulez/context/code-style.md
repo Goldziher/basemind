@@ -8,7 +8,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 
 ## Module layout
 
-- One concern per file. When `src/mcp/tools.rs` approached the 1000-line cap, the bodies were extracted to `helpers.rs`; that's the canonical split for the `tools.rs` cap.
+- One concern per file. When `src/mcp/tools.rs` approached the 1000-line cap, the bodies were extracted to `helpers.rs` and then sliced again by area (`helpers_documents.rs`, `helpers_calls.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`, `helpers_web.rs`). Match that shape when adding a new tool area.
 - 1000-line cap on `src/**/*.rs` enforced by the `rust-max-lines` prek hook. Refactor by extracting helpers or types, never by lifting the cap.
 - Tests sit in `tests/<area>_smoke.rs` files (one per area) plus the integration harness at `tests/harden.rs`.
 
@@ -29,7 +29,7 @@ Project-specific conventions baked into context so they ship into every AI tool'
 #### Codegen
 
 - `build.rs` + `schema/*.json` are the codegen surface. Hand-editing generated files is forbidden.
-- JSON Schema drives the config types; mismatches between schema and `src/config/v1.rs` are caught by `tests/config_schema.rs`.
+- Rust config types in `src/config/` drive the JSON Schema via `schemars` derives; the snapshot at `schema/basemind-config-v1.schema.json` is asserted byte-equal by `tests/config_schema.rs`. Regenerate with `cargo test --test config_schema -- --ignored regenerate_schema`.
 
 #### Commits
 

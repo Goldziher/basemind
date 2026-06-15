@@ -268,7 +268,7 @@ Measured by the in-repo hardening harness — Apple Silicon, release build,
 |---|---|---|---|
 | basemind (this repo) | 136 | Rust | < 1 s |
 | tokio | 856 | Rust | 0.2 s |
-| TypeScript compiler | 81 324 | TS / JS / JSON | 17–18 s |
+| TypeScript compiler | 81 324 | TS / JS / JSON | 21–22 s |
 
 The TypeScript clone is the worst case in the in-repo hardening harness. Most
 real repos sit between these two extremes. Re-scans skip files whose content
@@ -305,12 +305,17 @@ histories.
 The L1 walk fuses symbols, imports, and implementations into one combined
 tree-sitter query — one `QueryCursor`, one tree walk per file. The eager-L2
 path then runs L2's calls + docs queries against the same parsed tree
-instead of re-parsing. Two measurements against the consolidation:
+instead of re-parsing. Historical deltas against the consolidation
+(eager-L2-off baseline at the time):
 
 | Repo | Before | After | Delta |
 |---|---|---|---|
 | tokio | 535 ms | **212 ms** | −60% |
 | TypeScript compiler | 25.9 s | **17.5 s** | −32% |
+
+Current numbers in the scan-throughput table above include the document
+tier (`--features full`) and the default `eager_l2 = true`, so the
+end-to-end TypeScript scan sits at ~22 s.
 
 ---
 

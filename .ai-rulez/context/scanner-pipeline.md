@@ -28,7 +28,7 @@ Walker (gitignore-aware)
 
 - **Per-file commit**: every `process_file` commits its Fjall batch before returning. Fjall handles cross-thread locking; the scanner does not.
 - **Atomic upsert**: `IndexWriter::upsert_file` is read-before-write — it reads existing primary entries first to derive secondary-index keys for deletion, then stages all deletes + inserts in one batch. No torn state on re-scan.
-- **Eager L2 cost**: scanning TypeScript at 39k files goes 13.5 s → ~23 s with eager L2 on. Document the trade-off when enabling; offer the `eager_l2 = false` escape hatch.
+- **Eager L2 cost**: scanning TypeScript at ~81 k files takes ~22 s with eager L2 on (the default) and ~17 s with eager L2 off. Document the trade-off when enabling; offer the `eager_l2 = false` escape hatch.
 - **`scan_paths` removal mirror**: when a file disappears between scans, `scan_paths` calls `IndexWriter::remove_file` so secondary indexes don't leak stale entries.
 - **No `tokio::spawn`** on the scanner path — rayon `par_iter` is the parallelization unit.
 

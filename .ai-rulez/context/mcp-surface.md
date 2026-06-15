@@ -37,4 +37,4 @@ priority: high
 - Responses are `JsonSchema`-derived and stable; new fields are additive with `#[serde(default)]`.
 - Lists are capped (`limit`, default 100, max 1000). Index scans use `scan_cap = limit * 8` to bound work on common names.
 - Tool descriptions are the routing surface for agents; state semantics (substring vs prefix, scope-aware vs name-only) explicitly.
-- Tool bodies live in `src/mcp/helpers.rs`; `tools.rs` contains `#[tool]` shims only.
+- Tool bodies live in `src/mcp/helpers*.rs` (sliced by area: `helpers_documents.rs`, `helpers_calls.rs`, `helpers_graph.rs`, `helpers_grep.rs`, `helpers_impls.rs`, `helpers_web.rs`); `tools.rs` and the `tools_<area>.rs` siblings contain `#[tool]` shims only.
