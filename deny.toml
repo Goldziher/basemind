@@ -73,6 +73,10 @@ deny = []
 skip = []
 skip-tree = []
 
+# Temporary: kreuzberg is a path-dep on the local workspace head (rc.14) until
+# rc.14 ships on crates.io. cargo-deny does not audit local path sources so no
+# allow rule is needed here. Remove this comment and restore the
+# `version = "=…"` pin in Cargo.toml after the next kreuzberg crates.io release.
 [sources]
 unknown-registry = "warn"
 unknown-git = "warn"

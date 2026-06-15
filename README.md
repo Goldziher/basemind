@@ -157,6 +157,17 @@ immediately after it.
 matching `--documents-language-*` flags, or `BASEMIND_DOCUMENTS_LANGUAGE_*` env
 vars.
 
+Cross-encoder reranking is available as a per-query opt-in:
+
+```text
+search_documents(query, reranker_enabled=true, reranker_preset="bge-reranker-base")
+```
+
+The first reranker call downloads the ONNX weights (~278 MB) and caches them under
+`~/.cache/kreuzberg/rerankers/`. Enable permanently via
+`[documents.reranker] enabled = true` in `.basemind/basemind.toml`. Each reranked
+hit gains a `rerank_score` field (cross-encoder relevance in `[0, 1]`).
+
 Memory is scoped by the repo's normalised `origin` URL so clones share entries.
 A repo with no remote falls back to a workdir-keyed scope (configurable via
 `[memory].scope_strategy` in `.basemind/basemind.toml`).
