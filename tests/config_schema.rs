@@ -2,8 +2,10 @@ use basemind::config::{
     self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, DocumentsCliOverrides, merge_layers,
 };
 
+#[cfg(feature = "full")]
 const SCHEMA_PATH: &str = "schema/basemind-config-v1.schema.json";
 
+#[cfg(feature = "full")]
 fn generate_schema_text() -> String {
     let schema = schemars::schema_for!(ConfigV1);
     let mut s = serde_json::to_string_pretty(&schema).expect("schema serializes");

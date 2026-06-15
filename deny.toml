@@ -30,6 +30,9 @@ allow = [
   "Unicode-3.0",
   "BSL-1.0",
   "0BSD",
+  # finl_unicode (transitive) ships under Unicode-DFS-2016 — the same Unicode
+  # Consortium license family as Unicode-3.0 (already allowed).
+  "Unicode-DFS-2016",
 ]
 confidence-threshold = 0.8
 
@@ -63,6 +66,24 @@ allow = ["MPL-2.0"]
 name = "uluru"
 allow = ["MPL-2.0"]
 
+# kreuzberg is Elastic-2.0 — basemind ships it as the document-tier engine
+# (RAG / OCR / NER stack). Source license is intentionally chosen by basemind.
+[[licenses.exceptions]]
+name = "kreuzberg"
+allow = ["Elastic-2.0"]
+
+# kreuzcrawl is Elastic-2.0 — sibling project to kreuzberg, used as the web
+# crawl tier (gated by the `crawl` feature).
+[[licenses.exceptions]]
+name = "kreuzcrawl"
+allow = ["Elastic-2.0"]
+
+# libbz2-rs-sys (transitive via the document tier's archive support) ships
+# under the bespoke bzip2-1.0.6 license — equivalent to BSD-style permissive.
+[[licenses.exceptions]]
+name = "libbz2-rs-sys"
+allow = ["bzip2-1.0.6"]
+
 [licenses.private]
 ignore = false
 registries = []
@@ -78,15 +99,18 @@ deny = []
 skip = []
 skip-tree = []
 
-# Temporary: kreuzberg is a path-dep on the local workspace head (rc.14) until
-# rc.14 ships on crates.io. cargo-deny does not audit local path sources so no
-# allow rule is needed here. Remove this comment and restore the
-# `version = "=…"` pin in Cargo.toml after the next kreuzberg crates.io release.
+# Temporary: kreuzberg is git-pinned to v5.0.0-rc.15 until that release (or
+# newer) ships to crates.io. Remove the kreuzberg allow-git entry and restore
+# the `version = "=…"` pin in Cargo.toml after the next kreuzberg crates.io
+# release.
 [sources]
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/kreuzberg-dev/tree-sitter-language-pack"]
+allow-git = [
+  "https://github.com/kreuzberg-dev/tree-sitter-language-pack",
+  "https://github.com/kreuzberg-dev/kreuzberg",
+]
 
 [sources.allow-org]
 github = []
