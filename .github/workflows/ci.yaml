@@ -35,6 +35,17 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # protoc is required by lance-encoding's build script (transitive via the
+      # `memory`, `documents`, `crawl`, and `full` features). Install on every
+      # matrix point — the default-features build doesn't need it but the cost
+      # is negligible and keeps the steps uniform across matrix entries.
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
       - uses: Swatinem/rust-cache@v2
         with:
           # Differentiate caches per-OS and features so the cache key is stable across runs.
