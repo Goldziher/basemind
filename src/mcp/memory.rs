@@ -405,6 +405,14 @@ pub(super) async fn run_search_documents(
     // `~/.cache/kreuzberg/rerankers/`. Enable via `[documents.reranker] enabled = true`
     // in TOML or `reranker_enabled = true` as a per-query override.
     if reranker_enabled && !hits.is_empty() {
+        // Fail-fast on unknown preset names before constructing `RerankerConfig` so we
+        // don't trigger an opaque ONNX error or a wrong-model download.
+        if kreuzberg::get_reranker_preset(&reranker_preset).is_none() {
+            return Err(McpError::invalid_params(
+                format!("unknown reranker preset: {reranker_preset:?}"),
+                None,
+            ));
+        }
         let krz_config = kreuzberg::core::config::RerankerConfig {
             model: kreuzberg::core::config::RerankerModelType::Preset {
                 name: reranker_preset,
@@ -415,15 +423,47 @@ pub(super) async fn run_search_documents(
         let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
         let reranked = kreuzberg::rerank_async(params.query.clone(), documents, &krz_config)
             .await
-            .map_err(|e| McpError::internal_error(format!("rerank: {e}"), None))?;
+            .map_err(|e| {
+                // Best-effort split between model-load and inference failures. The
+                // kreuzberg error variants don't expose a kind discriminator, so we
+                // substring-match the Display impl — better than the opaque `rerank: {e}`
+                // we had before, even if it occasionally misclassifies.
+                let msg = e.to_string();
+                let kind = if msg.contains("download")
+                    || msg.contains("HuggingFace")
+                    || msg.contains("model")
+                {
+                    "rerank model load"
+                } else {
+                    "rerank inference"
+                };
+                McpError::internal_error(format!("{kind}: {msg}"), None)
+            })?;
+        // Bounds-check every external index — the reranker is a third-party ONNX model
+        // and a buggy run must not panic the server.
+        let original_hits = std::mem::take(&mut hits);
         hits = reranked
             .into_iter()
             .map(|r| {
-                let mut hit = hits[r.index].clone();
-                hit.rerank_score = Some(r.score);
-                hit
+                original_hits
+                    .get(r.index)
+                    .cloned()
+                    .map(|mut hit| {
+                        hit.rerank_score = Some(r.score);
+                        hit
+                    })
+                    .ok_or_else(|| {
+                        McpError::internal_error(
+                            format!(
+                                "reranker returned out-of-range index {} (got {} hits)",
+                                r.index,
+                                original_hits.len()
+                            ),
+                            None,
+                        )
+                    })
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
     }
 
     format_response(

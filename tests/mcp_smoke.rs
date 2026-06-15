@@ -1590,6 +1590,10 @@ async fn blame_symbol_paginates_by_start_line() {
 #[ignore]
 #[cfg(feature = "documents")]
 async fn reranks_search_results() {
+    // Weakness: this test only verifies the reranker ran (rerank_score present)
+    // and produced scores in [0,1]. It does NOT verify that reranking changed the
+    // hit order — engineering a synthetic fixture where vector distance and
+    // cross-encoder scores reliably disagree is impractical without real corpora.
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);

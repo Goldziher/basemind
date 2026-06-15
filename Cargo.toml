@@ -126,8 +126,10 @@ hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
 # Kreuzberg powers the document tier + the embedding engine. Path-dep on the
-# workspace head (rc.13) for the unreleased reranker / future feature surfaces;
+# workspace head (rc.14) for the unreleased reranker / future feature surfaces;
 # revert to a `version = "=…"` pin after the next kreuzberg crates.io release.
+# NOTE: this path-dep blocks `cargo publish`. Switch back to `version = "=…"`
+# once kreuzberg rc.13+ ships on crates.io.
 kreuzberg = { path = "../kreuzberg-dev/kreuzberg/crates/kreuzberg", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 # kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
 # same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
