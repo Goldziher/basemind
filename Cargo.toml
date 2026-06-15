@@ -1,6 +1,6 @@
 [package]
 name = "basemind"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level."
