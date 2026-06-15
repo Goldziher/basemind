@@ -17,7 +17,7 @@
     "shortDescription": "Code-map MCP server for navigating large codebases",
     "longDescription": "basemind indexes a repository with tree-sitter and exposes a structured code map — outlines, references, callers, history, blame, diff — over MCP. Designed for AI agents to navigate unfamiliar code without reading every file.",
     "developerName": "Na'aman Hirschfeld",
-    "category": "Coding",
+    "category": "Developer Tools",
     "capabilities": ["Interactive", "Read"],
     "defaultPrompt": [
       "Outline this file.",

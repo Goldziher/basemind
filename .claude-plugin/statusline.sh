@@ -104,28 +104,38 @@ saved_fmt="$(fmt_count "$saved")"
 calls_fmt="$(fmt_count "$calls")"
 
 # ─── Styling ───────────────────────────────────────────────────────────────────
-# 256-color orange for the brand mark; ANSI bright/dim for hierarchy.
-brand=$'\033[38;5;208m' # orange — matches plugin brandColor #F97316
+# True-color (24-bit) brand mark, exact match for plugin brandColor #F97316
+# (R=249, G=115, B=22). True-color is supported by every modern terminal
+# emulator (iTerm2, kitty, alacritty, modern xterm/gnome-terminal, Ghostty,
+# Warp, the Claude Code statusline renderer). Terminals that don't support it
+# fall back to the closest available palette colour without breaking the line.
+brand=$'\033[38;2;249;115;22m'
 bold=$'\033[1m'
 dim=$'\033[2m'
 reset=$'\033[0m'
 
-# Freshness dot — green < 1h, yellow 1–24h, red > 1d.
-if [[ $scan_delta -lt 3600 ]]; then
-  dot_color=$'\033[32m' # green
-elif [[ $scan_delta -lt 86400 ]]; then
-  dot_color=$'\033[33m' # yellow
-else
-  dot_color=$'\033[31m' # red
+# Freshness dot — green < 1h, yellow 1–24h, red > 1d. Suppressed entirely when
+# the index doesn't exist yet (scan_age="never"); the trailing space collapses
+# so the layout stays clean.
+dot=""
+if [[ "$scan_age" != "never" ]]; then
+  if [[ $scan_delta -lt 3600 ]]; then
+    dot_color=$'\033[32m' # green
+  elif [[ $scan_delta -lt 86400 ]]; then
+    dot_color=$'\033[33m' # yellow
+  else
+    dot_color=$'\033[31m' # red
+  fi
+  dot="  ${dot_color}●${reset}"
 fi
 
 # ─── Render ────────────────────────────────────────────────────────────────────
 # Layout: ▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved
-printf '%s▲%s %s%sbasemind%s  %s%s files · scanned %s%s  %s●%s  %s calls · %s tok saved' \
+printf '%s▲%s %sbasemind%s  %s%s files · scanned %s%s%s  %s calls · %s tok saved' \
   "$brand" "$reset" \
-  "$bold" "" "$reset" \
+  "$bold" "$reset" \
   "$dim" "$file_count" \
   "$scan_age" "$reset" \
-  "$dot_color" "$reset" \
+  "$dot" \
   "$calls_fmt" \
   "$saved_fmt"

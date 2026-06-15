@@ -50,6 +50,7 @@ else
 fi
 
 assert_contains $'\033[' 'ANSI escape present'
+assert_contains $'\033[38;2;249;115;22m' 'true-color brand orange #F97316 present'
 assert_contains '▲' 'brand mark ▲ present'
 assert_contains 'basemind' 'name present'
 assert_contains 'files · scanned' 'layout glue present'
@@ -58,6 +59,19 @@ assert_contains 'calls' 'calls segment present'
 assert_contains 'tok saved' 'tokens segment present'
 assert_contains '1 calls' '1 call recorded (from fixture telemetry)'
 assert_contains '500 tok saved' '500 tok recorded (from fixture telemetry)'
+
+# Never-scanned fixture: .basemind/ exists, no index file → dot suppressed.
+unscanned_dir="$(mktemp -d)"
+mkdir -p "$unscanned_dir/.basemind"
+trap 'rm -rf "$FIXTURE" "$empty_dir" "$unscanned_dir"' EXIT
+unscanned_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$unscanned_dir")"
+unscanned_output="$(printf '%s' "$unscanned_payload" | "$STATUSLINE")"
+if [[ "$unscanned_output" == *'scanned never'* ]] && [[ "$unscanned_output" != *'●'* ]]; then
+  printf '  ok  freshness dot suppressed when never scanned\n'
+else
+  printf '  FAIL never-scanned output should drop the dot; got: %q\n' "$unscanned_output" >&2
+  fail=1
+fi
 
 # Silent-exit when .basemind/ is missing.
 empty_dir="$(mktemp -d)"

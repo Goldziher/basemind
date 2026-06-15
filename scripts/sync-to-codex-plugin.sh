@@ -2,11 +2,12 @@
 #
 # sync-to-codex-plugin.sh
 #
-# Sync this basemind checkout → Goldziher/openai-codex-plugins (fork of
-# openai/codex-plugins). Clones the fork fresh into a temp dir, rsyncs tracked
-# upstream plugin content (the committed Codex manifest under .codex-plugin/
-# plus the skills/ tree), preserves OpenAI-owned marketplace metadata already
-# in the destination plugin, commits, pushes a sync branch, and opens a PR.
+# Sync this basemind checkout → Goldziher/openai-codex-plugins (a fork of
+# openai/plugins, the canonical Codex plugin marketplace). Clones the fork
+# fresh into a temp dir, rsyncs tracked upstream plugin content (the committed
+# Codex manifest under .codex-plugin/ plus the skills/ tree), preserves
+# OpenAI-owned marketplace metadata already in the destination plugin,
+# commits, pushes a sync branch, and opens a PR.
 # Path/user agnostic — auto-detects upstream from script location.
 #
 # Adapted from obra/superpowers scripts/sync-to-codex-plugin.sh.
@@ -218,7 +219,7 @@ if [[ -z "$LOCAL_CHECKOUT" ]] && ! gh repo view "$FORK" >/dev/null 2>&1; then
   die "fork '$FORK' does not exist or you cannot access it.
 
   Create it once:
-    gh repo fork openai/codex-plugins --clone=false --remote=false --org=Goldziher
+    gh repo fork openai/plugins --clone=false --remote=false --org=Goldziher --fork-name=openai-codex-plugins
     # then re-run this script.
 
   If your fork lives elsewhere, edit FORK= at the top of this script."
@@ -234,6 +235,17 @@ UPSTREAM_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1
 UPSTREAM_BRANCH="$(cd "$UPSTREAM" && git branch --show-current)"
 UPSTREAM_SHA="$(cd "$UPSTREAM" && git rev-parse HEAD)"
 UPSTREAM_SHORT="$(cd "$UPSTREAM" && git rev-parse --short HEAD)"
+
+# Derive the upstream repo URL from the origin remote so a fork or rename
+# doesn't silently link the PR back to the wrong place.
+UPSTREAM_REMOTE_RAW="$(cd "$UPSTREAM" && git remote get-url origin 2>/dev/null || true)"
+case "$UPSTREAM_REMOTE_RAW" in
+git@github.com:*) UPSTREAM_URL="https://github.com/${UPSTREAM_REMOTE_RAW#git@github.com:}" ;;
+ssh://git@github.com/*) UPSTREAM_URL="https://github.com/${UPSTREAM_REMOTE_RAW#ssh://git@github.com/}" ;;
+https://*) UPSTREAM_URL="$UPSTREAM_REMOTE_RAW" ;;
+*) UPSTREAM_URL="https://github.com/Goldziher/basemind" ;;
+esac
+UPSTREAM_URL="${UPSTREAM_URL%.git}"
 
 confirm() {
   [[ $YES -eq 1 ]] && return 0
@@ -480,7 +492,7 @@ if [[ $BOOTSTRAP -eq 1 ]]; then
 Creates \`plugins/basemind/\` by copying the tracked plugin files from upstream, including \`.codex-plugin/plugin.json\` and \`assets/\`.
 
 Run via: \`scripts/sync-to-codex-plugin.sh --bootstrap\`
-Upstream commit: https://github.com/Goldziher/basemind/commit/$UPSTREAM_SHA
+Upstream commit: ${UPSTREAM_URL}/commit/$UPSTREAM_SHA
 
 This is a one-time bootstrap. Subsequent syncs will be normal (non-bootstrap) runs using the same tracked upstream plugin files."
 else
@@ -490,7 +502,7 @@ else
 Copies the tracked plugin files from upstream, including the committed Codex manifest and assets.
 
 Run via: \`scripts/sync-to-codex-plugin.sh\`
-Upstream commit: https://github.com/Goldziher/basemind/commit/$UPSTREAM_SHA
+Upstream commit: ${UPSTREAM_URL}/commit/$UPSTREAM_SHA
 
 Running the sync tool again against the same upstream SHA should produce a PR with an identical diff — use that to verify the tool is behaving."
 fi
@@ -498,7 +510,7 @@ fi
 git commit --quiet -m "$COMMIT_TITLE
 
 Automated sync via scripts/sync-to-codex-plugin.sh
-Upstream: https://github.com/Goldziher/basemind/commit/$UPSTREAM_SHA
+Upstream: ${UPSTREAM_URL}/commit/$UPSTREAM_SHA
 Branch:   $SYNC_BRANCH"
 
 echo "Pushing $SYNC_BRANCH to $FORK..."
