@@ -27,7 +27,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        features: ['', 'memory', 'documents', 'crawl', 'full']
+        # Default-features only on per-PR CI. The opt-in intelligence features
+        # (`memory`, `documents`, `crawl`, `full`) pull in kreuzberg's heavy
+        # system-dep stack (libheif source build, Tesseract, ONNX runtime,
+        # downloadable embedding models) — too expensive for fast PR feedback.
+        # The nightly `hardening` job runs the full feature surface against
+        # real OSS repos and is the authoritative signal for those builds.
+        features: ['']
     steps:
       - uses: actions/checkout@v4
 

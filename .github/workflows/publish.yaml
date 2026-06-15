@@ -148,7 +148,10 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean --skip=validate
+          # Skip the homebrew tap step — Goldziher/homebrew-tap is private and
+          # the HOMEBREW_TOKEN secret hasn't been provisioned yet. The binary
+          # archives + checksums still ship via the SCM release step.
+          args: release --clean --skip=validate --skip=homebrew
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
