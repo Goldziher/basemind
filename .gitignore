@@ -7,7 +7,8 @@
 /pip-package/build
 /pip-package/dist
 /pip-package/basemind.egg-info
-/npm-package/bin
+/npm-package/bin/*
+!/npm-package/bin/basemind.js
 /npm-package/node_modules
 /npm-package/*.tgz
 /opencode-plugin/skills
