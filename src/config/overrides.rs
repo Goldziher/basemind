@@ -94,12 +94,19 @@ pub struct DocumentsCliOverrides {
     )]
     pub keywords_enabled: Option<bool>,
 
-    /// Override `documents.keywords.count`.
+    /// Override `documents.keywords.max_keywords` (maximum keywords per document).
     #[arg(
-        long = "documents-keywords-count",
-        env = "BASEMIND_DOCUMENTS_KEYWORDS_COUNT"
+        long = "documents-keywords-max-keywords",
+        env = "BASEMIND_DOCUMENTS_KEYWORDS_MAX_KEYWORDS"
     )]
-    pub keywords_count: Option<usize>,
+    pub keywords_max_keywords: Option<usize>,
+
+    /// Override `documents.keywords.min_score`.
+    #[arg(
+        long = "documents-keywords-min-score",
+        env = "BASEMIND_DOCUMENTS_KEYWORDS_MIN_SCORE"
+    )]
+    pub keywords_min_score: Option<f32>,
 
     /// Override `documents.ner.enabled`.
     #[arg(long = "documents-ner-enabled", env = "BASEMIND_DOCUMENTS_NER_ENABLED")]
@@ -149,7 +156,8 @@ impl DocumentsCliOverrides {
             || self.reranker_preset.is_some()
             || self.reranker_top_k.is_some()
             || self.keywords_enabled.is_some()
-            || self.keywords_count.is_some()
+            || self.keywords_max_keywords.is_some()
+            || self.keywords_min_score.is_some()
             || self.ner_enabled.is_some()
             || self.summarization_enabled.is_some()
             || self.summarization_max_chars.is_some()

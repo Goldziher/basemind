@@ -146,7 +146,7 @@ immediately after it.
 
 | Tool | What the agent can finally do |
 |---|---|
-| `search_documents` | Semantic KNN over PDFs / HTML / emails. Per-query overrides; JSON or TOON output. |
+| `search_documents` | Semantic KNN over PDFs / HTML / emails — per-query overrides, reranker, keywords + entities. |
 | `memory_put` / `memory_get` / `memory_list` | Persist scoped notes — exact-key store and prefix / tag scans. |
 | `memory_search` | Semantic recall across stored memory entries — KNN over the LanceDB memory table. |
 | `memory_delete` | Drop an entry from both Fjall and LanceDB. |
@@ -167,6 +167,13 @@ The first reranker call downloads the ONNX weights (~278 MB) and caches them und
 `~/.cache/kreuzberg/rerankers/`. Enable permanently via
 `[documents.reranker] enabled = true` in `.basemind/basemind.toml`. Each reranked
 hit gains a `rerank_score` field (cross-encoder relevance in `[0, 1]`).
+
+When `[documents.keywords]` or `[documents.ner]` is enabled at scan time, each
+`search_documents` hit also carries `keywords` (YAKE/RAKE) and `entities`
+(gline-rs ONNX or LLM) from its parent document. Filter per query via
+`entity_category` (lowercase: `"person"`, `"organization"`, `"location"`, …) or
+`keywords_contains` (case-insensitive substring on keyword text). NER weights
+(~250 MB) download lazily on first run.
 
 Memory is scoped by the repo's normalised `origin` URL so clones share entries.
 A repo with no remote falls back to a workdir-keyed scope (configurable via

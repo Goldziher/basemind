@@ -703,6 +703,110 @@ fn scan_detects_french_in_markdown_fixture() {
     );
 }
 
+/// YAKE keyword extraction runs entirely in-process — no model download — so
+/// the test runs unconditionally. We assert at least one keyword surfaces from
+/// a topical paragraph; we don't pin the exact string because YAKE's ranking
+/// can shift slightly across versions, but presence is a stable lower bound.
+#[cfg(feature = "documents")]
+#[test]
+fn extract_doc_surfaces_keywords_when_enabled() {
+    use std::fs;
+    use std::path::Path;
+
+    use basemind::config::{KeywordAlgorithm, KeywordsConfig};
+    use basemind::extract::doc::{DocConfig, extract_doc};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("article.txt");
+    // Topical text so YAKE has obvious phrases to lock onto.
+    let body = "Climate change is reshaping global agriculture. Farmers in tropical regions \
+                report shifting rainfall patterns and crop yields are declining year over year. \
+                Climate adaptation strategies include drought-resistant seed varieties and \
+                precision irrigation. Climate scientists warn that without aggressive emissions \
+                reductions, food security will deteriorate further across vulnerable regions.";
+    fs::write(&path, body).expect("write fixture");
+
+    let cfg = DocConfig {
+        embed: false,
+        embedding_preset: None,
+        keywords: KeywordsConfig {
+            enabled: true,
+            algorithm: KeywordAlgorithm::Yake,
+            max_keywords: 10,
+            ..KeywordsConfig::default()
+        },
+        ..DocConfig::default()
+    };
+    let doc = extract_doc(Path::new(&path), Some("text/plain"), &cfg).expect("extract");
+    assert!(
+        !doc.keywords.is_empty(),
+        "YAKE should surface at least one keyword for topical text; got empty list"
+    );
+    assert!(
+        doc.keywords.iter().all(|k| k.algorithm == "yake"),
+        "every keyword should be tagged with the algorithm used to produce it"
+    );
+}
+
+/// End-to-end keywords + NER assertion. NER (gline-rs ONNX) downloads ~250 MB
+/// of weights on first run, so the test is `#[ignore]`-gated. Pre-warm with:
+/// `cargo test --features documents scan_extracts_keywords_and_entities -- --ignored`.
+#[cfg(feature = "documents")]
+#[test]
+#[ignore = "downloads gline-rs ONNX weights (~250MB) on first run; pre-warm explicitly"]
+fn scan_extracts_keywords_and_entities() {
+    use std::fs;
+    use std::path::Path;
+
+    use basemind::config::{KeywordAlgorithm, KeywordsConfig, NerBackend, NerConfig};
+    use basemind::extract::doc::{DocConfig, extract_doc};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("press_release.txt");
+    let body = "Microsoft Corporation announced a new partnership with the city of Paris \
+                on Tuesday. Contact alice@example.com for media inquiries. The collaboration \
+                will focus on artificial intelligence research and sustainable computing \
+                infrastructure across Europe.";
+    fs::write(&path, body).expect("write fixture");
+
+    let cfg = DocConfig {
+        embed: false,
+        embedding_preset: None,
+        keywords: KeywordsConfig {
+            enabled: true,
+            algorithm: KeywordAlgorithm::Yake,
+            max_keywords: 10,
+            ..KeywordsConfig::default()
+        },
+        ner: NerConfig {
+            enabled: true,
+            backend: NerBackend::Onnx,
+            ..NerConfig::default()
+        },
+        ..DocConfig::default()
+    };
+
+    let doc = extract_doc(Path::new(&path), Some("text/plain"), &cfg).expect("extract");
+    assert!(
+        !doc.keywords.is_empty(),
+        "keywords pipeline should produce at least one hit on the fixture"
+    );
+    assert!(
+        !doc.entities.is_empty(),
+        "NER pipeline should produce at least one entity on the fixture"
+    );
+    // We don't pin the exact label set — gline-rs models evolve — but at least
+    // ONE entity should land in a structured category (i.e. not custom-empty).
+    assert!(
+        doc.entities.iter().any(|e| matches!(
+            e.category.as_str(),
+            "person" | "organization" | "location" | "email"
+        )),
+        "expected at least one standard-category entity; got {:?}",
+        doc.entities.iter().map(|e| &e.category).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn ts_multiline_generic_signature_is_collapsed() {
     let (dir, cfg) = fresh_repo();
