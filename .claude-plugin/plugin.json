@@ -9,7 +9,7 @@
   "homepage": "https://github.com/Goldziher/basemind",
   "repository": "https://github.com/Goldziher/basemind",
   "license": "MIT",
-  "keywords": ["mcp", "code-map", "tree-sitter", "scanner", "indexer"],
+  "keywords": ["mcp", "tree-sitter", "code-map", "scanner", "indexer"],
   "mcpServers": {
     "basemind": {
       "command": "basemind",
