@@ -99,18 +99,11 @@ deny = []
 skip = []
 skip-tree = []
 
-# Temporary: kreuzberg is git-pinned to v5.0.0-rc.15 until that release (or
-# newer) ships to crates.io. Remove the kreuzberg allow-git entry and restore
-# the `version = "=…"` pin in Cargo.toml after the next kreuzberg crates.io
-# release.
 [sources]
 unknown-registry = "warn"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = [
-  "https://github.com/kreuzberg-dev/tree-sitter-language-pack",
-  "https://github.com/kreuzberg-dev/kreuzberg",
-]
+allow-git = []
 
 [sources.allow-org]
 github = []
