@@ -26,6 +26,9 @@ repos:
       - id: detect-private-key
       - id: check-case-conflict
       - id: check-executables-have-shebangs
+        # run-hook.cmd is an intentional cmd/bash polyglot: executable on Unix
+        # (no shebang — sh runs it as a script) and a .cmd batch file on Windows.
+        exclude: \.cmd$
       - id: check-shebang-scripts-are-executable
       - id: mixed-line-ending
       - id: typos

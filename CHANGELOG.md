@@ -5,9 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-<!-- markdownlint-disable MD024 -- Keep a Changelog repeats Added/Changed/Fixed/etc. per version. -->
+<!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
+<!-- markdownlint-disable MD024 -->
 
 ## [Unreleased]
+
+## [0.2.2] — 2026-06-17
+
+### Added
+
+- **Claude Code plugin now auto-installs the basemind binary.** The MCP launcher
+  (`scripts/mcp-launch.sh`) tries version-matched cached binaries, then npx
+  (npm package), uvx (PyPI package), and finally downloads the prebuilt binary
+  from the GitHub release with checksum verification. Override the launch strategy
+  with `BASEMIND_LAUNCHER=auto|npx|uvx|download`.
+- **SessionStart hook pre-warms the binary and nudges statusline setup.** The
+  hook runs in the background on session start to ensure the first tool call isn't
+  a cold install, and suggests `/bm-statusline` if the statusline isn't yet
+  configured.
+- **`/bm-statusline` slash command wires the statusline into
+  `~/.claude/settings.json`.** Plugins cannot set the main statusline
+  automatically; `/bm-statusline` is the one-step opt-in.
 
 ## [0.2.1] — 2026-06-17
 
@@ -230,7 +248,8 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Goldziher/basemind/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Goldziher/basemind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Goldziher/basemind/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Goldziher/basemind/compare/v0.1.0...v0.1.1

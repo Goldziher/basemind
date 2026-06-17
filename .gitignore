@@ -4,6 +4,8 @@
 
 # Release build artifacts
 /dist
+# Binary the plugin MCP launcher (scripts/mcp-launch.sh) downloads on demand
+/bin/
 /pip-package/build
 /pip-package/dist
 /pip-package/basemind.egg-info

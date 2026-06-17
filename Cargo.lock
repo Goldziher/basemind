@@ -675,7 +675,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
 name = "basemind"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
