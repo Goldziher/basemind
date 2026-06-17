@@ -5,7 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- markdownlint-disable MD024 -- Keep a Changelog repeats Added/Changed/Fixed/etc. per version. -->
+
 ## [Unreleased]
+
+## [0.2.0] — 2026-06-17
+
+**Minor release — schema wipe (`RELEASE_MINOR=2`).** The blob and inverted-index
+formats are versioned to the release minor, so the next `basemind scan` rebuilds
+`.basemind/` from source. This is the intentional migration path; no user action
+beyond a rescan is needed.
+
+### Changed
+
+- **Dependencies on crates.io.** `kreuzberg` moved from the `v5.0.0-rc.15` git pin
+  to the published crates.io release `=5.0.0-rc.18`; the temporary `allow-git`
+  exemptions in `deny.toml` are dropped. With no remaining git dependencies,
+  `cargo publish` to crates.io is unblocked — basemind now ships on all four
+  registries (crates.io, npm, PyPI, Homebrew) from a single tag.
+- **README is now a positioning document.** Rewritten from a code-map feature
+  inventory into a full AI-context-layer overview: four pillars (Code, Documents,
+  Memory, Web), a feature table mapping every MCP tool to its backend, a
+  three-flavour quickstart, comparisons against grep / vector-only RAG /
+  repo-map indexers / GitHub search, and a differentiators section. Sub-package
+  READMEs (npm / PyPI / OpenCode) collapse to install stubs linking the root.
+- **Aligned package metadata across all surfaces.** One canonical description and
+  a positioning-led 5-keyword set (`mcp`, `agent-context`, `rag`, `code-map`,
+  `tree-sitter`) now ship identically across `Cargo.toml`, the npm / PyPI
+  manifests, and every harness plugin manifest. GitHub repo description + topics
+  updated to match.
+
+### Added
+
+- **Redesigned Claude Code statusline.** Bright 256-color palette (no more
+  low-contrast dim text), a `◆` brand mark, a dedicated serve/scan freshness
+  dot, and width-aware wide/narrow layouts. The file count now reads the L1 blob
+  set directly (exact, deduped) instead of estimating from index bytes; scan
+  recency reads the view index mtime; an empty repo renders an actionable
+  `run: basemind scan` hint instead of a blank line. The intelligence row
+  (documents / memory / web) appears when a LanceDB store is present.
+- **Agent-facing skills + slash commands bundled into every plugin tree.** The
+  `basemind` routing skill and `basemind-stats` dashboard, plus `/bm` and
+  `/bm-stats` slash commands, now ship inside `.claude-plugin/`, `.codex-plugin/`,
+  `.cursor-plugin/`, and the `basemind-opencode` npm tarball — so an installed
+  plugin teaches the agent how to use the tools without manual onboarding. A new
+  `scripts/sync-plugin-skills.sh` (wired as a prek hook) keeps the canonical
+  source and the per-harness copies in lock-step.
 
 ## [0.1.1] — 2026-06-15
 
@@ -165,5 +210,7 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Goldziher/basemind/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/Goldziher/basemind/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Goldziher/basemind/releases/tag/v0.1.0
