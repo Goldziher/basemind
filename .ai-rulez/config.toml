@@ -37,3 +37,14 @@ name = "ai-rulez"
 description = "Manage AI governance config via MCP."
 command = "npx"
 args = ["-y", "ai-rulez@latest", "mcp"]
+
+[[marketplaces]]
+name = "basemind"
+source = "Goldziher/basemind"
+type = "github"
+
+[[plugins]]
+marketplace = "basemind"
+name = "basemind"
+scope = "project"
+enabled = true
