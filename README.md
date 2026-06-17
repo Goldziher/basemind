@@ -72,8 +72,10 @@ Restart the session. Optional: add a live statusline to `~/.claude/settings.json
 }
 ```
 
-Output: `▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`. The freshness dot is
-green (< 1 h), yellow (1–24 h), or red (> 1 day).
+Output: `◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved`. Counts render bright; the
+state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve and
+stale index). When a document/memory/web index is present, a third segment appears: `│  312 docs ·
+18 mem · 4 sites`. Narrow terminals collapse to `◆ basemind ● 1.2k · 23m │ 47c · 14k saved`.
 
 ### Any MCP client
 
