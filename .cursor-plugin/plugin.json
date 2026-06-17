@@ -1,7 +1,7 @@
 {
   "name": "basemind",
   "displayName": "basemind",
-  "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases: outline files, find references/callers, search symbols, walk recent history, blame and diff at the symbol level.",
+  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
   "version": "0.1.1",
   "author": {
     "name": "Na'aman Hirschfeld",
@@ -12,10 +12,10 @@
   "license": "MIT",
   "keywords": [
     "mcp",
-    "tree-sitter",
+    "agent-context",
+    "rag",
     "code-map",
-    "scanner",
-    "indexer"
+    "tree-sitter"
   ],
   "skills": "./skills/",
   "mcpServers": {

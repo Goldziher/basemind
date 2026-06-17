@@ -1,6 +1,6 @@
 {
   "name": "basemind",
-  "description": "basemind code-map MCP server, as a Claude Code plugin",
+  "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
   "owner": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com",
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "basemind",
-      "description": "Tree-sitter code-map + git context MCP server. Use for navigating large or unfamiliar codebases.",
+      "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
       "version": "0.1.1",
       "source": "./",
       "author": {
