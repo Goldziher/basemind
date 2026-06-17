@@ -36,6 +36,10 @@ changelog:
       - "^chore:"
 
 release:
+  # keep-existing lets a re-dispatch / re-run reconcile against an already-created
+  # release instead of failing — e.g. publishing the Homebrew formula on a re-run
+  # when the binaries already uploaded on the first pass.
+  mode: keep-existing
   footer: >-
 
     ---
@@ -44,7 +48,7 @@ release:
 
 brews:
   - name: basemind
-    description: "Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines"
+    description: "Full AI context layer for coding agents — code-map, RAG, memory, web, git"
     homepage: "https://github.com/Goldziher/basemind"
     license: "MIT"
     repository:
