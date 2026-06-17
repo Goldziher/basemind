@@ -11,7 +11,6 @@
 !/npm-package/bin/basemind.js
 /npm-package/node_modules
 /npm-package/*.tgz
-/opencode-plugin/skills
 /opencode-plugin/node_modules
 /opencode-plugin/*.tgz
 
