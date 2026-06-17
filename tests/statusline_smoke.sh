@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke test for .claude-plugin/statusline.sh — runs the script against a
 # synthetic fixture and asserts the rendered output has colors, the brand mark,
-# a file count, and the freshness dot.
+# a file count derived from the blob store, and the freshness dot.
 
 set -euo pipefail
 
@@ -15,9 +15,14 @@ STATUSLINE="$REPO_ROOT/.claude-plugin/statusline.sh"
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
 
+mkdir -p "$FIXTURE/.basemind/blobs"
 mkdir -p "$FIXTURE/.basemind/views/working"
-# 13 kB → ~100 files at 130 bytes/entry
-dd if=/dev/zero of="$FIXTURE/.basemind/views/working/index.msgpack" bs=1024 count=13 status=none
+# Synthesize 7 fake l1 blobs → file_count == 7.
+for i in 0 1 2 3 4 5 6; do
+  : >"$FIXTURE/.basemind/blobs/${i}aaaaaaaa.l1.msgpack"
+done
+# A views index file so scan-age stamps as "Xs ago".
+: >"$FIXTURE/.basemind/views/working/index.msgpack"
 
 # Synthesize one telemetry record from today (microseconds since epoch).
 now_us="$(($(date +%s) * 1000000))"
@@ -51,37 +56,33 @@ fi
 
 assert_contains $'\033[' 'ANSI escape present'
 assert_contains $'\033[38;2;249;115;22m' 'true-color brand orange #F97316 present'
-assert_contains '▲' 'brand mark ▲ present'
+assert_contains '◆' 'brand glyph ◆ present'
 assert_contains 'basemind' 'name present'
-assert_contains 'files · scanned' 'layout glue present'
-assert_contains '●' 'freshness dot present'
-assert_contains 'calls' 'calls segment present'
-assert_contains 'tok saved' 'tokens segment present'
-assert_contains '1 calls' '1 call recorded (from fixture telemetry)'
-assert_contains '500 tok saved' '500 tok recorded (from fixture telemetry)'
+assert_contains '●' 'liveness dot present'
+assert_contains '7' 'file count 7 from blob fixture'
 
-# Never-scanned fixture: .basemind/ exists, no index file → dot suppressed.
+# Empty-index (`.basemind/` exists but no blobs/) → "scanning…" hint.
 unscanned_dir="$(mktemp -d)"
 mkdir -p "$unscanned_dir/.basemind"
 trap 'rm -rf "$FIXTURE" "$empty_dir" "$unscanned_dir"' EXIT
 unscanned_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$unscanned_dir")"
 unscanned_output="$(printf '%s' "$unscanned_payload" | "$STATUSLINE")"
-if [[ "$unscanned_output" == *'scanned never'* ]] && [[ "$unscanned_output" != *'●'* ]]; then
-  printf '  ok  freshness dot suppressed when never scanned\n'
+if [[ "$unscanned_output" == *'scanning'* ]]; then
+  printf '  ok  unscanned (no blobs) renders scanning hint\n'
 else
-  printf '  FAIL never-scanned output should drop the dot; got: %q\n' "$unscanned_output" >&2
+  printf '  FAIL unscanned output should say scanning; got: %q\n' "$unscanned_output" >&2
   fail=1
 fi
 
-# Silent-exit when .basemind/ is missing.
+# Missing `.basemind/` → actionable "no index — run: basemind scan" hint.
 empty_dir="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE" "$empty_dir"' EXIT
 empty_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$empty_dir")"
 empty_output="$(printf '%s' "$empty_payload" | "$STATUSLINE")"
-if [[ -z "$empty_output" ]]; then
-  printf '  ok  silent-exit when .basemind/ missing\n'
+if [[ "$empty_output" == *'no index'* ]] && [[ "$empty_output" == *'basemind scan'* ]]; then
+  printf '  ok  missing .basemind/ shows actionable hint\n'
 else
-  printf '  FAIL expected empty output, got: %s\n' "$empty_output" >&2
+  printf '  FAIL expected actionable hint, got: %q\n' "$empty_output" >&2
   fail=1
 fi
 

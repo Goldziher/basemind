@@ -25,13 +25,10 @@
   "bugs": {
     "url": "https://github.com/Goldziher/basemind/issues"
   },
-  "scripts": {
-    "prepack": "rm -rf skills && cp -R ../skills skills",
-    "postpack": "rm -rf skills"
-  },
   "files": [
     "basemind.js",
     "skills/",
+    "commands/",
     "README.md"
   ],
   "engines": {

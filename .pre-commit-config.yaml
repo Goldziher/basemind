@@ -86,3 +86,10 @@ repos:
         entry: bash tests/statusline_smoke.sh
         files: ^(\.claude-plugin/statusline\.sh|tests/statusline_smoke\.sh)$
         pass_filenames: false
+
+      - id: sync-plugin-skills
+        name: sync canonical skills + commands into all plugin trees
+        language: system
+        entry: bash scripts/sync-plugin-skills.sh
+        files: ^(skills/(basemind|basemind-stats)/SKILL\.md|scripts/sync-plugin-skills\.sh)$
+        pass_filenames: false
