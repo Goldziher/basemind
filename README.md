@@ -60,17 +60,10 @@ documents store under scope `web:<host>` for unified search.
 /plugin install basemind@basemind
 ```
 
-Restart the session. Optional: add a live statusline to `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
-    "refreshInterval": 5
-  }
-}
-```
+Restart the session. The basemind binary installs automatically on first use (via npx, uvx, or
+direct download with checksum verification). To enable a live statusline, run `/bm-statusline`
+once — this wires the statusline into `~/.claude/settings.json` (plugins cannot set it
+automatically).
 
 Output: `◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved`. Counts render bright; the
 state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve and

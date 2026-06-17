@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# basemind SessionStart hook.
+#   1. Async pre-warm: ensure a version-matched basemind binary is cached so the
+#      first MCP tool call isn't a cold install. After the first run the launcher's
+#      fast path makes this instant.
+#   2. Status-line nudge: Claude Code plugins cannot set the main status line, so
+#      if the user hasn't wired it yet, inject a one-line hint about /bm-statusline.
+#
+# Output goes to stdout as the hook's JSON result; diagnostics would go to stderr.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# 1. Pre-warm in the background; `--version` triggers the launcher's install path
+#    then exits immediately. Never block or fail session startup on this.
+("${PLUGIN_ROOT}/scripts/mcp-launch.sh" --version >/dev/null 2>&1 &) || true
+
+# 2. Stay quiet if a basemind status line is already configured.
+SETTINGS="${HOME}/.claude/settings.json"
+if grep -q 'statusline.sh' "${SETTINGS}" 2>/dev/null; then
+  exit 0
+fi
+
+CONTEXT="The basemind status line is not enabled in the user's Claude Code settings. If the user asks about the status line or about basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
+
+# Escape for JSON embedding (single-pass parameter substitutions).
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+CTX="$(escape_for_json "${CONTEXT}")"
+
+# Emit the field the current harness consumes. Cursor expects additional_context;
+# Claude Code expects hookSpecificOutput.additionalContext; SDK-standard hosts
+# (e.g. Copilot CLI) expect a top-level additionalContext.
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "${CTX}"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "SessionStart",\n    "additionalContext": "%s"\n  }\n}\n' "${CTX}"
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "${CTX}"
+fi
+
+exit 0
