@@ -1,73 +1,57 @@
 # basemind
 
-**Give your AI coding agent a brain for your repo.**
-
-basemind is a code-map MCP server: it indexes your codebase into a queryable map
-so AI coding agents — Claude Code, Cursor, Continue, anything that speaks
-[MCP](https://modelcontextprotocol.io) — get instant semantic answers about your
-code. **Where is this defined? Who calls it? When did it change? What's churning?**
-
-Sub-millisecond queries. 300+ languages out of the box. Local-only. Built in Rust.
+Full AI context layer for coding agents — code-map, document RAG, shared memory, web crawl,
+git history. 300+ languages, one MCP server.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![crates.io](https://img.shields.io/crates/v/basemind.svg)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind.svg)](https://www.npmjs.com/package/basemind)
 [![PyPI](https://img.shields.io/pypi/v/basemind.svg)](https://pypi.org/project/basemind/)
+<!-- markdownlint-disable-next-line MD013 -->
 [![CI](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml/badge.svg)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 
----
+<!-- markdownlint-disable-next-line MD057 -->
+![statusline](docs/assets/statusline.png)
 
-## Why your agent needs this
-
-Today, agents read code by **grepping blind**. Ask Claude "who calls `parseQuery`?"
-and it ripgreps the string — you get hits in docs, tests, comments, and 14 unrelated
-files. The agent burns context filtering noise, then guesses.
-
-LSPs are the semantic answer, but they're single-language, slow to start, and
-useless across a polyglot monorepo.
-
-**basemind is the missing layer.** One index, every language, semantic-quality answers
-at grep speed — exposed to the agent over MCP as concrete tools (`find_callers`,
-`find_references`, `outline`, `symbol_history`, `blame_symbol`, `hot_files`, …)
-instead of "go grep again."
+<!-- TODO: replace with screenshot after Commit 2 ships and user provides screenshot -->
 
 ---
 
-## 30-second setup
+## The four pillars
 
-**Install** (pick one):
+**Code** — Tree-sitter outlines, symbol search, reference + caller + implementation graphs,
+call chains, git history per symbol, blame at symbol-level resolution.
 
-```bash
-brew install Goldziher/tap/basemind     # macOS, Linux
-npm install -g basemind                 # any Node 14+ platform
-pip install basemind                    # any Python 3.8+ platform
-cargo install basemind --locked         # build from source
-```
+**Documents** — Ingest + semantic search over PDFs, Office (Word/Excel/iWork), HTML, email,
+archives. Built-in OCR, layout detection, keyword + NER extraction, cross-encoder reranking.
+All ONNX bundled — no system install needed.
 
-Opt-in **intelligence build** (PDF/Office ingestion, semantic doc search, shared
-agent memory backed by LanceDB):
+**Memory** — Per-repo scoped key-value + semantic vector storage. Clones of the same git
+origin automatically share memory; unrelated repos isolated.
 
-```bash
-cargo install basemind --locked --features full
-```
+**Web** — On-demand HTTP scrape + follow-link crawl. Pages chunk, embed, and land in the
+documents store under scope `web:<host>` for unified search.
 
-`full` is the meta-feature that turns on both `documents` (PDF / Office / HTML
-ingestion + OCR + layout) and `memory` (shared agent memory + vector search).
-Pulls in [`kreuzberg`](https://github.com/kreuzberg-dev/kreuzberg) (Elastic-2.0;
-document parsing + bundled ONNX embeddings) and `lancedb` (embedded vector
-store). First scan after enabling downloads the embedding model into the
-kreuzberg cache; subsequent scans are warm.
+---
 
-**Index your repo:**
+## Feature table
 
-```bash
-cd /path/to/your/repo
-basemind scan
-```
+<!-- markdownlint-disable MD013 -->
 
-**Wire it into your agent.** Pick your harness — every install registers the
-basemind MCP server plus the `basemind` skill that teaches the model when to
-reach for code-map tools.
+| Pillar | What it does | MCP tools | Backend |
+|---|---|---|---|
+| **Code intelligence** | Outlines, symbol search, refs/callers/callees, call graphs, impl lookup, dependents, in-tree regex | `outline`, `search_symbols`, `workspace_grep`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `list_files`, `status`, `repo_info` | tree-sitter × 300+ langs · Fjall LSM index · content-addressed blob store |
+| **Git intelligence** | Symbol-level history, blame, churn, recent changes, structural diffs across revs | `symbol_history`, `blame_file`, `blame_symbol`, `hot_files`, `recent_changes`, `commits_touching`, `find_commits_by_path`, `diff_outline`, `diff_file`, `working_tree_status` | gix + sha-keyed disk cache |
+| **Document RAG** | Ingest + semantic search over PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
+| **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` | LanceDB + Fjall, scope-keyed |
+| **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
+| **Admin** | Live rescan + telemetry dashboard | `rescan`, `telemetry_summary` | — |
+
+<!-- markdownlint-enable MD013 -->
+
+---
+
+## Quickstart
 
 ### Claude Code
 
@@ -76,12 +60,7 @@ reach for code-map tools.
 /plugin install basemind@basemind
 ```
 
-Restart the session.
-
-**Live statusline (optional, manual wiring).** Add to `~/.claude/settings.json`
-to get a one-line summary of the indexed map under the prompt — the Claude Code
-plugin manifest doesn't yet expose a `statusLine` field, so this step is still
-manual:
+Restart the session. Optional: add a live statusline to `~/.claude/settings.json`:
 
 ```json
 {
@@ -93,75 +72,16 @@ manual:
 }
 ```
 
-Output: `▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`. The
-freshness dot is green (< 1 h), yellow (1–24 h), or red (> 1 day). If the
-`calls` / `tok saved` counters stay at `0`, restart `basemind serve` — the
-counter is written by the running MCP process.
+Output: `▲ basemind  144 files · scanned 2d ago  ●  0 calls · 0 tok saved`. The freshness dot is
+green (< 1 h), yellow (1–24 h), or red (> 1 day).
 
-### Codex CLI
-
-```text
-/plugins
-```
-
-Search for `basemind` and select **Install Plugin**. The `.codex-plugin/plugin.json`
-manifest is shipped in this repo and `scripts/sync-to-codex-plugin.sh` mirrors
-it into the OpenAI plugin marketplace when a release ships.
-
-### Codex App
-
-Open the **Plugins** panel in the Codex sidebar, find **basemind** under the
-**Coding** category, and click `+`.
-
-### Gemini CLI
+### Any MCP client
 
 ```bash
-gemini extensions install https://github.com/Goldziher/basemind
+cargo install basemind --features full --locked
 ```
 
-Update later with `gemini extensions update basemind`. The
-`gemini-extension.json` at the repo root declares the basemind MCP server, so
-the extension is functional immediately after install.
-
-### OpenCode
-
-Add to your `opencode.json` (global or project-level):
-
-```json
-{
-  "plugin": ["basemind-opencode@latest"]
-}
-```
-
-Restart OpenCode. The plugin is published to npm as
-[`basemind-opencode`](https://www.npmjs.com/package/basemind-opencode); it
-registers the MCP server and the bundled skills directory.
-
-For monorepo development, pin to the git source instead:
-
-```json
-{
-  "plugin": ["basemind-opencode@git+https://github.com/Goldziher/basemind.git#main"]
-}
-```
-
-### Factory Droid, Cursor, GitHub Copilot CLI
-
-basemind ships a manifest for each (`.cursor-plugin/plugin.json` for Cursor;
-the existing `.claude-plugin/marketplace.json` is reused for Droid and Copilot
-CLI when those harnesses pick it up). The exact install command varies per
-harness and per release — consult the relevant CLI's plugin docs:
-
-- Factory Droid: `droid plugin --help`
-- Cursor: see the Cursor docs for the current plugin install flow
-- GitHub Copilot CLI: `copilot plugin --help`
-
-Until a harness publishes a public plugin marketplace, the **generic MCP
-config** below works in every MCP-aware client.
-
-### Other MCP clients (Continue, Cline, …)
-
-Drop the standard `mcpServers` entry into the client's MCP config:
+Then add to your MCP config:
 
 ```json
 {
@@ -174,490 +94,220 @@ Drop the standard `mcpServers` entry into the client's MCP config:
 }
 ```
 
----
+Supported harnesses: Claude Code · Cursor · Codex (CLI + App) · Gemini · OpenCode · Factory Droid ·
+GitHub Copilot CLI · Continue · Cline. Each harness has install instructions in the
+[Harness-specific setup](#harness-specific-setup) section below.
 
-## What your agent gets
+### CLI only
 
-### Code-map tools
-
-| Tool | What the agent can finally do |
-|---|---|
-| `outline` | "Give me this file's structure" — symbols, line/col, signatures, imports. One call replaces five Reads. |
-| `search_symbols` | "Find anything named `useAuth`" — substring match across every indexed symbol, kind-filterable. |
-| `workspace_grep` | Regex search across indexed files — returns line + column + matched text. |
-| `find_references` | "Where is `parseQuery` called?" — indexed call-site lookup. No regex noise. |
-| `find_callers` | "Who calls `User.save()`?" — resolves the definition first, then scans. |
-| `call_graph` | "Trace the call chain into / out of `process_file` 3 levels deep" — BFS DAG over the call index. |
-| `find_implementations` | "What implements `Drawable`?" — Fjall-backed trait/interface/base-class lookup. |
-| `dependents` | "What imports this module?" — reverse import lookup. |
-| `list_files` | "What files are in `src/auth/`?" — indexed path + language filters. |
-| `status` | "What languages does this repo use?" — file count + language breakdown. |
-| `repo_info` | Branch, HEAD, workdir at a glance. |
-| `rescan` | Re-index after the agent edits code — full or `paths: [...]` for changed files only. |
-
-### Git-aware tools
-
-| Tool | What the agent can finally do |
-|---|---|
-| `symbol_history` \* | "When did `validateToken` actually change?" — tree-sitter × git, comment/format-stable diffs. |
-| `blame_file` \* / `blame_symbol` \* | "Who wrote this and why?" — line-range or symbol-scoped blame. |
-| `hot_files` | "What's been churning?" — top-K most-changed files in the last N commits. |
-| `recent_changes` \* | "What changed recently on this branch?" |
-| `commits_touching` \* | "Show me every commit that touched `auth.rs`." |
-| `find_commits_by_path` \* | "Pickaxe: every commit whose changed-files match this regex." |
-| `diff_outline` | "What symbols differ between `main` and `HEAD`?" — structural diff. |
-| `diff_file` | "Give me the unified diff for `auth.rs` across these revs." |
-| `working_tree_status` | "What's staged / unstaged / untracked right now?" |
-
-\* Accepts `cursor` for pagination. Commit-iterator cursors (`recent_changes`,
-`commits_touching`, `find_commits_by_path`, `symbol_history`) are bound to the HEAD sha at
-mint time and surface `cursor_invalidated: true` if HEAD moves between calls. Blame cursors
-(`blame_file`, `blame_symbol`) encode the last-returned hunk's `start_line` and resume
-immediately after it.
-
-### Intelligence tools (opt-in: `--features full`)
-
-| Tool | What the agent can finally do |
-|---|---|
-| `search_documents` | Semantic KNN over PDFs / HTML / emails — per-query overrides, reranker, keywords + entities. |
-| `memory_put` / `memory_get` / `memory_list` | Persist scoped notes — exact-key store and prefix / tag scans. |
-| `memory_search` | Semantic recall across stored memory entries — KNN over the LanceDB memory table. |
-| `memory_delete` | Drop an entry from both Fjall and LanceDB. |
-
-`search_documents` returns ISO 639-3 language codes per document (via
-`whatlang`); tune detection through
-`documents.language.{auto_detect,min_confidence,detect_multiple}` in TOML, the
-matching `--documents-language-*` flags, or `BASEMIND_DOCUMENTS_LANGUAGE_*` env
-vars.
-
-Cross-encoder reranking is available as a per-query opt-in:
-
-```text
-search_documents(query, reranker_enabled=true, reranker_preset="bge-reranker-base")
+```bash
+basemind scan                     # index the working tree
+basemind query outline path/file.rs  # inspect structure
+basemind query symbol "parseQuery"   # find by name
+basemind watch                    # live re-index on file change
 ```
-
-The first reranker call downloads the ONNX weights (~278 MB) and caches them under
-`~/.cache/kreuzberg/rerankers/`. Enable permanently via
-`[documents.reranker] enabled = true` in `.basemind/basemind.toml`. Each reranked
-hit gains a `rerank_score` field (cross-encoder relevance in `[0, 1]`).
-
-When `[documents.keywords]` or `[documents.ner]` is enabled at scan time, each
-`search_documents` hit also carries `keywords` (YAKE/RAKE) and `entities`
-(gline-rs ONNX or LLM) from its parent document. Filter per query via
-`entity_category` (lowercase: `"person"`, `"organization"`, `"location"`, …) or
-`keywords_contains` (case-insensitive substring on keyword text). NER weights
-(~250 MB) download lazily on first run.
-
-Memory is scoped by the repo's normalised `origin` URL so clones share entries.
-A repo with no remote falls back to a workdir-keyed scope (configurable via
-`[memory].scope_strategy` in `.basemind/basemind.toml`).
-
-### Web ingestion (opt-in: `--features crawl` or `--features full`)
-
-| Tool | What the agent can finally do |
-|---|---|
-| `web_scrape` | Fetch one URL, extract markdown, chunk + embed, write to the documents store. |
-| `web_crawl` | Follow links from a seed up to `[crawl].max_depth`, index each page. |
-| `web_map` | "What URLs exist on this site?" — sitemap + link discovery without fetching bodies. |
-
-Crawled pages land in the same LanceDB `documents` table as on-disk docs; the
-default scope tag is `web:<host>` so `search_documents { scope: "web:docs.rs" }`
-retrieves them together. `robots.txt` is honoured by default — flip it off only
-via `[crawl].respect_robots_txt = false` in `.basemind/basemind.toml` (and only
-for hosts you control). The crawler is HTTP-only; the browser, AI extraction,
-and WARC archive features of the upstream
-[`kreuzcrawl`](https://github.com/kreuzberg-dev/kreuzcrawl) engine are
-deliberately not exposed.
-
-Every tool returns JSON. Responses are capped (`limit`, default 100, max 1000) so
-the agent's context doesn't explode.
-
-### Pagination
-
-Twelve tools support cursor-based pagination. When a response includes a
-`next_cursor` field, pass it back as the `cursor` param on the next call to
-fetch the next page. Callers that omit `cursor` see no behaviour change.
-
-Three cursor backends, each with its own stability contract:
-
-- **Fjall-backed** — `find_references`, `find_callers`, `find_implementations`,
-  `memory_list`. Cursors remain valid across rescans because the underlying
-  keys are content-addressed.
-- **In-memory** — `search_symbols`, `list_files`. Cursors are invalidated if
-  the cache rebuilds between calls. Responses carry `cursor_invalidated: true`
-  in that case; the caller restarts pagination from the beginning.
-- **Git-iterator** — `recent_changes`, `commits_touching`,
-  `find_commits_by_path`, `symbol_history`. Cursors are bound to the HEAD sha
-  at mint time. If HEAD moves between calls the response carries
-  `cursor_invalidated: true` and the caller re-starts.
-- **Deterministic blame** — `blame_file`, `blame_symbol`. Cursors encode the
-  last-returned hunk's `start_line` and resume immediately after; no
-  invalidation flag because the `(suspect_sha, path)` blame is deterministic.
-
----
-
-## Visual integration: live stats in Claude Code
-
-basemind writes one row per MCP tool call to `.basemind/telemetry.jsonl` (always on,
-best-effort, ~200 bytes per row). Two surfaces consume it:
-
-**Live statusline** — three lines in `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
-    "refreshInterval": 5
-  }
-}
-```
-
-Renders `bm ~103f · scan 2m ago · 47 calls · ~14k tok saved` at the bottom of the
-Claude Code terminal. Refreshes every 5 seconds. The script is shipped in the
-plugin tree; Claude Code cannot auto-install statusline scripts so the wiring is
-manual (one-time).
-
-**On-demand dashboard** — the new `telemetry_summary` MCP tool returns the full
-breakdown (per-tool histogram, per-baseline savings, last 10 calls). The
-`/basemind-stats` skill renders it as markdown in the conversation.
-
-The `est_tokens_saved` numbers are **heuristics** vs a disclosed grep+Read baseline.
-Every row carries a `saved_baseline` label so the model is auditable. Tools without
-a realistic baseline (`memory_*`, `search_documents`, git wrappers) record their
-calls but report zero savings — we don't claim what we can't honestly measure.
-
----
-
-## Performance
-
-Measured by the in-repo hardening harness — Apple Silicon, release build,
-`--features full`, default `eager_l2 = true`. Numbers are warm steady-state
-(cold filesystem cache adds ~50% to scan time on the first run of a session).
-
-### Scan throughput
-
-| Repo | Files | Language mix | Cold scan |
-|---|---|---|---|
-| basemind (this repo) | 136 | Rust | < 1 s |
-| tokio | 856 | Rust | 0.2 s |
-| TypeScript compiler | 81 324 | TS / JS / JSON | 21–22 s |
-
-The TypeScript clone is the worst case in the in-repo hardening harness. Most
-real repos sit between these two extremes. Re-scans skip files whose content
-hash is unchanged, so warm scans on edited working trees are typically
-dominated by the changed-set size, not the repo size. The harness covers 8
-upstream repos in total — see [§ Hardening](#hardening) for the full list.
-
-### Per-tool MCP latency
-
-Walk over the full code-map tool set against the TypeScript-compiler index
-(81 324 files):
-
-| Latency | Tools |
-|---|---|
-| < 1 ms | `outline`, `list_files`, `find_references`, `find_callers` |
-| < 1 ms | `find_implementations`, `hot_files`, `repo_info` |
-| 3–6 ms | `search_symbols`, `call_graph` |
-| 4–10 ms | `recent_changes`, `commits_touching`, `find_commits_by_path` |
-| 4–10 ms | `symbol_history`, `diff_outline`, `diff_file` |
-| 20–25 ms | `status` (cross-file language breakdown) |
-| 30–40 ms | `blame_file`, `blame_symbol` |
-| 40–200 ms | `workspace_grep` (in-RAM regex over indexed files) |
-| ~200 ms | `search_documents` (LanceDB KNN, opt-in) |
-| 350–600 ms | `working_tree_status` (full `git status` walk) |
-
-basemind preloads L1 outlines into RAM on `serve` start, so the code-map
-queries are sub-millisecond — there's no per-call disk hit. The Fjall LSM
-inverted index handles ref / caller / impl lookups without scanning blobs.
-Git-tool latency tracks `gix` walk cost and dominates only on the largest
-histories.
-
-### What the query / parse consolidation bought
-
-The L1 walk fuses symbols, imports, and implementations into one combined
-tree-sitter query — one `QueryCursor`, one tree walk per file. The eager-L2
-path then runs L2's calls + docs queries against the same parsed tree
-instead of re-parsing. Historical deltas against the consolidation
-(eager-L2-off baseline at the time):
-
-| Repo | Before | After | Delta |
-|---|---|---|---|
-| tokio | 535 ms | **212 ms** | −60% |
-| TypeScript compiler | 25.9 s | **17.5 s** | −32% |
-
-Current numbers in the scan-throughput table above include the document
-tier (`--features full`) and the default `eager_l2 = true`, so the
-end-to-end TypeScript scan sits at ~22 s.
-
----
-
-## Languages
-
-**300+ tree-sitter grammars** ship via
-[tree-sitter-language-pack](https://github.com/kreuzberg-dev/tree-sitter-language-pack).
-basemind dynamically loads them on first use and caches them locally.
-
-Three tiers of coverage:
-
-- **First-class** — hand-written `.scm` overrides in `src/queries/`. Full
-  outlines (symbols, imports, calls, docs) **plus `find_implementations`**.
-  Languages: Rust, Python, TypeScript, TSX, JavaScript.
-- **First-class minus implementations** — full outlines, but
-  `find_implementations` returns empty results by design. Go interface
-  satisfaction is structural rather than syntactic, so there's nothing to
-  capture. Languages: Go.
-- **Best-effort** — TSLP `tags.scm` fallback, capture-renamed to basemind's
-  shape by `adapt_tslp_tags`. Symbols and calls always work;
-  `find_implementations` lights up for any TSLP grammar whose upstream
-  `tags.scm` emits `@reference.implementation`. Covers ~100 grammars
-  including Kotlin, C#, Swift, C++, Scala, Solidity, Lua, Ruby, PHP, Java.
-
-Languages without an upstream `tags.scm` (JSON, YAML, TOML, plain `.properties`)
-still parse and appear in `list_files`; they just don't expose symbols.
 
 ---
 
 ## Why basemind, specifically
 
-- **Built for agents, not humans.** Every tool exists because an agent needs it,
-  not because it makes a cute terminal demo.
-- **Semantic quality, grep speed.** Tree-sitter parses → content-addressed blobs →
-  Fjall LSM inverted index → sub-millisecond MCP responses.
-- **Polyglot by default.** One index, every language. No LSP-per-language
-  zoo. No "we don't support that yet."
-- **Local-only.** No SaaS. No telemetry. No cloud round-trip. Your code never
-  leaves the machine.
-- **Deterministic.** Content-addressed blobs (blake3), stable hashes,
-  reproducible across machines.
-- **Pure Rust.** One static binary. No Python runtime, no Node runtime, no JVM.
-  `basemind serve` adds < 80 MB to your agent's stack.
+### vs grep / ripgrep
+
+**What ripgrep does well:** blazing-fast line matching. **What it misses:**
+
+- Grep returns 50+ hits in docs, tests, comments, variable names — agent wastes context filtering noise.
+- No scope awareness: `parseQuery()` and `parseQuery` string both match; semantic signals lost.
+- Every query re-scans the disk; no pre-computed structures to leverage.
+
+basemind: semantic-quality answers at grep speed via tree-sitter + indexed call sites.
+
+### vs vector-only RAG (LangChain / LlamaIndex DIY stacks)
+
+**What vector RAG does well:** fuzzy document semantic search. **What it misses:**
+
+- Pure embeddings lose exact structure — which function calls which, which class implements which interface.
+- No line/column resolution — agent can't map vector hits back to code symbols.
+- No git history integration — "what changed recently?" and "who wrote this?" require separate systems.
+
+basemind: code structure + git history + vector memory + document search all in one, unified scope.
+
+### vs context7 / openai-codex / Aider's repo-map
+
+**What these do well:** generate code-map summaries. **What they miss:**
+
+- Static snapshots — stale after the first edit.
+- No semantic indexing — every lookup re-parses or re-scans.
+- Human-focused output (markdown) instead of agent-facing structure (JSON tools).
+
+basemind: live-updated index with sub-millisecond MCP tools, built for agents not humans.
+
+### vs GitHub native search
+
+**What GitHub does well:** repository-wide fuzzy text search. **What it misses:**
+
+- Cloud-only — your code leaves the machine, latency is network-bound.
+- No local-editor integration — agent can't query in-progress edits before commit.
+- No cross-language polyglot support — each language's search tuned separately.
+
+basemind: local-only, always-fresh index of your working tree, 300+ languages in one sweep.
 
 ---
 
-## LLM configuration
+## Performance
 
-LLM-backed capabilities (abstractive summarisation today, ner-llm and VLM OCR
-in future iterations) share one `[llm]` config block. The same knobs flow
-through TOML, CLI flags, environment variables, and per-query MCP overrides —
-each layer wins over the one below it (MCP > CLI > env > TOML > defaults).
+Measured on Apple Silicon, release build, `--features full`, default `eager_l2 = true`. Cold
+filesystem cache adds ~50% to first scan; numbers below are warm steady-state.
 
-The `model` string follows liter-llm's `<provider>/<model>` routing format
-(`openai/gpt-4o`, `anthropic/claude-sonnet-4-20250514`, `groq/llama-3.1-70b-versatile`,
-…). An empty `model` (the default) leaves every LLM-backed feature inert;
-summarisation falls back to the pure-Rust extractive path with a warning.
+### Scan throughput
 
-### TOML
+| Repo | Files | Language mix | Time |
+|---|---|---|---|
+| tokio | 859 | Rust | 0.2 s |
+| react | 7 061 | TS / JSX | 2.2 s |
+| django | 7 061 | Python | 2.5 s |
+| requests | 2 195 | Python | 0.7 s |
+| gin | 1 217 | Go | 1.0 s |
+| ripgrep | 12 851 | Rust | 4.0 s |
+| ripgrep-shallow | 12 851 | Rust | 0.16 s |
+| TypeScript compiler | 81 324 | TS / JS / JSON | ~22 s |
+
+The TypeScript compiler is the worst case — 81k files scanned in 22 seconds. Most real repos sit
+between tokio and ripgrep. Re-scans skip unchanged content hashes, so warm rescans on edited
+working trees are typically dominated by the changed-set size, not repo size.
+
+### Per-tool MCP latency
+
+Against the 81k-file TypeScript index:
+
+<!-- markdownlint-disable MD013 -->
+
+| Latency | Tools |
+|---|---|
+| < 1 ms | `outline`, `list_files`, `find_references`, `find_callers`, `find_implementations`, `hot_files`, `repo_info` |
+| 3–6 ms | `search_symbols`, `call_graph` |
+| 4–10 ms | `recent_changes`, `commits_touching`, `find_commits_by_path`, `symbol_history`, `diff_outline`, `diff_file` |
+| 20–25 ms | `status` |
+| 30–40 ms | `blame_file`, `blame_symbol` |
+| 40–200 ms | `workspace_grep` |
+| ~200 ms | `search_documents` |
+| 350–600 ms | `working_tree_status` |
+
+<!-- markdownlint-enable MD013 -->
+
+basemind preloads L1 outlines into RAM on `serve` start, so code-map queries hit no disk. The Fjall
+LSM inverted index handles ref/caller/impl lookups without scanning blobs. Git tools track `gix`
+walk cost; Fjall-backed tools dominate only on enormous histories.
+
+---
+
+## Configuration
+
+Full config lives at `schema/basemind-config-v1.schema.json`. Minimal example:
 
 ```toml
-[llm]
-model = "openai/gpt-4o"
-api_key = { env = "OPENAI_API_KEY" }
-base_url = "https://api.openai.com/v1"
-temperature = 0.2
+# .basemind/basemind.toml
+file_watch_glob = "**/*.{rs,ts,tsx,py,go}"
+eager_l2 = true
 
-[documents.summarization]
+[documents]
 enabled = true
-strategy = "abstractive"   # extractive | abstractive
-max_tokens = 200
 ```
 
-`api_key` accepts either a literal string (strongly discouraged — keeps the
-secret in version control) or `{ env = "NAME" }` to resolve from an
-environment variable at load time. Resolved keys are wrapped in a
-`SecretString` whose `Debug` impl prints `<redacted>`, so tracing spans and
-panic messages never leak the value. `ApiKey::Literal` also has a custom
-`serde::Serialize` impl that emits `"<redacted>"` instead of the cleartext —
-config dumps, schema validators, and snapshot tests cannot round-trip the
-secret out to disk.
-
-**Trust boundary.** `SecretString` masks the api_key in basemind's `Debug` /
-`Display` / `serde::Serialize` paths. Once basemind hands the resolved key
-to `kreuzberg::LlmConfig` (which derives a non-redacting `Debug` upstream
-as of rc.14), redaction ends. Treat the kreuzberg crate as a trusted
-dependency for credential transit — review its release notes if you are
-paranoid about logging.
-
-### CLI flags
-
-```bash
-basemind serve \
-  --llm-model openai/gpt-4o \
-  --llm-api-key "$OPENAI_API_KEY" \
-  --documents-summarization-enabled true \
-  --documents-summarization-strategy abstractive
-```
-
-`--llm-api-key` is annotated `hide_env_values = true`, so `--help` does not
-echo the value when `BASEMIND_LLM_API_KEY` is set. Prefer
-`BASEMIND_LLM_API_KEY` over `--llm-api-key` for production use:
-command-line arguments appear in `ps aux` output to any local user, while
-env vars are only readable by the owning process.
-
-### Environment
-
-Every CLI flag has a matching env var with a mechanical naming scheme:
-`--llm-model` ↔ `BASEMIND_LLM_MODEL`,
-`--documents-summarization-strategy` ↔ `BASEMIND_DOCUMENTS_SUMMARIZATION_STRATEGY`,
-and so on.
-
-```bash
-export BASEMIND_LLM_MODEL=openai/gpt-4o
-export BASEMIND_LLM_API_KEY=...
-basemind serve
-```
-
-### MCP per-query overrides
-
-Agents can pass an LLM config per `search_documents` call. The same fields as
-the CLI/env layer are accepted, flattened directly onto the request params:
+Per-query MCP overrides:
 
 ```json
 {
   "query": "what does kreuzberg do?",
-  "summarization_enabled": true,
-  "summarization_strategy": "abstractive",
-  "llm_model": "anthropic/claude-sonnet-4-20250514"
+  "reranker_enabled": true,
+  "reranker_preset": "bge-reranker-base"
 }
 ```
 
-Per-query LLM args are routed to the on-machine LLM via outbound HTTPS.
-Trust boundary: MCP stdio is local-trust by design, but the resolved api_key
-still travels off-box to the provider — only pass credentials the agent is
-authorised to use.
-
----
-
-## CLI
-
-basemind is also a CLI — useful for piping into shell tools, CI checks, or
-just inspecting a repo without spinning up an MCP server.
-
-```text
-basemind init                              # write .basemind/basemind.toml with defaults
-basemind scan                              # index the working tree
-basemind scan --staged                     # index what's in git's staging area
-basemind scan --rev <REV>                  # index a commit / branch / sha
-basemind watch                             # long-running watcher; index on file change
-basemind serve [--view <name>]             # MCP stdio server for agents
-basemind query outline <path> [--l2]       # symbols, imports (+ docs/calls with --l2)
-basemind query symbol <needle> [--kind K]  # substring search across symbols
-basemind query dependents <module>         # reverse-lookup via imports
-basemind hook install                      # install pre-commit hook (--staged scan)
-basemind lang {list, install, clean}       # manage downloaded tree-sitter grammars
-basemind cache clear                       # drop .basemind/git-cache/
-```
-
-Global flags: `-q/--quiet`, `-v/--verbose`, `--no-color` (NO_COLOR honored).
+Environment variables map mechanically: `--llm-api-key` ↔ `BASEMIND_LLM_API_KEY`. Every MCP tool
+accepts per-query overrides that win over file/env/CLI layers.
 
 ---
 
 ## Architecture
 
-A short tour. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the long
-version.
+```text
+source files
+  → tree-sitter parsers (300+ langs, pack name dispatch)
+  → L1 outlines + L2 calls + L3 structural hash blobs (content-addressed)
+  → Fjall LSM inverted index (symbols / calls / imports / impls)
+  → MCP server (rmcp) + documents pipeline (kreuzberg) → LanceDB
+  → 32 MCP tools across 8 coding-agent harnesses
+```
 
-- **Scanner** (`src/scanner.rs`) — rayon-parallel walker over the gitignore-aware
-  file set. Extracts L1 (symbols + imports + implementations), L2 (calls +
-  docs), L3 (structural hashes) per file. One combined tree-sitter query per
-  language drives the L1 walk; the parsed tree is shared between L1 and L2 on
-  the eager-L2 path so each file is parsed exactly once.
+- **Scanner** (`src/scanner.rs`) — rayon-parallel walker over the gitignore-aware file set.
+  Extracts L1 (symbols + imports + implementations), L2 (calls + docs), L3 (structural hashes)
+  per file.
 - **Content-addressed blobs** (`src/store.rs`) — msgpack at
-  `.basemind/blobs/<blake3>.{l1,l2,l3}.msgpack`. Two files with identical content
-  share the same blob. Re-scan skips unchanged hashes.
-- **Inverted index** (`src/index/`) — pure-Rust [Fjall](https://github.com/fjall-rs/fjall)
-  LSM keyspace at `.basemind/views/<view>/index.fjall/`. Nine partitions
-  (`symbols_by_path`, `symbols_by_name`, `calls_by_path`, `calls_by_callee`,
-  `imports_by_module`, `imports_by_path`, `implementations_by_trait`,
-  `implementations_by_path`, `embeddings`) drive symbol search, references,
+  `.basemind/blobs/<blake3>.{l1,l2,l3}.msgpack`. Two files with identical content share the
+  same blob.
+- **Inverted index** (`src/index/`) — Fjall LSM keyspace at
+  `.basemind/views/<view>/index.fjall/`. Nine partitions drive symbol search, references,
   implementations, and dependents.
-- **MCP surface** (`src/mcp/`) — stdio JSON-RPC via `rmcp`. Tool descriptions are
-  the routing surface for agents; semantics (substring vs prefix, scope-aware vs
-  name-only, capped) are stated honestly.
-- **Git layer** (`src/git.rs`, `src/git_cache.rs`) — `gix`-backed blame, log,
-  diff, status. Sha-keyed disk cache (`.basemind/git-cache/`) makes warm queries
-  free.
-
-### Views
-
-A _view_ is a code map for a snapshot of the repo. Each view has its own index
-under `.basemind/views/<view>/`; blobs are shared in `.basemind/blobs/`.
-
-- **`working`** (default) — the on-disk working tree
-- **`staged`** — git staging area; what's about to be committed
-- **`rev-<sha7>`** — whatever you scanned with `basemind scan --rev <REV>`
-
-They coexist — running one doesn't clobber the others. The pre-commit hook
-installed by `basemind hook install` indexes `staged`, so the hook reflects
-exactly what's being committed.
-
-### Live refresh
-
-Run `basemind watch` in one terminal and `basemind serve` in another: the server
-watches the index, rebuilds its in-RAM map off-thread, and atomically swaps.
-Queries reflect filesystem changes within ~150 ms with no `serve` restart.
+- **MCP surface** (`src/mcp/`) — stdio JSON-RPC via rmcp. Tool descriptions are routing surface
+  for agents; semantics stated honestly (substring vs prefix, scope-aware vs name-only, capped).
+- **Git layer** (`src/git.rs`, `src/git_cache.rs`) — gix-backed blame, log, diff, status.
+  Sha-keyed disk cache makes warm queries free.
 
 ---
 
-## Hardening
+## Installation
 
-basemind ships with a real-OSS hardening harness — 8 upstream repos (ripgrep,
-tokio, microsoft/TypeScript, facebook/react, django, requests, gin, plus a
-shallow ripgrep variant) cloned, scanned, and MCP-swept on every release. Canary
-assertions catch regressions before they ship:
+<!-- markdownlint-disable MD013 -->
 
-```sh
-./scripts/harden.sh    # ~10 minutes; produces /tmp/basemind-harden/results.ndjson
-```
+| Channel | Command | Platforms | Features |
+|---|---|---|---|
+| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | base |
+| npm | `npm install -g basemind` | any Node 14+ platform | base |
+| pip | `pip install basemind` | any Python 3.8+ platform | base |
+| cargo | `cargo install basemind --locked` | any Rust platform | base |
+| cargo (full) | `cargo install basemind --features full --locked` | any Rust platform | documents + memory + crawl |
+| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | base |
 
-The harness is `#[ignore]`-gated from normal `cargo test`. Invoked nightly and
-on-dispatch from CI.
+<!-- markdownlint-enable MD013 -->
 
----
+### Harness-specific setup
 
-## Development
-
-```sh
-git clone https://github.com/Goldziher/basemind && cd basemind
-task setup     # cargo fetch + prek install
-task check     # lint + test
-task build     # release binary
-```
-
-Pre-commit hooks via [prek](https://github.com/j178/prek) cover Rust
-(`cargo fmt`/`clippy`/`sort`/`machete`/`deny`/`rustdoc-lint`), markdown, shell,
-JSON/YAML/TOML, file-safety basics, and commit-message linting via
-[gitfluff](https://github.com/Goldziher/gitfluff).
-
-Contributing guidelines: see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+| Harness | Install command |
+|---|---|
+| Claude Code | `/plugin marketplace add Goldziher/basemind` then `/plugin install basemind@basemind` |
+| Cursor | See Cursor docs for plugin install flow; `basemind` manifest at `.cursor-plugin/plugin.json` |
+| Codex CLI | `/plugins` then search for `basemind` |
+| Codex App | Plugins panel → Coding category → basemind → `+` |
+| Gemini CLI | `gemini extensions install https://github.com/Goldziher/basemind` |
+| OpenCode | Add `{ "plugin": ["basemind-opencode@latest"] }` to `opencode.json` |
+| Factory Droid | `droid plugin --help` (manifest at `.claude-plugin/marketplace.json`) |
+| GitHub Copilot CLI | `copilot plugin --help` (same manifest) |
+| Generic MCP | See "Any MCP client" section above |
 
 ---
 
-## Built on
+## Differentiators
 
-basemind stands on three sibling crates from the
-[kreuzberg-dev](https://github.com/kreuzberg-dev) family and the rest of the
-Rust ecosystem:
-
-- **[kreuzberg](https://github.com/kreuzberg-dev/kreuzberg)** — Elastic-2.0
-  document parsing engine. Powers PDF / Office / HTML / email ingestion, OCR,
-  layout detection, and the bundled ONNX embedding pipeline behind
-  `search_documents`. Enabled via `--features documents` / `--features full`.
-- **[kreuzcrawl](https://github.com/kreuzberg-dev/kreuzcrawl)** — HTTP-first
-  web crawling engine. Powers `web_scrape`, `web_crawl`, and `web_map`.
-  Enabled via `--features crawl` / `--features full`.
-- **[tree-sitter-language-pack](https://github.com/kreuzberg-dev/tree-sitter-language-pack)**
-  — the bundle of ~300 tree-sitter grammars + their `tags.scm` queries that
-  drives every parser in basemind. The `adapt_tslp_tags` adapter in
-  `src/lang.rs` rewrites upstream captures into basemind's shape so a single
-  override surface covers all of them.
-
-Plus [Fjall](https://github.com/fjall-rs/fjall) (pure-Rust LSM), `rmcp` (MCP
-server / client), `gix` (pure-Rust git), `rayon` (data parallelism),
-`tree-sitter`, and `lancedb`.
+- **Content-addressed dedup** — Blake3-hashed L1/L2/L3 blobs deduplicated across files and
+  views. Edit a file, rescan, skip unchanged hashes.
+- **Secret-masking `SecretString`** — api_key fields redacted in Debug/Display/Serialize.
+  Tracing spans and panic messages never leak the value.
+- **Provenance ledger** — every config value's origin tracked via `ConfigSource` (MCP > CLI >
+  env > TOML > defaults). Audit trail for debugging.
+- **Schema-driven config** — Rust types in `src/config/` drive
+  `schema/basemind-config-v1.schema.json` via `schemars`; snapshot is asserted byte-equal.
+  Config is code.
+- **Zero-system-dep ONNX** — `ort-bundled` ships the runtime in the binary. No
+  `apt install onnxruntime`, no system complexity.
 
 ---
 
-## License
+## Project state
 
-[MIT](LICENSE).
+- **Real-OSS hardening:** `tests/harden.rs` runs the full tool sweep against 8 upstream repos
+  (ripgrep, tokio, TypeScript, React, Django, requests, gin, ripgrep-shallow) on every release.
+  Canary assertions catch regressions.
+- **[CHANGELOG.md](CHANGELOG.md)** — release history and migration notes.
+- **[Contributing guide](CONTRIBUTING.md)** — development workflow: `task setup`, `task check`,
+  `task build`. Pre-commit hooks via [prek](https://github.com/j178/prek).
+- **[License: MIT](LICENSE)**

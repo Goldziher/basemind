@@ -1,7 +1,6 @@
 # basemind-opencode
 
-OpenCode plugin for [basemind](https://github.com/Goldziher/basemind) — a
-tree-sitter code-map + git context MCP server.
+OpenCode plugin for [basemind](https://github.com/Goldziher/basemind) — full AI context layer for coding agents.
 
 ## Install
 
@@ -13,10 +12,7 @@ Add to your `opencode.json` (global or project-level):
 }
 ```
 
-Restart OpenCode. The plugin registers the basemind MCP server and the bundled
-skills directory.
-
-You also need the `basemind` binary on your `PATH`:
+Restart OpenCode. You also need the `basemind` binary on your `PATH`:
 
 ```bash
 npm install -g basemind        # or: pip install basemind / cargo install basemind
@@ -31,14 +27,12 @@ basemind scan
 
 ## What this registers
 
-- **MCP server** named `basemind` running `basemind serve` over stdio. Exposes
-  the full code-map and git toolset — `outline`, `search_symbols`,
-  `find_references`, `find_callers`, `recent_changes`, `blame_symbol`, etc.
-- **Skills directory** with two pre-authored skills (`basemind`,
-  `basemind-stats`) that document how to drive the MCP toolset.
+- **MCP server** named `basemind` running `basemind serve` over stdio. Exposes the full
+  code-map, git, documents, and memory toolset.
+- **Skills directory** with pre-authored skills that document how to drive the MCP toolset.
 
-See the [root README](https://github.com/Goldziher/basemind#readme) for the
-full MCP tool table, architecture notes, and per-language coverage.
+See the [main README](https://github.com/Goldziher/basemind#readme) for the full MCP tool
+reference, architecture, and configuration.
 
 ## License
 
