@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-06-17
+
+### Fixed
+
+- **Claude Code slash commands now load.** The `/bm` and `/bm-stats` commands
+  were under `.claude-plugin/commands/`, which Claude Code ignores — plugin
+  component directories must sit at the plugin root, and basemind's marketplace
+  `source` is `"./"`, so the plugin root is the repo root. Moved `commands/`
+  (and confirmed `skills/`) to the repo root; `.claude-plugin/` now holds only
+  the manifests + statusline. The Codex / Cursor / OpenCode trees keep their own
+  in-tree copies (their plugin root is their own directory), kept in sync by
+  `scripts/sync-plugin-skills.sh`.
+
+### Changed
+
+- **Publish workflow no longer hard-fails on a missing Homebrew token.** The
+  GitHub-release-assets job skips the Homebrew tap publisher when
+  `HOMEBREW_TOKEN` is absent (and runs it when present), so an optional tap
+  update can't fail the binary release.
+
 ## [0.2.0] — 2026-06-17
 
 **Minor release — schema wipe (`RELEASE_MINOR=2`).** The blob and inverted-index
@@ -210,7 +230,8 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Goldziher/basemind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Goldziher/basemind/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/Goldziher/basemind/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Goldziher/basemind/releases/tag/v0.1.0

@@ -143,12 +143,27 @@ jobs:
       - name: Install Zig
         run: brew install zig mingw-w64
 
+      # Homebrew tap publish needs HOMEBREW_TOKEN (a PAT on Goldziher/homebrew-tap).
+      # When the secret is absent, skip the homebrew publisher so a missing optional
+      # tap update never fails the binary release. When present, it runs normally.
+      - name: Compute goreleaser skips
+        id: gr
+        env:
+          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
+        run: |
+          skips="validate"
+          if [ -z "$HOMEBREW_TOKEN" ]; then
+            skips="validate,homebrew"
+            echo "HOMEBREW_TOKEN not set — skipping the homebrew formula publish."
+          fi
+          echo "skips=$skips" >> "$GITHUB_OUTPUT"
+
       - name: Build and publish GitHub release assets
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean --skip=validate
+          args: release --clean --skip=${{ steps.gr.outputs.skips }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
