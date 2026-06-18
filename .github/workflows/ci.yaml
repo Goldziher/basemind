@@ -95,6 +95,66 @@ jobs:
       # `full` feature surface that harden.sh builds). Mirror the `test` job.
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # System libraries for the `full` feature surface that harden.sh builds.
+      # kreuzberg-tesseract needs the tesseract CLI + English data; libheif's
+      # codec backends (libde265 / libaom / libx265 / libdav1d) must be present
+      # at link + runtime even when the libheif build is restored from cache, so
+      # this install is UNCONDITIONAL — gating it on the cache hit would leave a
+      # cached libheif unable to load its codecs.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y \
+            tesseract-ocr tesseract-ocr-eng \
+            libssl-dev pkg-config build-essential cmake \
+            libmagic-dev libde265-dev libaom-dev \
+            libx265-dev libdav1d-dev libnuma-dev
+      # Ubuntu Noble ships libheif 1.17.6 but libheif-sys requires >=1.21, so
+      # build 1.23.0 from source. The cache below skips the rebuild on later runs.
+      - name: Cache libheif build (Linux)
+        id: cache-libheif
+        uses: actions/cache@v4
+        with:
+          path: |
+            /usr/local/lib/libheif*
+            /usr/local/lib/pkgconfig/libheif.pc
+            /usr/local/include/libheif/
+            /usr/local/share/libheif/
+          key: libheif-${{ runner.arch }}-v1.23.0
+          restore-keys: |
+            libheif-${{ runner.arch }}-v1.23.0
+      - name: Build and install libheif from source
+        if: steps.cache-libheif.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+
+          # Download and build libheif 1.23.0 from source.
+          LIBHEIF_VERSION="1.23.0"
+          LIBHEIF_PREFIX="/usr/local"
+          build_dir="$(mktemp -d)"
+          trap "rm -rf '$build_dir'" EXIT
+
+          cd "$build_dir"
+          curl -fsSL -o libheif.tar.gz \
+            "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          tar xzf libheif.tar.gz
+          cd "libheif-${LIBHEIF_VERSION}"
+          mkdir build && cd build
+
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LIBHEIF_PREFIX" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DBUILD_TESTING=OFF
+
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+      - name: Export libheif environment variables
+        run: |
+          echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
       - uses: Swatinem/rust-cache@v2
       - name: run harden.sh
         run: ./scripts/harden.sh
