@@ -1,19 +1,30 @@
+<!-- markdownlint-disable MD033 MD041 -->
+<div align="center">
+
 # basemind
 
 Full AI context layer for coding agents — code-map, document RAG, shared memory, web crawl,
 git history. 300+ languages, one MCP server.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![crates.io](https://img.shields.io/crates/v/basemind.svg)](https://crates.io/crates/basemind)
-[![npm](https://img.shields.io/npm/v/basemind.svg)](https://www.npmjs.com/package/basemind)
-[![PyPI](https://img.shields.io/pypi/v/basemind.svg)](https://pypi.org/project/basemind/)
-<!-- markdownlint-disable-next-line MD013 -->
-[![CI](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml/badge.svg)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
+[![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
+[![npm](https://img.shields.io/npm/v/basemind?style=flat-square)](https://www.npmjs.com/package/basemind)
+[![PyPI](https://img.shields.io/pypi/v/basemind?style=flat-square)](https://pypi.org/project/basemind/)
+[![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-<!-- markdownlint-disable-next-line MD057 -->
-![statusline](docs/assets/statusline.png)
+[Pillars](#the-four-pillars) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Architecture](#architecture) · [Install](#installation)
 
-<!-- TODO: replace with screenshot after Commit 2 ships and user provides screenshot -->
+</div>
+
+---
+
+## Live statusline (Claude Code)
+
+```text
+◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved  │  312 docs · 18 mem · 4 sites
+```
+
+Enable with `/bm-statusline` — see the [Statusline](#statusline) section for details.
 
 ---
 
@@ -112,7 +123,7 @@ Then add to your MCP config:
 
 Supported harnesses: Claude Code · Cursor · Codex (CLI + App) · Gemini · OpenCode · Factory Droid ·
 GitHub Copilot CLI · Continue · Cline. Each harness has install instructions in the
-[Harness-specific setup](#harness-specific-setup) section below.
+[Installation](#installation) section below.
 
 ### CLI only
 
@@ -246,6 +257,9 @@ accepts per-query overrides that win over file/env/CLI layers.
 
 ## Architecture
 
+<details>
+<summary><strong>Pipeline &amp; module breakdown</strong></summary>
+
 ```text
 source files
   → tree-sitter parsers (300+ langs, pack name dispatch)
@@ -269,6 +283,8 @@ source files
 - **Git layer** (`src/git.rs`, `src/git_cache.rs`) — gix-backed blame, log, diff, status.
   Sha-keyed disk cache makes warm queries free.
 
+</details>
+
 ---
 
 ## Installation
@@ -286,7 +302,8 @@ source files
 
 <!-- markdownlint-enable MD013 -->
 
-### Harness-specific setup
+<details>
+<summary><strong>Harness-specific setup</strong></summary>
 
 | Harness | Install command |
 |---|---|
@@ -299,6 +316,8 @@ source files
 | Factory Droid | `droid plugin --help` (manifest at `.claude-plugin/marketplace.json`) |
 | GitHub Copilot CLI | `copilot plugin --help` (same manifest) |
 | Generic MCP | See "Any MCP client" section above |
+
+</details>
 
 ---
 
