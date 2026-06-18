@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.6] — 2026-06-18
+
+### Changed
+
+- **Responsive two-line statusline with per-capability metrics.** The status line now
+  renders a context row (model · output-style · vim · dir · branch · context%) above the
+  basemind row, since a custom statusLine replaces Claude Code's default and cannot sit
+  below it. The basemind row breaks telemetry down per capability — searches, git, docs,
+  memory, web — showing only buckets with activity today, alongside calls and estimated
+  tokens saved. Width comes from `$COLUMNS` with full/compact/minimal tiers; override with
+  `BASEMIND_STATUSLINE` and hide the context row with `BASEMIND_STATUSLINE_CONTEXT=0`.
+
 ## [0.2.5] — 2026-06-18
 
 ### Added
