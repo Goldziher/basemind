@@ -727,16 +727,20 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
 /// Holds the `state.store` write lock for the duration of the scan. MCP query
 /// tools block while it runs (acceptable for small/medium repos; rescan is
 /// agent-triggered, not on every request).
-pub(super) async fn run_rescan(
+/// Run the scanner in-process and refresh the in-RAM caches, returning the raw
+/// [`crate::scanner::ScanReport`]. Shared by the `rescan` MCP tool and the
+/// startup auto-scan in [`super::BasemindServer::new`] so both go through the
+/// exact same scan + cache-swap path (and never collide with the Fjall lock the
+/// `serve` process already holds — this scans inside that same process).
+///
+/// `scoped_paths` limits the scan to those repo-relative paths; `None` runs a
+/// full working-tree scan.
+pub(super) async fn scan_and_refresh(
     state: Arc<ServerState>,
-    params: super::types::RescanParams,
-) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
+    scoped_paths: Option<Vec<std::path::PathBuf>>,
+) -> Result<crate::scanner::ScanReport, McpError> {
     let root = state.root.clone();
     let config = Arc::clone(&state.config);
-    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
-        .paths
-        .map(|v| v.into_iter().map(std::path::PathBuf::from).collect());
 
     // Run the scanner on a blocking thread — fully isolated from the MCP server
     // runtime's TLS so LanceStore's owned tokio runtime can `block_on` without
@@ -778,6 +782,21 @@ pub(super) async fn run_rescan(
         .cache_generation
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    Ok(report)
+}
+
+pub(super) async fn run_rescan(
+    state: Arc<ServerState>,
+    params: super::types::RescanParams,
+) -> Result<CallToolResult, McpError> {
+    let started = std::time::Instant::now();
+    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
+        .paths
+        .map(|v| v.into_iter().map(std::path::PathBuf::from).collect());
+
+    let root = state.root.display().to_string();
+    let report = scan_and_refresh(state, scoped_paths).await?;
+
     json_result(&super::types::RescanResponse {
         scanned: report.stats.scanned,
         updated: report.stats.updated,
@@ -786,7 +805,7 @@ pub(super) async fn run_rescan(
         skipped_no_lang: report.stats.skipped_no_lang,
         extract_failed: report.stats.extract_failed,
         elapsed_ms: started.elapsed().as_millis(),
-        root: state.root.display().to_string(),
+        root,
     })
 }
 

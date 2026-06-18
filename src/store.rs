@@ -104,6 +104,7 @@ impl Store {
     pub fn open(root: &Path, view: &str) -> Result<Self, StoreError> {
         let basemind_dir = root.join(crate::config::BASEMIND_DIR);
         ensure_dir(&basemind_dir)?;
+        ensure_gitignore(&basemind_dir)?;
         ensure_dir(&basemind_dir.join(BLOBS_DIR))?;
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
         migrate_legacy_index_into_views(&basemind_dir)?;
@@ -355,6 +356,25 @@ impl Store {
 fn ensure_dir(p: &Path) -> Result<(), StoreError> {
     std::fs::create_dir_all(p).map_err(|source| StoreError::Io {
         path: p.to_path_buf(),
+        source,
+    })
+}
+
+/// Drop a `.gitignore` inside `.basemind/` the first time the store is created.
+/// A bare `*` makes git ignore the whole directory (this file included), so a
+/// user's repository never accidentally commits the machine-local index. Written
+/// once and never overwritten — a deliberate user edit is respected.
+fn ensure_gitignore(basemind_dir: &Path) -> Result<(), StoreError> {
+    let gitignore = basemind_dir.join(".gitignore");
+    if gitignore.exists() {
+        return Ok(());
+    }
+    std::fs::write(
+        &gitignore,
+        "# basemind's machine-local index — not version-controlled.\n*\n",
+    )
+    .map_err(|source| StoreError::Io {
+        path: gitignore,
         source,
     })
 }

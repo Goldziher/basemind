@@ -174,6 +174,12 @@ impl BasemindServer {
             .unwrap_or_else(|| format!("path:{}", root.display()));
         let cache = Arc::new(MapCache::build(&store));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
+        // A fresh repo has no index yet. Auto-scan on startup (working view only)
+        // so the agent never has to run `basemind scan` by hand — the scan runs
+        // in-process below, after the server is up, so it never contends for the
+        // Fjall lock this `serve` already holds.
+        let needs_initial_scan =
+            store.view == crate::store::VIEW_WORKING && cache.by_path.is_empty();
         tracing::info!(
             files = cache.by_path.len(),
             corpus_bytes,
@@ -216,6 +222,22 @@ impl BasemindServer {
             crawl_engine,
         });
         spawn_view_watcher(Arc::clone(&state));
+        if needs_initial_scan {
+            let scan_state = Arc::clone(&state);
+            tracing::info!("empty index on startup; running initial scan in background");
+            tokio::spawn(async move {
+                match helpers::scan_and_refresh(scan_state, None).await {
+                    Ok(report) => tracing::info!(
+                        scanned = report.stats.scanned,
+                        updated = report.stats.updated,
+                        "initial background scan complete"
+                    ),
+                    Err(error) => {
+                        tracing::warn!(%error, "initial background scan failed");
+                    }
+                }
+            });
+        }
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
             + Self::tool_router_git()

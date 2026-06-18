@@ -47,6 +47,42 @@ fn scan_extracts_rust_symbols() {
 }
 
 #[test]
+fn store_open_writes_self_ignoring_gitignore() {
+    // Opening the store must drop a `.basemind/.gitignore` containing `*` so a
+    // user's repo never accidentally commits the machine-local index.
+    let (dir, _cfg) = fresh_repo();
+    let root = dir.path();
+
+    let _store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+
+    let gitignore = root.join(".basemind").join(".gitignore");
+    assert!(gitignore.is_file(), ".basemind/.gitignore should exist");
+    let body = fs::read_to_string(&gitignore).unwrap();
+    assert!(
+        body.lines().any(|l| l.trim() == "*"),
+        "gitignore should ignore the whole directory, got: {body:?}"
+    );
+}
+
+#[test]
+fn store_open_preserves_existing_gitignore() {
+    // A user edit to `.basemind/.gitignore` must be respected — never overwritten.
+    let (dir, _cfg) = fresh_repo();
+    let root = dir.path();
+    let basemind_dir = root.join(".basemind");
+    fs::create_dir_all(&basemind_dir).unwrap();
+    fs::write(basemind_dir.join(".gitignore"), "# custom\nblobs/\n").unwrap();
+
+    let _store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+
+    let body = fs::read_to_string(basemind_dir.join(".gitignore")).unwrap();
+    assert_eq!(
+        body, "# custom\nblobs/\n",
+        "existing gitignore must be kept"
+    );
+}
+
+#[test]
 fn scan_indexes_dynamic_language_without_override_queries() {
     // A file in a TSLP-supported language for which basemind ships no hand-written `.scm`
     // override now resolves through the TSLP `tags.scm` fallback (where one exists). For
