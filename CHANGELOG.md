@@ -10,6 +10,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-06-18
+
+### Added
+
+- **`serve` auto-scans a fresh repo on startup.** When the working-view index is
+  empty, the server kicks off an initial scan in the background (reusing the
+  in-process `rescan` path, so it never contends for the Fjall lock). The agent
+  no longer has to run `basemind scan` by hand — the statusline flips from
+  "scanning…" to live counts on its own.
+- **`.basemind/` is now self-ignoring.** The first time the store is created it
+  writes `.basemind/.gitignore` containing `*`, so a user's repository never
+  accidentally commits the machine-local index. An existing `.gitignore` is left
+  untouched.
+
+### Changed
+
+- **README redesign.** Centered hero with a uniform badge row, a fenced
+  statusline preview (replacing a broken image reference), and collapsible
+  architecture / harness-setup sections. Clarified that registering the
+  marketplace and installing the plugin are two distinct steps.
+
+### Fixed
+
+- **Nightly hardening CI is green again.** The `hardening` job built
+  `--features full` (kreuzberg's libheif + tesseract stack) but only installed
+  protoc, so the `libheif-sys` build failed. The job now installs the codec dev
+  libraries and builds libheif 1.23.0 from source (cached across runs).
+
 ## [0.2.2] — 2026-06-17
 
 ### Added
