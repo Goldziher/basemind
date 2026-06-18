@@ -1,9 +1,14 @@
 //! Single source-of-truth for release-version-derived constants.
 //!
 //! `RELEASE_MINOR` is the only place the persisted-schema version is declared. The blob
-//! format (`crate::extract::SCHEMA_VER`) and the inverted-index format
-//! (`crate::index::INDEX_SCHEMA_VER`) both read from it, so a minor-release bump wipes
-//! `.basemind/blobs/` and `.basemind/views/<view>/index.fjall/` together on next scan.
+//! format (`crate::extract::SCHEMA_VER`), the inverted-index format
+//! (`crate::index::INDEX_SCHEMA_VER`), and the git cache
+//! (`crate::git_cache::GIT_CACHE_SCHEMA`) all read from it, so a minor-release bump
+//! invalidates every cache on next scan. The invalidation is durable, not destructive:
+//! `Store::open` resets each view's `index.msgpack` and the Fjall index, then the next
+//! scan re-extracts every file — overwriting stale-schema blobs in place at their
+//! content-hash path. Orphaned blobs are reclaimed by `store_gc::run_gc`, so the expensive
+//! content-addressed blob store is never `rm -rf`'d out from under a live cache.
 //!
 //! Bump cadence — bound to release versions, not to commits:
 //! - `0.1.x` → `RELEASE_MINOR = 1`
@@ -17,4 +22,4 @@
 
 /// Persisted-schema version. Synced to the release minor: `0.X.y` → `X` (and
 /// `M.X.y` → `M * 100 + X` once `1.0` ships).
-pub const RELEASE_MINOR: u16 = 2;
+pub const RELEASE_MINOR: u16 = 3;

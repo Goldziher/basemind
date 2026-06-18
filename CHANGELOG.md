@@ -10,6 +10,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-18
+
+Minor release: `RELEASE_MINOR` bumps 2 → 3, so the blob + index schema versions advance.
+Unlike previous minor bumps, the cache is **no longer hard-wiped** — see "Durable cache
+refresh" below. The first `basemind scan` / `serve` after upgrading re-extracts in place.
+
+### Added
+
+- **Full MCP↔CLI parity.** Every MCP tool now has a `basemind` CLI subcommand, running the
+  identical in-process tool code against the same on-disk index (read-only, no lock — safe
+  to run alongside a live `basemind serve`). Human-readable output by default, `--json` for
+  the raw structured response. New groups: `basemind query` (outline, symbol, search,
+  references, callers, implementations, call-graph, grep, list-files, status, repo-info,
+  dependents), `basemind git` (status, history, blame, diffs, churn, symbol-history),
+  `basemind memory`, `basemind web`, and `basemind telemetry`.
+- **Cache garbage collection + cleanup.** New `cache_gc` (reclaim orphaned blobs no view
+  references), `cache_stats` (on-disk size + orphan accounting), and `cache_clear` MCP
+  tools, plus `basemind cache gc|stats|clear` CLI commands. GC runs automatically in the
+  background on `serve` startup. Blobs are shared across views; GC only sweeps blobs no
+  view's index references, under the store lock so it never races a scan.
+- **Continuous background watch.** `basemind serve` now watches the working tree and
+  incrementally refreshes its index in the background by default (debounced), keeping
+  queries fresh without manual `rescan`. Opt out with `basemind serve --no-watch` for very
+  large repos / CI.
+- **`basemind-cli` skill** documenting the CLI surface, and a restructured README with two
+  equal install paths (MCP plugin vs CLI + skill).
+
+### Changed
+
+- **Durable cache refresh on schema bump.** A schema/version bump now refreshes the
+  content-addressed blob store **in place** (re-extract overwrites blobs at their stable
+  content-hash path; background GC reclaims the remainder) instead of deleting
+  `.basemind/blobs/`. No window where the expensive extraction cache is gone. The Fjall
+  secondary index (derived, cheap) still rebuilds from blobs on its own schema bump.
+- **Git-cache schema** is now tied to `RELEASE_MINOR` so a release refreshes it consistently
+  (it auto-rebuilds from git).
+
+### Fixed
+
+- **Tightened token-savings estimate.** The `telemetry_summary` "tokens saved" figure no
+  longer scales with total corpus size (it previously credited ~5% of the whole repo per
+  grep-style call). Baselines are now derived from the actual response payload, decoupled
+  from corpus size.
+- **Read-only store degrades gracefully on a schema bump.** A CLI query run before the first
+  post-upgrade scan now reads an empty index ("run `basemind scan`") instead of erroring,
+  and never opens the stale Fjall index.
+
 ## [0.2.6] — 2026-06-18
 
 ### Changed
