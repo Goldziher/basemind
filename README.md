@@ -114,10 +114,21 @@ Code plugins cannot set the main statusline** — it is a platform limitation, n
 an **absolute** path into `~/.claude/settings.json` (`$HOME`/`~` are not expanded in the statusLine
 command field). After that it persists across sessions.
 
-Output: `◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved`. Counts render bright; the
-state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve and
-stale index). When a document/memory/web index is present, a third segment appears: `│  312 docs ·
-18 mem · 4 sites`. Narrow terminals collapse to `◆ basemind ● 1.2k · 23m │ 47c · 14k saved`.
+It renders two lines — a context line (model · output-style · dir · branch · context%) and the
+basemind line below it, since a custom statusLine replaces Claude Code's default and cannot sit
+_beneath_ it:
+
+```text
+Opus · basemind · ⎇ main · 12% ctx
+◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved
+```
+
+The state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve
+and stale index). The second segment breaks activity down per capability — searches, git, docs,
+memory, web — showing only the buckets with calls today; the last segment is estimated tokens
+saved. Layout adapts to terminal width (`$COLUMNS`): the per-capability breakdown drops on narrow
+terminals. Override with `BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the
+context line with `BASEMIND_STATUSLINE_CONTEXT=0`.
 
 ### Any MCP client
 
