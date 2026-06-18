@@ -12,19 +12,9 @@ git history. 300+ languages, one MCP server.
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Pillars](#the-four-pillars) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Architecture](#architecture) · [Install](#installation)
+[Pillars](#the-four-pillars) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Install](#installation)
 
 </div>
-
----
-
-## Live statusline (Claude Code)
-
-```text
-◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved  │  312 docs · 18 mem · 4 sites
-```
-
-Enable with `/bm-statusline` — see the [Statusline](#statusline) section for details.
 
 ---
 
@@ -255,38 +245,6 @@ accepts per-query overrides that win over file/env/CLI layers.
 
 ---
 
-## Architecture
-
-<details>
-<summary><strong>Pipeline &amp; module breakdown</strong></summary>
-
-```text
-source files
-  → tree-sitter parsers (300+ langs, pack name dispatch)
-  → L1 outlines + L2 calls + L3 structural hash blobs (content-addressed)
-  → Fjall LSM inverted index (symbols / calls / imports / impls)
-  → MCP server (rmcp) + documents pipeline (kreuzberg) → LanceDB
-  → 32 MCP tools across 8 coding-agent harnesses
-```
-
-- **Scanner** (`src/scanner.rs`) — rayon-parallel walker over the gitignore-aware file set.
-  Extracts L1 (symbols + imports + implementations), L2 (calls + docs), L3 (structural hashes)
-  per file.
-- **Content-addressed blobs** (`src/store.rs`) — msgpack at
-  `.basemind/blobs/<blake3>.{l1,l2,l3}.msgpack`. Two files with identical content share the
-  same blob.
-- **Inverted index** (`src/index/`) — Fjall LSM keyspace at
-  `.basemind/views/<view>/index.fjall/`. Nine partitions drive symbol search, references,
-  implementations, and dependents.
-- **MCP surface** (`src/mcp/`) — stdio JSON-RPC via rmcp. Tool descriptions are routing surface
-  for agents; semantics stated honestly (substring vs prefix, scope-aware vs name-only, capped).
-- **Git layer** (`src/git.rs`, `src/git_cache.rs`) — gix-backed blame, log, diff, status.
-  Sha-keyed disk cache makes warm queries free.
-
-</details>
-
----
-
 ## Installation
 
 <!-- markdownlint-disable MD013 -->
@@ -318,31 +276,3 @@ source files
 | Generic MCP | See "Any MCP client" section above |
 
 </details>
-
----
-
-## Differentiators
-
-- **Content-addressed dedup** — Blake3-hashed L1/L2/L3 blobs deduplicated across files and
-  views. Edit a file, rescan, skip unchanged hashes.
-- **Secret-masking `SecretString`** — api_key fields redacted in Debug/Display/Serialize.
-  Tracing spans and panic messages never leak the value.
-- **Provenance ledger** — every config value's origin tracked via `ConfigSource` (MCP > CLI >
-  env > TOML > defaults). Audit trail for debugging.
-- **Schema-driven config** — Rust types in `src/config/` drive
-  `schema/basemind-config-v1.schema.json` via `schemars`; snapshot is asserted byte-equal.
-  Config is code.
-- **Zero-system-dep ONNX** — `ort-bundled` ships the runtime in the binary. No
-  `apt install onnxruntime`, no system complexity.
-
----
-
-## Project state
-
-- **Real-OSS hardening:** `tests/harden.rs` runs the full tool sweep against 8 upstream repos
-  (ripgrep, tokio, TypeScript, React, Django, requests, gin, ripgrep-shallow) on every release.
-  Canary assertions catch regressions.
-- **[CHANGELOG.md](CHANGELOG.md)** — release history and migration notes.
-- **[Contributing guide](CONTRIBUTING.md)** — development workflow: `task setup`, `task check`,
-  `task build`. Pre-commit hooks via [prek](https://github.com/j178/prek).
-- **[License: MIT](LICENSE)**
