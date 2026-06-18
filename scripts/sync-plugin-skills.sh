@@ -22,6 +22,7 @@ cd "$REPO_ROOT"
 # Canonical sources — these double as the Claude plugin's components at the repo root.
 CANONICAL=(
   "skills/basemind/SKILL.md"
+  "skills/basemind-cli/SKILL.md"
   "skills/basemind-stats/SKILL.md"
   "commands/bm.md"
   "commands/bm-stats.md"
@@ -43,8 +44,9 @@ TREES=(
 )
 
 for tree in "${TREES[@]}"; do
-  mkdir -p "$tree/skills/basemind" "$tree/skills/basemind-stats" "$tree/commands"
+  mkdir -p "$tree/skills/basemind" "$tree/skills/basemind-cli" "$tree/skills/basemind-stats" "$tree/commands"
   cp "skills/basemind/SKILL.md" "$tree/skills/basemind/SKILL.md"
+  cp "skills/basemind-cli/SKILL.md" "$tree/skills/basemind-cli/SKILL.md"
   cp "skills/basemind-stats/SKILL.md" "$tree/skills/basemind-stats/SKILL.md"
   cp "commands/bm.md" "$tree/commands/bm.md"
   cp "commands/bm-stats.md" "$tree/commands/bm-stats.md"

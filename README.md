@@ -73,7 +73,7 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 | **Document RAG** | Ingest + semantic search over 90+ file formats — PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives, images. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
 | **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` | LanceDB + Fjall, scope-keyed |
 | **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
-| **Admin** | Live rescan + telemetry dashboard | `rescan`, `telemetry_summary` | — |
+| **Admin** | Live rescan, telemetry dashboard, cache introspection + GC + cleanup | `rescan`, `telemetry_summary`, `cache_stats`, `cache_gc`, `cache_clear` | — |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -81,62 +81,36 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 
 ## Quickstart
 
-### Claude Code
+Choose the path that fits your workflow. Both paths use the same on-disk index at `.basemind/`.
 
-These are **two separate steps** — run both, in order:
+### Path A: MCP plugin (Claude Code and other harnesses)
+
+MCP (Model Context Protocol) runs the basemind server in-process and exposes all tools as
+in-session function calls. Zero config — install and start using tools immediately.
+
+#### Claude Code
+
+Run these two commands in order:
 
 ```text
-/plugin marketplace add Goldziher/basemind   # 1. register the marketplace (makes the plugin available)
-/plugin install basemind@basemind            # 2. install the plugin (registers the MCP server)
+/plugin marketplace add Goldziher/basemind   # 1. register the marketplace
+/plugin install basemind@basemind            # 2. install the plugin
 ```
-
-Adding the marketplace alone does **not** give you any tools — it only makes the plugin available to
-install. You must run the second command (or pick **Install** for the `basemind` plugin in the
-`/plugin` menu) to register the MCP server. If no basemind tools appear after a restart, you almost
-certainly stopped after step 1; open `/plugin`, go into the **basemind** marketplace, and **Install**
-the plugin.
 
 Restart the session after installing. The basemind binary installs automatically on first use (via
 npx, uvx, or direct download with checksum verification) — no manual `cargo install` needed.
 
-#### Statusline
+To enable the optional live statusline (showing context % and per-capability metrics), run `/bm-statusline` once.
+This is a one-time opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation.
+See the [Statusline](#statusline) section for details.
 
-To enable the live statusline, run `/bm-statusline` once. This is a one-time opt-in because **Claude
-Code plugins cannot set the main statusline** — it is a platform limitation, not a basemind choice:
-
-- The plugin manifest (`plugin.json`) has no `statusLine` field.
-- A plugin-shipped `settings.json` honors only `agent` and `subagentStatusLine`; any `statusLine` key
-  is silently ignored.
-- Hooks communicate via stdout/stderr/exit codes only — a SessionStart hook **cannot** write to
-  `~/.claude/settings.json`, so it can only _nudge_ you to run `/bm-statusline`.
-
-`/bm-statusline` works because Claude (the agent) performs the settings edit on your behalf, writing
-an **absolute** path into `~/.claude/settings.json` (`$HOME`/`~` are not expanded in the statusLine
-command field). After that it persists across sessions.
-
-It renders two lines — a context line (model · output-style · dir · branch · context%) and the
-basemind line below it, since a custom statusLine replaces Claude Code's default and cannot sit
-_beneath_ it:
-
-```text
-Opus · basemind · ⎇ main · 12% ctx
-◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved
-```
-
-The state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve
-and stale index). The second segment breaks activity down per capability — searches, git, docs,
-memory, web — showing only the buckets with calls today; the last segment is estimated tokens
-saved. Layout adapts to terminal width (`$COLUMNS`): the per-capability breakdown drops on narrow
-terminals. Override with `BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the
-context line with `BASEMIND_STATUSLINE_CONTEXT=0`.
-
-### Any MCP client
+#### Any MCP client (Cursor, Codex, Gemini, OpenCode, Continue, Cline, etc.)
 
 ```bash
 cargo install basemind --features full --locked
 ```
 
-Then add to your MCP config:
+Add to your MCP config:
 
 ```json
 {
@@ -149,18 +123,71 @@ Then add to your MCP config:
 }
 ```
 
-Supported harnesses: Claude Code · Cursor · Codex (CLI + App) · Gemini · OpenCode · Factory Droid ·
-GitHub Copilot CLI · Continue · Cline. Each harness has install instructions in the
-[Installation](#installation) section below.
+Each harness has setup instructions in the [Installation](#installation) section.
 
-### CLI only
+### Path B: CLI + skill (scriptable, headless, CI)
+
+Use the standalone `basemind` CLI binary and the `basemind-cli` skill for query-driven exploration.
+Same index, same tools, different interface — faster for scripting and batch operations.
 
 ```bash
-basemind scan                     # index the working tree
-basemind query outline path/file.rs  # inspect structure
-basemind query symbol "parseQuery"   # find by name
-basemind watch                    # live re-index on file change
+# Install the binary
+npm install -g basemind    # or: pip install basemind, cargo install basemind, brew install Goldziher/tap/basemind
+basemind scan               # index the working tree once
 ```
+
+Then use the CLI:
+
+```bash
+basemind query outline path/file.rs           # inspect file structure
+basemind query symbol "parseQuery"            # find symbol by name
+basemind query references "processFile"       # find all call sites
+basemind git blame-file src/main.rs           # show per-line blame
+basemind cache stats                          # cache stats
+basemind cache gc                             # reclaim orphaned blobs
+basemind watch --no-serve                     # live re-index on file change (no MCP server)
+```
+
+Add the `basemind-cli` skill to route CLI commands efficiently.
+See the [CLI command reference](#cli-command-reference) below for the full command surface.
+
+### MCP vs CLI
+
+Both paths share the same `.basemind/` index and are safe to run alongside each other (the CLI opens
+the index read-only; `basemind serve` watches and incrementally updates in the background).
+
+- **MCP**: Wired as in-session tool calls. Zero config. Best for interactive agent workflows.
+- **CLI**: Scriptable, headless, CI-friendly. Best for batch queries, integration into non-MCP harnesses,
+  and when you want to control the tool routing explicitly.
+
+The choice is not binary — use MCP for interactive sessions and CLI for scripting in the same repo.
+
+#### Statusline
+
+To enable the live statusline in Claude Code (MCP only), run `/bm-statusline` once. This is a one-time
+opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation, not a basemind choice:
+
+- The plugin manifest has no `statusLine` field.
+- A plugin-shipped `settings.json` honors only `agent` and `subagentStatusLine`; any `statusLine` key is ignored.
+- Hooks communicate via stdout/stderr only — they cannot write to `~/.claude/settings.json`.
+
+`/bm-statusline` works because Claude (the agent) performs the settings edit on your behalf, writing
+an **absolute** path into `~/.claude/settings.json`. After that it persists across sessions.
+
+It renders two lines — a context line (model · output-style · dir · branch · context%) and the
+basemind line below it:
+
+```text
+Opus · basemind · ⎇ main · 12% ctx
+◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved
+```
+
+The state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve
+and stale index). The second segment breaks activity down per capability — searches, git, docs,
+memory, web — showing only the buckets with calls today; the last segment is estimated tokens
+saved. Layout adapts to terminal width (`$COLUMNS`): the per-capability breakdown drops on narrow
+terminals. Override with `BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the
+context line with `BASEMIND_STATUSLINE_CONTEXT=0`.
 
 ---
 
@@ -280,6 +307,85 @@ Per-query MCP overrides:
 
 Environment variables map mechanically: `--llm-api-key` ↔ `BASEMIND_LLM_API_KEY`. Every MCP tool
 accepts per-query overrides that win over file/env/CLI layers.
+
+---
+
+## CLI command reference
+
+CLI commands mirror MCP tools, grouped by capability. Run with `--json` for machine-readable output.
+
+<!-- markdownlint-disable MD013 -->
+
+### Query commands (`basemind query`)
+
+| Command | Purpose |
+|---|---|
+| `outline <path> [--l2]` | Full per-file structure: symbols + line/col + signatures. `--l2` includes calls + docs. |
+| `symbol <needle> [--kind]` | Substring symbol lookup. Optional kind filter (`function`, `class`, etc.). |
+| `search <needle>` | Full-text regex search over indexed files. |
+| `references <name>` | Call sites of any identifier matching name. |
+| `callers <path> <name> [--kind]` | Callers of a specific definition (path + name + optional kind). |
+| `implementations <trait>` | Types that implement or inherit from a trait/interface. |
+| `call-graph <name> [--direction --max-depth]` | BFS call graph (up or down). |
+| `grep <pattern> [--language --path-contains]` | Regex search with optional language / path filter. |
+| `list-files [--path-contains --language]` | Enumerate indexed paths. Optional filters. |
+| `status` | Repository overview: file count, language breakdown, cache directory. |
+| `repo-info` | Git info: current branch, HEAD, origin URL. |
+| `dependents <module>` | Modules that import a given module. |
+
+### Git commands (`basemind git`)
+
+| Command | Purpose |
+|---|---|
+| `working-tree-status` | `git status` summary with staged / unstaged classification. |
+| `recent-changes [--limit]` | Recent commits with paths + summaries. |
+| `commits-touching <path>` | Commits that modified a given path. |
+| `find-commits-by-path <pattern>` | Path-filtered commit log. |
+| `hot-files [--limit]` | Churn-ranked files (most frequently modified). |
+| `diff-file <path> <old> <new>` | File diff across revisions. |
+| `diff-outline <path> [--rev]` | Outline diff across revisions. |
+| `blame-file <path>` | Per-line blame (author, commit, message). |
+| `blame-symbol <path> <name>` | Per-symbol blame (when symbol last changed). |
+| `symbol-history <path> <name>` | Cross-commit structural hash of symbol (when body changed). |
+
+### Memory commands (`basemind memory`, requires `--features memory`)
+
+| Command | Purpose |
+|---|---|
+| `put <key> <value>` | Store a value (scoped to repo origin). |
+| `get <key>` | Retrieve exact key. |
+| `list [--prefix]` | List all keys or keys matching prefix. |
+| `search <query>` | Vector similarity search over stored values. |
+| `delete <key>` | Delete a key. |
+| `search-documents <query>` | Semantic search over documents + memory (scoped to repo). |
+
+### Cache commands (`basemind cache`)
+
+| Command | Purpose |
+|---|---|
+| `stats` | On-disk cache size + orphan accounting (blob store + index + git cache). |
+| `gc` | Reclaim orphaned blobs (safe to run while serve is running). |
+| `clear --component <blobs\|views\|lance\|git-cache\|telemetry\|all>` | Selective or full cache clear. Destructive to `views` and `all` — use CLI, not MCP. |
+
+### Web commands (`basemind web`, requires `--features crawl`)
+
+| Command | Purpose |
+|---|---|
+| `scrape <url>` | Ingest a single page (chunk → embed → LanceDB). |
+| `crawl <seed-url>` | Link-following crawl from a seed URL. |
+| `map <url>` | Sitemap + link discovery (no bodies). |
+
+### Other commands
+
+| Command | Purpose |
+|---|---|
+| `scan` | Full index scan. |
+| `watch [--no-serve]` | Live re-index on file change. Run `--no-serve` for continuous background watch without the MCP server. |
+| `serve [--no-watch]` | Start the MCP server. By default, watches and incrementally refreshes the index in the background. Run `--no-watch` to disable for very large repos or CI. |
+| `init` | Initialize a `.basemind/` directory (optional — `scan` creates it). |
+| `telemetry` | Show per-tool telemetry histogram + estimated tokens saved. |
+
+<!-- markdownlint-enable MD013 -->
 
 ---
 
