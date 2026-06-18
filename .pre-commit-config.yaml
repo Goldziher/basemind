@@ -16,7 +16,7 @@ repos:
           - commit-msg
 
   - repo: https://github.com/kreuzberg-dev/pre-commit-hooks
-    rev: v2.1.10
+    rev: v2.2.0
     hooks:
       # File safety
       - id: trailing-whitespace
@@ -78,8 +78,11 @@ repos:
         args:
           - --max=1000
 
-      # JSON formatting
+      # JSON formatting. Exclude the generated config schema — it is the
+      # byte-exact `schemars::to_string_pretty` snapshot asserted by
+      # tests/config_schema.rs, and oxfmt's style would drift it out of sync.
       - id: oxfmt
+        exclude: ^schema/.*\.schema\.json$
 
   - repo: local
     hooks:
