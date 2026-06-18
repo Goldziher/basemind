@@ -3,8 +3,12 @@
 
 # basemind
 
-Full AI context layer for coding agents — code-map, document RAG, shared memory, web crawl,
-git history. 300+ languages, one MCP server.
+**The full context layer for coding agents.** One MCP server that turns any repository into a
+queryable code map, document library, and shared memory — so agents navigate by **structure and
+search** instead of burning context on `grep` and file reads.
+
+Code map & search across **300+ languages** · document processing for **90+ file formats** ·
+semantic + full-text search · git history & blame · shared agent memory · on-demand web crawl
 
 [![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind?style=flat-square)](https://www.npmjs.com/package/basemind)
@@ -49,6 +53,11 @@ the agent's default operating discipline (carried in the MCP server instructions
 - `rescan` after edits instead of reconnecting the server.
 - Don't re-read a file basemind already mapped.
 
+The plugin also ships a PreToolUse **guard hook** that reaches the agent at the moment it reaches
+for search: by default (`BASEMIND_GUARD=nudge`) it points `Grep`/`Glob` calls at the matching
+basemind tool, once per session. Set `BASEMIND_GUARD=redirect` to enforce it (the call is blocked
+with a pointer to the basemind tool) or `BASEMIND_GUARD=off` to disable.
+
 The live statusline surfaces the payoff: estimated tokens saved vs a grep + read baseline.
 
 ---
@@ -61,7 +70,7 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 |---|---|---|---|
 | **Code intelligence** | Outlines, symbol search, refs/callers/callees, call graphs, impl lookup, dependents, in-tree regex | `outline`, `search_symbols`, `workspace_grep`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `list_files`, `status`, `repo_info` | tree-sitter × 300+ langs · Fjall LSM index · content-addressed blob store |
 | **Git intelligence** | Symbol-level history, blame, churn, recent changes, structural diffs across revs | `symbol_history`, `blame_file`, `blame_symbol`, `hot_files`, `recent_changes`, `commits_touching`, `find_commits_by_path`, `diff_outline`, `diff_file`, `working_tree_status` | gix + sha-keyed disk cache |
-| **Document RAG** | Ingest + semantic search over PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
+| **Document RAG** | Ingest + semantic search over 90+ file formats — PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives, images. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
 | **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` | LanceDB + Fjall, scope-keyed |
 | **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
 | **Admin** | Live rescan + telemetry dashboard | `rescan`, `telemetry_summary` | — |
