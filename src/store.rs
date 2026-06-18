@@ -460,9 +460,22 @@ fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
             path: path.clone(),
             source,
         })?;
-    file.try_lock_exclusive()
-        .map_err(|_| StoreError::Locked(path))?;
-    Ok(file)
+    // A Store dropped microseconds earlier in this process (or a just-exited
+    // holder) can leave the advisory `flock` briefly un-released — macOS in
+    // particular does not always release it before the next acquire observes it.
+    // Retry with a short backoff so a sequential open → close → open never races;
+    // only a lock genuinely held for the whole window (e.g. `basemind watch`)
+    // surfaces as `Locked`.
+    const LOCK_ATTEMPTS: u32 = 25;
+    const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+    for attempt in 0..LOCK_ATTEMPTS {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(file),
+            Err(_) if attempt + 1 < LOCK_ATTEMPTS => std::thread::sleep(LOCK_BACKOFF),
+            Err(_) => return Err(StoreError::Locked(path)),
+        }
+    }
+    unreachable!("loop returns on the final attempt")
 }
 
 fn write_blob<T: Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
