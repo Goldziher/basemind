@@ -1,186 +1,77 @@
 #!/usr/bin/env bash
-# basemind statusline — one-line live summary of the indexed code map.
+# basemind statusline — live, responsive, two-line summary.
 #
-# Wire it into Claude Code MANUALLY by adding to ~/.claude/settings.json
-# (per the Claude Code plugin schema documented at
-# https://code.claude.com/docs/en/plugins-reference — verified 2026-06-17,
-# the `plugin.json` manifest does NOT expose a `statusLine` field; the only
-# statusline-adjacent key supported there is `subagentStatusLine`, which is
-# not what we want here):
+# Line 1 (context): model · output-style · dir · branch · context% — reconstructs
+#   the "Claude" context Claude Code's default status line would show, because a
+#   custom statusLine REPLACES the default (it cannot render below it). Toggle off
+#   with BASEMIND_STATUSLINE_CONTEXT=0 for a single basemind line.
+# Line 2 (basemind): index health + per-capability activity (calls, searches, git,
+#   docs, memory, web) + estimated tokens saved.
 #
-#   {
-#     "statusLine": {
-#       "type": "command",
+# Wire it into Claude Code by running `/bm-statusline` once, or manually in
+# ~/.claude/settings.json:
+#
+#   { "statusLine": { "type": "command",
 #       "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
-#       "refreshInterval": 5
-#     }
-#   }
+#       "refreshInterval": 5 } }
 #
-# Claude Code feeds the script a JSON payload on stdin; we extract
-# `workspace.current_dir` (or fall back to PWD) and look for `.basemind/`
-# under it. Missing `.basemind/` is rendered as an actionable hint rather
-# than a silent line, so the user knows to run `basemind scan`.
-#
-# All filesystem reads are bounded (`tail -n 1000`) so the script stays cheap
-# even at `refreshInterval: 1`. `jq` is required for telemetry parsing; the
-# script degrades gracefully when absent.
+# Layout adapts to terminal width via $COLUMNS (Claude Code sets it; needs CC
+# v2.1.153+). Force a tier with BASEMIND_STATUSLINE=full|compact|minimal (default
+# auto). All filesystem reads are bounded so the script stays cheap at
+# refreshInterval: 1. `jq` is required for telemetry/context parsing; the script
+# degrades gracefully when absent.
 
 set -euo pipefail
 
-# ─── Workspace ─────────────────────────────────────────────────────────────────
+# ─── Input ─────────────────────────────────────────────────────────────────────
 input="$(cat 2>/dev/null || true)"
-cwd=""
-if [[ -n "$input" ]] && command -v jq >/dev/null 2>&1; then
-  cwd="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // empty' 2>/dev/null || true)"
-fi
-[[ -z "$cwd" ]] && cwd="${PWD}"
+have_jq=0
+command -v jq >/dev/null 2>&1 && have_jq=1
 
+json() { # json <jq-filter> <default>
+  local out=""
+  if [[ $have_jq -eq 1 && -n "$input" ]]; then
+    out="$(printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] && printf '%s' "$out" || printf '%s' "$2"
+}
+
+cwd="$(json '.workspace.current_dir // .cwd' "${PWD}")"
+model="$(json '.model.display_name' '')"
+out_style="$(json '.output_style.name' '')"
+vim_mode="$(json '.vim.mode' '')"
+ctx_pct="$(json '.context_window.used_percentage' '')"
 bm_dir="${cwd}/.basemind"
 
+# ─── Width / tier ──────────────────────────────────────────────────────────────
+cols="${COLUMNS:-0}"
+[[ "$cols" -le 0 ]] && cols="$(tput cols 2>/dev/null || echo 120)"
+[[ -z "$cols" || "$cols" -le 0 ]] && cols=120
+
+tier="${BASEMIND_STATUSLINE:-auto}"
+if [[ "$tier" == "auto" ]]; then
+  if [[ "$cols" -ge 120 ]]; then
+    tier="full"
+  elif [[ "$cols" -ge 80 ]]; then
+    tier="compact"
+  else
+    tier="minimal"
+  fi
+fi
+
 # ─── Styling ───────────────────────────────────────────────────────────────────
-# True-color (24-bit) brand mark — exact #F97316. Every other colour is from
-# the bright 256-colour palette so terminals without true-color still render
-# legibly. Nothing is dim — readability is the whole point of this redesign.
-brand=$'\033[38;2;249;115;22m' # brand orange (◆ + "basemind")
-cyan=$'\033[38;5;51m'          # bright cyan — file count, scan-age, intel
-magenta=$'\033[38;5;201m'      # bright magenta — calls, tokens saved
-label=$'\033[38;5;255m'        # soft white — units / labels
-sep=$'\033[38;5;240m'          # light grey — section separators
+brand=$'\033[38;2;249;115;22m' # brand orange
+cyan=$'\033[38;5;51m'          # file count, scan-age, intel
+magenta=$'\033[38;5;201m'      # calls, tokens saved
+label=$'\033[38;5;255m'        # units / labels
+sep=$'\033[38;5;240m'          # separators
+muted=$'\033[38;5;244m'        # context line text
 bold=$'\033[1m'
 reset=$'\033[0m'
-
 glyph="◆"
 
-# ─── Empty / missing cases ─────────────────────────────────────────────────────
-# `.basemind/` missing entirely → actionable hint.
-if [[ ! -d "$bm_dir" ]]; then
-  printf '%s%s%s %s%sbasemind%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
-    "$brand" "$glyph" "$reset" \
-    "$bold" "$brand" "$reset" \
-    "$sep" "$reset" \
-    "$label" "$reset" \
-    "$bold" "$cyan" "$reset"
-  exit 0
-fi
-
-# `.basemind/` exists but no blobs yet (scan in progress / freshly init'd).
-blobs_dir="${bm_dir}/blobs"
-if [[ ! -d "$blobs_dir" ]] || [[ -z "$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' -print -quit 2>/dev/null)" ]]; then
-  printf '%s%s%s %s%sbasemind%s %s│%s %sscanning…%s' \
-    "$brand" "$glyph" "$reset" \
-    "$bold" "$brand" "$reset" \
-    "$sep" "$reset" \
-    "$label" "$reset"
-  exit 0
-fi
-
-# ─── File count — count *.l1.msgpack in blobs/ (one per unique file content) ──
-file_count=0
-file_count_raw="$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' 2>/dev/null | wc -l || echo 0)"
-# Trim leading whitespace from `wc -l`.
-file_count="${file_count_raw##*[[:space:]]}"
-[[ -z "$file_count" ]] && file_count=0
-
-# ─── Scan recency — most-recent mtime of index.msgpack or index.fjall/ ────────
-scan_age="never"
-scan_delta=999999999
-scan_mtime=0
-view_index="${bm_dir}/views/working/index.msgpack"
-view_fjall="${bm_dir}/views/working/index.fjall"
-for candidate in "$view_index" "$view_fjall"; do
-  if [[ -e "$candidate" ]]; then
-    m="$(stat -f %m "$candidate" 2>/dev/null || stat -c %Y "$candidate" 2>/dev/null || echo 0)"
-    if [[ "$m" -gt "$scan_mtime" ]]; then
-      scan_mtime="$m"
-    fi
-  fi
-done
-if [[ "$scan_mtime" -gt 0 ]]; then
-  now="$(date +%s)"
-  scan_delta=$((now - scan_mtime))
-  if [[ $scan_delta -lt 60 ]]; then
-    scan_age="${scan_delta}s ago"
-  elif [[ $scan_delta -lt 3600 ]]; then
-    scan_age="$((scan_delta / 60))m ago"
-  elif [[ $scan_delta -lt 86400 ]]; then
-    scan_age="$((scan_delta / 3600))h ago"
-  else
-    scan_age="$((scan_delta / 86400))d ago"
-  fi
-fi
-
-# ─── Telemetry: calls + tokens saved today ─────────────────────────────────────
-tel_file="${bm_dir}/telemetry.jsonl"
-calls=0
-saved=0
-tel_mtime=0
-if [[ -f "$tel_file" ]]; then
-  tel_mtime="$(stat -f %m "$tel_file" 2>/dev/null || stat -c %Y "$tel_file" 2>/dev/null || echo 0)"
-  if command -v jq >/dev/null 2>&1; then
-    midnight_us="$(date -v0H -v0M -v0S +%s 2>/dev/null || date -d 'today 00:00' +%s 2>/dev/null || echo 0)"
-    midnight_us=$((midnight_us * 1000000))
-    read -r calls saved <<<"$(tail -n 1000 "$tel_file" 2>/dev/null |
-      jq -rs --arg cutoff "$midnight_us" '
-          [.[] | select(.ts_micros >= ($cutoff | tonumber))]
-          | "\(length) \([.[].est_tokens_saved] | add // 0)"
-        ' 2>/dev/null || echo "0 0")"
-    [[ -z "$calls" ]] && calls=0
-    [[ -z "$saved" ]] && saved=0
-  fi
-fi
-
-# ─── Intelligence sidecar (documents / memory / web) ──────────────────────────
-# Presence-only probe — row counts would require LanceDB reads too slow for a
-# 5-second refresh interval. The intelligence row is suppressed when the
-# top-level lance/ directory doesn't exist (typical for code-map-only repos).
-lance_dir="${bm_dir}/lance"
-have_intel=0
-docs_present=0
-mem_present=0
-web_present=0
-if [[ -d "$lance_dir" ]]; then
-  [[ -d "${lance_dir}/documents.lance" ]] && docs_present=1
-  [[ -d "${lance_dir}/memory.lance" ]] && mem_present=1
-  [[ -d "${lance_dir}/web.lance" ]] && web_present=1
-  if [[ $docs_present -eq 1 ]] || [[ $mem_present -eq 1 ]] || [[ $web_present -eq 1 ]]; then
-    have_intel=1
-  fi
-  # If a sidecar dropped exact counts, prefer those.
-  intel_sidecar="${bm_dir}/views/working/.intelligence_count.json"
-  if [[ -f "$intel_sidecar" ]] && command -v jq >/dev/null 2>&1; then
-    have_intel=1
-    docs_present="$(jq -r '.documents // 0' "$intel_sidecar" 2>/dev/null || echo 0)"
-    mem_present="$(jq -r '.memory // 0' "$intel_sidecar" 2>/dev/null || echo 0)"
-    web_present="$(jq -r '.web // 0' "$intel_sidecar" 2>/dev/null || echo 0)"
-  fi
-fi
-
-# ─── Liveness state dot ───────────────────────────────────────────────────────
-# green  ● — serve fresh (telemetry mtime <60s) OR scan <1h with no telemetry
-# amber  ● — serve idle (pgrep hit but stale telemetry) OR scan 1–24h
-# red    ● — no serve AND scan >24h
-now="$(date +%s)"
-tel_age=$((now - tel_mtime))
-serve_running=0
-if command -v pgrep >/dev/null 2>&1; then
-  if pgrep -f "basemind serve" >/dev/null 2>&1; then
-    serve_running=1
-  fi
-fi
-if [[ "$tel_mtime" -gt 0 ]] && [[ "$tel_age" -lt 60 ]]; then
-  dot_color=$'\033[38;5;46m' # bright green
-elif [[ $scan_delta -lt 3600 ]] && [[ "$calls" -eq 0 ]]; then
-  dot_color=$'\033[38;5;46m'
-elif [[ $serve_running -eq 1 ]] || { [[ $scan_delta -ge 3600 ]] && [[ $scan_delta -lt 86400 ]]; }; then
-  dot_color=$'\033[38;5;214m' # amber
-else
-  dot_color=$'\033[38;5;196m' # red
-fi
-dot="${dot_color}●${reset}"
-
-# ─── Formatters ───────────────────────────────────────────────────────────────
-# Compact count formatter — 1234 → 1.2k, 14200 → 14k, 1500000 → 1M.
-fmt_count() {
+# ─── Formatters ────────────────────────────────────────────────────────────────
+fmt_count() { # 1234 → 1.2k, 14200 → 14k, 1500000 → 1M
   local n="$1"
   if [[ "$n" -lt 1000 ]]; then
     printf '%d' "$n"
@@ -188,67 +79,171 @@ fmt_count() {
     printf '%d.%dk' "$((n / 1000))" "$(((n * 10 / 1000) % 10))"
   elif [[ "$n" -lt 1000000 ]]; then
     printf '%dk' "$((n / 1000))"
-  else
-    printf '%dM' "$((n / 1000000))"
-  fi
+  else printf '%dM' "$((n / 1000000))"; fi
 }
-
-# Thousands-separator formatter for the wide layout. POSIX `printf "%'d"`
-# only honours the apostrophe flag under a locale that defines a numeric
-# grouping; force one inline. Falls back to bare digits on broken locales.
 fmt_thousands() {
   local n="$1"
   LC_ALL=en_US.UTF-8 printf "%'d" "$n" 2>/dev/null || printf '%d' "$n"
 }
 
-files_wide="$(fmt_thousands "$file_count")"
-files_narrow="$(fmt_count "$file_count")"
-calls_fmt="$(fmt_count "$calls")"
-saved_fmt="$(fmt_count "$saved")"
+# ─── Line 1: Claude context ────────────────────────────────────────────────────
+build_context_line() {
+  [[ "${BASEMIND_STATUSLINE_CONTEXT:-1}" == "0" ]] && return 1
+  [[ -z "$model" && -z "$out_style" ]] && return 1 # nothing useful to show
 
-# ─── Width detection ──────────────────────────────────────────────────────────
-cols="$(tput cols 2>/dev/null || echo 120)"
-[[ -z "$cols" ]] && cols=120
+  local dir branch="" head_file parts=()
+  dir="$(basename "$cwd")"
+  head_file="${cwd}/.git/HEAD"
+  if [[ -f "$head_file" ]]; then
+    local ref
+    ref="$(IFS= read -r ref <"$head_file" && printf '%s' "$ref" || true)"
+    [[ "$ref" == ref:\ refs/heads/* ]] && branch="${ref#ref: refs/heads/}"
+  fi
 
-# ─── Render ───────────────────────────────────────────────────────────────────
-if [[ "$cols" -ge 100 ]]; then
-  # Wide layout. Render as concatenated coloured segments.
-  out=""
-  out+="${brand}${glyph}${reset} "
-  out+="${bold}${brand}basemind${reset}  "
-  out+="${dot}  "
-  out+="${bold}${cyan}${files_wide}${reset} ${label}files${reset} "
-  out+="${sep}·${reset} "
-  out+="${bold}${cyan}${scan_age}${reset}"
-  out+="  ${sep}│${reset}  "
-  out+="${bold}${magenta}${calls_fmt}${reset} ${label}calls${reset} "
-  out+="${sep}·${reset} "
-  out+="${bold}${magenta}${saved_fmt}${reset} ${label}saved${reset}"
-  if [[ $have_intel -eq 1 ]]; then
-    out+="  ${sep}│${reset}  "
-    if [[ "$docs_present" != 0 ]]; then
-      out+="${bold}${cyan}${docs_present}${reset} ${label}docs${reset}"
+  [[ -n "$model" ]] && parts+=("${bold}${muted}${model}${reset}")
+  if [[ "$tier" == "full" ]]; then
+    [[ -n "$out_style" && "$out_style" != "default" ]] && parts+=("${muted}${out_style}${reset}")
+    [[ -n "$vim_mode" ]] && parts+=("${muted}${vim_mode}${reset}")
+  fi
+  parts+=("${muted}${dir}${reset}")
+  [[ -n "$branch" ]] && parts+=("${muted}⎇ ${branch}${reset}")
+  if [[ -n "$ctx_pct" && "$tier" != "minimal" ]]; then
+    parts+=("${muted}${ctx_pct}% ctx${reset}")
+  fi
+
+  local line="" i
+  for i in "${!parts[@]}"; do
+    [[ "$i" -gt 0 ]] && line+=" ${sep}·${reset} "
+    line+="${parts[$i]}"
+  done
+  printf '%s' "$line"
+}
+
+# ─── Line 2: basemind ──────────────────────────────────────────────────────────
+mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$brand" "$reset"; }
+
+build_basemind_line() {
+  # No index → actionable hint.
+  if [[ ! -d "$bm_dir" ]]; then
+    printf '%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
+      "$(mark)" "$sep" "$reset" "$label" "$reset" "$bold" "$cyan" "$reset"
+    return
+  fi
+  local blobs_dir="${bm_dir}/blobs"
+  if [[ ! -d "$blobs_dir" ]] || [[ -z "$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' -print -quit 2>/dev/null)" ]]; then
+    printf '%s %s│%s %sscanning…%s' "$(mark)" "$sep" "$reset" "$label" "$reset"
+    return
+  fi
+
+  # File count.
+  local file_count
+  file_count="$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' 2>/dev/null | wc -l || echo 0)"
+  file_count="${file_count##*[[:space:]]}"
+  [[ -z "$file_count" ]] && file_count=0
+
+  # Scan recency.
+  local scan_age="never" scan_delta=999999999 scan_mtime=0 m now
+  for candidate in "${bm_dir}/views/working/index.msgpack" "${bm_dir}/views/working/index.fjall"; do
+    if [[ -e "$candidate" ]]; then
+      m="$(stat -f %m "$candidate" 2>/dev/null || stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+      [[ "$m" -gt "$scan_mtime" ]] && scan_mtime="$m"
     fi
-    if [[ "$mem_present" != 0 ]]; then
-      [[ "$docs_present" != 0 ]] && out+=" ${sep}·${reset} "
-      out+="${bold}${cyan}${mem_present}${reset} ${label}mem${reset}"
-    fi
-    if [[ "$web_present" != 0 ]]; then
-      { [[ "$docs_present" != 0 ]] || [[ "$mem_present" != 0 ]]; } && out+=" ${sep}·${reset} "
-      out+="${bold}${cyan}${web_present}${reset} ${label}sites${reset}"
+  done
+  if [[ "$scan_mtime" -gt 0 ]]; then
+    now="$(date +%s)"
+    scan_delta=$((now - scan_mtime))
+    if [[ $scan_delta -lt 60 ]]; then
+      scan_age="${scan_delta}s ago"
+    elif [[ $scan_delta -lt 3600 ]]; then
+      scan_age="$((scan_delta / 60))m ago"
+    elif [[ $scan_delta -lt 86400 ]]; then
+      scan_age="$((scan_delta / 3600))h ago"
+    else scan_age="$((scan_delta / 86400))d ago"; fi
+  fi
+
+  # Telemetry buckets (today): calls, saved, and per-capability counts.
+  local calls=0 saved=0 code=0 git=0 docs=0 mem=0 web=0 tel_mtime=0
+  local tel_file="${bm_dir}/telemetry.jsonl"
+  if [[ -f "$tel_file" ]]; then
+    tel_mtime="$(stat -f %m "$tel_file" 2>/dev/null || stat -c %Y "$tel_file" 2>/dev/null || echo 0)"
+    if [[ $have_jq -eq 1 ]]; then
+      local midnight_us
+      midnight_us="$(date -v0H -v0M -v0S +%s 2>/dev/null || date -d 'today 00:00' +%s 2>/dev/null || echo 0)"
+      midnight_us=$((midnight_us * 1000000))
+      read -r calls saved code git docs mem web <<<"$(tail -n 2000 "$tel_file" 2>/dev/null |
+        jq -rs --argjson cut "$midnight_us" '
+            def bucket:
+              if   (test("^(search_symbols|outline|find_references|find_callers|find_implementations|call_graph|dependents|list_files|workspace_grep|status|repo_info)$")) then "code"
+              elif (test("^(blame_|recent_changes|commits_touching|find_commits_by_path|diff_|hot_files|symbol_history|working_tree_status)")) then "git"
+              elif (.=="search_documents") then "docs"
+              elif (startswith("memory_")) then "mem"
+              elif (startswith("web_")) then "web"
+              else "code" end;
+            map(select(.ts_micros >= $cut))
+            | { calls: length, saved: ([.[].est_tokens_saved] | add // 0) } as $tot
+            | (map(.tool|bucket) | group_by(.) | map({(.[0]): length}) | add // {}) as $b
+            | "\($tot.calls) \($tot.saved) \($b.code // 0) \($b.git // 0) \($b.docs // 0) \($b.mem // 0) \($b.web // 0)"
+          ' 2>/dev/null || echo "0 0 0 0 0 0 0")"
+      [[ -z "$calls" ]] && calls=0
+      [[ -z "$saved" ]] && saved=0
     fi
   fi
+
+  # Liveness dot.
+  local now2 tel_age dot_color serve_running=0
+  now2="$(date +%s)"
+  tel_age=$((now2 - tel_mtime))
+  command -v pgrep >/dev/null 2>&1 && pgrep -f "basemind serve" >/dev/null 2>&1 && serve_running=1
+  if [[ "$tel_mtime" -gt 0 && "$tel_age" -lt 60 ]]; then
+    dot_color=$'\033[38;5;46m'
+  elif [[ $scan_delta -lt 3600 && "$calls" -eq 0 ]]; then
+    dot_color=$'\033[38;5;46m'
+  elif [[ $serve_running -eq 1 || ($scan_delta -ge 3600 && $scan_delta -lt 86400) ]]; then
+    dot_color=$'\033[38;5;214m'
+  else dot_color=$'\033[38;5;196m'; fi
+  local dot="${dot_color}●${reset}"
+
+  # Compose by tier.
+  local searches=$((code))
+  local out
+  out="$(mark)  ${dot}  "
+  if [[ "$tier" == "minimal" ]]; then
+    out+="${bold}${cyan}$(fmt_count "$file_count")${reset} ${sep}·${reset} "
+    out+="${bold}${cyan}${scan_age% ago}${reset} ${sep}│${reset} "
+    out+="${bold}${magenta}$(fmt_count "$calls")${reset}${label}c${reset} ${sep}·${reset} "
+    out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
+    printf '%s' "$out"
+    return
+  fi
+
+  local files_disp
+  if [[ "$tier" == "full" ]]; then files_disp="$(fmt_thousands "$file_count")"; else files_disp="$(fmt_count "$file_count")"; fi
+  out+="${bold}${cyan}${files_disp}${reset} ${label}files${reset} ${sep}·${reset} "
+  out+="${bold}${cyan}${scan_age}${reset}"
+  out+="  ${sep}│${reset}  "
+  out+="${bold}${magenta}$(fmt_count "$calls")${reset} ${label}calls${reset}"
+
+  if [[ "$tier" == "full" ]]; then
+    # Per-capability breakdown — only buckets with activity.
+    local seg=""
+    [[ "$searches" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$searches")${reset} ${label}srch${reset}"
+    [[ "$git" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$git")${reset} ${label}git${reset}"
+    [[ "$docs" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$docs")${reset} ${label}docs${reset}"
+    [[ "$mem" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$mem")${reset} ${label}mem${reset}"
+    [[ "$web" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$web")${reset} ${label}web${reset}"
+    out+="$seg"
+  fi
+
+  out+="  ${sep}│${reset}  "
+  out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
   printf '%s' "$out"
+}
+
+# ─── Emit ──────────────────────────────────────────────────────────────────────
+ctx="$(build_context_line || true)"
+bm="$(build_basemind_line)"
+if [[ -n "$ctx" ]]; then
+  printf '%s\n%s' "$ctx" "$bm"
 else
-  # Narrow layout.
-  out=""
-  out+="${brand}${glyph}${reset} "
-  out+="${bold}${brand}basemind${reset} "
-  out+="${dot} "
-  out+="${bold}${cyan}${files_narrow}${reset} ${sep}·${reset} "
-  out+="${bold}${cyan}${scan_age% ago}${reset} "
-  out+="${sep}│${reset} "
-  out+="${bold}${magenta}${calls_fmt}${reset}${label}c${reset} ${sep}·${reset} "
-  out+="${bold}${magenta}${saved_fmt}${reset} ${label}saved${reset}"
-  printf '%s' "$out"
+  printf '%s' "$bm"
 fi
