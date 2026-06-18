@@ -154,6 +154,17 @@ async fn mcp_server_exercises_representative_tools() {
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
+    // get_info: the always-injected instructions carry the context-economy operating
+    // discipline so agents default to basemind over grep/read and stay token-frugal.
+    let instructions = service
+        .peer_info()
+        .and_then(|info| info.instructions.clone())
+        .unwrap_or_default();
+    assert!(
+        instructions.contains("Context economy"),
+        "server instructions should state the context-economy discipline: {instructions}"
+    );
+
     // status: file_count > 0, languages includes rust + typescript
     let body = decode_text(
         &service

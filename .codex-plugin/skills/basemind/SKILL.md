@@ -29,6 +29,28 @@ If you are about to open more than two or three files just to learn structure, s
 and use basemind first. The tools return paths + line numbers; you only `read_file`
 once you know exactly which span you need.
 
+## Context economy — the operating discipline
+
+basemind tools return **paths, line numbers, and signatures — not file bodies**, so a
+structural answer costs a fraction of the tokens of reading source. Treat that as the
+default workflow, not an optimization:
+
+- **`outline` a file before you open it.** Read the whole file only when you have already
+  identified the exact span you need from the outline; then `read_file` that range, not the file.
+- **`search_symbols` instead of `grep`/`rg` for a definition.** It matches on indexed symbol
+  names and returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
+- **`find_references` / `find_callers` instead of grepping call sites.** Indexed call edges,
+  not text matches.
+- **`workspace_grep` instead of shelling out to ripgrep** when you genuinely need regex over
+  content — it runs over the in-RAM index and returns capped, structured hits.
+- **`rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it to
+  the files you touched.
+- **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
+
+Rule of thumb: if a question is about _where_, _what calls_, _what shape_, _who changed_, or
+_what's indexed_, a basemind tool answers it cheaper than reading files. Reach for `read_file`
+only to see the actual implementation of a span you have already located.
+
 ## Tool routing (copy this into your mental model)
 
 | Question | Tool |

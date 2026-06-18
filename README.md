@@ -35,6 +35,24 @@ documents store under scope `web:<host>` for unified search.
 
 ---
 
+## Context economy
+
+basemind tools return **paths, line numbers, and signatures — not file bodies** — so a
+structural answer costs a fraction of the tokens of reading source. The plugin ships this as
+the agent's default operating discipline (carried in the MCP server instructions, the
+`basemind` skill, and the SessionStart hook):
+
+- `outline` a file before opening it — then read only the span you need.
+- `search_symbols` instead of `grep`/`rg` for a definition.
+- `find_references` / `find_callers` instead of grepping call sites.
+- `workspace_grep` instead of shelling out to ripgrep for regex over content.
+- `rescan` after edits instead of reconnecting the server.
+- Don't re-read a file basemind already mapped.
+
+The live statusline surfaces the payoff: estimated tokens saved vs a grep + read baseline.
+
+---
+
 ## Feature table
 
 <!-- markdownlint-disable MD013 -->
