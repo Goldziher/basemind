@@ -1,29 +1,27 @@
 {
   "name": "basemind-opencode",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "type": "module",
-  "main": "basemind.js",
   "keywords": [
-    "mcp",
     "agent-context",
-    "rag",
     "code-map",
+    "mcp",
+    "rag",
     "tree-sitter"
   ],
+  "homepage": "https://github.com/Goldziher/basemind#opencode",
+  "bugs": {
+    "url": "https://github.com/Goldziher/basemind/issues"
+  },
+  "license": "MIT",
   "author": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com"
   },
-  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Goldziher/basemind.git",
     "directory": "opencode-plugin"
-  },
-  "homepage": "https://github.com/Goldziher/basemind#opencode",
-  "bugs": {
-    "url": "https://github.com/Goldziher/basemind/issues"
   },
   "files": [
     "basemind.js",
@@ -31,6 +29,8 @@
     "commands/",
     "README.md"
   ],
+  "type": "module",
+  "main": "basemind.js",
   "engines": {
     "node": ">=18"
   }

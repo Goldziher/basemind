@@ -1,17 +1,17 @@
 {
   "name": "basemind",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
-  "type": "module",
   "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin).",
   "homepage": "https://github.com/Goldziher/basemind",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Goldziher/basemind.git"
-  },
   "license": "MIT",
   "author": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Goldziher/basemind.git"
+  },
+  "type": "module"
 }

@@ -2,7 +2,7 @@
   "name": "basemind",
   "displayName": "basemind",
   "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "author": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com"
@@ -10,20 +10,12 @@
   "homepage": "https://github.com/Goldziher/basemind",
   "repository": "https://github.com/Goldziher/basemind",
   "license": "MIT",
-  "keywords": [
-    "mcp",
-    "agent-context",
-    "rag",
-    "code-map",
-    "tree-sitter"
-  ],
+  "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "skills": "./skills/",
   "mcpServers": {
     "basemind": {
       "command": "basemind",
-      "args": [
-        "serve"
-      ]
+      "args": ["serve"]
     }
   }
 }
