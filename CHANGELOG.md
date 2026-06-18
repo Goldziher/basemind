@@ -10,6 +10,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.5] — 2026-06-18
+
+### Added
+
+- **PreToolUse guard hook drives basemind usage.** A configurable hook
+  (`hooks/pre-tool-guard`) reaches the agent when it reaches for `Grep`/`Glob` and
+  points it at the matching basemind tool — the only Claude Code lever that can also
+  cover subagents. `BASEMIND_GUARD` selects the mode: `nudge` (default, advisory once
+  per session), `redirect` (deny with a pointer to the basemind tool), or `off`.
+- **Full-capability awareness in the agent surfaces.** The always-injected MCP
+  `get_info` instructions and the `basemind` skill now describe the whole surface —
+  code map across 300+ languages, full-text + semantic search, git intelligence,
+  document RAG over 90+ file formats, shared memory, and web crawl — instead of a
+  code-map-only framing. The README leads with the same capability set.
+
+### Fixed
+
+- **`Store::open` no longer races on a just-released lock.** `acquire_lock` retries the
+  exclusive `flock` with a short backoff, fixing a macOS-only flake where a sequential
+  open → close → open hit `Locked`.
+
 ## [0.2.4] — 2026-06-18
 
 ### Added
