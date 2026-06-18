@@ -1,11 +1,28 @@
 //! Integration tests for the sha-keyed git cache.
 
+/// The git-cache schema is unified with `RELEASE_MINOR` so every on-disk cache invalidates
+/// in lock-step on a minor-release bump. Mirror the exact derivation here so a future change
+/// to the formula (or an accidental revert to the old hardcoded `1`) fails loudly.
+#[test]
+fn git_cache_schema_tracks_release_minor() {
+    assert_eq!(
+        GIT_CACHE_SCHEMA,
+        RELEASE_MINOR + 1,
+        "GIT_CACHE_SCHEMA must derive from RELEASE_MINOR (the +1 offset), not a hardcoded value"
+    );
+    assert_ne!(
+        GIT_CACHE_SCHEMA, 1,
+        "must differ from the historical hardcoded 1 so the next release invalidates stale payloads"
+    );
+}
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use basemind::git::Repo;
-use basemind::git_cache::{GIT_CACHE_DIR, GitCache};
+use basemind::git_cache::{GIT_CACHE_DIR, GIT_CACHE_SCHEMA, GitCache};
+use basemind::version::RELEASE_MINOR;
 use tempfile::TempDir;
 
 fn run(repo: &Path, args: &[&str]) {

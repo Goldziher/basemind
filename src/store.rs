@@ -116,14 +116,28 @@ impl Store {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
+                // Durable refresh: reset only THIS view's `index.msgpack` (so `read_index`
+                // → None → `Index::empty()` and the next scan treats every file as new and
+                // re-extracts it). The shared content-addressed blob store is left in place;
+                // re-extraction overwrites each stale-schema blob at its (content-hash) path
+                // via `write_blob`'s schema-aware guard, and any blob no longer referenced
+                // becomes an orphan reclaimed later by `store_gc::run_gc`. No destructive
+                // `rm -rf blobs/`, so there is no window where the expensive cache is gone.
+                //
+                // Stale-blob-read safety: after this reset the in-RAM index is empty and the
+                // view's `index.msgpack` is gone, so every read path that resolves a blob by
+                // a `FileEntry.hash_hex` (`query::file_outline` / `file_outline_l2`, the
+                // MapCache build) finds no entry and returns "not found". The rescan that
+                // follows `Store::open` is what repopulates the index, and it re-extracts
+                // before it records the entry — so no consumer ever deserializes a
+                // pre-refresh (stale-schema) blob through the current code.
                 tracing::info!(
                     found,
                     expected,
                     view,
-                    "cache schema bumped; wiping view index + shared blobs"
+                    "cache schema bumped; refreshing view in place (re-extract + GC reclaims orphans)"
                 );
                 wipe_view(&view_dir)?;
-                wipe_blobs(&basemind_dir)?;
                 Index::empty()
             }
             Err(e) => return Err(e),
@@ -150,11 +164,29 @@ impl Store {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
         }
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
-        let index = read_index(&view_dir)?.unwrap_or_else(Index::empty);
+        // A read-only consumer cannot wipe + rebuild like `Store::open` does, so a schema
+        // bump must degrade gracefully rather than propagate a hard error: an out-of-date
+        // index reads as empty until the next `basemind scan` / `serve` refreshes it in
+        // place. `schema_ok == false` also means we must NOT open the Fjall index — its
+        // own open path wipes on a schema mismatch, which would corrupt a concurrently
+        // running `serve`'s live index. Skip it; the CLI degrades to "no indexed files".
+        let (index, schema_ok) = match read_index(&view_dir) {
+            Ok(Some(idx)) => (idx, true),
+            Ok(None) => (Index::empty(), true),
+            Err(StoreError::SchemaMismatch { found, expected }) => {
+                tracing::warn!(
+                    found,
+                    expected,
+                    "cache schema mismatch; index reads empty until `basemind scan` refreshes it"
+                );
+                (Index::empty(), false)
+            }
+            Err(e) => return Err(e),
+        };
         // The MCP server runs read-only; we still need to *read* from the Fjall index for
         // find_references etc. Opening it here is harmless — Fjall handles concurrent
         // readers fine via internal snapshots.
-        let index_db = if view_dir.exists() {
+        let index_db = if schema_ok && view_dir.exists() {
             IndexDb::open(&view_dir).ok()
         } else {
             None
@@ -391,9 +423,11 @@ fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Wipe the shared blobs directory. Called from `Store::open` when the persisted schema
-/// version doesn't match `SCHEMA_VER` — once one view's blobs are stale, all are.
-fn wipe_blobs(basemind_dir: &Path) -> Result<(), StoreError> {
+/// Wipe the shared blobs directory. Used by `store_gc::clear_component` for an explicit
+/// `Blobs` component clear (the CLI / MCP admin surface). NOT called on a schema bump:
+/// `Store::open` refreshes blobs durably in place (re-extract overwrites stale blobs;
+/// orphans are reclaimed by `store_gc::run_gc`) rather than destroying the cache.
+pub(crate) fn wipe_blobs(basemind_dir: &Path) -> Result<(), StoreError> {
     let blobs_dir = basemind_dir.join(BLOBS_DIR);
     if blobs_dir.exists() {
         std::fs::remove_dir_all(&blobs_dir).map_err(|source| StoreError::Io {
@@ -434,7 +468,10 @@ fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError
     Ok(())
 }
 
-fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
+/// Read and deserialize a view's `index.msgpack`. `Ok(None)` when the file is absent;
+/// `Err(StoreError::SchemaMismatch)` on a version mismatch. Reused by `store_gc` to
+/// enumerate the live blob hashes referenced by every view.
+pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     let path = view_dir.join(INDEX_FILE);
     if !path.exists() {
         return Ok(None);
@@ -448,7 +485,10 @@ fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
     Ok(Some(index))
 }
 
-fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
+/// Acquire the store's advisory `.lock` (exclusive flock, with bounded retry).
+/// Reused by `store_gc::run_gc` so the mark+sweep races neither a concurrent scan
+/// nor a `basemind watch`.
+pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     let path = basemind_dir.join(LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -478,12 +518,37 @@ fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     unreachable!("loop returns on the final attempt")
 }
 
+/// Minimal peek struct: decode only a blob's leading `schema_ver` field. Every blob map
+/// (`FileMapL1` / `FileMapL2` / `FileMapDoc`) carries `schema_ver: u16` first; rmp-serde
+/// decodes named maps by field name and ignores the remaining (unknown-to-us) fields, so
+/// this reads the version without paying to decode the whole blob.
+#[derive(Deserialize)]
+struct BlobSchemaPeek {
+    schema_ver: u16,
+}
+
+/// Cheaply read a blob's persisted `schema_ver`. Returns `None` if the blob is unreadable
+/// or its leading field can't be decoded (treated as "not current", forcing a rewrite).
+fn peek_blob_schema(path: &Path) -> Option<u16> {
+    let bytes = std::fs::read(path).ok()?;
+    rmp_serde::from_slice::<BlobSchemaPeek>(&bytes)
+        .ok()
+        .map(|peek| peek.schema_ver)
+}
+
 fn write_blob<T: Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
-    // Content-addressed: if the final blob exists, another worker (or a prior scan) already
-    // wrote identical bytes. Skip — saves the serialize + write + rename cost, and avoids
-    // duplicate-hash races between parallel workers (two distinct source files with the
-    // same content hash to the same blob path).
-    if path.exists() {
+    // Content-addressed: the blob is keyed by *source-content* hash, so an existing blob at
+    // this path holds the extraction of identical source bytes. If it was written under the
+    // current `SCHEMA_VER`, another worker (or a prior compatible scan) already produced
+    // identical bytes — skip the serialize + write + rename, and avoid duplicate-hash races
+    // between parallel workers.
+    //
+    // But a schema bump leaves stale-schema blobs at the *same* path (the source content,
+    // hence the hash, is unchanged across the bump). The durable-refresh flow re-extracts
+    // every file and relies on this write to OVERWRITE the stale blob in place — so we must
+    // NOT skip when the on-disk schema is stale. Peek the leading `schema_ver` and only
+    // short-circuit when it already matches `SCHEMA_VER`.
+    if path.exists() && peek_blob_schema(&path) == Some(SCHEMA_VER) {
         return Ok(());
     }
     let bytes = rmp_serde::to_vec_named(value)?;

@@ -2,6 +2,7 @@
 // Flip this off once the public API is frozen.
 #![allow(missing_docs)]
 
+pub mod cli;
 pub mod config;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
@@ -21,6 +22,7 @@ pub mod scanner;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
 pub mod store;
+pub mod store_gc;
 #[cfg(feature = "crawl")]
 pub mod url;
 pub mod version;

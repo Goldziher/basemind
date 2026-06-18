@@ -8,6 +8,7 @@
 
 pub(crate) mod cursor;
 mod helpers;
+mod helpers_admin;
 mod helpers_calls;
 #[cfg(feature = "documents")]
 mod helpers_documents;
@@ -27,6 +28,7 @@ mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod types;
+mod types_admin;
 mod types_documents;
 mod types_graph;
 mod types_impls;
@@ -47,6 +49,30 @@ use tokio::sync::RwLock;
 use crate::extract::{FileMapL1, Import};
 use crate::lang::LangId;
 use crate::store::Store;
+
+/// Public re-export of every tool `*Params` type plus the `Parameters` wrapper, so the
+/// in-process CLI (`src/cli/`) can build tool arguments and call the `#[tool]` methods
+/// directly. This is the parity-by-construction surface: the CLI runs the identical tool
+/// code an MCP client would dispatch.
+pub mod params {
+    pub use rmcp::handler::server::wrapper::Parameters;
+
+    pub use super::types::{
+        BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams,
+        DiffFileParams, DiffOutlineParams, FindCallersParams, FindCommitsByPathParams,
+        FindReferencesParams, HotFilesParams, ListFilesParams, MemoryDeleteParams, MemoryGetParams,
+        MemoryListParams, MemoryPutParams, MemorySearchParams, OutlineParams, RecentChangesParams,
+        RepoInfoParams, RescanParams, SearchDocumentsParams, SearchSymbolsParams, StatusParams,
+        SymbolHistoryParams, TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
+    };
+    #[cfg(feature = "crawl")]
+    pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
+    pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_graph::CallGraphParams;
+    pub use super::types_impls::FindImplementationsParams;
+}
+
+pub use params::Parameters;
 
 /// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
 /// language we'd extract with, hold onto the parsed `FileMapL1` and the source bytes so
@@ -160,13 +186,98 @@ impl MapCache {
     }
 }
 
+/// Construction-time switches for [`BasemindServer`].
+///
+/// `serve` wants every background facility running; a one-shot CLI query wants
+/// none of them (no auto-scan, no view watcher, no background GC) so the process
+/// exits the instant the single tool call returns.
+///
+/// NOTE: this is intentionally a struct of named bools rather than a bare flag —
+/// a future workstream (the live FS watcher / `--no-watch`) will extend it with
+/// finer-grained switches (e.g. `auto_scan` vs `watch` decoupled). Keep new knobs
+/// additive and defaulted so callers that only care about `background` stay terse.
+#[derive(Debug, Clone, Copy)]
+pub struct ServerOptions {
+    /// When true, spawn the empty-index auto-scan, the view watcher thread, and
+    /// the background blob GC. When false, the server is a pure one-shot query
+    /// handle: it preloads the in-RAM map cache and nothing else.
+    pub background: bool,
+    /// When true (and `background` is on, and the served view is the working
+    /// view), spawn a live filesystem watcher that funnels changed paths into
+    /// `scan_and_refresh` so the in-RAM map stays current as the agent edits.
+    /// When false, fall back to the passive view watcher (which only reacts to
+    /// external scans writing `index.msgpack`). Disabled for one-shot queries.
+    ///
+    /// `--no-watch` on `basemind serve` flips this off — useful for very large
+    /// repos (e.g. the ~81k-file TypeScript tree) or CI, where the continuous
+    /// incremental re-scan is not worth the cost.
+    pub watch: bool,
+}
+
+impl Default for ServerOptions {
+    fn default() -> Self {
+        // Default mirrors `serve`: everything on.
+        Self {
+            background: true,
+            watch: true,
+        }
+    }
+}
+
 impl BasemindServer {
+    /// Construct a server with all background facilities running (the `serve` path).
     pub fn new(
         store: Store,
         root: PathBuf,
         config: Arc<crate::config::Config>,
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
+    ) -> Self {
+        Self::new_with_options(
+            store,
+            root,
+            config,
+            repo,
+            git_cache,
+            ServerOptions::default(),
+        )
+    }
+
+    /// Construct a one-shot server with every background facility disabled.
+    ///
+    /// Used by the `basemind` CLI to run a single MCP tool in-process and exit —
+    /// no auto-scan, no view watcher, no background GC. The in-RAM map cache is
+    /// still preloaded so the tool sees the same data an MCP client would.
+    pub fn new_oneshot(
+        store: Store,
+        root: PathBuf,
+        config: Arc<crate::config::Config>,
+        repo: Option<Arc<crate::git::Repo>>,
+        git_cache: Arc<crate::git_cache::GitCache>,
+    ) -> Self {
+        Self::new_with_options(
+            store,
+            root,
+            config,
+            repo,
+            git_cache,
+            ServerOptions {
+                background: false,
+                watch: false,
+            },
+        )
+    }
+
+    /// Shared constructor honoring [`ServerOptions`]. `new` / `new_oneshot` are
+    /// the public entry points; this threads the `background` switch through the
+    /// three spawn sites + the initial auto-scan.
+    pub fn new_with_options(
+        store: Store,
+        root: PathBuf,
+        config: Arc<crate::config::Config>,
+        repo: Option<Arc<crate::git::Repo>>,
+        git_cache: Arc<crate::git_cache::GitCache>,
+        options: ServerOptions,
     ) -> Self {
         let scope = repo
             .as_ref()
@@ -221,22 +332,60 @@ impl BasemindServer {
             #[cfg(feature = "crawl")]
             crawl_engine,
         });
-        spawn_view_watcher(Arc::clone(&state));
-        if needs_initial_scan {
-            let scan_state = Arc::clone(&state);
-            tracing::info!("empty index on startup; running initial scan in background");
-            tokio::spawn(async move {
-                match helpers::scan_and_refresh(scan_state, None).await {
-                    Ok(report) => tracing::info!(
-                        scanned = report.stats.scanned,
-                        updated = report.stats.updated,
-                        "initial background scan complete"
-                    ),
-                    Err(error) => {
-                        tracing::warn!(%error, "initial background scan failed");
-                    }
+        // One-shot CLI queries skip ALL background facilities: no view watcher,
+        // no auto-scan, no background GC. They preload the map cache (above) and
+        // return immediately so the process can exit after a single tool call.
+        if options.background {
+            // Live FS watcher vs. passive view watcher are mutually exclusive for
+            // the working view: the active watcher already triggers
+            // `scan_and_refresh`, which writes `index.msgpack` — the exact event
+            // the passive watcher reacts to. Running both would double-refresh.
+            //
+            // Non-working views (staged / rev-<sha>) are immutable snapshots, so
+            // the active watcher is meaningless there; they always get the passive
+            // watcher (which still picks up an external re-scan of that view).
+            let view_is_working = {
+                match state.store.try_read() {
+                    Ok(g) => g.view == crate::store::VIEW_WORKING,
+                    // Unable to read the view at boot is unexpected; fall back to the
+                    // passive watcher rather than risk watching the wrong tree.
+                    Err(_) => false,
                 }
-            });
+            };
+            if options.watch && view_is_working {
+                spawn_serve_watcher(Arc::clone(&state));
+            } else {
+                spawn_view_watcher(Arc::clone(&state));
+            }
+            // Background blob GC: reclaim orphaned blobs left behind by prior scans /
+            // branch switches. Detached so it never blocks serve startup, and it never
+            // crashes serve (all errors are warned + swallowed).
+            if needs_initial_scan {
+                // A fresh scan is what *creates* reclaimable orphans, so chain GC after it.
+                let scan_state = Arc::clone(&state);
+                tracing::info!("empty index on startup; running initial scan in background");
+                tokio::spawn(async move {
+                    match helpers::scan_and_refresh(Arc::clone(&scan_state), None).await {
+                        Ok(report) => tracing::info!(
+                            scanned = report.stats.scanned,
+                            updated = report.stats.updated,
+                            "initial background scan complete"
+                        ),
+                        Err(error) => {
+                            tracing::warn!(%error, "initial background scan failed");
+                        }
+                    }
+                    // Run GC after the scan settles, regardless of scan outcome.
+                    run_background_gc(scan_state).await;
+                });
+            } else {
+                // No initial scan — run GC shortly after startup to reclaim any
+                // orphans from earlier sessions.
+                let gc_state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    run_background_gc(gc_state).await;
+                });
+            }
         }
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
@@ -252,6 +401,98 @@ impl BasemindServer {
             tool_router: router,
         }
     }
+}
+
+/// Run an in-process blob GC once, logging the outcome and swallowing any error.
+///
+/// Uses the UNLOCKED `store_gc` primitives (`collect_referenced_hashes` + `gc_blobs`)
+/// under a `blocking_read()` store guard — NEVER `store_gc::run_gc`, which re-acquires
+/// the `.basemind/.lock` flock that `serve` already holds (that would deadlock). The
+/// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
+/// mark+sweep; cross-process scans are impossible because serve holds the flock.
+async fn run_background_gc(state: Arc<ServerState>) {
+    let result = tokio::task::spawn_blocking(move || {
+        let store = state.store.blocking_read();
+        let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
+        crate::store_gc::gc_blobs(&store.basemind_dir, &referenced)
+    })
+    .await;
+    match result {
+        Ok(Ok(report)) if report.removed > 0 => tracing::info!(
+            removed = report.removed,
+            bytes_freed = report.bytes_freed,
+            "background blob GC reclaimed orphaned blobs"
+        ),
+        Ok(Ok(_)) => tracing::debug!("background blob GC: nothing to reclaim"),
+        Ok(Err(error)) => tracing::warn!(%error, "background blob GC failed"),
+        Err(error) => tracing::warn!(%error, "background blob GC task panicked"),
+    }
+}
+
+/// Active filesystem watcher embedded in `serve` for the working view.
+///
+/// Unlike [`spawn_view_watcher`] (which is passive — it only reacts to an
+/// external process writing `index.msgpack`), this watches the working tree
+/// directly and funnels every debounced batch of changed paths into the
+/// canonical in-process refresh, [`helpers::scan_and_refresh`]. That re-scans
+/// under serve's already-open `Store` (its `RwLock`), so we never open a second
+/// `.basemind/.lock` flock — the reason we cannot reuse `watcher::watch`, which
+/// owns its own `Store`.
+///
+/// Threading bridge: `watcher::watch_paths` runs the debouncer on a blocking std
+/// thread, but `scan_and_refresh` is async. We capture the current tokio runtime
+/// `Handle` at spawn time and `handle.block_on(...)` the refresh inside the
+/// callback. `block_on` is safe here because the callback runs on a plain OS
+/// thread with no tokio runtime entered (it's `std::thread`, not a worker), so
+/// the "cannot block the current thread from within a runtime" guard never trips.
+///
+/// Lifetime: the thread is detached and runs for the process lifetime, mirroring
+/// `spawn_view_watcher`. The `shutdown` oneshot sender is dropped immediately, so
+/// `watch_paths`'s `shutdown.try_recv()` returns `Disconnected` only if the loop
+/// ever polls it after the sender drops — in practice the loop exits when the
+/// process tears down stdio and the debouncer channel closes. A failed
+/// incremental refresh is logged and swallowed so a transient scan error never
+/// kills the watcher.
+fn spawn_serve_watcher(state: Arc<ServerState>) {
+    let root = state.root.clone();
+    let config = Arc::clone(&state.config);
+    let handle = tokio::runtime::Handle::current();
+    // Keep the sender alive for the process lifetime by leaking it into the
+    // detached closure-free slot: we never signal shutdown explicitly (the
+    // process exit tears the watcher down), so hold the receiver and drop the
+    // sender at the end of `serve`'s life via the thread owning it.
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    std::thread::Builder::new()
+        .name("basemind-mcp-serve-watcher".to_string())
+        .spawn(move || {
+            // Hold the sender for the whole watcher lifetime so the receiver never
+            // sees `Disconnected` early; the watcher exits when the debouncer
+            // channel closes at process teardown.
+            let _keep_sender_alive = _shutdown_tx;
+            tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
+            let result =
+                crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
+                    let refresh_state = Arc::clone(&state);
+                    // Bridge the blocking watcher thread into the async refresh.
+                    match handle.block_on(helpers::scan_and_refresh(refresh_state, Some(paths))) {
+                        Ok(report) => tracing::debug!(
+                            scanned = report.stats.scanned,
+                            updated = report.stats.updated,
+                            removed = report.stats.removed,
+                            "serve watcher: incremental rescan complete"
+                        ),
+                        Err(error) => tracing::warn!(
+                            %error,
+                            "serve watcher: incremental rescan failed (watcher continues)"
+                        ),
+                    }
+                });
+            if let Err(error) = result {
+                tracing::warn!(%error, "serve watcher exited with error");
+            }
+            tracing::info!("serve watcher: exiting");
+        })
+        .ok();
 }
 
 fn spawn_view_watcher(state: Arc<ServerState>) {

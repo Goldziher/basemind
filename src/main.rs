@@ -6,7 +6,6 @@ use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
 
 use basemind::config::{self, Config, DocumentsCliOverrides};
-use basemind::extract::SymbolKind;
 use basemind::render::{self, Verbosity};
 use basemind::store::Store;
 use basemind::watcher::{BatchKind, WatchBatch};
@@ -35,6 +34,16 @@ struct Cli {
     #[arg(long, global = true)]
     no_color: bool,
 
+    /// Emit machine-readable JSON instead of the human-readable rendering. Applies
+    /// to every tool subcommand (query / git / memory / web / telemetry / cache).
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Which view to query for tool subcommands. "working" (default) is the on-disk
+    /// tree; "staged" is the git index; "rev-<sha7>" is a previously scanned rev.
+    #[arg(long, global = true, default_value_t = basemind::store::VIEW_WORKING.to_string())]
+    view: String,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -47,9 +56,27 @@ enum Cmd {
     Scan(ScanArgs),
     /// Long-running watcher; keeps the code map current as files change.
     Watch,
-    /// Query the code map.
+    /// Query the code map (outline, search, references, call-graph, …).
     #[command(subcommand)]
-    Query(QueryCmd),
+    Query(basemind::cli::codemap::QueryCmd),
+    /// Git history / blame / diff queries.
+    #[command(subcommand)]
+    Git(basemind::cli::git::GitCmd),
+    /// Shared agent memory + document search (needs `--features memory,documents`).
+    #[command(subcommand)]
+    Memory(basemind::cli::memory::MemoryCmd),
+    /// On-demand web ingestion (needs `--features crawl`).
+    #[command(subcommand)]
+    Web(basemind::cli::web::WebCmd),
+    /// Aggregate telemetry into a usage summary.
+    Telemetry {
+        /// Aggregation window: `today` (default), `1h`, `24h`, `all`.
+        #[arg(long)]
+        window: Option<String>,
+        /// Optional exact tool-name filter.
+        #[arg(long)]
+        tool: Option<String>,
+    },
     /// Install a pre-commit hook that runs `basemind scan --staged`.
     Hook {
         #[command(subcommand)]
@@ -62,17 +89,9 @@ enum Cmd {
     },
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
-    /// Manage the sha-keyed git cache at .basemind/git-cache/.
-    Cache {
-        #[command(subcommand)]
-        action: CacheCmd,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum CacheCmd {
-    /// Drop every persisted git-cache entry. Next MCP query will warm from scratch.
-    Clear,
+    /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
+    #[command(subcommand)]
+    Cache(basemind::cli::admin::CacheCmd),
 }
 
 #[derive(clap::Args, Debug)]
@@ -106,6 +125,14 @@ struct ServeArgs {
     /// `basemind serve` runs.
     #[arg(long)]
     no_git_cache_disk: bool,
+    /// Disable the continuous background re-scan. By default `serve` watches the
+    /// working tree and incrementally refreshes the index as files change, so the
+    /// code map stays current without `rescan`. Pass `--no-watch` to turn that off
+    /// for very large repos (e.g. the ~81k-file TypeScript tree) or CI runs where
+    /// the per-edit incremental scan isn't worth the cost; refresh manually via the
+    /// `rescan` tool instead.
+    #[arg(long)]
+    no_watch: bool,
     /// Document-tier overrides. Every flag in this group corresponds to a
     /// `[documents.…]` TOML key and a `BASEMIND_DOCUMENTS_…` env var.
     #[command(flatten)]
@@ -120,27 +147,6 @@ enum LangCmd {
     Install,
     /// Delete the grammar cache. Next run will redownload.
     Clean,
-}
-
-#[derive(Subcommand, Debug)]
-enum QueryCmd {
-    /// Print the outline of a single file.
-    Outline {
-        /// Path relative to the repository root.
-        path: String,
-        /// Also fetch L2 (docs + calls) — escalates to live extraction if missing.
-        #[arg(long)]
-        l2: bool,
-    },
-    /// Search for symbols by name (substring match).
-    Symbol {
-        needle: String,
-        /// Optional kind filter (function, struct, class, etc.).
-        #[arg(long)]
-        kind: Option<String>,
-    },
-    /// Find files whose imports mention the given module (heuristic).
-    Dependents { module: String },
 }
 
 #[derive(Subcommand, Debug)]
@@ -175,11 +181,53 @@ fn main() -> Result<()> {
         Err(_) => start,
     };
 
+    let json = cli.json;
+    let view = cli.view.clone();
+    // Query reads cached extracts; grammars are not strictly needed, but the L2
+    // escalation path falls back to live extraction. Bootstrap quietly for the
+    // tool subcommands so first-time L2 doesn't stall.
     match cli.cmd {
         Cmd::Init => cmd_init(&root),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
-        Cmd::Query(q) => cmd_query(&root, q),
+        Cmd::Query(q) => {
+            let _ = basemind::lang::ensure_grammars();
+            basemind::cli::run(
+                &root,
+                &view,
+                DocumentsCliOverrides::default(),
+                json,
+                basemind::cli::ToolCmd::Query(q),
+            )
+        }
+        Cmd::Git(g) => basemind::cli::run(
+            &root,
+            &view,
+            DocumentsCliOverrides::default(),
+            json,
+            basemind::cli::ToolCmd::Git(g),
+        ),
+        Cmd::Memory(m) => basemind::cli::run(
+            &root,
+            &view,
+            DocumentsCliOverrides::default(),
+            json,
+            basemind::cli::ToolCmd::Memory(m),
+        ),
+        Cmd::Web(w) => basemind::cli::run(
+            &root,
+            &view,
+            DocumentsCliOverrides::default(),
+            json,
+            basemind::cli::ToolCmd::Web(w),
+        ),
+        Cmd::Telemetry { window, tool } => basemind::cli::run(
+            &root,
+            &view,
+            DocumentsCliOverrides::default(),
+            json,
+            basemind::cli::ToolCmd::Telemetry { window, tool },
+        ),
         Cmd::Hook { action } => match action {
             HookCmd::Install => cmd_hook_install(&root),
         },
@@ -189,19 +237,8 @@ fn main() -> Result<()> {
             LangCmd::Clean => cmd_lang_clean(),
         },
         Cmd::Serve(args) => cmd_serve(&root, &args),
-        Cmd::Cache { action } => match action {
-            CacheCmd::Clear => cmd_cache_clear(&root),
-        },
+        Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
     }
-}
-
-fn cmd_cache_clear(root: &std::path::Path) -> Result<()> {
-    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
-    let cache =
-        basemind::git_cache::GitCache::open(&basemind_dir, 1, true).context("open cache")?;
-    let removed = cache.clear().context("clear cache")?;
-    println!("cleared git-cache ({removed} files removed)");
-    Ok(())
 }
 
 fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
@@ -378,97 +415,6 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     }
 }
 
-fn cmd_query(root: &std::path::Path, q: QueryCmd) -> Result<()> {
-    // Query reads cached extracts; grammars are not strictly needed, but the L2 escalation
-    // path falls back to live extraction. Bootstrap quietly so first-time L2 doesn't stall.
-    let _ = basemind::lang::ensure_grammars();
-    let store =
-        Store::open_read_only(root, basemind::store::VIEW_WORKING).context("open store (ro)")?;
-    match q {
-        QueryCmd::Outline { path, l2 } => {
-            let outline = basemind::query::file_outline(&store, &path)?;
-            println!("# {} ({})", path, outline.language);
-            if outline.had_errors {
-                println!(
-                    "  ⚠ {} parse error{} — outline is partial",
-                    outline.error_count,
-                    if outline.error_count == 1 { "" } else { "s" }
-                );
-            }
-            for s in &outline.symbols {
-                let sig = s.signature.as_deref().unwrap_or("");
-                println!(
-                    "{:>5}:{:<3} {:<10} {:<24} {}",
-                    s.start_row + 1,
-                    s.start_col,
-                    format!("{:?}", s.kind).to_lowercase(),
-                    s.name,
-                    sig
-                );
-            }
-            if !outline.imports.is_empty() {
-                println!("\n## imports");
-                for i in &outline.imports {
-                    let m = i.module.as_deref().unwrap_or("-");
-                    println!("  {m}\t{}", i.raw.replace('\n', " "));
-                }
-            }
-            if l2 {
-                let l2 = basemind::query::file_outline_l2(&store, &path, root)?;
-                println!("\n## calls ({})", l2.calls.len());
-                for c in &l2.calls {
-                    println!("  {}", c.callee);
-                }
-                println!("\n## docs ({})", l2.docs.len());
-            }
-            Ok(())
-        }
-        QueryCmd::Symbol { needle, kind } => {
-            let k = kind.as_deref().map(parse_kind).transpose()?;
-            let hits = basemind::query::search_symbols(&store, &needle, k)?;
-            for h in hits {
-                println!(
-                    "{}:{}:{} {} {:?}",
-                    h.path,
-                    h.symbol.start_row + 1,
-                    h.symbol.start_col,
-                    h.symbol.name,
-                    h.symbol.kind,
-                );
-            }
-            Ok(())
-        }
-        QueryCmd::Dependents { module } => {
-            let hits = basemind::query::dependents_of(&store, &module)?;
-            for h in hits {
-                println!("{h}");
-            }
-            Ok(())
-        }
-    }
-}
-
-fn parse_kind(s: &str) -> Result<SymbolKind> {
-    Ok(match s.to_ascii_lowercase().as_str() {
-        "function" => SymbolKind::Function,
-        "method" => SymbolKind::Method,
-        "struct" => SymbolKind::Struct,
-        "enum" => SymbolKind::Enum,
-        "class" => SymbolKind::Class,
-        "interface" => SymbolKind::Interface,
-        "trait" => SymbolKind::Trait,
-        "type" => SymbolKind::Type,
-        "const" => SymbolKind::Const,
-        "module" => SymbolKind::Module,
-        "macro" => SymbolKind::Macro,
-        "impl" => SymbolKind::Impl,
-        "namespace" => SymbolKind::Namespace,
-        "getter" => SymbolKind::Getter,
-        "setter" => SymbolKind::Setter,
-        other => anyhow::bail!("unknown symbol kind: {other}"),
-    })
-}
-
 fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
     // Open the store in writable mode so the `rescan` MCP tool can run the
     // scanner in-process. The MCP server is the canonical Fjall owner; the
@@ -496,9 +442,15 @@ fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
         .context("open git cache")?,
     );
 
+    let options = basemind::mcp::ServerOptions {
+        background: true,
+        watch: !args.no_watch,
+    };
     runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = basemind::mcp::BasemindServer::new(store, root_buf, config, repo, git_cache);
+        let server = basemind::mcp::BasemindServer::new_with_options(
+            store, root_buf, config, repo, git_cache, options,
+        );
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)

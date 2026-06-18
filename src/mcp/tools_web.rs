@@ -27,7 +27,7 @@ impl BasemindServer {
         Use for pulling a known doc / spec / blog post into RAG. \
         Needs --features crawl."
     )]
-    async fn web_scrape(
+    pub(crate) async fn web_scrape(
         &self,
         Parameters(p): Parameters<WebScrapeParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -53,7 +53,7 @@ impl BasemindServer {
         of a docs site, not a single page. \
         Needs --features crawl."
     )]
-    async fn web_crawl(
+    pub(crate) async fn web_crawl(
         &self,
         Parameters(p): Parameters<WebCrawlParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -77,7 +77,7 @@ impl BasemindServer {
         Use this to scope a follow-up `web_crawl` or to pick targeted `web_scrape` calls. \
         Needs --features crawl."
     )]
-    async fn web_map(
+    pub(crate) async fn web_map(
         &self,
         Parameters(p): Parameters<WebMapParams>,
     ) -> Result<CallToolResult, McpError> {

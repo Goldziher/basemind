@@ -25,7 +25,7 @@ impl BasemindServer {
                        and doc comments (only returned if an L2 blob already exists for the \
                        file's current content)."
     )]
-    async fn outline(
+    pub(crate) async fn outline(
         &self,
         Parameters(params): Parameters<OutlineParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -126,7 +126,7 @@ impl BasemindServer {
                        means no more results. Cursors invalidate on rescan — caller must \
                        restart when `cursor_invalidated` is set."
     )]
-    async fn search_symbols(
+    pub(crate) async fn search_symbols(
         &self,
         Parameters(params): Parameters<SearchSymbolsParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -240,7 +240,7 @@ impl BasemindServer {
                        fetch the next page; absent means no more results. Cursors invalidate on \
                        rescan — caller must restart when `cursor_invalidated` is set."
     )]
-    async fn list_files(
+    pub(crate) async fn list_files(
         &self,
         Parameters(params): Parameters<ListFilesParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -343,7 +343,7 @@ impl BasemindServer {
         description = "Return the list of indexed files whose imports mention `module`. \
                        Heuristic — matches by substring against the recorded module path of each import."
     )]
-    async fn dependents(
+    pub(crate) async fn dependents(
         &self,
         Parameters(params): Parameters<DependentsParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -378,7 +378,7 @@ impl BasemindServer {
         description = "Quick report on the repo basemind has indexed: file count, total bytes, \
                        per-language breakdown, root path, grammar cache directory, schema version."
     )]
-    async fn status(
+    pub(crate) async fn status(
         &self,
         Parameters(_): Parameters<StatusParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -427,7 +427,7 @@ impl BasemindServer {
                        (the default); returns an empty hit list otherwise. Pass `cursor` from a \
                        previous response to fetch the next page; absent means no more results."
     )]
-    async fn find_references(
+    pub(crate) async fn find_references(
         &self,
         Parameters(params): Parameters<FindReferencesParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -460,7 +460,7 @@ impl BasemindServer {
                        applies. Default limit 100, max 1000. Pass `cursor` from a previous \
                        response to fetch the next page; absent means no more results."
     )]
-    async fn find_callers(
+    pub(crate) async fn find_callers(
         &self,
         Parameters(params): Parameters<FindCallersParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -493,7 +493,7 @@ impl BasemindServer {
                        pass `language` or `path_contains` to narrow the scan. Default limit 100, \
                        max 1000."
     )]
-    async fn workspace_grep(
+    pub(crate) async fn workspace_grep(
         &self,
         Parameters(params): Parameters<WorkspaceGrepParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -524,7 +524,7 @@ impl BasemindServer {
                        previous response to fetch the next page; cursors remain stable across \
                        rescans (Fjall-backed)."
     )]
-    async fn find_implementations(
+    pub(crate) async fn find_implementations(
         &self,
         Parameters(params): Parameters<FindImplementationsParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -559,7 +559,7 @@ impl BasemindServer {
                        disambiguate overloaded names. Cycles detected via name-visited set; \
                        recursive functions surface as a self-edge on the root."
     )]
-    async fn call_graph(
+    pub(crate) async fn call_graph(
         &self,
         Parameters(params): Parameters<CallGraphParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -588,7 +588,7 @@ impl BasemindServer {
         description = "Repository identity: workdir path, current branch name (if HEAD is on one), \
                        full HEAD sha, short HEAD sha. Pairs well with `working_tree_status`."
     )]
-    async fn repo_info(
+    pub(crate) async fn repo_info(
         &self,
         Parameters(_): Parameters<RepoInfoParams>,
     ) -> Result<CallToolResult, McpError> {

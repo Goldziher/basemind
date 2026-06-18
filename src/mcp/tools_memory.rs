@@ -31,7 +31,7 @@ impl BasemindServer {
         embed=true stores in LanceDB for memory_search. Upsert semantics. \
         Needs --features memory."
     )]
-    async fn memory_put(
+    pub(crate) async fn memory_put(
         &self,
         Parameters(p): Parameters<MemoryPutParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -64,7 +64,7 @@ impl BasemindServer {
     #[tool(description = "Exact-key lookup in scoped memory. Returns entry \
         (key,value,tags,timestamps) or null. Fjall only, no vector touch. \
         Needs --features memory.")]
-    async fn memory_get(
+    pub(crate) async fn memory_get(
         &self,
         Parameters(p): Parameters<MemoryGetParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -100,7 +100,7 @@ impl BasemindServer {
         Default 100 max 1000. Pass `cursor` from a previous response to fetch the \
         next page; absent means no more results. Needs --features memory."
     )]
-    async fn memory_list(
+    pub(crate) async fn memory_list(
         &self,
         Parameters(p): Parameters<MemoryListParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -135,7 +135,7 @@ impl BasemindServer {
         memory table (scope-filtered). tag is post-KNN exact filter. \
         Default 10 max 100 by L2 distance. Needs --features memory."
     )]
-    async fn memory_search(
+    pub(crate) async fn memory_search(
         &self,
         Parameters(p): Parameters<MemorySearchParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -169,7 +169,7 @@ impl BasemindServer {
         description = "Delete memory entry by exact key from Fjall and LanceDB. \
         Returns {deleted:true} when found. Needs --features memory."
     )]
-    async fn memory_delete(
+    pub(crate) async fn memory_delete(
         &self,
         Parameters(p): Parameters<MemoryDeleteParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -204,7 +204,7 @@ impl BasemindServer {
         Embeds query, KNN in LanceDB documents table (scope-filtered). \
         mime_type is exact filter. Default 10 max 100. Needs --features documents."
     )]
-    async fn search_documents(
+    pub(crate) async fn search_documents(
         &self,
         Parameters(p): Parameters<SearchDocumentsParams>,
     ) -> Result<CallToolResult, McpError> {

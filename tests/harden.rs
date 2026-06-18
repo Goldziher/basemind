@@ -446,6 +446,11 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    // Cache admin tools: both must succeed on every repo. cache_stats is read-only;
+    // cache_gc reclaims orphaned blobs (safe in-process under the server's lock).
+    call(svc, &mut records, "cache_stats", json!({})).await;
+    call(svc, &mut records, "cache_gc", json!({})).await;
+
     records
 }
 

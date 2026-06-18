@@ -962,6 +962,8 @@ pub(super) struct WebMapEntry {
     pub priority: Option<String>,
 }
 
+pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+pub(super) use super::types_admin::{CacheClearResponse, CacheGcResponse, CacheStatsResponse};
 pub use super::types_documents::SearchDocumentsParams;
 #[cfg(feature = "documents")]
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
