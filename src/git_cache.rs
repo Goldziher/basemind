@@ -15,7 +15,9 @@
 //!
 //! Both layers are content-addressed by the inputs the agent passed; we never
 //! invalidate, only roll off via LRU. The schema version is baked into every
-//! payload and a mismatch on read wipes the on-disk dir.
+//! payload and a mismatch on read treats the entry as a miss — the value is
+//! recomputed from `gix` and the fresh-schema payload overwrites it on write, so
+//! a schema bump rebuilds the git cache lazily without any destructive wipe.
 
 use std::fs;
 use std::num::NonZeroUsize;
@@ -28,8 +30,15 @@ use thiserror::Error;
 
 use crate::git::{BlameResult, ChangeKind, CommitInfo, GitError, Repo};
 
-/// Bump when any cached payload's shape changes. Mismatch on read wipes the on-disk dir.
-pub const GIT_CACHE_SCHEMA: u16 = 1;
+/// Git-cache payload schema version, derived from [`crate::version::RELEASE_MINOR`] so it
+/// moves in lock-step with the other on-disk caches (`crate::extract::SCHEMA_VER`,
+/// `crate::index::INDEX_SCHEMA_VER`) on every minor-release bump. The `+1` offset mirrors
+/// the index's `+2` convention: a fixed offset from `RELEASE_MINOR` that (a) changes
+/// whenever `RELEASE_MINOR` changes and (b) differs from the historical hardcoded `1`, so
+/// the next release invalidates stale git-cache payloads exactly once. A mismatch on read
+/// is a cache miss — the value is recomputed from `gix` and rewritten, so this rebuilds
+/// lazily and cheaply with no destructive wipe.
+pub const GIT_CACHE_SCHEMA: u16 = crate::version::RELEASE_MINOR + 1;
 pub const GIT_CACHE_DIR: &str = "git-cache";
 
 #[derive(Debug, Error)]

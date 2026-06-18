@@ -1016,6 +1016,105 @@ async fn mcp_server_exercises_representative_tools() {
         "savings_note must disclose the heuristic nature: {savings_note:?}"
     );
 
+    // cache_stats: read-only introspection. A freshly-scanned fixture has blobs on disk and
+    // every blob is referenced, so blob_count > 0 and orphan_blob_count == 0.
+    let body = decode_text(
+        &service
+            .call_tool(call_params("cache_stats", json!({})))
+            .await
+            .expect("cache_stats"),
+    );
+    let blob_count = body
+        .get("blob_count")
+        .and_then(Value::as_u64)
+        .expect("blob_count");
+    assert!(
+        blob_count >= 1,
+        "freshly-scanned fixture should have blobs on disk: {body}"
+    );
+    assert_eq!(
+        body.get("orphan_blob_count").and_then(Value::as_u64),
+        Some(0),
+        "no orphans immediately after a clean scan: {body}"
+    );
+    let per_view = body
+        .get("per_view_file_count")
+        .and_then(Value::as_array)
+        .expect("per_view_file_count array");
+    assert!(
+        !per_view.is_empty(),
+        "the working view should be listed: {body}"
+    );
+
+    // cache_gc: nothing is orphaned right after a scan, so removed == 0 and bytes_freed == 0.
+    let body = decode_text(
+        &service
+            .call_tool(call_params("cache_gc", json!({})))
+            .await
+            .expect("cache_gc"),
+    );
+    assert_eq!(
+        body.get("removed").and_then(Value::as_u64),
+        Some(0),
+        "no orphaned blobs to reclaim on a clean scan: {body}"
+    );
+    assert_eq!(
+        body.get("bytes_freed").and_then(Value::as_u64),
+        Some(0),
+        "zero bytes freed when nothing is orphaned: {body}"
+    );
+    let scanned = body
+        .get("scanned")
+        .and_then(Value::as_u64)
+        .expect("scanned");
+    assert!(scanned >= 1, "GC should have inspected blob files: {body}");
+
+    // cache_clear: a non-live component (telemetry) clears without confirm.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "cache_clear",
+                json!({ "component": "telemetry" }),
+            ))
+            .await
+            .expect("cache_clear(telemetry)"),
+    );
+    assert_eq!(
+        body.get("component").and_then(Value::as_str),
+        Some("telemetry"),
+        "echoes the cleared component: {body}"
+    );
+    assert_eq!(
+        body.get("cleared").and_then(Value::as_bool),
+        Some(true),
+        "telemetry clear should succeed: {body}"
+    );
+
+    // cache_clear: a destructive component (blobs) without confirm must be rejected.
+    let err = service
+        .call_tool(call_params("cache_clear", json!({ "component": "blobs" })))
+        .await;
+    assert!(
+        err.is_err(),
+        "clearing `blobs` without confirm=true must be rejected, got: {err:?}"
+    );
+
+    // cache_clear: `views` and `all` delete the live Fjall index / lock out from under the
+    // running server, so they must be refused in-process even with confirm=true — the
+    // critical safety gate. Stop the server and use the offline CLI for those.
+    for component in ["views", "all"] {
+        let err = service
+            .call_tool(call_params(
+                "cache_clear",
+                json!({ "component": component, "confirm": true }),
+            ))
+            .await;
+        assert!(
+            err.is_err(),
+            "clearing `{component}` in-process must be refused (deletes the live index), got: {err:?}"
+        );
+    }
+
     // find_implementations: `Drawable` should return Beta (a.rs, Rust) and Rectangle (b.ts, TS).
     let body = decode_text(
         &service

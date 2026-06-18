@@ -22,7 +22,7 @@ impl BasemindServer {
                        working-tree modifications, and untracked files. `is_clean: true` if all five \
                        buckets are empty. Requires `basemind serve` to be run inside a git repository."
     )]
-    async fn working_tree_status(
+    pub(crate) async fn working_tree_status(
         &self,
         Parameters(_): Parameters<WorkingTreeStatusParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -67,7 +67,7 @@ impl BasemindServer {
                        previous response to fetch the next page; cursors invalidate when HEAD moves \
                        (caller restarts on `cursor_invalidated`). Cached by HEAD sha."
     )]
-    async fn recent_changes(
+    pub(crate) async fn recent_changes(
         &self,
         Parameters(params): Parameters<RecentChangesParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -144,7 +144,7 @@ impl BasemindServer {
                        `limit` is the page size (default 20, max 100). Pass `cursor` from a previous \
                        response to fetch the next page; cursors invalidate when HEAD moves."
     )]
-    async fn commits_touching(
+    pub(crate) async fn commits_touching(
         &self,
         Parameters(params): Parameters<CommitsTouchingParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -220,7 +220,7 @@ impl BasemindServer {
                        not at `rev`), `removed` (at `rev`, not in current view), and `common`. Useful \
                        for 'what symbols did this branch add' style questions without reading source."
     )]
-    async fn diff_outline(
+    pub(crate) async fn diff_outline(
         &self,
         Parameters(params): Parameters<DiffOutlineParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -371,7 +371,7 @@ impl BasemindServer {
                        to fetch the next page; cursors invalidate when HEAD moves. Cached via \
                        the same `commit_files` cache as `recent_changes`."
     )]
-    async fn find_commits_by_path(
+    pub(crate) async fn find_commits_by_path(
         &self,
         Parameters(params): Parameters<FindCommitsByPathParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -459,7 +459,7 @@ impl BasemindServer {
                        breakdown (added/modified/deleted). Useful for a churn map of where the \
                        activity is concentrated."
     )]
-    async fn hot_files(
+    pub(crate) async fn hot_files(
         &self,
         Parameters(params): Parameters<HotFilesParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -533,7 +533,7 @@ impl BasemindServer {
                        modifications). When the file is absent on one side, `present_at_old` or \
                        `present_at_new` indicates so and hunks describe the full add/remove."
     )]
-    async fn diff_file(
+    pub(crate) async fn diff_file(
         &self,
         Parameters(params): Parameters<DiffFileParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -590,7 +590,7 @@ impl BasemindServer {
                        `limit` is the page size (default 20, max 100). Pass `cursor` from a \
                        previous response to fetch the next page; cursors invalidate when HEAD moves."
     )]
-    async fn symbol_history(
+    pub(crate) async fn symbol_history(
         &self,
         Parameters(params): Parameters<SymbolHistoryParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -738,7 +738,7 @@ impl BasemindServer {
                        returned `next_cursor` encodes the last hunk's `start_line`. Cached \
                        forever by (suspect_sha, path, range)."
     )]
-    async fn blame_file(
+    pub(crate) async fn blame_file(
         &self,
         Parameters(params): Parameters<BlameFileParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -820,7 +820,7 @@ impl BasemindServer {
                        to page through hunks; the returned `next_cursor` encodes the last hunk's \
                        `start_line`."
     )]
-    async fn blame_symbol(
+    pub(crate) async fn blame_symbol(
         &self,
         Parameters(params): Parameters<BlameSymbolParams>,
     ) -> Result<CallToolResult, McpError> {
