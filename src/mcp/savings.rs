@@ -26,12 +26,24 @@ fn bytes_to_tokens(bytes: u64) -> u64 {
     bytes / 4
 }
 
+/// Grep-style name search (`search_symbols`, `find_references`, `find_callers`,
+/// `find_implementations`): the agent pays for the grep output (≈ the matching hits we
+/// already return) plus opening a few top hits to confirm them. Modelled as the response
+/// payload times this multiplier — corpus-independent, since a real `rg` emits matching
+/// lines, not whole files, and the agent reads only the top results.
+const GREP_READ_MULTIPLIER: u64 = 3;
+
+/// `dependents` baseline multiplier. Imports are sparse and a reverse-import lookup leaves
+/// less follow-up file reading than a name search, so this is lower than `GREP_READ_MULTIPLIER`.
+const DEPENDENTS_READ_MULTIPLIER: u64 = 2;
+
 /// Estimate baseline + actual tokens for one tool call.
 ///
 /// `corpus_bytes` is the total byte count of every indexed file (held on `ServerState` and
-/// recomputed after each rescan). Used to model the cost of a hypothetical grep across the
-/// repo. Pass 0 when unknown — the savings number degrades gracefully to 0.
-pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
+/// recomputed after each rescan). Retained for signature stability and potential future
+/// per-tool models; the grep-style baselines are now corpus-independent (derived from the
+/// response payload), so this argument currently goes unused.
+pub fn estimate(tool: &str, _corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
     let actual = bytes_to_tokens(resp_bytes);
 
     let (baseline, baseline_name) = match tool {
@@ -41,33 +53,35 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
         "outline" => (actual.saturating_mul(5), "full_file_read"),
 
         // Symbol-name search would otherwise be `grep -r <needle>` followed by
-        // reading the top hits. Assume 5% of corpus_bytes for the grep
-        // (rough — grep reads everything but emits little) + the actual hit
-        // payload as the "Read top results" cost.
+        // reading the top hits. The grep emits the matching lines (≈ our response
+        // payload) and the agent reads a few top files to confirm — modelled as
+        // the response times GREP_READ_MULTIPLIER, independent of corpus size.
         "search_symbols" => (
-            bytes_to_tokens(corpus_bytes / 20).saturating_add(actual),
+            actual.saturating_mul(GREP_READ_MULTIPLIER),
             "grep_plus_read_top_hits",
         ),
 
-        // Reference / caller lookups: same grep model as search_symbols but
-        // without the Read step — `find_references` already returns the call
-        // sites inline.
+        // Reference / caller lookups: same grep-output-plus-confirm model as
+        // search_symbols. `find_references` already returns the call sites inline,
+        // so the payload is the grep output and the multiplier covers reading a
+        // few sites to confirm. Corpus-independent.
         "find_references" | "find_callers" => {
-            (bytes_to_tokens(corpus_bytes / 20), "grep_across_corpus")
+            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
         }
 
         // Implementation lookups: alternative is `rg 'impl.*Trait'` / `grep class.*extends`
-        // plus manual filtering across languages. Same grep ratio as find_references — the
-        // corpus scan cost dominates and the response is already the filtered result.
+        // plus manual filtering across languages. Same grep-output-plus-confirm model —
+        // the response is the filtered result, the multiplier covers confirming a few hits.
         "find_implementations" => {
-            (bytes_to_tokens(corpus_bytes / 20), "grep_across_corpus")
+            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
         }
 
-        // Dependents = grep imports across the corpus. Imports are sparse so
-        // the grep ratio is lower than for name search.
+        // Dependents = grep imports across the corpus. Imports are sparse and the
+        // result needs less follow-up reading than a name search, so it uses the
+        // smaller DEPENDENTS_READ_MULTIPLIER. Corpus-independent.
         "dependents" => (
-            bytes_to_tokens(corpus_bytes / 30),
-            "grep_imports_across_corpus",
+            actual.saturating_mul(DEPENDENTS_READ_MULTIPLIER),
+            "grep_imports_top_hits",
         ),
 
         // Hot files: the agent would otherwise iterate `git log` per file,
@@ -100,6 +114,9 @@ pub fn estimate(tool: &str, corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
         | "search_documents"
         | "telemetry_summary"
         | "rescan"
+        | "cache_stats"
+        | "cache_gc"
+        | "cache_clear"
         | "status"
         | "repo_info"
         | "list_files"
@@ -145,21 +162,42 @@ mod tests {
     }
 
     #[test]
-    fn search_symbols_uses_corpus_size() {
-        let s = estimate("search_symbols", 1_000_000, 400);
-        // 1_000_000 / 20 / 4 = 12_500 grep + 100 actual baseline; 100 actual
-        assert_eq!(s.baseline_tokens, 12_600);
-        assert_eq!(s.actual_tokens, 100);
-        assert_eq!(s.est_tokens_saved, 12_500);
-        assert_eq!(s.baseline, "grep_plus_read_top_hits");
+    fn search_symbols_savings_independent_of_corpus() {
+        // Same response payload, wildly different corpus sizes → identical savings.
+        let big = estimate("search_symbols", 1_000_000, 400);
+        let empty = estimate("search_symbols", 0, 400);
+        assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
+        // 400 bytes → 100 actual tokens; baseline = 100 * 3 = 300; saved = 200.
+        assert_eq!(big.actual_tokens, 100);
+        assert_eq!(big.baseline_tokens, 300);
+        assert_eq!(big.est_tokens_saved, 200);
+        assert_eq!(big.baseline, "grep_plus_read_top_hits");
     }
 
     #[test]
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
+        // Corpus is now irrelevant; savings derive from the response payload.
         let s = estimate("find_references", 0, 200);
-        assert_eq!(s.baseline_tokens, 0);
-        assert_eq!(s.est_tokens_saved, 0); // saturating_sub
-        assert_eq!(s.baseline, "grep_across_corpus");
+        // 200 bytes → 50 actual; baseline = 50 * 3 = 150; saved = 100.
+        assert_eq!(s.actual_tokens, 50);
+        assert_eq!(s.baseline_tokens, 150);
+        assert_eq!(s.est_tokens_saved, 100);
+        assert_eq!(s.baseline, "grep_top_hits");
+    }
+
+    #[test]
+    fn grep_savings_scale_with_response_not_corpus() {
+        // Larger hit payload → larger savings, holding corpus fixed.
+        let small = estimate("search_symbols", 1_000_000, 400);
+        let large = estimate("search_symbols", 1_000_000, 4_000);
+        assert!(
+            large.est_tokens_saved > small.est_tokens_saved,
+            "bigger response must yield bigger savings: {} !> {}",
+            large.est_tokens_saved,
+            small.est_tokens_saved
+        );
+        // 4_000 bytes → 1_000 actual; baseline = 3_000; saved = 2_000.
+        assert_eq!(large.est_tokens_saved, 2_000);
     }
 
     #[test]
