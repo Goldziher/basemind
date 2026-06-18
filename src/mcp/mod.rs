@@ -329,8 +329,12 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
 impl ServerHandler for BasemindServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "basemind is a tree-sitter-backed code map + git context. Prefer these tools over \
-             reading files when navigating large or unfamiliar codebases.\n\
+            "basemind is the indexed context layer for this repository, served over MCP: a \
+             tree-sitter code map across 300+ languages (symbols, references, callers, call \
+             graphs, implementations), git history + blame at symbol resolution, full-text + \
+             semantic search, document RAG over 90+ file formats, and shared cross-session \
+             memory. Prefer these tools over reading files when navigating large or unfamiliar \
+             codebases.\n\
              Context economy — these tools return paths, line numbers, and signatures, not \
              file bodies, so they cost a fraction of the tokens of reading source. Default to \
              them: `outline` a file before you open it (then read only the span you need); \

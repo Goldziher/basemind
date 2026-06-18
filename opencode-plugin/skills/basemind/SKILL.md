@@ -8,11 +8,24 @@ description: >-
   or open many files to find structural information.
 ---
 
-# basemind — code-map MCP server
+# basemind — the indexed context layer
 
-basemind is a tree-sitter-backed code map plus git context, served over MCP. It
-pre-indexes a repository into a Fjall inverted index so structural and historical
-questions resolve in milliseconds — without you reading whole files.
+basemind is the full context layer for this repository, served over MCP. It pre-indexes the
+repo into a content-addressed blob store + Fjall inverted index (and, when enabled, a LanceDB
+vector store) so structural, historical, and semantic questions resolve in milliseconds —
+without you reading whole files.
+
+## Capabilities
+
+- **Code map across 300+ languages** — tree-sitter outlines, symbol search, references,
+  callers, call graphs, implementations, dependents.
+- **Full-text + symbol search** — indexed regex over content (`workspace_grep`) and substring
+  symbol lookup (`search_symbols`).
+- **Git intelligence** — history, blame, and structural diffs at symbol resolution, plus churn.
+- **Document RAG over 90+ file formats** — PDFs, Office, HTML, email, images (OCR) → semantic
+  search with cross-encoder reranking (`search_documents`).
+- **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
+- **Web crawl** — scrape / follow-link crawl into the same searchable document store.
 
 ## When to reach for it (instead of `grep` / `read_file`)
 

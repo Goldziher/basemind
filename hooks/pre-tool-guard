@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# basemind PreToolUse guard.
+#
+# Fires only for the codebase-search tools (matcher "Grep|Glob" in hooks.json) and
+# steers the agent toward basemind's indexed tools, which return paths + line numbers
+# instead of file bodies. Three modes via the BASEMIND_GUARD env var:
+#
+#   nudge    (default) — allow the call, attach a one-time advisory pointing at the
+#                        cheaper basemind tool. Fires once per session per tool.
+#   redirect           — deny the call with a reason telling the agent to use the
+#                        basemind tool instead. Enforcing; no dedup.
+#   off                — no-op.
+#
+# Caveat: whether Claude Code fires PreToolUse inside subagents is undocumented, so
+# this reliably covers main-session tool calls; subagent coverage is best-effort.
+#
+# Output is the PreToolUse JSON result on stdout; the hook never blocks startup and
+# degrades to a silent no-op (exit 0 = proceed normally) when it cannot run.
+set -euo pipefail
+
+MODE="${BASEMIND_GUARD:-nudge}"
+[ "${MODE}" = "off" ] && exit 0
+
+# Need jq to read the event payload + emit well-formed JSON; degrade to no-op if absent.
+command -v jq >/dev/null 2>&1 || exit 0
+
+input="$(cat 2>/dev/null || true)"
+[ -n "${input}" ] || exit 0
+tool="$(printf '%s' "${input}" | jq -r '.tool_name // empty' 2>/dev/null || true)"
+session="$(printf '%s' "${input}" | jq -r '.session_id // "nosession"' 2>/dev/null || echo nosession)"
+
+# Tailor the suggestion to the tool. Anything outside the matcher set just proceeds.
+case "${tool}" in
+Grep)
+  alt="basemind: search_symbols (definitions), find_references / find_callers (call sites), or workspace_grep (indexed regex over content)"
+  ;;
+Glob)
+  alt="basemind: list_files (indexed paths, with language / path filters)"
+  ;;
+*)
+  exit 0
+  ;;
+esac
+
+emit_allow() {
+  jq -cn --arg m "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"allow",additionalContext:$m}}'
+}
+emit_deny() {
+  jq -cn --arg m "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$m}}'
+}
+
+if [ "${MODE}" = "redirect" ]; then
+  emit_deny "Use ${alt} instead of ${tool} for codebase navigation — it answers from the index \
+(paths + line numbers, a fraction of the tokens). Set BASEMIND_GUARD=nudge to make this advisory, \
+or BASEMIND_GUARD=off to disable."
+  exit 0
+fi
+
+# nudge: one advisory per session per tool so it informs without nagging.
+marker_dir="${TMPDIR:-/tmp}/basemind-guard"
+marker="${marker_dir}/${session}.${tool}"
+mkdir -p "${marker_dir}" 2>/dev/null || true
+if [ -e "${marker}" ]; then
+  exit 0
+fi
+: >"${marker}" 2>/dev/null || true
+
+emit_allow "basemind is indexed for this repo. For codebase structure, prefer ${alt} — it returns \
+paths + line numbers without reading file bodies, at a fraction of the tokens. Proceeding with \
+${tool} for now. (BASEMIND_GUARD=off silences this; =redirect enforces it.)"
+exit 0
