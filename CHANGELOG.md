@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-06-18
+
+### Added
+
+- **Context-economy operating discipline shipped across every agent surface.** The
+  MCP `get_info` instructions, the `basemind` skill, the SessionStart hook, and the
+  README now state one default workflow: these tools return paths, line numbers, and
+  signatures rather than file bodies, so agents `outline` before reading,
+  `search_symbols` / `find_references` / `workspace_grep` before grep, and `rescan`
+  after edits. The SessionStart hook injects this every session instead of only
+  nudging when the statusline is unset.
+
 ## [0.2.3] — 2026-06-18
 
 ### Added
