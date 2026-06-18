@@ -3,8 +3,10 @@
 #   1. Async pre-warm: ensure a version-matched basemind binary is cached so the
 #      first MCP tool call isn't a cold install. After the first run the launcher's
 #      fast path makes this instant.
-#   2. Status-line nudge: Claude Code plugins cannot set the main status line, so
-#      if the user hasn't wired it yet, inject a one-line hint about /bm-statusline.
+#   2. Context-economy nudge: always inject the operating discipline so the agent
+#      defaults to basemind over grep/read and stays token-frugal.
+#   3. Status-line nudge: Claude Code plugins cannot set the main status line, so
+#      if the user hasn't wired it yet, append a hint about /bm-statusline.
 #
 # Output goes to stdout as the hook's JSON result; diagnostics would go to stderr.
 set -euo pipefail
@@ -16,13 +18,14 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 #    then exits immediately. Never block or fail session startup on this.
 ("${PLUGIN_ROOT}/scripts/mcp-launch.sh" --version >/dev/null 2>&1 &) || true
 
-# 2. Stay quiet if a basemind status line is already configured.
-SETTINGS="${HOME}/.claude/settings.json"
-if grep -q 'statusline.sh' "${SETTINGS}" 2>/dev/null; then
-  exit 0
-fi
+# 2. Always inject the context-economy operating discipline.
+CONTEXT="basemind is available over MCP in this session — a tree-sitter code map + git context. Prefer it over grep/read for structural and historical questions: its tools return paths, line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of reading source. Default workflow: outline a file before opening it (then read only the span you need); search_symbols instead of grep for a definition; find_references/find_callers instead of grepping call sites; workspace_grep instead of shelling out to ripgrep; rescan after edits instead of reconnecting. Do not re-read a file basemind already mapped."
 
-CONTEXT="The basemind status line is not enabled in the user's Claude Code settings. If the user asks about the status line or about basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
+# 3. Append the status-line nudge only when it isn't wired yet.
+SETTINGS="${HOME}/.claude/settings.json"
+if ! grep -q 'statusline.sh' "${SETTINGS}" 2>/dev/null; then
+  CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
+fi
 
 # Escape for JSON embedding (single-pass parameter substitutions).
 escape_for_json() {

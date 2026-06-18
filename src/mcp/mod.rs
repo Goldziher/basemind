@@ -331,6 +331,13 @@ impl ServerHandler for BasemindServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "basemind is a tree-sitter-backed code map + git context. Prefer these tools over \
              reading files when navigating large or unfamiliar codebases.\n\
+             Context economy — these tools return paths, line numbers, and signatures, not \
+             file bodies, so they cost a fraction of the tokens of reading source. Default to \
+             them: `outline` a file before you open it (then read only the span you need); \
+             `search_symbols` instead of grep for a definition; `find_references` / \
+             `find_callers` instead of grepping call sites; `workspace_grep` instead of \
+             shelling out to ripgrep; `rescan` after edits instead of reconnecting. Do not \
+             re-read a file basemind already mapped.\n\
              Routing: \
              \"where is X defined?\" → `search_symbols`; \
              \"what calls X?\" → `find_references` (any name) or `find_callers` (specific def); \
