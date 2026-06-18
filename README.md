@@ -55,15 +55,36 @@ documents store under scope `web:<host>` for unified search.
 
 ### Claude Code
 
+These are **two separate steps** — run both, in order:
+
 ```text
-/plugin marketplace add Goldziher/basemind
-/plugin install basemind@basemind
+/plugin marketplace add Goldziher/basemind   # 1. register the marketplace (makes the plugin available)
+/plugin install basemind@basemind            # 2. install the plugin (registers the MCP server)
 ```
 
-Restart the session. The basemind binary installs automatically on first use (via npx, uvx, or
-direct download with checksum verification). To enable a live statusline, run `/bm-statusline`
-once — this wires the statusline into `~/.claude/settings.json` (plugins cannot set it
-automatically).
+Adding the marketplace alone does **not** give you any tools — it only makes the plugin available to
+install. You must run the second command (or pick **Install** for the `basemind` plugin in the
+`/plugin` menu) to register the MCP server. If no basemind tools appear after a restart, you almost
+certainly stopped after step 1; open `/plugin`, go into the **basemind** marketplace, and **Install**
+the plugin.
+
+Restart the session after installing. The basemind binary installs automatically on first use (via
+npx, uvx, or direct download with checksum verification) — no manual `cargo install` needed.
+
+#### Statusline
+
+To enable the live statusline, run `/bm-statusline` once. This is a one-time opt-in because **Claude
+Code plugins cannot set the main statusline** — it is a platform limitation, not a basemind choice:
+
+- The plugin manifest (`plugin.json`) has no `statusLine` field.
+- A plugin-shipped `settings.json` honors only `agent` and `subagentStatusLine`; any `statusLine` key
+  is silently ignored.
+- Hooks communicate via stdout/stderr/exit codes only — a SessionStart hook **cannot** write to
+  `~/.claude/settings.json`, so it can only _nudge_ you to run `/bm-statusline`.
+
+`/bm-statusline` works because Claude (the agent) performs the settings edit on your behalf, writing
+an **absolute** path into `~/.claude/settings.json` (`$HOME`/`~` are not expanded in the statusLine
+command field). After that it persists across sessions.
 
 Output: `◆ basemind  ●  1,247 files · 23m ago  │  47 calls · 14k saved`. Counts render bright; the
 state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve and
