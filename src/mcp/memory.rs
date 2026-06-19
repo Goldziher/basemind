@@ -197,11 +197,6 @@ fn memory_put_lock(
     Arc::clone(guard.get_or_insert(registry_key, || Arc::new(tokio::sync::Mutex::new(()))))
 }
 
-/// Resolve the `(vis_byte, owner)` namespace coordinates for a memory call.
-///
-/// `group` → `owner = ""` (shared tier, today's behavior). `individual` → `owner` is the
-/// server's resolved `agent_id`, which was validated through `AgentId` at boot and is
-/// therefore NUL-free — safe to embed in the length-prefixed Fjall key segment.
 /// String form of a [`Visibility`] for the LanceDB `visibility` column. Matches the serde
 /// `rename_all = "lowercase"` discriminants so the column reads back as the same enum.
 #[cfg(feature = "memory")]
@@ -212,6 +207,11 @@ fn lance_visibility(visibility: Visibility) -> &'static str {
     }
 }
 
+/// Resolve the `(vis_byte, owner)` namespace coordinates for a memory call.
+///
+/// `group` → `owner = ""` (shared tier, today's behavior). `individual` → `owner` is the
+/// server's resolved `agent_id`, which was validated through `AgentId` at boot and is
+/// therefore NUL-free — safe to embed in the length-prefixed Fjall key segment.
 #[cfg(feature = "memory")]
 fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
     let owner: &str = match visibility {
