@@ -230,3 +230,94 @@ a representative subset of git tools. Canary assertions catch regressions:
 - **ripgrep-shallow**: `any_truncated == true` (shallow-clone signal surfaces)
 
 Per-repo metrics land at `/tmp/basemind-harden-*.log`.
+
+## Agent comms & split memory
+
+```mermaid
+flowchart TB
+  subgraph agents["Opaque agents (same machine, multiple repos)"]
+    A1["Agent A — repo X"]
+    A2["Agent B — repo Y (same workspace)"]
+    HK["SessionStart hook\n(boot-subscribe + inject)"]
+  end
+  subgraph serve["basemind serve (per session)"]
+    MT["MCP tools: memory_* + comms_*"]
+    CC["CommsClient (proxy)"]
+    PEER["rmcp Peer (push, best-effort)"]
+  end
+  subgraph daemon["basemind comms daemon (singleton, user-global)"]
+    FE["Front-ends: UDS · in-proc · (future A2A-HTTP)"]
+    REG["Room registry\n(scope: remote | path-prefix | global)"]
+    BR["Broker: scope-match auto-join, fan-out, refcount"]
+    CS["CommsStore (2nd Fjall):\nrooms · messages_by_room(front-matter)\n· message_body · subs · cursors · agents"]
+  end
+  subgraph repo["Repo .basemind/ (per serve, exclusive lock)"]
+    MEM["memory_by_key (scope, visibility, owner)"]
+    LAN["LanceDB memory (+agent_id +visibility)"]
+  end
+  A1 --> serve
+  A2 -->|own serve| daemon
+  HK -->|scope chain| daemon
+  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> REG --> CS
+  BR -. push .-> CC -. notify .-> PEER
+  MT --> MEM
+  MT --> LAN
+```
+
+### Why a separate daemon
+
+Each `basemind serve` takes an exclusive flock on the repo's `.basemind/` store, so
+the comms substrate cannot live there. It lives in a separate, user-global,
+daemon-owned second Fjall store (path via the `directories` crate;
+`BASEMIND_COMMS_DIR` overrides). The daemon is a singleton enforced by
+socket-bind-as-lock (a Unix domain socket whose successful bind IS the lock);
+stale sockets are reclaimed probe-before-unlink. It auto-starts on first need,
+goes idle with no subscribers (socket stays bound as a split-brain guard), and
+stops on explicit `comms stop`.
+
+### Chat-server room model
+
+Rooms are registered in a central registry owned by the daemon. Each room has a
+scope: a git remote, a path prefix, or global (`RoomScope = Remote | PathPrefix
+| Global`). At boot an agent computes its scope chain (repo remote + cwd +
+ancestor dirs up to a workspace/`$HOME` boundary) and auto-joins every
+registered room whose scope covers it — so per-repo rooms, workspace rooms
+spanning sibling repos (horizontal monorepo), and nested repos all work via
+ancestor/prefix matching. Agents can also explicitly create/list/join rooms
+across repos.
+
+### Condensed two-tier messages
+
+A message is a front-matter envelope (`id, room, from, ts_micros, subject, tags,
+reply_to, body_len, body_sha`) stored in `messages_by_room`, plus a
+separately-stored body in `message_body` keyed by message id. `room_history` and
+`inbox_read` scan front-matter ONLY — never the body — to stay token-frugal; the
+body is fetched on demand by `message_get {message_id}`. Poster supplies a
+required short `subject` plus an optional long body.
+
+### Split memory
+
+Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key`
+Fjall key is `(scope, vis_byte, owner, key)` and the LanceDB memory table gained
+`agent_id` + `visibility` columns. Group memory (`visibility=group`, default,
+`owner=""`) is shared across agents in a repo; individual memory
+(`visibility=individual`, `owner=agent_id`) is private to one agent. Default is
+`group` for back-compat. Schema is guarded by `MEMORY_SCHEMA_VER` (derives from
+`RELEASE_MINOR`); a mismatch wipes and rebuilds.
+
+### Identity & delivery
+
+Agent identity resolves as `BASEMIND_AGENT_ID` env → `config.comms.agent_id` →
+a persisted per-repo `.basemind/agent-id` (`session-<pid>-<nanos>`) → `anon`.
+Notification delivery is hook-driven: the SessionStart hook boot-subscribes and
+injects the comms levers + condensed recent history; a `UserPromptSubmit` hook
+(`inbox-notify`) injects messages newer than a per-session high-water mark each
+turn. MCP push via the rmcp `Peer` is best-effort/secondary (Claude Code only
+surfaces `list_changed`).
+
+### A2A
+
+Message and agent-card shapes are schema-aligned with the A2A (Agent2Agent)
+protocol so a future A2A-HTTP front-end can be added behind the same
+`CommsFrontend` trait; the HTTP/SSE server and cross-machine rooms are
+deferred.
