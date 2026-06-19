@@ -136,23 +136,42 @@ fn delete_memory_record(
 /// out a per-key `tokio::sync::Mutex` from a process-global registry. The
 /// registry itself is guarded by a short-lived `std::sync::Mutex` (held only to
 /// clone an `Arc`, never across an `.await`).
+///
+/// The registry is an `LruCache` bounded at [`MEMORY_PUT_LOCK_CAP`] so it cannot
+/// grow without limit as distinct `(scope, key)` pairs are written over the
+/// process lifetime. The cap is generous enough that realistic key counts never
+/// evict. Eviction is safe for correctness: any task already holding the `Arc`
+/// keeps its mutex alive after the entry is dropped from the cache. The single
+/// rare-eviction caveat is that if a key's lock is evicted while one put holds
+/// it and a *second* put for the same key arrives, the second put mints a fresh
+/// mutex and the two no longer serialize — a window only reachable when more
+/// than [`MEMORY_PUT_LOCK_CAP`] distinct keys are written between two racing
+/// puts on the same key.
+// `NonZeroUsize::new(4096)` is `Some` at const-eval time; `.unwrap()` here runs
+// in a const initializer, so it is a compile-time check, not a runtime panic —
+// the lib-code "no unwrap" rule targets fallible runtime paths, which this is
+// not.
+#[cfg(feature = "memory")]
+const MEMORY_PUT_LOCK_CAP: std::num::NonZeroUsize = std::num::NonZeroUsize::new(4096).unwrap();
+
 #[cfg(feature = "memory")]
 type MemoryPutLockRegistry =
-    std::sync::Mutex<ahash::AHashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+    std::sync::Mutex<lru::LruCache<(String, String), Arc<tokio::sync::Mutex<()>>>>;
 
 #[cfg(feature = "memory")]
 fn memory_put_lock(scope: &str, key: &str) -> Arc<tokio::sync::Mutex<()>> {
     use std::sync::OnceLock;
     static LOCKS: OnceLock<MemoryPutLockRegistry> = OnceLock::new();
-    let registry = LOCKS.get_or_init(|| std::sync::Mutex::new(ahash::AHashMap::new()));
+    let registry =
+        LOCKS.get_or_init(|| std::sync::Mutex::new(lru::LruCache::new(MEMORY_PUT_LOCK_CAP)));
     let mut guard = registry
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Arc::clone(
-        guard
-            .entry((scope.to_string(), key.to_string()))
-            .or_default(),
-    )
+    let registry_key = (scope.to_string(), key.to_string());
+    // `get_or_insert` bumps recency on hit and inserts (evicting LRU) on miss,
+    // returning a reference to the live `Arc` either way. We clone the `Arc`
+    // while holding the std mutex — never across an `.await`.
+    Arc::clone(guard.get_or_insert(registry_key, || Arc::new(tokio::sync::Mutex::new(()))))
 }
 
 #[cfg(feature = "memory")]
@@ -392,9 +411,27 @@ pub(super) async fn run_memory_delete(
         let lance = Arc::clone(lance);
         let scope = state.scope.clone();
         let key = params.key.clone();
-        tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &key))
-            .await
-            .ok();
+        // The Fjall delete already succeeded and is the authoritative `deleted`
+        // signal, so a Lance failure here is non-fatal — but it leaves Fjall and
+        // Lance divergent (a stale embedding lingers), so log it rather than
+        // swallow it silently with `.ok()`.
+        match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &key)).await {
+            Ok(Ok(_rows_deleted)) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    key = %params.key,
+                    ?error,
+                    "lance delete_memory failed; embedding may be stale relative to Fjall"
+                );
+            }
+            Err(join_error) => {
+                tracing::warn!(
+                    key = %params.key,
+                    ?join_error,
+                    "lance delete_memory task panicked; embedding may be stale relative to Fjall"
+                );
+            }
+        }
     }
     json_result(&MemoryDeleteResponse {
         deleted: deleted_fjall,
