@@ -65,7 +65,8 @@ pub mod params {
         FindReferencesParams, HotFilesParams, ListFilesParams, MemoryDeleteParams, MemoryGetParams,
         MemoryListParams, MemoryPutParams, MemorySearchParams, OutlineParams, RecentChangesParams,
         RepoInfoParams, RescanParams, SearchDocumentsParams, SearchSymbolsParams, StatusParams,
-        SymbolHistoryParams, TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
+        SymbolHistoryParams, TelemetrySummaryParams, Visibility, WorkingTreeStatusParams,
+        WorkspaceGrepParams,
     };
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
@@ -144,6 +145,11 @@ pub(crate) struct ServerState {
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)] // used by memory / documents feature tools
     pub(crate) scope: String,
+    /// Owner segment for the individual-memory tier. Resolved once at boot from
+    /// `BASEMIND_AGENT_ID` (validated through [`crate::comms::ids::AgentId`] so it is
+    /// NUL-free) or `"anon"` when unset/invalid. Group-tier writes ignore it.
+    #[allow(dead_code)] // used by the memory feature tools
+    pub(crate) agent_id: String,
     /// LanceDB vector store. Lazy-init on first memory/document call.
     #[cfg(any(feature = "memory", feature = "documents"))]
     pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
@@ -285,6 +291,14 @@ impl BasemindServer {
             .as_ref()
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
+        // Resolve the individual-memory owner once. Validate through `AgentId` so the owner
+        // segment is always NUL-free; fall back to "anon" when unset or invalid. (Richer
+        // clientInfo-based resolution lands in a later component.)
+        let agent_id = std::env::var("BASEMIND_AGENT_ID")
+            .ok()
+            .and_then(|s| crate::comms::ids::AgentId::parse(s).ok())
+            .map(|a| a.into_string())
+            .unwrap_or_else(|| "anon".to_string());
         let cache = Arc::new(MapCache::build(&store));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         // A fresh repo has no index yet. Auto-scan on startup (working view only)
@@ -327,6 +341,7 @@ impl BasemindServer {
             corpus_bytes: std::sync::atomic::AtomicU64::new(corpus_bytes),
             cache_generation: std::sync::atomic::AtomicU32::new(1),
             scope,
+            agent_id,
             #[cfg(any(feature = "memory", feature = "documents"))]
             lance: tokio::sync::OnceCell::new(),
             #[cfg(feature = "intelligence")]

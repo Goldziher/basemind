@@ -312,33 +312,63 @@ pub fn parse_impl_by_path(key: &[u8]) -> Option<(RelPath, String, String, u32)> 
 
 // ─── memory_by_key ───────────────────────────────────────────────────────────
 
-/// `memory_by_key`: `u16:scope_len ‖ scope ‖ NUL ‖ u16:key_len ‖ key`.
-pub fn memory_by_key(scope: &str, key: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 2 + key.len());
+/// Visibility ordinal for the **group** (shared) memory tier. Stable, append-only.
+pub const MEMORY_VIS_GROUP: u8 = 0;
+/// Visibility ordinal for the **individual** (per-agent) memory tier. Stable, append-only.
+pub const MEMORY_VIS_INDIVIDUAL: u8 = 1;
+
+/// `memory_by_key`:
+/// `u16:scope_len ‖ scope ‖ NUL ‖ vis_byte ‖ u16:owner_len ‖ owner ‖ NUL ‖ u16:key_len ‖ key`.
+///
+/// The `(scope, vis_byte, owner)` triple forms the namespace; placing it ahead of the key
+/// keeps every namespace's keys contiguous, so a [`memory_by_key_ns_prefix`] range scan
+/// returns exactly one namespace's entries. `vis_byte` is one of [`MEMORY_VIS_GROUP`] /
+/// [`MEMORY_VIS_INDIVIDUAL`]. `owner` is the empty string for the group tier and the
+/// validated `AgentId` for the individual tier (NUL-free by construction).
+pub fn memory_by_key(scope: &str, vis_byte: u8, owner: &str, key: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1 + 2 + owner.len() + 1 + 2 + key.len());
     let _ = write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out.push(vis_byte);
+    let _ = write_len_prefixed(&mut out, owner.as_bytes());
     out.push(0u8);
     let _ = write_len_prefixed(&mut out, key.as_bytes());
     out
 }
 
-/// Prefix bytes for "all memory entries in this scope" — feed to `keyspace.prefix(..)`.
-pub fn memory_by_key_scope_prefix(scope: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + scope.len() + 1);
+/// Prefix bytes for "all memory entries in this `(scope, vis_byte, owner)` namespace" —
+/// everything up to and including the owner's NUL separator. Feed to `keyspace.prefix(..)`
+/// or use as the lower bound of a range scan.
+pub fn memory_by_key_ns_prefix(scope: &str, vis_byte: u8, owner: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1 + 2 + owner.len() + 1);
     let _ = write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out.push(vis_byte);
+    let _ = write_len_prefixed(&mut out, owner.as_bytes());
     out.push(0u8);
     out
 }
 
-/// Decode `scope` and `key` from a raw `memory_by_key` key buffer.
-pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, String)> {
+/// Decode `(scope, vis_byte, owner, key)` from a raw `memory_by_key` key buffer.
+pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
     let mut c = 0;
     let scope = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
     if buf.len() <= c {
         return None;
     }
-    c += 1; // skip NUL separator
+    c += 1; // skip NUL separator after scope
+    if buf.len() <= c {
+        return None;
+    }
+    let vis_byte = buf[c];
+    c += 1;
+    let owner = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
+    if buf.len() <= c {
+        return None;
+    }
+    c += 1; // skip NUL separator after owner
     let key = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
-    Some((scope, key))
+    Some((scope, vis_byte, owner, key))
 }
 
 /// One-byte ordinal for a `SymbolKind`. Stable across releases so existing keys stay valid;
@@ -611,6 +641,77 @@ mod tests {
         assert!(
             impl_by_path(&rel, &huge, "T", 0).is_none(),
             "impl_by_path must return None for a 65536-byte trait name"
+        );
+    }
+
+    #[test]
+    fn memory_by_key_roundtrips_group() {
+        let raw = memory_by_key("scope-a", MEMORY_VIS_GROUP, "", "my.key");
+        assert_eq!(
+            parse_memory_by_key(&raw),
+            Some((
+                "scope-a".to_string(),
+                MEMORY_VIS_GROUP,
+                String::new(),
+                "my.key".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn memory_by_key_roundtrips_individual() {
+        let raw = memory_by_key("scope-a", MEMORY_VIS_INDIVIDUAL, "agent-7", "my.key");
+        assert_eq!(
+            parse_memory_by_key(&raw),
+            Some((
+                "scope-a".to_string(),
+                MEMORY_VIS_INDIVIDUAL,
+                "agent-7".to_string(),
+                "my.key".to_string()
+            ))
+        );
+    }
+
+    /// A group key and an individual key for the same `(scope, key)` must live in
+    /// disjoint namespaces: neither key may fall within the other's namespace prefix.
+    #[test]
+    fn memory_namespace_prefixes_do_not_overlap() {
+        let scope = "scope-a";
+        let key = "shared.key";
+        let group_key = memory_by_key(scope, MEMORY_VIS_GROUP, "", key);
+        let indiv_key = memory_by_key(scope, MEMORY_VIS_INDIVIDUAL, "agent-7", key);
+
+        let group_prefix = memory_by_key_ns_prefix(scope, MEMORY_VIS_GROUP, "");
+        let indiv_prefix = memory_by_key_ns_prefix(scope, MEMORY_VIS_INDIVIDUAL, "agent-7");
+
+        assert!(
+            group_key.starts_with(&group_prefix),
+            "group key must extend the group namespace prefix"
+        );
+        assert!(
+            indiv_key.starts_with(&indiv_prefix),
+            "individual key must extend the individual namespace prefix"
+        );
+        assert!(
+            !group_key.starts_with(&indiv_prefix),
+            "a group key must NOT fall within an individual namespace prefix"
+        );
+        assert!(
+            !indiv_key.starts_with(&group_prefix),
+            "an individual key must NOT fall within the group namespace prefix"
+        );
+    }
+
+    /// Two different agents' individual namespaces for the same scope+key are disjoint.
+    #[test]
+    fn memory_individual_namespaces_isolate_by_owner() {
+        let scope = "scope-a";
+        let key = "k";
+        let a_key = memory_by_key(scope, MEMORY_VIS_INDIVIDUAL, "agent-a", key);
+        let b_prefix = memory_by_key_ns_prefix(scope, MEMORY_VIS_INDIVIDUAL, "agent-b");
+        assert!(
+            !a_key.starts_with(&b_prefix),
+            "agent-a's key must NOT fall within agent-b's namespace prefix"
         );
     }
 }

@@ -623,6 +623,32 @@ pub(super) struct RepoInfoResponse {
 
 // ─── Memory + document-search shapes ─────────────────────────────────────────
 
+/// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
+/// behavior, with an empty owner segment. `individual` scopes the entry to the calling
+/// agent (owner = its `AgentId`), so two agents can keep private same-key entries.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    /// Shared, cross-agent memory (owner segment is empty). The default.
+    #[default]
+    Group,
+    /// Per-agent memory (owner segment is the caller's `AgentId`).
+    Individual,
+}
+
+impl Visibility {
+    /// Stable, append-only on-disk ordinal for this tier — matches the `vis_byte`
+    /// encoded by [`crate::index::keys::memory_by_key`].
+    pub fn vis_byte(self) -> u8 {
+        match self {
+            Visibility::Group => crate::index::keys::MEMORY_VIS_GROUP,
+            Visibility::Individual => crate::index::keys::MEMORY_VIS_INDIVIDUAL,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryPutParams {
     pub key: String,
@@ -631,6 +657,9 @@ pub struct MemoryPutParams {
     pub tags: Option<Vec<String>>,
     #[serde(default = "default_true")]
     pub embed: bool,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent).
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[cfg(feature = "memory")]
@@ -644,6 +673,9 @@ pub(super) struct MemoryPutResponse {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryGetParams {
     pub key: String,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent).
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[cfg(feature = "memory")]
@@ -668,6 +700,9 @@ pub struct MemoryListParams {
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
     pub cursor: Option<Cursor>,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent).
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[cfg(feature = "memory")]
@@ -689,6 +724,10 @@ pub struct MemorySearchParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub tag: Option<String>,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent). An individual
+    /// search never returns another agent's rows; a group search only sees group rows.
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[cfg(feature = "memory")]
@@ -710,6 +749,9 @@ pub(super) struct MemorySearchResponse {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryDeleteParams {
     pub key: String,
+    /// Memory tier: `group` (shared, default) or `individual` (per-agent).
+    #[serde(default)]
+    pub visibility: Visibility,
 }
 
 #[cfg(feature = "memory")]

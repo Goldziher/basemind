@@ -16,6 +16,15 @@ use crate::mcp::params::*;
 use super::render::emit;
 use super::run_tool;
 
+/// Map the `--individual` CLI flag onto a [`Visibility`]. Absent = group (shared) tier.
+fn visibility(individual: bool) -> Visibility {
+    if individual {
+        Visibility::Individual
+    } else {
+        Visibility::Group
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum MemoryCmd {
     /// Persist a key-value pair in scoped memory.
@@ -27,9 +36,17 @@ pub enum MemoryCmd {
         /// Disable embedding into LanceDB (skips memory_search indexing).
         #[arg(long)]
         no_embed: bool,
+        /// Use the per-agent (individual) memory tier instead of shared (group).
+        #[arg(long)]
+        individual: bool,
     },
     /// Exact-key lookup.
-    Get { key: String },
+    Get {
+        key: String,
+        /// Look up in the per-agent (individual) tier instead of shared (group).
+        #[arg(long)]
+        individual: bool,
+    },
     /// List scoped memory entries.
     List {
         #[arg(long)]
@@ -38,6 +55,9 @@ pub enum MemoryCmd {
         tag: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
+        /// List the per-agent (individual) tier instead of shared (group).
+        #[arg(long)]
+        individual: bool,
     },
     /// Vector KNN search over stored memory.
     Search {
@@ -46,9 +66,17 @@ pub enum MemoryCmd {
         limit: Option<u32>,
         #[arg(long)]
         tag: Option<String>,
+        /// Search the per-agent (individual) tier instead of shared (group).
+        #[arg(long)]
+        individual: bool,
     },
     /// Delete a memory entry by exact key.
-    Delete { key: String },
+    Delete {
+        key: String,
+        /// Delete from the per-agent (individual) tier instead of shared (group).
+        #[arg(long)]
+        individual: bool,
+    },
     /// Semantic search over indexed document chunks.
     SearchDocuments {
         query: String,
@@ -71,38 +99,62 @@ pub async fn run(
             value,
             tag,
             no_embed,
+            individual,
         } => {
             let p = MemoryPutParams {
                 key,
                 value,
                 tags: if tag.is_empty() { None } else { Some(tag) },
                 embed: !no_embed,
+                visibility: visibility(individual),
             };
             let r = run_tool("memory_put", server.memory_put(Parameters(p)).await)?;
             emit("memory_put", &r, json, out)
         }
-        MemoryCmd::Get { key } => {
-            let p = MemoryGetParams { key };
+        MemoryCmd::Get { key, individual } => {
+            let p = MemoryGetParams {
+                key,
+                visibility: visibility(individual),
+            };
             let r = run_tool("memory_get", server.memory_get(Parameters(p)).await)?;
             emit("memory_get", &r, json, out)
         }
-        MemoryCmd::List { prefix, tag, limit } => {
+        MemoryCmd::List {
+            prefix,
+            tag,
+            limit,
+            individual,
+        } => {
             let p = MemoryListParams {
                 prefix,
                 tag,
                 limit,
                 cursor: None,
+                visibility: visibility(individual),
             };
             let r = run_tool("memory_list", server.memory_list(Parameters(p)).await)?;
             emit("memory_list", &r, json, out)
         }
-        MemoryCmd::Search { query, limit, tag } => {
-            let p = MemorySearchParams { query, limit, tag };
+        MemoryCmd::Search {
+            query,
+            limit,
+            tag,
+            individual,
+        } => {
+            let p = MemorySearchParams {
+                query,
+                limit,
+                tag,
+                visibility: visibility(individual),
+            };
             let r = run_tool("memory_search", server.memory_search(Parameters(p)).await)?;
             emit("memory_search", &r, json, out)
         }
-        MemoryCmd::Delete { key } => {
-            let p = MemoryDeleteParams { key };
+        MemoryCmd::Delete { key, individual } => {
+            let p = MemoryDeleteParams {
+                key,
+                visibility: visibility(individual),
+            };
             let r = run_tool("memory_delete", server.memory_delete(Parameters(p)).await)?;
             emit("memory_delete", &r, json, out)
         }

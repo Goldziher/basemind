@@ -76,6 +76,10 @@ pub struct MemoryRow {
     pub key: String,
     pub value: String,
     pub tags: Vec<String>,
+    /// Memory tier: `"group"` (shared) or `"individual"` (per-agent).
+    pub visibility: String,
+    /// Owner of an individual-tier row; empty string for the group tier.
+    pub agent_id: String,
     pub embedding: Vec<f32>,
     /// Microseconds since unix epoch.
     pub created_at: i64,
@@ -228,11 +232,8 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {MEMORY_TABLE} table"))?;
-            let predicate = format!(
-                "scope = '{}' AND key = '{}'",
-                escape_sql_literal(&row.scope),
-                escape_sql_literal(&row.key)
-            );
+            let predicate =
+                memory_row_predicate(&row.scope, &row.visibility, &row.agent_id, &row.key);
             table
                 .delete(&predicate)
                 .await
@@ -252,9 +253,15 @@ impl LanceStore {
         })
     }
 
-    /// Delete one memory entry by `(scope, key)`. Returns the number of rows
-    /// LanceDB actually deleted (`0` when no row matched the predicate).
-    pub fn delete_memory(&self, scope: &str, key: &str) -> Result<u64> {
+    /// Delete one memory entry by `(scope, visibility, agent_id, key)`. Returns the
+    /// number of rows LanceDB actually deleted (`0` when no row matched the predicate).
+    pub fn delete_memory(
+        &self,
+        scope: &str,
+        visibility: &str,
+        agent_id: &str,
+        key: &str,
+    ) -> Result<u64> {
         self.inner.runtime.block_on(async {
             let table = self
                 .inner
@@ -263,11 +270,7 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {MEMORY_TABLE} table"))?;
-            let predicate = format!(
-                "scope = '{}' AND key = '{}'",
-                escape_sql_literal(scope),
-                escape_sql_literal(key)
-            );
+            let predicate = memory_row_predicate(scope, visibility, agent_id, key);
             let result = table
                 .delete(&predicate)
                 .await
@@ -320,10 +323,15 @@ impl LanceStore {
         })
     }
 
-    /// KNN over the memory table for one scope.
+    /// KNN over the memory table for one `(scope, visibility, agent_id)` namespace.
+    ///
+    /// The `visibility` + `agent_id` predicate is mandatory so an individual search never
+    /// returns another agent's rows and a group search only sees group rows.
     pub fn search_memory(
         &self,
         scope: &str,
+        visibility: &str,
+        agent_id: &str,
         query: Vec<f32>,
         limit: usize,
         tag_filter: Option<&str>,
@@ -347,11 +355,11 @@ impl LanceStore {
                 .vector_search(query)
                 .context("build memory vector search")?
                 .limit(limit);
-            let scope_clause = format!("scope = '{}'", escape_sql_literal(scope));
+            let namespace_clause = memory_namespace_predicate(scope, visibility, agent_id);
             // LanceDB's predicate language does not have a clean "list_contains" yet for
             // List<Utf8>; tag filtering is therefore best-effort post-filter in the host.
             let _ = tag_filter; // kept in the signature for forward-compat
-            q = q.only_if(scope_clause);
+            q = q.only_if(namespace_clause);
             let mut stream = q.execute().await.context("run memory search")?;
             let mut hits = Vec::new();
             while let Some(batch) = stream.try_next().await.context("stream next batch")? {
@@ -474,6 +482,8 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
     let mut key = StringBuilder::new();
     let mut value = StringBuilder::new();
     let mut tags = ListBuilder::new(StringBuilder::new());
+    let mut visibility = StringBuilder::new();
+    let mut agent_id = StringBuilder::new();
     let mut embedding = FixedSizeListBuilder::new(Float32Builder::new(), i32::from(dim));
     let mut created = TimestampMicrosecondBuilder::new();
     let mut updated = TimestampMicrosecondBuilder::new();
@@ -493,6 +503,8 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
             tags.values().append_value(t);
         }
         tags.append(true);
+        visibility.append_value(&r.visibility);
+        agent_id.append_value(&r.agent_id);
         for v in &r.embedding {
             embedding.values().append_value(*v);
         }
@@ -509,6 +521,8 @@ fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {
             Arc::new(key.finish()),
             Arc::new(value.finish()),
             Arc::new(tags.finish()),
+            Arc::new(visibility.finish()),
+            Arc::new(agent_id.finish()),
             Arc::new(embedding.finish()),
             Arc::new(created.finish()),
             Arc::new(updated.finish()),
@@ -605,6 +619,30 @@ fn escape_sql_literal(s: &str) -> String {
     s.replace('\'', "''")
 }
 
+/// Predicate selecting a whole `(scope, visibility, agent_id)` memory namespace.
+///
+/// Used by [`LanceStore::search_memory`] so an individual search can never surface another
+/// agent's rows and a group search only sees group rows.
+fn memory_namespace_predicate(scope: &str, visibility: &str, agent_id: &str) -> String {
+    format!(
+        "scope = '{}' AND visibility = '{}' AND agent_id = '{}'",
+        escape_sql_literal(scope),
+        escape_sql_literal(visibility),
+        escape_sql_literal(agent_id),
+    )
+}
+
+/// Predicate selecting exactly one memory row by `(scope, visibility, agent_id, key)`.
+///
+/// Used by [`LanceStore::upsert_memory`] (delete-then-insert) and [`LanceStore::delete_memory`].
+fn memory_row_predicate(scope: &str, visibility: &str, agent_id: &str, key: &str) -> String {
+    format!(
+        "{} AND key = '{}'",
+        memory_namespace_predicate(scope, visibility, agent_id),
+        escape_sql_literal(key),
+    )
+}
+
 /// Convenience: current time as microseconds since unix epoch, saturating on
 /// the (effectively impossible) clock-before-epoch case.
 pub fn now_micros() -> i64 {
@@ -622,6 +660,43 @@ mod tests {
         let p = dir.join("sentinel");
         std::fs::write(&p, b"keep-me").unwrap();
         p
+    }
+
+    /// The search predicate must pin the full `(scope, visibility, agent_id)` namespace so
+    /// an individual search can never surface another agent's or the group's rows, and a
+    /// group search only sees group rows. We assert the predicate-string construction
+    /// directly — a full `LanceStore` needs an embedder + on-disk table, far heavier than
+    /// the isolation invariant under test.
+    #[test]
+    fn search_predicate_isolates_namespaces() {
+        let group = memory_namespace_predicate("scope-a", "group", "");
+        assert_eq!(
+            group,
+            "scope = 'scope-a' AND visibility = 'group' AND agent_id = ''"
+        );
+
+        let indiv_a = memory_namespace_predicate("scope-a", "individual", "agent-a");
+        assert_eq!(
+            indiv_a,
+            "scope = 'scope-a' AND visibility = 'individual' AND agent_id = 'agent-a'"
+        );
+
+        // The group and individual predicates differ, so they select disjoint row sets.
+        assert_ne!(group, indiv_a);
+        // A different agent gets a different predicate — no cross-agent leakage.
+        let indiv_b = memory_namespace_predicate("scope-a", "individual", "agent-b");
+        assert_ne!(indiv_a, indiv_b);
+    }
+
+    /// The row predicate appends the key clause to the namespace predicate, and a
+    /// single-quote in any segment is escaped so the literal cannot break out.
+    #[test]
+    fn row_predicate_pins_key_and_escapes_quotes() {
+        let p = memory_row_predicate("s", "individual", "a", "o'brien");
+        assert_eq!(
+            p,
+            "scope = 's' AND visibility = 'individual' AND agent_id = 'a' AND key = 'o''brien'"
+        );
     }
 
     /// A pre-0.5 `meta.json` (no `schema_ver`) must deserialize as `schema_ver = 0` and,

@@ -42,9 +42,11 @@ pub fn documents_schema(dim: u16) -> SchemaRef {
 ///
 /// Columns:
 /// - `scope`       UTF-8     repo identity
-/// - `key`         UTF-8     primary lookup key (unique within scope)
+/// - `key`         UTF-8     primary lookup key (unique within `(scope, visibility, agent_id)`)
 /// - `value`       UTF-8     the stored value text
 /// - `tags`        List<UTF-8>  optional tags
+/// - `visibility`  UTF-8     memory tier: `"group"` (shared) or `"individual"` (per-agent)
+/// - `agent_id`    UTF-8     owner of an individual-tier row (empty for the group tier)
 /// - `embedding`   FixedSizeList<Float32, DIM>
 /// - `created_at`  TimestampMicros
 /// - `updated_at`  TimestampMicros
@@ -55,6 +57,8 @@ pub fn memory_schema(dim: u16) -> SchemaRef {
         Field::new("key", DataType::Utf8, false),
         Field::new("value", DataType::Utf8, false),
         Field::new("tags", DataType::List(tags_inner), true),
+        Field::new("visibility", DataType::Utf8, false),
+        Field::new("agent_id", DataType::Utf8, false),
         Field::new(
             "embedding",
             DataType::FixedSizeList(
