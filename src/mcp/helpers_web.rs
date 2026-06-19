@@ -33,11 +33,57 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("{prefix}: {err}"), None)
 }
 
+/// Resolve the LanceDB scope tag for a fetched page.
+///
+/// When the caller supplied an explicit `scope`, honour it verbatim. Otherwise
+/// derive the scope from the page's *final* URL (after redirects) rather than
+/// the requested URL, so a redirect across hosts (e.g. `example.com` →
+/// `cdn.example.net`) lands the rows under the host they actually came from and
+/// `search_documents { scope: "web:<host>" }` retrieves them. Falls back to the
+/// requested URL's scope if the final URL fails to parse (it should not for an
+/// http/https response, but we never panic on a server-supplied string).
+fn resolve_scope(explicit: Option<&str>, requested: &crate::url::Url, final_url: &str) -> String {
+    if let Some(scope) = explicit {
+        return scope.to_string();
+    }
+    match crate::url::Url::parse(final_url) {
+        Ok(resolved) => default_scope(&resolved),
+        Err(_) => default_scope(requested),
+    }
+}
+
+/// Build a per-call kreuzcrawl engine that overrides `max_pages` / `max_depth`
+/// for this request only, leaving the server's shared `[crawl]` defaults intact.
+///
+/// kreuzcrawl bakes the page/depth caps into the engine handle, so honouring a
+/// per-call override means constructing a fresh engine from a cloned config.
+/// `None` overrides fall back to the server default.
+#[cfg(feature = "crawl")]
+fn per_call_engine(
+    state: &ServerState,
+    max_pages: Option<u32>,
+    max_depth: Option<u32>,
+) -> Result<kreuzcrawl::CrawlEngineHandle, McpError> {
+    let mut cfg = state.config.crawl.clone();
+    if let Some(mp) = max_pages {
+        cfg.max_pages = mp;
+    }
+    if let Some(md) = max_depth {
+        cfg.max_depth = md;
+    }
+    crate::web::build_engine(&cfg).map_err(|e| mcp_internal("build per-call crawl engine", e))
+}
+
 async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> {
+    // Use the configured embedding preset, not a hardcoded one. The disk
+    // scanner embeds with `documents.embedding_preset`; if serve loaded a
+    // different model the LanceStore (dim, model) mismatch would wipe the table
+    // on the next open, so serve and disk scans must agree on the preset.
+    let preset = state.config.documents.embedding_preset.clone();
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            SharedEmbedder::load("balanced")
+            SharedEmbedder::load(&preset)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })
@@ -61,11 +107,15 @@ pub(super) async fn run_web_scrape(
 ) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
-    let scope = params.scope.unwrap_or_else(|| default_scope(&params.url));
 
     let result = kreuzcrawl::scrape(engine, &url_str)
         .await
         .map_err(|e| mcp_internal("kreuzcrawl scrape", e))?;
+
+    // Derive the scope from the FINAL url (post-redirect), not the requested
+    // host — the rows we store are keyed by `result.final_url`, so the scope
+    // must match the host they actually came from.
+    let scope = resolve_scope(params.scope.as_deref(), &params.url, &result.final_url);
 
     let body_text: String = result
         .markdown
@@ -126,38 +176,27 @@ pub(super) async fn run_web_crawl(
     state: &ServerState,
     params: WebCrawlParams,
 ) -> Result<CallToolResult, McpError> {
-    // kreuzcrawl's per-call config knobs (max_pages, max_depth) live on
-    // CrawlConfig, which is owned by the shared engine. Cloning the engine to
-    // apply per-call overrides is not supported by the public API today —
-    // honour the request shape but emit a warn when overrides differ from the
-    // server defaults, so an agent at least sees the discrepancy in logs.
-    let cfg = &state.config.crawl;
-    if let Some(mp) = params.max_pages
-        && mp != cfg.max_pages
-    {
-        tracing::warn!(
-            requested = mp,
-            server_default = cfg.max_pages,
-            "web_crawl.max_pages override ignored — using server default"
-        );
-    }
-    if let Some(md) = params.max_depth
-        && md != cfg.max_depth
-    {
-        tracing::warn!(
-            requested = md,
-            server_default = cfg.max_depth,
-            "web_crawl.max_depth override ignored — using server default"
-        );
-    }
-
-    let engine = engine(state)?;
+    // Apply the per-call max_pages / max_depth overrides by building a one-shot
+    // engine from the server config with those fields replaced. kreuzcrawl bakes
+    // the caps into the engine handle, so a per-call override needs its own
+    // engine; `None` overrides inherit the server `[crawl]` default. Make sure
+    // the shared engine exists before paying for a per-call one so the error
+    // surface matches the other web tools.
+    engine(state)?;
+    let engine = per_call_engine(state, params.max_pages, params.max_depth)?;
     let url_str = params.url.as_str().to_string();
-    let scope = params.scope.unwrap_or_else(|| default_scope(&params.url));
 
-    let crawl_outcome = kreuzcrawl::crawl(engine, &url_str)
+    let crawl_outcome = kreuzcrawl::crawl(&engine, &url_str)
         .await
         .map_err(|e| mcp_internal("kreuzcrawl crawl", e))?;
+
+    // Top-level scope echoed in the response: explicit when supplied, else
+    // derived from the seed URL's host. Per-page rows derive their own scope
+    // from the page's final URL below (a crawl can span subdomains).
+    let scope = params
+        .scope
+        .clone()
+        .unwrap_or_else(|| default_scope(&params.url));
 
     let pages_visited = crawl_outcome.pages.len();
     let lance = lance_store(state).await?;
@@ -176,10 +215,22 @@ pub(super) async fn run_web_crawl(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| page.html.clone());
 
+        // Each page is stored under `page.normalized_url`; derive its scope from
+        // that same URL's host so rows land under the host they came from, not
+        // the seed host (a crawl can follow links across subdomains). An
+        // explicit caller scope still wins for every page.
+        let page_scope = match params.scope.as_deref() {
+            Some(s) => s.to_string(),
+            None => match crate::url::Url::parse(&page.normalized_url) {
+                Ok(u) => default_scope(&u),
+                Err(_) => scope.clone(),
+            },
+        };
+
         let lance_for_block = Arc::clone(&lance);
         let embedder_for_block = Arc::clone(&embedder);
         let docs_for_block = documents_cfg.clone();
-        let scope_for_block = scope.clone();
+        let scope_for_block = page_scope;
         let path_for_block = page.normalized_url.clone();
         let mime_for_block = page.content_type.clone();
 
