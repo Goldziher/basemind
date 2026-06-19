@@ -175,11 +175,11 @@ mod tests {
     fn ancestors_stop_at_home_boundary() {
         let home = PathBuf::from("/home/u");
         let cwd = PathBuf::from("/home/u/a/b");
-        let anc = ancestors_up_to(&cwd, Some(&home));
-        assert!(anc.contains(&PathBuf::from("/home/u/a/b")));
-        assert!(anc.contains(&home));
+        let ancestors = ancestors_up_to(&cwd, Some(&home));
+        assert!(ancestors.contains(&PathBuf::from("/home/u/a/b")));
+        assert!(ancestors.contains(&home));
         assert!(
-            !anc.contains(&PathBuf::from("/home")),
+            !ancestors.contains(&PathBuf::from("/home")),
             "must not walk above the HOME boundary"
         );
     }

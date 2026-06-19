@@ -1,8 +1,10 @@
 //! Unix-domain-socket front-end + link — the production local IPC path.
 //!
 //! Frames ride a [`LengthDelimitedCodec`](tokio_util::codec::LengthDelimitedCodec) (`u32`
-//! big-endian length prefix) carrying a msgpack [`CommsRequest`] / [`CommsOut`] body. At
-//! accept time the link captures the peer's credentials and the daemon rejects any connection
+//! big-endian length prefix) carrying a msgpack
+//! [`CommsRequest`](super::protocol::CommsRequest) / [`CommsOut`](super::protocol::CommsOut)
+//! body. At accept time the link captures the peer's credentials and the daemon rejects any
+//! connection
 //! whose uid differs from its own — defence in depth on top of the socket's mode-0600
 //! permissions.
 //!
