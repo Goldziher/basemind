@@ -118,8 +118,12 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.1"
-arrow-array = { version = "59", optional = true }
-arrow-schema = { version = "59", optional = true }
+# Pinned to arrow 58 to match the version lancedb 0.30 resolves transitively
+# (lancedb → lance → datafusion → arrow 58). Depending on a newer arrow here
+# produces a dual-version skew where our `src/lance` RecordBatch/Schema types
+# don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
