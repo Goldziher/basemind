@@ -359,13 +359,14 @@ static COMBINED_L1_QUERIES: OnceLock<RwLock<CombinedL1Map>> = OnceLock::new();
 /// Convention: each .scm file is divided into sections marked by `;; section: <name>` lines.
 /// Sections we look for: `symbols`, `imports`, `calls`, `docs`.
 fn extract_section(source: &str, name: &str) -> Option<String> {
-    let marker_open = format!(";; section: {name}");
+    // Zero-alloc section detection: strip the fixed prefix then compare the trimmed remainder
+    // to `name` exactly. Avoids the `format!(";; section: {name}")` allocation on every call.
     let mut out = String::new();
     let mut in_section = false;
     for line in source.lines() {
         let trimmed = line.trim_start();
-        if trimmed.starts_with(";; section:") {
-            in_section = trimmed.starts_with(&marker_open);
+        if let Some(section_name) = trimmed.strip_prefix(";; section:") {
+            in_section = section_name.trim() == name;
             continue;
         }
         if in_section {

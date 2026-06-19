@@ -1,0 +1,152 @@
+name: Install system dependencies
+description: Install system dependencies for building basemind with --features full
+
+runs:
+  using: composite
+  steps:
+    # Linux: apt + protoc + libheif 1.23.0 from source + codec backends
+    - name: Install dependencies (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "::group::Installing Linux dependencies"
+
+        sudo apt-get update || true
+
+        # Core build + image libraries
+        sudo apt-get install -y \
+          tesseract-ocr tesseract-ocr-eng \
+          libssl-dev pkg-config build-essential cmake \
+          libmagic-dev libde265-dev libaom-dev \
+          libx265-dev libdav1d-dev libnuma-dev \
+          protobuf-compiler patchelf
+
+        echo "::endgroup::"
+
+        echo "::group::Building libheif from source (1.23.0)"
+
+        LIBHEIF_VERSION="1.23.0"
+        LIBHEIF_PREFIX="/usr/local"
+
+        # Check if already cached
+        if [ -f "$LIBHEIF_PREFIX/lib/pkgconfig/libheif.pc" ] && \
+           pkg-config --modversion libheif 2>/dev/null | grep -q "^${LIBHEIF_VERSION}$"; then
+          echo "✓ libheif ${LIBHEIF_VERSION} already installed (cached)"
+        else
+          echo "Building libheif ${LIBHEIF_VERSION} from source..."
+          build_dir="$(mktemp -d)"
+          trap "rm -rf '$build_dir'" EXIT
+
+          cd "$build_dir"
+          curl -fsSL -o libheif.tar.gz \
+            "https://github.com/strukturag/libheif/releases/download/v${LIBHEIF_VERSION}/libheif-${LIBHEIF_VERSION}.tar.gz"
+          tar xzf libheif.tar.gz
+          cd "libheif-${LIBHEIF_VERSION}"
+          mkdir build && cd build
+
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$LIBHEIF_PREFIX" \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DBUILD_TESTING=OFF
+
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+
+          echo "✓ libheif ${LIBHEIF_VERSION} installed"
+        fi
+
+        echo "PKG_CONFIG_PATH=$LIBHEIF_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=$LIBHEIF_PREFIX/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
+        echo "::endgroup::"
+
+    # macOS: brew + protobuf
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "::group::Installing macOS dependencies"
+
+        # Add homebrew paths
+        if [[ -d "/opt/homebrew/bin" ]]; then
+          export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
+          echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+          echo "/opt/homebrew/sbin" >> "$GITHUB_PATH"
+        fi
+        if [[ -d "/usr/local/bin" ]]; then
+          export PATH="/usr/local/bin:/usr/local/sbin:${PATH}"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/sbin" >> "$GITHUB_PATH"
+        fi
+
+        # Install all dependencies
+        brew install cmake tesseract tesseract-lang libheif libmagic pkg-config protobuf || true
+
+        echo "::endgroup::"
+
+    # Windows: choco + protoc + vcpkg libheif + tessdata
+    - name: Install dependencies (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        Set-StrictMode -Version Latest
+        $ErrorActionPreference = 'Stop'
+
+        Write-Host "::group::Installing Windows dependencies"
+
+        # Install protoc via choco
+        Write-Host "Installing protobuf..."
+        choco install -y protoc --no-progress || Write-Host "::warning::Failed to install protoc"
+
+        # Install tesseract
+        Write-Host "Installing Tesseract..."
+        choco install -y tesseract --no-progress || Write-Host "::warning::Failed to install Tesseract"
+
+        # Download tessdata
+        $tesseractPath = "C:\Program Files\Tesseract-OCR"
+        if (Test-Path $tesseractPath) {
+          $tessdataPath = "$tesseractPath\tessdata"
+          if (-not (Test-Path $tessdataPath)) {
+            New-Item -ItemType Directory -Path $tessdataPath -Force | Out-Null
+          }
+
+          # Download English
+          if (-not (Test-Path "$tessdataPath\eng.traineddata")) {
+            Write-Host "Downloading English language data..."
+            $engUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata"
+            Invoke-WebRequest -Uri $engUrl -OutFile "$tessdataPath\eng.traineddata" -ErrorAction SilentlyContinue || `
+              Write-Host "::warning::Failed to download eng.traineddata"
+          }
+
+          # Download OSD
+          if (-not (Test-Path "$tessdataPath\osd.traineddata")) {
+            Write-Host "Downloading OSD data..."
+            $osdUrl = "https://github.com/tesseract-ocr/tessdata_fast/raw/main/osd.traineddata"
+            Invoke-WebRequest -Uri $osdUrl -OutFile "$tessdataPath\osd.traineddata" -ErrorAction SilentlyContinue || `
+              Write-Host "::warning::Failed to download osd.traineddata"
+          }
+
+          $env:TESSDATA_PREFIX = $tessdataPath
+          Add-Content -Path $env:GITHUB_ENV -Value "TESSDATA_PREFIX=$tessdataPath"
+        }
+
+        # Install libheif via vcpkg
+        $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+        $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
+        if (Test-Path $vcpkgExe) {
+          Write-Host "Installing libheif via vcpkg..."
+          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse || `
+            Write-Host "::warning::Failed to install libheif via vcpkg"
+
+          Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+        }
+
+        Write-Host "::endgroup::"

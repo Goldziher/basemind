@@ -159,6 +159,9 @@ struct Filters {
     /// .skip_submodules` is true, any candidate path under one of these prefixes is filtered
     /// out before extraction. Empty when there are no submodules or the knob is disabled.
     submodule_roots: Vec<String>,
+    /// Pre-built `"{root}/"` prefix strings for each submodule root — avoids a `format!`
+    /// allocation per candidate file in the `allows` hot path.
+    submodule_prefixes: Vec<String>,
     /// Mirror of `config.scan.eager_l2`. When true the scanner runs L2 extraction inline
     /// with L1 and pushes calls to the Fjall index. Off → calls index stays stale until
     /// the on-demand lazy path runs.
@@ -169,7 +172,7 @@ impl Filters {
     fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
         let include = compile_globs(&config.scan.include)?;
         let exclude = compile_globs(&config.scan.exclude)?;
-        let submodule_roots = if config.scan.skip_submodules {
+        let submodule_roots: Vec<String> = if config.scan.skip_submodules {
             submodule_roots
                 .into_iter()
                 .map(|s| s.trim_end_matches('/').to_string())
@@ -178,11 +181,15 @@ impl Filters {
         } else {
             Vec::new()
         };
+        // Pre-build `"{root}/"` once so `allows` never calls `format!` per candidate file.
+        let submodule_prefixes: Vec<String> =
+            submodule_roots.iter().map(|r| format!("{r}/")).collect();
         Ok(Self {
             include,
             exclude,
             max_file_bytes: config.scan.max_file_bytes,
             submodule_roots,
+            submodule_prefixes,
             eager_l2: config.scan.eager_l2,
         })
     }
@@ -191,8 +198,12 @@ impl Filters {
         if self.exclude.is_match(rel) {
             return false;
         }
-        for root in &self.submodule_roots {
-            if rel == root || rel.starts_with(&format!("{root}/")) {
+        for (root, prefix) in self
+            .submodule_roots
+            .iter()
+            .zip(self.submodule_prefixes.iter())
+        {
+            if rel == root || rel.starts_with(prefix.as_str()) {
                 return false;
             }
         }
@@ -257,20 +268,19 @@ pub fn scan(
         .map(|rel| process_file(root, rel, &filters, store, &source, config, &scope))
         .collect();
 
-    let seen: ahash::AHashSet<String> = outcomes
+    // Borrow path strings directly from `outcomes` — avoids one String clone per indexed
+    // file. The `seen` set is built and consumed before `outcomes` is moved into
+    // `apply_outcomes`, so the `&str` borrows remain valid for the full window of use.
+    let seen: ahash::AHashSet<&str> = outcomes
         .iter()
         .filter_map(|r| match &r.status {
-            FileStatus::Updated { .. } | FileStatus::Unchanged => Some(r.path.clone()),
+            FileStatus::Updated { .. } | FileStatus::Unchanged => Some(r.path.as_str()),
             _ => None,
         })
         .collect();
 
-    let mut report = ScanReport::default();
-    let doc_batches = apply_outcomes(store, &mut report, outcomes);
-
-    // Purge index entries for files no longer present / no longer allowed. Compare keys
-    // via lossy UTF-8 — `seen` is populated from `FileResult.path: String` which itself
-    // came through `to_string_lossy` during enumeration, so the round-trip is consistent.
+    // Compute stale keys while `outcomes` (and thus `seen`) are still alive, then consume
+    // both. `store` is not yet mutably borrowed here, so this read is fine.
     let stale: Vec<String> = store
         .index
         .files
@@ -278,6 +288,13 @@ pub fn scan(
         .filter(|k| !seen.contains(k.to_str_lossy().as_ref()))
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
+    // `seen` is no longer needed — drop it explicitly to release the borrows into `outcomes`.
+    drop(seen);
+
+    let mut report = ScanReport::default();
+    let doc_batches = apply_outcomes(store, &mut report, outcomes);
+
+    // Purge index entries for files no longer present / no longer allowed.
     for k in &stale {
         store.remove(k);
         if let Some(idx) = store.index_db.as_ref() {
@@ -553,10 +570,14 @@ fn process_file(
     }
 
     let hash = hashing::hash_bytes(&bytes);
-    let hash_hex = hashing::hex(&hash);
+    // Compare against the stored hash without allocating a String on the common
+    // unchanged-file path. `hex_buf` encodes into a stack buffer; `hex_str` borrows it.
+    // The owned `String` is deferred to `FileEntry` construction on the actual update path.
+    let hex_buf = hashing::hex_buf(&hash);
+    let hash_hex_str = hashing::hex_str(&hex_buf);
 
     if let Some(existing) = store.lookup(rel)
-        && existing.hash_hex == hash_hex
+        && existing.hash_hex == hash_hex_str
         && store.blob_path_l1(&hash).exists()
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
@@ -616,7 +637,7 @@ fn process_file(
     }
 
     let entry = FileEntry {
-        hash_hex,
+        hash_hex: hash_hex_str.to_string(),
         language: lang.to_string(),
         size_bytes,
         mtime,

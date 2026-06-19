@@ -14,7 +14,7 @@
   "skills": "./skills/",
   "mcpServers": {
     "basemind": {
-      "command": "basemind",
+      "command": "./scripts/mcp-launch.sh",
       "args": ["serve"]
     }
   }
