@@ -380,8 +380,14 @@ fn ensure_subdir(root: &Path, sub: &str) -> Result<(), CacheError> {
     fs::create_dir_all(&path).map_err(|source| CacheError::Io { path, source })
 }
 
+/// Monotonic per-process counter that makes temp-file names unique. PID alone collides when
+/// two threads in the *same* process write the same cache key concurrently — both would pick
+/// `<key>.msgpack.<pid>.tmp` and clobber each other mid-write. The counter splits them.
+static ATOMIC_WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension(format!("msgpack.{}.tmp", std::process::id()));
+    let seq = ATOMIC_WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("msgpack.{}.{seq}.tmp", std::process::id()));
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)
 }
@@ -450,5 +456,44 @@ pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
         if fs::remove_file(&path).is_ok() {
             over = over.saturating_sub(size);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::atomic_write;
+
+    /// Concurrent same-process writers to the *same* destination key must not clobber each
+    /// other's temp file mid-write: the final file is always one complete payload, never a
+    /// torn/empty file. PID-only temp names broke this; the per-process sequence fixes it.
+    #[test]
+    fn concurrent_same_key_writes_never_tear() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("k.msgpack");
+        // Distinct, equal-length payloads so a torn write would be detectable by content.
+        let payloads: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; 4096]).collect();
+        std::thread::scope(|scope| {
+            for p in &payloads {
+                let dest = dest.clone();
+                scope.spawn(move || atomic_write(&dest, p).expect("atomic_write"));
+            }
+        });
+        let got = std::fs::read(&dest).expect("dest exists");
+        assert_eq!(got.len(), 4096, "final file must be a complete payload");
+        let byte = got[0];
+        assert!(
+            got.iter().all(|&b| b == byte) && byte < 16,
+            "final file must be exactly one writer's payload, not a mix"
+        );
+        // No stray temp files left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "temp files must be renamed away, not orphaned"
+        );
     }
 }
