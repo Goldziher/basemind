@@ -15,18 +15,31 @@ if "%~1"=="" (
 )
 
 set "HOOK_DIR=%~dp0"
+set "HOOK_SCRIPT=%~1"
 
+REM Collect every argument after the script name, not just %2..%9 — `shift` past
+REM the first token then accumulate the rest so hooks invoked with 9+ args don't
+REM silently lose the tail.
+set "HOOK_ARGS="
+shift
+:collect_args
+if "%~1"=="" goto run_hook
+set "HOOK_ARGS=%HOOK_ARGS% %1"
+shift
+goto collect_args
+
+:run_hook
 if exist "C:\Program Files\Git\bin\bash.exe" (
-    "C:\Program Files\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    "C:\Program Files\Git\bin\bash.exe" "%HOOK_DIR%%HOOK_SCRIPT%"%HOOK_ARGS%
     exit /b %ERRORLEVEL%
 )
 if exist "C:\Program Files (x86)\Git\bin\bash.exe" (
-    "C:\Program Files (x86)\Git\bin\bash.exe" "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    "C:\Program Files (x86)\Git\bin\bash.exe" "%HOOK_DIR%%HOOK_SCRIPT%"%HOOK_ARGS%
     exit /b %ERRORLEVEL%
 )
 where bash >nul 2>nul
 if %ERRORLEVEL% equ 0 (
-    bash "%HOOK_DIR%%~1" %2 %3 %4 %5 %6 %7 %8 %9
+    bash "%HOOK_DIR%%HOOK_SCRIPT%"%HOOK_ARGS%
     exit /b %ERRORLEVEL%
 )
 
