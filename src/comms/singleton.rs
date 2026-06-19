@@ -63,11 +63,21 @@ pub enum SingletonError {
     SpawnTimeout,
 }
 
-/// Resolve the per-user comms paths via `directories::ProjectDirs::from("", "", "basemind")`.
-/// Creates the `comms/` directory (mode 0700 on Unix) as a side effect.
+/// Environment override for the comms data directory. When set, it is used verbatim as the
+/// `comms_dir` instead of the per-user `directories::ProjectDirs` location. Intended for tests,
+/// CI, and users who want the broker's socket + store in a custom (e.g. sandboxed) location.
+pub const COMMS_DIR_ENV: &str = "BASEMIND_COMMS_DIR";
+
+/// Resolve the per-user comms paths via `directories::ProjectDirs::from("", "", "basemind")`,
+/// or the [`COMMS_DIR_ENV`] override when set. Creates the dir (mode 0700 on Unix) as a side effect.
 pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
-    let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
-    let comms_dir = dirs.data_dir().join(COMMS_SUBDIR);
+    let comms_dir = match std::env::var_os(COMMS_DIR_ENV) {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => {
+            let dirs = ProjectDirs::from("", "", "basemind").ok_or(SingletonError::NoDataDir)?;
+            dirs.data_dir().join(COMMS_SUBDIR)
+        }
+    };
     std::fs::create_dir_all(&comms_dir).map_err(|source| SingletonError::Io {
         path: comms_dir.clone(),
         source,
