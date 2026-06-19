@@ -13,10 +13,18 @@ use crate::extract::SymbolKind;
 use crate::path::RelPath;
 
 /// `u16:name_len ‖ name`. Internal helper.
-fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u16::try_from(bytes.len()).expect("identifier > 64 KiB — pathological input");
+///
+/// Returns `None` when `bytes` exceeds 65535 bytes (the u16 ceiling). Path encoders that
+/// call this for `RelPath` components may ignore the return value with `let _ = …` — real
+/// file paths never hit 64 KiB. Identifier encoders (`symbol_by_name`, `call_by_callee`,
+/// `import_by_module`, `import_by_path`, `impl_by_trait`, `impl_by_path`) return `Option`
+/// and propagate `None` to their callers so that pathologically long tokens are silently
+/// skipped rather than panicking inside a rayon `par_iter`.
+fn write_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) -> Option<()> {
+    let len = u16::try_from(bytes.len()).ok()?;
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(bytes);
+    Some(())
 }
 
 fn read_len_prefixed(buf: &[u8], cursor: &mut usize) -> Option<Vec<u8>> {
@@ -54,7 +62,7 @@ fn read_len_prefixed_ref<'buf>(buf: &'buf [u8], cursor: &mut usize) -> Option<&'
 /// `symbols_by_path`: `u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
 pub fn symbol_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
     out
 }
@@ -62,7 +70,7 @@ pub fn symbol_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
 /// Prefix bytes for "all symbols in this file" — feed to `keyspace.prefix(..)`.
 pub fn symbols_by_path_prefix(rel: &RelPath) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out
 }
 
@@ -77,18 +85,26 @@ pub fn parse_symbol_by_path(key: &[u8]) -> Option<(RelPath, u32)> {
 }
 
 /// `symbols_by_name`: `u16:len(name) ‖ name ‖ kind:u8 ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-pub fn symbol_by_name(name: &str, kind: SymbolKind, rel: &RelPath, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `name` exceeds 65535 bytes. The caller skips the secondary-index
+/// entry but still writes the primary `symbols_by_path` entry so the outline stays complete.
+pub fn symbol_by_name(
+    name: &str,
+    kind: SymbolKind,
+    rel: &RelPath,
+    start_byte: u32,
+) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + name.len() + 1 + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, name.as_bytes());
+    write_len_prefixed(&mut out, name.as_bytes())?;
     out.push(symbol_kind_byte(kind));
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn symbols_by_name_prefix(name: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + name.len());
-    write_len_prefixed(&mut out, name.as_bytes());
+    let _ = write_len_prefixed(&mut out, name.as_bytes());
     out
 }
 
@@ -110,17 +126,20 @@ pub fn parse_symbol_by_name(key: &[u8]) -> Option<(String, SymbolKind, RelPath, 
 }
 
 /// `calls_by_callee`: `u16:len(callee) ‖ callee ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-pub fn call_by_callee(callee: &str, rel: &RelPath, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `callee` exceeds 65535 bytes. The caller skips the secondary-index
+/// entry but still writes the primary `calls_by_path` entry so the call record stays complete.
+pub fn call_by_callee(callee: &str, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + callee.len() + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, callee.as_bytes());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, callee.as_bytes())?;
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn calls_by_callee_prefix(callee: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + callee.len());
-    write_len_prefixed(&mut out, callee.as_bytes());
+    let _ = write_len_prefixed(&mut out, callee.as_bytes());
     out
 }
 
@@ -139,29 +158,32 @@ pub fn parse_call_by_callee(key: &[u8]) -> Option<(String, RelPath, u32)> {
 /// works the same way.
 pub fn call_by_path(rel: &RelPath, start_byte: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
     out
 }
 
 pub fn calls_by_path_prefix(rel: &RelPath) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out
 }
 
 /// `imports_by_module`: `u16:len(module) ‖ module ‖ u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-pub fn import_by_module(module: &str, rel: &RelPath, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `module` exceeds 65535 bytes. The caller skips the secondary-index
+/// entry but still writes the primary `imports_by_path` entry so the import record stays complete.
+pub fn import_by_module(module: &str, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + module.len() + 2 + rel.as_bytes().len() + 4);
-    write_len_prefixed(&mut out, module.as_bytes());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, module.as_bytes())?;
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn imports_by_module_prefix(module: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + module.len());
-    write_len_prefixed(&mut out, module.as_bytes());
+    let _ = write_len_prefixed(&mut out, module.as_bytes());
     out
 }
 
@@ -179,17 +201,20 @@ pub fn parse_import_by_module(key: &[u8]) -> Option<(String, RelPath, u32)> {
 /// `imports_by_path`: same role as `symbols_by_path` for the imports keyspace —
 /// gives O(prefix) deletion when re-upserting a file. Shape:
 /// `u16:len(rel) ‖ rel ‖ u16:len(module) ‖ module ‖ start_byte:u32_be`.
-pub fn import_by_path(rel: &RelPath, module: &str, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `module` exceeds 65535 bytes. The rel component is path-only
+/// and never reaches the 64 KiB ceiling.
+pub fn import_by_path(rel: &RelPath, module: &str, start_byte: u32) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 2 + module.len() + 4);
-    write_len_prefixed(&mut out, rel.as_bytes());
-    write_len_prefixed(&mut out, module.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, module.as_bytes())?;
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn imports_by_path_prefix(rel: &RelPath) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out
 }
 
@@ -207,20 +232,28 @@ pub fn parse_import_by_path(key: &[u8]) -> Option<(RelPath, String, u32)> {
 /// `implementations_by_trait`: prefix-scan keyspace for `find_implementations`. Shape:
 /// `u16:len(trait_name) ‖ trait_name ‖ u16:len(impl_type) ‖ impl_type ‖
 /// u16:len(rel) ‖ rel ‖ start_byte:u32_be`.
-pub fn impl_by_trait(trait_name: &str, impl_type: &str, rel: &RelPath, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `trait_name` or `impl_type` exceeds 65535 bytes. The caller skips
+/// the secondary-index entry but still writes the primary `implementations_by_path` entry.
+pub fn impl_by_trait(
+    trait_name: &str,
+    impl_type: &str,
+    rel: &RelPath,
+    start_byte: u32,
+) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(
         2 + trait_name.len() + 2 + impl_type.len() + 2 + rel.as_bytes().len() + 4,
     );
-    write_len_prefixed(&mut out, trait_name.as_bytes());
-    write_len_prefixed(&mut out, impl_type.as_bytes());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, trait_name.as_bytes())?;
+    write_len_prefixed(&mut out, impl_type.as_bytes())?;
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn impls_by_trait_prefix(trait_name: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + trait_name.len());
-    write_len_prefixed(&mut out, trait_name.as_bytes());
+    let _ = write_len_prefixed(&mut out, trait_name.as_bytes());
     out
 }
 
@@ -240,20 +273,28 @@ pub fn parse_impl_by_trait(key: &[u8]) -> Option<(String, String, RelPath, u32)>
 /// upsert is O(prefix) instead of a full-iter scan. Shape:
 /// `u16:len(rel) ‖ rel ‖ u16:len(trait_name) ‖ trait_name ‖
 /// u16:len(impl_type) ‖ impl_type ‖ start_byte:u32_be`.
-pub fn impl_by_path(rel: &RelPath, trait_name: &str, impl_type: &str, start_byte: u32) -> Vec<u8> {
+///
+/// Returns `None` when `trait_name` or `impl_type` exceeds 65535 bytes. The rel component
+/// is path-only and never reaches the 64 KiB ceiling.
+pub fn impl_by_path(
+    rel: &RelPath,
+    trait_name: &str,
+    impl_type: &str,
+    start_byte: u32,
+) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(
         2 + rel.as_bytes().len() + 2 + trait_name.len() + 2 + impl_type.len() + 4,
     );
-    write_len_prefixed(&mut out, rel.as_bytes());
-    write_len_prefixed(&mut out, trait_name.as_bytes());
-    write_len_prefixed(&mut out, impl_type.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
+    write_len_prefixed(&mut out, trait_name.as_bytes())?;
+    write_len_prefixed(&mut out, impl_type.as_bytes())?;
     out.extend_from_slice(&start_byte.to_be_bytes());
-    out
+    Some(out)
 }
 
 pub fn impls_by_path_prefix(rel: &RelPath) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
-    write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
     out
 }
 
@@ -274,16 +315,16 @@ pub fn parse_impl_by_path(key: &[u8]) -> Option<(RelPath, String, String, u32)> 
 /// `memory_by_key`: `u16:scope_len ‖ scope ‖ NUL ‖ u16:key_len ‖ key`.
 pub fn memory_by_key(scope: &str, key: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + scope.len() + 1 + 2 + key.len());
-    write_len_prefixed(&mut out, scope.as_bytes());
+    let _ = write_len_prefixed(&mut out, scope.as_bytes());
     out.push(0u8);
-    write_len_prefixed(&mut out, key.as_bytes());
+    let _ = write_len_prefixed(&mut out, key.as_bytes());
     out
 }
 
 /// Prefix bytes for "all memory entries in this scope" — feed to `keyspace.prefix(..)`.
 pub fn memory_by_key_scope_prefix(scope: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + scope.len() + 1);
-    write_len_prefixed(&mut out, scope.as_bytes());
+    let _ = write_len_prefixed(&mut out, scope.as_bytes());
     out.push(0u8);
     out
 }
@@ -372,7 +413,7 @@ mod tests {
     #[test]
     fn symbol_by_name_roundtrips_with_kind() {
         let rel = RelPath::from("src/foo.rs");
-        let key = symbol_by_name("alpha", SymbolKind::Function, &rel, 42);
+        let key = symbol_by_name("alpha", SymbolKind::Function, &rel, 42).unwrap();
         let (name, kind, back, start) = parse_symbol_by_name(&key).unwrap();
         assert_eq!(name, "alpha");
         assert_eq!(kind, SymbolKind::Function);
@@ -383,7 +424,7 @@ mod tests {
     #[test]
     fn call_by_callee_roundtrips() {
         let rel = RelPath::from("src/main.rs");
-        let key = call_by_callee("spawn", &rel, 999);
+        let key = call_by_callee("spawn", &rel, 999).unwrap();
         let (callee, back, start) = parse_call_by_callee(&key).unwrap();
         assert_eq!(callee, "spawn");
         assert_eq!(back, rel);
@@ -393,7 +434,7 @@ mod tests {
     #[test]
     fn import_by_module_roundtrips() {
         let rel = RelPath::from("src/foo.py");
-        let key = import_by_module("os.path", &rel, 0);
+        let key = import_by_module("os.path", &rel, 0).unwrap();
         let (module, back, start) = parse_import_by_module(&key).unwrap();
         assert_eq!(module, "os.path");
         assert_eq!(back, rel);
@@ -406,8 +447,8 @@ mod tests {
     #[test]
     fn prefix_scan_isolates_callees() {
         let rel = RelPath::from("a.rs");
-        let key_foo = call_by_callee("Foo", &rel, 1);
-        let key_foobar = call_by_callee("Foobar", &rel, 1);
+        let key_foo = call_by_callee("Foo", &rel, 1).unwrap();
+        let key_foobar = call_by_callee("Foobar", &rel, 1).unwrap();
         let prefix_foo = calls_by_callee_prefix("Foo");
         assert!(
             key_foo.starts_with(&prefix_foo),
@@ -422,7 +463,7 @@ mod tests {
     #[test]
     fn import_by_path_roundtrips() {
         let rel = RelPath::from("src/foo.py");
-        let key = import_by_path(&rel, "os.path", 42);
+        let key = import_by_path(&rel, "os.path", 42).unwrap();
         let (back_rel, module, start) = parse_import_by_path(&key).unwrap();
         assert_eq!(back_rel, rel);
         assert_eq!(module, "os.path");
@@ -435,8 +476,8 @@ mod tests {
     fn prefix_scan_isolates_imports_by_path() {
         let rel_a = RelPath::from("src/foo.py");
         let rel_b = RelPath::from("src/foo.py.bak");
-        let key_a = import_by_path(&rel_a, "os", 0);
-        let key_b = import_by_path(&rel_b, "os", 0);
+        let key_a = import_by_path(&rel_a, "os", 0).unwrap();
+        let key_b = import_by_path(&rel_b, "os", 0).unwrap();
         let prefix_a = imports_by_path_prefix(&rel_a);
         assert!(
             key_a.starts_with(&prefix_a),
@@ -451,7 +492,7 @@ mod tests {
     #[test]
     fn impl_by_trait_roundtrips() {
         let rel = RelPath::from("src/foo.rs");
-        let key = impl_by_trait("Display", "Foo", &rel, 42);
+        let key = impl_by_trait("Display", "Foo", &rel, 42).unwrap();
         let (trait_name, impl_type, back_rel, start) = parse_impl_by_trait(&key).unwrap();
         assert_eq!(trait_name, "Display");
         assert_eq!(impl_type, "Foo");
@@ -462,7 +503,7 @@ mod tests {
     #[test]
     fn impl_by_path_roundtrips() {
         let rel = RelPath::from("src/foo.rs");
-        let key = impl_by_path(&rel, "Display", "Foo", 42);
+        let key = impl_by_path(&rel, "Display", "Foo", 42).unwrap();
         let (back_rel, trait_name, impl_type, start) = parse_impl_by_path(&key).unwrap();
         assert_eq!(back_rel, rel);
         assert_eq!(trait_name, "Display");
@@ -474,8 +515,8 @@ mod tests {
     #[test]
     fn prefix_scan_isolates_impls_by_trait() {
         let rel = RelPath::from("a.rs");
-        let key_a = impl_by_trait("Display", "Foo", &rel, 1);
-        let key_b = impl_by_trait("DisplayFmt", "Foo", &rel, 1);
+        let key_a = impl_by_trait("Display", "Foo", &rel, 1).unwrap();
+        let key_b = impl_by_trait("DisplayFmt", "Foo", &rel, 1).unwrap();
         let prefix = impls_by_trait_prefix("Display");
         assert!(
             key_a.starts_with(&prefix),
@@ -493,8 +534,8 @@ mod tests {
     fn prefix_scan_isolates_impls_by_path() {
         let rel_a = RelPath::from("src/foo.rs");
         let rel_b = RelPath::from("src/foo.rs.bak");
-        let key_a = impl_by_path(&rel_a, "Display", "Foo", 0);
-        let key_b = impl_by_path(&rel_b, "Display", "Foo", 0);
+        let key_a = impl_by_path(&rel_a, "Display", "Foo", 0).unwrap();
+        let key_b = impl_by_path(&rel_b, "Display", "Foo", 0).unwrap();
         let prefix_a = impls_by_path_prefix(&rel_a);
         assert!(
             key_a.starts_with(&prefix_a),
@@ -537,5 +578,39 @@ mod tests {
         for k in all {
             assert_eq!(symbol_kind_from_byte(symbol_kind_byte(k)), k);
         }
+    }
+
+    /// All six identifier-encoding functions must return `None` at the 65536-byte boundary
+    /// rather than panicking. This protects the rayon `par_iter` scan from being aborted
+    /// by a single pathologically long token.
+    #[test]
+    fn oversized_identifier_returns_none() {
+        let huge = "x".repeat(65536);
+        let rel = RelPath::from("a.rs");
+
+        assert!(
+            symbol_by_name(&huge, SymbolKind::Function, &rel, 0).is_none(),
+            "symbol_by_name must return None for a 65536-byte name"
+        );
+        assert!(
+            call_by_callee(&huge, &rel, 0).is_none(),
+            "call_by_callee must return None for a 65536-byte callee"
+        );
+        assert!(
+            import_by_module(&huge, &rel, 0).is_none(),
+            "import_by_module must return None for a 65536-byte module"
+        );
+        assert!(
+            import_by_path(&rel, &huge, 0).is_none(),
+            "import_by_path must return None for a 65536-byte module"
+        );
+        assert!(
+            impl_by_trait(&huge, "T", &rel, 0).is_none(),
+            "impl_by_trait must return None for a 65536-byte trait name"
+        );
+        assert!(
+            impl_by_path(&rel, &huge, "T", 0).is_none(),
+            "impl_by_path must return None for a 65536-byte trait name"
+        );
     }
 }

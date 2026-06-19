@@ -62,9 +62,16 @@ pub struct IndexDb {
     #[allow(dead_code)] // used by `peek_schema_version` only; kept on the handle for future writes
     pub(crate) meta: Keyspace,
     pub(crate) symbols_by_path: Keyspace,
+    /// Reserved fast-path partition: written on every upsert so that future name-based
+    /// symbol search can skip the in-RAM linear scan. Not yet read by any MCP query path;
+    /// kept to avoid a schema migration when the read path lands.
     pub(crate) symbols_by_name: Keyspace,
     pub(crate) calls_by_path: Keyspace,
     pub(crate) calls_by_callee: Keyspace,
+    /// Reserved fast-path partition: written on every upsert so that future
+    /// `dependents`-by-module queries can use a prefix scan instead of iterating the
+    /// full import set. Not yet read by any MCP query path; kept to avoid a schema
+    /// migration when the read path lands.
     pub(crate) imports_by_module: Keyspace,
     pub(crate) imports_by_path: Keyspace,
     /// `implementations_by_trait`: prefix scans on trait name — backs `find_implementations`.

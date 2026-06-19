@@ -52,8 +52,9 @@ proptest! {
     ) {
         let rel = RelPath::from(rel_bytes.as_slice());
 
-        // symbol_by_name
-        let key = symbol_by_name(&name, SymbolKind::Function, &rel, start_byte);
+        // symbol_by_name — names are ≤64 chars so encoding cannot fail.
+        let key = symbol_by_name(&name, SymbolKind::Function, &rel, start_byte)
+            .expect("symbol_by_name: name is ≤64 chars so encoding cannot fail");
         let (decoded_name, decoded_kind, decoded_rel, decoded_start) =
             parse_symbol_by_name(&key).expect("parse_symbol_by_name failed");
         prop_assert_eq!(&decoded_name, &name);
@@ -61,24 +62,27 @@ proptest! {
         prop_assert_eq!(decoded_rel.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start, start_byte);
 
-        // call_by_callee
-        let key = call_by_callee(&name, &rel, start_byte);
+        // call_by_callee — names are ≤64 chars so encoding cannot fail.
+        let key = call_by_callee(&name, &rel, start_byte)
+            .expect("call_by_callee: name is ≤64 chars so encoding cannot fail");
         let (decoded_callee, decoded_rel2, decoded_start2) =
             parse_call_by_callee(&key).expect("parse_call_by_callee failed");
         prop_assert_eq!(&decoded_callee, &name);
         prop_assert_eq!(decoded_rel2.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start2, start_byte);
 
-        // import_by_module
-        let key = import_by_module(&name, &rel, start_byte);
+        // import_by_module — names are ≤64 chars so encoding cannot fail.
+        let key = import_by_module(&name, &rel, start_byte)
+            .expect("import_by_module: name is ≤64 chars so encoding cannot fail");
         let (decoded_module, decoded_rel3, decoded_start3) =
             parse_import_by_module(&key).expect("parse_import_by_module failed");
         prop_assert_eq!(&decoded_module, &name);
         prop_assert_eq!(decoded_rel3.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start3, start_byte);
 
-        // impl_by_trait
-        let key = impl_by_trait(&name, &impl_type, &rel, start_byte);
+        // impl_by_trait — names are ≤64 chars so encoding cannot fail.
+        let key = impl_by_trait(&name, &impl_type, &rel, start_byte)
+            .expect("impl_by_trait: name is ≤64 chars so encoding cannot fail");
         let (decoded_trait, decoded_impl_type, decoded_rel4, decoded_start4) =
             parse_impl_by_trait(&key).expect("parse_impl_by_trait failed");
         prop_assert_eq!(&decoded_trait, &name);
@@ -86,8 +90,9 @@ proptest! {
         prop_assert_eq!(decoded_rel4.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start4, start_byte);
 
-        // impl_by_path
-        let key = impl_by_path(&rel, &name, &impl_type, start_byte);
+        // impl_by_path — names are ≤64 chars so encoding cannot fail.
+        let key = impl_by_path(&rel, &name, &impl_type, start_byte)
+            .expect("impl_by_path: name is ≤64 chars so encoding cannot fail");
         let (decoded_rel5, decoded_trait2, decoded_impl_type2, decoded_start5) =
             parse_impl_by_path(&key).expect("parse_impl_by_path failed");
         prop_assert_eq!(decoded_rel5.as_bytes(), rel.as_bytes());

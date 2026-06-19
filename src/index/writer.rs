@@ -52,13 +52,22 @@ impl IndexWriter {
         let mut found_symbols: Vec<(Vec<u8>, Symbol)> = Vec::new();
         for guard in self.db.symbols_by_path.prefix(path_prefix) {
             let (k, v) = guard.into_inner()?;
-            let sym: Symbol = rmp_serde::from_slice(&v)?;
-            found_symbols.push(((*k).to_vec(), sym));
+            match rmp_serde::from_slice::<Symbol>(&v) {
+                Ok(sym) => found_symbols.push(((*k).to_vec(), sym)),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %rel,
+                        error = %e,
+                        "index: failed to decode Symbol blob during delete staging — skipping entry"
+                    );
+                }
+            }
         }
         for (path_key, sym) in found_symbols {
-            let name_key = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte);
             self.batch.remove(&self.db.symbols_by_path, path_key);
-            self.batch.remove(&self.db.symbols_by_name, name_key);
+            if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
+                self.batch.remove(&self.db.symbols_by_name, name_key);
+            }
         }
 
         // Calls: scan calls_by_path under this file's prefix, decode each Call to derive
@@ -67,13 +76,22 @@ impl IndexWriter {
         let mut found_calls: Vec<(Vec<u8>, crate::extract::Call)> = Vec::new();
         for guard in self.db.calls_by_path.prefix(call_path_prefix) {
             let (k, v) = guard.into_inner()?;
-            let call: crate::extract::Call = rmp_serde::from_slice(&v)?;
-            found_calls.push(((*k).to_vec(), call));
+            match rmp_serde::from_slice::<crate::extract::Call>(&v) {
+                Ok(call) => found_calls.push(((*k).to_vec(), call)),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %rel,
+                        error = %e,
+                        "index: failed to decode Call blob during delete staging — skipping entry"
+                    );
+                }
+            }
         }
         for (path_key, call) in found_calls {
-            let callee_key = keys::call_by_callee(&call.callee, rel, call.start_byte);
             self.batch.remove(&self.db.calls_by_path, path_key);
-            self.batch.remove(&self.db.calls_by_callee, callee_key);
+            if let Some(callee_key) = keys::call_by_callee(&call.callee, rel, call.start_byte) {
+                self.batch.remove(&self.db.calls_by_callee, callee_key);
+            }
         }
 
         // Imports: prefix-scan imports_by_path for this file, derive the
@@ -88,9 +106,10 @@ impl IndexWriter {
             }
         }
         for (path_key, module, start_byte) in found_imports {
-            let module_key = keys::import_by_module(&module, rel, start_byte);
             self.batch.remove(&self.db.imports_by_path, path_key);
-            self.batch.remove(&self.db.imports_by_module, module_key);
+            if let Some(module_key) = keys::import_by_module(&module, rel, start_byte) {
+                self.batch.remove(&self.db.imports_by_module, module_key);
+            }
         }
 
         // Implementations: prefix-scan implementations_by_path for this file, derive the
@@ -105,11 +124,12 @@ impl IndexWriter {
             }
         }
         for (path_key, trait_name, impl_type, start_byte) in found_impls {
-            let trait_key = keys::impl_by_trait(&trait_name, &impl_type, rel, start_byte);
             self.batch
                 .remove(&self.db.implementations_by_path, path_key);
-            self.batch
-                .remove(&self.db.implementations_by_trait, trait_key);
+            if let Some(trait_key) = keys::impl_by_trait(&trait_name, &impl_type, rel, start_byte) {
+                self.batch
+                    .remove(&self.db.implementations_by_trait, trait_key);
+            }
         }
         Ok(())
     }
@@ -122,43 +142,87 @@ impl IndexWriter {
     ) -> Result<(), IndexError> {
         for sym in &l1.symbols {
             let path_key = keys::symbol_by_path(rel, sym.start_byte);
-            let name_key = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte);
             let value = rmp_serde::to_vec_named(sym)?;
+            // Always write the primary (by-path) entry so the outline stays complete.
             self.batch.insert(&self.db.symbols_by_path, path_key, value);
-            self.batch
-                .insert(&self.db.symbols_by_name, name_key, Vec::<u8>::new());
+            // Secondary (by-name) entry is skipped silently for oversized identifiers.
+            if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
+                self.batch
+                    .insert(&self.db.symbols_by_name, name_key, Vec::<u8>::new());
+            } else {
+                tracing::debug!(
+                    path = %rel,
+                    name_len = sym.name.len(),
+                    "index: symbol name exceeds 64 KiB — skipping symbols_by_name entry"
+                );
+            }
         }
         for imp in &l1.imports {
             if let Some(module) = &imp.module {
-                let module_key = keys::import_by_module(module, rel, imp.start_byte);
-                let path_key = keys::import_by_path(rel, module, imp.start_byte);
-                self.batch
-                    .insert(&self.db.imports_by_module, module_key, Vec::<u8>::new());
-                self.batch
-                    .insert(&self.db.imports_by_path, path_key, Vec::<u8>::new());
+                // Both partitions are secondary: skip both on oversized module names.
+                match (
+                    keys::import_by_module(module, rel, imp.start_byte),
+                    keys::import_by_path(rel, module, imp.start_byte),
+                ) {
+                    (Some(module_key), Some(path_key)) => {
+                        self.batch
+                            .insert(&self.db.imports_by_module, module_key, Vec::<u8>::new());
+                        self.batch
+                            .insert(&self.db.imports_by_path, path_key, Vec::<u8>::new());
+                    }
+                    _ => {
+                        tracing::debug!(
+                            path = %rel,
+                            module_len = module.len(),
+                            "index: import module name exceeds 64 KiB — skipping imports index entries"
+                        );
+                    }
+                }
             }
         }
         if let Some(l2) = l2 {
             for call in &l2.calls {
                 let path_key = keys::call_by_path(rel, call.start_byte);
-                let callee_key = keys::call_by_callee(&call.callee, rel, call.start_byte);
                 let value = rmp_serde::to_vec_named(call)?;
+                // Always write the primary (by-path) entry.
                 self.batch.insert(&self.db.calls_by_path, path_key, value);
-                self.batch
-                    .insert(&self.db.calls_by_callee, callee_key, Vec::<u8>::new());
+                // Secondary (by-callee) entry is skipped silently for oversized callee names.
+                if let Some(callee_key) = keys::call_by_callee(&call.callee, rel, call.start_byte) {
+                    self.batch
+                        .insert(&self.db.calls_by_callee, callee_key, Vec::<u8>::new());
+                } else {
+                    tracing::debug!(
+                        path = %rel,
+                        callee_len = call.callee.len(),
+                        "index: callee name exceeds 64 KiB — skipping calls_by_callee entry"
+                    );
+                }
             }
         }
         for imp in &l1.implementations {
-            let trait_key =
-                keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte);
-            let path_key = keys::impl_by_path(rel, &imp.trait_name, &imp.impl_type, imp.start_byte);
-            self.batch.insert(
-                &self.db.implementations_by_trait,
-                trait_key,
-                Vec::<u8>::new(),
-            );
-            self.batch
-                .insert(&self.db.implementations_by_path, path_key, Vec::<u8>::new());
+            // Both partitions are secondary: skip both on oversized trait/impl-type names.
+            match (
+                keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte),
+                keys::impl_by_path(rel, &imp.trait_name, &imp.impl_type, imp.start_byte),
+            ) {
+                (Some(trait_key), Some(path_key)) => {
+                    self.batch.insert(
+                        &self.db.implementations_by_trait,
+                        trait_key,
+                        Vec::<u8>::new(),
+                    );
+                    self.batch
+                        .insert(&self.db.implementations_by_path, path_key, Vec::<u8>::new());
+                }
+                _ => {
+                    tracing::debug!(
+                        path = %rel,
+                        trait_len = imp.trait_name.len(),
+                        impl_len = imp.impl_type.len(),
+                        "index: trait/impl-type name exceeds 64 KiB — skipping implementations index entries"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -464,5 +528,44 @@ mod tests {
 
         assert!(db.imports_by_module.iter().next().is_none());
         assert!(db.imports_by_path.iter().next().is_none());
+    }
+
+    /// Mixed oversized/normal upsert: the normal symbol must land in both partitions, the
+    /// oversized symbol must land only in `symbols_by_path` (outline stays complete). No
+    /// panic, no error propagated.
+    #[test]
+    fn oversized_identifier_skipped_gracefully() {
+        let (_d, db) = fresh_db();
+        let rel = RelPath::from("src/big.rs");
+        let huge_name = "x".repeat(65536);
+        let l1 = synthetic_l1(&[
+            ("normal_fn", SymbolKind::Function, 0),
+            (&huge_name, SymbolKind::Function, 100),
+        ]);
+        let mut w = db.writer();
+        // Must not panic.
+        w.upsert_file(&rel, &l1, None).unwrap();
+        w.commit().unwrap();
+
+        // Both symbols appear in the primary partition (outlines complete).
+        assert_eq!(
+            db.symbols_by_path.iter().count(),
+            2,
+            "both symbols must be in symbols_by_path"
+        );
+        // Only the normal symbol appears in the secondary partition.
+        assert_eq!(
+            db.symbols_by_name.iter().count(),
+            1,
+            "only the normal symbol must be in symbols_by_name"
+        );
+        // Prefix scan finds the normal symbol.
+        let prefix = keys::symbols_by_name_prefix("normal_fn");
+        let hits: Vec<_> = db
+            .symbols_by_name
+            .prefix(prefix)
+            .map(|g| g.into_inner().unwrap())
+            .collect();
+        assert_eq!(hits.len(), 1);
     }
 }

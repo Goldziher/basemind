@@ -255,7 +255,12 @@ fn window_cutoff_micros(window: &str) -> Result<Option<i64>, &'static str> {
 
 /// Read up to [`TELEMETRY_SUMMARY_READ_CAP`] rows from the JSONL tail, oldest-first.
 /// Missing file = empty vec (no panic, no error — the dashboard just shows zeros).
+///
+/// Uses a `VecDeque` ring-buffer so that evicting the oldest row during a bounded read is
+/// O(1) (`pop_front`) rather than O(n) (`Vec::remove(0)`), which matters on long-lived
+/// servers with millions of telemetry rows.
 fn read_telemetry_tail(path: &std::path::Path) -> Result<Vec<TelemetryRow>, std::io::Error> {
+    use std::collections::VecDeque;
     use std::io::{BufRead, BufReader};
     let file = match std::fs::File::open(path) {
         Ok(f) => f,
@@ -263,19 +268,19 @@ fn read_telemetry_tail(path: &std::path::Path) -> Result<Vec<TelemetryRow>, std:
         Err(e) => return Err(e),
     };
     let reader = BufReader::new(file);
-    let mut rows: Vec<TelemetryRow> = Vec::with_capacity(TELEMETRY_SUMMARY_READ_CAP);
+    let mut rows: VecDeque<TelemetryRow> = VecDeque::with_capacity(TELEMETRY_SUMMARY_READ_CAP);
     for line in reader.lines().map_while(Result::ok) {
         if line.trim().is_empty() {
             continue;
         }
         if let Ok(row) = serde_json::from_str::<TelemetryRow>(&line) {
             if rows.len() == TELEMETRY_SUMMARY_READ_CAP {
-                rows.remove(0); // drop oldest in-memory; cheap on Vec at this size
+                rows.pop_front(); // O(1) eviction of the oldest row
             }
-            rows.push(row);
+            rows.push_back(row);
         }
     }
-    Ok(rows)
+    Ok(rows.into_iter().collect())
 }
 
 #[cfg(test)]
@@ -321,5 +326,53 @@ mod tests {
         assert_eq!(a, b);
         assert_ne!(a, c);
         assert_eq!(a.len(), 16);
+    }
+
+    /// `read_telemetry_tail` evicts the oldest row (not the newest) once the cap is hit,
+    /// and returns rows in oldest-first order so that `summarize` can iterate `.rev()` for
+    /// the most-recent-N window.
+    #[test]
+    fn tail_read_evicts_oldest_and_preserves_order() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(TELEMETRY_FILENAME);
+        let savings = SavingsRow {
+            baseline_tokens: 100,
+            actual_tokens: 10,
+            est_tokens_saved: 90,
+            baseline: "test",
+        };
+        // Write (TELEMETRY_SUMMARY_READ_CAP + 2) rows with distinct tool names so we can
+        // verify which ones survive the cap eviction.
+        let tel = Telemetry::new(dir.path());
+        for i in 0..(TELEMETRY_SUMMARY_READ_CAP + 2) {
+            tel.record(&format!("tool_{i:05}"), &json!({}), 0, 0, &savings);
+        }
+
+        let rows = read_telemetry_tail(&path).unwrap();
+
+        // Exactly TELEMETRY_SUMMARY_READ_CAP rows survive.
+        assert_eq!(rows.len(), TELEMETRY_SUMMARY_READ_CAP);
+
+        // The two oldest rows must have been evicted: first survivor is tool_00002.
+        assert_eq!(
+            rows[0].tool, "tool_00002",
+            "oldest two rows must be evicted; first survivor should be tool_00002"
+        );
+        // Order is oldest-first (ascending).
+        let last_expected = format!("tool_{:05}", TELEMETRY_SUMMARY_READ_CAP + 1);
+        assert_eq!(
+            rows[rows.len() - 1].tool,
+            last_expected,
+            "last row must be the most-recently written one"
+        );
+        // Monotonically increasing tool names confirm no re-ordering.
+        for w in rows.windows(2) {
+            assert!(
+                w[0].tool < w[1].tool,
+                "rows must be in oldest-first (ascending) order: {} >= {}",
+                w[0].tool,
+                w[1].tool
+            );
+        }
     }
 }
