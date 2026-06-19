@@ -587,3 +587,59 @@ fn build_engine_handles_tight_bounds() {
         "tight non-zero bounds must still build a valid engine"
     );
 }
+
+// ─── Per-call crawl override (mirrors helpers_web::per_call_engine) ──────────
+
+/// `web_crawl` honours per-call `max_pages` / `max_depth` by cloning the server
+/// `[crawl]` config, overriding those two fields, and building a one-shot
+/// engine. This test reproduces that exact mechanism: start from a permissive
+/// server default, clone + override down to `max_pages = 2`, and prove the
+/// resulting engine enforces the per-call cap (not the server default).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn per_call_override_caps_pages_below_server_default() {
+    let server = MockServer::start().await;
+    let origin = server.uri();
+    let leaf_list: String = (0..20)
+        .map(|i| format!("<a href=\"{origin}/leaf{i}\">leaf{i}</a>"))
+        .collect();
+    let index_html = format!("<html><body>{leaf_list}</body></html>");
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(index_html),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(wiremock::matchers::path_regex("^/leaf[0-9]+$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string("<html><body>leaf body</body></html>"),
+        )
+        .mount(&server)
+        .await;
+
+    // Server default is permissive (would visit many pages)…
+    let server_default = CrawlConfig {
+        max_pages: 50,
+        max_depth: 5,
+        ..CrawlConfig::default()
+    };
+    // …but the per-call override clamps to 2 pages, exactly as
+    // `per_call_engine` does for an MCP/CLI `web_crawl { max_pages: 2 }`.
+    let mut per_call = server_default.clone();
+    per_call.max_pages = 2;
+    let engine = build_engine(&per_call).expect("per-call engine");
+
+    let url = format!("{origin}/");
+    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+
+    assert!(
+        result.pages.len() <= 2,
+        "per-call max_pages=2 must override the server default of 50; got {} pages",
+        result.pages.len()
+    );
+}
