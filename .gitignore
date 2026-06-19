@@ -38,3 +38,7 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 # END ai-rulez
+
+# Python bytecode
+__pycache__/
+*.pyc
