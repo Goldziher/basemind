@@ -51,10 +51,22 @@ pub fn normalize_remote_url(url: &str) -> String {
     {
         s = s[at + 1..].to_string();
     }
+    // Strip an explicit `:<port>` segment in the host position before the scp-form colon
+    // rewrite. Without this, `ssh://git@github.com:22/Foo/bar` (port form) rewrites to
+    // `github.com/22/Foo/bar`, diverging from the https form's `github.com/Foo/bar` and
+    // splitting the memory scope across ssh+port vs https clones of the same repo.
     if let Some(colon) = s.find(':')
         && !s[..colon].contains('/')
     {
-        s.replace_range(colon..=colon, "/");
+        let after = &s[colon + 1..];
+        let port_len = after.bytes().take_while(u8::is_ascii_digit).count();
+        if port_len > 0 && after[port_len..].starts_with('/') {
+            // `host:22/path` → `host/path`: drop the colon and the digit run, keep the slash.
+            s.replace_range(colon..colon + 1 + port_len, "");
+        } else {
+            // scp form `host:path` → `host/path`: turn the single colon into a slash.
+            s.replace_range(colon..=colon, "/");
+        }
     }
     if let Some(stripped) = s.strip_suffix(".git") {
         s = stripped.to_string();
@@ -89,6 +101,22 @@ mod tests {
         assert_eq!(
             normalize_remote_url("ssh://git@github.com/Foo/bar.git/"),
             "github.com/Foo/bar"
+        );
+    }
+
+    #[test]
+    fn ssh_with_port_normalizes_to_same_scope_as_https_and_scp() {
+        let expected = "github.com/Foo/bar";
+        assert_eq!(
+            normalize_remote_url("ssh://git@github.com:22/Foo/bar"),
+            expected
+        );
+        assert_eq!(normalize_remote_url("git@github.com:Foo/bar"), expected);
+        assert_eq!(normalize_remote_url("https://github.com/Foo/bar"), expected);
+        // `.git` suffix + ssh port should still collapse identically.
+        assert_eq!(
+            normalize_remote_url("ssh://git@github.com:22/Foo/bar.git"),
+            expected
         );
     }
 
