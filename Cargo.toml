@@ -48,10 +48,12 @@ intelligence = [
 # plus the full RAG-supporting analysis stack (chunking, keywords, NER, layout,
 # OCR, summarization, redaction). `embeddings` already implies `chunking` and
 # bundles ORT binaries (ort-bundled) so no system onnxruntime install is
-# required. LLM-driven features (liter-llm, ner-llm, summarization-llm,
-# translation, classification, captioning, redaction-ml) are intentionally
-# excluded — they require an external API key and would force runtime config
-# on every basemind user.
+# required. `summarization-llm` IS bundled, but it stays dormant unless an
+# `[llm]` config block (model + api_key) is supplied — with no key it is a no-op,
+# so it imposes no runtime config burden on the default user. The remaining
+# LLM-driven features (liter-llm, ner-llm, translation, classification,
+# captioning, redaction-ml) are intentionally excluded — they require an external
+# API key to do anything useful.
 documents = [
     "intelligence",
     "kreuzberg/formats",

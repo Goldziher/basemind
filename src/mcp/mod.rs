@@ -1,8 +1,10 @@
 //! MCP server exposing the basemind code map + git context to AI agents.
 //!
-//! The server is read-only and opens the store without taking the exclusive lock so it can
-//! coexist with `basemind watch` running in another terminal. Tools return JSON so the agent
-//! can navigate by file path + line numbers without opening source files.
+//! The server opens the store writably and is the canonical Fjall owner: it holds the exclusive
+//! lock so the in-process `rescan` tool (and the background watcher) can refresh the index. While
+//! a server is running, standalone `basemind scan` / `basemind watch` against the same repo fail
+//! fast with a lock error rather than racing it. Tools return JSON so the agent can navigate by
+//! file path + line numbers without opening source files.
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
