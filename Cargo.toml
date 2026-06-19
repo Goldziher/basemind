@@ -109,12 +109,21 @@ memory = [
 # IS the indexing sink for crawled pages.
 crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
 
+# Agent-to-agent communication: the singleton broker daemon, named rooms + per-agent
+# inbox, and the comms MCP/CLI surface. Pulls only small pure-Rust crates (directories,
+# tokio-util, a2a-types). The `AgentId`/`RoomId` newtypes in `comms::ids` are always
+# compiled (the split-memory tier needs them); this feature gates the daemon + tools.
+comms = ["dep:directories", "dep:tokio-util", "dep:a2a-types"]
+
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
-# `--features documents,memory,crawl`. Use this when you want one flag that
+# `--features documents,memory,crawl,comms`. Use this when you want one flag that
 # always pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory", "crawl"]
+full = ["documents", "memory", "crawl", "comms"]
 
 [dependencies]
+# A2A (Agent2Agent) message/agent-card type shapes, for the comms feature. Types-only
+# crate (MIT); we align our wire schema with it so a future A2A HTTP front-end is additive.
+a2a-types = { version = "0.2", optional = true }
 ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
@@ -129,6 +138,8 @@ arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+# User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
+directories = { version = "6", optional = true }
 fjall = "3.1.5"
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
@@ -160,7 +171,9 @@ serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
 streaming-iterator = "0.1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time", "net", "fs", "process"] }
+# Length-delimited framing for the comms daemon IPC (Unix socket / named pipe).
+tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
