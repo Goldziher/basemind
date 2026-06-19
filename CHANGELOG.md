@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Agent-to-agent communication + split memory (in progress).** Memory now has an
+  **individual** (per-agent) tier alongside the existing **group** (shared) tier, selected by a
+  `visibility` parameter; agent identity comes from `BASEMIND_AGENT_ID` (falling back to the MCP
+  client identity, then `anon`). A singleton broker daemon, named rooms, and a per-agent inbox
+  (A2A-aligned message schema) follow in subsequent commits.
+
+### Changed
+- **Schema bump: `RELEASE_MINOR` 4 → 5.** The blob, Fjall-index, and LanceDB `memory`/`documents`
+  schema versions advance, so the first `basemind scan` / `serve` after upgrading **wipes and
+  rebuilds the `.basemind/` cache and the LanceDB store in place** (the latter now guarded by a
+  `memory_schema_ver` in `meta.json` so the memory-table column add never faults at query time).
+  Stored memory is rebuildable scratch, not a source of truth — re-`memory_put` anything you want
+  to keep, or expect it to be re-derived.
+
 ## [0.4.0] — 2026-06-19
 
 Minor release: `RELEASE_MINOR` bumps 3 → 4, so the blob + index schema versions advance.

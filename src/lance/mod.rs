@@ -32,15 +32,29 @@ use tokio::runtime::Runtime;
 
 use schema::{DOCUMENTS_TABLE, MEMORY_TABLE, documents_schema, memory_schema};
 
-/// On-disk metadata for the lance store. Tracks the vector dim + the
-/// embedding-model identifier; a mismatch on open wipes the store.
+/// On-disk metadata for the lance store. Tracks the vector dim, the
+/// embedding-model identifier, and the Arrow table schema version; a mismatch on
+/// any field wipes the store.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct LanceMeta {
     dim: u16,
     embedding_model: String,
+    /// Arrow schema version of the `memory` / `documents` tables (see
+    /// [`MEMORY_SCHEMA_VER`]). `#[serde(default)]` makes a pre-0.5 `meta.json` (which
+    /// lacks this field) deserialize as `0`, forcing a wipe on upgrade rather than a
+    /// parse error — the table column set changed, and a stale-arity table would fault
+    /// at batch-build time, not at open.
+    #[serde(default)]
+    schema_ver: u32,
 }
 
 const META_FILE: &str = "meta.json";
+
+/// Schema version of the lance Arrow tables, bound to the release minor exactly like
+/// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. Bump `RELEASE_MINOR` whenever the
+/// `memory` or `documents` table column set changes; the resulting `LanceMeta` mismatch
+/// wipes and rebuilds the lance dir.
+pub const MEMORY_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32;
 
 /// One row in the `documents` table.
 #[derive(Debug, Clone)]
@@ -107,14 +121,15 @@ struct LanceStoreInner {
 
 impl LanceStore {
     /// Open (or initialise) the lance store rooted at `dir`. If a pre-existing
-    /// meta.json reports a different `(dim, embedding_model)` pair, the entire
-    /// dir is wiped and rebuilt before the connection opens.
+    /// meta.json reports a different `(dim, embedding_model, schema_ver)` triple, the
+    /// entire dir is wiped and rebuilt before the connection opens.
     pub fn open(dir: &Path, dim: u16, embedding_model: &str) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let meta_path = dir.join(META_FILE);
         let expected = LanceMeta {
             dim,
             embedding_model: embedding_model.to_string(),
+            schema_ver: MEMORY_SCHEMA_VER,
         };
         wipe_on_mismatch(dir, &meta_path, &expected)?;
 
@@ -366,7 +381,9 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
         new_dim = expected.dim,
         old_model = %actual.embedding_model,
         new_model = %expected.embedding_model,
-        "lance store dim/model mismatch — wiping {}",
+        old_schema_ver = actual.schema_ver,
+        new_schema_ver = expected.schema_ver,
+        "lance store dim/model/schema mismatch — wiping {}",
         dir.display()
     );
     // Remove every file/dir under `dir` but keep the dir itself, so callers
@@ -595,4 +612,78 @@ pub fn now_micros() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     i64::try_from(dur.as_micros()).unwrap_or(i64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sentinel(dir: &std::path::Path) -> std::path::PathBuf {
+        let p = dir.join("sentinel");
+        std::fs::write(&p, b"keep-me").unwrap();
+        p
+    }
+
+    /// A pre-0.5 `meta.json` (no `schema_ver`) must deserialize as `schema_ver = 0` and,
+    /// because that differs from the current `MEMORY_SCHEMA_VER`, force a wipe — never a
+    /// parse error. This is the guard against the memory-table column add faulting at
+    /// batch-build time on upgrade.
+    #[test]
+    fn pre_0_5_meta_without_schema_ver_triggers_wipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join(META_FILE);
+        // Old layout: only dim + embedding_model, no schema_ver field.
+        std::fs::write(&meta_path, br#"{"dim":384,"embedding_model":"balanced"}"#).unwrap();
+        let keep = sentinel(dir.path());
+
+        let expected = LanceMeta {
+            dim: 384,
+            embedding_model: "balanced".to_string(),
+            schema_ver: MEMORY_SCHEMA_VER,
+        };
+        assert_ne!(
+            MEMORY_SCHEMA_VER, 0,
+            "current schema ver must differ from the legacy 0"
+        );
+        wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
+        assert!(!keep.exists(), "stale lance dir should have been wiped");
+    }
+
+    /// A matching `meta.json` (same dim, model, and `schema_ver`) leaves the store intact.
+    #[test]
+    fn matching_meta_preserves_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join(META_FILE);
+        let expected = LanceMeta {
+            dim: 384,
+            embedding_model: "balanced".to_string(),
+            schema_ver: MEMORY_SCHEMA_VER,
+        };
+        std::fs::write(&meta_path, serde_json::to_vec(&expected).unwrap()).unwrap();
+        let keep = sentinel(dir.path());
+
+        wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
+        assert!(keep.exists(), "matching meta must not wipe the store");
+    }
+
+    /// A bumped `schema_ver` (e.g. a future minor) on an otherwise-identical store wipes.
+    #[test]
+    fn schema_ver_bump_triggers_wipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_path = dir.path().join(META_FILE);
+        let on_disk = LanceMeta {
+            dim: 384,
+            embedding_model: "balanced".to_string(),
+            schema_ver: MEMORY_SCHEMA_VER,
+        };
+        std::fs::write(&meta_path, serde_json::to_vec(&on_disk).unwrap()).unwrap();
+        let keep = sentinel(dir.path());
+
+        let expected = LanceMeta {
+            schema_ver: MEMORY_SCHEMA_VER + 1,
+            ..on_disk
+        };
+        wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
+        assert!(!keep.exists(), "a schema_ver bump should wipe the store");
+    }
 }
