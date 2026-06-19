@@ -16,6 +16,7 @@
 //! `Url::parse` so the allowlist is the only construction path.
 
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -23,6 +24,78 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Allowed schemes for the basemind crawler. Adding a scheme here is a
 /// security decision — keep the list small.
 const ALLOWED_SCHEMES: &[&str] = &["http", "https"];
+
+/// Environment variable that, when set to `1`, disables the private-host
+/// denylist. Opt-in escape hatch for users that legitimately crawl loopback /
+/// RFC1918 / link-local hosts (e.g. an internal docs server).
+const ALLOW_PRIVATE_HOSTS_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
+
+/// Host names that always resolve to the loopback interface and so must be
+/// rejected alongside the literal loopback IPs. `url::Url` does not resolve
+/// DNS, so a textual `localhost` host never parses into an `IpAddr` — we match
+/// it by name.
+const LOOPBACK_HOST_NAMES: &[&str] = &["localhost"];
+
+/// Return `true` when the private-host denylist is disabled via the
+/// [`ALLOW_PRIVATE_HOSTS_ENV`] escape hatch.
+fn private_hosts_allowed() -> bool {
+    std::env::var(ALLOW_PRIVATE_HOSTS_ENV).is_ok_and(|v| v == "1")
+}
+
+/// Classify an IP address as private / non-routable for SSRF purposes.
+///
+/// Rejects loopback (`127.0.0.0/8`, `::1`), RFC1918 (`10/8`, `172.16/12`,
+/// `192.168/16`), link-local (`169.254/16`, `fe80::/10`), and IPv6
+/// unique-local (`fc00::/7`). IPv4-mapped IPv6 addresses are unwrapped first so
+/// `::ffff:127.0.0.1` cannot bypass the IPv4 classifiers.
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_private_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_private_v4(mapped);
+            }
+            is_private_v6(v6)
+        }
+    }
+}
+
+fn is_private_v4(v4: Ipv4Addr) -> bool {
+    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+}
+
+fn is_private_v6(v6: Ipv6Addr) -> bool {
+    // `Ipv6Addr::is_unique_local` / `is_unicast_link_local` are stable since
+    // Rust 1.84; both fall under our denylist (fc00::/7 and fe80::/10).
+    v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local()
+}
+
+/// Reject a host that points at a private / loopback / link-local address.
+///
+/// Returns `Ok(())` when the host is allowed (public, or the escape hatch is
+/// set), and [`UrlError::PrivateHost`] otherwise. Hosts that are textual names
+/// (not IP literals) only trip the `localhost` check — basemind does not resolve
+/// DNS at parse time, so a name that later resolves to a private IP is not
+/// caught here (defence-in-depth would require a resolving HTTP client hook).
+fn reject_private_host(host: Option<url::Host<&str>>) -> Result<(), UrlError> {
+    if private_hosts_allowed() {
+        return Ok(());
+    }
+    match host {
+        Some(url::Host::Ipv4(v4)) if is_private_v4(v4) => {
+            Err(UrlError::PrivateHost(v4.to_string()))
+        }
+        Some(url::Host::Ipv6(v6)) if is_private_ip(IpAddr::V6(v6)) => {
+            Err(UrlError::PrivateHost(v6.to_string()))
+        }
+        Some(url::Host::Domain(name))
+            if LOOPBACK_HOST_NAMES.contains(&name.to_ascii_lowercase().as_str()) =>
+        {
+            Err(UrlError::PrivateHost(name.to_string()))
+        }
+        _ => Ok(()),
+    }
+}
 
 /// Validated http/https URL. Cheap to clone (`url::Url` is a small struct over
 /// a single `String`).
@@ -38,6 +111,9 @@ impl Url {
         if !ALLOWED_SCHEMES.contains(&scheme) {
             return Err(UrlError::DisallowedScheme(scheme.to_string()));
         }
+        // SSRF guard: refuse private / loopback / link-local hosts unless the
+        // operator explicitly opted in via `BASEMIND_ALLOW_PRIVATE_HOSTS=1`.
+        reject_private_host(parsed.host())?;
         Ok(Self(parsed))
     }
 
@@ -84,6 +160,11 @@ pub enum UrlError {
     Invalid(String),
     #[error("disallowed URL scheme: {0:?} (only http/https are accepted by the basemind crawler)")]
     DisallowedScheme(String),
+    #[error(
+        "private / loopback / link-local host rejected: {0:?} \
+         (set BASEMIND_ALLOW_PRIVATE_HOSTS=1 to allow)"
+    )]
+    PrivateHost(String),
 }
 
 impl Serialize for Url {
@@ -174,5 +255,116 @@ mod tests {
     fn host_str_reports_authority() {
         let u = Url::parse("https://docs.rs/rmcp/").unwrap();
         assert_eq!(u.host_str(), Some("docs.rs"));
+    }
+
+    // ── SSRF host denylist ──────────────────────────────────────────────────
+    //
+    // These tests mutate a process-global env var. `ENV_LOCK` serializes them so
+    // the default-vs-override cases never observe each other's state.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn rejects_loopback_ipv4() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(matches!(
+            Url::parse("http://127.0.0.1/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_localhost_name() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(matches!(
+            Url::parse("http://localhost:8080/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+        assert!(matches!(
+            Url::parse("http://LOCALHOST/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_rfc1918_ranges() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        for host in ["10.0.0.1", "172.16.5.5", "192.168.1.1"] {
+            assert!(
+                matches!(
+                    Url::parse(&format!("http://{host}/")),
+                    Err(UrlError::PrivateHost(_))
+                ),
+                "{host} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_link_local_ipv4() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(matches!(
+            Url::parse("http://169.254.169.254/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_ipv6_loopback_and_unique_local() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(matches!(
+            Url::parse("http://[::1]/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+        assert!(
+            matches!(
+                Url::parse("http://[fc00::1]/"),
+                Err(UrlError::PrivateHost(_))
+            ),
+            "fc00::/7 unique-local must be rejected"
+        );
+        assert!(
+            matches!(
+                Url::parse("http://[fe80::1]/"),
+                Err(UrlError::PrivateHost(_))
+            ),
+            "fe80::/10 link-local must be rejected"
+        );
+    }
+
+    #[test]
+    fn rejects_ipv4_mapped_loopback() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        // ::ffff:127.0.0.1 must not bypass the IPv4 loopback classifier.
+        assert!(matches!(
+            Url::parse("http://[::ffff:127.0.0.1]/"),
+            Err(UrlError::PrivateHost(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_public_hosts() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(Url::parse("https://example.com/").is_ok());
+        assert!(Url::parse("http://8.8.8.8/").is_ok());
+        assert!(Url::parse("http://[2606:4700:4700::1111]/").is_ok());
+    }
+
+    #[test]
+    fn override_allows_private_hosts() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var(super::ALLOW_PRIVATE_HOSTS_ENV, "1") };
+        let result = Url::parse("http://127.0.0.1:9000/");
+        let localhost = Url::parse("http://localhost/");
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        assert!(result.is_ok(), "override must permit loopback IP");
+        assert!(localhost.is_ok(), "override must permit localhost name");
     }
 }
