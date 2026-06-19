@@ -12,9 +12,9 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types::{
+use super::types::SearchDocumentsParams;
+use super::types_memory::{
     MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
-    SearchDocumentsParams,
 };
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {

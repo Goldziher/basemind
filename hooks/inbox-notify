@@ -39,10 +39,10 @@ fi
 HWM="$(tr -cd '0-9' <"$HWM_FILE" 2>/dev/null)"
 [ -n "$HWM" ] || HWM=0
 
-NEW_LINES="$(printf '%s' "$INBOX_JSON" \
-  | jq -r --argjson hwm "$HWM" \
-      '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (id: \(.id))"' \
-  2>/dev/null)"
+NEW_LINES="$(printf '%s' "$INBOX_JSON" |
+  jq -r --argjson hwm "$HWM" \
+    '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (id: \(.id))"' \
+    2>/dev/null)"
 [ -n "$NEW_LINES" ] || exit 0
 
 # Advance the high-water mark so these messages are not re-injected next turn.

@@ -7,7 +7,7 @@
 //!
 //! `proto_ver` negotiation in [`CommsRequest::Hello`] guards version skew: the daemon rejects
 //! a client whose major protocol version it does not speak rather than silently
-//! mis-deserializing a future request shape.
+//! misreading a future request shape.
 
 use serde::{Deserialize, Serialize};
 

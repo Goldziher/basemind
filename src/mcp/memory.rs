@@ -12,7 +12,7 @@ use super::helpers::json_result;
 #[cfg(feature = "documents")]
 use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResponse};
 #[cfg(feature = "memory")]
-use super::types::{
+use super::types_memory::{
     MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams,
     MemoryListResponse, MemoryPutParams, MemoryPutResponse, MemoryRecord, MemorySearchHit,
     MemorySearchParams, MemorySearchResponse, Visibility,

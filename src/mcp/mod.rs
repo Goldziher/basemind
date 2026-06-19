@@ -40,6 +40,7 @@ mod types_comms;
 mod types_documents;
 mod types_graph;
 mod types_impls;
+mod types_memory;
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -68,17 +69,19 @@ pub mod params {
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams,
         DiffFileParams, DiffOutlineParams, FindCallersParams, FindCommitsByPathParams,
-        FindReferencesParams, HotFilesParams, ListFilesParams, MemoryDeleteParams, MemoryGetParams,
-        MemoryListParams, MemoryPutParams, MemorySearchParams, OutlineParams, RecentChangesParams,
+        FindReferencesParams, HotFilesParams, ListFilesParams, OutlineParams, RecentChangesParams,
         RepoInfoParams, RescanParams, SearchDocumentsParams, SearchSymbolsParams, StatusParams,
-        SymbolHistoryParams, TelemetrySummaryParams, Visibility, WorkingTreeStatusParams,
-        WorkspaceGrepParams,
+        SymbolHistoryParams, TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_graph::CallGraphParams;
     pub use super::types_impls::FindImplementationsParams;
+    pub use super::types_memory::{
+        MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
+        Visibility,
+    };
 }
 
 pub use params::Parameters;

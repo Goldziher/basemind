@@ -11,8 +11,8 @@
 //! ## Two-tier message storage
 //!
 //! [`CommsStore::post`] writes a small [`MessageMeta`] front-matter record to
-//! `messages_by_room` AND the body to `message_body`. [`CommsStore::history`] /
-//! [`CommsStore::inbox_room_scan`] decode ONLY the front-matter; the body is fetched lazily
+//! `messages_by_room` AND the body to `message_body`. [`CommsStore::history`] and
+//! [`CommsStore::history_with_seq`] decode ONLY the front-matter; the body is fetched lazily
 //! via [`CommsStore::get_body`]. The daemon is the sole writer, which is Fjall's happy path.
 
 use std::fs::{File, OpenOptions};
