@@ -21,9 +21,25 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # 2. Always inject the context-economy operating discipline.
 CONTEXT="basemind is available over MCP in this session — a tree-sitter code map + git context. Prefer it over grep/read for structural and historical questions: its tools return paths, line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of reading source. Default workflow: outline a file before opening it (then read only the span you need); search_symbols instead of grep for a definition; find_references/find_callers instead of grepping call sites; workspace_grep instead of shelling out to ripgrep; rescan after edits instead of reconnecting. Do not re-read a file basemind already mapped."
 
-# 3. Append the status-line nudge only when it isn't wired yet.
+# 3. Append the status-line nudge only when a basemind status line isn't wired yet.
+#    Detect robustly: prefer parsing the `statusLine.command` value with jq (catches
+#    any script name / absolute path that references basemind), and fall back to a
+#    case-insensitive grep for "basemind" near a statusLine key when jq is absent.
+#    The old literal "statusline.sh" grep missed renamed scripts and matched unrelated
+#    files.
 SETTINGS="${HOME}/.claude/settings.json"
-if ! grep -q 'statusline.sh' "${SETTINGS}" 2>/dev/null; then
+statusline_wired() {
+  [ -f "${SETTINGS}" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '(.statusLine.command // "") | test("basemind"; "i")' \
+      "${SETTINGS}" >/dev/null 2>&1
+    return $?
+  fi
+  # No jq: best-effort. Require both a statusLine key and a basemind reference.
+  grep -qi 'statusLine' "${SETTINGS}" 2>/dev/null &&
+    grep -qi 'basemind' "${SETTINGS}" 2>/dev/null
+}
+if ! statusline_wired; then
   CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
 fi
 

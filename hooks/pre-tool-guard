@@ -59,8 +59,13 @@ or BASEMIND_GUARD=off to disable."
 fi
 
 # nudge: one advisory per session per tool so it informs without nagging.
+# Sanitize session_id before building a path from it — it is untrusted input, and a
+# value containing "/" or ".." would otherwise let the marker escape marker_dir.
+# Collapse everything outside [A-Za-z0-9._-] to "_".
+safe_session="$(printf '%s' "${session}" | tr -c 'A-Za-z0-9._-' '_')"
+[ -n "${safe_session}" ] || safe_session="nosession"
 marker_dir="${TMPDIR:-/tmp}/basemind-guard"
-marker="${marker_dir}/${session}.${tool}"
+marker="${marker_dir}/${safe_session}.${tool}"
 mkdir -p "${marker_dir}" 2>/dev/null || true
 if [ -e "${marker}" ]; then
   exit 0
