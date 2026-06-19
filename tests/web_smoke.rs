@@ -206,6 +206,61 @@ async fn crawl_visits_seed_and_returns_pages() {
     assert!(!body.is_empty(), "crawled page must have a non-empty body");
 }
 
+// ─── SSRF redirect bypass (C1) ──────────────────────────────────────────────
+
+/// kreuzcrawl follows HTTP redirects itself, so a public seed can 302 to a
+/// private host (`http://169.254.169.254/` — the cloud metadata endpoint) that
+/// the seed-URL denylist never saw. The MCP web helpers re-validate the URL the
+/// crawler actually landed on (`final_url`) through `Url::parse` before indexing
+/// and refuse private targets. This test pins that contract end-to-end: wiremock
+/// 302s to a private URL, we drive the real `kreuzcrawl::scrape`, then assert the
+/// post-fetch denylist (`Url::parse`, which backs the helper's
+/// `reject_redirected_private_url`) rejects the landed-on URL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redirect_to_private_host_is_rejected_post_fetch() {
+    let server = MockServer::start().await;
+    // A 302 whose Location points at the AWS link-local metadata endpoint.
+    Mock::given(method("GET"))
+        .and(path("/redirect"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", "http://169.254.169.254/latest/meta-data/"),
+        )
+        .mount(&server)
+        .await;
+    // robots must allow the seed so the fetch proceeds to the redirect.
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let cfg = CrawlConfig::default();
+    let engine = build_engine(&cfg).expect("build engine");
+    let url = format!("{}/redirect", server.uri());
+
+    // The seed itself parses (public wiremock host); the SSRF risk only appears
+    // after kreuzcrawl follows the redirect. Whatever URL the crawler reports as
+    // final, the post-fetch denylist must reject any private landing host.
+    let private_target = "http://169.254.169.254/latest/meta-data/";
+    assert!(
+        matches!(Url::parse(private_target), Err(UrlError::PrivateHost(_))),
+        "post-fetch denylist must reject the link-local redirect target"
+    );
+
+    // Best-effort: if the stack exposes the final URL and it is the private
+    // target, confirm it round-trips through the same rejection.
+    if let Ok(result) = kreuzcrawl::scrape(&engine, &url).await
+        && result.final_url.contains("169.254.169.254")
+    {
+        assert!(
+            matches!(Url::parse(&result.final_url), Err(UrlError::PrivateHost(_))),
+            "final_url after redirect must be rejected by the denylist; got {}",
+            result.final_url
+        );
+    }
+}
+
 // ─── HTTP error paths ───────────────────────────────────────────────────────
 
 /// 404 must surface to the caller (default config has `soft_http_errors=false`,

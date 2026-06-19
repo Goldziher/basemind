@@ -176,14 +176,21 @@ mod tests {
     // (see `src/url.rs`). These tests pin that the guard fires by default and
     // that the `BASEMIND_ALLOW_PRIVATE_HOSTS=1` escape hatch re-enables them so
     // `default_scope` still produces the host-only scope tag. The env var is
-    // process-global; `ENV_LOCK` serializes the two cases.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // process-global, so we serialize on the CRATE-WIDE lock shared with the
+    // `url` and `mcp::helpers_web` test modules (a per-module lock would let a
+    // setter in one module observe a remover in another mid-run). Poison is
+    // recovered so one panicking test does not cascade.
     const ALLOW_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::url::PRIVATE_HOSTS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn rfc1918_host_rejected_by_default() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(ALLOW_ENV) };
         assert!(
             Url::parse("http://192.168.1.1/").is_err(),
@@ -193,7 +200,7 @@ mod tests {
 
     #[test]
     fn ipv6_loopback_host_rejected_by_default() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(ALLOW_ENV) };
         assert!(
             Url::parse("http://[::1]/").is_err(),
@@ -203,7 +210,7 @@ mod tests {
 
     #[test]
     fn default_scope_handles_private_hosts_under_override() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var(ALLOW_ENV, "1") };
         let v4 = Url::parse("http://192.168.1.1/");
         let v6 = Url::parse("http://[::1]/");

@@ -33,8 +33,19 @@ const ALLOW_PRIVATE_HOSTS_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
 /// Host names that always resolve to the loopback interface and so must be
 /// rejected alongside the literal loopback IPs. `url::Url` does not resolve
 /// DNS, so a textual `localhost` host never parses into an `IpAddr` — we match
-/// it by name.
-const LOOPBACK_HOST_NAMES: &[&str] = &["localhost"];
+/// it by name. `ip6-localhost` / `ip6-loopback` are the conventional
+/// `/etc/hosts` aliases for `::1`.
+const LOOPBACK_HOST_NAMES: &[&str] = &["localhost", "ip6-localhost", "ip6-loopback"];
+
+/// Match `candidate` against [`LOOPBACK_HOST_NAMES`] case-insensitively without
+/// allocating. A single trailing FQDN dot is stripped first so the absolute
+/// form `localhost.` is caught alongside `localhost`.
+fn is_loopback_name(candidate: &str) -> bool {
+    let candidate = candidate.strip_suffix('.').unwrap_or(candidate);
+    LOOPBACK_HOST_NAMES
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(candidate))
+}
 
 /// Return `true` when the private-host denylist is disabled via the
 /// [`ALLOW_PRIVATE_HOSTS_ENV`] escape hatch.
@@ -88,9 +99,7 @@ fn reject_private_host(host: Option<url::Host<&str>>) -> Result<(), UrlError> {
         Some(url::Host::Ipv6(v6)) if is_private_ip(IpAddr::V6(v6)) => {
             Err(UrlError::PrivateHost(v6.to_string()))
         }
-        Some(url::Host::Domain(name))
-            if LOOPBACK_HOST_NAMES.contains(&name.to_ascii_lowercase().as_str()) =>
-        {
+        Some(url::Host::Domain(name)) if is_loopback_name(name) => {
             Err(UrlError::PrivateHost(name.to_string()))
         }
         _ => Ok(()),
@@ -180,6 +189,15 @@ impl<'de> Deserialize<'de> for Url {
     }
 }
 
+/// Process-wide lock serializing every test that mutates the
+/// [`ALLOW_PRIVATE_HOSTS_ENV`] env var. The env var is one shared process-global
+/// resource, so all such tests — across `url`, `web::ingest`, and
+/// `mcp::helpers_web` — must contend on the SAME mutex, not per-module ones, or
+/// a setter in one module observes a remover in another mid-run. Poisoning is
+/// recovered via `into_inner` so one panicking test does not cascade.
+#[cfg(test)]
+pub(crate) static PRIVATE_HOSTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl rmcp::schemars::JsonSchema for Url {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Url".into()
@@ -260,13 +278,20 @@ mod tests {
     // ── SSRF host denylist ──────────────────────────────────────────────────
     //
     // These tests mutate a process-global env var. `ENV_LOCK` serializes them so
-    // the default-vs-override cases never observe each other's state.
-    use std::sync::Mutex;
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // the default-vs-override cases never observe each other's state. It is the
+    // crate-wide lock (`super::PRIVATE_HOSTS_ENV_LOCK`) — shared with the
+    // `web::ingest` and `mcp::helpers_web` test modules that toggle the same env
+    // var — so no cross-module race is possible. `lock()` recovers from poison so
+    // one panicking test does not cascade into spurious failures.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        super::PRIVATE_HOSTS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn rejects_loopback_ipv4() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         assert!(matches!(
             Url::parse("http://127.0.0.1/"),
@@ -276,7 +301,7 @@ mod tests {
 
     #[test]
     fn rejects_localhost_name() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         assert!(matches!(
             Url::parse("http://localhost:8080/"),
@@ -289,8 +314,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_trailing_dot_localhost() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        // The absolute (FQDN) form `localhost.` must be caught — a single
+        // trailing dot is stripped before the name check.
+        assert!(matches!(
+            Url::parse("http://localhost./"),
+            Err(UrlError::PrivateHost(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_ip6_loopback_aliases() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
+        for host in ["ip6-localhost", "ip6-loopback", "IP6-LOCALHOST"] {
+            assert!(
+                matches!(
+                    Url::parse(&format!("http://{host}/")),
+                    Err(UrlError::PrivateHost(_))
+                ),
+                "{host} must be rejected as a loopback alias"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_rfc1918_ranges() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         for host in ["10.0.0.1", "172.16.5.5", "192.168.1.1"] {
             assert!(
@@ -305,7 +357,7 @@ mod tests {
 
     #[test]
     fn rejects_link_local_ipv4() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         assert!(matches!(
             Url::parse("http://169.254.169.254/"),
@@ -315,7 +367,7 @@ mod tests {
 
     #[test]
     fn rejects_ipv6_loopback_and_unique_local() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         assert!(matches!(
             Url::parse("http://[::1]/"),
@@ -339,7 +391,7 @@ mod tests {
 
     #[test]
     fn rejects_ipv4_mapped_loopback() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         // ::ffff:127.0.0.1 must not bypass the IPv4 loopback classifier.
         assert!(matches!(
@@ -350,7 +402,7 @@ mod tests {
 
     #[test]
     fn accepts_public_hosts() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         assert!(Url::parse("https://example.com/").is_ok());
         assert!(Url::parse("http://8.8.8.8/").is_ok());
@@ -359,7 +411,7 @@ mod tests {
 
     #[test]
     fn override_allows_private_hosts() {
-        let _g = ENV_LOCK.lock().unwrap();
+        let _g = env_lock();
         unsafe { std::env::set_var(super::ALLOW_PRIVATE_HOSTS_ENV, "1") };
         let result = Url::parse("http://127.0.0.1:9000/");
         let localhost = Url::parse("http://localhost/");

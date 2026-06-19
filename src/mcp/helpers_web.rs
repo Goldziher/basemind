@@ -33,6 +33,42 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("{prefix}: {err}"), None)
 }
 
+/// POST-FETCH defence-in-depth SSRF check on a URL that kreuzcrawl actually
+/// hit.
+///
+/// `Url::parse` enforces the private-host denylist on every *requested* URL, but
+/// kreuzcrawl follows HTTP redirects itself, so a public seed can 30x-redirect
+/// to a private target (`https://evil.com` → 302 → `http://169.254.169.254/`)
+/// that the seed validation never saw. Here we re-validate the URL the crawler
+/// landed on through the same denylist and refuse to index when it resolves to a
+/// private / loopback / link-local host.
+///
+/// This does NOT prevent the redirect GET itself — the request to the private
+/// host has already happened by the time we see `final_url` / `normalized_url`.
+/// Fully blocking the redirect fetch would require a redirect-policy hook inside
+/// kreuzcrawl's HTTP client, which is un-vendored here. This guard is the layer
+/// we control: it stops private-host content from ever landing in the index.
+fn reject_redirected_private_url(context: &str, fetched_url: &str) -> Result<(), McpError> {
+    match crate::url::Url::parse(fetched_url) {
+        Ok(_) => Ok(()),
+        Err(crate::url::UrlError::PrivateHost(host)) => Err(McpError::invalid_params(
+            format!(
+                "{context}: refusing to index private/loopback host reached via redirect: {host} \
+                 (set BASEMIND_ALLOW_PRIVATE_HOSTS=1 to allow)"
+            ),
+            None,
+        )),
+        // A non-denylist parse failure (e.g. an exotic scheme the crawler
+        // normalised to) is also unsafe to index — fail closed rather than open.
+        Err(other) => Err(McpError::invalid_params(
+            format!(
+                "{context}: refusing to index unparseable fetched URL {fetched_url:?}: {other}"
+            ),
+            None,
+        )),
+    }
+}
+
 /// Resolve the LanceDB scope tag for a fetched page.
 ///
 /// When the caller supplied an explicit `scope`, honour it verbatim. Otherwise
@@ -50,6 +86,19 @@ fn resolve_scope(explicit: Option<&str>, requested: &crate::url::Url, final_url:
         Ok(resolved) => default_scope(&resolved),
         Err(_) => default_scope(requested),
     }
+}
+
+/// Reject a `Some(0)` crawl override, mirroring the schema's `min = 1`. `None`
+/// (inherit server default) and `Some(n >= 1)` pass through.
+#[cfg(feature = "crawl")]
+fn reject_zero_override(field: &str, value: Option<u32>) -> Result<(), McpError> {
+    if value == Some(0) {
+        return Err(McpError::invalid_params(
+            format!("{field} must be >= 1"),
+            None,
+        ));
+    }
+    Ok(())
 }
 
 /// Build a per-call kreuzcrawl engine that overrides `max_pages` / `max_depth`
@@ -111,6 +160,11 @@ pub(super) async fn run_web_scrape(
     let result = kreuzcrawl::scrape(engine, &url_str)
         .await
         .map_err(|e| mcp_internal("kreuzcrawl scrape", e))?;
+
+    // POST-FETCH SSRF guard: kreuzcrawl may have followed a redirect from the
+    // (validated) seed to a private host. Re-validate the URL we actually
+    // landed on before indexing anything from it.
+    reject_redirected_private_url("web_scrape", &result.final_url)?;
 
     // Derive the scope from the FINAL url (post-redirect), not the requested
     // host — the rows we store are keyed by `result.final_url`, so the scope
@@ -183,6 +237,12 @@ pub(super) async fn run_web_crawl(
     // the shared engine exists before paying for a per-call one so the error
     // surface matches the other web tools.
     engine(state)?;
+    // Reject zero overrides at the boundary: the JSON schema declares `min = 1`
+    // for both, but a hand-crafted MCP request can still send `0`, which would
+    // bake a degenerate crawl (0 pages / 0 depth) into the per-call engine.
+    // `None` keeps the server default.
+    reject_zero_override("max_pages", params.max_pages)?;
+    reject_zero_override("max_depth", params.max_depth)?;
     let engine = per_call_engine(state, params.max_pages, params.max_depth)?;
     let url_str = params.url.as_str().to_string();
 
@@ -208,6 +268,27 @@ pub(super) async fn run_web_crawl(
     let mut outcomes: Vec<WebCrawlPageOutcome> = Vec::with_capacity(crawl_outcome.pages.len());
 
     for page in crawl_outcome.pages {
+        // POST-FETCH SSRF guard (defence-in-depth): a crawl can follow links /
+        // redirects from a public seed onto a private host. Re-validate the URL
+        // each page actually came from and skip indexing it when it resolves to
+        // a private / loopback / link-local host. See
+        // `reject_redirected_private_url` for why this can't block the GET
+        // itself (kreuzcrawl owns the redirect policy, un-vendored here).
+        if let Err(error) = reject_redirected_private_url("web_crawl", &page.normalized_url) {
+            tracing::warn!(
+                url = %page.normalized_url,
+                "web_crawl: skipping private/loopback page reached via crawl"
+            );
+            outcomes.push(WebCrawlPageOutcome {
+                url: page.normalized_url,
+                status_code: page.status_code,
+                chunks_indexed: 0,
+                indexed: false,
+                error: Some(error.message.to_string()),
+            });
+            continue;
+        }
+
         let body_text = page
             .markdown
             .as_ref()
@@ -320,4 +401,70 @@ pub(super) async fn run_web_map(
         total_urls: urls.len(),
         urls,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `reject_redirected_private_url` consults the same process-global
+    // `BASEMIND_ALLOW_PRIVATE_HOSTS` env as `Url::parse`; serialize the env
+    // mutation on the CRATE-WIDE lock shared with the `url` and `web::ingest`
+    // test modules so a setter in one module never observes a remover here.
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::url::PRIVATE_HOSTS_ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn rejects_zero_max_pages_and_depth() {
+        assert!(reject_zero_override("max_pages", Some(0)).is_err());
+        assert!(reject_zero_override("max_depth", Some(0)).is_err());
+        // None (inherit server default) and >= 1 pass through.
+        assert!(reject_zero_override("max_pages", None).is_ok());
+        assert!(reject_zero_override("max_pages", Some(1)).is_ok());
+        assert!(reject_zero_override("max_depth", Some(50)).is_ok());
+    }
+
+    #[test]
+    fn zero_override_error_names_the_field_and_bound() {
+        let err = reject_zero_override("max_pages", Some(0)).expect_err("0 must reject");
+        assert!(
+            err.message.contains("max_pages") && err.message.contains(">= 1"),
+            "error should name the field and the >= 1 bound; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn rejects_private_redirect_target() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
+        // Simulates the URL kreuzcrawl landed on AFTER following a redirect from a
+        // public seed to the AWS metadata endpoint — the canonical SSRF target.
+        let err =
+            reject_redirected_private_url("web_scrape", "http://169.254.169.254/latest/meta-data/")
+                .expect_err("link-local redirect target must be rejected");
+        assert!(
+            err.message.contains("169.254.169.254"),
+            "rejection should name the private host; got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn rejects_loopback_redirect_target() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
+        assert!(reject_redirected_private_url("web_crawl", "http://127.0.0.1:9000/").is_err());
+        assert!(reject_redirected_private_url("web_crawl", "http://localhost/admin").is_err());
+    }
+
+    #[test]
+    fn allows_public_redirect_target() {
+        let _g = env_lock();
+        unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
+        assert!(reject_redirected_private_url("web_scrape", "https://example.com/landing").is_ok());
+    }
 }
