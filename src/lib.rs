@@ -3,6 +3,7 @@
 #![allow(missing_docs)]
 
 pub mod cli;
+pub mod comms;
 pub mod config;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
