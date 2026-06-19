@@ -397,3 +397,49 @@ jobs:
         with:
           packages-dir: pip-package/dist
           skip-existing: true
+
+  publish_homebrew:
+    name: Update Homebrew formula
+    # Stable releases only — rc/beta/alpha pre-releases do not update the tap.
+    # Needs the binaries + checksums to exist first.
+    needs: [meta, checksums]
+    if: >-
+      !cancelled() && needs.checksums.result == 'success' &&
+      !contains(needs.meta.outputs.version, '-rc') &&
+      !contains(needs.meta.outputs.version, '-beta') &&
+      !contains(needs.meta.outputs.version, '-alpha')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+
+      - name: Generate formula and push to tap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${HOMEBREW_TOKEN:-}" ]; then
+            echo "HOMEBREW_TOKEN not set — skipping the Homebrew formula update."
+            exit 0
+          fi
+          tag="${{ needs.meta.outputs.tag }}"
+          version="${{ needs.meta.outputs.version }}"
+          gh release download "$tag" -p "basemind_${version}_checksums.txt" -O checksums.txt
+          ./scripts/update-homebrew-formula.sh "$version" checksums.txt > basemind.rb
+
+          git clone --depth 1 "https://x-access-token:${HOMEBREW_TOKEN}@github.com/Goldziher/homebrew-tap.git" tap
+          cp basemind.rb tap/Formula/basemind.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/basemind.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date."
+          else
+            git commit -m "basemind ${version}"
+            git push
+          fi
