@@ -3,6 +3,7 @@ const os = require("node:os");
 const path = require("node:path");
 const https = require("node:https");
 const http = require("node:http");
+const crypto = require("node:crypto");
 const tar = require("tar");
 const AdmZip = require("adm-zip");
 
@@ -13,7 +14,7 @@ function getPlatformTriple() {
   const arch = os.arch();
 
   if (type === "Windows_NT") {
-    if (arch === "x64") return "x86_64-pc-windows-gnu";
+    if (arch === "x64") return "x86_64-pc-windows-msvc";
     if (arch === "ia32") throw new Error("32-bit Windows is not supported");
   }
 
@@ -32,11 +33,16 @@ function getPlatformTriple() {
   throw new Error(`Unsupported platform: ${type} ${arch}`);
 }
 
-function getBinaryUrl() {
+function getReleaseAssets() {
   const platform = getPlatformTriple();
   const baseUrl = `https://github.com/Goldziher/basemind/releases/download/v${version}`;
   const ext = platform.includes("windows") ? "zip" : "tar.gz";
-  return `${baseUrl}/basemind-${platform}.${ext}`;
+  const assetName = `basemind-${platform}.${ext}`;
+  return {
+    assetName,
+    archiveUrl: `${baseUrl}/${assetName}`,
+    checksumsUrl: `${baseUrl}/basemind_${version}_checksums.txt`,
+  };
 }
 
 function downloadWithRedirects(url, dest, maxRedirects = 5) {
@@ -89,12 +95,105 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
   });
 }
 
+// Download a (small) text resource into memory, following redirects.
+function fetchTextWithRedirects(url, maxRedirects = 5) {
+  return new Promise((resolve, reject) => {
+    if (maxRedirects <= 0) {
+      return reject(new Error("Too many redirects"));
+    }
+
+    const urlObj = new URL(url);
+    const client = urlObj.protocol === "https:" ? https : http;
+
+    const req = client.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "basemind-npm-wrapper",
+        },
+      },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          return fetchTextWithRedirects(res.headers.location, maxRedirects - 1)
+            .then(resolve)
+            .catch(reject);
+        }
+
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+        }
+
+        const chunks = [];
+        res.on("data", (chunk) => chunks.push(chunk));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", reject);
+      },
+    );
+
+    req.on("error", reject);
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error("Download timeout"));
+    });
+  });
+}
+
+function sha256File(filePath) {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest("hex");
+}
+
+// Parse a `sha256<space>filename` checksums file and return the digest for
+// `assetName`, or null if absent. Lines may use one or two spaces (GNU coreutils
+// uses two: binary-mode marker "* "), so split on whitespace.
+function expectedDigest(checksumsText, assetName) {
+  for (const line of checksumsText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts.length < 2) continue;
+    const digest = parts[0];
+    const name = parts[parts.length - 1].replace(/^\*/, "");
+    if (name === assetName) return digest.toLowerCase();
+  }
+  return null;
+}
+
+// Verify the downloaded archive against the release checksums file. Fails CLOSED:
+// any failure to fetch the checksums, locate the entry, or match the digest
+// aborts the install.
+async function verifyChecksum(archivePath, assetName, checksumsUrl) {
+  let checksumsText;
+  try {
+    checksumsText = await fetchTextWithRedirects(checksumsUrl);
+  } catch (error) {
+    throw new Error(
+      `could not fetch checksums (${checksumsUrl}): ${error.message} — refusing to install unverified binary`,
+    );
+  }
+
+  const expected = expectedDigest(checksumsText, assetName);
+  if (!expected) {
+    throw new Error(
+      `no checksum entry for ${assetName} in ${checksumsUrl} — refusing to install unverified binary`,
+    );
+  }
+
+  const actual = sha256File(archivePath).toLowerCase();
+  if (actual !== expected) {
+    throw new Error(`checksum mismatch for ${assetName} (expected ${expected}, got ${actual})`);
+  }
+
+  console.log("Checksum verified.");
+}
+
 async function installBinary() {
   try {
-    const url = getBinaryUrl();
-    const isZip = url.endsWith(".zip");
+    const { assetName, archiveUrl, checksumsUrl } = getReleaseAssets();
+    const isZip = archiveUrl.endsWith(".zip");
     const binDir = path.join(__dirname, "bin");
-    const archivePath = path.join(binDir, isZip ? "basemind.zip" : "basemind.tar.gz");
+    const archivePath = path.join(binDir, assetName);
     const binaryName = os.type() === "Windows_NT" ? "basemind.exe" : "basemind";
     const binaryPath = path.join(binDir, binaryName);
 
@@ -106,28 +205,34 @@ async function installBinary() {
       return;
     }
 
-    console.log(`Downloading basemind binary from ${url}...`);
+    console.log(`Downloading basemind binary from ${archiveUrl}...`);
 
-    await downloadWithRedirects(url, archivePath);
+    await downloadWithRedirects(archiveUrl, archivePath);
 
-    console.log("Extracting binary...");
+    // Fail CLOSED: verify the archive against the release checksums before
+    // extracting anything. Any fetch/parse/mismatch failure aborts the install.
+    await verifyChecksum(archivePath, assetName, checksumsUrl);
 
+    console.log("Extracting archive (binary + bundled libraries)...");
+
+    // Archives now contain the binary plus a lib/ tree of bundled native
+    // libraries (the binary finds them via rpath; Windows co-locates DLLs next
+    // to the exe). Extract the whole tree into bin/, not just the binary.
     if (isZip) {
       const zip = new AdmZip(archivePath);
-      const entry = zip.getEntries().find((e) => e.entryName.endsWith(binaryName));
-      if (!entry) {
-        throw new Error("Binary not found in downloaded archive");
-      }
-      zip.extractEntryTo(entry, binDir, false, true);
+      zip.extractAllTo(binDir, true);
     } else {
       await tar.extract({
         file: archivePath,
         cwd: binDir,
-        filter: (entryPath) => entryPath.endsWith(binaryName),
       });
     }
 
     fs.unlinkSync(archivePath);
+
+    if (!fs.existsSync(binaryPath)) {
+      throw new Error(`binary ${binaryName} not found after extracting ${assetName}`);
+    }
 
     if (os.type() !== "Windows_NT") {
       fs.chmodSync(binaryPath, 0o755);
