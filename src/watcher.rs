@@ -78,7 +78,21 @@ pub fn watch_paths(
                         continue;
                     }
                     for p in &ev.event.paths {
+                        // Skip anything under `.basemind/` — re-scanning our own
+                        // index writes would feed an infinite refresh loop.
                         if p.starts_with(&basemind_subpath) {
+                            continue;
+                        }
+                        // macOS FSEvents coalesces bursts (e.g. our own
+                        // `.basemind/` index writes) into a single
+                        // `MustScanSubDirs` event reported on an ancestor of the
+                        // change — typically the watched root itself. Such a path
+                        // is an ancestor of `.basemind/`, so it would slip past the
+                        // check above and re-trigger the very loop that guard
+                        // prevents. A genuine source edit always reports the
+                        // concrete file path (`root/foo.rs`), never a bare
+                        // ancestor, so dropping ancestor paths is safe.
+                        if basemind_subpath.starts_with(p) {
                             continue;
                         }
                         touched.push(p.clone());
