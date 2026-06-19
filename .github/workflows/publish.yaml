@@ -123,9 +123,39 @@ jobs:
           echo "release_assets_exist=$release_assets_exist" >> "$GITHUB_OUTPUT"
           echo "GitHub release assets exist? $release_assets_exist"
 
+  create_release:
+    name: Create GitHub release
+    needs: meta
+    if: needs.meta.outputs.release_assets_exist != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+
+      - name: Ensure the GitHub release exists
+        # The native build matrix uploads assets to this release; gh release upload
+        # requires it to already exist (goreleaser used to create it). Create it once
+        # here, marked prerelease for rc/beta/alpha tags.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.meta.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+          else
+            prerelease=""
+            case "$tag" in
+              *-rc.* | *-beta* | *-alpha*) prerelease="--prerelease" ;;
+            esac
+            gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag $prerelease
+          fi
+
   build-binaries:
     name: Build binaries / ${{ matrix.triple }}
-    needs: meta
+    needs: [meta, create_release]
     if: needs.meta.outputs.release_assets_exist != 'true'
     strategy:
       fail-fast: false

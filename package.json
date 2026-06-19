@@ -1,6 +1,6 @@
 {
   "name": "basemind",
-  "version": "0.4.0-rc.1",
+  "version": "0.4.0-rc.2",
   "private": true,
   "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin).",
   "homepage": "https://github.com/Goldziher/basemind",

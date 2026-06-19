@@ -95,7 +95,9 @@ runs:
     # Windows: choco + protoc + vcpkg libheif + tessdata
     - name: Install dependencies (Windows)
       if: runner.os == 'Windows'
-      shell: powershell
+      # pwsh (PowerShell 7) — the script uses `||`/`&&` chain operators, which are
+      # not valid in Windows PowerShell 5.1 (`shell: powershell`).
+      shell: pwsh
       run: |
         Set-StrictMode -Version Latest
         $ErrorActionPreference = 'Stop'
