@@ -399,6 +399,9 @@ pub(super) fn symbol_line_range(
             path.as_str()
                 .and_then(|s| repo.read_blob_staged(s).ok().flatten())
         })
+        // `..`-safety: `path` is a `RelPath` produced by the scanner's strip_prefix(root) or
+        // git tree enumeration — neither source ever emits `..` components, so joining with
+        // `workdir()` cannot escape the repository root.
         .or_else(|| std::fs::read(repo.workdir().join(path.to_path_buf())).ok())
         .unwrap_or_default();
     line_range_in_blob(sym, &bytes)
@@ -634,14 +637,16 @@ fn walk_structural(
     hasher.update(&(kind_name.len() as u32).to_le_bytes());
     hasher.update(kind_name.as_bytes());
 
-    let mut named_children: Vec<tree_sitter::Node> = Vec::new();
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.is_named() && !child.is_extra() {
-            named_children.push(child);
-        }
-    }
-    if named_children.is_empty() {
+    // Iterate named children by index — `Node` is `Copy`, so we avoid allocating a `Vec`
+    // to stage them. `named_child(i: u32)` skips anonymous nodes automatically; we filter
+    // out extras (comments, semicolons) inline. The count pass and the recurse pass each
+    // call `named_child` O(nc) times; the index-based API is O(1) per call.
+    let nc = node.named_child_count() as u32;
+    let named_count: u32 = (0..nc)
+        .filter(|&i| node.named_child(i).is_some_and(|c| !c.is_extra()))
+        .count() as u32;
+
+    if named_count == 0 {
         // Leaf-shaped node: emit identifier or (optionally) literal text.
         let emit_text =
             is_identifier_kind(kind_name) || (include_literals && is_literal_kind(lang, kind_name));
@@ -653,9 +658,13 @@ fn walk_structural(
         }
         return;
     }
-    hasher.update(&(named_children.len() as u32).to_le_bytes());
-    for child in named_children {
-        walk_structural(child, source, include_literals, lang, hasher);
+    hasher.update(&named_count.to_le_bytes());
+    for i in 0..nc {
+        if let Some(child) = node.named_child(i)
+            && !child.is_extra()
+        {
+            walk_structural(child, source, include_literals, lang, hasher);
+        }
     }
 }
 

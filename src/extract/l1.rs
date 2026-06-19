@@ -124,38 +124,41 @@ fn run_combined(
 ///
 /// O(n) via an `AHashMap` keyed by `(start_byte, name)`. The earlier O(n²) `iter_mut().find`
 /// implementation cost ~100 µs on files with >500 symbols; this hash-lookup form stays under
-/// 5 µs on the same input. The map key clones `name` once per *new* symbol — the existing
-/// symbols already owned their name, so the dedupe step does not introduce additional
-/// `String` allocations beyond what tree-sitter extraction produced.
+/// 5 µs on the same input. `entry()` performs one hash probe per symbol; on the common
+/// no-collision (new-symbol) path the name clone goes straight into the key with no second
+/// lookup. On collision, we extract the stored index and update in place.
 fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     let mut keep: Vec<Symbol> = Vec::with_capacity(syms.len());
     let mut index: ahash::AHashMap<(u32, String), usize> =
         ahash::AHashMap::with_capacity(syms.len());
     for sym in syms {
-        let key = (sym.start_byte, sym.name.clone());
-        if let Some(&idx) = index.get(&key) {
-            let existing = &mut keep[idx];
-            if sym.kind.specificity() > existing.kind.specificity() {
-                existing.kind = sym.kind;
-                // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
-                // captures the whole `const F = (x) => …` line, which is the useful signature.
-                if sym.signature.is_some() {
-                    existing.signature = sym.signature;
+        use std::collections::hash_map::Entry;
+        match index.entry((sym.start_byte, sym.name.clone())) {
+            Entry::Occupied(e) => {
+                let idx = *e.get();
+                let existing = &mut keep[idx];
+                if sym.kind.specificity() > existing.kind.specificity() {
+                    existing.kind = sym.kind;
+                    // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
+                    // captures the whole `const F = (x) => …` line, which is the useful signature.
+                    if sym.signature.is_some() {
+                        existing.signature = sym.signature;
+                    }
+                }
+                // Decorator captures travel one-per-match (tree-sitter fires the
+                // `(decorator) @symbol.decorator` pattern once per decorator child of a
+                // decorated_definition), so on collision we union the lists — deduplicated by
+                // string, preserving first-seen order.
+                for d in sym.decorators {
+                    if !existing.decorators.contains(&d) {
+                        existing.decorators.push(d);
+                    }
                 }
             }
-            // Decorator captures travel one-per-match (tree-sitter fires the
-            // `(decorator) @symbol.decorator` pattern once per decorator child of a
-            // decorated_definition), so on collision we union the lists — deduplicated by
-            // string, preserving first-seen order.
-            for d in sym.decorators {
-                if !existing.decorators.contains(&d) {
-                    existing.decorators.push(d);
-                }
+            Entry::Vacant(e) => {
+                e.insert(keep.len());
+                keep.push(sym);
             }
-        } else {
-            let new_idx = keep.len();
-            keep.push(sym);
-            index.insert(key, new_idx);
         }
     }
     keep
@@ -255,7 +258,14 @@ fn signature_slice(text: &str) -> Option<String> {
             break;
         }
     }
-    let collapsed: String = text[..end].split_whitespace().collect::<Vec<_>>().join(" ");
+    // Collapse whitespace runs without an intermediate Vec allocation.
+    let mut collapsed = String::new();
+    for word in text[..end].split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.push_str(word);
+    }
     if collapsed.is_empty() {
         None
     } else {
