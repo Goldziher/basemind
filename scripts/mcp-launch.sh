@@ -104,7 +104,7 @@ Linux)
   *) TRIPLE="x86_64-unknown-linux-gnu" ;;
   esac
   ;;
-MINGW* | MSYS* | CYGWIN* | Windows_NT) TRIPLE="x86_64-pc-windows-gnu" ;;
+MINGW* | MSYS* | CYGWIN* | Windows_NT) TRIPLE="x86_64-pc-windows-msvc" ;;
 *) die "unsupported platform: $(uname -s) $arch" ;;
 esac
 case "$TRIPLE" in
@@ -130,7 +130,8 @@ if have sha256sum; then
 elif have shasum; then
   sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 else
-  sha256() { echo ""; } # no sha256 tool — verification skipped below
+  # Fail CLOSED: without a sha256 tool we cannot verify the download.
+  die "no sha256 tool available (need sha256sum or shasum) — refusing to install unverified binary"
 fi
 
 TMP="$(mktemp -d)"
@@ -139,33 +140,41 @@ trap 'rm -rf "$TMP"' EXIT
 log "no managed runtime found; downloading $ASSET ..."
 fetch "$ASSET_URL" "$TMP/$ASSET" || die "download failed: $ASSET_URL"
 
-EXPECTED=""
-if fetch "$SUMS_URL" "$TMP/checksums.txt" 2>/dev/null; then
-  EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$TMP/checksums.txt")"
-fi
+# Fail CLOSED: the checksums file MUST be fetchable and MUST contain an entry
+# for this asset. A missing file or absent entry aborts the install rather than
+# proceeding with an unverified binary.
+fetch "$SUMS_URL" "$TMP/checksums.txt" ||
+  die "could not fetch checksums ($SUMS_URL) — refusing to install unverified binary"
+EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$TMP/checksums.txt")"
+[ -n "$EXPECTED" ] ||
+  die "no checksum entry for $ASSET in $SUMS_URL — refusing to install unverified binary"
 ACTUAL="$(sha256 "$TMP/$ASSET")"
-if [ -n "$EXPECTED" ] && [ -n "$ACTUAL" ]; then
-  [ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
-  log "checksum verified"
-else
-  log "warning: checksum not verified (missing checksums file or sha256 tool)"
-fi
+[ -n "$ACTUAL" ] || die "failed to compute sha256 for $ASSET"
+[ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
+log "checksum verified"
 
 log "extracting ..."
+EX="$TMP/extracted"
+mkdir -p "$EX"
 case "$EXT" in
-tar.gz) tar -xzf "$TMP/$ASSET" -C "$TMP" ;;
+tar.gz) tar -xzf "$TMP/$ASSET" -C "$EX" ;;
 zip)
   if have unzip; then
-    unzip -qo "$TMP/$ASSET" -d "$TMP"
+    unzip -qo "$TMP/$ASSET" -d "$EX"
   else
     die "need unzip to extract $ASSET"
   fi
   ;;
 esac
-[ -f "$TMP/$BINARY_NAME" ] || die "binary $BINARY_NAME not found in $ASSET"
+# Archives now carry the binary plus a lib/ tree of bundled native libraries
+# (found via rpath; Windows co-locates DLLs next to the exe). Install the whole
+# extracted tree, not just the bare binary.
+[ -f "$EX/$BINARY_NAME" ] || die "binary $BINARY_NAME not found in $ASSET"
 
+rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
-mv "$TMP/$BINARY_NAME" "$BIN"
+# Move every extracted entry (binary + lib/) into BIN_DIR.
+mv "$EX"/* "$BIN_DIR"/
 chmod +x "$BIN"
 log "installed basemind $VERSION to $BIN"
 
