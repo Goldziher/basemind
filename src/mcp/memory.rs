@@ -124,7 +124,7 @@ fn delete_memory_record(
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
     let existed = idx
         .memory_by_key
-        .get(raw_key.clone())
+        .get(raw_key.as_slice())
         .map_err(|e| McpError::internal_error(format!("fjall get: {e}"), None))?
         .is_some();
     if existed {
@@ -358,7 +358,7 @@ pub(super) async fn run_memory_list(
         let (raw_key, raw_val) = guard
             .into_inner()
             .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-        let Some((_, _, _, key)) = crate::index::keys::parse_memory_by_key(&raw_key) else {
+        let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key) else {
             continue;
         };
         if !key.starts_with(key_prefix_filter) {
@@ -388,7 +388,7 @@ pub(super) async fn run_memory_list(
                 record.value.clone()
             };
             entries.push(MemoryEntry {
-                key,
+                key: key.to_string(),
                 value,
                 tags: record.tags,
                 created_at: record.created_at,

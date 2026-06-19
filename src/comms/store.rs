@@ -234,32 +234,37 @@ impl CommsStore {
 
     // ─── messages ─────────────────────────────────────────────────────────────────────────
 
-    /// Allocate the next `seq` for a room and persist the counter. Single-writer, so the
-    /// read-modify-write needs no CAS.
-    fn next_seq(&self, room: &RoomId) -> Result<u64, CommsStoreError> {
+    /// Read the current `seq` counter for a room (0 if unset). Single-writer, so the
+    /// read-modify-write in [`post`](Self::post) needs no CAS; the bumped value is staged into
+    /// the same batch as the message so a crash can never consume a `seq` without storing a
+    /// message at it.
+    fn current_seq(&self, room: &RoomId) -> Result<u64, CommsStoreError> {
         let key = keys::room_seq_meta_key(room.as_str());
-        let current = match self.meta.get(&key)? {
+        Ok(match self.meta.get(&key)? {
             Some(v) if v.len() == 8 => {
                 u64::from_be_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]])
             }
             _ => 0,
-        };
-        let next = current.saturating_add(1);
-        self.meta.insert(&key, next.to_be_bytes())?;
-        Ok(next)
+        })
     }
 
     /// Store a message: front-matter to `messages_by_room`, body to `message_body`. Returns
     /// the persisted [`MessageMeta`] (with its allocated `seq`-bearing key already written).
-    /// The two writes plus the seq bump go through one atomic batch.
+    /// The two writes plus the seq-counter bump go through one atomic batch, so the counter
+    /// never advances without a corresponding message landing.
     pub fn post(
         &self,
         room: &RoomId,
         meta: MessageMeta,
         body: MessageBody,
     ) -> Result<(u64, MessageMeta), CommsStoreError> {
-        let seq = self.next_seq(room)?;
+        let seq = self.current_seq(room)?.saturating_add(1);
         let mut batch = self.db.batch();
+        batch.insert(
+            &self.meta,
+            keys::room_seq_meta_key(room.as_str()),
+            seq.to_be_bytes(),
+        );
         let meta_key = keys::message_by_room(room.as_str(), seq);
         let meta_bytes = rmp_serde::to_vec_named(&meta)?;
         batch.insert(&self.messages_by_room, meta_key, meta_bytes);
@@ -540,6 +545,43 @@ mod tests {
         let page2 = store.history(&room, page1.last_seq, 2).expect("history");
         assert_eq!(page2.messages.len(), 2);
         assert_eq!(page2.messages[0].id, "m-2");
+    }
+
+    /// The seq counter is bumped inside the same atomic batch as the message, so it persists
+    /// with the message and a reopened store keeps allocating strictly increasing seqs — no
+    /// reuse of an existing seq (which would overwrite a message) and no off-by-one reset.
+    #[test]
+    fn seq_counter_persists_across_reopen() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let room = room_id("room-1");
+        let post = |store: &CommsStore, id: &str| {
+            let body = id.as_bytes().to_vec();
+            let meta = build_meta(
+                id.to_string(),
+                room.clone(),
+                agent_id("a"),
+                id.to_string(),
+                vec![],
+                None,
+                &body,
+            );
+            store.post(&room, meta, MessageBody(body)).expect("post").0
+        };
+        {
+            let store = CommsStore::open(dir.path()).expect("open");
+            assert_eq!(post(&store, "m-1"), 1);
+            assert_eq!(post(&store, "m-2"), 2);
+        }
+        // Reopen: the next seq must continue from the persisted counter, not restart at 1.
+        {
+            let store = CommsStore::open(dir.path()).expect("reopen");
+            assert_eq!(post(&store, "m-3"), 3, "seq must continue past reopen");
+            // All three messages survive with no overwrite.
+            let page = store.history(&room, 0, 10).expect("history");
+            assert_eq!(page.messages.len(), 3, "no message lost or overwritten");
+            let ids: Vec<&str> = page.messages.iter().map(|m| m.id.as_str()).collect();
+            assert_eq!(ids, ["m-1", "m-2", "m-3"]);
+        }
     }
 
     #[test]

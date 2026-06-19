@@ -371,6 +371,26 @@ pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
     Some((scope, vis_byte, owner, key))
 }
 
+/// Zero-copy decode of just the trailing `key` from a raw `memory_by_key` buffer, skipping the
+/// scope/vis_byte/owner namespace prefix without allocating. Use on scan paths (e.g.
+/// `memory_list`) that only need the key and discard the namespace components.
+pub fn parse_memory_key_only(buf: &[u8]) -> Option<&str> {
+    let mut c = 0;
+    read_len_prefixed_ref(buf, &mut c)?; // skip scope
+    c += 1; // NUL after scope
+    if buf.len() <= c {
+        return None;
+    }
+    c += 1; // vis_byte
+    read_len_prefixed_ref(buf, &mut c)?; // skip owner
+    if buf.len() <= c {
+        return None;
+    }
+    c += 1; // NUL after owner
+    let key = read_len_prefixed_ref(buf, &mut c)?;
+    std::str::from_utf8(key).ok()
+}
+
 /// One-byte ordinal for a `SymbolKind`. Stable across releases so existing keys stay valid;
 /// new variants extend the tail. Keep the explicit assignments — accidentally reordering
 /// would silently miscategorize cached entries.
@@ -670,6 +690,40 @@ mod tests {
                 "my.key".to_string()
             ))
         );
+    }
+
+    /// The zero-copy `parse_memory_key_only` must return exactly the `key` component that the
+    /// allocating `parse_memory_by_key` yields, for every namespace shape — including keys whose
+    /// own bytes contain the NUL-adjacent separators and length-prefix-sized values.
+    #[test]
+    fn parse_memory_key_only_matches_full_parse() {
+        let cases = [
+            ("scope-a", MEMORY_VIS_GROUP, "", "my.key"),
+            ("scope-a", MEMORY_VIS_INDIVIDUAL, "agent-7", "ns:sub.key"),
+            ("", MEMORY_VIS_GROUP, "", ""),
+            ("s", MEMORY_VIS_INDIVIDUAL, "owner-with-dashes", "k"),
+            (
+                "scope/with/slashes",
+                MEMORY_VIS_GROUP,
+                "",
+                "key.with.many.dots",
+            ),
+        ];
+        for (scope, vis, owner, key) in cases {
+            let raw = memory_by_key(scope, vis, owner, key);
+            let full = parse_memory_by_key(&raw).map(|(_, _, _, k)| k);
+            let only = parse_memory_key_only(&raw).map(str::to_string);
+            assert_eq!(only, full, "key-only parse diverged for key {key:?}");
+            assert_eq!(only.as_deref(), Some(key));
+        }
+    }
+
+    #[test]
+    fn parse_memory_key_only_rejects_truncated_buffer() {
+        let raw = memory_by_key("scope-a", MEMORY_VIS_INDIVIDUAL, "agent-7", "my.key");
+        // Lop off the trailing key bytes: the length prefix promises more than remains.
+        assert_eq!(parse_memory_key_only(&raw[..raw.len() - 3]), None);
+        assert_eq!(parse_memory_key_only(&[]), None);
     }
 
     /// A group key and an individual key for the same `(scope, key)` must live in
