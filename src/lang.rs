@@ -685,13 +685,24 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
 /// `Ok(None)` when neither the override file nor the TSLP fallback provides this section,
 /// and `Err` only on a compile error in source we do have.
 ///
+/// Language coverage is three concentric rings over TSLP's ~306-grammar registry:
+/// - **Override ring** ([`OVERRIDE_LANGUAGES`], 6 today): hand-written
+///   `src/queries/<lang>.scm` with full symbol/import/call/doc sections.
+/// - **TSLP `tags.scm` ring** (~100 grammars in the published bundle — e.g. kotlin,
+///   csharp, swift, cpp, scala, solidity): adapted on the fly via [`adapt_tslp_tags`].
+///   Best-effort symbol/call/implementation extraction; no import/doc sections.
+/// - **Detect-only ring** (the remaining grammars — JSON, YAML, TOML, …): the file
+///   is detected, parsed, and listed by `list_files`, but extraction yields empty
+///   vectors (see ring 3 below). This is the silent-empty-extraction case.
+///
 /// Lookup chain:
 /// 1. Local override — `src/queries/<lang>.scm` `;; section: <kind>`.
-/// 2. TSLP `tags.scm` via [`adapt_tslp_tags`] — covers the 14 languages that ship a vendored
-///    `tags.scm` upstream (kotlin, csharp, swift, gleam, gap, al, enforce, gdshader, roc,
-///    cfml, ql, tact, sourcepawn, mojo).
-/// 3. None — file is still detected and indexed, but symbol/import/call extraction yields
-///    empty vectors for this language.
+/// 2. TSLP `tags.scm` via [`adapt_tslp_tags`] — only for the `Symbols` / `Calls` /
+///    `Implementations` kinds, and only when upstream ships a vendored `tags.scm`.
+/// 3. None — the file is still detected and indexed, but symbol/import/call
+///    extraction yields empty vectors. Callers that need a hard signal for an
+///    unsupported language should use [`get_query`], which turns this into an error;
+///    `try_get_query` degrades silently by design.
 pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangError> {
     let lock = QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
     if let Some(slot) = lock.read().expect("query pool poisoned").get(&(lang, kind)) {
