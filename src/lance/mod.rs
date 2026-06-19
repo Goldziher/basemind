@@ -237,10 +237,9 @@ impl LanceStore {
         })
     }
 
-    /// Delete one memory entry by `(scope, key)`. Returns `true` if a row was
-    /// matched (whether it was deleted is up to LanceDB's semantics — currently
-    /// always deletes when the predicate matches).
-    pub fn delete_memory(&self, scope: &str, key: &str) -> Result<bool> {
+    /// Delete one memory entry by `(scope, key)`. Returns the number of rows
+    /// LanceDB actually deleted (`0` when no row matched the predicate).
+    pub fn delete_memory(&self, scope: &str, key: &str) -> Result<u64> {
         self.inner.runtime.block_on(async {
             let table = self
                 .inner
@@ -254,11 +253,11 @@ impl LanceStore {
                 escape_sql_literal(scope),
                 escape_sql_literal(key)
             );
-            table
+            let result = table
                 .delete(&predicate)
                 .await
                 .context("delete memory entry")?;
-            anyhow::Ok(true)
+            anyhow::Ok(result.num_deleted_rows)
         })
     }
 
