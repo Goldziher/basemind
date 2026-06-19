@@ -1,6 +1,8 @@
 //! `run_workspace_grep` helper — kept in its own file so `helpers.rs` stays under the
 //! 1000-line cap as the MCP surface grows.
 
+use std::sync::atomic::Ordering;
+
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
@@ -12,7 +14,8 @@ use super::types::{GrepHit, WorkspaceGrepParams, WorkspaceGrepResponse};
 ///
 /// Iterates over indexed files (bounded by `scan_cap = limit * 8`), reads each as UTF-8, and
 /// applies the compiled regex. Non-UTF-8 files are silently skipped. Returns up to `limit` hits
-/// with optional 1-line context.
+/// with optional 1-line context. Supports in-memory pagination via `cursor` / `next_cursor`
+/// using the same `encode_in_memory(offset, generation)` scheme as `list_files`.
 pub(super) fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
@@ -22,6 +25,28 @@ pub(super) fn run_workspace_grep(
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
         .min(SEARCH_LIMIT_MAX) as usize;
     let scan_cap = limit.saturating_mul(8).max(2_000);
+    let generation = state.cache_generation.load(Ordering::Relaxed);
+
+    // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
+    // cursor_invalidated=true so the caller can restart.
+    let skip: usize = match params.cursor.as_ref() {
+        Some(c) => {
+            let (offset, snapshot_id) = c.decode_in_memory()?;
+            if snapshot_id != generation {
+                return json_result(&WorkspaceGrepResponse {
+                    pattern: params.pattern,
+                    total_files_matched: 0,
+                    total_matches: 0,
+                    truncated: false,
+                    hits: Vec::new(),
+                    next_cursor: None,
+                    cursor_invalidated: true,
+                });
+            }
+            offset as usize
+        }
+        None => 0,
+    };
 
     let re = regex::Regex::new(&params.pattern)
         .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
@@ -39,8 +64,10 @@ pub(super) fn run_workspace_grep(
     let mut total_files_matched: usize = 0;
     let mut truncated = false;
     let mut files_visited: usize = 0;
+    // Track how many files passed filters so far (for cursor offset).
+    let mut files_seen: usize = 0;
 
-    for (path, entry) in &cache.by_path {
+    'files: for (path, entry) in &cache.by_path {
         // Honour scan_cap: stop iterating files once we've visited enough.
         if files_visited >= scan_cap {
             truncated = true;
@@ -61,6 +88,12 @@ pub(super) fn run_workspace_grep(
             continue;
         }
 
+        // Skip files that were already returned on prior pages.
+        if files_seen < skip {
+            files_seen += 1;
+            continue;
+        }
+        files_seen += 1;
         files_visited += 1;
 
         // Read the file from the working tree; skip non-UTF-8 silently.
@@ -87,7 +120,9 @@ pub(super) fn run_workspace_grep(
 
             if hits.len() >= limit {
                 // Keep counting total_matches, but stop materialising hits.
-                continue;
+                // Once limit is saturated, set truncated and stop processing files.
+                truncated = true;
+                break 'files;
             }
 
             // Binary search for the line that contains the match start.
@@ -124,14 +159,19 @@ pub(super) fn run_workspace_grep(
         if file_had_match {
             total_files_matched += 1;
         }
-
-        // If we've already hit `limit` hits and have also saturated scan_cap visits,
-        // the truncated flag was set at the top of the loop; here we detect the
-        // "hits saturated" truncation path.
-        if hits.len() >= limit && total_matches > limit as u32 {
-            truncated = true;
-        }
     }
+
+    // Emit a cursor when hits are saturated and there may be more files to visit.
+    // `files_seen` is the position past the last file we processed; the next page
+    // skips all files before that index.
+    let next_cursor = if truncated {
+        Some(super::cursor::Cursor::encode_in_memory(
+            files_seen as u64,
+            generation,
+        ))
+    } else {
+        None
+    };
 
     json_result(&WorkspaceGrepResponse {
         pattern: params.pattern,
@@ -139,6 +179,8 @@ pub(super) fn run_workspace_grep(
         total_matches,
         truncated,
         hits,
+        next_cursor,
+        cursor_invalidated: false,
     })
 }
 

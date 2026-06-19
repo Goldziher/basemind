@@ -1248,6 +1248,80 @@ async fn mcp_server_exercises_representative_tools() {
         "rust-filtered Drawable must not include Rectangle (TypeScript): {impl_types:?}"
     );
 
+    // find_references substring matching (B3/I14): "lph" is a substring of "alpha" and should
+    // return the same 3 call sites as the exact name. The callee field on each hit must
+    // still be the full captured identifier "alpha", not just the substring.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "lph", "limit": 100 }),
+            ))
+            .await
+            .expect("find_references(substring)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert_eq!(
+        hits.len(),
+        3,
+        "find_references(\"lph\") must return the 3 alpha() call sites via substring: {body}"
+    );
+    assert!(
+        hits.iter()
+            .all(|h| h.get("callee").and_then(Value::as_str) == Some("alpha")),
+        "every substring hit must carry the full callee=\"alpha\", not the substring"
+    );
+
+    // find_implementations substring matching: "raw" is a substring of "Drawable" and must
+    // return both Beta and Rectangle.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_implementations",
+                json!({ "trait_name": "raw", "limit": 100 }),
+            ))
+            .await
+            .expect("find_implementations(substring)"),
+    );
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let impl_types: Vec<&str> = hits
+        .iter()
+        .filter_map(|h| h.get("impl_type").and_then(Value::as_str))
+        .collect();
+    assert!(
+        impl_types.contains(&"Beta"),
+        "find_implementations(\"raw\") must include Beta via substring on \"Drawable\": {impl_types:?}"
+    );
+    assert!(
+        impl_types.contains(&"Rectangle"),
+        "find_implementations(\"raw\") must include Rectangle via substring on \"Drawable\": {impl_types:?}"
+    );
+    // The echoed trait_name must be the search needle, not the matched trait.
+    assert_eq!(
+        body.get("trait_name").and_then(Value::as_str),
+        Some("raw"),
+        "trait_name in response must echo the search needle"
+    );
+
+    // search_symbols empty needle guard: empty string must return 0 results without scanning.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "", "limit": 100 }),
+            ))
+            .await
+            .expect("search_symbols(empty)"),
+    );
+    let results = body
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("results");
+    assert!(
+        results.is_empty(),
+        "search_symbols with empty needle must return 0 results, got {results:?}"
+    );
+
     let _ = service.cancel().await;
 }
 

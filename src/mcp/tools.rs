@@ -161,6 +161,17 @@ impl BasemindServer {
                 None => 0,
             };
 
+            // Empty needle matches every symbol — never what the caller wants and
+            // expensive on large repos. Return immediately.
+            if params.needle.is_empty() {
+                return json_result(&SearchResponse {
+                    total: 0,
+                    truncated: false,
+                    results: Vec::new(),
+                    next_cursor: None,
+                    cursor_invalidated: false,
+                });
+            }
             let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
             let max_total = limit.saturating_mul(64).max(2_000);
             let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
@@ -416,16 +427,17 @@ impl BasemindServer {
         __result
     }
 
-    /// Incoming call sites for any callee whose identifier matches `name`.
+    /// Incoming call sites for any callee whose identifier contains `name`.
     #[tool(
-        description = "List call sites of any function/method whose callee identifier matches \
-                       `name`. Backed by the Fjall inverted index over L2 call captures — \
-                       returns hits as (path, line, column, exact callee). Best-effort: no \
-                       scope-aware resolution, so `Foo::bar()` and `bar()` both match \
-                       name=\"bar\". Returns up to `limit` results (default 100, max 1000). \
-                       Requires the index to have been populated by a scan with `eager_l2=true` \
-                       (the default); returns an empty hit list otherwise. Pass `cursor` from a \
-                       previous response to fetch the next page; absent means no more results."
+        description = "List call sites of any function/method whose callee identifier contains \
+                       `name` (case-sensitive substring match). Backed by the Fjall inverted \
+                       index over L2 call captures — returns hits as (path, line, column, exact \
+                       callee). No scope-aware resolution: `Foo::bar()` and `bar()` both match \
+                       name=\"bar\". Returns up to `limit` results (default 100, max 1000); \
+                       scan is bounded by `scan_cap = limit * 8` matching entries. Requires the \
+                       index to have been populated by a scan with `eager_l2=true` (the default). \
+                       Pass `cursor` from a previous response to fetch the next page; absent \
+                       means no more results."
     )]
     pub(crate) async fn find_references(
         &self,
@@ -491,7 +503,8 @@ impl BasemindServer {
                        `search_symbols` when the pattern is a plain substring identifier — \
                        that's index-backed and faster. Bounded by `scan_cap = limit * 8` files; \
                        pass `language` or `path_contains` to narrow the scan. Default limit 100, \
-                       max 1000."
+                       max 1000. Pass `cursor` from a previous response to fetch the next page; \
+                       absent means no more results. Cursors invalidate on rescan."
     )]
     pub(crate) async fn workspace_grep(
         &self,
@@ -511,13 +524,13 @@ impl BasemindServer {
         __result
     }
 
-    /// Types / classes that implement, extend, or inherit from a given name.
+    /// Types / classes that implement, extend, or inherit from a name containing `trait_name`.
     #[tool(
         description = "Find types that implement, extend, or inherit from a given trait / interface \
                        / base class. Returns each (trait, implementor, file, line, column) pair. \
-                       Substring-aware? No — `trait_name` is an exact-prefix match against \
-                       captured identifiers. Covers Rust (`impl Trait for Type`), Python \
-                       (`class Foo(Bar):`), TypeScript / TSX (`class X extends Y`, \
+                       Matching: `trait_name` is a case-sensitive substring match against captured \
+                       identifiers (full-partition scan). Covers Rust (`impl Trait for Type`), \
+                       Python (`class Foo(Bar):`), TypeScript / TSX (`class X extends Y`, \
                        `class X implements Y`, `interface X extends Y`), and JavaScript \
                        (`class X extends Y`). Go interface satisfaction is structural and not \
                        detected. Bounded by `scan_cap = limit * 8` — pass `cursor` from a \

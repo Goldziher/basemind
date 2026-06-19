@@ -79,11 +79,17 @@ pub fn file_outline_l2(
 
 /// Find all symbols across indexed files whose name matches `needle` (case-sensitive substring),
 /// optionally filtered by kind.
+///
+/// Returns an empty `Vec` immediately when `needle` is empty — an empty substring matches
+/// every symbol, which is never what callers want and is very expensive on large repos.
 pub fn search_symbols(
     store: &Store,
     needle: &str,
     kind: Option<SymbolKind>,
 ) -> Result<Vec<SymbolHit>, QueryError> {
+    if needle.is_empty() {
+        return Ok(Vec::new());
+    }
     let finder = memchr::memmem::Finder::new(needle.as_bytes());
     let mut out = Vec::new();
     for (rel, entry) in &store.index.files {
