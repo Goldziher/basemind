@@ -172,18 +172,47 @@ mod tests {
         assert_eq!(default_scope(&u), "web:example.com");
     }
 
+    // Private / loopback hosts are rejected by the SSRF guard in `Url::parse`
+    // (see `src/url.rs`). These tests pin that the guard fires by default and
+    // that the `BASEMIND_ALLOW_PRIVATE_HOSTS=1` escape hatch re-enables them so
+    // `default_scope` still produces the host-only scope tag. The env var is
+    // process-global; `ENV_LOCK` serializes the two cases.
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const ALLOW_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
+
     #[test]
-    fn default_scope_handles_ipv4_host() {
-        let u = Url::parse("http://192.168.1.1/").unwrap();
-        assert_eq!(default_scope(&u), "web:192.168.1.1");
+    fn rfc1918_host_rejected_by_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(ALLOW_ENV) };
+        assert!(
+            Url::parse("http://192.168.1.1/").is_err(),
+            "192.168.1.1 must be rejected without the override"
+        );
     }
 
     #[test]
-    fn default_scope_handles_ipv6_host() {
-        let u = Url::parse("http://[::1]/").unwrap();
-        // url::Url returns IPv6 hosts bracketed-or-not depending on form; we
-        // accept either as long as it round-trips with the scope prefix.
-        let scope = default_scope(&u);
+    fn ipv6_loopback_host_rejected_by_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var(ALLOW_ENV) };
+        assert!(
+            Url::parse("http://[::1]/").is_err(),
+            "[::1] must be rejected without the override"
+        );
+    }
+
+    #[test]
+    fn default_scope_handles_private_hosts_under_override() {
+        let _g = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var(ALLOW_ENV, "1") };
+        let v4 = Url::parse("http://192.168.1.1/");
+        let v6 = Url::parse("http://[::1]/");
+        unsafe { std::env::remove_var(ALLOW_ENV) };
+
+        let v4 = v4.expect("override must allow RFC1918 host");
+        assert_eq!(default_scope(&v4), "web:192.168.1.1");
+        let v6 = v6.expect("override must allow IPv6 loopback host");
+        let scope = default_scope(&v6);
         assert!(
             scope.starts_with("web:") && scope.contains(":1"),
             "ipv6 scope should contain the address; got {scope}"
