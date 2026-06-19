@@ -110,7 +110,20 @@
       "$ref": "#/$defs/MemoryConfig",
       "default": {
         "enabled": true,
-        "scope_strategy": "git_remote_with_fallback"
+        "scope_strategy": "git_remote_with_fallback",
+        "default_visibility": "group"
+      }
+    },
+    "comms": {
+      "$ref": "#/$defs/CommsConfig",
+      "default": {
+        "enabled": true,
+        "agent_id": null,
+        "idle_timeout_secs": 1800,
+        "max_messages_per_room": 1000,
+        "retention_secs": 604800,
+        "max_rooms": 256,
+        "workspace_root": null
       }
     },
     "crawl": {
@@ -621,6 +634,11 @@
           "description": "How to derive the scope key for an opened repository.",
           "$ref": "#/$defs/MemoryScopeStrategy",
           "default": "git_remote_with_fallback"
+        },
+        "default_visibility": {
+          "description": "Default memory tier when a `memory_*` call omits `visibility`. `group` (shared) keeps\ntoday's behavior; set to `individual` so a user's writes default to their private tier.",
+          "$ref": "#/$defs/Visibility",
+          "default": "group"
         }
       },
       "additionalProperties": false
@@ -638,6 +656,77 @@
           "const": "workdir_only"
         }
       ]
+    },
+    "Visibility": {
+      "description": "Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's\nbehavior, with an empty owner segment. `individual` scopes the entry to the calling\nagent (owner = its `AgentId`), so two agents can keep private same-key entries.",
+      "oneOf": [
+        {
+          "description": "Shared, cross-agent memory (owner segment is empty). The default.",
+          "type": "string",
+          "const": "group"
+        },
+        {
+          "description": "Per-agent memory (owner segment is the caller's `AgentId`).",
+          "type": "string",
+          "const": "individual"
+        }
+      ]
+    },
+    "CommsConfig": {
+      "description": "`[comms]` config sub-tree. See module docs for the lifecycle context.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Only meaningful when the `comms` cargo feature is compiled in; when\n`false` the MCP / CLI comms tools are wired but the server never connects to a daemon.",
+          "type": "boolean",
+          "default": true
+        },
+        "agent_id": {
+          "description": "Stable identity this process presents to the broker. When unset, the identity resolver\nfalls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-session id, then\n`\"anon\"`. Validated through [`crate::comms::ids::AgentId`] at resolution time.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "idle_timeout_secs": {
+          "description": "Seconds of zero-subscriber idle before the broker sheds caches. Keeps the socket bound.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 1800
+        },
+        "max_messages_per_room": {
+          "description": "Per-room front-matter retention cap before old messages become prune-eligible.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 1000
+        },
+        "retention_secs": {
+          "description": "Message retention window in seconds. Older messages are eligible for pruning.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 1,
+          "default": 604800
+        },
+        "max_rooms": {
+          "description": "Hard cap on the number of concurrently registered rooms.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 1,
+          "default": 256
+        },
+        "workspace_root": {
+          "description": "Optional explicit workspace root the daemon associates this client with. When unset the\nclient uses its discovered repo / cwd for scope context.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
     },
     "CrawlConfig": {
       "type": "object",

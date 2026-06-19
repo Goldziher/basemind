@@ -102,8 +102,12 @@ enum Cmd {
     },
 }
 
-/// Lifecycle subcommands for the comms broker daemon. The agent verbs (post / read / rooms)
-/// are a sibling component's responsibility and are intentionally absent here.
+/// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
+///
+/// Lifecycle verbs (`Daemon`/`Start`/`Stop`/`Status`) manage the singleton broker process. The
+/// agent verbs (`Register`/`Agents`/`RoomCreate`/`Rooms`/`Join`/`Leave`/`Post`/`History`/`Read`/
+/// `Inbox`) connect to the daemon DIRECTLY via `CommsClient::ensure_and_connect` (see
+/// `cli::comms`) — they never build a full server, so they cannot clash with a running `serve`.
 #[cfg(feature = "comms")]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
@@ -115,6 +119,9 @@ enum CommsLifecycleCmd {
     Stop,
     /// Report the daemon's pid / version / uptime / room + subscriber counts.
     Status,
+    /// Agent verbs (register / rooms / post / history / inbox …) against the broker.
+    #[command(flatten)]
+    Agent(basemind::cli::comms::CommsAgentCmd),
 }
 
 #[derive(clap::Args, Debug)]
@@ -264,7 +271,7 @@ fn main() -> Result<()> {
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(feature = "comms")]
-        Cmd::Comms { action } => cmd_comms(action, json),
+        Cmd::Comms { action } => cmd_comms(&root, action, json),
     }
 }
 
@@ -272,12 +279,13 @@ fn main() -> Result<()> {
 /// runtime — the broker daemon itself uses a multi-thread runtime so concurrent links don't
 /// serialize.
 #[cfg(feature = "comms")]
-fn cmd_comms(action: CommsLifecycleCmd, json: bool) -> Result<()> {
+fn cmd_comms(root: &std::path::Path, action: CommsLifecycleCmd, json: bool) -> Result<()> {
     match action {
         CommsLifecycleCmd::Daemon => cmd_comms_daemon(),
         CommsLifecycleCmd::Start => cmd_comms_start(),
         CommsLifecycleCmd::Stop => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
         CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
+        CommsLifecycleCmd::Agent(cmd) => basemind::cli::comms::run(root, json, cmd),
     }
 }
 

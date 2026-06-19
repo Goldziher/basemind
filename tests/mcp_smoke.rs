@@ -2001,3 +2001,144 @@ async fn search_documents_accepts_post_filter_params() {
 
     let _ = service.cancel().await;
 }
+
+// ─── agent-comms round-trip (feature = "comms") ─────────────────────────────
+
+/// End-to-end comms round-trip through the real `CommsClient` over an isolated Unix-socket
+/// broker — NOT the user's daemon. A throwaway `UdsFrontend` is bound to a temp socket and a
+/// temp store, then two clients with DISTINCT agent ids exercise the front-matter/body split:
+///
+/// * agent A posts (subject + body) to a shared room,
+/// * agent B's `read_history` returns the FRONT-MATTER (subject present) and NOT the body,
+/// * agent B's `get_body` returns the body,
+/// * agent B's inbox shows the unread message, then 0 unread after a `mark_read` pass.
+///
+/// Isolation: a per-test temp dir for the store + a per-test socket path, so the test daemon
+/// never touches the user's real `comms.sock` and parallel test runs do not collide.
+#[cfg(feature = "comms")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn comms_round_trip_front_matter_then_body_then_inbox() {
+    use std::sync::Arc;
+
+    use basemind::comms::client::CommsClient;
+    use basemind::comms::daemon::Broker;
+    use basemind::comms::frontend_uds::UdsFrontend;
+    use basemind::comms::ids::{AgentId, RoomId};
+    use basemind::comms::model::RoomScope;
+    use basemind::comms::singleton::CommsPaths;
+    use basemind::comms::store::CommsStore;
+    use basemind::comms::transport::CommsFrontend;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Short socket path under the temp dir (Unix socket paths are length-bounded).
+    let socket_path = dir.path().join("c.sock");
+    let paths = CommsPaths {
+        comms_dir: dir.path().to_path_buf(),
+        socket_path: socket_path.clone(),
+    };
+
+    // Bind the broker on the temp socket and drive its accept loop in the background.
+    let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
+    let broker = Arc::new(Broker::new(store));
+    let listener = {
+        let std_listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
+        std_listener.set_nonblocking(true).expect("nonblocking");
+        tokio::net::UnixListener::from_std(std_listener).expect("adopt listener")
+    };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
+    let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
+
+    // Two clients with DISTINCT identities connect to the running broker.
+    let agent_a = AgentId::parse("agent-a").expect("agent a");
+    let agent_b = AgentId::parse("agent-b").expect("agent b");
+    let mut a = CommsClient::connect(&paths, agent_a, None, None)
+        .await
+        .expect("connect a");
+    let mut b = CommsClient::connect(&paths, agent_b, None, None)
+        .await
+        .expect("connect b");
+
+    // Shared room; B joins so it lands in B's inbox.
+    let room = RoomId::parse("team").expect("room");
+    a.create_room(room.clone(), RoomScope::Global, Some("Team".to_string()))
+        .await
+        .expect("create room");
+    b.join_room(room.clone()).await.expect("b joins");
+
+    // A posts subject + body.
+    let subject = "deploy status";
+    let body = b"all systems green".to_vec();
+    let message_id = a
+        .post_message(
+            room.clone(),
+            subject.to_string(),
+            body.clone(),
+            vec!["ops".to_string()],
+            None,
+        )
+        .await
+        .expect("post");
+
+    // B reads history → FRONT-MATTER only: subject present, NO body field on the meta record.
+    let (history, _next) = b
+        .read_history(room.clone(), None, 10)
+        .await
+        .expect("history");
+    assert_eq!(history.len(), 1, "exactly one posted message");
+    let meta = &history[0];
+    assert_eq!(meta.subject, subject, "front-matter carries the subject");
+    assert_eq!(meta.id, message_id, "front-matter id matches the posted id");
+    assert_eq!(
+        meta.body_len,
+        body.len() as u32,
+        "front-matter carries body_len, not the body"
+    );
+    // The front-matter record is serialized WITHOUT the body bytes — assert the JSON view has
+    // no `body` key, only the length/hash metadata.
+    let meta_json = serde_json::to_value(meta).expect("serialize meta");
+    assert!(
+        meta_json.get("body").is_none(),
+        "history front-matter must NOT include the body: {meta_json}"
+    );
+    assert!(
+        meta_json.get("body_len").is_some(),
+        "history front-matter must include body_len: {meta_json}"
+    );
+
+    // B fetches the body on demand — the only body path.
+    let fetched = b.get_body(message_id.clone()).await.expect("get_body");
+    assert_eq!(
+        fetched.as_deref(),
+        Some(body.as_slice()),
+        "message_get returns the exact body"
+    );
+
+    // B's inbox shows the unread message, then mark_read clears it to 0 unread.
+    let (inbox, unread, _c) = b
+        .read_inbox(None, None, None, 10, true)
+        .await
+        .expect("inbox read+mark");
+    assert_eq!(inbox.len(), 1, "the posted message is in B's inbox");
+    assert_eq!(
+        inbox[0].subject, subject,
+        "inbox carries front-matter subject"
+    );
+    assert_eq!(unread, 0, "mark_read drained the unread count in this page");
+
+    // A second inbox read after mark_read returns nothing new.
+    let (inbox2, unread2, _c2) = b
+        .read_inbox(None, None, None, 10, false)
+        .await
+        .expect("inbox re-read");
+    assert!(
+        inbox2.is_empty(),
+        "no unread messages remain after mark_read"
+    );
+    assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
+
+    // Tear down the broker.
+    let _ = shutdown_tx.send(true);
+    let _ = serve.await;
+}

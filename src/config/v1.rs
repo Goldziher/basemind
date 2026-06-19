@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -22,6 +23,8 @@ pub struct ConfigV1 {
     pub documents: DocumentsConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
+    #[serde(default)]
+    pub comms: CommsConfig,
     #[serde(default)]
     pub crawl: CrawlConfig,
     /// Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,
@@ -214,6 +217,10 @@ pub struct MemoryConfig {
     /// How to derive the scope key for an opened repository.
     #[serde(default)]
     pub scope_strategy: MemoryScopeStrategy,
+    /// Default memory tier when a `memory_*` call omits `visibility`. `group` (shared) keeps
+    /// today's behavior; set to `individual` so a user's writes default to their private tier.
+    #[serde(default)]
+    pub default_visibility: crate::mcp::params::Visibility,
 }
 
 impl MemoryConfig {
@@ -227,6 +234,7 @@ impl Default for MemoryConfig {
         Self {
             enabled: Self::default_enabled(),
             scope_strategy: MemoryScopeStrategy::default(),
+            default_visibility: crate::mcp::params::Visibility::default(),
         }
     }
 }
@@ -317,6 +325,7 @@ impl ConfigV1 {
             languages: Default::default(),
             documents: DocumentsConfig::default(),
             memory: MemoryConfig::default(),
+            comms: CommsConfig::default(),
             crawl: CrawlConfig::default(),
             llm: LlmConfig::default(),
         }

@@ -12,6 +12,8 @@ pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;
+#[cfg(feature = "comms")]
+mod helpers_comms;
 #[cfg(feature = "documents")]
 mod helpers_documents;
 mod helpers_graph;
@@ -25,12 +27,16 @@ mod savings;
 mod telemetry;
 mod tools;
 mod tools_admin;
+#[cfg(feature = "comms")]
+mod tools_comms;
 mod tools_git;
 mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod types;
 mod types_admin;
+#[cfg(feature = "comms")]
+mod types_comms;
 mod types_documents;
 mod types_graph;
 mod types_impls;
@@ -161,6 +167,12 @@ pub(crate) struct ServerState {
     /// will return an MCP error rather than crash).
     #[cfg(feature = "crawl")]
     pub(crate) crawl_engine: Option<kreuzcrawl::CrawlEngineHandle>,
+    /// Lazily-connected client to the user-global comms broker. The first comms tool call
+    /// spawns the daemon if absent (via `ensure_and_connect`) and caches the connected client
+    /// here; subsequent calls reuse it. `None` until the first call. Best-effort: a connect
+    /// failure surfaces as an MCP error on the call, never at server boot.
+    #[cfg(feature = "comms")]
+    pub(crate) comms_client: tokio::sync::Mutex<Option<crate::comms::client::CommsClient>>,
 }
 
 pub(crate) struct MapCache {
@@ -291,14 +303,10 @@ impl BasemindServer {
             .as_ref()
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
-        // Resolve the individual-memory owner once. Validate through `AgentId` so the owner
-        // segment is always NUL-free; fall back to "anon" when unset or invalid. (Richer
-        // clientInfo-based resolution lands in a later component.)
-        let agent_id = std::env::var("BASEMIND_AGENT_ID")
-            .ok()
-            .and_then(|s| crate::comms::ids::AgentId::parse(s).ok())
-            .map(|a| a.into_string())
-            .unwrap_or_else(|| "anon".to_string());
+        // Resolve this server's stable agent identity once. Used as the individual-memory
+        // owner segment AND the comms-broker handle, so it must be NUL-free — every candidate
+        // is validated through `AgentId` and rejected candidates fall through to the next tier.
+        let agent_id = resolve_agent_id(&config, &store);
         let cache = Arc::new(MapCache::build(&store));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         // A fresh repo has no index yet. Auto-scan on startup (working view only)
@@ -348,6 +356,8 @@ impl BasemindServer {
             embedder: tokio::sync::OnceCell::new(),
             #[cfg(feature = "crawl")]
             crawl_engine,
+            #[cfg(feature = "comms")]
+            comms_client: tokio::sync::Mutex::new(None),
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
         // no auto-scan, no background GC. They preload the map cache (above) and
@@ -413,11 +423,73 @@ impl BasemindServer {
         {
             router += Self::tool_router_web();
         }
+        #[cfg(feature = "comms")]
+        {
+            router += Self::tool_router_comms();
+        }
         Self {
             state,
             tool_router: router,
         }
     }
+}
+
+/// File under `.basemind/` holding the generated-and-persisted per-session agent id. Created
+/// the first time identity resolution falls through to the generated tier, so two `serve`
+/// sessions against different repos get distinct ids while a single repo stays stable.
+const AGENT_ID_FILE: &str = "agent-id";
+
+/// Resolve this server's stable agent identity. Tiered, each candidate validated through
+/// [`crate::comms::ids::AgentId`] (an invalid candidate falls through, not fails):
+///
+/// 1. `BASEMIND_AGENT_ID` env — explicit per-process override.
+/// 2. `config.comms.agent_id` — workspace config.
+/// 3. A generated-and-persisted id at `.basemind/agent-id` — stable per repo across restarts,
+///    distinct across repos so two windows differ.
+/// 4. `"anon"` — the final fallback (itself a valid `AgentId`).
+///
+/// TODO: prefer the MCP `clientInfo.name` from rmcp's `initialize` handshake once it is
+/// cleanly reachable at construction time; the persisted per-session id is the stand-in.
+fn resolve_agent_id(config: &crate::config::Config, store: &Store) -> String {
+    fn validated(candidate: Option<String>) -> Option<String> {
+        candidate
+            .and_then(|s| crate::comms::ids::AgentId::parse(s).ok())
+            .map(|a| a.into_string())
+    }
+
+    if let Some(id) = validated(std::env::var("BASEMIND_AGENT_ID").ok()) {
+        return id;
+    }
+    if let Some(id) = validated(config.comms.agent_id.clone()) {
+        return id;
+    }
+    if let Some(id) = validated(load_or_create_persisted_agent_id(&store.basemind_dir)) {
+        return id;
+    }
+    "anon".to_string()
+}
+
+/// Read the persisted per-session agent id from `<basemind_dir>/agent-id`, generating and
+/// writing a fresh one when absent or unreadable. Best-effort: any io failure returns `None`
+/// so the resolver falls through to `"anon"` rather than erroring at server boot.
+fn load_or_create_persisted_agent_id(basemind_dir: &std::path::Path) -> Option<String> {
+    let path = basemind_dir.join(AGENT_ID_FILE);
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    // Generate a short, id-alphabet-safe token. The low 64 bits of a nanosecond timestamp mixed
+    // with the pid give a per-session-unique, NUL-free value within the `AgentId` alphabet.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let token = format!("session-{:x}-{:x}", std::process::id(), nanos);
+    // Persist best-effort; a write failure still returns the in-memory token for this session.
+    let _ = std::fs::write(&path, &token);
+    Some(token)
 }
 
 /// Run an in-process blob GC once, logging the outcome and swallowing any error.
