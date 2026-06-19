@@ -94,6 +94,27 @@ enum Cmd {
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
+    /// Manage the user-global agent-comms broker daemon (needs `--features comms`).
+    #[cfg(feature = "comms")]
+    Comms {
+        #[command(subcommand)]
+        action: CommsLifecycleCmd,
+    },
+}
+
+/// Lifecycle subcommands for the comms broker daemon. The agent verbs (post / read / rooms)
+/// are a sibling component's responsibility and are intentionally absent here.
+#[cfg(feature = "comms")]
+#[derive(Subcommand, Debug)]
+enum CommsLifecycleCmd {
+    /// Run the broker loop: bind the singleton socket, serve front-ends, block until shutdown.
+    Daemon,
+    /// Ensure the daemon is running (spawn if needed); noop when already alive.
+    Start,
+    /// Ask the running daemon to drain and stop.
+    Stop,
+    /// Report the daemon's pid / version / uptime / room + subscriber counts.
+    Status,
 }
 
 #[derive(clap::Args, Debug)]
@@ -242,7 +263,209 @@ fn main() -> Result<()> {
         },
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
+        #[cfg(feature = "comms")]
+        Cmd::Comms { action } => cmd_comms(action, json),
     }
+}
+
+/// Dispatch a comms lifecycle subcommand. Each command drives a small current-thread tokio
+/// runtime — the broker daemon itself uses a multi-thread runtime so concurrent links don't
+/// serialize.
+#[cfg(feature = "comms")]
+fn cmd_comms(action: CommsLifecycleCmd, json: bool) -> Result<()> {
+    match action {
+        CommsLifecycleCmd::Daemon => cmd_comms_daemon(),
+        CommsLifecycleCmd::Start => cmd_comms_start(),
+        CommsLifecycleCmd::Stop => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
+        CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
+    }
+}
+
+#[cfg(feature = "comms")]
+enum CommsRpc {
+    Stop,
+    Status,
+}
+
+/// Run the broker loop. Binds the singleton socket (the bind IS the lock), opens the store,
+/// serves the Unix-socket front-end, and blocks until SIGTERM / Ctrl-C / a `Stop` RPC.
+#[cfg(feature = "comms")]
+fn cmd_comms_daemon() -> Result<()> {
+    use std::sync::Arc;
+
+    use basemind::comms::daemon::Broker;
+    use basemind::comms::singleton;
+    use basemind::comms::store::CommsStore;
+
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+
+    // Bind first — the bind is the singleton lock. Probe before reclaiming a stale socket.
+    let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
+        Ok(listener) => listener,
+        Err(basemind::comms::singleton::SingletonError::AlreadyRunning(p)) => {
+            tracing::info!(socket = %p.display(), "comms daemon already running; exiting");
+            return Ok(());
+        }
+        Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
+    };
+
+    let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
+    let broker = Arc::new(Broker::new(store));
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // Signal handling: SIGTERM / Ctrl-C begins the drain.
+        let broker_for_signal = broker.clone();
+        let shutdown_for_signal = shutdown_tx.clone();
+        tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            tracing::info!("comms: shutdown signal received; draining");
+            broker_for_signal.begin_drain().await;
+            let _ = shutdown_for_signal.send(true);
+        });
+
+        let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
+            basemind::comms::frontend_uds::UdsFrontend::from_listener(
+                listener,
+                paths.socket_path.clone(),
+            ),
+        ));
+        frontend.serve_obj(broker, shutdown_rx).await
+    })?;
+    Ok(())
+}
+
+// `CommsFrontend::serve` uses RPITIT and is not object-safe, so wrap it behind a tiny
+// object-safe shim for the single dynamic dispatch in the daemon entry point.
+#[cfg(feature = "comms")]
+trait CommsFrontendObj: Send {
+    fn serve_obj(
+        self: Box<Self>,
+        broker: std::sync::Arc<basemind::comms::daemon::Broker>,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>;
+}
+
+#[cfg(feature = "comms")]
+struct UdsFrontendBox(basemind::comms::frontend_uds::UdsFrontend);
+
+#[cfg(feature = "comms")]
+impl CommsFrontendObj for UdsFrontendBox {
+    fn serve_obj(
+        self: Box<Self>,
+        broker: std::sync::Arc<basemind::comms::daemon::Broker>,
+        shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>> {
+        use basemind::comms::transport::CommsFrontend;
+        Box::pin(async move { Box::new(self.0).serve(broker, shutdown).await })
+    }
+}
+
+/// Block until SIGTERM or Ctrl-C.
+#[cfg(all(feature = "comms", unix))]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        }
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
+}
+
+#[cfg(all(feature = "comms", not(unix)))]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+/// Ensure a daemon is running, spawning it detached if needed.
+#[cfg(feature = "comms")]
+fn cmd_comms_start() -> Result<()> {
+    use basemind::comms::singleton;
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    let socket_path = paths.socket_path.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+    runtime.block_on(async move {
+        singleton::ensure_daemon(&paths)
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))
+    })?;
+    println!("comms daemon is running ({})", socket_path.display());
+    Ok(())
+}
+
+/// Connect to the running daemon and issue a Stop or Status RPC.
+#[cfg(feature = "comms")]
+fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
+    use basemind::comms::client::CommsClient;
+    use basemind::comms::ids::AgentId;
+    use basemind::comms::singleton;
+
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move {
+        // A control client identifies as a fixed CLI agent; no scope context needed.
+        let agent = AgentId::parse("basemind-cli").map_err(|e| anyhow::anyhow!("agent id: {e}"))?;
+        let mut client = CommsClient::connect(&paths, agent, None, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
+        match rpc {
+            CommsRpc::Stop => {
+                client
+                    .stop()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("stop: {e}"))?;
+                if json {
+                    println!("{{\"stopped\":true}}");
+                } else {
+                    println!("comms daemon stopping");
+                }
+            }
+            CommsRpc::Status => {
+                let status = client
+                    .status()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("status: {e}"))?;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&status)
+                            .map_err(|e| anyhow::anyhow!("serialize status: {e}"))?
+                    );
+                } else {
+                    println!(
+                        "pid={} version={} proto={} uptime={}s rooms={} subscribers={}",
+                        status.pid,
+                        status.version,
+                        status.proto_ver,
+                        status.uptime_secs,
+                        status.rooms,
+                        status.subscribers,
+                    );
+                }
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    })?;
+    Ok(())
 }
 
 /// Emit a `WARN` when a global flag was supplied to a subcommand that does not

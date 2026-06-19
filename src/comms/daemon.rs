@@ -1,0 +1,873 @@
+//! The broker: the single owner of all comms state.
+//!
+//! [`Broker`] wraps the [`CommsStore`] and an in-RAM registry of live notification sinks. It
+//! handles each [`CommsRequest`] and fans out [`CommsNotification::Message`] to every link
+//! subscribed to the posted room. The daemon is the sole writer to the store, so request
+//! handling needs no cross-process coordination beyond the store's flock.
+//!
+//! ## Lifecycle
+//!
+//! `Starting → Active ⇄ Idle → Draining → Stopped`. The subscriber refcount drives the
+//! Active⇄Idle edge: when it drops to zero (and a grace period elapses) the broker may shed
+//! in-RAM caches and pause timers, but it KEEPS the socket bound and the store flock held —
+//! that is the split-brain guard, so a second daemon cannot bind while this one merely idles.
+//! `Draining` (a `Stop` RPC or SIGTERM) stops accepting, flushes, then releases the flock and
+//! unlinks the socket on the way to `Stopped`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
+
+use ahash::AHashMap;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+
+use super::cursor::Cursor;
+use super::ids::{AgentId, RoomId};
+use super::model::{
+    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, Subscription,
+    now_micros,
+};
+use super::protocol::{
+    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport,
+};
+use super::scope::{self, ScopeChain};
+use super::store::{self, CommsStore, CommsStoreError};
+
+/// Default page size when a client omits `limit`.
+pub const DEFAULT_LIMIT: u32 = 100;
+/// Hard cap on a page, mirroring the MCP `limit` ceiling.
+pub const MAX_LIMIT: u32 = 1000;
+
+/// Lifecycle state of the broker. See the module docs for the transition rules.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleState {
+    /// Booting: store opening, front-ends not yet accepting.
+    Starting,
+    /// Serving with at least one live subscriber.
+    Active,
+    /// No live subscribers; socket + flock retained, caches may be shed.
+    Idle,
+    /// Stop requested: refusing new work, flushing.
+    Draining,
+    /// Fully stopped; flock released, socket unlinked.
+    Stopped,
+}
+
+/// A registered notification sink for one subscription. The link's writer half drains it.
+struct SubSink {
+    /// The room this sink streams.
+    room: RoomId,
+    /// The agent owning the subscription. Retained for diagnostics + future per-agent
+    /// targeting; the fan-out currently routes by room.
+    #[allow(dead_code)]
+    agent: AgentId,
+    /// Where notifications are pushed.
+    tx: mpsc::Sender<CommsOut>,
+}
+
+/// In-RAM broker state behind a single async mutex. Subscriber churn is low-frequency relative
+/// to posts, so one mutex is simpler than sharding and never on a hot loop.
+struct Registry {
+    /// Live notification sinks keyed by subscription handle.
+    sinks: AHashMap<u64, SubSink>,
+    /// Current lifecycle state.
+    state: LifecycleState,
+}
+
+/// The broker. Cheap to share via `Arc`; every front-end and link holds one.
+pub struct Broker {
+    store: Arc<CommsStore>,
+    registry: Mutex<Registry>,
+    /// Count of live notification subscribers; drives the Active⇄Idle edge.
+    subscriber_count: AtomicUsize,
+    /// Monotonic source of subscription handles.
+    next_sub: AtomicU64,
+    /// When the broker started, for uptime reporting.
+    started: Instant,
+    /// Build version string surfaced in `Welcome` / `Status`.
+    version: String,
+}
+
+impl Broker {
+    /// Construct a broker over an already-opened store.
+    pub fn new(store: Arc<CommsStore>) -> Self {
+        Self {
+            store,
+            registry: Mutex::new(Registry {
+                sinks: AHashMap::new(),
+                state: LifecycleState::Starting,
+            }),
+            subscriber_count: AtomicUsize::new(0),
+            next_sub: AtomicU64::new(1),
+            started: Instant::now(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
+    /// Mark the broker Active once front-ends are accepting.
+    pub async fn mark_active(&self) {
+        let mut reg = self.registry.lock().await;
+        if reg.state == LifecycleState::Starting || reg.state == LifecycleState::Idle {
+            reg.state = LifecycleState::Active;
+        }
+    }
+
+    /// Current live subscriber count.
+    pub fn subscriber_count(&self) -> usize {
+        self.subscriber_count.load(Ordering::Relaxed)
+    }
+
+    /// Handle one request on a link. `link_tx` is the link's outbound sink, used both for the
+    /// direct response (returned) and to register notification streams. `agent`/`chain` are
+    /// the per-link session context established by `Hello`. Returns the direct response, or
+    /// `None` for fire-and-forget requests (`Subscribe`/`Unsubscribe` reply through `link_tx`).
+    pub async fn handle(
+        &self,
+        req: CommsRequest,
+        session: &mut Session,
+        link_tx: &mpsc::Sender<CommsOut>,
+    ) -> CommsResponse {
+        match self.dispatch(req, session, link_tx).await {
+            Ok(resp) => resp,
+            Err(e) => CommsResponse::Error {
+                code: "store_error".to_string(),
+                message: e.to_string(),
+            },
+        }
+    }
+
+    async fn dispatch(
+        &self,
+        req: CommsRequest,
+        session: &mut Session,
+        link_tx: &mpsc::Sender<CommsOut>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        match req {
+            CommsRequest::Hello {
+                agent,
+                proto_ver,
+                remote,
+                cwd,
+            } => self.on_hello(agent, proto_ver, remote, cwd, session).await,
+            CommsRequest::Register { card } => self.on_register(session, card),
+            CommsRequest::ListAgents { room } => self.on_list_agents(room),
+            CommsRequest::CreateRoom { room, scope, title } => {
+                self.on_create_room(room, scope, title)
+            }
+            CommsRequest::ListRooms { remote, cwd } => {
+                self.on_list_rooms(remote, cwd, session).await
+            }
+            CommsRequest::Join { room } => self.on_join(session, room),
+            CommsRequest::Leave { room } => self.on_leave(session, room),
+            CommsRequest::Post {
+                room,
+                subject,
+                tags,
+                reply_to,
+                body,
+            } => {
+                self.on_post(session, room, subject, tags, reply_to, body)
+                    .await
+            }
+            CommsRequest::History {
+                room,
+                cursor,
+                limit,
+            } => self.on_history(room, cursor, limit),
+            CommsRequest::GetBody { message_id } => self.on_get_body(message_id),
+            CommsRequest::Inbox {
+                remote,
+                cwd,
+                cursor,
+                limit,
+                mark_read,
+            } => {
+                self.on_inbox(session, remote, cwd, cursor, limit, mark_read)
+                    .await
+            }
+            CommsRequest::Subscribe { room } => self.on_subscribe(session, room, link_tx).await,
+            CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
+            CommsRequest::Ping => Ok(CommsResponse::Pong),
+            CommsRequest::Status => Ok(self.on_status().await),
+            CommsRequest::Stop => {
+                self.begin_drain().await;
+                Ok(CommsResponse::Ok)
+            }
+        }
+    }
+
+    // ─── handlers ─────────────────────────────────────────────────────────────────────────
+
+    async fn on_hello(
+        &self,
+        agent: AgentId,
+        proto_ver: u32,
+        remote: Option<String>,
+        cwd: Option<std::path::PathBuf>,
+        session: &mut Session,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        if proto_ver != PROTO_VER {
+            return Ok(CommsResponse::Error {
+                code: "proto_skew".to_string(),
+                message: format!("daemon speaks proto {PROTO_VER}, client sent {proto_ver}"),
+            });
+        }
+        session.agent = Some(agent.clone());
+        session.chain = Some(build_chain(remote.clone(), cwd.clone()));
+
+        // Record / refresh the agent.
+        let now = now_micros();
+        let record = match self.store.get_agent(&agent)? {
+            Some(mut existing) => {
+                existing.last_seen = now;
+                existing
+            }
+            None => AgentRecord {
+                agent_id: agent.clone(),
+                card: AgentCard::default(),
+                kind: AgentKind::Other,
+                first_seen: now,
+                last_seen: now,
+            },
+        };
+        self.store.put_agent(&record)?;
+
+        // Auto-join every scope-matching room and the default per-repo room.
+        if let Some(chain) = session.chain.clone() {
+            self.auto_join(&agent, &chain)?;
+        }
+
+        Ok(CommsResponse::Welcome {
+            proto_ver: PROTO_VER,
+            daemon_version: self.version.clone(),
+        })
+    }
+
+    fn on_register(
+        &self,
+        session: &Session,
+        card: AgentCard,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let now = now_micros();
+        let record = match self.store.get_agent(&agent)? {
+            Some(mut existing) => {
+                existing.card = card;
+                existing.last_seen = now;
+                existing
+            }
+            None => AgentRecord {
+                agent_id: agent,
+                card,
+                kind: AgentKind::Other,
+                first_seen: now,
+                last_seen: now,
+            },
+        };
+        self.store.put_agent(&record)?;
+        Ok(CommsResponse::Ok)
+    }
+
+    fn on_list_agents(&self, room: Option<RoomId>) -> Result<CommsResponse, CommsStoreError> {
+        let agents = match room {
+            None => self.store.list_agents()?,
+            Some(room) => {
+                let subs = self.store.subscribers(&room)?;
+                let mut out = Vec::new();
+                for id in subs {
+                    if let Some(rec) = self.store.get_agent(&id)? {
+                        out.push(rec);
+                    }
+                }
+                out
+            }
+        };
+        Ok(CommsResponse::Agents(agents))
+    }
+
+    fn on_create_room(
+        &self,
+        room: RoomId,
+        scope: RoomScope,
+        title: Option<String>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let record = Room {
+            room_id: room.clone(),
+            scope,
+            title: title.unwrap_or_else(|| room.as_str().to_string()),
+            created_at: now_micros(),
+        };
+        self.store.put_room(&record)?;
+        Ok(CommsResponse::Room(record))
+    }
+
+    async fn on_list_rooms(
+        &self,
+        remote: Option<String>,
+        cwd: Option<std::path::PathBuf>,
+        session: &mut Session,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let chain = build_chain(remote, cwd);
+        // Auto-join the matching rooms for the session agent, if it has said Hello.
+        if let Some(agent) = session.agent.clone() {
+            self.auto_join(&agent, &chain)?;
+        }
+        let matching: Vec<Room> = self
+            .store
+            .list_rooms()?
+            .into_iter()
+            .filter(|r| scope::room_matches(&r.scope, &chain))
+            .collect();
+        Ok(CommsResponse::Rooms(matching))
+    }
+
+    fn on_join(&self, session: &Session, room: RoomId) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        self.store.subscribe(&Subscription {
+            agent_id: agent,
+            room,
+            created_at: now_micros(),
+        })?;
+        Ok(CommsResponse::Ok)
+    }
+
+    fn on_leave(&self, session: &Session, room: RoomId) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        self.store.unsubscribe(&room, &agent)?;
+        Ok(CommsResponse::Ok)
+    }
+
+    async fn on_post(
+        &self,
+        session: &Session,
+        room: RoomId,
+        subject: String,
+        tags: Vec<String>,
+        reply_to: Option<String>,
+        body: Vec<u8>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let id = mint_message_id(&room, &agent);
+        let meta = store::build_meta(id, room.clone(), agent, subject, tags, reply_to, &body);
+        let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
+        self.fan_out(&room, &stored).await;
+        Ok(CommsResponse::Posted {
+            message_id: stored.id,
+        })
+    }
+
+    fn on_history(
+        &self,
+        room: RoomId,
+        cursor: Option<Cursor>,
+        limit: Option<u32>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let after = decode_after(cursor.as_ref(), room.as_str());
+        let limit = clamp_limit(limit);
+        let page = self.store.history(&room, after, limit)?;
+        let next = page
+            .more
+            .then(|| Cursor::encode(room.as_str(), page.last_seq));
+        Ok(CommsResponse::History {
+            messages: page.messages,
+            next_cursor: next,
+        })
+    }
+
+    fn on_get_body(&self, message_id: String) -> Result<CommsResponse, CommsStoreError> {
+        let body = self.store.get_body(&message_id)?;
+        Ok(CommsResponse::Body { body })
+    }
+
+    async fn on_inbox(
+        &self,
+        session: &mut Session,
+        remote: Option<String>,
+        cwd: Option<std::path::PathBuf>,
+        cursor: Option<Cursor>,
+        limit: Option<u32>,
+        mark_read: bool,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let chain = build_chain(remote, cwd);
+        self.auto_join(&agent, &chain)?;
+
+        let limit = clamp_limit(limit);
+        // Walk the agent's subscribed rooms in a stable (id-sorted) order, gathering messages
+        // past each room's per-agent read cursor. The cursor token carries the room + seq of
+        // where the previous page stopped so we resume mid-walk deterministically.
+        let resume = cursor.as_ref().and_then(|c| c.decode().ok());
+        let mut rooms = self.store.rooms_for_agent(&agent)?;
+        rooms.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut collected: Vec<MessageMeta> = Vec::new();
+        // Highest delivered seq per room in THIS page — used to mark-read and to mint the
+        // next cursor.
+        let mut delivered_high: Vec<(RoomId, u64)> = Vec::new();
+        let mut unread_remaining: u32 = 0;
+        let mut next_cursor: Option<Cursor> = None;
+
+        for room in &rooms {
+            let read_seq = self.store.read_cursor(&agent, room)?;
+            // Resume point for THIS room: its read cursor, bumped past anything already paged
+            // when the resume token points at this room.
+            let after = match &resume {
+                Some(pos) if pos.room == room.as_str() => pos.seq.max(read_seq),
+                _ => read_seq,
+            };
+            // +1 so we can tell whether more remain past the page budget for this room.
+            let remaining = limit.saturating_sub(collected.len());
+            let want = remaining.saturating_add(1).max(1);
+            let rows = self.store.history_with_seq(room, after, want)?;
+            for (seq, meta) in rows {
+                if collected.len() < limit {
+                    collected.push(meta);
+                    upsert_high(&mut delivered_high, room, seq);
+                } else {
+                    // Overflow: this is where the next page resumes.
+                    unread_remaining = unread_remaining.saturating_add(1);
+                    if next_cursor.is_none() {
+                        let resume_seq = highest_for(&delivered_high, room).unwrap_or(after);
+                        next_cursor = Some(Cursor::encode(room.as_str(), resume_seq));
+                    }
+                }
+            }
+        }
+
+        if mark_read {
+            for (room, seq) in &delivered_high {
+                self.store.set_read_cursor(&agent, room, *seq)?;
+            }
+        }
+
+        Ok(CommsResponse::Inbox {
+            messages: collected,
+            unread: unread_remaining,
+            next_cursor,
+        })
+    }
+
+    async fn on_subscribe(
+        &self,
+        session: &Session,
+        room: RoomId,
+        link_tx: &mpsc::Sender<CommsOut>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        // Persist the subscription so the inbox sees it even across reconnects.
+        self.store.subscribe(&Subscription {
+            agent_id: agent.clone(),
+            room: room.clone(),
+            created_at: now_micros(),
+        })?;
+        let sub = self.next_sub.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut reg = self.registry.lock().await;
+            reg.sinks.insert(
+                sub,
+                SubSink {
+                    room,
+                    agent,
+                    tx: link_tx.clone(),
+                },
+            );
+            reg.state = LifecycleState::Active;
+        }
+        self.subscriber_count.fetch_add(1, Ordering::Relaxed);
+        Ok(CommsResponse::Subscribed { sub })
+    }
+
+    async fn on_unsubscribe(&self, sub: u64) -> Result<CommsResponse, CommsStoreError> {
+        let removed = {
+            let mut reg = self.registry.lock().await;
+            reg.sinks.remove(&sub)
+        };
+        if removed.is_some() {
+            self.subscriber_count.fetch_sub(1, Ordering::Relaxed);
+            self.maybe_idle().await;
+        }
+        Ok(CommsResponse::Ok)
+    }
+
+    async fn on_status(&self) -> CommsResponse {
+        let rooms = self.store.list_rooms().map(|r| r.len()).unwrap_or(0);
+        CommsResponse::Status(StatusReport {
+            pid: std::process::id(),
+            version: self.version.clone(),
+            proto_ver: PROTO_VER,
+            uptime_secs: self.started.elapsed().as_secs(),
+            rooms: u32::try_from(rooms).unwrap_or(u32::MAX),
+            subscribers: u32::try_from(self.subscriber_count()).unwrap_or(u32::MAX),
+        })
+    }
+
+    // ─── internals ────────────────────────────────────────────────────────────────────────
+
+    /// Subscribe `agent` to every registered room whose scope matches `chain`, auto-creating
+    /// and registering a default room for the agent's repo/workspace on first sight. Logs each
+    /// auto-join.
+    fn auto_join(&self, agent: &AgentId, chain: &ScopeChain) -> Result<(), CommsStoreError> {
+        // Ensure a default room exists for this scope.
+        let default = default_room_for(chain);
+        if self.store.get_room(&default.room_id)?.is_none() {
+            tracing::info!(
+                room = %default.room_id,
+                "comms: auto-creating default room for scope"
+            );
+            self.store.put_room(&default)?;
+        }
+
+        for room in self.store.list_rooms()? {
+            if scope::room_matches(&room.scope, chain) {
+                let already = self
+                    .store
+                    .subscribers(&room.room_id)?
+                    .iter()
+                    .any(|a| a == agent);
+                if !already {
+                    tracing::info!(
+                        agent = %agent,
+                        room = %room.room_id,
+                        "comms: auto-joining agent to scope-matching room"
+                    );
+                    self.store.subscribe(&Subscription {
+                        agent_id: agent.clone(),
+                        room: room.room_id.clone(),
+                        created_at: now_micros(),
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Push a new message to every live sink subscribed to `room`. Best-effort: a sink whose
+    /// channel is full or closed is dropped (the link's reader will clean up its own sinks).
+    async fn fan_out(&self, room: &RoomId, meta: &MessageMeta) {
+        let mut dead: Vec<u64> = Vec::new();
+        {
+            let reg = self.registry.lock().await;
+            for (sub, sink) in reg.sinks.iter() {
+                if &sink.room == room {
+                    let note = CommsOut::Notification(CommsNotification::Message(meta.clone()));
+                    if sink.tx.try_send(note).is_err() {
+                        dead.push(*sub);
+                    }
+                }
+            }
+        }
+        if !dead.is_empty() {
+            let mut reg = self.registry.lock().await;
+            for sub in dead {
+                if reg.sinks.remove(&sub).is_some() {
+                    self.subscriber_count.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /// Transition to Idle when the last subscriber leaves. Keeps the socket + flock; only
+    /// sheds the (currently negligible) in-RAM caches.
+    async fn maybe_idle(&self) {
+        if self.subscriber_count() == 0 {
+            let mut reg = self.registry.lock().await;
+            if reg.state == LifecycleState::Active {
+                reg.state = LifecycleState::Idle;
+                tracing::debug!("comms: broker idle (no subscribers); socket + flock retained");
+            }
+        }
+    }
+
+    /// Enter the Draining state and notify every live sink to disconnect. The front-end's
+    /// shutdown watch is what actually stops the accept loop and unbinds the socket.
+    pub async fn begin_drain(&self) {
+        let sinks: Vec<mpsc::Sender<CommsOut>> = {
+            let mut reg = self.registry.lock().await;
+            reg.state = LifecycleState::Draining;
+            reg.sinks.values().map(|s| s.tx.clone()).collect()
+        };
+        for tx in sinks {
+            let _ = tx
+                .send(CommsOut::Notification(CommsNotification::Shutdown))
+                .await;
+        }
+    }
+
+    /// Current lifecycle state.
+    pub async fn state(&self) -> LifecycleState {
+        self.registry.lock().await.state
+    }
+}
+
+/// Per-link session context. Established by `Hello`, then read by every subsequent handler on
+/// that link.
+#[derive(Default)]
+pub struct Session {
+    /// The authenticated agent id for this link.
+    pub agent: Option<AgentId>,
+    /// The scope chain captured at Hello, used for auto-join.
+    pub chain: Option<ScopeChain>,
+}
+
+fn need_hello() -> CommsResponse {
+    CommsResponse::Error {
+        code: "no_hello".to_string(),
+        message: "send Hello before any other request".to_string(),
+    }
+}
+
+fn clamp_limit(limit: Option<u32>) -> usize {
+    usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
+        .unwrap_or(DEFAULT_LIMIT as usize)
+}
+
+fn decode_after(cursor: Option<&Cursor>, room: &str) -> u64 {
+    match cursor.and_then(|c| c.decode().ok()) {
+        Some(pos) if pos.room == room || pos.room.is_empty() => pos.seq,
+        _ => 0,
+    }
+}
+
+/// Record the highest delivered `seq` for `room` in a small per-page accumulator.
+fn upsert_high(acc: &mut Vec<(RoomId, u64)>, room: &RoomId, seq: u64) {
+    if let Some(entry) = acc.iter_mut().find(|(r, _)| r == room) {
+        if seq > entry.1 {
+            entry.1 = seq;
+        }
+    } else {
+        acc.push((room.clone(), seq));
+    }
+}
+
+/// Look up the highest delivered `seq` recorded for `room`.
+fn highest_for(acc: &[(RoomId, u64)], room: &RoomId) -> Option<u64> {
+    acc.iter().find(|(r, _)| r == room).map(|(_, s)| *s)
+}
+
+/// Build a scope chain from the optional remote + cwd a client supplied. When `cwd` is given
+/// we attempt git discovery to enrich the chain's remote if the client did not supply one.
+fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf>) -> ScopeChain {
+    match cwd {
+        Some(cwd) => {
+            let repo = crate::git::Repo::discover(&cwd).ok();
+            let mut chain = scope::scope_chain(&cwd, repo.as_ref());
+            if chain.remote.is_none() {
+                chain.remote = remote;
+            }
+            chain
+        }
+        None => ScopeChain {
+            remote,
+            cwd: std::path::PathBuf::new(),
+            ancestors: Vec::new(),
+        },
+    }
+}
+
+/// The default room every agent in a scope auto-joins on first sight. Keyed by remote when the
+/// agent is in a repo with a remote, else by the repo/workspace path, else Global.
+fn default_room_for(chain: &ScopeChain) -> Room {
+    let (room_id, scope, title) = match (&chain.remote, chain.cwd.as_os_str().is_empty()) {
+        (Some(remote), _) => (
+            RoomId::parse(sanitize_id(remote)).unwrap_or_else(|_| fallback_room()),
+            RoomScope::Remote(remote.clone()),
+            format!("workspace: {remote}"),
+        ),
+        (None, false) => {
+            let path = chain.cwd.clone();
+            (
+                RoomId::parse(sanitize_id(&path.to_string_lossy()))
+                    .unwrap_or_else(|_| fallback_room()),
+                RoomScope::PathPrefix(path.clone()),
+                format!("workspace: {}", path.display()),
+            )
+        }
+        (None, true) => (fallback_room(), RoomScope::Global, "global".to_string()),
+    };
+    Room {
+        room_id,
+        scope,
+        title,
+        created_at: now_micros(),
+    }
+}
+
+fn fallback_room() -> RoomId {
+    RoomId::parse("global").expect("`global` is a valid room id")
+}
+
+/// Map an arbitrary string to the id alphabet (`[A-Za-z0-9._:-]`), truncated to the id cap.
+fn sanitize_id(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if out.len() > super::ids::MAX_ID_LEN {
+        out.truncate(super::ids::MAX_ID_LEN);
+    }
+    if out.is_empty() {
+        out.push('x');
+    }
+    out
+}
+
+/// Mint a unique message id from the room, agent, and a microsecond timestamp + a process
+/// counter. Collisions are structurally impossible within a single daemon because the counter
+/// is monotonic and the daemon is the sole writer.
+fn mint_message_id(room: &RoomId, agent: &AgentId) -> String {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{}:{}:{}:{}",
+        room.as_str(),
+        agent.as_str(),
+        now_micros(),
+        n
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
+        (dir, Arc::new(Broker::new(store)))
+    }
+
+    fn agent(s: &str) -> AgentId {
+        AgentId::parse(s).expect("agent")
+    }
+
+    #[tokio::test]
+    async fn hello_rejects_proto_skew() {
+        let (_d, broker) = temp_broker();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut session = Session::default();
+        let resp = broker
+            .handle(
+                CommsRequest::Hello {
+                    agent: agent("a"),
+                    proto_ver: PROTO_VER + 1,
+                    remote: None,
+                    cwd: None,
+                },
+                &mut session,
+                &tx,
+            )
+            .await;
+        assert!(matches!(resp, CommsResponse::Error { code, .. } if code == "proto_skew"));
+    }
+
+    #[tokio::test]
+    async fn post_requires_hello() {
+        let (_d, broker) = temp_broker();
+        let (tx, _rx) = mpsc::channel(8);
+        let mut session = Session::default();
+        let resp = broker
+            .handle(
+                CommsRequest::Post {
+                    room: RoomId::parse("r").expect("r"),
+                    subject: "s".to_string(),
+                    tags: vec![],
+                    reply_to: None,
+                    body: b"b".to_vec(),
+                },
+                &mut session,
+                &tx,
+            )
+            .await;
+        assert!(matches!(resp, CommsResponse::Error { code, .. } if code == "no_hello"));
+    }
+
+    #[tokio::test]
+    async fn subscribe_then_post_fans_out_notification() {
+        let (_d, broker) = temp_broker();
+        let (tx, mut rx) = mpsc::channel(8);
+        let mut session = Session::default();
+        // Hello with no cwd → Global default room.
+        broker
+            .handle(
+                CommsRequest::Hello {
+                    agent: agent("a"),
+                    proto_ver: PROTO_VER,
+                    remote: None,
+                    cwd: None,
+                },
+                &mut session,
+                &tx,
+            )
+            .await;
+        let room = RoomId::parse("r").expect("r");
+        broker
+            .handle(
+                CommsRequest::CreateRoom {
+                    room: room.clone(),
+                    scope: RoomScope::Global,
+                    title: None,
+                },
+                &mut session,
+                &tx,
+            )
+            .await;
+        let sub_resp = broker
+            .handle(
+                CommsRequest::Subscribe { room: room.clone() },
+                &mut session,
+                &tx,
+            )
+            .await;
+        assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
+        assert_eq!(broker.subscriber_count(), 1);
+
+        let posted = broker
+            .handle(
+                CommsRequest::Post {
+                    room: room.clone(),
+                    subject: "hi".to_string(),
+                    tags: vec![],
+                    reply_to: None,
+                    body: b"hello".to_vec(),
+                },
+                &mut session,
+                &tx,
+            )
+            .await;
+        assert!(matches!(posted, CommsResponse::Posted { .. }));
+
+        let note = rx.recv().await.expect("notification");
+        match note {
+            CommsOut::Notification(CommsNotification::Message(meta)) => {
+                assert_eq!(meta.subject, "hi");
+                assert_eq!(meta.room, room);
+            }
+            other => panic!("expected a Message notification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sanitize_id_maps_to_alphabet() {
+        assert_eq!(sanitize_id("github.com/foo/bar"), "github.com-foo-bar");
+        assert!(RoomId::parse(sanitize_id("a b!c")).is_ok());
+    }
+}
