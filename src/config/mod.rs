@@ -1,6 +1,5 @@
 mod documents;
 pub(crate) mod layered;
-mod migrate;
 mod overrides;
 mod source;
 mod v1;
