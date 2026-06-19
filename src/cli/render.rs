@@ -88,30 +88,30 @@ fn scalar_to_string(value: &Value) -> String {
 pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Result<()> {
     match value {
         Value::Object(map) => {
-            // Find the single array-of-objects field that is the "main" payload.
-            let main_array = map.iter().find_map(|(k, v)| match v {
-                Value::Array(items) if items.first().is_some_and(|i| i.is_object()) => {
-                    Some((k.as_str(), items))
-                }
-                _ => None,
-            });
+            // Collect EVERY array-of-objects field. Multi-array responses (e.g.
+            // `diff_outline` with added / removed / common) each get their own
+            // labeled table — none are hidden behind a "(N items)" summary.
+            let object_arrays: Vec<(&str, &Vec<Value>)> = map
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Array(items) if items.first().is_some_and(|i| i.is_object()) => {
+                        Some((k.as_str(), items))
+                    }
+                    _ => None,
+                })
+                .collect();
 
-            // Print the scalar / flat fields first as a header.
+            // Print the scalar / flat fields first as a header. Object-arrays are
+            // rendered as tables below, so skip them here.
             for (key, v) in map.iter() {
-                if let Some((main_key, _)) = main_array
-                    && key == main_key
-                {
+                if object_arrays.iter().any(|(k, _)| *k == key) {
                     continue;
                 }
                 match v {
                     Value::Array(items) if !items.is_empty() => {
-                        // Secondary arrays: render as a comma list of scalars, or count.
-                        if items.iter().all(|i| !i.is_object() && !i.is_array()) {
-                            let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
-                            writeln!(out, "{key}: {}", joined.join(", "))?;
-                        } else {
-                            writeln!(out, "{key}: ({} items)", items.len())?;
-                        }
+                        // Scalar arrays: render as a comma list inline.
+                        let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
+                        writeln!(out, "{key}: {}", joined.join(", "))?;
                     }
                     Value::Array(_) => writeln!(out, "{key}: (empty)")?,
                     Value::Object(_) => writeln!(out, "{key}: {}", scalar_to_string(v))?,
@@ -119,8 +119,9 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
                 }
             }
 
-            if let Some((main_key, items)) = main_array {
-                writeln!(out, "\n{main_key} ({} items):", items.len())?;
+            // Render each object-array as its own labeled table.
+            for (key, items) in &object_arrays {
+                writeln!(out, "\n{key} ({} items):", items.len())?;
                 render_table(tool_name, items, out)?;
             }
         }
@@ -255,5 +256,47 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Res
             Ok(Some(()))
         }
         _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_human;
+    use serde_json::json;
+
+    fn render(value: &serde_json::Value) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        render_human("diff_outline", value, &mut buf).expect("render");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn renders_every_object_array_as_labeled_table() {
+        // A diff_outline-shaped response with three object-arrays. Every one must
+        // appear as its own table — none hidden behind "(N items)".
+        let value = json!({
+            "added": [{"name": "alpha"}],
+            "removed": [{"name": "beta"}],
+            "common": [{"name": "gamma"}],
+        });
+        let out = render(&value);
+        assert!(
+            out.contains("added (1 items):"),
+            "missing added table: {out}"
+        );
+        assert!(
+            out.contains("removed (1 items):"),
+            "missing removed table: {out}"
+        );
+        assert!(
+            out.contains("common (1 items):"),
+            "missing common table: {out}"
+        );
+        assert!(out.contains("alpha") && out.contains("beta") && out.contains("gamma"));
+        // No array should be summarized away.
+        assert!(
+            !out.contains("items)\nremoved"),
+            "removed was summarized: {out}"
+        );
     }
 }

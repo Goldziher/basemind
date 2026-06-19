@@ -223,13 +223,26 @@ pub fn render_batch_header(
     );
 }
 
+/// Sanitize a repo-relative path for single-line terminal output: collapse
+/// newlines and strip the remaining control characters (including ANSI escape
+/// introducers) so a crafted filename can't inject escape sequences or break the
+/// one-line-per-file layout. Mirrors the newline-flattening done in
+/// `cli::render::truncate`, but also drops control chars since paths are
+/// rendered raw (not length-capped).
+fn sanitize_path(path: &str) -> String {
+    path.chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .filter(|c| !c.is_control())
+        .collect()
+}
+
 fn format_line(res: &FileResult, verbosity: Verbosity) -> Option<String> {
     let row = row_for(res, verbosity)?;
     let style = row.style.render();
     let reset = Reset.render();
     let symbol = row.symbol;
     let label = row.label;
-    let path = &res.path;
+    let path = sanitize_path(&res.path);
     let detail = row.detail;
     let detail_block = if detail.is_empty() {
         String::new()
@@ -411,3 +424,26 @@ fn human_bytes(b: u64) -> String {
 
 // Silence unused warnings for COL_PATH which is documentation rather than logic.
 const _: usize = COL_PATH;
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_path;
+
+    #[test]
+    fn sanitize_path_flattens_newlines_to_spaces() {
+        assert_eq!(sanitize_path("src/a\nb.rs"), "src/a b.rs");
+        assert_eq!(sanitize_path("src/a\r\nb.rs"), "src/a  b.rs");
+    }
+
+    #[test]
+    fn sanitize_path_strips_ansi_and_control_chars() {
+        // ESC ([1b) + a bell + a tab should all be removed; printable text stays.
+        let crafted = "src/\x1b[31mevil\x07\tname.rs";
+        assert_eq!(sanitize_path(crafted), "src/[31mevilname.rs");
+    }
+
+    #[test]
+    fn sanitize_path_leaves_plain_paths_unchanged() {
+        assert_eq!(sanitize_path("src/render.rs"), "src/render.rs");
+    }
+}
