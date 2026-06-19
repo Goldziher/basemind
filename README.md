@@ -68,7 +68,7 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 
 | Pillar | What it does | MCP tools | Backend |
 |---|---|---|---|
-| **Code intelligence** | Outlines, symbol search, refs/callers/callees, call graphs, impl lookup, dependents, in-tree regex | `outline`, `search_symbols`, `workspace_grep`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `list_files`, `status`, `repo_info` | tree-sitter × 300+ langs · Fjall LSM index · content-addressed blob store |
+| **Code intelligence** | Outlines, symbol search (substring), call-site lookup (substring), call graphs, impl lookup (substring), dependents, in-tree regex | `outline`, `search_symbols`, `workspace_grep`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `list_files`, `status`, `repo_info` | tree-sitter × 300+ langs · Fjall LSM index · content-addressed blob store |
 | **Git intelligence** | Symbol-level history, blame, churn, recent changes, structural diffs across revs | `symbol_history`, `blame_file`, `blame_symbol`, `hot_files`, `recent_changes`, `commits_touching`, `find_commits_by_path`, `diff_outline`, `diff_file`, `working_tree_status` | gix + sha-keyed disk cache |
 | **Document RAG** | Ingest + semantic search over 90+ file formats — PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives, images. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
 | **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` | LanceDB + Fjall, scope-keyed |
@@ -97,8 +97,11 @@ Run these two commands in order:
 /plugin install basemind@basemind            # 2. install the plugin
 ```
 
-Restart the session after installing. The basemind binary installs automatically on first use (via
-npx, uvx, or direct download with checksum verification) — no manual `cargo install` needed.
+Restart the session after installing. The basemind binary installs automatically on first use
+(via npx, uvx, or direct download with verified checksums) — no manual `cargo install` needed.
+Prebuilt binaries ship with the full feature set enabled (96 document formats, OCR, embeddings,
+reranker, semantic search, web crawl, shared memory), so first use downloads ML models over the
+network; binaries are larger as a result.
 
 To enable the optional live statusline (showing context % and per-capability metrics), run `/bm-statusline` once.
 This is a one-time opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation.
@@ -323,9 +326,9 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `outline <path> [--l2]` | Full per-file structure: symbols + line/col + signatures. `--l2` includes calls + docs. |
 | `symbol <needle> [--kind]` | Substring symbol lookup. Optional kind filter (`function`, `class`, etc.). |
 | `search <needle>` | Full-text regex search over indexed files. |
-| `references <name>` | Call sites of any identifier matching name. |
+| `references <name>` | Substring call-site lookup: all identifiers matching name. Case-sensitive. |
 | `callers <path> <name> [--kind]` | Callers of a specific definition (path + name + optional kind). |
-| `implementations <trait>` | Types that implement or inherit from a trait/interface. |
+| `implementations <trait>` | Substring implementation lookup: types implementing/inheriting from names matching trait. |
 | `call-graph <name> [--direction --max-depth]` | BFS call graph (up or down). |
 | `grep <pattern> [--language --path-contains]` | Regex search with optional language / path filter. |
 | `list-files [--path-contains --language]` | Enumerate indexed paths. Optional filters. |
@@ -395,12 +398,12 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 
 | Channel | Command | Platforms | Features |
 |---|---|---|---|
-| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | base |
-| npm | `npm install -g basemind` | any Node 14+ platform | base |
-| pip | `pip install basemind` | any Python 3.8+ platform | base |
+| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | documents + memory + crawl |
+| npm | `npm install -g basemind` | any Node 14+ platform | documents + memory + crawl |
+| pip | `pip install basemind` | any Python 3.8+ platform | documents + memory + crawl |
 | cargo | `cargo install basemind --locked` | any Rust platform | base |
 | cargo (full) | `cargo install basemind --features full --locked` | any Rust platform | documents + memory + crawl |
-| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | base |
+| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | documents + memory + crawl |
 
 <!-- markdownlint-enable MD013 -->
 

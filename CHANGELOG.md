@@ -10,6 +10,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-19
+
+Minor release: `RELEASE_MINOR` bumps 3 → 4, so the blob + index schema versions advance.
+The first `basemind scan` / `serve` after upgrading rebuilds the cache in place. Prebuilt binaries
+now ship `--features full` (96 document formats, OCR, embeddings, reranker, semantic search, web
+crawl, shared memory). **Windows asset triple changed:** `x86_64-pc-windows-gnu` → `x86_64-pc-windows-msvc`
+(ONNX Runtime ships no MinGW prebuilts); anyone hard-coding the old asset name must update.
+
+### Added
+
+- **Full-feature prebuilt binaries via native per-platform runner.** All prebuilt binaries
+  (Homebrew, npm, pip, GitHub Releases) now ship `--features full`: 96 document formats (PDF,
+  Office, email, HTML, archives, structured, source, markup), OCR (Tesseract), HEIC/AVIF
+  (libheif), embeddings + reranker + NER, shared memory, and web crawl. First use downloads ML
+  models over the network; binaries are larger. Replaced goreleaser with a new native
+  per-platform CI runner pipeline.
+- **Enforced binary checksum verification.** All install paths (npm, pip/uvx, direct download via
+  `mcp-launch.sh`) now verify the binary's sha256 against `basemind_<version>_checksums.txt` and
+  fail closed on mismatch or missing checksum. (This was previously claimed in the README but not
+  implemented.)
+
+### Changed
+
+- **`find_references` and `find_implementations` now do real substring matching.** Previously
+  documented as substring matching but actually exact-only. Now genuinely substring (case-sensitive),
+  so `Foo::bar()` and `bar()` both match `name="bar"`.
+
+### Fixed
+
+- **SSRF denylist + redirect revalidation for web crawler.** Added safeguards to prevent server-side
+  request forgery on the `web_scrape` and `web_crawl` tools.
+- **Configured embedder preset.** Eliminates cross-process vector state wipe, improving performance
+  and cache isolation.
+- **Atomic memory writes.** Prevents torn writes on concurrent `memory_put` across sessions.
+- **Index panic on corrupted entries.** Fixed a panic when the Fjall index contained malformed keys
+  (now degrades gracefully).
+- **Git blame robustness.** Improved handling of edge cases (missing commits, detached HEAD, shallow
+  repos).
+- **Config layer precedence fixes.** MCP > CLI > env > TOML > defaults now strictly enforced.
+- **Hot-path allocation cuts.** Reduced allocations in scanner, extract, and query paths; removed
+  unnecessary `String::from_utf8` round-trips and clones in the Fjall secondary-index scans.
+
 ## [0.3.0] — 2026-06-18
 
 Minor release: `RELEASE_MINOR` bumps 2 → 3, so the blob + index schema versions advance.
@@ -368,7 +410,13 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Goldziher/basemind/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/Goldziher/basemind/compare/v0.2.6...v0.3.0
+[0.2.6]: https://github.com/Goldziher/basemind/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/Goldziher/basemind/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/Goldziher/basemind/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/Goldziher/basemind/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Goldziher/basemind/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Goldziher/basemind/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Goldziher/basemind/compare/v0.1.1...v0.2.0
