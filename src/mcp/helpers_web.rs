@@ -61,9 +61,7 @@ fn reject_redirected_private_url(context: &str, fetched_url: &str) -> Result<(),
         // A non-denylist parse failure (e.g. an exotic scheme the crawler
         // normalised to) is also unsafe to index — fail closed rather than open.
         Err(other) => Err(McpError::invalid_params(
-            format!(
-                "{context}: refusing to index unparseable fetched URL {fetched_url:?}: {other}"
-            ),
+            format!("{context}: refusing to index unparsable fetched URL {fetched_url:?}: {other}"),
             None,
         )),
     }
