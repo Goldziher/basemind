@@ -25,12 +25,12 @@ sha_for() {
   awk -v f="basemind-$1.tar.gz" '{n=$NF; sub(/^[*]/, "", n); if (n == f) print $1}' "$SUMS"
 }
 
+# Intel macOS (x86_64-apple-darwin) is intentionally not shipped — Apple Silicon only.
 MAC_ARM=$(sha_for aarch64-apple-darwin)
-MAC_X64=$(sha_for x86_64-apple-darwin)
 LINUX_ARM=$(sha_for aarch64-unknown-linux-gnu)
 LINUX_X64=$(sha_for x86_64-unknown-linux-gnu)
 
-for pair in "aarch64-apple-darwin:$MAC_ARM" "x86_64-apple-darwin:$MAC_X64" \
+for pair in "aarch64-apple-darwin:$MAC_ARM" \
   "aarch64-unknown-linux-gnu:$LINUX_ARM" "x86_64-unknown-linux-gnu:$LINUX_X64"; do
   if [ -z "${pair#*:}" ]; then
     echo "missing checksum for ${pair%%:*} in $SUMS" >&2
@@ -49,14 +49,14 @@ class Basemind < Formula
   version "${VERSION}"
   license "MIT"
 
+  # Apple Silicon only — Intel macOS is not supported.
   on_macos do
     on_arm do
       url "${BASE}/basemind-aarch64-apple-darwin.tar.gz"
       sha256 "${MAC_ARM}"
     end
     on_intel do
-      url "${BASE}/basemind-x86_64-apple-darwin.tar.gz"
-      sha256 "${MAC_X64}"
+      odie "basemind does not ship Intel macOS (x86_64) binaries; Apple Silicon (arm64) only"
     end
   end
 

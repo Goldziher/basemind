@@ -89,13 +89,14 @@ if { [ "$LAUNCHER" = "auto" ] || [ "$LAUNCHER" = "uvx" ]; } && have uvx; then
 fi
 
 # ---- 4. Direct prebuilt download (last resort) ------------------------------
-# Map uname → goreleaser target triple (matches npm-package/install.js).
+# Map uname → target triple (matches npm-package/install.js).
 arch="$(uname -m)"
 case "$(uname -s)" in
 Darwin)
+  # Only Apple Silicon (arm64) macOS binaries are shipped; Intel macOS is unsupported.
   case "$arch" in
   arm64 | aarch64) TRIPLE="aarch64-apple-darwin" ;;
-  *) TRIPLE="x86_64-apple-darwin" ;;
+  *) die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries" ;;
   esac
   ;;
 Linux)

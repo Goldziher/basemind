@@ -10,7 +10,7 @@ set -euo pipefail
 #
 # Usage: package-release.sh <target-triple>
 #   x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu
-#   x86_64-apple-darwin       | aarch64-apple-darwin
+#   aarch64-apple-darwin     (Apple Silicon only — Intel macOS is unsupported)
 #   x86_64-pc-windows-msvc
 #
 # Output: basemind-<triple>.tar.gz   (Linux/macOS: binary + lib/ at archive root)
@@ -30,7 +30,7 @@ x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu)
   SYSTEM="linux"
   BINEXT=""
   ;;
-x86_64-apple-darwin | aarch64-apple-darwin)
+aarch64-apple-darwin)
   SYSTEM="macos"
   BINEXT=""
   ;;

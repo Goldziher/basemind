@@ -17,6 +17,8 @@ The first `basemind scan` / `serve` after upgrading rebuilds the cache in place.
 now ship `--features full` (96 document formats, OCR, embeddings, reranker, semantic search, web
 crawl, shared memory). **Windows asset triple changed:** `x86_64-pc-windows-gnu` → `x86_64-pc-windows-msvc`
 (ONNX Runtime ships no MinGW prebuilts); anyone hard-coding the old asset name must update.
+**Intel macOS (`x86_64-apple-darwin`) is no longer shipped** — macOS prebuilts are Apple Silicon
+(`aarch64-apple-darwin`) only; Intel Mac users build from source (`cargo install basemind --features full`).
 
 ### Added
 
@@ -36,6 +38,9 @@ crawl, shared memory). **Windows asset triple changed:** `x86_64-pc-windows-gnu`
 - **`find_references` and `find_implementations` now do real substring matching.** Previously
   documented as substring matching but actually exact-only. Now genuinely substring (case-sensitive),
   so `Foo::bar()` and `bar()` both match `name="bar"`.
+- **Dropped Intel macOS (`x86_64-apple-darwin`) prebuilt binaries.** macOS releases are Apple Silicon
+  only. npm/pip/Homebrew install on an Intel Mac now fails fast with a clear message; build from source
+  instead.
 
 ### Fixed
 
