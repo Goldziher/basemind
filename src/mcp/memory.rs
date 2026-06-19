@@ -22,10 +22,11 @@ use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
+    let preset = state.config.documents.embedding_preset.clone();
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            crate::embeddings::SharedEmbedder::load("balanced")
+            crate::embeddings::SharedEmbedder::load(&preset)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })
@@ -43,13 +44,14 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 pub(super) async fn lance_store(
     state: &ServerState,
 ) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+    let preset = state.config.documents.embedding_preset.clone();
     state
         .lance
         .get_or_try_init(|| async {
             let embedder = state
                 .embedder
                 .get_or_try_init(|| async {
-                    crate::embeddings::SharedEmbedder::load("balanced")
+                    crate::embeddings::SharedEmbedder::load(&preset)
                         .map(Arc::new)
                         .map_err(|e| format!("load embedder: {e}"))
                 })
@@ -57,7 +59,12 @@ pub(super) async fn lance_store(
                 .map_err(|e| format!("embedder init: {e}"))?;
             let dim = embedder.dim();
             let model = embedder.model().to_string();
-            let lance_dir = state.store.read().await.basemind_dir.join("lance");
+            let lance_dir = state
+                .store
+                .read()
+                .await
+                .basemind_dir
+                .join(crate::store::LANCE_DIR);
             // LanceStore::open builds its own current-thread tokio runtime and
             // calls `block_on`, which panics when invoked from inside the live
             // server runtime. Offload to a blocking thread so the inner runtime
@@ -118,28 +125,71 @@ fn delete_memory_record(
     Ok(existed)
 }
 
+/// Per-`(scope, key)` write serialization for `memory_put`.
+///
+/// `memory_put` is a read-modify-write across two stores (Fjall + LanceDB).
+/// Without serialization, two concurrent puts for the same key both read "no
+/// existing record" and stamp different `created_at` values, and their two-phase
+/// (Fjall, then async Lance) writes can interleave so the stores disagree.
+///
+/// We serialize per key — unrelated keys still write in parallel — by handing
+/// out a per-key `tokio::sync::Mutex` from a process-global registry. The
+/// registry itself is guarded by a short-lived `std::sync::Mutex` (held only to
+/// clone an `Arc`, never across an `.await`).
+#[cfg(feature = "memory")]
+type MemoryPutLockRegistry =
+    std::sync::Mutex<ahash::AHashMap<(String, String), Arc<tokio::sync::Mutex<()>>>>;
+
+#[cfg(feature = "memory")]
+fn memory_put_lock(scope: &str, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+    use std::sync::OnceLock;
+    static LOCKS: OnceLock<MemoryPutLockRegistry> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| std::sync::Mutex::new(ahash::AHashMap::new()));
+    let mut guard = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Arc::clone(
+        guard
+            .entry((scope.to_string(), key.to_string()))
+            .or_default(),
+    )
+}
+
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_put(
     state: &ServerState,
     params: MemoryPutParams,
 ) -> Result<CallToolResult, McpError> {
+    // Serialize same-key puts so the read-modify-write below is atomic w.r.t.
+    // `created_at` derivation and the Fjall + Lance stores cannot interleave.
+    let key_lock = memory_put_lock(&state.scope, &params.key);
+    let _put_guard = key_lock.lock().await;
+
     let now = crate::lance::now_micros();
-    let store = state.store.read().await;
-    let idx = store
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    let existing = read_memory_record(idx, &state.scope, &params.key);
-    let created_at = existing.map(|r| r.created_at).unwrap_or(now);
     let tags = params.tags.clone().unwrap_or_default();
-    let record = MemoryRecord {
-        value: params.value.clone(),
-        tags: tags.clone(),
-        created_at,
-        updated_at: now,
+
+    // Read-modify-write the Fjall record under the store read guard, then drop
+    // the guard before the async Lance upsert. The per-key lock (held for the
+    // whole function) — not the store guard — is what serializes same-key puts,
+    // so dropping the store guard here does not reopen the race.
+    let created_at = {
+        let store = state.store.read().await;
+        let idx = store
+            .index_db
+            .as_ref()
+            .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+        let existing = read_memory_record(idx, &state.scope, &params.key);
+        let created_at = existing.map(|r| r.created_at).unwrap_or(now);
+        let record = MemoryRecord {
+            value: params.value.clone(),
+            tags: tags.clone(),
+            created_at,
+            updated_at: now,
+        };
+        write_memory_record(idx, &state.scope, &params.key, &record)?;
+        created_at
     };
-    write_memory_record(idx, &state.scope, &params.key, &record)?;
-    drop(store);
+
     if params.embed {
         let embedding = embed_query(state, &params.value).await?;
         let lance = lance_store(state).await?;
@@ -223,6 +273,11 @@ pub(super) async fn run_memory_list(
     };
     let key_prefix_filter = params.prefix.as_deref().unwrap_or("");
     let tag_filter = params.tag.as_deref();
+    // Bound the post-page count so a huge scope doesn't force a full keyspace
+    // walk just to compute `total`. Once we have a full page AND have counted
+    // past `scan_cap` matching entries, we stop: `has_more`/`next_cursor` still
+    // drive pagination, and `truncated` flags that `total` is a lower bound.
+    let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut entries: Vec<MemoryEntry> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
     let mut last_emitted_key: Option<Vec<u8>> = None;
@@ -270,6 +325,11 @@ pub(super) async fn run_memory_list(
             last_emitted_key = Some(raw_key.to_vec());
         } else {
             has_more = true;
+            // We already have a full page; stop the count once it exceeds the
+            // scan cap to bound work on large scopes.
+            if total > scan_cap {
+                break;
+            }
         }
     }
     let next_cursor = if has_more {

@@ -380,3 +380,99 @@ async fn parallel_blame_same_file() {
 
     let _ = service.cancel().await;
 }
+
+// ─── test 5 ──────────────────────────────────────────────────────────────────
+
+/// Concurrent `memory_put` calls for the SAME key must serialize so the
+/// read-modify-write of `created_at` is atomic. Without the per-key lock, two
+/// puts both observe "no existing record" and stamp different `created_at`
+/// values; whichever Fjall write lands last wins, so the surviving record's
+/// `created_at` is non-deterministic.
+///
+/// Here we seed the key once (establishing `created_at = C0`), then fire 8
+/// concurrent puts of new values. Every put must preserve `C0`, and a final
+/// `memory_get` must report `created_at == C0` with `updated_at >= C0`.
+#[cfg(feature = "memory")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_same_key_put_preserves_created_at() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let service = spawn_server(root).await;
+    let peer = Arc::new(service.peer().clone());
+
+    const KEY: &str = "same_key_race";
+
+    // Seed once so `created_at` is established before the concurrent storm.
+    let seed = peer
+        .call_tool(call_params(
+            "memory_put",
+            json!({ "key": KEY, "value": "seed", "embed": false }),
+        ))
+        .await
+        .expect("seed memory_put");
+    let seed_body = decode_text(&seed);
+    let created0 = seed_body
+        .get("created_at")
+        .and_then(Value::as_i64)
+        .expect("seed put missing created_at");
+
+    // Ensure the clock advances past `created0` so a buggy put that re-derives
+    // `created_at` would produce a DIFFERENT value (making the race observable).
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let mut set: JoinSet<i64> = JoinSet::new();
+    for n in 0_u32..8 {
+        let p = Arc::clone(&peer);
+        set.spawn(async move {
+            let result = p
+                .call_tool(call_params(
+                    "memory_put",
+                    json!({ "key": KEY, "value": format!("v{n}"), "embed": false }),
+                ))
+                .await
+                .unwrap_or_else(|e| panic!("memory_put {n} failed: {e}"));
+            decode_text(&result)
+                .get("created_at")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| panic!("put {n} missing created_at"))
+        });
+    }
+
+    timeout(Duration::from_secs(60), async {
+        while let Some(result) = set.join_next().await {
+            let created = result.expect("put task panicked");
+            assert_eq!(
+                created, created0,
+                "concurrent same-key put must preserve the original created_at"
+            );
+        }
+    })
+    .await
+    .expect("concurrent_same_key_put timed out after 60 s");
+
+    let get_result = peer
+        .call_tool(call_params("memory_get", json!({ "key": KEY })))
+        .await
+        .expect("memory_get");
+    let body = decode_text(&get_result);
+    let created_final = body
+        .get("created_at")
+        .and_then(Value::as_i64)
+        .expect("memory_get missing created_at");
+    let updated_final = body
+        .get("updated_at")
+        .and_then(Value::as_i64)
+        .expect("memory_get missing updated_at");
+    assert_eq!(
+        created_final, created0,
+        "final record must keep the original created_at after the put storm"
+    );
+    assert!(
+        updated_final >= created0,
+        "updated_at ({updated_final}) must be >= created_at ({created0})"
+    );
+
+    let _ = service.cancel().await;
+}
