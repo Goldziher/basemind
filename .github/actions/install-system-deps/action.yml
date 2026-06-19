@@ -21,7 +21,7 @@ runs:
           libssl-dev pkg-config build-essential cmake \
           libmagic-dev libde265-dev libaom-dev \
           libx265-dev libdav1d-dev libnuma-dev \
-          protobuf-compiler
+          protobuf-compiler patchelf
 
         echo "::endgroup::"
 

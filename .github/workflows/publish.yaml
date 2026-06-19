@@ -211,8 +211,16 @@ jobs:
             gh release download "$tag" -p "$asset" -O "$asset"
           done
 
-          # Generate checksums file
-          sha256sum basemind-*.{tar.gz,zip} 2>/dev/null | sort > basemind_${{ needs.meta.outputs.version }}_checksums.txt || true
+          # Generate checksums file. Fail loudly if no archives were downloaded
+          # rather than uploading an empty checksums file (which would make every
+          # install fail closed with no diagnostic).
+          shopt -s nullglob
+          archives=(basemind-*.tar.gz basemind-*.zip)
+          if [ ${#archives[@]} -eq 0 ]; then
+            echo "::error::no release archives found to checksum" >&2
+            exit 1
+          fi
+          sha256sum "${archives[@]}" | sort > "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
 
       - name: Upload checksums to release
         env:

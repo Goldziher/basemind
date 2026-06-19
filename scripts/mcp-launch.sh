@@ -145,7 +145,7 @@ fetch "$ASSET_URL" "$TMP/$ASSET" || die "download failed: $ASSET_URL"
 # proceeding with an unverified binary.
 fetch "$SUMS_URL" "$TMP/checksums.txt" ||
   die "could not fetch checksums ($SUMS_URL) — refusing to install unverified binary"
-EXPECTED="$(awk -v f="$ASSET" '$2 == f {print $1}' "$TMP/checksums.txt")"
+EXPECTED="$(awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) print $1}' "$TMP/checksums.txt")"
 [ -n "$EXPECTED" ] ||
   die "no checksum entry for $ASSET in $SUMS_URL — refusing to install unverified binary"
 ACTUAL="$(sha256 "$TMP/$ASSET")"
