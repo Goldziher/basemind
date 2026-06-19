@@ -111,7 +111,10 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
     }
     if let Some(prefix) = entry.strip_suffix('/') {
         // Treat "image/" as the prefix "image/" — match `image/png` etc.
-        return mime_type.starts_with(&format!("{prefix}/"));
+        // Zero-alloc: check the prefix then that the very next byte is `/`,
+        // instead of building a throwaway `format!("{prefix}/")` per call.
+        return mime_type.starts_with(prefix)
+            && mime_type.as_bytes().get(prefix.len()) == Some(&b'/');
     }
     false
 }
@@ -154,15 +157,20 @@ pub(crate) fn extract_and_persist_doc(
         }));
     }
 
+    // Hoist the per-row constant strings out of the map so we allocate them
+    // once instead of once per chunk (a doc can have hundreds of chunks).
+    let scope_owned = scope.to_string();
+    let rel_owned = rel.to_string();
+    let mime_owned = doc.mime_type.clone();
     let rows: Vec<DocumentRow> = doc
         .chunks
         .iter()
         .enumerate()
         .map(|(idx, chunk)| DocumentRow {
-            scope: scope.to_string(),
-            path: rel.to_string(),
+            scope: scope_owned.clone(),
+            path: rel_owned.clone(),
             chunk_idx: u32::try_from(idx).unwrap_or(u32::MAX),
-            mime_type: doc.mime_type.clone(),
+            mime_type: mime_owned.clone(),
             text: chunk.text.clone(),
             byte_start: chunk.byte_start,
             byte_end: chunk.byte_end,
@@ -280,6 +288,10 @@ mod tests {
         assert!(matches_mime("image/", "image/jpeg"));
         assert!(!matches_mime("image/", "video/mp4"));
         assert!(!matches_mime("application/pdf", "application/json"));
+        // The zero-alloc byte check must not let a longer type name that merely
+        // *starts with* the prefix slip through: `image/` must NOT match
+        // `imageprocessing/x` (next byte after `image` is `p`, not `/`).
+        assert!(!matches_mime("image/", "imageprocessing/x"));
     }
 
     #[test]
