@@ -9,7 +9,7 @@ use std::ops::Bound;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::cursor::{Cursor, prefix_upper_bound};
+use super::cursor::Cursor;
 use super::helpers::{
     SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind,
 };
@@ -73,7 +73,7 @@ pub(super) fn run_find_references(
 }
 
 /// Body of the `find_callers` MCP tool. Resolves the definition via the in-RAM cache (the
-/// same source `outline` uses) for context, then delegates to the same callee-prefix scan.
+/// same source `outline` uses) for context, then delegates to the same callee-substring scan.
 pub(super) fn run_find_callers(
     idx: Option<&crate::index::IndexDb>,
     params: super::types::FindCallersParams,
@@ -131,10 +131,10 @@ pub(super) struct CallScanPage {
     pub next_cursor: Option<Cursor>,
 }
 
-/// Shared inner loop for `find_references` / `find_callers`: range-scan the
-/// `calls_by_callee` partition with a `name`-prefix, materialize up to `limit` hits, and
-/// track the `total` count separately. Caps the scan at `limit * 8` to bound work on
-/// extremely common names.
+/// Shared inner loop for `find_references` / `find_callers`: full-partition scan of
+/// `calls_by_callee` with a `memmem` case-sensitive substring filter on the callee name.
+/// Materializes up to `limit` hits and caps at `scan_cap = limit * 8` matching entries
+/// to bound work on extremely common names.
 ///
 /// When `cursor_after` is `Some`, the scan resumes from the key immediately following
 /// the cursor (exclusive). The cursor returned in [`CallScanPage::next_cursor`] is the
@@ -145,14 +145,11 @@ fn scan_calls_by_name(
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> Result<CallScanPage, McpError> {
-    let prefix = crate::index::keys::calls_by_callee_prefix(name);
-    let upper = prefix_upper_bound(&prefix);
-    let lower = match cursor_after {
+    // Build the finder once; full-partition substring scan per the B3/I14 spec.
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+
+    let lower: Bound<Vec<u8>> = match cursor_after {
         Some(k) => Bound::Excluded(k.to_vec()),
-        None => Bound::Included(prefix.clone()),
-    };
-    let upper_bound: Bound<Vec<u8>> = match upper {
-        Some(b) => Bound::Excluded(b),
         None => Bound::Unbounded,
     };
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
@@ -161,9 +158,10 @@ fn scan_calls_by_name(
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
+    let mut matched: usize = 0;
     for guard in idx
         .calls_by_callee
-        .range::<Vec<u8>, _>((lower, upper_bound))
+        .range::<Vec<u8>, _>((lower, Bound::Unbounded))
     {
         let (k, _) = guard
             .into_inner()
@@ -171,7 +169,12 @@ fn scan_calls_by_name(
         let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
             continue;
         };
+        // Case-sensitive substring filter — skip non-matching callees cheaply.
+        if finder.find(callee.as_bytes()).is_none() {
+            continue;
+        }
         total += 1;
+        matched += 1;
         if hits.len() < limit {
             let (line, column) = resolve_call_line_col(idx, &rel, start);
             hits.push(ReferenceHit {
@@ -185,7 +188,7 @@ fn scan_calls_by_name(
             // We collected a full page; this extra entry proves more remain on disk.
             has_more = true;
         }
-        if total as usize >= scan_cap {
+        if matched >= scan_cap {
             total_is_partial = true;
             break;
         }

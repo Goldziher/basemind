@@ -745,6 +745,10 @@ pub struct WorkspaceGrepParams {
     /// Include 1 line of context before + after each hit. Default true.
     #[serde(default = "default_true")]
     pub include_context: bool,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the in-RAM index snapshot and invalidate on rescan.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -775,6 +779,13 @@ pub(super) struct WorkspaceGrepResponse {
     /// True when the result was cut short by `limit` or `scan_cap`.
     pub truncated: bool,
     pub hits: Vec<GrepHit>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
+    /// (a rescan happened between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 // ─── rescan ──────────────────────────────────────────────────────────────────
@@ -895,10 +906,10 @@ pub(super) struct WebScrapeResponse {
 pub struct WebCrawlParams {
     /// Seed URL. The crawler follows links breadth-first from this page.
     pub url: crate::url::Url,
-    /// Override the global `[crawl].max_pages` cap for this call.
+    /// Overrides the global `[crawl].max_pages` cap for this call only.
     #[serde(default)]
     pub max_pages: Option<u32>,
-    /// Override the global `[crawl].max_depth` cap for this call.
+    /// Overrides the global `[crawl].max_depth` cap for this call only.
     #[serde(default)]
     pub max_depth: Option<u32>,
     /// LanceDB `scope` tag. Default `"web:<host>"` derived from the seed URL's

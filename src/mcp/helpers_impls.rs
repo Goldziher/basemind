@@ -1,23 +1,24 @@
 //! Helper body for the `find_implementations` MCP tool.
 //!
-//! Mirrors the structure of `helpers_calls.rs`: a Fjall prefix-range scan over
-//! `implementations_by_trait`, bounded by `scan_cap = limit * 8`, with optional
-//! language filtering via the in-RAM `MapCache`.
+//! Mirrors the structure of `helpers_calls.rs`: a full-partition scan over
+//! `implementations_by_trait` with a `memmem` case-sensitive substring filter,
+//! bounded by `scan_cap = limit * 8`, with optional language filtering via the
+//! in-RAM `MapCache`.
 
 use std::ops::Bound;
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::cursor::{Cursor, prefix_upper_bound};
+use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
 use super::types_impls::{
     FindImplementationsParams, FindImplementationsResponse, ImplementationHit,
 };
 
-/// Body of the `find_implementations` MCP tool. Performs an exact-prefix scan over the
-/// `implementations_by_trait` Fjall partition and returns up to `limit` hits, with
-/// optional language filtering backed by the in-RAM `MapCache`.
+/// Body of the `find_implementations` MCP tool. Performs a full-partition scan over the
+/// `implementations_by_trait` Fjall partition with a case-sensitive substring filter on
+/// `trait_name`, returning up to `limit` hits with optional language filtering.
 pub(super) fn run_find_implementations(
     idx: Option<&crate::index::IndexDb>,
     params: FindImplementationsParams,
@@ -44,14 +45,11 @@ pub(super) fn run_find_implementations(
         .map(|c| c.decode_fjall())
         .transpose()?;
 
-    let prefix = crate::index::keys::impls_by_trait_prefix(&params.trait_name);
-    let upper = prefix_upper_bound(&prefix);
+    // Build the finder once for the full-partition substring scan.
+    let finder = memchr::memmem::Finder::new(params.trait_name.as_bytes());
+
     let lower: Bound<Vec<u8>> = match cursor_bytes.as_deref() {
         Some(k) => Bound::Excluded(k.to_vec()),
-        None => Bound::Included(prefix.clone()),
-    };
-    let upper_bound: Bound<Vec<u8>> = match upper {
-        Some(b) => Bound::Excluded(b),
         None => Bound::Unbounded,
     };
 
@@ -61,10 +59,11 @@ pub(super) fn run_find_implementations(
     let mut total_is_partial = false;
     let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
+    let mut matched: usize = 0;
 
     for guard in idx
         .implementations_by_trait
-        .range::<Vec<u8>, _>((lower, upper_bound))
+        .range::<Vec<u8>, _>((lower, Bound::Unbounded))
     {
         let (k, _) = guard
             .into_inner()
@@ -76,16 +75,22 @@ pub(super) fn run_find_implementations(
             continue;
         };
 
+        // Case-sensitive substring filter on trait_name.
+        if finder.find(trait_name.as_bytes()).is_none() {
+            continue;
+        }
+
         // Language filter: look up the file's L1 blob in the in-RAM cache.
+        // Applied after the substring filter — filtered entries don't count toward scan_cap.
         if let Some(lang_filter) = params.language.as_deref() {
             let l1_lang = cache.by_path.get(&rel).map(|l1| l1.language.as_str());
             if l1_lang != Some(lang_filter) {
-                // Don't count filtered entries toward scan_cap — they're fast to skip.
                 continue;
             }
         }
 
         total += 1;
+        matched += 1;
 
         if hits.len() < limit {
             // Resolve start_row / start_col from the stored Implementation in the L1 blob.
@@ -103,7 +108,7 @@ pub(super) fn run_find_implementations(
             has_more = true;
         }
 
-        if total >= scan_cap {
+        if matched >= scan_cap {
             total_is_partial = true;
             break;
         }

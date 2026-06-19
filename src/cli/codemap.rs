@@ -85,6 +85,9 @@ pub enum QueryCmd {
         path_contains: Option<String>,
         #[arg(long)]
         limit: Option<u32>,
+        /// Suppress the 1-line before/after context for each match.
+        #[arg(long = "no-context")]
+        no_context: bool,
     },
     /// List indexed files, optionally filtered.
     ListFiles {
@@ -204,13 +207,15 @@ pub async fn run(
             language,
             path_contains,
             limit,
+            no_context,
         } => {
             let p = WorkspaceGrepParams {
                 pattern,
                 language,
                 path_contains,
                 limit,
-                include_context: true,
+                include_context: !no_context,
+                cursor: None,
             };
             let r = run_tool("workspace_grep", server.workspace_grep(Parameters(p)).await)?;
             emit("workspace_grep", &r, json, out)

@@ -18,8 +18,8 @@ use super::types::{
 };
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
-    Err(McpError::internal_error(
-        format!("{feature} feature not enabled"),
+    Err(McpError::invalid_request(
+        format!("{feature} feature not enabled — rebuild with --features {feature}"),
         None,
     ))
 }
