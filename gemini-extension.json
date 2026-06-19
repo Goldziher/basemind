@@ -5,7 +5,7 @@
   "contextFileName": "GEMINI.md",
   "mcpServers": {
     "basemind": {
-      "command": "basemind",
+      "command": "${extensionPath}/scripts/mcp-launch.sh",
       "args": ["serve"]
     }
   }
