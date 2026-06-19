@@ -111,9 +111,12 @@ crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
 
 # Agent-to-agent communication: the singleton broker daemon, named rooms + per-agent
 # inbox, and the comms MCP/CLI surface. Pulls only small pure-Rust crates (directories,
-# tokio-util, a2a-types). The `AgentId`/`RoomId` newtypes in `comms::ids` are always
-# compiled (the split-memory tier needs them); this feature gates the daemon + tools.
-comms = ["dep:directories", "dep:tokio-util", "dep:a2a-types"]
+# tokio-util). Message/agent-card shapes are modelled as plain serde structs that are
+# field-compatible with the A2A spec (the published `a2a-types` crate is protobuf-based and
+# doesn't round-trip through msgpack), so a future A2A HTTP front-end maps cleanly. The
+# `AgentId`/`RoomId` newtypes in `comms::ids` are always compiled (the split-memory tier
+# needs them); this feature gates the daemon + tools.
+comms = ["dep:directories", "dep:tokio-util"]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms`. Use this when you want one flag that
@@ -121,9 +124,6 @@ comms = ["dep:directories", "dep:tokio-util", "dep:a2a-types"]
 full = ["documents", "memory", "crawl", "comms"]
 
 [dependencies]
-# A2A (Agent2Agent) message/agent-card type shapes, for the comms feature. Types-only
-# crate (MIT); we align our wire schema with it so a future A2A HTTP front-end is additive.
-a2a-types = { version = "0.2", optional = true }
 ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
