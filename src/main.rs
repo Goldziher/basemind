@@ -35,12 +35,14 @@ struct Cli {
     no_color: bool,
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies
-    /// to every tool subcommand (query / git / memory / web / telemetry / cache).
+    /// to the tool subcommands (query / git / memory / web / telemetry / cache) and
+    /// is ignored — with a warning — on init / scan / watch / hook / lang.
     #[arg(long, global = true)]
     json: bool,
 
-    /// Which view to query for tool subcommands. "working" (default) is the on-disk
-    /// tree; "staged" is the git index; "rev-<sha7>" is a previously scanned rev.
+    /// Which view to query or serve. "working" (default) is the on-disk tree;
+    /// "staged" is the git index; "rev-<sha7>" is a previously scanned rev. Used by
+    /// the tool subcommands and `serve`; ignored — with a warning — elsewhere.
     #[arg(long, global = true, default_value_t = basemind::store::VIEW_WORKING.to_string())]
     view: String,
 
@@ -113,11 +115,8 @@ struct ScanArgs {
 
 #[derive(clap::Args, Debug)]
 struct ServeArgs {
-    /// Which view to serve. "working" (default) is the on-disk tree; "staged" is
-    /// the git index; "rev-<sha7>" is whatever you previously scanned with
-    /// `basemind scan --rev <REV>`.
-    #[arg(long, default_value_t = basemind::store::VIEW_WORKING.to_string())]
-    view: String,
+    // The view to serve comes from the global `--view` flag (see `Cli::view`), passed
+    // into `cmd_serve` — a single source of truth so the two cannot diverge.
     /// LRU capacity per category for the in-process git cache (commit_files, log, blame).
     #[arg(long, default_value_t = 1024)]
     git_cache_mem: usize,
@@ -183,6 +182,11 @@ fn main() -> Result<()> {
 
     let json = cli.json;
     let view = cli.view.clone();
+    // `--json` / `--view` are global for ergonomics but only the tool subcommands
+    // (and `serve`, for `--view`) consume them. Warn — rather than silently ignore —
+    // when they're passed to a command that has no use for them, so a typo'd
+    // invocation doesn't appear to take effect.
+    warn_ignored_global_flags(&cli.cmd, json, &view);
     // Query reads cached extracts; grammars are not strictly needed, but the L2
     // escalation path falls back to live extraction. Bootstrap quietly for the
     // tool subcommands so first-time L2 doesn't stall.
@@ -236,8 +240,32 @@ fn main() -> Result<()> {
             LangCmd::Install => cmd_lang_install(verbosity, no_color),
             LangCmd::Clean => cmd_lang_clean(),
         },
-        Cmd::Serve(args) => cmd_serve(&root, &args),
+        Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
+    }
+}
+
+/// Emit a `WARN` when a global flag was supplied to a subcommand that does not
+/// consume it. `--json` only affects the tool subcommands (query / git / memory /
+/// web / telemetry / cache); `--view` additionally affects `serve`. Everything else
+/// ignores them, so warning prevents a no-op flag from looking effective.
+fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
+    let consumes_json = matches!(
+        cmd,
+        Cmd::Query(_)
+            | Cmd::Git(_)
+            | Cmd::Memory(_)
+            | Cmd::Web(_)
+            | Cmd::Telemetry { .. }
+            | Cmd::Cache(_)
+    );
+    let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));
+
+    if json && !consumes_json {
+        tracing::warn!("--json has no effect on this subcommand; ignoring");
+    }
+    if view != basemind::store::VIEW_WORKING && !consumes_view {
+        tracing::warn!(view = %view, "--view has no effect on this subcommand; ignoring");
     }
 }
 
@@ -415,12 +443,12 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     }
 }
 
-fn cmd_serve(root: &std::path::Path, args: &ServeArgs) -> Result<()> {
+fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
     // Open the store in writable mode so the `rescan` MCP tool can run the
     // scanner in-process. The MCP server is the canonical Fjall owner; the
     // standalone `basemind scan` / `basemind watch` CLIs intentionally fail
     // with a lock error when a server is already running against the repo.
-    let store = Store::open(root, &args.view).context("open store")?;
+    let store = Store::open(root, view).context("open store")?;
     let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
     let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);
