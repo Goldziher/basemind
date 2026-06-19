@@ -229,3 +229,80 @@ fn scan_skips_submodule_paths_by_default() {
         "submodule file should be indexed when skip_submodules=false"
     );
 }
+
+/// I6: blame reads the committed HEAD blob, not the working tree. A dirty working copy that
+/// shifts line numbers must not corrupt blame's line attribution — blame against HEAD must
+/// return the committed lines regardless of on-disk edits.
+#[test]
+fn blame_file_uses_committed_blob_not_dirty_working_tree() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"fn one() {}\nfn two() {}\n").unwrap();
+    run(root, &["add", "a.rs"]);
+    run(root, &["commit", "-q", "-m", "initial"]);
+
+    // Dirty the working tree by prepending lines that would shift every line number.
+    fs::write(
+        root.join("a.rs"),
+        b"// dirty\n// dirty\nfn one() {}\nfn two() {}\n",
+    )
+    .unwrap();
+
+    let repo = Repo::discover(root).expect("discover");
+    let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
+    let rel = basemind::path::RelPath::from("a.rs".as_bytes());
+    // Blame committed lines 1..=2 — these are `fn one` / `fn two` in the *committed* blob.
+    let result = repo
+        .blame_file(&head, &rel, Some((1, 2)))
+        .expect("blame committed blob");
+    assert!(
+        !result.hunks.is_empty(),
+        "blame against HEAD must resolve even with a dirty working tree"
+    );
+    let first = &result.hunks[0];
+    assert_eq!(
+        first.start_line, 1,
+        "committed line 1 must blame to line 1, not a working-tree-shifted line"
+    );
+    assert_eq!(
+        first.commit_sha, head,
+        "single-commit history blames to HEAD"
+    );
+}
+
+/// I5: history is by exact path and stops at renames, while blame follows them. This test
+/// pins that documented asymmetry so a future change to either side is caught.
+#[test]
+fn log_for_path_stops_at_rename_while_blame_follows() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    fs::write(root.join("old.rs"), b"fn keep() {}\n").unwrap();
+    run(root, &["add", "old.rs"]);
+    run(root, &["commit", "-q", "-m", "add old"]);
+    run(root, &["mv", "old.rs", "new.rs"]);
+    run(root, &["commit", "-q", "-m", "rename to new"]);
+
+    let repo = Repo::discover(root).expect("discover");
+    // History for the new name only sees the rename commit, not the original add.
+    let log = repo.log_for_path("new.rs", 10).expect("log new.rs");
+    assert_eq!(
+        log.len(),
+        1,
+        "log_for_path is exact-path and stops at the rename (documented asymmetry)"
+    );
+    assert!(
+        log[0].summary.contains("rename"),
+        "the single visible commit is the rename itself"
+    );
+
+    // Blame, by contrast, follows the rename: the kept line still attributes to the add.
+    let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
+    let rel = basemind::path::RelPath::from("new.rs".as_bytes());
+    let blame = repo
+        .blame_file(&head, &rel, Some((1, 1)))
+        .expect("blame new.rs");
+    assert!(
+        !blame.hunks.is_empty(),
+        "blame follows the rename and resolves the kept line"
+    );
+}
