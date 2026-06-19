@@ -123,11 +123,25 @@ jobs:
           echo "release_assets_exist=$release_assets_exist" >> "$GITHUB_OUTPUT"
           echo "GitHub release assets exist? $release_assets_exist"
 
-  release_assets:
-    name: Publish GitHub release assets
+  build-binaries:
+    name: Build binaries / ${{ matrix.triple }}
     needs: meta
     if: needs.meta.outputs.release_assets_exist != 'true'
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - triple: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - triple: x86_64-apple-darwin
+            os: macos-13
+          - triple: aarch64-apple-darwin
+            os: macos-latest
+          - triple: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -138,35 +152,74 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-pc-windows-gnu
+          targets: ${{ matrix.triple }}
 
-      - name: Install Zig
-        run: brew install zig mingw-w64
+      - name: Install system dependencies
+        uses: ./.github/actions/install-system-deps
 
-      # Homebrew tap publish needs HOMEBREW_TOKEN (a PAT on Goldziher/homebrew-tap).
-      # When the secret is absent, skip the homebrew publisher so a missing optional
-      # tap update never fails the binary release. When present, it runs normally.
-      - name: Compute goreleaser skips
-        id: gr
-        env:
-          HOMEBREW_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
-        run: |
-          skips="validate"
-          if [ -z "$HOMEBREW_TOKEN" ]; then
-            skips="validate,homebrew"
-            echo "HOMEBREW_TOKEN not set — skipping the homebrew formula publish."
-          fi
-          echo "skips=$skips" >> "$GITHUB_OUTPUT"
-
-      - name: Build and publish GitHub release assets
-        uses: goreleaser/goreleaser-action@v7
+      - name: Setup cache
+        uses: Swatinem/rust-cache@v2
         with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean --skip=${{ steps.gr.outputs.skips }}
+          key: ${{ matrix.triple }}
+
+      - name: Build release binary
+        run: cargo build --release --features full --bin basemind --target ${{ matrix.triple }}
+
+      - name: Package release
+        shell: bash
+        run: ./scripts/package-release.sh ${{ matrix.triple }}
+
+      - name: Upload to GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TOKEN }}
+        run: |
+          tag="${{ needs.meta.outputs.tag }}"
+          triple="${{ matrix.triple }}"
+
+          if [ "$triple" = "x86_64-pc-windows-msvc" ]; then
+            archive="basemind-${triple}.zip"
+          else
+            archive="basemind-${triple}.tar.gz"
+          fi
+
+          if [ ! -f "$archive" ]; then
+            echo "::error::Archive not found: $archive"
+            exit 1
+          fi
+
+          gh release upload "$tag" "$archive" --clobber
+
+  checksums:
+    name: Generate and upload checksums
+    needs: [meta, build-binaries]
+    if: needs.meta.outputs.release_assets_exist != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+
+      - name: Download checksums from release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.meta.outputs.tag }}"
+
+          # Download all release assets and compute checksums
+          gh release view "$tag" --json assets -q '.assets[].name' | while read -r asset; do
+            gh release download "$tag" -p "$asset" -O "$asset"
+          done
+
+          # Generate checksums file
+          sha256sum basemind-*.{tar.gz,zip} 2>/dev/null | sort > basemind_${{ needs.meta.outputs.version }}_checksums.txt || true
+
+      - name: Upload checksums to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ needs.meta.outputs.tag }}"
+          gh release upload "$tag" basemind_${{ needs.meta.outputs.version }}_checksums.txt --clobber
 
   publish_crates:
     name: Publish crates.io
