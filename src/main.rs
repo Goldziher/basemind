@@ -307,25 +307,28 @@ fn cmd_comms_daemon() -> Result<()> {
 
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
 
-    // Bind first — the bind is the singleton lock. Probe before reclaiming a stale socket.
-    let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
-        Ok(listener) => listener,
-        Err(basemind::comms::singleton::SingletonError::AlreadyRunning(p)) => {
-            tracing::info!(socket = %p.display(), "comms daemon already running; exiting");
-            return Ok(());
-        }
-        Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
-    };
-
-    let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
-    let broker = Arc::new(Broker::new(store));
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
+        // Bind, open the store, and build the broker INSIDE the runtime: `bind_listener`
+        // converts a std listener via `tokio::net::UnixListener::from_std`, which requires a
+        // live reactor — calling it before entering the runtime panics ("no reactor running").
+        // The bind IS the singleton lock; probe before reclaiming a stale socket.
+        let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
+            Ok(listener) => listener,
+            Err(basemind::comms::singleton::SingletonError::AlreadyRunning(p)) => {
+                tracing::info!(socket = %p.display(), "comms daemon already running; exiting");
+                return Ok(());
+            }
+            Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
+        };
+
+        let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
+        let broker = Arc::new(Broker::new(store));
+
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Signal handling: SIGTERM / Ctrl-C begins the drain.
@@ -344,7 +347,10 @@ fn cmd_comms_daemon() -> Result<()> {
                 paths.socket_path.clone(),
             ),
         ));
-        frontend.serve_obj(broker, shutdown_rx).await
+        frontend
+            .serve_obj(broker, shutdown_rx)
+            .await
+            .context("comms front-end serve loop")
     })?;
     Ok(())
 }
