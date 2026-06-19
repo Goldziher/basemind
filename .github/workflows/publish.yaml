@@ -200,6 +200,7 @@ jobs:
         run: ./scripts/package-release.sh ${{ matrix.triple }}
 
       - name: Upload to GitHub release
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
