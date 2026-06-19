@@ -369,29 +369,39 @@ where
 }
 
 /// Translate a tree-sitter symbol's byte range into a 1-based inclusive
-/// `(start_line, end_line)` pair. We start from L1's `start_row` (0-based row) and
-/// add the count of newlines in `(start_byte..end_byte)` for the end. Cheap: one
-/// filesystem read, one memchr-count, no tree-sitter re-parse.
+/// `(start_line, end_line)` pair against a specific source blob. We start from L1's
+/// `start_row` (0-based row) and add the count of newlines in `(start_byte..end_byte)`
+/// for the end. Pure + cheap: one memchr-count, no tree-sitter re-parse.
+fn line_range_in_blob(sym: &crate::extract::Symbol, bytes: &[u8]) -> (u32, u32) {
+    let start_line = sym.start_row + 1;
+    let s = sym.start_byte as usize;
+    let e = (sym.end_byte as usize).min(bytes.len());
+    let slice = if s < e { &bytes[s..e] } else { &[][..] };
+    let newlines = memchr::memchr_iter(b'\n', slice).count() as u32;
+    (start_line, start_line + newlines)
+}
+
+/// Symbol's 1-based inclusive `(start_line, end_line)` against the *committed HEAD blob* —
+/// the blob `blame_file` reads by default, so the range must be derived from the same blob to
+/// attribute lines correctly. On a clean tree HEAD equals the working copy and the result is
+/// exact; on a dirty tree, reading the HEAD blob (and clamping the end byte to its length)
+/// keeps the range bounded to the blamed blob instead of over-attributing on-disk-only lines.
+/// Fallbacks for an unborn HEAD: staged blob, then the working-tree file.
 pub(super) fn symbol_line_range(
     repo: &crate::git::Repo,
     path: &crate::path::RelPath,
     sym: &crate::extract::Symbol,
 ) -> (u32, u32) {
-    let start_line = sym.start_row + 1;
-    // Prefer the working-tree file; fall back to the staged blob if the working copy is gone.
-    let bytes = std::fs::read(repo.workdir().join(path.to_path_buf()))
-        .ok()
+    let bytes = path
+        .as_str()
+        .and_then(|s| repo.read_blob_at_rev("HEAD", s).ok().flatten())
         .or_else(|| {
             path.as_str()
                 .and_then(|s| repo.read_blob_staged(s).ok().flatten())
         })
+        .or_else(|| std::fs::read(repo.workdir().join(path.to_path_buf())).ok())
         .unwrap_or_default();
-    let s = sym.start_byte as usize;
-    let e = (sym.end_byte as usize).min(bytes.len());
-    let slice = if s < e { &bytes[s..e] } else { &[][..] };
-    let newlines = memchr::memchr_iter(b'\n', slice).count() as u32;
-    let end_line = start_line + newlines;
-    (start_line, end_line)
+    line_range_in_blob(sym, &bytes)
 }
 
 /// If `err` is a wrapped `GitError::BlameTooLarge`, return a graceful empty response
@@ -943,6 +953,30 @@ mod tests {
             fingerprint_for(b, RUST, HashMode::StructuralLoose),
             "StructuralLoose must still catch identifier renames"
         );
+    }
+
+    #[test]
+    fn line_range_counts_newlines_against_the_given_blob() {
+        use super::line_range_in_blob;
+        use crate::extract::{Symbol, SymbolKind};
+        let blob = b"// hdr\n\nfn alpha() {\n    body;\n}\nfn beta() {}\n";
+        let start = blob.windows(8).position(|w| w == b"fn alpha").unwrap();
+        // alpha's body ends at the closing brace; +1 to include the `}` itself, excluding the
+        // trailing newline that separates it from `fn beta`.
+        let end = blob.iter().position(|&b| b == b'}').unwrap() + 1;
+        let sym = Symbol {
+            name: "alpha".into(),
+            kind: SymbolKind::Function,
+            start_byte: start as u32,
+            end_byte: end as u32,
+            start_row: 2,
+            start_col: 0,
+            signature: None,
+            decorators: Vec::new(),
+        };
+        assert_eq!(line_range_in_blob(&sym, blob), (3, 5));
+        // A dirty working copy that inserted lines must not stretch the range past the blob.
+        assert_eq!(line_range_in_blob(&sym, &blob[..start + 4]), (3, 3));
     }
 
     #[test]

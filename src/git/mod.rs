@@ -390,6 +390,11 @@ impl Repo {
     }
 
     /// Recent commits that touch `rel`, newest first.
+    ///
+    /// History is by exact path and **stops at renames** — a commit that renamed the file
+    /// into `rel` is included, but older commits under the file's former name are not. This
+    /// differs from [`Repo::blame_file`], which follows renames. Pass the pre-rename path
+    /// explicitly to see the earlier history.
     pub fn log_for_path(
         &self,
         rel: impl AsRef<Path>,
@@ -445,8 +450,9 @@ impl Repo {
 
         // Size cap: blame's per-line work is O(history); a 100k-line lockfile blame swamps
         // the worker. Reject up front with a typed error the caller can surface cleanly.
-        // We peek at the suspect-rev blob (not the working tree) because that's what gets
-        // blamed; for HEAD this is what's on disk anyway.
+        // We peek at the suspect-rev *committed* blob (not the working tree) because that's
+        // exactly what blame reads. When the tree is dirty these can differ — blame still
+        // operates on the committed blob, so the size cap must measure the committed blob too.
         let (size_bytes, line_count) =
             blob_size_and_line_count(&local, suspect_sha, path).unwrap_or((0, 0));
         let max_bytes = blame_max_bytes_from_env();
@@ -598,6 +604,10 @@ impl Repo {
         Ok(commit_files(&local, id).unwrap_or_default())
     }
 
+    /// Repo overview: workdir, HEAD sha (short + long), and branch name. Safe on an unborn
+    /// HEAD (fresh `git init`, no commit): `head_sha` is `None` while `branch` still resolves.
+    /// Staged status is intentionally omitted — this is a cheap identity snapshot; use
+    /// `working_tree_status` for index/worktree state (correct even before the first commit).
     pub fn info(&self) -> Result<RepoInfo, GitError> {
         let local = self.local();
         let head_id = local.head_id().ok();
@@ -809,6 +819,10 @@ fn change_severity(k: ChangeKind) -> u8 {
     }
 }
 
+/// Whether `commit_id` touched the file at the exact path `rel`. Exact-path match — it does
+/// **not** follow renames, so history built on it (`log_for_path`, `commits_touching`,
+/// `symbol_history`) stops at a rename. Deliberate asymmetry with [`Repo::blame_file`], which
+/// passes `Rewrites::default()` to gix and follows renames line-by-line.
 fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &[u8]) -> bool {
     let Some(files) = commit_files(local, commit_id) else {
         return false;
