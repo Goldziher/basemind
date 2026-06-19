@@ -120,7 +120,7 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)"
+        "user_agent": "basemind/0.4.0-rc.1 (+https://github.com/Goldziher/basemind)"
       }
     },
     "llm": {
@@ -672,7 +672,7 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.1.0 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.4.0-rc.1 (+https://github.com/Goldziher/basemind)"
         }
       },
       "additionalProperties": false

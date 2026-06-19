@@ -637,10 +637,7 @@ fn walk_structural(
     hasher.update(&(kind_name.len() as u32).to_le_bytes());
     hasher.update(kind_name.as_bytes());
 
-    // Iterate named children by index — `Node` is `Copy`, so we avoid allocating a `Vec`
-    // to stage them. `named_child(i: u32)` skips anonymous nodes automatically; we filter
-    // out extras (comments, semicolons) inline. The count pass and the recurse pass each
-    // call `named_child` O(nc) times; the index-based API is O(1) per call.
+    // Iterate named children by index (Node is Copy) — no Vec staging; extras skipped inline.
     let nc = node.named_child_count() as u32;
     let named_count: u32 = (0..nc)
         .filter(|&i| node.named_child(i).is_some_and(|c| !c.is_extra()))
