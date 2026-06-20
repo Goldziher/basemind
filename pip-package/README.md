@@ -1,7 +1,8 @@
 # basemind
 
-Full AI context layer for coding agents — code-map, document RAG, shared memory, web crawl,
-git history. 300+ languages, one MCP server.
+The context and communication layer for coding agents — a shared code-map, document RAG, memory,
+web crawl, git history, and agent-to-agent comms so multiple agents coordinate while they work.
+300+ languages, one MCP server.
 
 <!-- markdownlint-disable-next-line MD013 -->
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Goldziher/basemind/blob/main/LICENSE)

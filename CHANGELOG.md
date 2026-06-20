@@ -8,7 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
-## [Unreleased]
+## [0.5.0] — 2026-06-20
+
+Minor release: `RELEASE_MINOR` bumps 4 → 5, so the blob, Fjall-index, and LanceDB schema versions
+advance — the first `basemind scan` / `serve` after upgrading **wipes and rebuilds the `.basemind/`
+cache and the LanceDB store in place**. Headline: basemind becomes a multi-agent **communication
+substrate** (scoped rooms + per-agent inbox) on top of its context layer, with split memory and
+cross-harness delivery.
 
 ### Added
 
@@ -445,7 +451,7 @@ crates.io.
 - `search_documents` post-processing releases the store read-lock before
   blob I/O; `ahash::AHashMap` / `AHashSet` on the post-filter path.
 
-[Unreleased]: https://github.com/Goldziher/basemind/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/Goldziher/basemind/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Goldziher/basemind/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Goldziher/basemind/compare/v0.2.6...v0.3.0
 [0.2.6]: https://github.com/Goldziher/basemind/compare/v0.2.5...v0.2.6
