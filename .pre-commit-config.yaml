@@ -20,7 +20,12 @@ repos:
     hooks:
       # File safety
       - id: trailing-whitespace
+        # Generated buf code is byte-compared against `buf generate` by the CI
+        # drift gate; whitespace fixups would desync it. See `mixed-line-ending`
+        # and `end-of-file-fixer` below for the same exclusion.
+        exclude: ^src/a2a/generated/
       - id: end-of-file-fixer
+        exclude: ^src/a2a/generated/
       - id: check-merge-conflict
       - id: check-added-large-files
       - id: detect-private-key
@@ -31,6 +36,7 @@ repos:
         exclude: \.cmd$
       - id: check-shebang-scripts-are-executable
       - id: mixed-line-ending
+        exclude: ^src/a2a/generated/
       - id: typos
         args:
           - --force-exclude
