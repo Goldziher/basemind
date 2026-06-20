@@ -221,11 +221,6 @@ fn validate_webhook_url(url: &str) -> Result<(), PushNotificationError> {
             "push notification url '{url}' is invalid: empty host"
         )));
     }
-    if scheme.is_empty() {
-        return Err(invalid(format!(
-            "push notification url '{url}' is invalid: empty scheme"
-        )));
-    }
     Ok(())
 }
 

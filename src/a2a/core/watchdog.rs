@@ -14,83 +14,17 @@
 //! where a smarter index would matter.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::a2a::core::registry::AgentRegistry;
 use crate::a2a::core::task_manager::TaskManager;
 use crate::a2a::core::task_types::{MessageRole, Part, TaskFilter, TaskId, TaskMessage, TaskState};
 use crate::a2a::core::types::{AgentStatus, MessageId};
-
-/// A cheaply-cloneable, latching cancellation signal.
-///
-/// Ported in place of `tokio_util::sync::CancellationToken` because
-/// `tokio-util` is only linked under the `comms` feature; this shim depends on
-/// `tokio` alone (always available under `a2a`). All clones share one signal:
-/// calling [`Self::cancel`] on any clone wakes every outstanding
-/// [`Self::cancelled`] future. The signal latches — once cancelled,
-/// [`Self::cancelled`] returns immediately forever after.
-#[derive(Clone)]
-pub struct CancellationToken {
-    inner: Arc<CancellationInner>,
-}
-
-struct CancellationInner {
-    cancelled: AtomicBool,
-    notify: Notify,
-}
-
-impl CancellationToken {
-    /// Create a fresh, un-cancelled token.
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(CancellationInner {
-                cancelled: AtomicBool::new(false),
-                notify: Notify::new(),
-            }),
-        }
-    }
-
-    /// Latch the token as cancelled and wake all waiters.
-    ///
-    /// Idempotent: subsequent calls are no-ops.
-    pub fn cancel(&self) {
-        self.inner.cancelled.store(true, Ordering::SeqCst);
-        // `notify_waiters` only wakes futures already awaiting; the latched
-        // flag above covers any waiter that polls afterwards.
-        self.inner.notify.notify_waiters();
-    }
-
-    /// Resolve once the token has been cancelled.
-    ///
-    /// Returns immediately if cancellation already happened.
-    pub async fn cancelled(&self) {
-        loop {
-            if self.inner.cancelled.load(Ordering::SeqCst) {
-                return;
-            }
-            // Register for the next notification, then re-check the flag to
-            // avoid missing a `cancel()` that raced between the load and the
-            // `notified()` registration.
-            let notified = self.inner.notify.notified();
-            if self.inner.cancelled.load(Ordering::SeqCst) {
-                return;
-            }
-            notified.await;
-        }
-    }
-}
-
-impl Default for CancellationToken {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// Spawn the agent + task watchdog and return its `JoinHandle`.
 ///

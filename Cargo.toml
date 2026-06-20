@@ -123,7 +123,16 @@ comms = ["dep:directories", "dep:tokio-util"]
 # src/a2a/generated/). Pulls only the gRPC runtime crates; not yet wired into the
 # server. tonic 0.12 / prost 0.13 are pinned to match the buf remote plugins
 # (neoeinstein-tonic v0.4.1 / neoeinstein-prost v0.4.0) that generated the code.
-a2a = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:uuid", "dep:chrono", "dep:base64"]
+a2a = [
+    "dep:tonic",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:uuid",
+    "dep:chrono",
+    "dep:base64",
+    "dep:tokio-util",
+    "dep:tokio-stream",
+]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms`. Use this when you want one flag that
@@ -188,6 +197,8 @@ serde_toon_format = { version = "0.1", optional = true }
 streaming-iterator = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time", "net", "fs", "process"] }
+# `ReceiverStream` adapter for the A2A gRPC streaming RPCs (a2a feature only).
+tokio-stream = { version = "0.1", optional = true }
 # Length-delimited framing for the comms daemon IPC (Unix socket / named pipe).
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
