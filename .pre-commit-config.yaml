@@ -77,6 +77,7 @@ repos:
       - id: rust-max-lines
         args:
           - --max=1000
+        exclude: ^src/a2a/generated/
 
       # JSON formatting. Exclude the generated config schema — it is the
       # byte-exact `schemars::to_string_pretty` snapshot asserted by
