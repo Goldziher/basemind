@@ -16,6 +16,11 @@
 /opencode-plugin/node_modules
 /opencode-plugin/*.tgz
 
+
+# Python bytecode
+__pycache__/
+*.pyc
+
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
 .agents/
 .ai-rulez/.generated-manifest.json
@@ -38,7 +43,3 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 # END ai-rulez
-
-# Python bytecode
-__pycache__/
-*.pyc

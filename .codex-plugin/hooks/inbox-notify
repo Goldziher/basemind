@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# basemind UserPromptSubmit hook: surface NEW agent-comms messages to the model.
+#
+# Reads this agent's inbox (front-matter ONLY — never message bodies) from the broker daemon
+# and injects any messages newer than the last turn as additionalContext. A per-session
+# high-water timestamp (keyed by the host's session_id) makes it idempotent: each message is
+# injected once, and the first turn only baselines (SessionStart already showed recent history).
+#
+# Hard rule: this must NEVER block or fail the user's turn. Every step is time-boxed and
+# fail-open — any error (no daemon, no jq, no messages) exits 0 with no output.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# jq is required to parse the inbox JSON; without it, stay silent.
+command -v jq >/dev/null 2>&1 || exit 0
+
+STDIN_JSON="$(cat 2>/dev/null || true)"
+SID="$(printf '%s' "$STDIN_JSON" | jq -r '.session_id // "default"' 2>/dev/null | tr -c 'A-Za-z0-9._-' '_')"
+[ -n "$SID" ] || SID="default"
+HWM_FILE="${TMPDIR:-/tmp}/basemind-comms-hwm-${SID}"
+
+# Pull recent inbox front-matter (across auto-joined rooms). mark_read stays false so the hook
+# never consumes the agent's own inbox state — its own cursor is the hwm file below.
+INBOX_JSON="$(timeout 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" comms inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
+[ -n "$INBOX_JSON" ] || exit 0
+
+MAXTS="$(printf '%s' "$INBOX_JSON" | jq -r '[.messages[].ts_micros] | max // 0' 2>/dev/null | tr -cd '0-9')"
+[ -n "$MAXTS" ] || MAXTS=0
+
+# First turn this session: baseline the high-water mark, do not replay history.
+if [ ! -f "$HWM_FILE" ]; then
+  printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
+  exit 0
+fi
+
+HWM="$(tr -cd '0-9' <"$HWM_FILE" 2>/dev/null)"
+[ -n "$HWM" ] || HWM=0
+
+NEW_LINES="$(printf '%s' "$INBOX_JSON" |
+  jq -r --argjson hwm "$HWM" \
+    '.messages[] | select(.ts_micros > $hwm) | "  • [\(.subject)] from \(.from) (id: \(.id))"' \
+    2>/dev/null)"
+[ -n "$NEW_LINES" ] || exit 0
+
+# Advance the high-water mark so these messages are not re-injected next turn.
+printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
+
+CONTEXT="New basemind agent-comms message(s) since your last turn (front-matter only — call message_get with an id to read a body):
+${NEW_LINES}
+Reply with room_post {room, subject, body, reply_to:<id>} if a response is warranted."
+
+# Escape for JSON embedding (single-pass parameter substitutions; mirrors session-start).
+escape_for_json() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+CTX="$(escape_for_json "${CONTEXT}")"
+
+# Emit the field the current harness consumes (same tri-format branch as session-start).
+if [ -n "${CURSOR_PLUGIN_ROOT:-}" ]; then
+  printf '{\n  "additional_context": "%s"\n}\n' "${CTX}"
+elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -z "${COPILOT_CLI:-}" ]; then
+  printf '{\n  "hookSpecificOutput": {\n    "hookEventName": "UserPromptSubmit",\n    "additionalContext": "%s"\n  }\n}\n' "${CTX}"
+else
+  printf '{\n  "additionalContext": "%s"\n}\n' "${CTX}"
+fi
+
+exit 0

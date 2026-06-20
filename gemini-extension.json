@@ -8,5 +8,31 @@
       "command": "${extensionPath}/scripts/mcp-launch.sh",
       "args": ["serve"]
     }
+  },
+  "_comment_hooks": "BEST-EFFORT: Gemini CLI extension hook wiring is only partly documented. We mirror the Claude SessionStart + UserPromptSubmit entries against the shared top-level hooks scripts via ${extensionPath} (the gemini extension root == repo root, so hooks/ resolves directly — no copy needed). session-start emits SDK-standard {additionalContext}; inbox-notify does per-turn delta injection. TODO: confirm Gemini's exact event names + stdout contract and drop this _comment_ shim if it consumes a different manifest.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" session-start",
+            "async": false
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${extensionPath}/hooks/run-hook.cmd\" inbox-notify",
+            "async": false
+          }
+        ]
+      }
+    ]
   }
 }

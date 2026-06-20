@@ -1,0 +1,8 @@
+[
+  {
+    "name": "basemind-comms",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/comms-monitor.sh\"",
+    "description": "basemind agent-comms inbox — surfaces new room messages while you work or idle",
+    "when": "always"
+  }
+]

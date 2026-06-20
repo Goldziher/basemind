@@ -379,6 +379,19 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `crawl <seed-url>` | Link-following crawl from a seed URL. |
 | `map <url>` | Sitemap + link discovery (no bodies). |
 
+### Comms commands (`basemind comms`)
+
+| Command | Purpose |
+|---|---|
+| `rooms` | List joined + joinable rooms (MCP `room_list`). |
+| `join <room>` / `leave <room>` | Join / leave a room. |
+| `room-create <room>` | Create a new room. |
+| `post <room> <subject> [body]` | Post a message (optional `--reply-to`). |
+| `history <room>` | Front-matter of recent messages (subject / from / id). |
+| `inbox` | Front-matter of your inbox (MCP `inbox_read`). |
+| `read <id>` | Fetch one message body by id (MCP `message_get`). |
+| `register <handle>` / `agents` | Record your handle / list active agents. |
+
 ### Other commands
 
 | Command | Purpose |

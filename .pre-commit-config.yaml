@@ -97,5 +97,5 @@ repos:
         name: sync canonical skills + commands into all plugin trees
         language: system
         entry: bash scripts/sync-plugin-skills.sh
-        files: ^(skills/(basemind|basemind-stats)/SKILL\.md|commands/(bm|bm-stats)\.md|scripts/sync-plugin-skills\.sh)$
+        files: ^(skills/(basemind|basemind-cli|basemind-comms|basemind-stats)/SKILL\.md|commands/(bm|bm-stats)\.md|hooks/(session-start|inbox-notify|run-hook\.cmd)|scripts/sync-plugin-skills\.sh)$
         pass_filenames: false

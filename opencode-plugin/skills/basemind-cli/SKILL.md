@@ -32,6 +32,13 @@ when you're scripting, batching queries, running in headless environments, or CI
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing caches destructively (only the CLI allows `--component all`).
 
+**basemind first, shell/grep/git fallback.** Prefer `basemind query` over reading files, over
+`grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
+history / blame / diffs (`basemind git`), document extraction / RAG / keyword + entity (NER) /
+summary (`basemind memory search-documents`), and web scraping / crawling / sitemaps
+(`basemind web scrape` / `crawl` / `map`). Drop to raw shell, grep, or git only when no basemind
+command covers the question.
+
 ## Command routing (copy this into your mental model)
 
 | Question | Command | Notes |

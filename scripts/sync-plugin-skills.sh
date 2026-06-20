@@ -19,18 +19,37 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Canonical sources — these double as the Claude plugin's components at the repo root.
-CANONICAL=(
-  "skills/basemind/SKILL.md"
-  "skills/basemind-cli/SKILL.md"
-  "skills/basemind-stats/SKILL.md"
-  "commands/bm.md"
-  "commands/bm-stats.md"
+# Canonical skills (per-skill SKILL.md) mirrored into every non-Claude tree.
+SKILLS=(
+  "basemind"
+  "basemind-cli"
+  "basemind-comms"
+  "basemind-stats"
+)
+# Canonical slash commands mirrored into every non-Claude tree.
+COMMANDS=(
+  "bm"
+  "bm-stats"
+)
+# Canonical agent-comms hook scripts. These are identical across the harness trees that consume
+# `hooks/` (Codex, Cursor) — only each tree's hand-authored `hooks.json` differs (per-harness
+# root env var + event contract), so we sync the scripts but NEVER the manifest. Gemini reads the
+# repo-root `hooks/` directly (extension root == repo root); opencode uses `basemind.js` instead.
+HOOK_SCRIPTS=(
+  "session-start"
+  "inbox-notify"
+  "run-hook.cmd"
 )
 
-for src in "${CANONICAL[@]}"; do
-  [[ -f "$src" ]] || {
-    printf 'sync-plugin-skills: missing canonical source: %s\n' "$src" >&2
+for skill in "${SKILLS[@]}"; do
+  [[ -f "skills/$skill/SKILL.md" ]] || {
+    printf 'sync-plugin-skills: missing canonical skill: skills/%s/SKILL.md\n' "$skill" >&2
+    exit 1
+  }
+done
+for cmd in "${COMMANDS[@]}"; do
+  [[ -f "commands/$cmd.md" ]] || {
+    printf 'sync-plugin-skills: missing canonical command: commands/%s.md\n' "$cmd" >&2
     exit 1
   }
 done
@@ -42,13 +61,31 @@ TREES=(
   ".cursor-plugin"
   "opencode-plugin"
 )
+# Subset of TREES that consume the shared `hooks/` scripts (Codex + Cursor). opencode drives
+# comms from `basemind.js`, so it gets no hook-script copies.
+HOOK_TREES=(
+  ".codex-plugin"
+  ".cursor-plugin"
+)
 
 for tree in "${TREES[@]}"; do
-  mkdir -p "$tree/skills/basemind" "$tree/skills/basemind-cli" "$tree/skills/basemind-stats" "$tree/commands"
-  cp "skills/basemind/SKILL.md" "$tree/skills/basemind/SKILL.md"
-  cp "skills/basemind-cli/SKILL.md" "$tree/skills/basemind-cli/SKILL.md"
-  cp "skills/basemind-stats/SKILL.md" "$tree/skills/basemind-stats/SKILL.md"
-  cp "commands/bm.md" "$tree/commands/bm.md"
-  cp "commands/bm-stats.md" "$tree/commands/bm-stats.md"
+  mkdir -p "$tree/commands"
+  for skill in "${SKILLS[@]}"; do
+    mkdir -p "$tree/skills/$skill"
+    cp "skills/$skill/SKILL.md" "$tree/skills/$skill/SKILL.md"
+  done
+  for cmd in "${COMMANDS[@]}"; do
+    cp "commands/$cmd.md" "$tree/commands/$cmd.md"
+  done
   printf 'sync-plugin-skills: %s ← skills + commands\n' "$tree"
+done
+
+# Mirror the canonical hook scripts (preserving the executable bit) into the hook-consuming
+# trees. Each tree keeps its OWN hooks.json (different root env var / event contract).
+for tree in "${HOOK_TREES[@]}"; do
+  mkdir -p "$tree/hooks"
+  for script in "${HOOK_SCRIPTS[@]}"; do
+    cp -p "hooks/$script" "$tree/hooks/$script"
+  done
+  printf 'sync-plugin-skills: %s/hooks ← hook scripts\n' "$tree"
 done

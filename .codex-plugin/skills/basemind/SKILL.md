@@ -64,6 +64,12 @@ Rule of thumb: if a question is about _where_, _what calls_, _what shape_, _who 
 _what's indexed_, a basemind tool answers it cheaper than reading files. Reach for `read_file`
 only to see the actual implementation of a span you have already located.
 
+**basemind first, shell/grep/git fallback.** Prefer basemind over reading files, over `grep`/`rg`,
+and over naked `git`: use it for code parsing (outlines, references, callers), git history / blame /
+diffs, document extraction / RAG / keyword + entity (NER) / summary (`search_documents`), and web
+scraping / crawling / sitemaps (`web_scrape` / `web_crawl` / `web_map`). Drop to raw shell, grep, or
+git only when no basemind tool covers the question.
+
 ## Tool routing (copy this into your mental model)
 
 | Question | Tool |
