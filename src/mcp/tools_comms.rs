@@ -16,8 +16,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, InboxReadParams, MessageGetParams, RoomCreateParams,
-    RoomHistoryParams, RoomJoinParams, RoomLeaveParams, RoomListParams, RoomPostParams,
+    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, MessageGetParams,
+    RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams, RoomListParams,
+    RoomPostParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -230,6 +231,31 @@ impl BasemindServer {
         record_call(
             &self.state,
             "inbox_read",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    #[tool(
+        description = "Acknowledge inbox messages by ADVANCING this agent's per-room read cursors \
+        — it does NOT delete anything and does NOT affect the shared append-only log or any other \
+        agent's inbox (message_get and room_history still return acked messages). Two modes, \
+        combinable: pass `message_ids` to ack specific messages (each resolved to its room+seq), \
+        and/or `room` + `to_seq` to bulk-ack everything up to `to_seq` in one room (stale-room \
+        cleanup). At least one mode is required. Needs --features comms."
+    )]
+    pub(crate) async fn inbox_ack(
+        &self,
+        Parameters(p): Parameters<InboxAckParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_inbox_ack(&self.state, p).await;
+        record_call(
+            &self.state,
+            "inbox_ack",
             &__params_json,
             __started,
             &__result,

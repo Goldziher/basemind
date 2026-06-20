@@ -201,6 +201,7 @@ mod tests {
                 subject: "status".to_string(),
                 tags: vec!["daily".to_string()],
                 reply_to: None,
+                scope: vec![],
                 body: b"all green".to_vec(),
             })
             .await
@@ -223,9 +224,9 @@ mod tests {
         match expect_response(&mut reader).await {
             CommsResponse::History { messages, .. } => {
                 assert_eq!(messages.len(), 1);
-                assert_eq!(messages[0].subject, "status");
-                assert_eq!(messages[0].id, message_id);
-                assert_eq!(messages[0].body_len, "all green".len() as u32);
+                assert_eq!(messages[0].meta.subject, "status");
+                assert_eq!(messages[0].meta.id, message_id);
+                assert_eq!(messages[0].meta.body_len, "all green".len() as u32);
             }
             other => panic!("expected History, got {other:?}"),
         }
@@ -262,7 +263,7 @@ mod tests {
                     1,
                     "the posted message is unread for the reader"
                 );
-                assert_eq!(messages[0].subject, "status");
+                assert_eq!(messages[0].meta.subject, "status");
             }
             other => panic!("expected Inbox, got {other:?}"),
         }
@@ -333,6 +334,7 @@ mod tests {
                 subject: "mine".to_string(),
                 tags: vec![],
                 reply_to: None,
+                scope: vec![],
                 body: b"self note".to_vec(),
             })
             .await
@@ -381,7 +383,7 @@ mod tests {
         match expect_response(&mut writer).await {
             CommsResponse::History { messages, .. } => {
                 assert_eq!(messages.len(), 1, "history keeps self-authored messages");
-                assert_eq!(messages[0].id, message_id);
+                assert_eq!(messages[0].meta.id, message_id);
             }
             other => panic!("expected History, got {other:?}"),
         }
@@ -400,7 +402,7 @@ mod tests {
         match expect_response(&mut reader).await {
             CommsResponse::Inbox { messages, .. } => {
                 assert_eq!(messages.len(), 1, "a different agent sees the message");
-                assert_eq!(messages[0].subject, "mine");
+                assert_eq!(messages[0].meta.subject, "mine");
             }
             other => panic!("expected Inbox, got {other:?}"),
         }

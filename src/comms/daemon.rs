@@ -29,7 +29,7 @@ use super::model::{
     now_micros,
 };
 use super::protocol::{
-    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport,
+    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport,
 };
 use super::scope::{self, ScopeChain};
 use super::store::{self, CommsStore, CommsStoreError};
@@ -165,9 +165,10 @@ impl Broker {
                 subject,
                 tags,
                 reply_to,
+                scope,
                 body,
             } => {
-                self.on_post(session, room, subject, tags, reply_to, body)
+                self.on_post(session, room, subject, tags, reply_to, scope, body)
                     .await
             }
             CommsRequest::History {
@@ -186,6 +187,11 @@ impl Broker {
                 self.on_inbox(session, remote, cwd, cursor, limit, mark_read)
                     .await
             }
+            CommsRequest::AckInbox {
+                message_ids,
+                room,
+                to_seq,
+            } => self.on_ack(session, message_ids, room, to_seq),
             CommsRequest::Subscribe { room } => self.on_subscribe(session, room, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::Ping => Ok(CommsResponse::Pong),
@@ -344,6 +350,7 @@ impl Broker {
         Ok(CommsResponse::Ok)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn on_post(
         &self,
         session: &Session,
@@ -351,13 +358,23 @@ impl Broker {
         subject: String,
         tags: Vec<String>,
         reply_to: Option<String>,
+        scope: Vec<String>,
         body: Vec<u8>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
         let id = mint_message_id(&room, &agent);
-        let meta = store::build_meta(id, room.clone(), agent, subject, tags, reply_to, &body);
+        let meta = store::build_meta(
+            id,
+            room.clone(),
+            agent,
+            subject,
+            tags,
+            reply_to,
+            scope,
+            &body,
+        );
         let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
         self.fan_out(&room, &stored).await;
         Ok(CommsResponse::Posted {
@@ -377,8 +394,13 @@ impl Broker {
         let next = page
             .more
             .then(|| Cursor::encode(room.as_str(), page.last_seq));
+        let messages = page
+            .messages
+            .into_iter()
+            .map(|(seq, meta)| SeqMeta { seq, meta })
+            .collect();
         Ok(CommsResponse::History {
-            messages: page.messages,
+            messages,
             next_cursor: next,
         })
     }
@@ -411,7 +433,7 @@ impl Broker {
         let mut rooms = self.store.rooms_for_agent(&agent)?;
         rooms.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
-        let mut collected: Vec<MessageMeta> = Vec::new();
+        let mut collected: Vec<SeqMeta> = Vec::new();
         // Highest delivered seq per room in THIS page — used to mark-read and to mint the
         // next cursor.
         let mut delivered_high: Vec<(RoomId, u64)> = Vec::new();
@@ -440,7 +462,7 @@ impl Broker {
                     continue;
                 }
                 if collected.len() < limit {
-                    collected.push(meta);
+                    collected.push(SeqMeta { seq, meta });
                     upsert_high(&mut delivered_high, room, seq);
                 } else {
                     // Overflow: this is where the next page resumes.
@@ -463,6 +485,61 @@ impl Broker {
             messages: collected,
             unread: unread_remaining,
             next_cursor,
+        })
+    }
+
+    /// Acknowledge inbox messages by advancing the calling agent's per-room read cursors. Never
+    /// touches the shared log and never affects another agent: an ack is purely a per-agent cursor
+    /// move. Supports both the `message_ids` mode (resolve each id → `(room, seq)`, advance each
+    /// room to its max acked seq) and the bulk `room` + `to_seq` mode, applying both when given.
+    fn on_ack(
+        &self,
+        session: &Session,
+        message_ids: Vec<String>,
+        room: Option<RoomId>,
+        to_seq: Option<u64>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let bulk = matches!((&room, to_seq), (Some(_), Some(_)));
+        if message_ids.is_empty() && !bulk {
+            return Ok(CommsResponse::Error {
+                code: "empty_ack".to_string(),
+                message: "ack requires message_ids or a (room, to_seq) pair".to_string(),
+            });
+        }
+
+        // Accumulate the highest seq to advance per room across both modes, then apply once so a
+        // room targeted by both modes advances to the single maximum.
+        let mut targets: Vec<(RoomId, u64)> = Vec::new();
+        let mut acked: u32 = 0;
+        if !message_ids.is_empty() {
+            for (_, room, seq) in self.store.resolve_ids(&message_ids)? {
+                acked = acked.saturating_add(1);
+                upsert_high(&mut targets, &room, seq);
+            }
+        }
+        if let (Some(room), Some(seq)) = (room, to_seq) {
+            upsert_high(&mut targets, &room, seq);
+        }
+
+        // Apply each advance (monotonic in the store) and report ONLY the rooms whose cursor
+        // actually moved, so the response never claims a phantom advance for an already-acked seq
+        // or a `to_seq` at or below the current position (e.g. `to_seq = 0`).
+        let mut cursors_advanced: Vec<(String, u64)> = Vec::new();
+        for (room, seq) in &targets {
+            let before = self.store.read_cursor(&agent, room)?;
+            self.store.set_read_cursor(&agent, room, *seq)?;
+            let after = self.store.read_cursor(&agent, room)?;
+            if after > before {
+                cursors_advanced.push((room.as_str().to_string(), after));
+            }
+        }
+
+        Ok(CommsResponse::Acked {
+            acked,
+            cursors_advanced,
         })
     }
 
@@ -754,128 +831,5 @@ fn mint_message_id(room: &RoomId, agent: &AgentId) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
-        (dir, Arc::new(Broker::new(store)))
-    }
-
-    fn agent(s: &str) -> AgentId {
-        AgentId::parse(s).expect("agent")
-    }
-
-    #[tokio::test]
-    async fn hello_rejects_proto_skew() {
-        let (_d, broker) = temp_broker();
-        let (tx, _rx) = mpsc::channel(8);
-        let mut session = Session::default();
-        let resp = broker
-            .handle(
-                CommsRequest::Hello {
-                    agent: agent("a"),
-                    proto_ver: PROTO_VER + 1,
-                    remote: None,
-                    cwd: None,
-                },
-                &mut session,
-                &tx,
-            )
-            .await;
-        assert!(matches!(resp, CommsResponse::Error { code, .. } if code == "proto_skew"));
-    }
-
-    #[tokio::test]
-    async fn post_requires_hello() {
-        let (_d, broker) = temp_broker();
-        let (tx, _rx) = mpsc::channel(8);
-        let mut session = Session::default();
-        let resp = broker
-            .handle(
-                CommsRequest::Post {
-                    room: RoomId::parse("r").expect("r"),
-                    subject: "s".to_string(),
-                    tags: vec![],
-                    reply_to: None,
-                    body: b"b".to_vec(),
-                },
-                &mut session,
-                &tx,
-            )
-            .await;
-        assert!(matches!(resp, CommsResponse::Error { code, .. } if code == "no_hello"));
-    }
-
-    #[tokio::test]
-    async fn subscribe_then_post_fans_out_notification() {
-        let (_d, broker) = temp_broker();
-        let (tx, mut rx) = mpsc::channel(8);
-        let mut session = Session::default();
-        // Hello with no cwd → Global default room.
-        broker
-            .handle(
-                CommsRequest::Hello {
-                    agent: agent("a"),
-                    proto_ver: PROTO_VER,
-                    remote: None,
-                    cwd: None,
-                },
-                &mut session,
-                &tx,
-            )
-            .await;
-        let room = RoomId::parse("r").expect("r");
-        broker
-            .handle(
-                CommsRequest::CreateRoom {
-                    room: room.clone(),
-                    scope: RoomScope::Global,
-                    title: None,
-                },
-                &mut session,
-                &tx,
-            )
-            .await;
-        let sub_resp = broker
-            .handle(
-                CommsRequest::Subscribe { room: room.clone() },
-                &mut session,
-                &tx,
-            )
-            .await;
-        assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
-        assert_eq!(broker.subscriber_count(), 1);
-
-        let posted = broker
-            .handle(
-                CommsRequest::Post {
-                    room: room.clone(),
-                    subject: "hi".to_string(),
-                    tags: vec![],
-                    reply_to: None,
-                    body: b"hello".to_vec(),
-                },
-                &mut session,
-                &tx,
-            )
-            .await;
-        assert!(matches!(posted, CommsResponse::Posted { .. }));
-
-        let note = rx.recv().await.expect("notification");
-        match note {
-            CommsOut::Notification(CommsNotification::Message(meta)) => {
-                assert_eq!(meta.subject, "hi");
-                assert_eq!(meta.room, room);
-            }
-            other => panic!("expected a Message notification, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn sanitize_id_maps_to_alphabet() {
-        assert_eq!(sanitize_id("github.com/foo/bar"), "github.com-foo-bar");
-        assert!(RoomId::parse(sanitize_id("a b!c")).is_ok());
-    }
-}
+#[path = "daemon_tests.rs"]
+mod tests;

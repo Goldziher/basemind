@@ -90,6 +90,10 @@ pub enum CommsRequest {
         /// Id of the message being replied to, for threading.
         #[serde(default)]
         reply_to: Option<String>,
+        /// Glob / path patterns describing where the message applies. Additive; empty when
+        /// omitted.
+        #[serde(default)]
+        scope: Vec<String>,
         /// The message body bytes.
         body: Vec<u8>,
     },
@@ -126,6 +130,24 @@ pub enum CommsRequest {
         /// When true, advance the agent's read cursors past the returned messages.
         #[serde(default)]
         mark_read: bool,
+    },
+    /// Acknowledge inbox messages by ADVANCING the calling agent's per-room read cursors. This
+    /// never deletes from the shared append-only log nor affects any other agent — it only moves
+    /// THIS agent's cursors forward (monotonic). Two modes, combinable:
+    /// * `message_ids` — resolve each id to its `(room, seq)`, then advance each room's cursor to
+    ///   the max acked seq in that room.
+    /// * `room` + `to_seq` — advance that one room's cursor straight to `to_seq` (bulk
+    ///   "ack everything up to here" / stale-room cleanup).
+    AckInbox {
+        /// Message ids to ack (mode a). Empty when only the bulk mode is used.
+        #[serde(default)]
+        message_ids: Vec<String>,
+        /// Target room for the bulk `to_seq` mode (mode b).
+        #[serde(default)]
+        room: Option<RoomId>,
+        /// Advance `room`'s cursor straight to this seq (mode b). Requires `room`.
+        #[serde(default)]
+        to_seq: Option<u64>,
     },
     /// Open a notification stream for a room (the link receives [`CommsNotification::Message`]
     /// for every subsequent post). Returns a subscription handle.
@@ -172,19 +194,28 @@ pub enum CommsResponse {
     },
     /// Reply to [`CommsRequest::History`].
     History {
-        /// The page of front-matter records.
-        messages: Vec<MessageMeta>,
+        /// The page of front-matter records, each paired with its per-room `seq`.
+        messages: Vec<SeqMeta>,
         /// Resume token for the next page, when more remain.
         next_cursor: Option<Cursor>,
     },
     /// Reply to [`CommsRequest::Inbox`].
     Inbox {
-        /// The page of front-matter records across subscribed rooms.
-        messages: Vec<MessageMeta>,
+        /// The page of front-matter records across subscribed rooms, each with its per-room `seq`.
+        messages: Vec<SeqMeta>,
         /// Count of unread messages remaining after this page.
         unread: u32,
         /// Resume token for the next page, when more remain.
         next_cursor: Option<Cursor>,
+    },
+    /// Reply to [`CommsRequest::AckInbox`]: how many ids were acked and the new per-room cursor
+    /// values that advanced as a result.
+    Acked {
+        /// Number of message ids that resolved and were acked (excludes unknown ids; the bulk
+        /// `to_seq` mode does not contribute to this count).
+        acked: u32,
+        /// `(room, new_seq)` for each room whose cursor advanced in this call.
+        cursors_advanced: Vec<(String, u64)>,
     },
     /// Reply to [`CommsRequest::GetBody`].
     Body {
@@ -209,6 +240,17 @@ pub enum CommsResponse {
     },
 }
 
+/// A front-matter record paired with its per-room `seq`. The `seq` is the position the message
+/// occupies in its room's append-only log; callers surface it so they can drive `inbox_ack`'s
+/// `to_seq` bulk mode and `message_ids` resolution without an extra round-trip.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeqMeta {
+    /// The message's per-room sequence number.
+    pub seq: u64,
+    /// The front-matter record.
+    pub meta: MessageMeta,
+}
+
 /// Daemon status snapshot returned by [`CommsRequest::Status`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusReport {
@@ -227,6 +269,10 @@ pub struct StatusReport {
 }
 
 /// An unsolicited message the broker pushes to a subscribed link.
+// The `Message` variant carries the full front-matter and dwarfs the unit `Shutdown` variant.
+// Boxing it would add a heap allocation on every fan-out push (the hot path) to shrink a frame
+// that is constructed-then-serialized once, so the size asymmetry is accepted deliberately.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "notify", content = "data", rename_all = "snake_case")]
 pub enum CommsNotification {
@@ -259,6 +305,7 @@ mod tests {
             subject: "hi".to_string(),
             tags: vec!["t".to_string()],
             reply_to: None,
+            scope: vec!["src/**".to_string()],
             body: b"hello".to_vec(),
         };
         let bytes = rmp_serde::to_vec_named(&req).expect("encode");

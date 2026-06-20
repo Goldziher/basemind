@@ -2121,6 +2121,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
             body.clone(),
             vec!["ops".to_string()],
             None,
+            vec!["src/**".to_string()],
         )
         .await
         .expect("post");
@@ -2131,9 +2132,16 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("history");
     assert_eq!(history.len(), 1, "exactly one posted message");
-    let meta = &history[0];
+    let seq_meta = &history[0];
+    let meta = &seq_meta.meta;
+    assert_eq!(seq_meta.seq, 1, "front-matter carries the per-room seq");
     assert_eq!(meta.subject, subject, "front-matter carries the subject");
     assert_eq!(meta.id, message_id, "front-matter id matches the posted id");
+    assert_eq!(
+        meta.scope,
+        vec!["src/**".to_string()],
+        "front-matter round-trips the posted scope"
+    );
     assert_eq!(
         meta.body_len,
         body.len() as u32,
@@ -2166,7 +2174,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .expect("inbox read+mark");
     assert_eq!(inbox.len(), 1, "the posted message is in B's inbox");
     assert_eq!(
-        inbox[0].subject, subject,
+        inbox[0].meta.subject, subject,
         "inbox carries front-matter subject"
     );
     assert_eq!(unread, 0, "mark_read drained the unread count in this page");
@@ -2181,6 +2189,57 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         "no unread messages remain after mark_read"
     );
     assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
+
+    // inbox_ack: A posts a second message; B dismisses it via `ack_inbox` (a cursor advance,
+    // NOT a delete). The message must leave B's inbox but stay in the shared history.
+    let second_id = a
+        .post_message(
+            room.clone(),
+            "second".to_string(),
+            b"more".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("post second");
+    let (inbox3, _u3, _c3) = b
+        .read_inbox(None, None, None, 10, false)
+        .await
+        .expect("inbox shows second");
+    assert_eq!(inbox3.len(), 1, "the second message is unread in B's inbox");
+    assert_eq!(
+        inbox3[0].meta.id, second_id,
+        "inbox shows the second message"
+    );
+
+    let (acked, cursors_advanced) = b
+        .ack_inbox(vec![second_id.clone()], None, None)
+        .await
+        .expect("ack");
+    assert_eq!(acked, 1, "exactly one message acked");
+    assert_eq!(
+        cursors_advanced,
+        vec![("team".to_string(), 2)],
+        "ack advances B's team cursor to seq 2"
+    );
+
+    let (inbox4, _u4, _c4) = b
+        .read_inbox(None, None, None, 10, false)
+        .await
+        .expect("inbox after ack");
+    assert!(inbox4.is_empty(), "ack removed the message from B's inbox");
+
+    // The acked message is still in the shared, append-only history.
+    let (history_after, _n) = b
+        .read_history(room.clone(), None, 10)
+        .await
+        .expect("history after ack");
+    assert_eq!(
+        history_after.len(),
+        2,
+        "ack does not delete from the shared log"
+    );
 
     // Tear down the broker.
     let _ = shutdown_tx.send(true);

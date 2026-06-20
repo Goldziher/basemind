@@ -300,7 +300,7 @@ impl CommsStore {
                 break;
             }
             let meta: MessageMeta = rmp_serde::from_slice(&v)?;
-            messages.push(meta);
+            messages.push((seq, meta));
             last_seq = seq;
         }
         Ok(HistoryPage {
@@ -347,6 +347,39 @@ impl CommsStore {
         }
     }
 
+    /// Resolve a batch of message ids to their `(room, seq)` positions in a SINGLE scan of the
+    /// front-matter index. Returns one entry per id that was found (unknown ids are skipped).
+    ///
+    /// There is no dedicated `id → (room, seq)` reverse index, so this walks `messages_by_room`
+    /// (front-matter only — never a body), bounded by the front-matter count not body sizes. The
+    /// single-pass batch design keeps `inbox_ack` over many ids at one `messages_by_room` walk
+    /// rather than one walk per id. A reverse index is the future optimization if this scan ever
+    /// becomes hot (tracked alongside the comms schema version).
+    pub fn resolve_ids(
+        &self,
+        message_ids: &[String],
+    ) -> Result<Vec<(String, RoomId, u64)>, CommsStoreError> {
+        if message_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wanted: ahash::AHashSet<&str> = message_ids.iter().map(String::as_str).collect();
+        let mut out = Vec::with_capacity(message_ids.len());
+        for guard in self.messages_by_room.iter() {
+            let (k, v) = guard.into_inner()?;
+            let Some((_, seq)) = keys::parse_message_by_room(&k) else {
+                continue;
+            };
+            let meta: MessageMeta = rmp_serde::from_slice(&v)?;
+            if wanted.contains(meta.id.as_str()) {
+                out.push((meta.id.clone(), meta.room, seq));
+                if out.len() == wanted.len() {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     // ─── read cursors (per agent, per room) ───────────────────────────────────────────────
 
     /// The agent's last-read `seq` for a room (0 when never read).
@@ -381,8 +414,8 @@ impl CommsStore {
 /// stopped early because `limit` was hit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPage {
-    /// The front-matter records in this page, oldest-first.
-    pub messages: Vec<MessageMeta>,
+    /// The front-matter records in this page, oldest-first, each paired with its per-room `seq`.
+    pub messages: Vec<(u64, MessageMeta)>,
     /// The `seq` of the last record returned (or the input `after_seq` when empty).
     pub last_seq: u64,
     /// True when more records remain after this page.
@@ -398,6 +431,7 @@ pub fn body_hash_hex(body: &[u8]) -> String {
 /// Build the front-matter for a post. The id is the body hash + timestamp + sequence-free
 /// uniqueness via the room and microsecond timestamp; callers should ensure uniqueness by
 /// passing a unique `id` (the daemon uses `room:ts:agent`-derived ids).
+#[allow(clippy::too_many_arguments)]
 pub fn build_meta(
     id: String,
     room: RoomId,
@@ -405,6 +439,7 @@ pub fn build_meta(
     subject: String,
     tags: Vec<String>,
     reply_to: Option<String>,
+    scope: Vec<String>,
     body: &[u8],
 ) -> MessageMeta {
     MessageMeta {
@@ -415,6 +450,7 @@ pub fn build_meta(
         subject,
         tags,
         reply_to,
+        scope,
         body_len: u32::try_from(body.len()).unwrap_or(u32::MAX),
         body_sha: body_hash_hex(body),
     }
@@ -499,6 +535,7 @@ mod tests {
             "subj".to_string(),
             vec![],
             None,
+            vec![],
             &body,
         );
         let (seq, _) = store
@@ -508,7 +545,11 @@ mod tests {
 
         let page = store.history(&room, 0, 10).expect("history");
         assert_eq!(page.messages.len(), 1);
-        let got = &page.messages[0];
+        let (got_seq, got) = &page.messages[0];
+        assert_eq!(
+            *got_seq, 1,
+            "history pairs each record with its per-room seq"
+        );
         // History returns the front-matter, including the body length + hash, but NOT the
         // body itself — `MessageMeta` has no body field.
         assert_eq!(got.id, "m-1");
@@ -535,6 +576,7 @@ mod tests {
                 format!("s-{i}"),
                 vec![],
                 None,
+                vec![],
                 &body,
             );
             store.post(&room, meta, MessageBody(body)).expect("post");
@@ -544,7 +586,7 @@ mod tests {
         assert!(page1.more);
         let page2 = store.history(&room, page1.last_seq, 2).expect("history");
         assert_eq!(page2.messages.len(), 2);
-        assert_eq!(page2.messages[0].id, "m-2");
+        assert_eq!(page2.messages[0].1.id, "m-2");
     }
 
     /// The seq counter is bumped inside the same atomic batch as the message, so it persists
@@ -563,6 +605,7 @@ mod tests {
                 id.to_string(),
                 vec![],
                 None,
+                vec![],
                 &body,
             );
             store.post(&room, meta, MessageBody(body)).expect("post").0
@@ -579,7 +622,7 @@ mod tests {
             // All three messages survive with no overwrite.
             let page = store.history(&room, 0, 10).expect("history");
             assert_eq!(page.messages.len(), 3, "no message lost or overwritten");
-            let ids: Vec<&str> = page.messages.iter().map(|m| m.id.as_str()).collect();
+            let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
             assert_eq!(ids, ["m-1", "m-2", "m-3"]);
         }
     }
@@ -616,6 +659,45 @@ mod tests {
         // Moving backward is a no-op.
         store.set_read_cursor(&agent, &room, 3).expect("set");
         assert_eq!(store.read_cursor(&agent, &room).expect("read"), 5);
+    }
+
+    #[test]
+    fn resolve_ids_maps_each_id_to_its_room_and_seq() {
+        let (_d, store) = temp_store();
+        let room_a = room_id("room-a");
+        let room_b = room_id("room-b");
+        let mk = |store: &CommsStore, room: &RoomId, id: &str| {
+            let body = id.as_bytes().to_vec();
+            let meta = build_meta(
+                id.to_string(),
+                room.clone(),
+                agent_id("a"),
+                id.to_string(),
+                vec![],
+                None,
+                vec![],
+                &body,
+            );
+            store.post(room, meta, MessageBody(body)).expect("post").0
+        };
+        let s_a1 = mk(&store, &room_a, "m-a1");
+        let _s_a2 = mk(&store, &room_a, "m-a2");
+        let s_b1 = mk(&store, &room_b, "m-b1");
+
+        // Batch resolver groups across rooms; unknown ids are dropped.
+        let mut got = store
+            .resolve_ids(&["m-a1".to_string(), "m-b1".to_string(), "ghost".to_string()])
+            .expect("resolve_ids");
+        got.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(
+            got,
+            vec![
+                ("m-a1".to_string(), room_a.clone(), s_a1),
+                ("m-b1".to_string(), room_b.clone(), s_b1),
+            ]
+        );
+        // Empty input short-circuits to an empty result with no scan.
+        assert!(store.resolve_ids(&[]).expect("resolve_ids").is_empty());
     }
 
     #[test]

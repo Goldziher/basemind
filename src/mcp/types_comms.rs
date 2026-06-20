@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::RoomId;
-use crate::comms::model::{MessageMeta, Room, RoomScope};
+use crate::comms::model::{Room, RoomScope};
+use crate::comms::protocol::SeqMeta;
 
 // ─── agent_register ───────────────────────────────────────────────────────────────────────
 
@@ -212,6 +213,10 @@ pub struct RoomPostParams {
     /// Id of the message this one replies to, for threading.
     #[serde(default)]
     pub reply_to: Option<String>,
+    /// Glob / path patterns (or repo / workspace tags) describing WHERE this message applies, so
+    /// peers can filter relevance from front-matter without fetching the body. Empty when omitted.
+    #[serde(default)]
+    pub scope: Option<Vec<String>>,
 }
 
 /// Response for `room_post`.
@@ -236,40 +241,49 @@ pub struct RoomHistoryParams {
     pub limit: Option<u32>,
 }
 
-/// Front-matter view of a message. Mirrors [`MessageMeta`] exactly — NO body. Fetch the body
-/// with `message_get`.
+/// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-room `seq`
+/// — NO body. Fetch the body with `message_get`. `seq` lets callers drive `inbox_ack` (the
+/// `to_seq` bulk mode) without an extra round-trip.
 #[derive(Debug, Serialize)]
 pub(super) struct MessageFrontMatter {
-    /// Globally unique message id (pass to `message_get`).
+    /// Globally unique message id (pass to `message_get` or `inbox_ack`).
     pub id: String,
     /// Room the message was posted to.
     pub room: String,
     /// Authoring agent.
     pub from: String,
-    /// Post time, microseconds since the unix epoch.
-    pub ts_micros: i64,
     /// Short human subject line.
     pub subject: String,
+    /// Post time, microseconds since the unix epoch.
+    pub ts_micros: i64,
     /// Free-form tags.
     pub tags: Vec<String>,
+    /// Glob / path patterns describing where the message applies (empty when unscoped).
+    pub scope: Vec<String>,
     /// Id of the message this one replies to, if any.
     pub reply_to: Option<String>,
+    /// Per-room sequence number — the message's position in its room's append-only log. Pass as
+    /// `inbox_ack`'s `to_seq` to bulk-ack everything up to and including this message.
+    pub seq: u64,
     /// Length of the separately-stored body in bytes.
     pub body_len: u32,
     /// Hex SHA-256 of the body for integrity.
     pub body_sha: String,
 }
 
-impl From<&MessageMeta> for MessageFrontMatter {
-    fn from(meta: &MessageMeta) -> Self {
+impl From<&SeqMeta> for MessageFrontMatter {
+    fn from(sm: &SeqMeta) -> Self {
+        let meta = &sm.meta;
         Self {
             id: meta.id.clone(),
             room: meta.room.as_str().to_string(),
             from: meta.from.as_str().to_string(),
-            ts_micros: meta.ts_micros,
             subject: meta.subject.clone(),
+            ts_micros: meta.ts_micros,
             tags: meta.tags.clone(),
+            scope: meta.scope.clone(),
             reply_to: meta.reply_to.clone(),
+            seq: sm.seq,
             body_len: meta.body_len,
             body_sha: meta.body_sha.clone(),
         }
@@ -337,4 +351,47 @@ pub(super) struct InboxReadResponse {
     /// Opaque cursor for the next page; absent means no more results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+}
+
+// ─── inbox_ack ───────────────────────────────────────────────────────────────────────────────
+
+/// Params for `inbox_ack`: advance this agent's per-room read cursors past acked messages.
+///
+/// Two modes, combinable:
+/// * `message_ids` — resolve each id to its `(room, seq)`, then advance each room's cursor to the
+///   max acked seq in that room.
+/// * `room` + `to_seq` — advance that one room's cursor straight to `to_seq` ("ack everything up
+///   to here" / stale-room cleanup).
+///
+/// At least one mode must be supplied; an empty request is rejected.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct InboxAckParams {
+    /// Message ids to ack (mode a). Empty when only the bulk mode is used.
+    #[serde(default)]
+    pub message_ids: Vec<String>,
+    /// Target room for the bulk `to_seq` mode (mode b).
+    #[serde(default)]
+    pub room: Option<RoomId>,
+    /// Advance `room`'s cursor straight to this seq (mode b). Requires `room`.
+    #[serde(default)]
+    pub to_seq: Option<u64>,
+}
+
+/// One `(room, new_seq)` cursor advance recorded by `inbox_ack`.
+#[derive(Debug, Serialize)]
+pub(super) struct CursorAdvance {
+    /// The room whose per-agent read cursor advanced.
+    pub room: String,
+    /// The cursor's new seq after the advance.
+    pub seq: u64,
+}
+
+/// Response for `inbox_ack`.
+#[derive(Debug, Serialize)]
+pub(super) struct InboxAckResponse {
+    /// Number of message ids that resolved and were acked (the bulk `to_seq` mode does not
+    /// contribute to this count).
+    pub acked: usize,
+    /// The `(room, new_seq)` cursor advances this call produced.
+    pub cursors_advanced: Vec<CursorAdvance>,
 }
