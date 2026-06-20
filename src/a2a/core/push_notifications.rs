@@ -206,26 +206,6 @@ impl PushNotificationStore {
         }
         removed
     }
-
-    /// Replace the entire store with `configs` (used by snapshot restore).
-    ///
-    /// # Security
-    ///
-    /// This bypasses [`validate_webhook_url`] and the per-task cap: it trusts
-    /// the supplied configs as already-vetted snapshot state. It is NOT reachable
-    /// from any remote RPC today. If a snapshot-restore RPC is ever exposed, the
-    /// restored URLs MUST be re-validated through the SSRF guard first.
-    pub fn restore(&mut self, configs: Vec<PushNotificationConfig>) {
-        self.configs.clear();
-        for cfg in configs {
-            self.configs.entry(cfg.task_id).or_default().push(cfg);
-        }
-    }
-
-    /// Flatten every stored configuration for snapshot persistence.
-    pub fn all(&self) -> Vec<PushNotificationConfig> {
-        self.configs.values().flatten().cloned().collect()
-    }
 }
 
 // ── URL validation ──────────────────────────────────────────────────────────
@@ -395,31 +375,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn restore_replaces_existing_state() {
-        let mut store = PushNotificationStore::new();
-        store
-            .create(
-                task_id(),
-                "https://a.example/".to_owned(),
-                String::new(),
-                None,
-            )
-            .unwrap();
-
-        let tid = task_id();
-        let cfg = PushNotificationConfig {
-            id: PushNotificationId::new(),
-            task_id: tid,
-            url: "https://restored.example/".to_owned(),
-            token: String::new(),
-            authentication: None,
-        };
-        store.restore(vec![cfg.clone()]);
-
-        let listed = store.list(&tid);
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0], cfg);
-        assert_eq!(store.all().len(), 1, "previous state must be cleared");
-    }
 }

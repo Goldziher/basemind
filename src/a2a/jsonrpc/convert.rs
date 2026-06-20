@@ -74,26 +74,6 @@ pub(crate) fn core_state_to_dto(state: TaskState) -> TaskStateDto {
     }
 }
 
-/// Convert a wire [`TaskStateDto`] back to a core [`TaskState`].
-///
-/// `Unknown` has no core analogue; it maps to [`TaskState::Submitted`] as the
-/// most conservative non-terminal default.
-// B4.5: the inbound direction is exercised by the A2A client (parsing task
-// states off remote agents); kept as the complete bidirectional converter.
-#[allow(dead_code)]
-pub(crate) fn dto_state_to_core(state: TaskStateDto) -> TaskState {
-    match state {
-        TaskStateDto::Submitted | TaskStateDto::Unknown => TaskState::Submitted,
-        TaskStateDto::Working => TaskState::Working,
-        TaskStateDto::Completed => TaskState::Completed,
-        TaskStateDto::Failed => TaskState::Failed,
-        TaskStateDto::Canceled => TaskState::Canceled,
-        TaskStateDto::InputRequired => TaskState::InputRequired,
-        TaskStateDto::AuthRequired => TaskState::AuthRequired,
-        TaskStateDto::Rejected => TaskState::Rejected,
-    }
-}
-
 // ── Role ──────────────────────────────────────────────────────────────────
 
 fn core_role_to_dto(role: MessageRole) -> RoleDto {
@@ -387,7 +367,6 @@ mod tests {
         let dto = core_state_to_dto(TaskState::InputRequired);
         let value = serde_json::to_value(dto).expect("serialize must succeed");
         assert_eq!(value, serde_json::json!("input-required"));
-        assert_eq!(dto_state_to_core(dto), TaskState::InputRequired);
     }
 
     #[test]
@@ -395,7 +374,6 @@ mod tests {
         let dto = core_state_to_dto(TaskState::AuthRequired);
         let value = serde_json::to_value(dto).expect("serialize must succeed");
         assert_eq!(value, serde_json::json!("auth-required"));
-        assert_eq!(dto_state_to_core(dto), TaskState::AuthRequired);
     }
 
     #[test]

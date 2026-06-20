@@ -1,19 +1,15 @@
-//! Shared identity and agent metadata types for the A2A core.
+//! Shared identity types for the A2A core.
 //!
 //! This module holds the A2A-internal identity newtypes ([`AgentId`],
-//! [`MessageId`]) and the agent metadata ([`AgentInfo`], [`AgentStatus`]) that
-//! the task system depends on. These are distinct from basemind's
-//! `comms::ids::AgentId` — they are the A2A protocol's own identity surface and
-//! must not be merged with the comms identity.
+//! [`MessageId`]) that the task system depends on. These are distinct from
+//! basemind's `comms::ids::AgentId` — they are the A2A protocol's own identity
+//! surface and must not be merged with the comms identity.
 //!
 //! Chat / tool / conversation types from the upstream source are intentionally
 //! omitted here; basemind models those concerns elsewhere.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-use crate::a2a::core::task_types::AgentCapabilities;
 
 /// Unique identifier for a registered agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,41 +73,6 @@ impl std::str::FromStr for MessageId {
     }
 }
 
-/// Lifecycle state of a registered agent.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    /// The agent is connected and accepting work.
-    Connected,
-    /// The agent is not currently reachable.
-    Disconnected,
-}
-
-/// Metadata for a registered agent.
-///
-/// Does not include runtime state such as active tasks; those live in the
-/// registry and are looked up by [`AgentId`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AgentInfo {
-    /// Stable identity for this agent.
-    pub id: AgentId,
-    /// Human-readable agent name (e.g. `"claude-code-1"`).
-    pub name: String,
-    /// Wall-clock time at which the agent first registered.
-    pub registered_at: DateTime<Utc>,
-    /// Wall-clock time of the most recent heartbeat (or registration, when
-    /// no heartbeat has yet been observed). Used by the connection watchdog
-    /// to detect dead agents and flip them to [`AgentStatus::Disconnected`]
-    /// after `agents.timeout_secs` of silence.
-    #[serde(default = "Utc::now")]
-    pub last_heartbeat_at: DateTime<Utc>,
-    /// Current connectivity status.
-    pub status: AgentStatus,
-    /// Optional capabilities advertised by this agent (ADR-015).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capabilities: Option<AgentCapabilities>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,41 +101,5 @@ mod tests {
             s.chars().all(|c| c.is_ascii_hexdigit() || c == '-'),
             "display must only contain hex digits and hyphens: {s}"
         );
-    }
-
-    #[test]
-    fn agent_info_round_trips_through_json() {
-        let original = AgentInfo {
-            id: AgentId::new(),
-            name: "claude-code-1".to_owned(),
-            registered_at: Utc::now(),
-            last_heartbeat_at: Utc::now(),
-            status: AgentStatus::Connected,
-            capabilities: None,
-        };
-        let json = serde_json::to_string(&original).expect("serialization must succeed");
-        let recovered: AgentInfo =
-            serde_json::from_str(&json).expect("deserialization must succeed");
-
-        assert_eq!(original.id, recovered.id, "id must survive round-trip");
-        assert_eq!(
-            original.name, recovered.name,
-            "name must survive round-trip"
-        );
-        assert_eq!(
-            original.status, recovered.status,
-            "status must survive round-trip"
-        );
-    }
-
-    #[test]
-    fn agent_status_serializes_as_snake_case() {
-        let connected =
-            serde_json::to_string(&AgentStatus::Connected).expect("serialization must succeed");
-        assert_eq!(connected, r#""connected""#);
-
-        let disconnected =
-            serde_json::to_string(&AgentStatus::Disconnected).expect("serialization must succeed");
-        assert_eq!(disconnected, r#""disconnected""#);
     }
 }

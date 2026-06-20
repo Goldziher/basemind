@@ -160,12 +160,6 @@ impl TaskState {
         )
     }
 
-    /// Returns `true` if the state represents an interruption that requires
-    /// external input before execution can resume.
-    pub fn is_interrupted(self) -> bool {
-        matches!(self, TaskState::InputRequired | TaskState::AuthRequired)
-    }
-
     /// Returns `true` if transitioning from `self` to `target` is a valid
     /// state-machine step.
     pub fn can_transition_to(self, target: TaskState) -> bool {
@@ -389,27 +383,6 @@ pub struct TaskFilter {
 }
 
 // ---------------------------------------------------------------------------
-// AgentCapabilities (ADR-015)
-// ---------------------------------------------------------------------------
-
-/// Advertised capabilities of a registered agent.
-///
-/// Used during task routing to determine which agents can handle a given
-/// request.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentCapabilities {
-    /// MIME types or mode identifiers the agent can accept as input
-    /// (e.g. `["text/plain", "application/json"]`).
-    pub supported_input_modes: Vec<String>,
-    /// MIME types or mode identifiers the agent can produce as output.
-    pub supported_output_modes: Vec<String>,
-    /// Whether the agent supports streaming incremental output.
-    pub streaming: bool,
-    /// Skill tags this agent can handle (e.g. `["code.review", "code.fix"]`).
-    pub skill_tags: Vec<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -462,43 +435,6 @@ mod tests {
         assert!(
             !TaskState::AuthRequired.is_terminal(),
             "AuthRequired must not be terminal"
-        );
-    }
-
-    #[test]
-    fn task_state_is_interrupted() {
-        assert!(
-            TaskState::InputRequired.is_interrupted(),
-            "InputRequired must be interrupted"
-        );
-        assert!(
-            TaskState::AuthRequired.is_interrupted(),
-            "AuthRequired must be interrupted"
-        );
-
-        assert!(
-            !TaskState::Submitted.is_interrupted(),
-            "Submitted must not be interrupted"
-        );
-        assert!(
-            !TaskState::Working.is_interrupted(),
-            "Working must not be interrupted"
-        );
-        assert!(
-            !TaskState::Completed.is_interrupted(),
-            "Completed must not be interrupted"
-        );
-        assert!(
-            !TaskState::Failed.is_interrupted(),
-            "Failed must not be interrupted"
-        );
-        assert!(
-            !TaskState::Canceled.is_interrupted(),
-            "Canceled must not be interrupted"
-        );
-        assert!(
-            !TaskState::Rejected.is_interrupted(),
-            "Rejected must not be interrupted"
         );
     }
 

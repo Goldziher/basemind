@@ -11,7 +11,6 @@ use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::a2a::core::bus::Event;
 use crate::a2a::core::push_notifications::{
     PushNotificationAuth, PushNotificationConfig, PushNotificationId,
 };
@@ -105,19 +104,9 @@ impl BasemindA2aService {
                     },
                 };
 
-                // Artifact lookups read the post-mutation task straight off the
-                // event (it embeds the appended artifact); no facade re-fetch.
-                let event_task = match &event {
-                    Event::TaskArtifactAdded { task, .. } => Some(task.as_ref()),
-                    _ => None,
-                };
-
-                if let Some(envelope) = convert::task_event_to_stream_response(
-                    &event,
-                    &task_id,
-                    &context_id,
-                    event_task,
-                ) && tx.send(Ok(envelope)).await.is_err()
+                if let Some(envelope) =
+                    convert::task_event_to_stream_response(&event, &task_id, &context_id)
+                    && tx.send(Ok(envelope)).await.is_err()
                 {
                     break;
                 }
@@ -321,7 +310,6 @@ impl proto::a2a_service_server::A2aService for BasemindA2aService {
                 FacadeError::Task(
                     TaskError::TaskAlreadyTerminal { .. } | TaskError::TaskInvalidTransition { .. },
                 ) => Status::failed_precondition(e.to_string()),
-                _ => Status::internal(e.to_string()),
             })?;
 
         Ok(Response::new(convert::core_task_to_proto(&task)))

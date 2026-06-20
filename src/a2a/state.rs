@@ -12,8 +12,6 @@ use tokio::sync::RwLock;
 
 use crate::a2a::core::bus::MessageBus;
 use crate::a2a::core::push_notifications::PushNotificationStore;
-use crate::a2a::core::registry::AgentRegistry;
-use crate::a2a::core::router::DefaultTaskRouter;
 use crate::a2a::core::task_facade::TaskFacade;
 use crate::a2a::core::task_manager::TaskManager;
 
@@ -87,12 +85,7 @@ impl A2aState {
     pub fn new(card: AgentCardInfo) -> Self {
         let bus = Arc::new(MessageBus::new(BUS_CAPACITY));
         let task_manager = Arc::new(RwLock::new(TaskManager::new(Arc::clone(&bus))));
-        let registry = Arc::new(RwLock::new(AgentRegistry::new(Arc::clone(&bus))));
-        let task_facade = Arc::new(TaskFacade::new(
-            task_manager,
-            registry,
-            Box::new(DefaultTaskRouter),
-        ));
+        let task_facade = Arc::new(TaskFacade::new(task_manager));
         let push_notifications = Arc::new(RwLock::new(PushNotificationStore::new()));
 
         Self {

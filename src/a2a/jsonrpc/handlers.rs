@@ -431,9 +431,6 @@ fn task_stream_response(
                 Event::TaskStatusChanged {
                     task_id: tid, task, ..
                 } if *tid == task_id => task.as_ref(),
-                Event::TaskArtifactAdded {
-                    task_id: tid, task, ..
-                } if *tid == task_id => task.as_ref(),
                 _ => continue,
             };
 
