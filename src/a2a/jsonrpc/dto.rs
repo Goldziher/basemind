@@ -229,6 +229,14 @@ pub(crate) struct AgentCardDto {
     /// Advertised skills (empty for now).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) skills: Vec<serde_json::Value>,
+    /// Named security schemes (e.g. a `bearer` HTTP scheme). Absent when the
+    /// server runs without auth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) security_schemes: Option<serde_json::Value>,
+    /// Security requirements: a list of `{ scheme-name: [scopes] }` maps. Empty
+    /// when the server runs without auth.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) security: Vec<serde_json::Value>,
     /// Optional provider descriptor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) provider: Option<AgentProviderDto>,

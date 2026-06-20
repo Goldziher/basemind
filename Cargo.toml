@@ -135,6 +135,7 @@ a2a = [
     "dep:axum",
     "dep:tower",
     "dep:tower-http",
+    "dep:subtle",
 ]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
@@ -202,6 +203,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
 streaming-iterator = "0.1"
+# Audited constant-time byte comparison for the A2A bearer-token check.
+subtle = { version = "2", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time", "net", "fs", "process"] }
 # `ReceiverStream` adapter for the A2A gRPC streaming RPCs (a2a feature only).

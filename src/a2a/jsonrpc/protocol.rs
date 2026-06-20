@@ -37,13 +37,21 @@ pub(crate) const INTERNAL_ERROR: i32 = -32603;
 pub(crate) const TASK_NOT_FOUND: i32 = -32001;
 /// The task is in a state that does not permit cancellation.
 pub(crate) const TASK_NOT_CANCELABLE: i32 = -32002;
+// B4.6: the four A2A-specific codes below are the complete spec error surface;
+// they are wired to methods as conformance lands (push-notification rejection,
+// content-type negotiation, client-side agent-response validation). Kept as the
+// canonical table until then.
 /// The agent does not support push notifications.
+#[allow(dead_code)]
 pub(crate) const PUSH_NOTIFICATION_NOT_SUPPORTED: i32 = -32003;
 /// The requested operation is not supported by the agent.
+#[allow(dead_code)]
 pub(crate) const UNSUPPORTED_OPERATION: i32 = -32004;
 /// The requested content type is not supported.
+#[allow(dead_code)]
 pub(crate) const CONTENT_TYPE_NOT_SUPPORTED: i32 = -32005;
 /// The agent returned a response that does not conform to the spec.
+#[allow(dead_code)]
 pub(crate) const INVALID_AGENT_RESPONSE: i32 = -32006;
 
 // ── Envelope types ────────────────────────────────────────────────────────────
@@ -130,6 +138,9 @@ impl JsonRpcError {
     }
 
     /// Build an error with `code`, `message`, and structured `data`.
+    // B4.6: used once conformance attaches structured detail (e.g. the offending
+    // field) to A2A error responses; the constructor is part of the complete API.
+    #[allow(dead_code)]
     pub(crate) fn with_data(
         code: i32,
         message: impl Into<String>,
@@ -158,6 +169,12 @@ pub(crate) fn invalid_params(reason: impl Into<String>) -> JsonRpcError {
 /// `PARSE_ERROR` for malformed JSON in the request body.
 pub(crate) fn parse_error() -> JsonRpcError {
     JsonRpcError::new(PARSE_ERROR, "parse error")
+}
+
+/// `INVALID_REQUEST` for a well-formed JSON body that is not a valid JSON-RPC
+/// 2.0 request (e.g. a missing or wrong `jsonrpc` version marker).
+pub(crate) fn invalid_request(reason: impl Into<String>) -> JsonRpcError {
+    JsonRpcError::new(INVALID_REQUEST, reason)
 }
 
 /// `INTERNAL_ERROR` carrying a human-readable `reason`.

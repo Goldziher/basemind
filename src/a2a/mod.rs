@@ -5,6 +5,7 @@
 //! the [`core`] task domain through the shared [`state::A2aState`]. The binary
 //! reaches it through the public [`run_server`] entry point (`basemind a2a serve`).
 
+pub(crate) mod auth;
 pub(crate) mod core;
 pub(crate) mod grpc;
 pub(crate) mod jsonrpc;
@@ -30,6 +31,12 @@ pub struct A2aServeOptions {
     pub name: Option<String>,
     /// Agent description advertised in the agent card.
     pub description: Option<String>,
+    /// Explicit bearer token required on every request except the public agent
+    /// card. Takes precedence over [`token_file`](Self::token_file).
+    pub token: Option<String>,
+    /// Path to a bearer-token file, auto-created with `0600` permissions when
+    /// missing. Ignored when [`token`](Self::token) is set.
+    pub token_file: Option<std::path::PathBuf>,
 }
 
 /// Build the A2A server state and serve the combined gRPC + JSON-RPC + SSE app on
@@ -56,7 +63,41 @@ pub fn run_server(opts: A2aServeOptions) -> std::io::Result<()> {
     card.http_url.clone_from(&url);
     card.grpc_url = url;
 
-    let app_state = state::A2aState::new(card);
+    // Resolve the bearer token: an explicit `--token` wins; otherwise a
+    // `--token-file` is read (and auto-generated 0600 when missing); otherwise
+    // auth is disabled.
+    let auth_token: Option<std::sync::Arc<str>> = if let Some(token) = opts.token.as_deref() {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "--token must not be empty",
+            ));
+        }
+        Some(std::sync::Arc::from(token))
+    } else if let Some(path) = opts.token_file.as_deref() {
+        let token = auth::load_or_create_token(path)?;
+        tracing::info!(path = %path.display(), "A2A bearer auth enabled (token file)");
+        Some(std::sync::Arc::from(token.as_str()))
+    } else {
+        None
+    };
+
+    // Bind-safety: never expose a non-loopback interface without auth.
+    if auth_token.is_none() && !opts.addr.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to bind non-loopback address {} without auth; pass --token or --token-file",
+                opts.addr
+            ),
+        ));
+    }
+    if auth_token.is_some() {
+        tracing::info!("A2A bearer auth required on all routes except the public agent card");
+    }
+
+    let app_state = state::A2aState::new(card).with_auth_token(auth_token);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

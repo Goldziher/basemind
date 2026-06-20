@@ -123,8 +123,8 @@ enum A2aCmd {
 #[cfg(feature = "a2a")]
 #[derive(clap::Args, Debug)]
 struct A2aServeArgs {
-    /// Address to bind, `host:port`. Defaults to loopback — the server has no auth
-    /// yet, so only bind a public interface (`0.0.0.0:…`) once auth + TLS are wired.
+    /// Address to bind, `host:port`. Defaults to loopback. Binding a public
+    /// interface (`0.0.0.0:…`) is refused unless `--token`/`--token-file` is set.
     #[arg(long, default_value = "127.0.0.1:8723")]
     addr: std::net::SocketAddr,
     /// Agent name advertised in the agent card (defaults to "basemind").
@@ -133,6 +133,16 @@ struct A2aServeArgs {
     /// Agent description advertised in the agent card.
     #[arg(long)]
     description: Option<String>,
+    /// Bearer token required on every request except the public agent card.
+    /// On a CLI this is visible in the process list (`ps`, `/proc/<pid>/cmdline`);
+    /// prefer `--token-file`, or the `BASEMIND_A2A_TOKEN` env var, in shared
+    /// environments. Takes precedence over `--token-file`.
+    #[arg(long, env = "BASEMIND_A2A_TOKEN")]
+    token: Option<String>,
+    /// Path to a bearer-token file (auto-created with `0600` permissions when
+    /// missing). Enables bearer auth.
+    #[arg(long)]
+    token_file: Option<std::path::PathBuf>,
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -333,6 +343,8 @@ fn cmd_a2a(action: A2aCmd) -> Result<()> {
                 addr: args.addr,
                 name: args.name,
                 description: args.description,
+                token: args.token,
+                token_file: args.token_file,
             };
             basemind::a2a::run_server(options).context("run A2A server")
         }

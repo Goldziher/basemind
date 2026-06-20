@@ -78,6 +78,9 @@ pub(crate) fn core_state_to_dto(state: TaskState) -> TaskStateDto {
 ///
 /// `Unknown` has no core analogue; it maps to [`TaskState::Submitted`] as the
 /// most conservative non-terminal default.
+// B4.5: the inbound direction is exercised by the A2A client (parsing task
+// states off remote agents); kept as the complete bidirectional converter.
+#[allow(dead_code)]
 pub(crate) fn dto_state_to_core(state: TaskStateDto) -> TaskState {
     match state {
         TaskStateDto::Submitted | TaskStateDto::Unknown => TaskState::Submitted,
@@ -262,6 +265,19 @@ pub(crate) fn core_task_to_dto(task: &Task) -> TaskDto {
 
 /// Build the JSON-RPC agent card DTO from the static [`AgentCardInfo`].
 pub(crate) fn core_card_to_dto(card: &AgentCardInfo) -> AgentCardDto {
+    // Advertise a bearer scheme only when the server actually enforces auth, so
+    // the public discovery card never claims protection it doesn't apply.
+    let (security_schemes, security) = if card.requires_auth {
+        (
+            Some(serde_json::json!({
+                "bearer": { "type": "http", "scheme": "bearer" }
+            })),
+            vec![serde_json::json!({ "bearer": [] })],
+        )
+    } else {
+        (None, Vec::new())
+    };
+
     AgentCardDto {
         name: card.name.clone(),
         description: card.description.clone(),
@@ -286,6 +302,8 @@ pub(crate) fn core_card_to_dto(card: &AgentCardInfo) -> AgentCardDto {
         default_input_modes: vec!["text/plain".to_owned()],
         default_output_modes: vec!["text/plain".to_owned()],
         skills: vec![],
+        security_schemes,
+        security,
         provider: Some(AgentProviderDto {
             organization: "basemind".to_owned(),
             url: String::new(),
@@ -519,22 +537,46 @@ mod tests {
         );
     }
 
-    #[test]
-    fn card_uses_jsonrpc_preferred_transport() {
-        let card = AgentCardInfo {
+    fn sample_card() -> AgentCardInfo {
+        AgentCardInfo {
             name: "basemind".to_owned(),
             description: "d".to_owned(),
             version: "1.2.3".to_owned(),
             grpc_url: "http://grpc".to_owned(),
             http_url: "http://http".to_owned(),
-        };
-        let dto = core_card_to_dto(&card);
+            requires_auth: false,
+        }
+    }
+
+    #[test]
+    fn card_uses_jsonrpc_preferred_transport() {
+        let dto = core_card_to_dto(&sample_card());
         assert_eq!(dto.protocol_version, "0.3.0");
         assert_eq!(dto.preferred_transport, "JSONRPC");
         assert_eq!(dto.url, "http://http");
         assert_eq!(dto.additional_interfaces.len(), 2);
         assert!(dto.capabilities.streaming);
         assert!(dto.capabilities.push_notifications);
+    }
+
+    #[test]
+    fn card_omits_security_when_auth_disabled() {
+        let dto = core_card_to_dto(&sample_card());
+        assert!(dto.security_schemes.is_none());
+        assert!(dto.security.is_empty());
+    }
+
+    #[test]
+    fn card_advertises_bearer_when_auth_enabled() {
+        let mut card = sample_card();
+        card.requires_auth = true;
+        let dto = core_card_to_dto(&card);
+        let schemes = dto
+            .security_schemes
+            .expect("auth card must advertise schemes");
+        assert_eq!(schemes["bearer"]["type"], serde_json::json!("http"));
+        assert_eq!(schemes["bearer"]["scheme"], serde_json::json!("bearer"));
+        assert_eq!(dto.security, vec![serde_json::json!({ "bearer": [] })]);
     }
 
     #[test]

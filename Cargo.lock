@@ -796,6 +796,7 @@ dependencies = [
  "serde_json",
  "serde_toon_format",
  "streaming-iterator",
+ "subtle",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
