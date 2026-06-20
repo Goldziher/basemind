@@ -6,9 +6,7 @@
   "mcpServers": {
     "basemind": {
       "command": "${extensionPath}/scripts/mcp-launch.sh",
-      "args": [
-        "serve"
-      ]
+      "args": ["serve"]
     }
   }
 }

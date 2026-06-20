@@ -10,13 +10,7 @@
   "homepage": "https://github.com/Goldziher/basemind",
   "repository": "https://github.com/Goldziher/basemind",
   "license": "MIT",
-  "keywords": [
-    "mcp",
-    "agent-context",
-    "rag",
-    "code-map",
-    "tree-sitter"
-  ],
+  "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "skills": "./skills/",
   "interface": {
     "displayName": "basemind",
@@ -24,10 +18,7 @@
     "longDescription": "basemind indexes a repository with tree-sitter and exposes a structured code map — outlines, references, callers, history, blame, diff — over MCP. Designed for AI agents to navigate unfamiliar code without reading every file.",
     "developerName": "Na'aman Hirschfeld",
     "category": "Developer Tools",
-    "capabilities": [
-      "Interactive",
-      "Read"
-    ],
+    "capabilities": ["Interactive", "Read"],
     "defaultPrompt": [
       "Outline this file.",
       "What calls `<symbol>` in this repo?",

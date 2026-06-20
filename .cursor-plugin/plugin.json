@@ -10,20 +10,12 @@
   "homepage": "https://github.com/Goldziher/basemind",
   "repository": "https://github.com/Goldziher/basemind",
   "license": "MIT",
-  "keywords": [
-    "mcp",
-    "agent-context",
-    "rag",
-    "code-map",
-    "tree-sitter"
-  ],
+  "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "skills": "./skills/",
   "mcpServers": {
     "basemind": {
       "command": "./scripts/mcp-launch.sh",
-      "args": [
-        "serve"
-      ]
+      "args": ["serve"]
     }
   }
 }

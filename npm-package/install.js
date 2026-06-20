@@ -26,7 +26,9 @@ function getPlatformTriple() {
 
   if (type === "Darwin") {
     if (arch === "x64") {
-      throw new Error("Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries");
+      throw new Error(
+        "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries",
+      );
     }
     return "aarch64-apple-darwin";
   }
