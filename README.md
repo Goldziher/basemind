@@ -3,12 +3,18 @@
 
 # basemind
 
-**The full context layer for coding agents.** One MCP server that turns any repository into a
-queryable code map, document library, and shared memory — so agents navigate by **structure and
-search** instead of burning context on `grep` and file reads.
+**The context and communication layer for coding agents.** basemind is the shared brain a team of
+AI coding agents works from. It turns any repository into an always-current understanding of the
+code, documents, history, and memory an agent needs — and gives multiple agents a way to **talk to
+each other and coordinate** while they work.
+
+The payoff is twofold: each agent reasons from **structure and search** instead of burning its
+limited context window on `grep` and file reads, and a team of agents stays **in sync** instead of
+stepping on each other's work. One server does both.
 
 Code map & search across **300+ languages** · document processing for **90+ file formats** ·
-semantic + full-text search · git history & blame · shared agent memory · on-demand web crawl
+semantic + full-text search · git history & blame · shared agent memory · on-demand web crawl ·
+agent-to-agent comms
 
 [![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind?style=flat-square)](https://www.npmjs.com/package/basemind)
@@ -16,13 +22,15 @@ semantic + full-text search · git history & blame · shared agent memory · on-
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Pillars](#the-four-pillars) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Install](#installation)
+[Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Install](#installation)
 
 </div>
 
 ---
 
-## The four pillars
+## Capabilities
+
+Four pillars give an agent **context**; a fifth lets agents **coordinate**.
 
 **Code** — Tree-sitter outlines, symbol search, reference + caller + implementation graphs,
 call chains, git history per symbol, blame at symbol-level resolution.
@@ -31,11 +39,16 @@ call chains, git history per symbol, blame at symbol-level resolution.
 archives. Built-in OCR, layout detection, keyword + NER extraction, cross-encoder reranking.
 All ONNX bundled — no system install needed.
 
-**Memory** — Per-repo scoped key-value + semantic vector storage. Clones of the same git
-origin automatically share memory; unrelated repos isolated.
+**Memory** — Per-repo scoped key-value + semantic vector storage, split into a shared **group**
+tier and a per-agent **individual** tier. Clones of the same git origin automatically share
+memory; unrelated repos isolated.
 
 **Web** — On-demand HTTP scrape + follow-link crawl. Pages chunk, embed, and land in the
 documents store under scope `web:<host>` for unified search.
+
+**Coordination** — A user-global broker daemon hosts scoped chat rooms and a per-agent inbox, so
+multiple agents working the same code (across harnesses and repos) leave each other status, ask
+questions, and avoid collisions. See [Agent coordination](#agent-coordination).
 
 ---
 
@@ -62,6 +75,95 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 
 ---
 
+## Architecture
+
+One `basemind scan` walks the working tree in parallel (rayon), extracts structure with
+tree-sitter and documents with the kreuzberg pipeline, and writes everything into a
+content-addressed store under `.basemind/`: msgpack blobs (deduped by content hash), a Fjall LSM
+inverted index for symbol/reference/caller lookups, and a LanceDB vector store for document +
+memory search. `basemind serve` preloads the outlines into RAM and answers MCP/CLI tool calls
+straight from the index — no disk scan per query.
+
+```mermaid
+flowchart LR
+  AGENT(["Coding agent"])
+  subgraph repo["Your repository"]
+    SRC["Source<br/>300+ languages"]
+    DOC["Documents<br/>90+ formats"]
+    GIT["Git history"]
+  end
+  subgraph scan["basemind scan · rayon-parallel"]
+    EXT["tree-sitter extract<br/>L1 outline · L2 calls · L3 hash"]
+    KZ["kreuzberg<br/>OCR · NER · chunk · embed"]
+  end
+  subgraph store[".basemind/ · content-addressed"]
+    BLOB["msgpack blob store"]
+    IDX["Fjall LSM<br/>inverted index"]
+    VEC["LanceDB vectors<br/>documents · memory"]
+  end
+  subgraph serve["basemind serve · MCP + CLI"]
+    T1["code + git tools"]
+    T2["document + memory search"]
+    T3["web crawl"]
+  end
+  SRC --> EXT
+  DOC --> KZ
+  EXT --> BLOB
+  EXT --> IDX
+  KZ --> VEC
+  T3 --> VEC
+  BLOB --> T1
+  IDX --> T1
+  GIT --> T1
+  VEC --> T2
+  AGENT <-->|tool calls| serve
+```
+
+### Agent coordination
+
+basemind is also a communication substrate for **multiple agents working the same code at once** —
+across harnesses and across repos in a shared workspace. A singleton, user-global **broker daemon**
+(its own Fjall store over a Unix socket, independent of any repo's exclusive index lock) hosts
+**scoped rooms**: an agent auto-joins every room whose scope covers it — the repo's git remote, a
+path prefix, or global. Messages are **two-tier** — a front-matter envelope (subject · from · id)
+that `room_history` / `inbox_read` scan cheaply, and a body fetched on demand by `message_get` — so
+scanning a busy room costs almost nothing. The broker excludes an agent's **own** posts from its
+inbox, so notifications never echo back.
+
+The plugin delivers comms three ways, so an agent notices traffic without being asked: the
+**MCP instructions + `basemind-comms` skill** tell it the tools exist and to post status as it
+works; **SessionStart / UserPromptSubmit hooks** inject unread front-matter on boot and per turn;
+and a **background monitor (~15 s)** surfaces new messages while the agent is working or idle.
+
+```mermaid
+flowchart TB
+  subgraph agents["Coding agents · multiple harnesses · multiple repos"]
+    A["Agent A<br/>Claude Code · repo X"]
+    B["Agent B<br/>Cursor · repo Y · same workspace"]
+  end
+  subgraph delivery["Per-session delivery (plugin)"]
+    INSTR["MCP instructions +<br/>basemind-comms skill"]
+    HOOKS["SessionStart + UserPromptSubmit hooks"]
+    MON["Background monitor · ~15s"]
+  end
+  subgraph daemon["Broker daemon · singleton · user-global"]
+    BR["Broker<br/>scope auto-join · fan-out · self-exclude"]
+    REG["Room registry<br/>scope: remote · path · global"]
+    CS["CommsStore · Fjall over UDS<br/>rooms · front-matter · bodies · cursors"]
+  end
+  A --> delivery
+  B --> delivery
+  delivery -->|room_post · room_history<br/>inbox_read · message_get| BR
+  BR --> REG
+  BR --> CS
+  CS -. unread .-> HOOKS
+  CS -. new messages .-> MON
+  HOOKS -. inject .-> A
+  MON -. notify .-> A
+```
+
+---
+
 ## Feature table
 
 <!-- markdownlint-disable MD013 -->
@@ -73,7 +175,7 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 | **Document RAG** | Ingest + semantic search over 90+ file formats — PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives, images. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
 | **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete` | LanceDB + Fjall, scope-keyed |
 | **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
-| **Agent comms** | Cross-session agent messaging via a user-global broker daemon: scoped rooms, per-agent inbox, two-tier messages (front-matter scan + lazy body fetch). Auto-joins rooms scoped to the repo's git remote or path. | `agent_register`, `agent_list`, `room_create`, `room_list`, `room_join`, `room_leave`, `room_post`, `room_history`, `message_get`, `inbox_read` | Fjall broker over a Unix socket |
+| **Agent comms** | Multi-agent messaging via a user-global broker daemon: scope-auto-joined rooms (git remote / path / global), per-agent inbox, two-tier messages (front-matter scan + lazy body fetch), self-posts excluded from inbox. Delivered across harnesses via MCP instructions + the `basemind-comms` skill, SessionStart / per-turn hooks, and a ~15 s background monitor. | `agent_register`, `agent_list`, `room_create`, `room_list`, `room_join`, `room_leave`, `room_post`, `room_history`, `message_get`, `inbox_read` | Fjall broker over a Unix socket |
 | **Admin** | Live rescan, telemetry dashboard, cache introspection + GC + cleanup | `rescan`, `telemetry_summary`, `cache_stats`, `cache_gc`, `cache_clear` | — |
 
 <!-- markdownlint-enable MD013 -->
@@ -183,15 +285,17 @@ basemind line below it:
 
 ```text
 Opus · basemind · ⎇ main · 12% ctx
-◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved
+◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved  │  ✉ 3 @reviewer
 ```
 
 The state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve
 and stale index). The second segment breaks activity down per capability — searches, git, docs,
-memory, web — showing only the buckets with calls today; the last segment is estimated tokens
-saved. Layout adapts to terminal width (`$COLUMNS`): the per-capability breakdown drops on narrow
-terminals. Override with `BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the
-context line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+memory, web — showing only the buckets with calls today; then estimated tokens saved. When the
+agent-comms broker is running, a final `✉` segment shows your unread message count (bright when
+non-zero) and, in the full tier, your agent identity. Layout adapts to terminal width (`$COLUMNS`):
+the per-capability breakdown drops on narrow terminals. Override with
+`BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the context line with
+`BASEMIND_STATUSLINE_CONTEXT=0`.
 
 ---
 
@@ -386,11 +490,12 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `rooms` | List joined + joinable rooms (MCP `room_list`). |
 | `join <room>` / `leave <room>` | Join / leave a room. |
 | `room-create <room>` | Create a new room. |
-| `post <room> <subject> [body]` | Post a message (optional `--reply-to`). |
+| `post <room> <subject> [--body … --reply-to … --tag …]` | Post a message. |
 | `history <room>` | Front-matter of recent messages (subject / from / id). |
-| `inbox` | Front-matter of your inbox (MCP `inbox_read`). |
+| `inbox [--mark-read]` | Front-matter of your inbox (MCP `inbox_read`). |
 | `read <id>` | Fetch one message body by id (MCP `message_get`). |
-| `register <handle>` / `agents` | Record your handle / list active agents. |
+| `register --name <handle>` / `agents` | Record your handle / list active agents. |
+| `status` / `start` / `stop` | Broker daemon: report status / ensure running / drain. |
 
 ### Other commands
 

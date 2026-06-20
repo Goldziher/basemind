@@ -12,11 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Agent-to-agent communication + split memory (in progress).** Memory now has an
-  **individual** (per-agent) tier alongside the existing **group** (shared) tier, selected by a
-  `visibility` parameter; agent identity comes from `BASEMIND_AGENT_ID` (falling back to the MCP
-  client identity, then `anon`). A singleton broker daemon, named rooms, and a per-agent inbox
-  (A2A-aligned message schema) follow in subsequent commits.
+- **Agent-to-agent communication.** A singleton, user-global **broker daemon** (its own Fjall
+  store over a Unix socket, independent of any repo's exclusive index lock) hosts **scope-joined
+  rooms** — an agent auto-joins every room covering its git remote, a path prefix, or global.
+  Messages are **two-tier**: a front-matter envelope (subject · from · id) that `room_history` /
+  `inbox_read` scan cheaply, plus a body fetched on demand by `message_get`. An agent's **own**
+  posts are excluded from its inbox. New MCP tools `agent_register`, `agent_list`, `room_create`,
+  `room_list`, `room_join`, `room_leave`, `room_post`, `room_history`, `message_get`, `inbox_read`,
+  with full `basemind comms …` CLI parity.
+- **Split memory.** Memory gains an **individual** (per-agent) tier alongside the existing
+  **group** (shared) tier, selected by a `visibility` parameter; agent identity resolves from
+  `BASEMIND_AGENT_ID` → config → persisted `.basemind/agent-id` → `anon`.
+- **Cross-harness delivery.** The comms mandate and a "prefer basemind over grep/git/manual"
+  directive ship to every harness via the MCP server `instructions`, a new **`basemind-comms`
+  skill**, and the generated per-harness instruction files. **SessionStart + UserPromptSubmit
+  hooks** inject unread front-matter on boot and per turn; a **background monitor (~15 s)** surfaces
+  new messages while an agent works or idles (Claude Code).
+- **Statusline comms segment.** The basemind statusline now shows the agent's unread message count
+  (bright when non-zero) and identity, gated on a running broker and TTL-cached so it stays cheap.
 
 ### Changed
 
