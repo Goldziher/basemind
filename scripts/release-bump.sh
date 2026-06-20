@@ -71,27 +71,27 @@ if [[ -f pip-package/basemind/__init__.py ]]; then
   rm pip-package/basemind/__init__.py.bak
 fi
 
-# Plugin manifests (per-harness) — every shipped manifest carries the same
-# Cargo version, no PyPI normalisation. jq rewrites are atomic + format-stable.
-bump_json_top_version() {
+# Plugin manifests (per-harness) — every shipped manifest carries the same Cargo version (no PyPI
+# normalisation). Bump the version VALUE in place with a surgical sed so existing formatting is
+# preserved: a jq re-serialization pretty-prints and EXPANDS short arrays, which then fights the
+# `oxfmt` prek hook (it collapses them) and produces churn on every release. Each manifest carries
+# exactly one `"version"` key — including marketplace.json, whose only version is `plugins[0].version`
+# — so a single global substitution is unambiguous.
+bump_json_version() {
   local file="$1"
   [[ -f "$file" ]] || return 0
   echo "→ ${file}        → $VERSION"
-  jq --arg v "$VERSION" '.version = $v' "$file" >"${file}.tmp" && mv "${file}.tmp" "$file"
+  sed -i.bak -E "s/(\"version\"[[:space:]]*:[[:space:]]*\")[^\"]+(\")/\1${VERSION}\2/" "$file"
+  rm "${file}.bak"
 }
 
-bump_json_top_version package.json
-bump_json_top_version opencode-plugin/package.json
-bump_json_top_version .claude-plugin/plugin.json
-bump_json_top_version .codex-plugin/plugin.json
-bump_json_top_version .cursor-plugin/plugin.json
-bump_json_top_version gemini-extension.json
-
-if [[ -f .claude-plugin/marketplace.json ]]; then
-  echo "→ .claude-plugin/marketplace.json → $VERSION"
-  jq --arg v "$VERSION" '.plugins[0].version = $v' .claude-plugin/marketplace.json >.claude-plugin/marketplace.json.tmp
-  mv .claude-plugin/marketplace.json.tmp .claude-plugin/marketplace.json
-fi
+bump_json_version package.json
+bump_json_version opencode-plugin/package.json
+bump_json_version .claude-plugin/plugin.json
+bump_json_version .codex-plugin/plugin.json
+bump_json_version .cursor-plugin/plugin.json
+bump_json_version gemini-extension.json
+bump_json_version .claude-plugin/marketplace.json
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then
   echo "→ RELEASE_MINOR      $CURRENT_RELEASE_MINOR → $RELEASE_MINOR (minor bump — schema wipe on next scan)"
