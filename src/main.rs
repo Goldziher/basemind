@@ -103,6 +103,36 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
+    /// Run the A2A protocol server: gRPC + JSON-RPC 2.0 + agent card + SSE on one
+    /// listener (needs `--features a2a`).
+    #[cfg(feature = "a2a")]
+    A2a {
+        #[command(subcommand)]
+        action: A2aCmd,
+    },
+}
+
+/// Subcommands for `basemind a2a`.
+#[cfg(feature = "a2a")]
+#[derive(Subcommand, Debug)]
+enum A2aCmd {
+    /// Bind the combined gRPC + JSON-RPC + SSE listener and serve until Ctrl-C.
+    Serve(A2aServeArgs),
+}
+
+#[cfg(feature = "a2a")]
+#[derive(clap::Args, Debug)]
+struct A2aServeArgs {
+    /// Address to bind, `host:port`. Defaults to loopback — the server has no auth
+    /// yet, so only bind a public interface (`0.0.0.0:…`) once auth + TLS are wired.
+    #[arg(long, default_value = "127.0.0.1:8723")]
+    addr: std::net::SocketAddr,
+    /// Agent name advertised in the agent card (defaults to "basemind").
+    #[arg(long)]
+    name: Option<String>,
+    /// Agent description advertised in the agent card.
+    #[arg(long)]
+    description: Option<String>,
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -288,6 +318,24 @@ fn main() -> Result<()> {
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(feature = "comms")]
         Cmd::Comms { action } => cmd_comms(&root, action, json),
+        #[cfg(feature = "a2a")]
+        Cmd::A2a { action } => cmd_a2a(action),
+    }
+}
+
+/// Dispatch a `basemind a2a` subcommand. `serve` blocks on a dedicated tokio
+/// runtime inside [`basemind::a2a::run_server`] until Ctrl-C.
+#[cfg(feature = "a2a")]
+fn cmd_a2a(action: A2aCmd) -> Result<()> {
+    match action {
+        A2aCmd::Serve(args) => {
+            let options = basemind::a2a::A2aServeOptions {
+                addr: args.addr,
+                name: args.name,
+                description: args.description,
+            };
+            basemind::a2a::run_server(options).context("run A2A server")
+        }
     }
 }
 
