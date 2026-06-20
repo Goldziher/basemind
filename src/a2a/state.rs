@@ -17,9 +17,13 @@ use crate::a2a::core::router::DefaultTaskRouter;
 use crate::a2a::core::task_facade::TaskFacade;
 use crate::a2a::core::task_manager::TaskManager;
 
-/// Capacity of the shared [`MessageBus`] broadcast channel. Sized to buffer a
-/// burst of task-lifecycle events before slow subscribers see lag.
-const BUS_CAPACITY: usize = 256;
+/// Capacity of the shared [`MessageBus`] broadcast channel.
+///
+/// Sized to match the server's `MAX_CONCURRENT_REQUESTS` (1024, defined in
+/// `crate::a2a::server`) so that even under a full-concurrency burst SSE/gRPC
+/// subscribers do not silently lag-drop task-lifecycle events. Kept in
+/// lock-step with that limit — bump both together.
+const BUS_CAPACITY: usize = 1024;
 
 /// Static descriptor used to populate the A2A agent card.
 ///

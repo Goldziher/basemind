@@ -11,8 +11,6 @@
 //!
 //! [`agent_card_handler`] serves the public agent card at its well-known route.
 
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
@@ -241,7 +239,7 @@ async fn push_config_get(
     let store = state.push_notifications.read().await;
     let config = match cfg_id {
         // No id supplied: return the first config registered for the task.
-        None => store.list(&tid).into_iter().next(),
+        None => store.list(&tid).first().cloned(),
         Some(id) => store.get(&tid, &id).cloned(),
     };
 
@@ -264,8 +262,9 @@ async fn push_config_list(
     let p: dto::ListTaskPushConfigParams = parse_params(params)?;
     let tid = parse_task_id(&p.id)?;
 
-    let configs = state.push_notifications.read().await.list(&tid);
-    let dtos: Vec<dto::TaskPushNotificationConfigDto> = configs
+    let store = state.push_notifications.read().await;
+    let dtos: Vec<dto::TaskPushNotificationConfigDto> = store
+        .list(&tid)
         .iter()
         .map(convert::core_push_config_to_dto)
         .collect();
@@ -354,7 +353,6 @@ fn task_stream_response(
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<SseEvent>(SSE_CHANNEL_CAPACITY);
     let mut bus_rx = state.bus.subscribe();
-    let facade = Arc::clone(&state.task_facade);
     let task_id = task.id;
     let context_id = task.context_id;
 
@@ -399,32 +397,47 @@ fn task_stream_response(
                 recv = bus_rx.recv() => match recv {
                     Ok(event) => event,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        // The subscriber fell behind and the broadcast buffer
+                        // overwrote events it never saw. Don't silently swallow
+                        // the gap: surface it so the client knows the snapshot
+                        // sequence is no longer contiguous and can resubscribe.
                         tracing::warn!(
                             task_id = %task_id,
                             skipped = n,
-                            "SSE subscriber lagged; events were dropped"
+                            "SSE subscriber lagged; events were dropped — client should resubscribe"
                         );
+                        if tx
+                            .send(
+                                SseEvent::default()
+                                    .event("lagged")
+                                    .data(n.to_string()),
+                            )
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 },
             };
 
-            // Only react to lifecycle events for this task; re-fetch the full
-            // task and emit a fresh snapshot.
-            let relevant = matches!(
-                &event,
-                Event::TaskStatusChanged { task_id: tid, .. } if *tid == task_id
-            ) || matches!(
-                &event,
-                Event::TaskArtifactAdded { task_id: tid, .. } if *tid == task_id
-            );
-            if !relevant {
-                continue;
-            }
+            // Only react to lifecycle events for this task. The bus event now
+            // carries the post-mutation `Arc<Task>` snapshot directly, so emit
+            // it without re-fetching under lock or re-serializing per
+            // subscriber.
+            let snapshot = match &event {
+                Event::TaskStatusChanged {
+                    task_id: tid, task, ..
+                } if *tid == task_id => task.as_ref(),
+                Event::TaskArtifactAdded {
+                    task_id: tid, task, ..
+                } if *tid == task_id => task.as_ref(),
+                _ => continue,
+            };
 
-            if let Ok(refreshed) = facade.get_task(&task_id).await
-                && let Some(sse) = snapshot_event(&refreshed, &rpc_id)
+            if let Some(sse) = snapshot_event(snapshot, &rpc_id)
                 && tx.send(sse).await.is_err()
             {
                 break;

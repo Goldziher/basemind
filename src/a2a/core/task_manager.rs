@@ -71,17 +71,24 @@ pub enum TaskError {
 #[allow(clippy::enum_variant_names)]
 pub enum TaskEvent {
     /// A new task was created.
-    TaskCreated(Box<Task>),
+    ///
+    /// Carries an [`Arc<Task>`] shared with the mirrored [`Event::TaskCreated`]
+    /// so fan-out across both channels is a refcount bump, not a deep clone.
+    TaskCreated(Arc<Task>),
     /// A task's state changed.
     TaskStatusChanged {
         task_id: TaskId,
         old_state: TaskState,
         new_state: TaskState,
+        /// Post-mutation task snapshot, shared via [`Arc`].
+        task: Arc<Task>,
     },
     /// An artifact was appended to a task.
     TaskArtifactAdded {
         task_id: TaskId,
         artifact_id: ArtifactId,
+        /// Post-mutation task snapshot, shared via [`Arc`].
+        task: Arc<Task>,
     },
 }
 
@@ -170,10 +177,15 @@ impl TaskManager {
         };
 
         self.context_index.entry(context_id).or_default().push(id);
-        self.tasks.insert(id, task.clone());
+        // Snapshot once into an `Arc`. The map entry and the caller return each
+        // need an owned `Task` (two unavoidable clones), but the event payload is
+        // now an `Arc::clone` (refcount bump) instead of a deep `Task` clone per
+        // bus subscriber — that fan-out clone is the cost this removes.
+        let snapshot = Arc::new(task);
+        self.tasks.insert(id, Task::clone(&snapshot));
 
-        self.publish(TaskEvent::TaskCreated(Box::new(task.clone())));
-        Ok(task)
+        self.publish(TaskEvent::TaskCreated(Arc::clone(&snapshot)));
+        Ok(Task::clone(&snapshot))
     }
 
     /// Look up a task by its [`TaskId`].
@@ -271,14 +283,17 @@ impl TaskManager {
             task.history.push(msg);
         }
 
-        let task = task.clone();
+        // Snapshot once into an `Arc`; reuse it (refcount bump) for the event
+        // and clone the inner once for the owned return value.
+        let snapshot = Arc::new(task.clone());
         self.publish(TaskEvent::TaskStatusChanged {
             task_id: *task_id,
             old_state,
             new_state,
+            task: Arc::clone(&snapshot),
         });
 
-        Ok(task)
+        Ok(Task::clone(&snapshot))
     }
 
     /// Append an artifact to a task.
@@ -309,13 +324,16 @@ impl TaskManager {
 
         task.artifacts.push(artifact);
 
-        let task = task.clone();
+        // Snapshot once into an `Arc`; reuse it (refcount bump) for the event
+        // and clone the inner once for the owned return value.
+        let snapshot = Arc::new(task.clone());
         self.publish(TaskEvent::TaskArtifactAdded {
             task_id: *task_id,
             artifact_id,
+            task: Arc::clone(&snapshot),
         });
 
-        Ok(task)
+        Ok(Task::clone(&snapshot))
     }
 
     /// Cancel a task by transitioning it to [`TaskState::Canceled`].
@@ -364,29 +382,32 @@ impl TaskManager {
     /// Publish a task event on the task-scoped channel and mirror it to the
     /// global bus so SSE/WebSocket subscribers see task events too.
     fn publish(&self, event: TaskEvent) {
-        // Mirror to global bus.
+        // Mirror to global bus. The task payloads are shared via `Arc`, so the
+        // mirror is a refcount bump rather than a deep `Task` clone.
         let bus_event = match &event {
-            TaskEvent::TaskCreated(task) => Some(Event::TaskCreated(task.clone())),
+            TaskEvent::TaskCreated(task) => Event::TaskCreated(Arc::clone(task)),
             TaskEvent::TaskStatusChanged {
                 task_id,
                 old_state,
                 new_state,
-            } => Some(Event::TaskStatusChanged {
+                task,
+            } => Event::TaskStatusChanged {
                 task_id: *task_id,
                 old_state: *old_state,
                 new_state: *new_state,
-            }),
+                task: Arc::clone(task),
+            },
             TaskEvent::TaskArtifactAdded {
                 task_id,
                 artifact_id,
-            } => Some(Event::TaskArtifactAdded {
+                task,
+            } => Event::TaskArtifactAdded {
                 task_id: *task_id,
                 artifact_id: *artifact_id,
-            }),
+                task: Arc::clone(task),
+            },
         };
-        if let Some(evt) = bus_event {
-            self.bus.publish(evt);
-        }
+        self.bus.publish(bus_event);
         // Task-scoped channel. SendError on a tokio broadcast means no
         // receivers — log at TRACE to avoid noise during startup.
         if let Err(tokio::sync::broadcast::error::SendError(dropped)) = self.event_tx.send(event) {

@@ -159,9 +159,12 @@ impl PushNotificationStore {
         self.configs.get(task_id)?.iter().find(|c| &c.id == id)
     }
 
-    /// Return every configuration registered against `task_id`.
-    pub fn list(&self, task_id: &TaskId) -> Vec<PushNotificationConfig> {
-        self.configs.get(task_id).cloned().unwrap_or_default()
+    /// Return every configuration registered against `task_id` as a borrowed
+    /// slice, avoiding a clone of the whole `Vec` for read-only callers.
+    ///
+    /// An unknown `task_id` yields an empty slice.
+    pub fn list(&self, task_id: &TaskId) -> &[PushNotificationConfig] {
+        self.configs.get(task_id).map_or(&[], Vec::as_slice)
     }
 
     /// Delete the configuration `(task_id, id)`. Returns `true` when a

@@ -9,6 +9,8 @@
 //! types (see [`crate::a2a::core::types`]) and models those concerns
 //! elsewhere. The agent-lifecycle and task variants are preserved verbatim.
 
+use std::sync::Arc;
+
 use serde::Serialize;
 use tokio::sync::broadcast;
 
@@ -30,17 +32,30 @@ pub enum Event {
     /// [`AgentStatus::Connected`](crate::a2a::core::types::AgentStatus) again.
     AgentReconnected(AgentInfo),
     /// A new task was created.
-    TaskCreated(Box<Task>),
+    ///
+    /// Carries an [`Arc<Task>`] so broadcast fan-out to N subscribers bumps a
+    /// refcount instead of deep-cloning the whole task per receiver.
+    TaskCreated(Arc<Task>),
     /// A task's state changed.
+    ///
+    /// `old_state`/`new_state` are retained for cheap subscriber-side filtering
+    /// and metadata; `task` is the post-mutation snapshot (shared via [`Arc`])
+    /// so consumers can serialize it directly without re-fetching under lock.
     TaskStatusChanged {
         task_id: TaskId,
         old_state: TaskState,
         new_state: TaskState,
+        task: Arc<Task>,
     },
     /// An artifact was added to a task.
+    ///
+    /// `artifact_id` identifies the appended artifact; `task` is the
+    /// post-mutation snapshot (shared via [`Arc`]) so consumers can serialize
+    /// it directly without re-fetching under lock.
     TaskArtifactAdded {
         task_id: TaskId,
         artifact_id: ArtifactId,
+        task: Arc<Task>,
     },
 }
 
@@ -165,7 +180,7 @@ mod tests {
         let mut rx2 = bus.subscribe();
 
         let task = make_task();
-        bus.publish(Event::TaskCreated(Box::new(task.clone())));
+        bus.publish(Event::TaskCreated(Arc::new(task.clone())));
 
         let ev1 = rx1
             .recv()
@@ -210,7 +225,7 @@ mod tests {
         let bus = MessageBus::new(16);
         // No subscribers — must complete without panicking.
         bus.publish(Event::AgentRegistered(make_agent_info()));
-        bus.publish(Event::TaskCreated(Box::new(make_task())));
+        bus.publish(Event::TaskCreated(Arc::new(make_task())));
     }
 
     #[test]
@@ -224,6 +239,7 @@ mod tests {
                 task_id: TaskId::new(),
                 old_state: TaskState::Submitted,
                 new_state: TaskState::Working,
+                task: Arc::new(make_task()),
             }
             .event_type(),
             "task_status_changed"

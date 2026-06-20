@@ -52,11 +52,10 @@ impl BasemindA2aService {
     /// [`ReceiverStream`].
     ///
     /// If `initial_task` is `Some`, the stream begins by yielding the full
-    /// task snapshot so the client never misses the initial state. The
-    /// snapshot is also retained inside the spawn closure as the cached
-    /// reference for artifact-update lookups; on each `TaskArtifactAdded`
-    /// event we re-fetch the task via the facade to get the latest
-    /// artifact body.
+    /// task snapshot so the client never misses the initial state. Subsequent
+    /// status/artifact events carry their own post-mutation `Arc<Task>`
+    /// snapshot, so the loop reads the artifact body straight off the event
+    /// rather than re-fetching the task through the facade under lock.
     fn spawn_task_stream(
         &self,
         task_id: TaskId,
@@ -65,7 +64,6 @@ impl BasemindA2aService {
     ) -> ReceiverStream<Result<proto::StreamResponse, Status>> {
         let (tx, rx) = tokio::sync::mpsc::channel(STREAM_CHANNEL_CAPACITY);
         let mut bus_rx = self.state.bus.subscribe();
-        let facade = self.facade();
 
         tokio::spawn(async move {
             // Emit initial task snapshot so the client never misses state.
@@ -80,7 +78,9 @@ impl BasemindA2aService {
                 }
             }
 
-            let mut latest_task = initial_task;
+            // The initial snapshot has been emitted; subsequent events carry
+            // their own post-mutation task snapshot via `Arc<Task>`.
+            drop(initial_task);
             loop {
                 // Wake on either a bus event or the client dropping its end of
                 // the channel. Without the `tx.closed()` arm a *quiet* task
@@ -97,7 +97,7 @@ impl BasemindA2aService {
                             tracing::warn!(
                                 task_id = %task_id,
                                 skipped = n,
-                                "stream subscriber lagged; events were dropped"
+                                "stream subscriber lagged; events were dropped — client should resubscribe"
                             );
                             continue;
                         }
@@ -105,19 +105,18 @@ impl BasemindA2aService {
                     },
                 };
 
-                // Refresh cached task for artifact lookups when an artifact
-                // event arrives; the bus carries only the artifact id.
-                if matches!(&event, Event::TaskArtifactAdded { task_id: tid, .. } if *tid == task_id)
-                    && let Ok(refreshed) = facade.get_task(&task_id).await
-                {
-                    latest_task = Some(refreshed);
-                }
+                // Artifact lookups read the post-mutation task straight off the
+                // event (it embeds the appended artifact); no facade re-fetch.
+                let event_task = match &event {
+                    Event::TaskArtifactAdded { task, .. } => Some(task.as_ref()),
+                    _ => None,
+                };
 
                 if let Some(envelope) = convert::task_event_to_stream_response(
                     &event,
                     &task_id,
                     &context_id,
-                    latest_task.as_ref(),
+                    event_task,
                 ) && tx.send(Ok(envelope)).await.is_err()
                 {
                     break;
@@ -417,9 +416,11 @@ impl proto::a2a_service_server::A2aService for BasemindA2aService {
             .map_err(|_| Status::invalid_argument("invalid task id"))?;
 
         let store = self.state.push_notifications.read().await;
-        let configs_vec = store.list(&task_id);
-        let configs: Vec<proto::TaskPushNotificationConfig> =
-            configs_vec.iter().map(push_config_to_proto).collect();
+        let configs: Vec<proto::TaskPushNotificationConfig> = store
+            .list(&task_id)
+            .iter()
+            .map(push_config_to_proto)
+            .collect();
 
         Ok(Response::new(
             proto::ListTaskPushNotificationConfigsResponse {

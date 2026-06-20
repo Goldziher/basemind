@@ -10,10 +10,10 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 
 use crate::a2a::core::registry::{AgentRegistry, RegistryError};
-use crate::a2a::core::router::TaskRouter;
+use crate::a2a::core::router::{TaskRouteContext, TaskRouter};
 use crate::a2a::core::task_manager::{TaskError, TaskEvent, TaskManager};
 use crate::a2a::core::task_types::{
-    Artifact, ContextId, Task, TaskFilter, TaskId, TaskMessage, TaskState, TaskStatus,
+    Artifact, ContextId, Task, TaskFilter, TaskId, TaskMessage, TaskState,
 };
 use crate::a2a::core::types::{AgentId, AgentInfo, AgentStatus};
 
@@ -103,49 +103,42 @@ impl TaskFacade {
         metadata: Option<serde_json::Value>,
         deadline: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<Task, FacadeError> {
-        // If the caller pinned an explicit assignee, reject early when that
-        // agent is currently disconnected. Silently re-routing a pinned
-        // assignment would surprise callers who picked a specific agent.
-        if let Some(id) = assignee {
-            let reg = self.registry.read().await;
-            match reg.get(&id) {
-                None => {
-                    return Err(FacadeError::AgentNotFound {
-                        name: id.to_string(),
-                    });
-                }
-                Some(info) if info.status != AgentStatus::Connected => {
-                    return Err(FacadeError::AgentDisconnected {
-                        name: info.name.clone(),
-                    });
-                }
-                _ => {}
-            }
-        }
-
-        // Resolve assignee before creating the task.
-        let resolved_assignee = if assignee.is_some() {
-            assignee
-        } else {
-            // Build a temporary task for the router to inspect metadata/context.
-            let temp = Task {
-                id: TaskId::new(),
-                context_id: context_id.unwrap_or_default(),
-                status: TaskStatus {
-                    state: TaskState::Submitted,
-                    message: None,
-                    timestamp: chrono::Utc::now(),
-                },
-                artifacts: vec![],
-                history: vec![],
-                metadata: metadata.clone(),
-                assignee: None,
-                creator: None,
-                deadline,
-            };
+        // Resolve the assignee under a single registry read lock so a pinned
+        // agent cannot flip to Disconnected between the preflight check and the
+        // routing decision (TOCTOU). The router inspects only the prospective
+        // task's metadata/assignee, so no throwaway `Task` is allocated.
+        let resolved_assignee = {
             let registry = self.registry.read().await;
-            let agents = registry.list();
-            self.router.select_agent(&temp, &agents)
+
+            // If the caller pinned an explicit assignee, reject early when that
+            // agent is currently disconnected. Silently re-routing a pinned
+            // assignment would surprise callers who picked a specific agent.
+            if let Some(id) = assignee {
+                match registry.get(&id) {
+                    None => {
+                        return Err(FacadeError::AgentNotFound {
+                            name: id.to_string(),
+                        });
+                    }
+                    Some(info) if info.status != AgentStatus::Connected => {
+                        return Err(FacadeError::AgentDisconnected {
+                            name: info.name.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+                // A pinned, connected assignee is honoured verbatim — no need to
+                // run the router.
+                assignee
+            } else {
+                let route_context = TaskRouteContext {
+                    assignee: None,
+                    context_id: context_id.unwrap_or_default(),
+                    metadata: metadata.as_ref(),
+                };
+                let agents = registry.list();
+                self.router.select_agent(&route_context, &agents)
+            }
         };
 
         let mut mgr = self.tasks.write().await;

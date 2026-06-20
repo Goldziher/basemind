@@ -234,6 +234,7 @@ pub(crate) fn task_event_to_stream_response(
         Event::TaskArtifactAdded {
             task_id: tid,
             artifact_id,
+            ..
         } if tid == task_id => {
             let artifact = task?
                 .artifacts
@@ -495,7 +496,7 @@ mod tests {
     #[test]
     fn stream_filter_emits_task_for_matching_creation() {
         let task = make_task();
-        let event = Event::TaskCreated(Box::new(task.clone()));
+        let event = Event::TaskCreated(std::sync::Arc::new(task.clone()));
         let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None)
             .expect("matching task creation must produce a stream response");
         assert!(matches!(
@@ -508,7 +509,7 @@ mod tests {
     fn stream_filter_drops_unrelated_task_creation() {
         let task = make_task();
         let other = make_task();
-        let event = Event::TaskCreated(Box::new(other));
+        let event = Event::TaskCreated(std::sync::Arc::new(other));
         let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None);
         assert!(resp.is_none(), "unrelated task creation must not stream");
     }
@@ -520,6 +521,7 @@ mod tests {
             task_id: task.id,
             old_state: TaskState::Submitted,
             new_state: TaskState::Working,
+            task: std::sync::Arc::new(task.clone()),
         };
         let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None)
             .expect("matching status change must produce a stream response");
@@ -584,6 +586,7 @@ mod tests {
         let event = Event::TaskArtifactAdded {
             task_id: task.id,
             artifact_id,
+            task: std::sync::Arc::new(task.clone()),
         };
         let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, Some(&task))
             .expect("artifact event with snapshot must yield response");

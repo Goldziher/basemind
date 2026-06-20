@@ -100,9 +100,11 @@ async fn sweep(
         }
         drop(reg);
 
-        // ── Phase 3: fail in-flight tasks for those agents.
+        // ── Phase 3: fail in-flight tasks for those agents. Acquire the task
+        //    write lock once and process every stale agent under the single
+        //    guard rather than re-locking per agent.
+        let mut mgr = tasks.write().await;
         for id in &stale_ids {
-            let mut mgr = tasks.write().await;
             let in_flight: Vec<(TaskId, TaskState)> = mgr
                 .list_filtered(&TaskFilter {
                     assignee: Some(*id),
@@ -140,6 +142,7 @@ async fn sweep(
                 }
             }
         }
+        drop(mgr);
     }
 
     // ── Phase 4: deadline-driven task failure (orthogonal to agent

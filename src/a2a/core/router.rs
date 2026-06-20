@@ -3,16 +3,37 @@
 //! The [`TaskRouter`] trait is object-safe so that alternative routing
 //! strategies can be swapped in without touching the server layer.
 
-use crate::a2a::core::task_types::Task;
+use crate::a2a::core::task_types::ContextId;
 use crate::a2a::core::types::{AgentId, AgentInfo, AgentStatus};
+
+// ── Route context ─────────────────────────────────────────────────────────────
+
+/// The slice of a prospective task that routing actually inspects.
+///
+/// Passing this borrow instead of a synthetic [`Task`](crate::a2a::core::task_types::Task)
+/// lets the facade route a task *before* it is created, with no throwaway
+/// allocation of a fully-populated task just to read a couple of fields.
+#[derive(Clone, Copy, Debug)]
+pub struct TaskRouteContext<'a> {
+    /// An explicitly pinned assignee, if the caller requested one.
+    pub assignee: Option<AgentId>,
+    /// The (resolved) context the task will belong to.
+    pub context_id: ContextId,
+    /// Caller-supplied metadata; routing reads `required_tags` from it.
+    pub metadata: Option<&'a serde_json::Value>,
+}
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
-/// Selects an agent to handle a [`Task`] from a slice of candidate agents.
+/// Selects an agent to handle a prospective task from a slice of candidates.
 pub trait TaskRouter: Send + Sync {
     /// Return the [`AgentId`] of the selected agent, or `None` when no
     /// suitable agent is available.
-    fn select_agent(&self, task: &Task, agents: &[&AgentInfo]) -> Option<AgentId>;
+    fn select_agent(
+        &self,
+        context: &TaskRouteContext<'_>,
+        agents: &[&AgentInfo],
+    ) -> Option<AgentId>;
 }
 
 // ── DefaultTaskRouter ─────────────────────────────────────────────────────────
@@ -31,9 +52,13 @@ pub trait TaskRouter: Send + Sync {
 pub struct DefaultTaskRouter;
 
 impl TaskRouter for DefaultTaskRouter {
-    fn select_agent(&self, task: &Task, agents: &[&AgentInfo]) -> Option<AgentId> {
+    fn select_agent(
+        &self,
+        context: &TaskRouteContext<'_>,
+        agents: &[&AgentInfo],
+    ) -> Option<AgentId> {
         // 1. Honour an explicit assignment when the assignee is connected.
-        if let Some(assignee) = task.assignee
+        if let Some(assignee) = context.assignee
             && agents
                 .iter()
                 .any(|a| a.id == assignee && a.status == AgentStatus::Connected)
@@ -43,7 +68,7 @@ impl TaskRouter for DefaultTaskRouter {
 
         // 2. Capability matching: find connected agents whose skill_tags
         //    satisfy all required_tags from task metadata.
-        if let Some(ref metadata) = task.metadata
+        if let Some(metadata) = context.metadata
             && let Some(tags) = metadata.get("required_tags").and_then(|v| v.as_array())
         {
             let required: Vec<&str> = tags.iter().filter_map(|t| t.as_str()).collect();
@@ -80,10 +105,7 @@ mod tests {
     use chrono::Utc;
 
     use super::*;
-    use crate::a2a::core::task_types::{
-        ContextId, MessageRole, Part, Task, TaskId, TaskMessage, TaskState, TaskStatus,
-    };
-    use crate::a2a::core::types::MessageId;
+    use crate::a2a::core::task_types::ContextId;
 
     fn make_agent(id: AgentId, status: AgentStatus) -> AgentInfo {
         AgentInfo {
@@ -96,43 +118,32 @@ mod tests {
         }
     }
 
-    fn make_task_inner(assignee: Option<AgentId>, metadata: Option<serde_json::Value>) -> Task {
-        Task {
-            id: TaskId::new(),
-            context_id: ContextId::new(),
-            status: TaskStatus {
-                state: TaskState::Submitted,
-                message: None,
-                timestamp: Utc::now(),
-            },
-            artifacts: vec![],
-            history: vec![TaskMessage {
-                id: MessageId::new(),
-                role: MessageRole::User,
-                parts: vec![Part::Text {
-                    text: "do something".to_owned(),
-                }],
-                metadata: None,
-            }],
-            metadata,
+    /// Build a route context with no metadata for the given pinned assignee.
+    fn ctx(assignee: Option<AgentId>) -> TaskRouteContext<'static> {
+        TaskRouteContext {
             assignee,
-            creator: None,
-            deadline: None,
+            context_id: ContextId::new(),
+            metadata: None,
         }
     }
 
-    fn make_task(assignee: Option<AgentId>) -> Task {
-        make_task_inner(assignee, None)
+    /// Build a route context whose metadata borrows the supplied value.
+    fn ctx_with_metadata(metadata: &serde_json::Value) -> TaskRouteContext<'_> {
+        TaskRouteContext {
+            assignee: None,
+            context_id: ContextId::new(),
+            metadata: Some(metadata),
+        }
     }
 
     #[test]
     fn explicit_assignment_returns_assignee() {
         let id = AgentId::new();
         let agent = make_agent(id, AgentStatus::Connected);
-        let task = make_task(Some(id));
+        let context = ctx(Some(id));
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&agent]);
+        let selected = router.select_agent(&context, &[&agent]);
 
         assert_eq!(
             selected,
@@ -145,10 +156,10 @@ mod tests {
     fn explicit_assignment_skips_disconnected() {
         let id = AgentId::new();
         let agent = make_agent(id, AgentStatus::Disconnected);
-        let task = make_task(Some(id));
+        let context = ctx(Some(id));
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&agent]);
+        let selected = router.select_agent(&context, &[&agent]);
 
         assert_eq!(
             selected, None,
@@ -160,10 +171,10 @@ mod tests {
     fn falls_back_to_connected_agent() {
         let id = AgentId::new();
         let connected = make_agent(id, AgentStatus::Connected);
-        let task = make_task(None);
+        let context = ctx(None);
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&connected]);
+        let selected = router.select_agent(&context, &[&connected]);
 
         assert_eq!(
             selected,
@@ -191,9 +202,8 @@ mod tests {
         }
     }
 
-    fn make_task_with_tags(tags: Vec<&str>) -> Task {
-        let metadata = serde_json::json!({ "required_tags": tags });
-        make_task_inner(None, Some(metadata))
+    fn tags_metadata(tags: Vec<&str>) -> serde_json::Value {
+        serde_json::json!({ "required_tags": tags })
     }
 
     #[test]
@@ -202,10 +212,11 @@ mod tests {
         let plain_id = AgentId::new();
         let capable = make_agent_with_tags(capable_id, AgentStatus::Connected, vec!["code.review"]);
         let plain = make_agent(plain_id, AgentStatus::Connected);
-        let task = make_task_with_tags(vec!["code.review"]);
+        let metadata = tags_metadata(vec!["code.review"]);
+        let context = ctx_with_metadata(&metadata);
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&plain, &capable]);
+        let selected = router.select_agent(&context, &[&plain, &capable]);
 
         assert_eq!(
             selected,
@@ -221,10 +232,11 @@ mod tests {
         let capable =
             make_agent_with_tags(capable_id, AgentStatus::Disconnected, vec!["code.review"]);
         let fallback = make_agent(fallback_id, AgentStatus::Connected);
-        let task = make_task_with_tags(vec!["code.review"]);
+        let metadata = tags_metadata(vec!["code.review"]);
+        let context = ctx_with_metadata(&metadata);
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&capable, &fallback]);
+        let selected = router.select_agent(&context, &[&capable, &fallback]);
 
         assert_eq!(
             selected, None,
@@ -236,10 +248,11 @@ mod tests {
     fn no_capability_match_returns_none() {
         let id = AgentId::new();
         let agent = make_agent_with_tags(id, AgentStatus::Connected, vec!["code.fix"]);
-        let task = make_task_with_tags(vec!["code.review"]);
+        let metadata = tags_metadata(vec!["code.review"]);
+        let context = ctx_with_metadata(&metadata);
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&agent]);
+        let selected = router.select_agent(&context, &[&agent]);
 
         assert_eq!(
             selected, None,
@@ -251,10 +264,11 @@ mod tests {
     fn empty_required_tags_skips_matching() {
         let id = AgentId::new();
         let agent = make_agent(id, AgentStatus::Connected);
-        let task = make_task_with_tags(vec![]);
+        let metadata = tags_metadata(vec![]);
+        let context = ctx_with_metadata(&metadata);
         let router = DefaultTaskRouter;
 
-        let selected = router.select_agent(&task, &[&agent]);
+        let selected = router.select_agent(&context, &[&agent]);
 
         assert_eq!(
             selected,
