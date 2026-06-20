@@ -9,7 +9,9 @@
 
 pub(crate) mod core;
 pub(crate) mod grpc;
+pub(crate) mod jsonrpc;
 pub mod proto;
+pub(crate) mod server;
 pub(crate) mod state;
 
 /// Crate-internal handle on the generated `lf.a2a.v1` package (prost message structs plus the

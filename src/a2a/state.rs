@@ -35,6 +35,9 @@ pub struct AgentCardInfo {
     pub version: String,
     /// Advertised gRPC endpoint URL (empty until the server binds an address).
     pub grpc_url: String,
+    /// Advertised JSON-RPC/HTTP endpoint URL — the agent card's primary
+    /// interface (empty until the axum server binds an address).
+    pub http_url: String,
 }
 
 impl Default for AgentCardInfo {
@@ -44,6 +47,7 @@ impl Default for AgentCardInfo {
             description: "basemind agent context + A2A task server".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             grpc_url: String::new(),
+            http_url: String::new(),
         }
     }
 }

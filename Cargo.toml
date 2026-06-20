@@ -132,6 +132,9 @@ a2a = [
     "dep:base64",
     "dep:tokio-util",
     "dep:tokio-stream",
+    "dep:axum",
+    "dep:tower",
+    "dep:tower-http",
 ]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
@@ -151,6 +154,10 @@ arc-swap = "1.9.1"
 # don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
+# A2A JSON-RPC 2.0 / agent-card / SSE HTTP binding (a2a feature only). axum 0.7
+# matches the http 1 / hyper 1 / tower-service 0.3 generation tonic 0.12 resolves,
+# so the gRPC service mounts into the same app with no version skew.
+axum = { version = "0.7", optional = true }
 # Base64 codec for A2A `Part::Bytes` JSON round-tripping (a2a feature only).
 base64 = { version = "0.22", optional = true }
 blake3 = "1"
@@ -204,6 +211,12 @@ tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
 # A2A gRPC service + transport. tonic 0.12 matches neoeinstein-tonic v0.4.1.
 tonic = { version = "0.12", optional = true }
+# Shared tower middleware stack for the A2A HTTP server (ServiceBuilder +
+# concurrency-limit / load-shed / timeout). a2a feature only.
+tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"], optional = true }
+# HTTP middleware layers (trace, cors, request-id, body-limit) for the A2A
+# axum server. a2a feature only.
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "limit"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
