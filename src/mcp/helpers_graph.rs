@@ -300,7 +300,12 @@ fn collect_callers(
     };
 
     let mut parents: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
-    let mut seen_parents: AHashSet<String> = AHashSet::new();
+    // Dedupe by (path, start_row, start_col) of the *parent symbol* — a function
+    // definition has a unique (file, start position) triple, so this key is sufficient
+    // to prevent adding the same parent site twice when one function calls `name` many
+    // times. The name dimension is not needed: two distinct functions cannot share the
+    // same (file, row, col).
+    let mut seen_sites: AHashSet<(RelPath, u32, u32)> = AHashSet::new();
     let mut scanned: usize = 0;
 
     for guard in idx
@@ -337,16 +342,9 @@ fn collect_callers(
             start_row: parent_sym.start_row,
             start_col: parent_sym.start_col,
         };
-        // Dedupe by (parent_name, path, start_row, start_col) to avoid duplicate sites
-        // when one function contains many calls to `name`.
-        let dedupe_key = format!(
-            "{}\0{}\0{}\0{}",
-            entry_key,
-            rel.as_bstr(),
-            site.start_row,
-            site.start_col,
-        );
-        if seen_parents.insert(dedupe_key) {
+        // Dedupe: (path, start_row, start_col) uniquely identifies the parent symbol
+        // definition — no format! allocation required.
+        if seen_sites.insert((rel, site.start_row, site.start_col)) {
             parents.entry(entry_key).or_default().push(site);
         }
     }

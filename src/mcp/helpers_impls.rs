@@ -94,8 +94,7 @@ pub(super) fn run_find_implementations(
 
         if hits.len() < limit {
             // Resolve start_row / start_col from the stored Implementation in the L1 blob.
-            let (start_row, start_col) =
-                resolve_impl_row_col(cache, &rel, &trait_name, &impl_type, start_byte);
+            let (start_row, start_col) = resolve_impl_row_col(cache, &rel, start_byte);
             hits.push(ImplementationHit {
                 path: rel,
                 trait_name,
@@ -132,21 +131,22 @@ pub(super) fn run_find_implementations(
 /// Look up `(start_row, start_col)` for an `Implementation` record from the in-RAM L1
 /// cache. Falls back to `(0, 0)` when the cache entry is absent or the matching
 /// `Implementation` record isn't found (e.g. an older blob predating the field).
+///
+/// `start_byte` is the sole discriminant: an impl/class block has a unique byte offset
+/// within a file, so no additional fields are needed.
 fn resolve_impl_row_col(
     cache: &super::MapCache,
     rel: &crate::path::RelPath,
-    trait_name: &str,
-    impl_type: &str,
     start_byte: u32,
 ) -> (u32, u32) {
     let Some(l1) = cache.by_path.get(rel) else {
         return (0, 0);
     };
-    // Match by all three discriminants: (trait_name, impl_type, start_byte) is a stable
-    // compound key — the same triple is what the index writer encoded.
-    if let Some(imp) = l1.implementations.iter().find(|i| {
-        i.trait_name == trait_name && i.impl_type == impl_type && i.start_byte == start_byte
-    }) {
+    // Match by start_byte alone: an `impl` / class definition has a unique byte offset
+    // within a file, so start_byte is a sufficient key into l1.implementations. The
+    // index writer encodes exactly one record per (path, start_byte) pair, making
+    // trait_name and impl_type redundant discriminants here.
+    if let Some(imp) = l1.implementations.iter().find(|i| i.start_byte == start_byte) {
         // start_row is 0-based in the blob; emit 1-based for line numbers per editor convention.
         (imp.start_row + 1, imp.start_col)
     } else {

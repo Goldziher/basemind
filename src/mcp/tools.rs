@@ -32,54 +32,58 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
-            let store = self.state.store.read().await;
-            let l1 = query::file_outline(&store, &params.path).map_err(|e| {
-                McpError::invalid_params(format!("file_outline({}): {e}", params.path), None)
-            })?;
+            // Helper: map an L1 blob to its (symbols, imports) view fields.
+            fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
+                let symbols = l1
+                    .symbols
+                    .iter()
+                    .map(|s| SymbolView {
+                        name: s.name.clone(),
+                        kind: kind_to_str(s.kind).to_string(),
+                        start_row: s.start_row,
+                        start_col: s.start_col,
+                        start_byte: s.start_byte,
+                        end_byte: s.end_byte,
+                        signature: s.signature.clone(),
+                    })
+                    .collect();
+                let imports = l1
+                    .imports
+                    .iter()
+                    .map(|i| ImportView {
+                        module: i.module.clone(),
+                        raw: i.raw.clone(),
+                        start_byte: i.start_byte,
+                    })
+                    .collect();
+                (symbols, imports)
+            }
 
-            let symbols = l1
-                .symbols
-                .iter()
-                .map(|s| SymbolView {
-                    name: s.name.clone(),
-                    kind: kind_to_str(s.kind).to_string(),
-                    start_row: s.start_row,
-                    start_col: s.start_col,
-                    start_byte: s.start_byte,
-                    end_byte: s.end_byte,
-                    signature: s.signature.clone(),
-                })
-                .collect();
-            let imports = l1
-                .imports
-                .iter()
-                .map(|i| ImportView {
-                    module: i.module.clone(),
-                    raw: i.raw.clone(),
-                    start_byte: i.start_byte,
-                })
-                .collect();
-
-            let mut response = OutlineResponse {
-                path: params.path.clone(),
-                language: l1.language.clone(),
-                size_bytes: l1.size_bytes,
-                had_errors: l1.had_errors,
-                error_count: l1.error_count,
-                symbols,
-                imports,
-                calls: None,
-                docs: None,
-                l2_status: None,
-            };
-
-            if params.l2 {
+            let mut response = if params.l2 {
+                // L2 path: take the store lock once for both the L1 read and the L2 read.
+                let store = self.state.store.read().await;
+                let l1 = query::file_outline(&store, &params.path).map_err(|e| {
+                    McpError::invalid_params(format!("file_outline({}): {e}", params.path), None)
+                })?;
+                let (symbols, imports) = l1_views(&l1);
+                let mut r = OutlineResponse {
+                    path: params.path.clone(),
+                    language: l1.language.clone(),
+                    size_bytes: l1.size_bytes,
+                    had_errors: l1.had_errors,
+                    error_count: l1.error_count,
+                    symbols,
+                    imports,
+                    calls: None,
+                    docs: None,
+                    l2_status: None,
+                };
                 let entry = store.lookup(&params.path).ok_or_else(|| {
                     McpError::internal_error("file not indexed after outline succeeded", None)
                 })?;
                 match store.read_l2_by_hex(&entry.hash_hex) {
                     Ok(Some(l2)) => {
-                        response.calls = Some(
+                        r.calls = Some(
                             l2.calls
                                 .iter()
                                 .map(|c| CallView {
@@ -88,7 +92,7 @@ impl BasemindServer {
                                 })
                                 .collect(),
                         );
-                        response.docs = Some(
+                        r.docs = Some(
                             l2.docs
                                 .iter()
                                 .map(|d| DocView {
@@ -99,17 +103,63 @@ impl BasemindServer {
                         );
                     }
                     Ok(None) => {
-                        response.l2_status = Some(
+                        r.l2_status = Some(
                             "missing — run `basemind query outline <path> --l2` to materialize",
                         );
                     }
                     Err(e) => {
-                        response.l2_status = Some("error");
+                        r.l2_status = Some("error");
                         return Err(McpError::internal_error(format!("read_l2: {e}"), None));
                     }
                 }
-            }
+                r
+            } else {
+                // L1-only path: serve from the in-RAM MapCache — no store lock, no disk
+                // read. The cache is authoritative (rebuilt on every rescan). Fall back
+                // to the store only on a cache miss (file indexed but blob evicted, which
+                // should not happen in normal operation).
+                let cache = self.state.cache.load();
+                if let Some(l1) = cache.by_path.get(&params.path) {
+                    let (symbols, imports) = l1_views(l1);
+                    OutlineResponse {
+                        path: params.path.clone(),
+                        language: l1.language.clone(),
+                        size_bytes: l1.size_bytes,
+                        had_errors: l1.had_errors,
+                        error_count: l1.error_count,
+                        symbols,
+                        imports,
+                        calls: None,
+                        docs: None,
+                        l2_status: None,
+                    }
+                } else {
+                    // Cache miss fallback.
+                    let store = self.state.store.read().await;
+                    let l1 = query::file_outline(&store, &params.path).map_err(|e| {
+                        McpError::invalid_params(
+                            format!("file_outline({}): {e}", params.path),
+                            None,
+                        )
+                    })?;
+                    let (symbols, imports) = l1_views(&l1);
+                    OutlineResponse {
+                        path: params.path.clone(),
+                        language: l1.language.clone(),
+                        size_bytes: l1.size_bytes,
+                        had_errors: l1.had_errors,
+                        error_count: l1.error_count,
+                        symbols,
+                        imports,
+                        calls: None,
+                        docs: None,
+                        l2_status: None,
+                    }
+                }
+            };
 
+            // Suppress the unused-mut lint: `response` is mutated only on the l2 branch.
+            let _ = &mut response;
             json_result(&response)
         }
         .await;
@@ -397,12 +447,20 @@ impl BasemindServer {
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
             let store = self.state.store.read().await;
-            let mut by_lang: BTreeMap<String, usize> = BTreeMap::new();
+            // Count into a borrowed-key map to avoid one String::clone() per file.
+            // The store lock is held for the entire loop, so &str borrows into the
+            // store are valid. Convert to BTreeMap<String,usize> once at the end —
+            // cost is O(distinct languages), not O(total files).
+            let mut by_lang_ref: BTreeMap<&str, usize> = BTreeMap::new();
             let mut total_size: u64 = 0;
             for entry in store.index.files.values() {
-                *by_lang.entry(entry.language.clone()).or_insert(0) += 1;
+                *by_lang_ref.entry(entry.language.as_str()).or_insert(0) += 1;
                 total_size = total_size.saturating_add(entry.size_bytes);
             }
+            let by_lang: BTreeMap<String, usize> = by_lang_ref
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
             let cache_dir = crate::lang::grammar_cache_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "(unresolved)".to_string());
