@@ -143,6 +143,14 @@ struct A2aServeArgs {
     /// missing). Enables bearer auth.
     #[arg(long)]
     token_file: Option<std::path::PathBuf>,
+    /// PEM certificate (chain) for TLS termination. Must be paired with
+    /// `--tls-key`; supplying exactly one is a usage error. When both are set the
+    /// server serves HTTPS and negotiates HTTP/2 (gRPC) vs HTTP/1.1 via ALPN.
+    #[arg(long, requires = "tls_key")]
+    tls_cert: Option<std::path::PathBuf>,
+    /// PEM private key matching `--tls-cert`. Must be paired with `--tls-cert`.
+    #[arg(long, requires = "tls_cert")]
+    tls_key: Option<std::path::PathBuf>,
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -248,6 +256,14 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Install the rustls crypto provider once, at startup, before anything can
+    // perform a TLS handshake. aws-lc-rs AND ring are both in the dependency
+    // tree (via reqwest/hyper-rustls), so the process-default provider is
+    // ambiguous and a later `ServerConfig::builder()` would panic; pinning it
+    // here removes any ordering dependency. Idempotent — a prior install wins.
+    #[cfg(feature = "a2a")]
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli = Cli::parse();
     let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let no_color = cli.no_color;
@@ -345,6 +361,8 @@ fn cmd_a2a(action: A2aCmd) -> Result<()> {
                 description: args.description,
                 token: args.token,
                 token_file: args.token_file,
+                tls_cert: args.tls_cert,
+                tls_key: args.tls_key,
             };
             basemind::a2a::run_server(options).context("run A2A server")
         }

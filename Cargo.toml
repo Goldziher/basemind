@@ -133,6 +133,8 @@ a2a = [
     "dep:tokio-util",
     "dep:tokio-stream",
     "dep:axum",
+    "dep:axum-server",
+    "dep:rustls",
     "dep:tower",
     "dep:tower-http",
     "dep:subtle",
@@ -159,6 +161,10 @@ arrow-schema = { version = "58", optional = true }
 # matches the http 1 / hyper 1 / tower-service 0.3 generation tonic 0.12 resolves,
 # so the gRPC service mounts into the same app with no version skew.
 axum = { version = "0.7", optional = true }
+# TLS termination for the A2A server (`--tls-cert`/`--tls-key`). Wraps the same
+# axum app behind a rustls acceptor so gRPC-over-TLS negotiates HTTP/2 via ALPN.
+# 0.7 matches the hyper 1 / tower 0.5 generation axum 0.7 resolves. a2a feature only.
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
 # Base64 codec for A2A `Part::Bytes` JSON round-tripping (a2a feature only).
 base64 = { version = "0.22", optional = true }
 blake3 = "1"
@@ -195,6 +201,12 @@ rayon = "1"
 regex = "1.12.4"
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
+# A2A TLS crypto provider. rustls is already pulled transitively, but both the
+# aws-lc-rs and ring providers are enabled in the dep tree (ring via ureq), so the
+# process-default provider is ambiguous and `ServerConfig::builder()` would panic.
+# We depend on it directly only to install the aws-lc-rs provider explicitly before
+# building the TLS config. a2a feature only; no extra provider features requested.
+rustls = { version = "0.23", default-features = false, optional = true }
 # Drives the schema-first config: every config struct in src/config/v1.rs derives
 # JsonSchema so the committed JSON schema can be regenerated from the Rust types.
 # Pinned to 1.2 to match the transitive version rmcp already pulls in.
@@ -231,12 +243,18 @@ uuid = { version = "1", features = ["v4", "serde"], optional = true }
 [dev-dependencies]
 insta = "1"
 proptest = "1"
+# Self-signed cert/key generation for the A2A TLS tests (no committed secrets).
+rcgen = "0.13"
 # Client-side rmcp used by the `harden` integration test to drive `basemind serve`
 # over a stdio child-process transport. Composes with the [dependencies] entry
 # above — features are union-merged by cargo.
 rmcp = { version = "1.7", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# TLS client used by the A2A `serve_tls` handshake test to connect to the
+# self-signed server with a permissive (test-only) verifier. Already in the dep
+# tree transitively, so this adds no new crate to the graph.
+tokio-rustls = "0.26"
 # wiremock spins up an in-process HTTP server for the `crawl` smoke test so we
 # never hit the live network. Pulled in only at test time.
 wiremock = "0.6"

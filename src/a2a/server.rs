@@ -11,7 +11,14 @@
 //! [`serve`] binds the listener and runs the app with graceful shutdown driven
 //! by a [`CancellationToken`](tokio_util::sync::CancellationToken). It is mounted
 //! by [`crate::a2a::run_server`] (the `basemind a2a serve` CLI). Bearer auth is
-//! applied here via [`crate::a2a::auth::require_bearer`]; TLS lands in B4.3.
+//! applied here via [`crate::a2a::auth::require_bearer`].
+//!
+//! When a TLS pair ([`crate::a2a::TlsPaths`]) is supplied, [`serve`] swaps the
+//! plaintext `axum::serve` acceptor for an `axum_server` rustls acceptor whose
+//! ALPN list is `["h2", "http/1.1"]`, so gRPC-over-TLS negotiates HTTP/2. The
+//! plaintext path is left byte-for-byte unchanged (it depends on axum's HTTP/2
+//! h2c upgrade for gRPC). Graceful shutdown for the TLS path is wired through an
+//! [`axum_server::Handle`] driven by the same [`CancellationToken`].
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -109,19 +116,89 @@ async fn handle_middleware_error(err: tower::BoxError) -> StatusCode {
     }
 }
 
+/// Grace period granted to in-flight connections after shutdown is signalled on
+/// the TLS path before they are forcibly dropped.
+const TLS_SHUTDOWN_GRACE: Duration = Duration::from_secs(REQUEST_TIMEOUT_SECS);
+
 /// Bind `addr` and serve the A2A app until `cancel` fires, then drain gracefully.
+///
+/// When `tls` is `None` the plaintext path is used verbatim (`axum::serve`,
+/// which auto-negotiates HTTP/1.1 + HTTP/2 h2c — gRPC depends on the h2c
+/// upgrade). When `tls` is `Some`, [`serve_tls`] terminates TLS via rustls with
+/// ALPN `["h2", "http/1.1"]`.
 pub(crate) async fn serve(
     state: A2aState,
     addr: SocketAddr,
     cancel: CancellationToken,
+    tls: Option<crate::a2a::TlsPaths>,
 ) -> std::io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    let bound = listener.local_addr()?;
-    tracing::info!(address = %bound, "A2A HTTP server listening");
+    match tls {
+        Some(tls) => serve_tls(state, addr, cancel, tls).await,
+        None => {
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            let bound = listener.local_addr()?;
+            tracing::info!(address = %bound, tls = false, "A2A HTTP server listening");
 
-    axum::serve(listener, build_router(state))
-        .with_graceful_shutdown(async move { cancel.cancelled().await })
+            axum::serve(listener, build_router(state))
+                .with_graceful_shutdown(async move { cancel.cancelled().await })
+                .await
+        }
+    }
+}
+
+/// Serve the A2A app over TLS, terminating with rustls and negotiating HTTP/2
+/// vs HTTP/1.1 via ALPN so gRPC-over-TLS works.
+///
+/// Graceful shutdown is wired through an [`axum_server::Handle`]: a task awaits
+/// `cancel` and then calls [`Handle::graceful_shutdown`] with a bounded grace
+/// period, mirroring the plaintext path's `with_graceful_shutdown` semantics.
+///
+/// Never logs key material — only the bound address and the cert/key *paths*.
+async fn serve_tls(
+    state: A2aState,
+    addr: SocketAddr,
+    cancel: CancellationToken,
+    tls: crate::a2a::TlsPaths,
+) -> std::io::Result<()> {
+    // Both the aws-lc-rs and ring rustls providers are present in the dependency
+    // tree, so the process-default crypto provider is ambiguous and building a
+    // `ServerConfig` would panic. Install aws-lc-rs explicitly (idempotent: a
+    // prior install by another component is fine, hence the discarded result).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    // `RustlsConfig::from_pem_file` builds a `ServerConfig` whose `alpn_protocols`
+    // is `["h2", "http/1.1"]`, which is exactly what gRPC-over-TLS needs.
+    let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert, &tls.key)
         .await
+        .map_err(|err| std::io::Error::new(err.kind(), format!("loading TLS cert/key: {err}")))?;
+
+    let handle = axum_server::Handle::new();
+    // Bridge the CancellationToken to axum_server's graceful shutdown.
+    let shutdown_handle = handle.clone();
+    let shutdown_cancel = cancel.clone();
+    let shutdown_task = tokio::spawn(async move {
+        shutdown_cancel.cancelled().await;
+        shutdown_handle.graceful_shutdown(Some(TLS_SHUTDOWN_GRACE));
+    });
+
+    tracing::info!(
+        address = %addr,
+        tls = true,
+        cert = %tls.cert.display(),
+        key = %tls.key.display(),
+        "A2A HTTPS server listening",
+    );
+
+    let result = axum_server::bind_rustls(addr, config)
+        .handle(handle)
+        .serve(build_router(state).into_make_service())
+        .await;
+
+    // If serve returned for a reason OTHER than cancellation (bind/IO error), the
+    // bridge task is still parked on `cancelled()`; abort it so it can't linger
+    // until runtime shutdown.
+    shutdown_task.abort();
+    result
 }
 
 #[cfg(test)]
@@ -342,5 +419,159 @@ mod tests {
         let body = json_body(resp).await;
         assert_eq!(body["error"]["code"], json!(-32600));
         assert_eq!(body["id"], json!(7));
+    }
+
+    // --- TLS path ---------------------------------------------------------
+
+    /// Test-only certificate verifier that trusts any server certificate.
+    ///
+    /// This lives in `#[cfg(test)]` and is used ONLY by the in-test TLS client so
+    /// it can connect to the self-signed server. Production code never weakens
+    /// verification; the server side performs no client-cert checks either way.
+    #[derive(Debug)]
+    struct TrustAnyServerCert;
+
+    impl tokio_rustls::rustls::client::danger::ServerCertVerifier for TrustAnyServerCert {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+            _intermediates: &[tokio_rustls::rustls::pki_types::CertificateDer<'_>],
+            _server_name: &tokio_rustls::rustls::pki_types::ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: tokio_rustls::rustls::pki_types::UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+            _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+            tokio_rustls::rustls::Error,
+        > {
+            Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &tokio_rustls::rustls::pki_types::CertificateDer<'_>,
+            _dss: &tokio_rustls::rustls::DigitallySignedStruct,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::HandshakeSignatureValid,
+            tokio_rustls::rustls::Error,
+        > {
+            Ok(tokio_rustls::rustls::client::danger::HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<tokio_rustls::rustls::SignatureScheme> {
+            tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    /// End-to-end TLS handshake: start `serve_tls` with a self-signed cert,
+    /// connect over real TLS with a permissive client, and assert the public
+    /// agent card returns `200 OK` over HTTPS. Exercises the full B4.3 path
+    /// (cert load + ALPN + bind) that the validation unit tests cannot.
+    #[tokio::test]
+    async fn serve_tls_serves_agent_card_over_https() {
+        use std::io::Write as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        // Self-signed cert/key via rcgen (no committed secrets).
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])
+            .expect("generate self-signed cert");
+        let mut cert_file = tempfile::NamedTempFile::new().expect("cert temp file");
+        cert_file
+            .write_all(cert.cert.pem().as_bytes())
+            .expect("write cert pem");
+        cert_file.flush().expect("flush cert");
+        let mut key_file = tempfile::NamedTempFile::new().expect("key temp file");
+        key_file
+            .write_all(cert.key_pair.serialize_pem().as_bytes())
+            .expect("write key pem");
+        key_file.flush().expect("flush key");
+
+        let tls = crate::a2a::resolve_tls_config(Some(cert_file.path()), Some(key_file.path()))
+            .expect("config must validate")
+            .expect("both supplied yields Some");
+
+        // Bind an ephemeral loopback port; reuse it for the server.
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("probe bind");
+        let addr = probe.local_addr().expect("probe addr");
+        drop(probe);
+
+        let cancel = CancellationToken::new();
+        let server_cancel = cancel.clone();
+        let server =
+            tokio::spawn(
+                async move { serve_tls(A2aState::default(), addr, server_cancel, tls).await },
+            );
+
+        // Build a permissive TLS client config with HTTP/1.1 ALPN so the request
+        // is a plain HTTP/1.1 GET.
+        let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let mut client_config = tokio_rustls::rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(std::sync::Arc::new(TrustAnyServerCert))
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_config));
+        let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from("localhost")
+            .expect("server name");
+
+        // Retry the connect until the server has bound (graceful startup race).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let tcp = loop {
+            match tokio::net::TcpStream::connect(addr).await {
+                Ok(stream) => break stream,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+                Err(err) => panic!("server never accepted TLS connections: {err}"),
+            }
+        };
+        let mut tls_stream = connector
+            .connect(server_name, tcp)
+            .await
+            .expect("TLS handshake must succeed");
+
+        let request = format!(
+            "GET {AGENT_CARD_PATH} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+        );
+        tls_stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("write request over TLS");
+        tls_stream.flush().await.expect("flush TLS request");
+
+        let mut raw = Vec::new();
+        tls_stream
+            .read_to_end(&mut raw)
+            .await
+            .expect("read TLS response");
+        let text = String::from_utf8_lossy(&raw);
+        let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_ref(), ""));
+        assert!(
+            head.starts_with("HTTP/1.1 200"),
+            "agent card must return 200 over TLS, got head: {head}"
+        );
+        assert!(
+            body.contains("\"basemind\""),
+            "agent card body must name basemind over TLS: {body}"
+        );
+
+        cancel.cancel();
+        let _ = server.await;
     }
 }
