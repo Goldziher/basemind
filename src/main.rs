@@ -98,7 +98,7 @@ enum Cmd {
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
     /// Manage the user-global agent-comms broker daemon (needs `--features comms`).
-    #[cfg(feature = "comms")]
+    #[cfg(all(feature = "comms", unix))]
     Comms {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
@@ -159,7 +159,7 @@ struct A2aServeArgs {
 /// agent verbs (`Register`/`Agents`/`RoomCreate`/`Rooms`/`Join`/`Leave`/`Post`/`History`/`Read`/
 /// `Inbox`) connect to the daemon DIRECTLY via `CommsClient::ensure_and_connect` (see
 /// `cli::comms`) — they never build a full server, so they cannot clash with a running `serve`.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
     /// Run the broker loop: bind the singleton socket, serve front-ends, block until shutdown.
@@ -342,7 +342,7 @@ fn main() -> Result<()> {
         },
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
-        #[cfg(feature = "comms")]
+        #[cfg(all(feature = "comms", unix))]
         Cmd::Comms { action } => cmd_comms(&root, action, json),
         #[cfg(feature = "a2a")]
         Cmd::A2a { action } => cmd_a2a(action),
@@ -372,7 +372,7 @@ fn cmd_a2a(action: A2aCmd) -> Result<()> {
 /// Dispatch a comms lifecycle subcommand. Each command drives a small current-thread tokio
 /// runtime — the broker daemon itself uses a multi-thread runtime so concurrent links don't
 /// serialize.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 fn cmd_comms(root: &std::path::Path, action: CommsLifecycleCmd, json: bool) -> Result<()> {
     match action {
         CommsLifecycleCmd::Daemon => cmd_comms_daemon(),
@@ -383,7 +383,7 @@ fn cmd_comms(root: &std::path::Path, action: CommsLifecycleCmd, json: bool) -> R
     }
 }
 
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 enum CommsRpc {
     Stop,
     Status,
@@ -391,7 +391,7 @@ enum CommsRpc {
 
 /// Run the broker loop. Binds the singleton socket (the bind IS the lock), opens the store,
 /// serves the Unix-socket front-end, and blocks until SIGTERM / Ctrl-C / a `Stop` RPC.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 fn cmd_comms_daemon() -> Result<()> {
     use std::sync::Arc;
 
@@ -451,7 +451,7 @@ fn cmd_comms_daemon() -> Result<()> {
 
 // `CommsFrontend::serve` uses RPITIT and is not object-safe, so wrap it behind a tiny
 // object-safe shim for the single dynamic dispatch in the daemon entry point.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 trait CommsFrontendObj: Send {
     fn serve_obj(
         self: Box<Self>,
@@ -460,10 +460,10 @@ trait CommsFrontendObj: Send {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>>;
 }
 
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 struct UdsFrontendBox(basemind::comms::frontend_uds::UdsFrontend);
 
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 impl CommsFrontendObj for UdsFrontendBox {
     fn serve_obj(
         self: Box<Self>,
@@ -492,13 +492,8 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
-#[cfg(all(feature = "comms", not(unix)))]
-async fn wait_for_shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
-}
-
 /// Ensure a daemon is running, spawning it detached if needed.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 fn cmd_comms_start() -> Result<()> {
     use basemind::comms::singleton;
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
@@ -517,7 +512,7 @@ fn cmd_comms_start() -> Result<()> {
 }
 
 /// Connect to the running daemon and issue a Stop or Status RPC.
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
     use basemind::comms::client::CommsClient;
     use basemind::comms::ids::AgentId;

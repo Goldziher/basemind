@@ -6,7 +6,7 @@
 //! matching client method, and `json_result` the front-matter response. History and inbox
 //! tools surface front-matter ONLY — bodies are fetched exclusively through `message_get`.
 
-#![cfg(feature = "comms")]
+#![cfg(all(feature = "comms", unix))]
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;

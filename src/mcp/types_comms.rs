@@ -6,7 +6,7 @@
 //! the broker. Response structs serialize the broker's [`MessageMeta`] front-matter directly —
 //! history and inbox tools return front-matter ONLY; bodies come from `message_get`.
 
-#![cfg(feature = "comms")]
+#![cfg(all(feature = "comms", unix))]
 
 use serde::{Deserialize, Serialize};
 

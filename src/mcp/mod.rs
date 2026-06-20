@@ -12,7 +12,7 @@ pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 mod helpers_comms;
 #[cfg(feature = "documents")]
 mod helpers_documents;
@@ -27,7 +27,7 @@ mod savings;
 mod telemetry;
 mod tools;
 mod tools_admin;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 mod tools_comms;
 mod tools_git;
 mod tools_memory;
@@ -35,7 +35,7 @@ mod tools_memory;
 mod tools_web;
 mod types;
 mod types_admin;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 mod types_comms;
 mod types_documents;
 mod types_graph;
@@ -174,7 +174,7 @@ pub(crate) struct ServerState {
     /// spawns the daemon if absent (via `ensure_and_connect`) and caches the connected client
     /// here; subsequent calls reuse it. `None` until the first call. Best-effort: a connect
     /// failure surfaces as an MCP error on the call, never at server boot.
-    #[cfg(feature = "comms")]
+    #[cfg(all(feature = "comms", unix))]
     pub(crate) comms_client: tokio::sync::Mutex<Option<crate::comms::client::CommsClient>>,
 }
 
@@ -379,7 +379,7 @@ impl BasemindServer {
             embedder: tokio::sync::OnceCell::new(),
             #[cfg(feature = "crawl")]
             crawl_engine,
-            #[cfg(feature = "comms")]
+            #[cfg(all(feature = "comms", unix))]
             comms_client: tokio::sync::Mutex::new(None),
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
@@ -446,7 +446,7 @@ impl BasemindServer {
         {
             router += Self::tool_router_web();
         }
-        #[cfg(feature = "comms")]
+        #[cfg(all(feature = "comms", unix))]
         {
             router += Self::tool_router_comms();
         }

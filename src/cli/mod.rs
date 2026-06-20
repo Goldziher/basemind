@@ -13,7 +13,7 @@
 
 pub mod admin;
 pub mod codemap;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod comms;
 pub mod context;
 pub mod git;

@@ -8,29 +8,29 @@
 
 pub mod ids;
 
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod client;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod cursor;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod daemon;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod frontend_inproc;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod frontend_uds;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod keys;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod model;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod protocol;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod scope;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod singleton;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod store;
-#[cfg(feature = "comms")]
+#[cfg(all(feature = "comms", unix))]
 pub mod transport;
 
 /// Schema version for the comms store, bound to the release minor exactly like
