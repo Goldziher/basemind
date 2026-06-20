@@ -118,11 +118,13 @@ crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
 # needs them); this feature gates the daemon + tools.
 comms = ["dep:directories", "dep:tokio-util"]
 
-# Agent-to-agent gRPC surface (A2A protocol). Phase B0a: brings in the generated
-# `lf.a2a.v1` tonic service + prost message types (committed under
-# src/a2a/generated/). Pulls only the gRPC runtime crates; not yet wired into the
-# server. tonic 0.12 / prost 0.13 are pinned to match the buf remote plugins
-# (neoeinstein-tonic v0.4.1 / neoeinstein-prost v0.4.0) that generated the code.
+# Agent-to-agent (A2A protocol) server: gRPC + JSON-RPC/SSE on one axum listener,
+# agent card, bearer auth, optional TLS, and push-notification webhook delivery.
+# EXPERIMENTAL and opt-in only: deliberately excluded from `default` AND from the
+# `full` meta-feature, and not part of the shipped release surface. Build with
+# `--features a2a` to use it. tonic 0.12 / prost 0.13 are pinned to the buf remote
+# plugins (neoeinstein-tonic v0.4.1 / neoeinstein-prost v0.4.0) that generated the
+# committed codegen under src/a2a/generated/.
 a2a = [
     "dep:tonic",
     "dep:prost",
@@ -144,7 +146,7 @@ a2a = [
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms`. Use this when you want one flag that
 # always pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory", "crawl", "comms", "a2a"]
+full = ["documents", "memory", "crawl", "comms"]
 
 [dependencies]
 ahash = "0.8"
