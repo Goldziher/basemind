@@ -132,6 +132,12 @@ pub(crate) async fn serve(
     cancel: CancellationToken,
     tls: Option<crate::a2a::TlsPaths>,
 ) -> std::io::Result<()> {
+    // Spawn the outbound webhook delivery worker before serving. It subscribes to
+    // the message bus and POSTs task-lifecycle events to registered push-notification
+    // webhooks. Tied to the same `cancel` token, so it drains when the server does;
+    // no explicit abort is needed. `state` is cloned so it remains usable below.
+    let _worker = crate::a2a::core::webhook::spawn_delivery_worker(state.clone(), cancel.clone());
+
     match tls {
         Some(tls) => serve_tls(state, addr, cancel, tls).await,
         None => {

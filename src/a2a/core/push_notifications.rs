@@ -10,12 +10,15 @@
 //!
 //! # B4: outbound webhook delivery
 //!
-//! The actual outbound HTTP delivery (a background worker that subscribes to
-//! the message bus and POSTs task lifecycle events to each registered webhook
-//! URL, plus the SSRF guard on `create`) is deferred to phase B4. Only the
-//! config store + types are ported here; the `reqwest`-backed delivery worker
-//! and exponential-backoff retry loop are intentionally omitted. See the
-//! `// B4:` markers below for the precise extension points.
+//! The SSRF guard ([`crate::a2a::core::ssrf`]) is now applied: at create time
+//! it rejects IP-literal hosts in reserved / private / loopback / cloud-metadata
+//! ranges, and the delivery worker re-checks every DNS-resolved address with
+//! [`crate::a2a::core::ssrf::ip_is_blocked`] before POSTing (defeating DNS
+//! rebinding). The actual outbound HTTP delivery worker (subscribes to the
+//! message bus and POSTs task lifecycle events to each registered webhook URL)
+//! is still deferred to phase B4: the `reqwest`-backed delivery loop and
+//! exponential-backoff retry are intentionally omitted. See the `// B4:` markers
+//! below for the precise extension points.
 
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
@@ -107,6 +110,14 @@ pub struct PushNotificationConfig {
 
 // ── Store ───────────────────────────────────────────────────────────────────
 
+/// Maximum number of webhook configurations a single task may register.
+///
+/// Bounds the work a single bus event can fan out to: the delivery worker POSTs
+/// to each config serially with a bounded timeout + retry budget, so without a
+/// cap an authenticated registrant could attach many slow webhooks and starve
+/// the worker. 16 is well above any legitimate need.
+const MAX_PUSH_CONFIGS_PER_TASK: usize = 16;
+
 /// In-memory store of [`PushNotificationConfig`]s, indexed by task.
 #[derive(Debug, Default)]
 pub struct PushNotificationStore {
@@ -122,14 +133,19 @@ impl PushNotificationStore {
     /// Register a new webhook for `task_id` and return the populated
     /// configuration.
     ///
-    /// The URL is validated to be an absolute `http`/`https` URL. A full SSRF
-    /// guard (private-range / loopback / metadata-endpoint rejection) is part
-    /// of the B4 delivery phase and is *not* applied here.
+    /// The URL is validated to be an absolute `http`/`https` URL and run
+    /// through the SSRF guard: when the host is an IP literal it is rejected if
+    /// it falls in a reserved / private / loopback / link-local (cloud-metadata)
+    /// range. Hostname targets pass here and are re-checked against
+    /// [`crate::a2a::core::ssrf::ip_is_blocked`] on every resolved address at
+    /// delivery time.
     ///
     /// # Errors
     ///
     /// Returns [`PushNotificationError::InvalidInput`] when `url` is not a
-    /// parseable absolute URL with an `http` or `https` scheme.
+    /// parseable absolute URL with an `http` or `https` scheme, when an
+    /// IP-literal host targets a blocked address, or when `task_id` already has
+    /// [`MAX_PUSH_CONFIGS_PER_TASK`] configurations registered.
     pub fn create(
         &mut self,
         task_id: TaskId,
@@ -138,6 +154,15 @@ impl PushNotificationStore {
         authentication: Option<PushNotificationAuth>,
     ) -> Result<PushNotificationConfig, PushNotificationError> {
         validate_webhook_url(&url)?;
+
+        let existing = self.configs.get(&task_id).map_or(0, Vec::len);
+        if existing >= MAX_PUSH_CONFIGS_PER_TASK {
+            return Err(PushNotificationError::InvalidInput {
+                reason: format!(
+                    "task already has the maximum of {MAX_PUSH_CONFIGS_PER_TASK} push notification configs"
+                ),
+            });
+        }
 
         let cfg = PushNotificationConfig {
             id: PushNotificationId::new(),
@@ -183,6 +208,13 @@ impl PushNotificationStore {
     }
 
     /// Replace the entire store with `configs` (used by snapshot restore).
+    ///
+    /// # Security
+    ///
+    /// This bypasses [`validate_webhook_url`] and the per-task cap: it trusts
+    /// the supplied configs as already-vetted snapshot state. It is NOT reachable
+    /// from any remote RPC today. If a snapshot-restore RPC is ever exposed, the
+    /// restored URLs MUST be re-validated through the SSRF guard first.
     pub fn restore(&mut self, configs: Vec<PushNotificationConfig>) {
         self.configs.clear();
         for cfg in configs {
@@ -198,33 +230,20 @@ impl PushNotificationStore {
 
 // ── URL validation ──────────────────────────────────────────────────────────
 
-/// Validate that `url` is an absolute `http`/`https` webhook URL.
+/// Validate that `url` is an absolute `http`/`https` webhook URL and run it
+/// through the SSRF guard.
 ///
-/// The upstream port used the `url` crate; that crate is not enabled under
-/// the `a2a` feature, so this performs the equivalent scheme/authority check
-/// by hand. A complete SSRF guard is deferred to B4 (see module docs).
+/// Delegates to [`crate::a2a::core::ssrf::validate_webhook_url`], which performs
+/// the scheme/authority parse by hand (the `url` crate is not enabled under the
+/// `a2a` feature) and rejects IP-literal hosts in reserved / private / loopback /
+/// link-local ranges. Hostname targets are re-checked per resolved address at
+/// delivery time.
 fn validate_webhook_url(url: &str) -> Result<(), PushNotificationError> {
-    let invalid = |reason: String| PushNotificationError::InvalidInput { reason };
-
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(invalid(format!(
-            "push notification url '{url}' is invalid: missing scheme separator '://'"
-        )));
-    };
-    let scheme = scheme.to_ascii_lowercase();
-    if !matches!(scheme.as_str(), "http" | "https") {
-        return Err(invalid(format!(
-            "push notification url '{url}' must use http or https; got '{scheme}'"
-        )));
-    }
-    // Require a non-empty authority (host) component after the scheme.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    if authority.is_empty() {
-        return Err(invalid(format!(
-            "push notification url '{url}' is invalid: empty host"
-        )));
-    }
-    Ok(())
+    crate::a2a::core::ssrf::validate_webhook_url(url)
+        .map(|_target| ())
+        .map_err(|crate::a2a::core::ssrf::SsrfRejected { reason }| {
+            PushNotificationError::InvalidInput { reason }
+        })
 }
 
 // ── B4: webhook delivery ─────────────────────────────────────────────────────
@@ -324,6 +343,38 @@ mod tests {
 
         let listed = store.list(&tid);
         assert_eq!(listed.len(), 2, "must list exactly 2 configs for the task");
+    }
+
+    #[test]
+    fn create_rejects_when_per_task_cap_reached() {
+        let mut store = PushNotificationStore::new();
+        let tid = task_id();
+        for i in 0..MAX_PUSH_CONFIGS_PER_TASK {
+            store
+                .create(tid, format!("https://h{i}.example/"), String::new(), None)
+                .expect("create within cap must succeed");
+        }
+        let err = store
+            .create(
+                tid,
+                "https://overflow.example/".to_owned(),
+                String::new(),
+                None,
+            )
+            .expect_err("create past the cap must be rejected");
+        assert!(
+            matches!(err, PushNotificationError::InvalidInput { ref reason } if reason.contains("maximum")),
+            "expected a cap InvalidInput, got: {err:?}"
+        );
+        // A different task is unaffected by another task's cap.
+        store
+            .create(
+                task_id(),
+                "https://other.example/".to_owned(),
+                String::new(),
+                None,
+            )
+            .expect("a different task must still accept configs");
     }
 
     #[test]

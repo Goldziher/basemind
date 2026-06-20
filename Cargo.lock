@@ -813,6 +813,7 @@ dependencies = [
  "rayon",
  "rcgen",
  "regex",
+ "reqwest 0.13.4",
  "rmcp",
  "rmp-serde",
  "rustls",

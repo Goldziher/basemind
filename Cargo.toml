@@ -134,6 +134,7 @@ a2a = [
     "dep:tokio-stream",
     "dep:axum",
     "dep:axum-server",
+    "dep:reqwest",
     "dep:rustls",
     "dep:tower",
     "dep:tower-http",
@@ -199,6 +200,13 @@ prost = { version = "0.13", optional = true }
 prost-types = { version = "0.13", optional = true }
 rayon = "1"
 regex = "1.12.4"
+# Outbound HTTP client for the A2A push-notification (webhook) delivery worker.
+# rustls only (`default-features = false` drops reqwest's default native-tls /
+# openssl backend): the A2A TLS stack is rustls/aws-lc-rs and pulling openssl
+# in through reqwest is unacceptable. `http2` matches the h2 generation already
+# resolved; `charset` keeps response decoding working without default-tls.
+# a2a feature only. Pinned to 0.13 to share the copy kreuzcrawl already resolves.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "charset"], optional = true }
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
 # A2A TLS crypto provider. rustls is already pulled transitively, but both the
