@@ -985,6 +985,50 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("scanned");
     assert!(scanned > 0, "rescan should walk at least the fixture files");
 
+    // rescan {full:true}: forcing a full re-index must walk the working tree even though a
+    // `paths` scope is also supplied (full wins over paths). Asserts the full-scan override
+    // wiring — `scanned > 0` proves the whole tree was walked, not just the scoped path.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "rescan",
+                json!({ "full": true, "paths": ["does-not-exist.rs"] }),
+            ))
+            .await
+            .expect("rescan full"),
+    );
+    let scanned_full = body
+        .get("scanned")
+        .and_then(Value::as_u64)
+        .expect("scanned (full)");
+    assert!(
+        scanned_full > 0,
+        "rescan {{full:true}} must force a full working-tree scan even with a paths scope, \
+         got scanned={scanned_full}"
+    );
+
+    // rescan {paths:[real file]} (full:false): the scoped path must be VISITED, not silently
+    // dropped. Repo-relative request paths have to be joined to the absolute root before the
+    // scanner strips the root prefix — a bare relative path strips to nothing and the whole
+    // report comes back all-zeros (a no-op that looks like success). `a.rs` is unchanged here, so
+    // it lands in `skipped_unchanged`; asserting the report is non-empty distinguishes the fix
+    // from the relative-path no-op bug.
+    let body = decode_text(
+        &service
+            .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
+            .await
+            .expect("rescan scoped"),
+    );
+    let visited = ["scanned", "updated", "skipped_unchanged"]
+        .iter()
+        .filter_map(|k| body.get(*k).and_then(Value::as_u64))
+        .sum::<u64>();
+    assert!(
+        visited > 0,
+        "scoped rescan {{paths:[a.rs]}} must visit the path (relative paths joined to root), \
+         got all-zero report {body}"
+    );
+
     // telemetry_summary: every successful tool call we've fired in this test should be
     // recorded. Don't assert an exact count (the smoke test evolves), just that the
     // dashboard sees the activity and the per-tool breakdown isn't empty.

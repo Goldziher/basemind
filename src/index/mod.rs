@@ -147,6 +147,18 @@ impl IndexDb {
     pub fn writer(&self) -> writer::IndexWriter {
         writer::IndexWriter::new(self.clone())
     }
+
+    /// True when the secondary index holds no per-file symbol entries. Cheap — peeks at
+    /// the first key of `symbols_by_path` rather than counting.
+    ///
+    /// Used by the MCP startup auto-scan to detect a present-but-empty Fjall index (e.g. a
+    /// `views/<view>/index.fjall/` that was wiped or removed out-of-band while the msgpack
+    /// `index.msgpack` survived). In that state the in-RAM map cache looks populated but the
+    /// Fjall-backed tools (`find_references` / `search_symbols`) would silently return nothing,
+    /// so a rescan is warranted even though the RAM cache is non-empty.
+    pub fn symbols_index_is_empty(&self) -> bool {
+        self.symbols_by_path.iter().next().is_none()
+    }
 }
 
 /// Best-effort peek at the on-disk schema version without opening a full Database. Used by

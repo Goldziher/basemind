@@ -251,6 +251,8 @@ basemind query references "processFile"       # find all call sites
 basemind git blame-file src/main.rs           # show per-line blame
 basemind cache stats                          # cache stats
 basemind cache gc                             # reclaim orphaned blobs
+basemind rescan                               # full re-index (rebuild a stale/empty index)
+basemind rescan src/main.rs                   # incremental re-index of one path
 basemind watch --no-serve                     # live re-index on file change (no MCP server)
 ```
 

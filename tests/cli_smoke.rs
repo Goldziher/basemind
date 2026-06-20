@@ -188,6 +188,46 @@ fn git_working_tree_status_is_clean() {
 }
 
 #[test]
+fn rescan_full_reindexes_new_file() {
+    let dir = build_and_scan();
+    let root = dir.path();
+    // A new file the initial scan never saw.
+    std::fs::write(root.join("d.rs"), b"pub fn delta() {}\n").unwrap();
+
+    let (stdout, ok) = run(root, &["rescan", "--full", "--quiet"]);
+    assert!(ok, "rescan --full exited non-zero; stdout: {stdout}");
+
+    // The full re-index must pick up the new symbol and the new file.
+    let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
+    assert_eq!(
+        search["total"], 1,
+        "rescan --full must index the new symbol"
+    );
+    let status = assert_json_fields(root, &["query", "status"], &["file_count"]);
+    assert_eq!(
+        status["file_count"], 3,
+        "rescan --full must index the new file"
+    );
+}
+
+#[test]
+fn rescan_scoped_path_reindexes_only_that_path() {
+    let dir = build_and_scan();
+    let root = dir.path();
+    std::fs::write(root.join("d.rs"), b"pub fn delta() {}\n").unwrap();
+
+    // Incremental rescan scoped to the single new path (no --full).
+    let (stdout, ok) = run(root, &["rescan", "d.rs", "--quiet"]);
+    assert!(ok, "scoped rescan exited non-zero; stdout: {stdout}");
+
+    let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
+    assert_eq!(
+        search["total"], 1,
+        "scoped rescan must index the named path"
+    );
+}
+
+#[test]
 fn cache_stats_reports_blob_accounting() {
     let dir = build_and_scan();
     let root = dir.path();
