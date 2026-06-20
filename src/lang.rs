@@ -16,12 +16,19 @@ use tree_sitter::{Language, ParseOptions, Parser, Query, Tree};
 /// for the TypeScript compiler's biggest files) but reliably aborts known hangers.
 pub const DEFAULT_PARSE_TIMEOUT: Duration = Duration::from_millis(5_000);
 
+/// Cache of the resolved parse timeout. Initialized once per process on first call to
+/// `parse_with_default_timeout`; eliminates a `std::env::var` syscall on every file parse
+/// (called ×2 per file when eager L2 is on — once for L1, once for L2).
+static PARSE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
 fn parse_timeout_from_env() -> Duration {
-    std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(DEFAULT_PARSE_TIMEOUT)
+    *PARSE_TIMEOUT.get_or_init(|| {
+        std::env::var("BASEMIND_PARSE_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(DEFAULT_PARSE_TIMEOUT)
+    })
 }
 
 #[derive(Debug, Error)]
@@ -354,6 +361,31 @@ static QUERIES: OnceLock<RwLock<QueryMap>> = OnceLock::new();
 type CombinedL1Map = AHashMap<LangId, CachedQuery>;
 static COMBINED_L1_QUERIES: OnceLock<RwLock<CombinedL1Map>> = OnceLock::new();
 
+/// Per-capture classification for the combined L1 query. Lets `run_combined` dispatch by
+/// capture index (a `Copy` array lookup) instead of `str::starts_with` on every query match.
+///
+/// Derived once when the query is compiled and cached for process lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureClass {
+    Symbol,
+    Import,
+    Impl,
+    Other,
+}
+
+/// A compiled combined-L1 query paired with its per-capture classification table.
+///
+/// The `classes` slice has exactly `query.capture_names().len()` entries; index `i` is the
+/// class of capture index `i`. Callers read `classes[first_cap.index as usize]` to dispatch
+/// without any string comparison in the hot loop.
+pub struct ClassifiedQuery {
+    pub query: Arc<Query>,
+    pub classes: Box<[CaptureClass]>,
+}
+
+type ClassifiedL1Map = AHashMap<LangId, Option<Arc<ClassifiedQuery>>>;
+static CLASSIFIED_COMBINED_L1: OnceLock<RwLock<ClassifiedL1Map>> = OnceLock::new();
+
 /// Extract a single named query (S-expression `;; @section name`) from the .scm source.
 ///
 /// Convention: each .scm file is divided into sections marked by `;; section: <name>` lines.
@@ -678,6 +710,54 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
 
     lock.write()
         .expect("combined L1 query pool poisoned")
+        .insert(lang, cached.as_ref().map(Arc::clone));
+    Ok(cached)
+}
+
+/// Like [`try_get_combined_l1_query`] but also returns a per-capture classification table
+/// so `run_combined` can dispatch by integer index instead of `starts_with` comparisons.
+///
+/// The returned [`ClassifiedQuery`] has `classes[i]` set for every capture index `i` in the
+/// compiled query. Cached globally per language; built at most once per process per language.
+pub fn try_get_classified_combined_l1_query(
+    lang: LangId,
+) -> Result<Option<Arc<ClassifiedQuery>>, LangError> {
+    let lock = CLASSIFIED_COMBINED_L1.get_or_init(|| RwLock::new(AHashMap::new()));
+    if let Some(slot) = lock
+        .read()
+        .expect("classified L1 query pool poisoned")
+        .get(&lang)
+    {
+        return Ok(slot.as_ref().map(Arc::clone));
+    }
+
+    // Build from the same combined query — reuses the compiled Arc<Query> from the sibling
+    // cache when it already exists, otherwise compiles fresh. We call `try_get_combined_l1_query`
+    // to avoid duplicating the source-assembly logic.
+    let cached: Option<Arc<ClassifiedQuery>> = match try_get_combined_l1_query(lang)? {
+        Some(query) => {
+            let classes: Box<[CaptureClass]> = query
+                .capture_names()
+                .iter()
+                .map(|name| {
+                    if name.starts_with("symbol.") {
+                        CaptureClass::Symbol
+                    } else if name.starts_with("import.") {
+                        CaptureClass::Import
+                    } else if name.starts_with("impl.") {
+                        CaptureClass::Impl
+                    } else {
+                        CaptureClass::Other
+                    }
+                })
+                .collect();
+            Some(Arc::new(ClassifiedQuery { query, classes }))
+        }
+        None => None,
+    };
+
+    lock.write()
+        .expect("classified L1 query pool poisoned")
         .insert(lang, cached.as_ref().map(Arc::clone));
     Ok(cached)
 }
