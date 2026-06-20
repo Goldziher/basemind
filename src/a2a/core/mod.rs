@@ -14,6 +14,8 @@ pub mod bus;
 pub mod push_notifications;
 pub mod registry;
 pub mod router;
+pub mod task_facade;
 pub mod task_manager;
 pub mod task_types;
 pub mod types;
+pub mod watchdog;
