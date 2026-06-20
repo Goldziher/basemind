@@ -123,7 +123,7 @@ comms = ["dep:directories", "dep:tokio-util"]
 # src/a2a/generated/). Pulls only the gRPC runtime crates; not yet wired into the
 # server. tonic 0.12 / prost 0.13 are pinned to match the buf remote plugins
 # (neoeinstein-tonic v0.4.1 / neoeinstein-prost v0.4.0) that generated the code.
-a2a = ["dep:tonic", "dep:prost", "dep:prost-types"]
+a2a = ["dep:tonic", "dep:prost", "dep:prost-types", "dep:uuid", "dep:chrono", "dep:base64"]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms`. Use this when you want one flag that
@@ -142,8 +142,12 @@ arc-swap = "1.9.1"
 # don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
+# Base64 codec for A2A `Part::Bytes` JSON round-tripping (a2a feature only).
+base64 = { version = "0.22", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
+# Timestamps for A2A domain types (a2a feature only).
+chrono = { version = "0.4", features = ["serde"], optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 # User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
@@ -194,6 +198,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.9.0-rc.45"
 url = { version = "2", features = ["serde"], optional = true }
+# UUID-backed identity newtypes for A2A domain types (a2a feature only).
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
 
 [dev-dependencies]
 insta = "1"

@@ -753,8 +753,10 @@ dependencies = [
  "arc-swap",
  "arrow-array",
  "arrow-schema",
+ "base64 0.22.1",
  "blake3",
  "bstr",
+ "chrono",
  "clap",
  "directories",
  "fjall",
@@ -796,6 +798,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-language-pack",
  "url",
+ "uuid",
  "wiremock",
 ]
 
