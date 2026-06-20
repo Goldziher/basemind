@@ -146,7 +146,11 @@ fn resolve_impl_row_col(
     // within a file, so start_byte is a sufficient key into l1.implementations. The
     // index writer encodes exactly one record per (path, start_byte) pair, making
     // trait_name and impl_type redundant discriminants here.
-    if let Some(imp) = l1.implementations.iter().find(|i| i.start_byte == start_byte) {
+    if let Some(imp) = l1
+        .implementations
+        .iter()
+        .find(|i| i.start_byte == start_byte)
+    {
         // start_row is 0-based in the blob; emit 1-based for line numbers per editor convention.
         (imp.start_row + 1, imp.start_col)
     } else {

@@ -191,7 +191,7 @@ fn is_ipv6_documentation(ip: Ipv6Addr) -> bool {
 /// # Errors
 ///
 /// Returns [`SsrfRejected`] when the URL is malformed, uses a non-`http(s)`
-/// scheme, has an empty host, has an unparseable port, or resolves to a blocked
+/// scheme, has an empty host, has an unparsable port, or resolves to a blocked
 /// IP literal.
 pub fn validate_webhook_url(url: &str) -> Result<WebhookTarget, SsrfRejected> {
     let reject = |reason: String| SsrfRejected { reason };

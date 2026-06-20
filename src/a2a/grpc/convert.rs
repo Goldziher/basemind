@@ -514,5 +514,4 @@ mod tests {
             other => panic!("expected StatusUpdate, got: {other:?}"),
         }
     }
-
 }

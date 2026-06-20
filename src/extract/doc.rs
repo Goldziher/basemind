@@ -13,8 +13,8 @@
 use std::path::Path;
 
 use kreuzberg::LanguageDetectionConfig;
-use kreuzberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use kreuzberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
+use kreuzberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
 

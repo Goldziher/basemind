@@ -120,7 +120,6 @@ impl JsonRpcError {
             data: None,
         }
     }
-
 }
 
 // ── Convenience constructors ──────────────────────────────────────────────────
@@ -323,5 +322,4 @@ mod tests {
         assert_eq!(jsonrpc.code, INVALID_PARAMS);
         assert!(jsonrpc.message.contains("bad url"));
     }
-
 }

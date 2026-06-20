@@ -102,7 +102,7 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
 // Does NOT retry on 404 (deterministic failure). Returns error on 4xx (except retryable timeout).
 function retryWithBackoff(fn, maxAttempts = 3) {
   const delays = [1000, 2000, 4000]; // exponential: 1s, 2s, 4s
-  return async function attempt(index = 0) {
+  return (async function attempt(index = 0) {
     try {
       return await fn();
     } catch (err) {
@@ -119,11 +119,13 @@ function retryWithBackoff(fn, maxAttempts = 3) {
       }
 
       const delay = delays[index];
-      console.log(`Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`);
+      console.log(
+        `Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`,
+      );
       await new Promise((resolve) => setTimeout(resolve, delay));
       return attempt(index + 1);
     }
-  }();
+  })();
 }
 
 // Download a (small) text resource into memory, following redirects.

@@ -374,5 +374,4 @@ mod tests {
             "second delete must report no-op"
         );
     }
-
 }

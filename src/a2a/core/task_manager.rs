@@ -484,5 +484,4 @@ mod tests {
             "task must be in Canceled state after cancel()"
         );
     }
-
 }
