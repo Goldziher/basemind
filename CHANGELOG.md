@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.6.1] — 2026-06-21
+
+Patch release: blob/index/comms schema unchanged (`RELEASE_MINOR` stays 6), so no
+`.basemind/` rebuild. Fixes the Windows release build that blocked the 0.6.0 wrapper publish.
+
+### Fixed
+
+- **Windows build** — the agent-comms substrate is built on Unix domain sockets
+  (`UnixStream`/`UnixListener`, peer-cred auth) with no Windows analogue, but `comms`
+  imported `tokio::net::UnixStream` ungated, so the `--features full` `x86_64-pc-windows-msvc`
+  build failed to compile (since comms landed in 0.5.0). This failed the Windows binary job and
+  held back the npm/PyPI/Homebrew publishes. The comms surface is now gated on
+  `all(feature = "comms", unix)` — on Windows the binary compiles with comms absent; unix is
+  unchanged. 0.6.0 published to crates.io only; 0.6.1 is the first complete cross-channel release
+  of the 0.6 line.
+
 ## [0.6.0] — 2026-06-20
 
 Minor release: `RELEASE_MINOR` bumps 5 → 6, so the blob, Fjall-index, and LanceDB schema versions
