@@ -370,15 +370,13 @@ async fn subscribe_yields_status_update_when_task_progresses() {
         .expect("stream must yield")
         .expect("first item must be Ok");
 
-    // Trigger a state change via the facade.
+    // Trigger a state change via the facade. The facade exposes task
+    // transitions through `cancel_task`; cancelling a Submitted task is a valid
+    // transition that emits a `TaskStatusChanged` event onto the bus.
     let facade = svc.facade();
     let parsed: TaskId = task_id.parse().expect("task id must parse");
     facade
-        .update_status(
-            &parsed,
-            crate::a2a::core::task_types::TaskState::Working,
-            None,
-        )
+        .cancel_task(&parsed, None)
         .await
         .expect("state update must succeed");
 
@@ -393,7 +391,7 @@ async fn subscribe_yields_status_update_when_task_progresses() {
             assert_eq!(update.task_id, task_id);
             assert_eq!(
                 update.status.expect("status").state,
-                proto::TaskState::Working as i32
+                proto::TaskState::Canceled as i32
             );
         }
         other => panic!("expected StatusUpdate, got: {other:?}"),

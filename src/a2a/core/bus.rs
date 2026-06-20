@@ -14,23 +14,12 @@ use std::sync::Arc;
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::a2a::core::task_types::{ArtifactId, Task, TaskId, TaskState};
-use crate::a2a::core::types::{AgentId, AgentInfo};
+use crate::a2a::core::task_types::{Task, TaskId, TaskState};
 
 /// Events propagated through the message bus.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    /// A new agent has registered with the nexus.
-    AgentRegistered(AgentInfo),
-    /// An agent has been removed from the registry.
-    AgentDeregistered(AgentId),
-    /// An agent failed to heartbeat within the timeout window and has been
-    /// flipped to [`AgentStatus::Disconnected`](crate::a2a::core::types::AgentStatus).
-    AgentDisconnected(AgentInfo),
-    /// A previously disconnected agent resumed heartbeating and is now
-    /// [`AgentStatus::Connected`](crate::a2a::core::types::AgentStatus) again.
-    AgentReconnected(AgentInfo),
     /// A new task was created.
     ///
     /// Carries an [`Arc<Task>`] so broadcast fan-out to N subscribers bumps a
@@ -47,29 +36,14 @@ pub enum Event {
         new_state: TaskState,
         task: Arc<Task>,
     },
-    /// An artifact was added to a task.
-    ///
-    /// `artifact_id` identifies the appended artifact; `task` is the
-    /// post-mutation snapshot (shared via [`Arc`]) so consumers can serialize
-    /// it directly without re-fetching under lock.
-    TaskArtifactAdded {
-        task_id: TaskId,
-        artifact_id: ArtifactId,
-        task: Arc<Task>,
-    },
 }
 
 impl Event {
     /// The canonical event type string for SSE/WebSocket topic filtering.
     pub fn event_type(&self) -> &'static str {
         match self {
-            Self::AgentRegistered(_) => "agent_registered",
-            Self::AgentDeregistered(_) => "agent_deregistered",
-            Self::AgentDisconnected(_) => "agent_disconnected",
-            Self::AgentReconnected(_) => "agent_reconnected",
             Self::TaskCreated(_) => "task_created",
             Self::TaskStatusChanged { .. } => "task_status_changed",
-            Self::TaskArtifactAdded { .. } => "task_artifact_added",
         }
     }
 }
@@ -124,18 +98,6 @@ mod tests {
 
     use super::*;
     use crate::a2a::core::task_types::{ContextId, Task, TaskMessage, TaskState, TaskStatus};
-    use crate::a2a::core::types::{AgentId, AgentInfo, AgentStatus};
-
-    fn make_agent_info() -> AgentInfo {
-        AgentInfo {
-            id: AgentId::new(),
-            name: "test-agent".to_owned(),
-            registered_at: Utc::now(),
-            last_heartbeat_at: Utc::now(),
-            status: AgentStatus::Connected,
-            capabilities: None,
-        }
-    }
 
     fn make_task() -> Task {
         Task {
@@ -160,16 +122,16 @@ mod tests {
         let bus = MessageBus::new(16);
         let mut rx = bus.subscribe();
 
-        let info = make_agent_info();
-        bus.publish(Event::AgentRegistered(info.clone()));
+        let task = make_task();
+        bus.publish(Event::TaskCreated(Arc::new(task.clone())));
 
         let received = rx.recv().await.expect("subscriber must receive the event");
-        let Event::AgentRegistered(received_info) = received else {
-            panic!("expected AgentRegistered, got something else");
+        let Event::TaskCreated(received_task) = received else {
+            panic!("expected TaskCreated, got something else");
         };
         assert_eq!(
-            received_info.id, info.id,
-            "received agent id must match published agent id"
+            received_task.id, task.id,
+            "received task id must match published task id"
         );
     }
 
@@ -207,7 +169,7 @@ mod tests {
         let bus = MessageBus::new(16);
 
         // Publish before subscribing.
-        bus.publish(Event::AgentDeregistered(AgentId::new()));
+        bus.publish(Event::TaskCreated(Arc::new(make_task())));
 
         let mut rx = bus.subscribe();
 
@@ -224,16 +186,11 @@ mod tests {
     async fn publish_with_no_subscribers_should_not_panic() {
         let bus = MessageBus::new(16);
         // No subscribers — must complete without panicking.
-        bus.publish(Event::AgentRegistered(make_agent_info()));
         bus.publish(Event::TaskCreated(Arc::new(make_task())));
     }
 
     #[test]
     fn event_type_strings_are_stable() {
-        assert_eq!(
-            Event::AgentDeregistered(AgentId::new()).event_type(),
-            "agent_deregistered"
-        );
         assert_eq!(
             Event::TaskStatusChanged {
                 task_id: TaskId::new(),

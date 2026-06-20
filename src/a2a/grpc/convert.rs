@@ -192,19 +192,14 @@ pub(crate) fn core_task_to_proto(task: &Task) -> proto::Task {
 /// streaming envelope used by `SendStreamingMessage` / `SubscribeToTask`.
 ///
 /// Returns `None` when the event does not pertain to the requested task or
-/// is not relevant to the stream (e.g. agent or chat events). The caller is
-/// expected to supply `context_id` because the bus event carries only the
-/// task id; the context is stable across a task's lifetime so callers cache
-/// it from the initial task fetch.
-///
-/// `task` is consulted only when an artifact update arrives, to look up the
-/// artifact body that the bus event references by id alone. Pass the most
-/// recently observed task snapshot.
+/// is not relevant to the stream. The caller is expected to supply
+/// `context_id` because the bus event carries only the task id; the context is
+/// stable across a task's lifetime so callers cache it from the initial task
+/// fetch.
 pub(crate) fn task_event_to_stream_response(
     event: &Event,
     task_id: &TaskId,
     context_id: &ContextId,
-    task: Option<&Task>,
 ) -> Option<proto::StreamResponse> {
     use proto::stream_response::Payload;
 
@@ -227,27 +222,6 @@ pub(crate) fn task_event_to_stream_response(
                     task_id: tid.to_string(),
                     context_id: context_id.to_string(),
                     status: Some(status),
-                    metadata: None,
-                })),
-            })
-        }
-        Event::TaskArtifactAdded {
-            task_id: tid,
-            artifact_id,
-            ..
-        } if tid == task_id => {
-            let artifact = task?
-                .artifacts
-                .iter()
-                .find(|a| &a.id == artifact_id)
-                .map(core_artifact_to_proto)?;
-            Some(proto::StreamResponse {
-                payload: Some(Payload::ArtifactUpdate(proto::TaskArtifactUpdateEvent {
-                    task_id: tid.to_string(),
-                    context_id: context_id.to_string(),
-                    artifact: Some(artifact),
-                    append: false,
-                    last_chunk: false,
                     metadata: None,
                 })),
             })
@@ -497,7 +471,7 @@ mod tests {
     fn stream_filter_emits_task_for_matching_creation() {
         let task = make_task();
         let event = Event::TaskCreated(std::sync::Arc::new(task.clone()));
-        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None)
+        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id)
             .expect("matching task creation must produce a stream response");
         assert!(matches!(
             resp.payload,
@@ -510,7 +484,7 @@ mod tests {
         let task = make_task();
         let other = make_task();
         let event = Event::TaskCreated(std::sync::Arc::new(other));
-        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None);
+        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id);
         assert!(resp.is_none(), "unrelated task creation must not stream");
     }
 
@@ -523,7 +497,7 @@ mod tests {
             new_state: TaskState::Working,
             task: std::sync::Arc::new(task.clone()),
         };
-        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, None)
+        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id)
             .expect("matching status change must produce a stream response");
         let payload = resp
             .payload
@@ -541,58 +515,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stream_filter_ignores_agent_events() {
-        use crate::a2a::core::types::{AgentId, AgentInfo, AgentStatus};
-
-        let task = make_task();
-        let event = Event::AgentDeregistered(AgentId::new());
-        assert!(
-            task_event_to_stream_response(&event, &task.id, &task.context_id, None).is_none(),
-            "agent events must not appear on a task stream"
-        );
-
-        let info = AgentInfo {
-            id: AgentId::new(),
-            name: "x".to_owned(),
-            registered_at: chrono::Utc::now(),
-            last_heartbeat_at: chrono::Utc::now(),
-            status: AgentStatus::Connected,
-            capabilities: None,
-        };
-        let event = Event::AgentRegistered(info);
-        assert!(
-            task_event_to_stream_response(&event, &task.id, &task.context_id, None).is_none(),
-            "agent events must not appear on a task stream"
-        );
-    }
-
-    #[test]
-    fn stream_filter_emits_artifact_when_task_carries_it() {
-        use crate::a2a::core::task_types::ArtifactId;
-
-        let mut task = make_task();
-        let artifact_id = ArtifactId::new();
-        task.artifacts.push(Artifact {
-            id: artifact_id,
-            name: Some("doc".to_owned()),
-            description: None,
-            parts: vec![Part::Text {
-                text: "body".to_owned(),
-            }],
-            metadata: None,
-        });
-
-        let event = Event::TaskArtifactAdded {
-            task_id: task.id,
-            artifact_id,
-            task: std::sync::Arc::new(task.clone()),
-        };
-        let resp = task_event_to_stream_response(&event, &task.id, &task.context_id, Some(&task))
-            .expect("artifact event with snapshot must yield response");
-        assert!(matches!(
-            resp.payload,
-            Some(proto::stream_response::Payload::ArtifactUpdate(_))
-        ));
-    }
 }

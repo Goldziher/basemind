@@ -12,7 +12,7 @@ use tokio::sync::broadcast;
 
 use crate::a2a::core::bus::{Event, MessageBus};
 use crate::a2a::core::task_types::{
-    Artifact, ArtifactId, ContextId, Task, TaskFilter, TaskId, TaskMessage, TaskState, TaskStatus,
+    ContextId, Task, TaskFilter, TaskId, TaskMessage, TaskState, TaskStatus,
 };
 use crate::a2a::core::types::AgentId;
 
@@ -83,13 +83,6 @@ pub enum TaskEvent {
         /// Post-mutation task snapshot, shared via [`Arc`].
         task: Arc<Task>,
     },
-    /// An artifact was appended to a task.
-    TaskArtifactAdded {
-        task_id: TaskId,
-        artifact_id: ArtifactId,
-        /// Post-mutation task snapshot, shared via [`Arc`].
-        task: Arc<Task>,
-    },
 }
 
 // ── TaskManager ───────────────────────────────────────────────────────────────
@@ -118,35 +111,12 @@ impl TaskManager {
         }
     }
 
-    /// Subscribe to task-lifecycle events.
-    ///
-    /// The returned receiver only captures events published **after** this
-    /// call returns.
-    pub fn subscribe(&self) -> broadcast::Receiver<TaskEvent> {
-        self.event_tx.subscribe()
-    }
-
-    /// Create a new task from an initial message.
+    /// Create a new task from an initial message, with an explicit `deadline`.
     ///
     /// A fresh [`TaskId`] is always generated. When `context_id` is `None` a
     /// new [`ContextId`] is generated automatically. The task enters the
     /// [`TaskState::Submitted`] state and a [`TaskEvent::TaskCreated`] event
     /// is published.
-    pub fn create_task(
-        &mut self,
-        message: TaskMessage,
-        context_id: Option<ContextId>,
-        assignee: Option<AgentId>,
-        creator: Option<AgentId>,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Task, TaskError> {
-        self.create_task_with_deadline(message, context_id, assignee, creator, metadata, None)
-    }
-
-    /// Same as [`Self::create_task`] but accepts an explicit `deadline`.
-    ///
-    /// The watchdog periodically scans non-terminal tasks and transitions any
-    /// whose `deadline` has passed to [`TaskState::Failed`].
     pub fn create_task_with_deadline(
         &mut self,
         message: TaskMessage,
@@ -191,16 +161,6 @@ impl TaskManager {
     /// Look up a task by its [`TaskId`].
     pub fn get(&self, id: &TaskId) -> Option<&Task> {
         self.tasks.get(id)
-    }
-
-    /// Look up a task mutably by its [`TaskId`].
-    pub fn get_mut(&mut self, id: &TaskId) -> Option<&mut Task> {
-        self.tasks.get_mut(id)
-    }
-
-    /// Return all tasks in unspecified order.
-    pub fn list(&self) -> Vec<&Task> {
-        self.tasks.values().collect()
     }
 
     /// Return tasks matching `filter`.
@@ -296,46 +256,6 @@ impl TaskManager {
         Ok(Task::clone(&snapshot))
     }
 
-    /// Append an artifact to a task.
-    ///
-    /// # Errors
-    ///
-    /// - [`TaskError::TaskNotFound`] — no task with `task_id`.
-    /// - [`TaskError::TaskAlreadyTerminal`] — task is in a terminal state.
-    pub fn add_artifact(
-        &mut self,
-        task_id: &TaskId,
-        artifact: Artifact,
-    ) -> Result<Task, TaskError> {
-        let artifact_id = artifact.id;
-        let task = self
-            .tasks
-            .get_mut(task_id)
-            .ok_or_else(|| TaskError::TaskNotFound {
-                id: task_id.to_string(),
-            })?;
-
-        if task.status.state.is_terminal() {
-            return Err(TaskError::TaskAlreadyTerminal {
-                task_id: task_id.to_string(),
-                state: format!("{:?}", task.status.state),
-            });
-        }
-
-        task.artifacts.push(artifact);
-
-        // Snapshot once into an `Arc`; reuse it (refcount bump) for the event
-        // and clone the inner once for the owned return value.
-        let snapshot = Arc::new(task.clone());
-        self.publish(TaskEvent::TaskArtifactAdded {
-            task_id: *task_id,
-            artifact_id,
-            task: Arc::clone(&snapshot),
-        });
-
-        Ok(Task::clone(&snapshot))
-    }
-
     /// Cancel a task by transitioning it to [`TaskState::Canceled`].
     ///
     /// # Errors
@@ -347,34 +267,6 @@ impl TaskManager {
         message: Option<TaskMessage>,
     ) -> Result<Task, TaskError> {
         self.update_status(task_id, TaskState::Canceled, message)
-    }
-
-    /// Return active (non-terminal) tasks assigned to `agent_id`.
-    ///
-    /// Terminal states are [`TaskState::Completed`], [`TaskState::Canceled`],
-    /// [`TaskState::Failed`], and [`TaskState::Rejected`].
-    pub fn tasks_for_agent(&self, agent_id: &AgentId) -> Vec<&Task> {
-        self.tasks
-            .values()
-            .filter(|t| t.assignee.as_ref() == Some(agent_id) && !t.status.state.is_terminal())
-            .collect()
-    }
-
-    /// Clear all task state and repopulate from `tasks`.
-    ///
-    /// Used during daemon startup to restore persisted state. No events are
-    /// published.
-    pub fn restore(&mut self, tasks: Vec<Task>) {
-        self.tasks.clear();
-        self.context_index.clear();
-
-        for task in tasks {
-            self.context_index
-                .entry(task.context_id)
-                .or_default()
-                .push(task.id);
-            self.tasks.insert(task.id, task);
-        }
     }
 
     // ── private helpers ───────────────────────────────────────────────────────
@@ -397,15 +289,6 @@ impl TaskManager {
                 new_state: *new_state,
                 task: Arc::clone(task),
             },
-            TaskEvent::TaskArtifactAdded {
-                task_id,
-                artifact_id,
-                task,
-            } => Event::TaskArtifactAdded {
-                task_id: *task_id,
-                artifact_id: *artifact_id,
-                task: Arc::clone(task),
-            },
         };
         self.bus.publish(bus_event);
         // Task-scoped channel. SendError on a tokio broadcast means no
@@ -414,7 +297,6 @@ impl TaskManager {
             let event_type = match &dropped {
                 TaskEvent::TaskCreated(_) => "task_created",
                 TaskEvent::TaskStatusChanged { .. } => "task_status_changed",
-                TaskEvent::TaskArtifactAdded { .. } => "task_artifact_added",
             };
             tracing::trace!(event_type, "no task-event subscribers; event dropped");
         }
@@ -445,26 +327,14 @@ mod tests {
         }
     }
 
-    fn make_artifact() -> Artifact {
-        Artifact {
-            id: ArtifactId::new(),
-            name: Some("output.txt".to_owned()),
-            description: None,
-            parts: vec![Part::Text {
-                text: "result".to_owned(),
-            }],
-            metadata: None,
-        }
-    }
-
-    // ── create_task ───────────────────────────────────────────────────────────
+    // ── create_task_with_deadline ─────────────────────────────────────────────
 
     #[tokio::test]
     async fn create_task_succeeds() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
-            .expect("create_task must succeed");
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
+            .expect("create_task_with_deadline must succeed");
 
         assert_eq!(
             task.status.state,
@@ -482,10 +352,10 @@ mod tests {
     async fn create_task_generates_context_id_when_none() {
         let mut mgr = make_manager();
         let task1 = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("first create_task must succeed");
         let task2 = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("second create_task must succeed");
 
         assert_ne!(
@@ -500,7 +370,7 @@ mod tests {
     async fn get_returns_created_task() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("create_task must succeed");
 
         let found = mgr.get(&task.id).expect("get must return the created task");
@@ -513,10 +383,10 @@ mod tests {
     async fn list_filtered_by_state() {
         let mut mgr = make_manager();
         let task1 = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("first create must succeed");
         let task2 = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("second create must succeed");
 
         mgr.update_status(&task2.id, TaskState::Working, None)
@@ -539,7 +409,7 @@ mod tests {
     async fn update_status_valid_transition() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("create must succeed");
 
         let updated = mgr
@@ -557,7 +427,7 @@ mod tests {
     async fn update_status_invalid_transition() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("create must succeed");
 
         let err = mgr
@@ -574,7 +444,7 @@ mod tests {
     async fn update_status_terminal_rejects() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("create must succeed");
 
         mgr.update_status(&task.id, TaskState::Working, None)
@@ -592,40 +462,13 @@ mod tests {
         );
     }
 
-    // ── add_artifact ──────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn add_artifact_succeeds() {
-        let mut mgr = make_manager();
-        let task = mgr
-            .create_task(make_message(), None, None, None, None)
-            .expect("create must succeed");
-
-        let artifact = make_artifact();
-        let artifact_id = artifact.id;
-
-        let updated = mgr
-            .add_artifact(&task.id, artifact)
-            .expect("add_artifact must succeed");
-
-        assert_eq!(
-            updated.artifacts.len(),
-            1,
-            "task must have exactly one artifact"
-        );
-        assert_eq!(
-            updated.artifacts[0].id, artifact_id,
-            "artifact id must match"
-        );
-    }
-
     // ── cancel ────────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn cancel_from_working_succeeds() {
         let mut mgr = make_manager();
         let task = mgr
-            .create_task(make_message(), None, None, None, None)
+            .create_task_with_deadline(make_message(), None, None, None, None, None)
             .expect("create must succeed");
 
         mgr.update_status(&task.id, TaskState::Working, None)
@@ -642,55 +485,4 @@ mod tests {
         );
     }
 
-    // ── tasks_for_agent ───────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn tasks_for_agent_returns_active_only() {
-        let mut mgr = make_manager();
-        let agent = AgentId::new();
-
-        let task1 = mgr
-            .create_task(make_message(), None, Some(agent), None, None)
-            .expect("create task1 must succeed");
-        let task2 = mgr
-            .create_task(make_message(), None, Some(agent), None, None)
-            .expect("create task2 must succeed");
-
-        // Complete task1: Submitted → Working → Completed
-        mgr.update_status(&task1.id, TaskState::Working, None)
-            .expect("Submitted → Working");
-        mgr.update_status(&task1.id, TaskState::Completed, None)
-            .expect("Working → Completed");
-
-        let active = mgr.tasks_for_agent(&agent);
-        assert_eq!(
-            active.len(),
-            1,
-            "only the non-terminal task must be returned"
-        );
-        assert_eq!(active[0].id, task2.id, "the active task must be task2");
-    }
-
-    // ── restore ───────────────────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn restore_populates_tasks() {
-        let mut mgr = make_manager();
-        let original = mgr
-            .create_task(make_message(), None, None, None, None)
-            .expect("create must succeed");
-        let snapshot = vec![original.clone()];
-
-        let mut mgr2 = make_manager();
-        mgr2.restore(snapshot);
-
-        let found = mgr2
-            .get(&original.id)
-            .expect("restored task must be retrievable by id");
-        assert_eq!(found.id, original.id, "restored task id must match");
-        assert_eq!(
-            found.context_id, original.context_id,
-            "restored context_id must match"
-        );
-    }
 }

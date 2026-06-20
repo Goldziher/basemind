@@ -206,18 +206,13 @@ where
     });
 }
 
-/// Resolve the [`TaskId`] a bus event concerns, if any.
+/// Resolve the [`TaskId`] a bus event concerns.
 ///
-/// Only the three task variants carry a task; the agent-lifecycle variants
-/// return `None`.
+/// Both bus variants carry a task; the function returns its id.
 fn task_id_for_event(event: &Event) -> Option<TaskId> {
     let task: &Task = match event {
         Event::TaskCreated(task) => task,
-        Event::TaskStatusChanged { task, .. } | Event::TaskArtifactAdded { task, .. } => task,
-        Event::AgentRegistered(_)
-        | Event::AgentDeregistered(_)
-        | Event::AgentDisconnected(_)
-        | Event::AgentReconnected(_) => return None,
+        Event::TaskStatusChanged { task, .. } => task,
     };
     Some(task.id)
 }
@@ -600,13 +595,6 @@ mod tests {
         );
         // The listener must NOT have accepted a connection; cancel it.
         handle.abort();
-    }
-
-    /// Agent-lifecycle events carry no task and must not map to a task id.
-    #[test]
-    fn agent_events_have_no_task_id() {
-        use crate::a2a::core::types::AgentId;
-        assert!(task_id_for_event(&Event::AgentDeregistered(AgentId::new())).is_none());
     }
 
     /// Task events expose their task id for config lookup.
