@@ -19,9 +19,11 @@
 //! and the connect cannot redirect the request to a private host.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::StatusCode;
+use tokio::sync::Semaphore;
 use tokio::sync::broadcast::error::RecvError;
 use tokio_util::sync::CancellationToken;
 
@@ -44,6 +46,19 @@ const BACKOFF_BASE_MS: u64 = 200;
 
 /// Header carrying the per-subscription correlation token.
 const NOTIFICATION_TOKEN_HEADER: &str = "X-Basemind-Notification-Token";
+
+/// Upper bound on webhook deliveries running concurrently across the whole
+/// worker.
+///
+/// Each individual delivery (one config × its retry loop) acquires a permit
+/// before doing any network work and releases it on completion. This caps the
+/// total number of in-flight HTTP requests — and the memory of their bodies —
+/// regardless of how many tasks fire events at once. Deliveries are spawned as
+/// detached tasks that acquire the permit *inside* the task, so the bus
+/// `recv()` loop never blocks on a slow endpoint: it keeps draining events
+/// while excess deliveries queue on the semaphore. 32 comfortably covers the
+/// per-task config cap (16) plus headroom for a handful of concurrent tasks.
+const MAX_INFLIGHT_DELIVERIES: usize = 32;
 
 /// Spawn the background webhook-delivery worker.
 ///
@@ -68,6 +83,9 @@ pub fn spawn_delivery_worker(
             return;
         }
 
+        // Shared across every spawned delivery to cap total in-flight requests.
+        let permits = Arc::new(Semaphore::new(MAX_INFLIGHT_DELIVERIES));
+
         let mut rx = state.bus.subscribe();
         loop {
             tokio::select! {
@@ -76,7 +94,7 @@ pub fn spawn_delivery_worker(
                     return;
                 }
                 received = rx.recv() => match received {
-                    Ok(event) => handle_event(&state, event).await,
+                    Ok(event) => handle_event(&state, &permits, event).await,
                     Err(RecvError::Lagged(skipped)) => {
                         tracing::warn!(
                             skipped,
@@ -107,12 +125,16 @@ fn build_base_client() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
-/// Map a single bus event to its task and deliver it to every registered config.
+/// Map a single bus event to its task and fan delivery out to every config.
 ///
 /// Agent-lifecycle events carry no task and are ignored. The configs are cloned
 /// out from under the read lock so the [`RwLock`](tokio::sync::RwLock) guard is
-/// never held across an `.await`.
-async fn handle_event(state: &A2aState, event: Event) {
+/// never held across an `.await`. The only `.await` in this function is the
+/// (cheap, network-free) store read — the actual deliveries are dispatched to
+/// detached tasks via [`spawn_deliveries`] so the caller (the bus `recv()`
+/// loop) returns to draining events immediately instead of blocking on slow
+/// endpoints.
+async fn handle_event(state: &A2aState, permits: &Arc<Semaphore>, event: Event) {
     let Some(task_id) = task_id_for_event(&event) else {
         return;
     };
@@ -125,18 +147,63 @@ async fn handle_event(state: &A2aState, event: Event) {
         return;
     }
 
-    // Serialize the event once; every config receives the identical body.
-    let body = match serde_json::to_vec(&event) {
-        Ok(body) => body,
+    // Serialize the event once; every config receives the identical body. The
+    // body is shared (`Arc`) into each per-config task rather than cloned.
+    let body: Arc<[u8]> = match serde_json::to_vec(&event) {
+        Ok(body) => Arc::from(body.into_boxed_slice()),
         Err(error) => {
             tracing::error!(%error, %task_id, "failed to serialize bus event for webhook delivery");
             return;
         }
     };
 
-    for config in &configs {
-        deliver_with_retries(config, &body).await;
+    spawn_deliveries(permits, configs, body);
+}
+
+/// Dispatch one detached, semaphore-bounded delivery task per config.
+///
+/// Each task acquires a permit from `permits` *before* doing any network work,
+/// so the total number of in-flight deliveries never exceeds
+/// [`MAX_INFLIGHT_DELIVERIES`]. The permit is acquired inside the spawned task
+/// (not here), so this function returns immediately even when all permits are
+/// taken — the excess tasks simply queue on the semaphore while the caller goes
+/// back to draining the bus. Detached tasks are fire-and-forget: on shutdown
+/// they either finish or are dropped with the runtime, leaking nothing.
+fn spawn_deliveries(
+    permits: &Arc<Semaphore>,
+    configs: Vec<PushNotificationConfig>,
+    body: Arc<[u8]>,
+) {
+    for config in configs {
+        let body = Arc::clone(&body);
+        spawn_bounded(permits, move || async move {
+            deliver_with_retries(&config, &body).await;
+        });
     }
+}
+
+/// Spawn `work` as a detached task that holds a [`MAX_INFLIGHT_DELIVERIES`]
+/// semaphore permit for its whole duration.
+///
+/// The permit is acquired *inside* the spawned task, so this returns at once
+/// even when the semaphore is saturated; the queued tasks wait on the permit
+/// rather than the caller. Factoring the spawn/permit dance out keeps it
+/// directly unit-testable (the production path passes the real delivery future;
+/// tests pass a delaying future to prove the fan-out runs concurrently).
+fn spawn_bounded<Work, Fut>(permits: &Arc<Semaphore>, work: Work)
+where
+    Work: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
+    let permits = Arc::clone(permits);
+    tokio::spawn(async move {
+        // The semaphore is never closed in production, so `acquire` only errors
+        // on close; treat that as "shutting down" and drop the work.
+        let Ok(_permit) = permits.acquire().await else {
+            return;
+        };
+        work().await;
+    });
 }
 
 /// Resolve the [`TaskId`] a bus event concerns, if any.
