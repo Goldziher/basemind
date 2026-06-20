@@ -27,7 +27,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 # Poll cadence (seconds), clamped to a sane floor so a misconfig cannot busy-loop.
 INTERVAL="${BASEMIND_COMMS_POLL_SECS:-15}"
 case "$INTERVAL" in
-  '' | *[!0-9]*) INTERVAL=15 ;;
+'' | *[!0-9]*) INTERVAL=15 ;;
 esac
 [ "$INTERVAL" -ge 5 ] 2>/dev/null || INTERVAL=5
 
