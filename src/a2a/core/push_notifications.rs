@@ -1,0 +1,376 @@
+//! Webhook push-notification configuration store for tasks.
+//!
+//! Implements the storage half of the four `*PushNotificationConfig` RPCs
+//! from the A2A spec: per-task webhook configuration CRUD plus snapshot
+//! save/restore. Configurations are kept in [`PushNotificationStore`],
+//! indexed by [`TaskId`].
+//!
+//! The store is intentionally not wrapped in `Arc`/`RwLock`; locking belongs
+//! at the server layer.
+//!
+//! # B4: outbound webhook delivery
+//!
+//! The actual outbound HTTP delivery (a background worker that subscribes to
+//! the message bus and POSTs task lifecycle events to each registered webhook
+//! URL, plus the SSRF guard on `create`) is deferred to phase B4. Only the
+//! config store + types are ported here; the `reqwest`-backed delivery worker
+//! and exponential-backoff retry loop are intentionally omitted. See the
+//! `// B4:` markers below for the precise extension points.
+
+use ahash::AHashMap;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::a2a::core::task_types::TaskId;
+
+// ── Error ───────────────────────────────────────────────────────────────────
+
+/// Errors raised while validating or mutating push-notification config.
+#[derive(Debug, thiserror::Error)]
+pub enum PushNotificationError {
+    /// External input failed validation (e.g. a malformed or non-`http(s)`
+    /// webhook URL).
+    #[error("invalid input: {reason}")]
+    InvalidInput {
+        /// Human-readable description of what was rejected.
+        reason: String,
+    },
+}
+
+// ── ID newtype ──────────────────────────────────────────────────────────────
+
+/// Identifier for a single push-notification configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PushNotificationId(Uuid);
+
+impl PushNotificationId {
+    /// Mint a new random identifier.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+impl Default for PushNotificationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Display for PushNotificationId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::str::FromStr for PushNotificationId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self(s.parse()?))
+    }
+}
+
+// ── Authentication ──────────────────────────────────────────────────────────
+
+/// HTTP authentication credentials used when delivering a webhook.
+///
+/// Currently only `Bearer` and `Basic` schemes are recognised by the (B4)
+/// delivery worker; other schemes are still stored and would be emitted
+/// verbatim in an `Authorization` header.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushNotificationAuth {
+    /// HTTP authentication scheme name (case-insensitive per RFC 9110).
+    pub scheme: String,
+    /// Credential payload — format depends on the scheme.
+    pub credentials: String,
+}
+
+// ── Config ──────────────────────────────────────────────────────────────────
+
+/// A single webhook configuration attached to a task.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushNotificationConfig {
+    /// Unique identifier for this configuration.
+    pub id: PushNotificationId,
+    /// Task this configuration is bound to.
+    pub task_id: TaskId,
+    /// Absolute URL to which lifecycle events are POSTed.
+    pub url: String,
+    /// Opaque token forwarded as `X-Basemind-Notification-Token` so the
+    /// receiver can correlate calls to a specific subscription.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token: String,
+    /// Optional `Authorization` header credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<PushNotificationAuth>,
+}
+
+// ── Store ───────────────────────────────────────────────────────────────────
+
+/// In-memory store of [`PushNotificationConfig`]s, indexed by task.
+#[derive(Debug, Default)]
+pub struct PushNotificationStore {
+    configs: AHashMap<TaskId, Vec<PushNotificationConfig>>,
+}
+
+impl PushNotificationStore {
+    /// Create an empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a new webhook for `task_id` and return the populated
+    /// configuration.
+    ///
+    /// The URL is validated to be an absolute `http`/`https` URL. A full SSRF
+    /// guard (private-range / loopback / metadata-endpoint rejection) is part
+    /// of the B4 delivery phase and is *not* applied here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushNotificationError::InvalidInput`] when `url` is not a
+    /// parseable absolute URL with an `http` or `https` scheme.
+    pub fn create(
+        &mut self,
+        task_id: TaskId,
+        url: String,
+        token: String,
+        authentication: Option<PushNotificationAuth>,
+    ) -> Result<PushNotificationConfig, PushNotificationError> {
+        validate_webhook_url(&url)?;
+
+        let cfg = PushNotificationConfig {
+            id: PushNotificationId::new(),
+            task_id,
+            url,
+            token,
+            authentication,
+        };
+        self.configs.entry(task_id).or_default().push(cfg.clone());
+        Ok(cfg)
+    }
+
+    /// Fetch a single configuration by `(task_id, id)`.
+    pub fn get(
+        &self,
+        task_id: &TaskId,
+        id: &PushNotificationId,
+    ) -> Option<&PushNotificationConfig> {
+        self.configs.get(task_id)?.iter().find(|c| &c.id == id)
+    }
+
+    /// Return every configuration registered against `task_id`.
+    pub fn list(&self, task_id: &TaskId) -> Vec<PushNotificationConfig> {
+        self.configs.get(task_id).cloned().unwrap_or_default()
+    }
+
+    /// Delete the configuration `(task_id, id)`. Returns `true` when a
+    /// configuration was removed.
+    pub fn delete(&mut self, task_id: &TaskId, id: &PushNotificationId) -> bool {
+        let Some(v) = self.configs.get_mut(task_id) else {
+            return false;
+        };
+        let len_before = v.len();
+        v.retain(|c| &c.id != id);
+        let removed = v.len() < len_before;
+        if v.is_empty() {
+            self.configs.remove(task_id);
+        }
+        removed
+    }
+
+    /// Replace the entire store with `configs` (used by snapshot restore).
+    pub fn restore(&mut self, configs: Vec<PushNotificationConfig>) {
+        self.configs.clear();
+        for cfg in configs {
+            self.configs.entry(cfg.task_id).or_default().push(cfg);
+        }
+    }
+
+    /// Flatten every stored configuration for snapshot persistence.
+    pub fn all(&self) -> Vec<PushNotificationConfig> {
+        self.configs.values().flatten().cloned().collect()
+    }
+}
+
+// ── URL validation ──────────────────────────────────────────────────────────
+
+/// Validate that `url` is an absolute `http`/`https` webhook URL.
+///
+/// The upstream port used the `url` crate; that crate is not enabled under
+/// the `a2a` feature, so this performs the equivalent scheme/authority check
+/// by hand. A complete SSRF guard is deferred to B4 (see module docs).
+fn validate_webhook_url(url: &str) -> Result<(), PushNotificationError> {
+    let invalid = |reason: String| PushNotificationError::InvalidInput { reason };
+
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Err(invalid(format!(
+            "push notification url '{url}' is invalid: missing scheme separator '://'"
+        )));
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(invalid(format!(
+            "push notification url '{url}' must use http or https; got '{scheme}'"
+        )));
+    }
+    // Require a non-empty authority (host) component after the scheme.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(invalid(format!(
+            "push notification url '{url}' is invalid: empty host"
+        )));
+    }
+    if scheme.is_empty() {
+        return Err(invalid(format!(
+            "push notification url '{url}' is invalid: empty scheme"
+        )));
+    }
+    Ok(())
+}
+
+// ── B4: webhook delivery ─────────────────────────────────────────────────────
+//
+// B4: the outbound HTTP delivery worker is intentionally not ported in this
+// phase. The trumpet original spawned a `tokio` task that subscribed to the
+// `MessageBus`, mapped each `Event` to its `TaskId`, looked up the matching
+// configs in this store, and POSTed the serialized event to every registered
+// webhook URL via `reqwest` with an exponential-backoff retry loop
+// (`DELIVERY_TIMEOUT_SECS` / `MAX_RETRIES`) and an `X-Basemind-Notification-
+// Token` + `Authorization` header. That code requires the `reqwest`
+// dependency (absent from the `a2a` feature today) and the SSRF guard, both of
+// which land in phase B4. When B4 ports it, reintroduce:
+//   - `spawn_delivery_worker(store, bus, client) -> JoinHandle<()>`
+//   - `task_id_for_event(&Event) -> Option<TaskId>`
+//   - `deliver_with_retries` / `deliver_once`
+// and add the matching live-HTTP integration tests dropped below.
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // B4: the two trumpet `#[tokio::test]`s that stood up an in-process TCP
+    // listener to assert `deliver_once` round-trips headers + body
+    // (`deliver_once_succeeds_on_2xx`, `deliver_once_returns_error_on_4xx`)
+    // are dropped here — they exercise live HTTP delivery, which is omitted
+    // until B4. The config-store tests below are ported verbatim.
+
+    fn task_id() -> TaskId {
+        TaskId::new()
+    }
+
+    #[test]
+    fn create_and_get_round_trip() {
+        let mut store = PushNotificationStore::new();
+        let tid = task_id();
+        let cfg = store
+            .create(
+                tid,
+                "https://example.com/webhook".to_owned(),
+                "tok".to_owned(),
+                None,
+            )
+            .expect("create must succeed");
+
+        let fetched = store.get(&tid, &cfg.id).expect("must find created config");
+        assert_eq!(fetched, &cfg, "round-trip must yield identical config");
+    }
+
+    #[test]
+    fn create_rejects_non_http_url() {
+        let mut store = PushNotificationStore::new();
+        let err = store
+            .create(
+                task_id(),
+                "ftp://example.com/x".to_owned(),
+                String::new(),
+                None,
+            )
+            .expect_err("non-http url must be rejected");
+        assert!(
+            matches!(err, PushNotificationError::InvalidInput { ref reason } if reason.contains("http")),
+            "expected InvalidInput about http scheme, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn create_rejects_malformed_url() {
+        let mut store = PushNotificationStore::new();
+        let err = store
+            .create(task_id(), "not a url".to_owned(), String::new(), None)
+            .expect_err("invalid url must be rejected");
+        assert!(matches!(err, PushNotificationError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn list_returns_all_for_task() {
+        let mut store = PushNotificationStore::new();
+        let tid = task_id();
+        store
+            .create(tid, "https://a.example/".to_owned(), String::new(), None)
+            .unwrap();
+        store
+            .create(tid, "https://b.example/".to_owned(), String::new(), None)
+            .unwrap();
+        // Different task — must not appear.
+        store
+            .create(
+                task_id(),
+                "https://c.example/".to_owned(),
+                String::new(),
+                None,
+            )
+            .unwrap();
+
+        let listed = store.list(&tid);
+        assert_eq!(listed.len(), 2, "must list exactly 2 configs for the task");
+    }
+
+    #[test]
+    fn delete_removes_config_and_returns_true() {
+        let mut store = PushNotificationStore::new();
+        let tid = task_id();
+        let cfg = store
+            .create(tid, "https://x.example/".to_owned(), String::new(), None)
+            .unwrap();
+        assert!(store.delete(&tid, &cfg.id), "delete must report success");
+        assert!(
+            store.get(&tid, &cfg.id).is_none(),
+            "config must be gone after delete"
+        );
+        assert!(
+            !store.delete(&tid, &cfg.id),
+            "second delete must report no-op"
+        );
+    }
+
+    #[test]
+    fn restore_replaces_existing_state() {
+        let mut store = PushNotificationStore::new();
+        store
+            .create(
+                task_id(),
+                "https://a.example/".to_owned(),
+                String::new(),
+                None,
+            )
+            .unwrap();
+
+        let tid = task_id();
+        let cfg = PushNotificationConfig {
+            id: PushNotificationId::new(),
+            task_id: tid,
+            url: "https://restored.example/".to_owned(),
+            token: String::new(),
+            authentication: None,
+        };
+        store.restore(vec![cfg.clone()]);
+
+        let listed = store.list(&tid);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], cfg);
+        assert_eq!(store.all().len(), 1, "previous state must be cleared");
+    }
+}
