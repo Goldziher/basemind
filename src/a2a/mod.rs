@@ -5,6 +5,7 @@
 //! `proto/a2a/v1/a2a.proto`. Nothing here is wired into the running server yet;
 //! later phases build the service implementation on top of these types.
 
+pub(crate) mod core;
 pub mod proto;
 
 /// Crate-internal handle on the generated `lf.a2a.v1` package (prost message structs plus the
