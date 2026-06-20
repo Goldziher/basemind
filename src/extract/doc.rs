@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use kreuzberg::LanguageDetectionConfig;
-use kreuzberg::core::config::ExtractionConfig;
+use kreuzberg::core::config::{ConcurrencyConfig, ExtractionConfig};
 use kreuzberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
 use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
@@ -213,12 +213,25 @@ impl DocConfig {
         let keywords = self.kreuzberg_keywords();
         let ner = self.kreuzberg_ner();
         let summarization = self.kreuzberg_summarization();
+        // Tell kreuzberg to use whatever rayon pool is already live — basemind's
+        // scanner owns the global pool (initialized lazily by par_iter). Without
+        // this, kreuzberg calls `rayon::ThreadPoolBuilder::build_global` with
+        // `num_cpus.min(8)` on its first use, which caps the pool to 8 threads
+        // on machines with more cores (e.g. M-chip Macs have 10–14 logical CPUs).
+        // Passing `rayon::current_num_threads()` here either uses the already-
+        // initialized pool size (no-op inside `call_once`) or, if kreuzberg is
+        // first, sets the pool to the rayon default rather than kreuzberg's min(8)
+        // cap.
+        let concurrency = Some(ConcurrencyConfig {
+            max_threads: Some(rayon::current_num_threads()),
+        });
         ExtractionConfig {
             chunking: Some(chunking),
             language_detection,
             keywords,
             ner,
             summarization,
+            concurrency,
             ..Default::default()
         }
     }

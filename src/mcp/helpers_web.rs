@@ -16,6 +16,8 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt as _;
+use futures::stream::FuturesUnordered;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
@@ -228,12 +230,11 @@ pub(super) async fn run_web_crawl(
     state: &ServerState,
     params: WebCrawlParams,
 ) -> Result<CallToolResult, McpError> {
-    // Apply the per-call max_pages / max_depth overrides by building a one-shot
-    // engine from the server config with those fields replaced. kreuzcrawl bakes
-    // the caps into the engine handle, so a per-call override needs its own
-    // engine; `None` overrides inherit the server `[crawl]` default. Make sure
-    // the shared engine exists before paying for a per-call one so the error
-    // surface matches the other web tools.
+    // When both overrides are None reuse the shared engine — no config clone,
+    // no new engine construction. When either override is set, build a one-shot
+    // engine from a cloned config (kreuzcrawl bakes caps into the engine handle).
+    // Validate the shared engine is live either way so the error surface matches
+    // the other web tools.
     engine(state)?;
     // Reject zero overrides at the boundary: the JSON schema declares `min = 1`
     // for both, but a hand-crafted MCP request can still send `0`, which would
@@ -241,10 +242,19 @@ pub(super) async fn run_web_crawl(
     // `None` keeps the server default.
     reject_zero_override("max_pages", params.max_pages)?;
     reject_zero_override("max_depth", params.max_depth)?;
-    let engine = per_call_engine(state, params.max_pages, params.max_depth)?;
+    // `engine` borrow must outlive the crawl call; hold in a local so the
+    // `Cow` borrow of the shared handle compiles without a use-after-free.
+    let per_call_handle;
+    let engine_ref = if params.max_pages.is_none() && params.max_depth.is_none() {
+        // Zero-override fast path: borrow the already-initialized shared handle.
+        engine(state)?
+    } else {
+        per_call_handle = per_call_engine(state, params.max_pages, params.max_depth)?;
+        &per_call_handle
+    };
     let url_str = params.url.as_str().to_string();
 
-    let crawl_outcome = kreuzcrawl::crawl(&engine, &url_str)
+    let crawl_outcome = kreuzcrawl::crawl(engine_ref, &url_str)
         .await
         .map_err(|e| mcp_internal("kreuzcrawl crawl", e))?;
 
@@ -256,16 +266,32 @@ pub(super) async fn run_web_crawl(
         .clone()
         .unwrap_or_else(|| default_scope(&params.url));
 
+    // Maximum concurrent ONNX embed + LanceDB write tasks per `web_crawl` call.
+    // Each task runs on a blocking thread. The semaphore caps active tasks so
+    // the blocking pool doesn't exhaust under large crawls. `LanceStore` wraps
+    // a current-thread tokio runtime; tokio's docs confirm that `block_on` on a
+    // current-thread runtime IS safe to call concurrently from multiple threads —
+    // the first caller "owns" the driver; other callers hook into it.
+    const CRAWL_INDEX_CONCURRENCY: usize = 4;
+
     let pages_visited = crawl_outcome.pages.len();
     let lance = lance_store(state).await?;
     let embedder = embedder(state).await?;
-    let documents_cfg = state.config.documents.clone();
+    // Hoist the two chunking scalars out once rather than cloning the full
+    // `DocumentsConfig` (which contains several `Vec<String>` + `BTreeMap`)
+    // once per page closure.
+    let documents_cfg = Arc::new(state.config.documents.clone());
 
     let mut total_chunks = 0usize;
     let mut pages_indexed = 0usize;
-    let mut outcomes: Vec<WebCrawlPageOutcome> = Vec::with_capacity(crawl_outcome.pages.len());
+    // Track outcomes in insertion order. SSRF-rejected pages are written
+    // directly as `Some`; indexing futures write their slot on completion.
+    let mut outcomes: Vec<Option<WebCrawlPageOutcome>> =
+        Vec::with_capacity(crawl_outcome.pages.len());
+    let mut futs: FuturesUnordered<_> = FuturesUnordered::new();
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(CRAWL_INDEX_CONCURRENCY));
 
-    for page in crawl_outcome.pages {
+    for (slot, page) in crawl_outcome.pages.into_iter().enumerate() {
         // POST-FETCH SSRF guard (defence-in-depth): a crawl can follow links /
         // redirects from a public seed onto a private host. Re-validate the URL
         // each page actually came from and skip indexing it when it resolves to
@@ -277,13 +303,13 @@ pub(super) async fn run_web_crawl(
                 url = %page.normalized_url,
                 "web_crawl: skipping private/loopback page reached via crawl"
             );
-            outcomes.push(WebCrawlPageOutcome {
+            outcomes.push(Some(WebCrawlPageOutcome {
                 url: page.normalized_url,
                 status_code: page.status_code,
                 chunks_indexed: 0,
                 indexed: false,
                 error: Some(error.message.to_string()),
-            });
+            }));
             continue;
         }
 
@@ -308,58 +334,78 @@ pub(super) async fn run_web_crawl(
 
         let lance_for_block = Arc::clone(&lance);
         let embedder_for_block = Arc::clone(&embedder);
-        let docs_for_block = documents_cfg.clone();
+        // Arc clone = one atomic increment per page (vs a full DocumentsConfig
+        // deep clone). The async closure below accesses it with a shared borrow.
+        let docs_for_block = Arc::clone(&documents_cfg);
+        let sem = Arc::clone(&semaphore);
         let scope_for_block = page_scope;
         let path_for_block = page.normalized_url.clone();
         let mime_for_block = page.content_type.clone();
+        let status_code = page.status_code;
+        let normalized_url = page.normalized_url.clone();
 
-        let res = tokio::task::spawn_blocking(move || {
-            index_page(
-                lance_for_block.as_ref(),
-                &embedder_for_block,
-                &docs_for_block,
-                &scope_for_block,
-                &path_for_block,
-                &mime_for_block,
-                &body_text,
-            )
-        })
-        .await;
+        // Reserve a slot now; the future writes its `(slot, outcome)` pair.
+        outcomes.push(None);
 
-        let outcome = match res {
-            Ok(Ok(indexed)) => {
-                if indexed.chunks_indexed > 0 {
-                    pages_indexed += 1;
-                    total_chunks += indexed.chunks_indexed;
-                }
-                WebCrawlPageOutcome {
-                    url: page.normalized_url,
-                    status_code: page.status_code,
+        futs.push(async move {
+            // Acquire the semaphore before entering the blocking pool so at
+            // most CRAWL_INDEX_CONCURRENCY tasks are active simultaneously.
+            let _permit = sem.acquire().await;
+            let res = tokio::task::spawn_blocking(move || {
+                index_page(
+                    lance_for_block.as_ref(),
+                    &embedder_for_block,
+                    &docs_for_block,
+                    &scope_for_block,
+                    &path_for_block,
+                    &mime_for_block,
+                    &body_text,
+                )
+            })
+            .await;
+            let outcome = match res {
+                Ok(Ok(indexed)) => WebCrawlPageOutcome {
+                    url: normalized_url,
+                    status_code,
                     chunks_indexed: indexed.chunks_indexed,
                     indexed: indexed.chunks_indexed > 0,
                     error: None,
+                },
+                Ok(Err(error)) => {
+                    tracing::warn!(url = %normalized_url, ?error, "web_crawl index_page failed");
+                    WebCrawlPageOutcome {
+                        url: normalized_url,
+                        status_code,
+                        chunks_indexed: 0,
+                        indexed: false,
+                        error: Some(error.to_string()),
+                    }
                 }
-            }
-            Ok(Err(error)) => {
-                tracing::warn!(url = %page.normalized_url, ?error, "web_crawl index_page failed");
-                WebCrawlPageOutcome {
-                    url: page.normalized_url,
-                    status_code: page.status_code,
+                Err(join_err) => WebCrawlPageOutcome {
+                    url: normalized_url,
+                    status_code,
                     chunks_indexed: 0,
                     indexed: false,
-                    error: Some(error.to_string()),
-                }
-            }
-            Err(join_err) => WebCrawlPageOutcome {
-                url: page.normalized_url,
-                status_code: page.status_code,
-                chunks_indexed: 0,
-                indexed: false,
-                error: Some(format!("spawn_blocking: {join_err}")),
-            },
-        };
-        outcomes.push(outcome);
+                    error: Some(format!("spawn_blocking: {join_err}")),
+                },
+            };
+            (slot, outcome)
+        });
     }
+
+    // Drive all concurrent indexing futures to completion, placing results back
+    // into assigned slots to preserve caller-visible insertion order.
+    while let Some((slot, outcome)) = futs.next().await {
+        if outcome.indexed {
+            pages_indexed += 1;
+            total_chunks += outcome.chunks_indexed;
+        }
+        outcomes[slot] = Some(outcome);
+    }
+
+    // Unwrap sentinels — every slot is now `Some`: SSRF-rejected slots were
+    // written directly above; indexing slots were written in the drive loop.
+    let outcomes: Vec<WebCrawlPageOutcome> = outcomes.into_iter().flatten().collect();
 
     json_result(&WebCrawlResponse {
         seed_url: url_str,
