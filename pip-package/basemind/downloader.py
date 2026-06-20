@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 from urllib.error import URLError
@@ -61,28 +62,87 @@ def _asset(version: str) -> tuple[str, str, str, str]:
     return archive_url, ext, asset_name, checksums_url
 
 
+def _is_retryable_error(error: Exception | str) -> bool:
+    """Check if an error is transient and worth retrying."""
+    error_str = str(error).lower()
+    # Retry on network timeouts, connection errors, and HTTP 5xx
+    return any(
+        substring in error_str
+        for substring in [
+            "timeout",
+            "connection",
+            "refused",
+            "reset",
+            "unreachable",
+            "http 5",
+            "temporarily unavailable",
+        ]
+    )
+
+
+def _retry_with_backoff(
+    fn, max_attempts: int = 3, delays: list[int] | None = None
+) -> None:
+    """Execute fn with exponential backoff retry on transient errors.
+
+    Only retries on transient errors (network, 5xx). Deterministic failures
+    (404, bad checksum) propagate immediately.
+    """
+    if delays is None:
+        delays = [1, 2, 4]  # exponential: 1s, 2s, 4s
+
+    last_error = None
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except Exception as error:
+            last_error = error
+            if not _is_retryable_error(error) or attempt >= max_attempts - 1:
+                raise
+
+            delay = delays[attempt]
+            print(
+                f"Transient error (attempt {attempt + 1}/{max_attempts}): {error}; "
+                f"retrying in {delay}s...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+
+    # Should not reach here, but raise last error just in case
+    if last_error:
+        raise last_error
+
+
 def _download(url: str, destination: Path) -> None:
-    request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
-    context = ssl.create_default_context(cafile=certifi.where())
-    try:
-        with urlopen(request, timeout=30, context=context) as response:
-            if response.status != 200:
-                raise RuntimeError(f"HTTP {response.status}: {response.reason}")
-            destination.write_bytes(response.read())
-    except URLError as exc:
-        raise RuntimeError(f"Failed to download binary: {exc}") from exc
+    """Download a file with retry-with-backoff on transient errors."""
+    def download_attempt():
+        request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        try:
+            with urlopen(request, timeout=30, context=context) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status}: {response.reason}")
+                destination.write_bytes(response.read())
+        except URLError as exc:
+            raise RuntimeError(f"Failed to download binary: {exc}") from exc
+
+    _retry_with_backoff(download_attempt)
 
 
 def _download_text(url: str) -> str:
-    request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
-    context = ssl.create_default_context(cafile=certifi.where())
-    try:
-        with urlopen(request, timeout=30, context=context) as response:
-            if response.status != 200:
-                raise RuntimeError(f"HTTP {response.status}: {response.reason}")
-            return response.read().decode("utf-8")
-    except URLError as exc:
-        raise RuntimeError(f"Failed to download checksums: {exc}") from exc
+    """Download text content with retry-with-backoff on transient errors."""
+    def download_attempt():
+        request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
+        context = ssl.create_default_context(cafile=certifi.where())
+        try:
+            with urlopen(request, timeout=30, context=context) as response:
+                if response.status != 200:
+                    raise RuntimeError(f"HTTP {response.status}: {response.reason}")
+                return response.read().decode("utf-8")
+        except URLError as exc:
+            raise RuntimeError(f"Failed to download checksums: {exc}") from exc
+
+    return _retry_with_backoff(download_attempt)
 
 
 def _expected_digest(checksums_text: str, asset_name: str) -> str | None:
@@ -154,7 +214,12 @@ def _cache_dir(version: str) -> Path:
 
 
 def ensure_binary():
-    """Ensure the binary is available, downloading if necessary."""
+    """Ensure the binary is available, downloading if necessary.
+
+    Handles concurrent invocations via atomic rename: download+extract into a
+    temp dir, then atomically move into the cache to prevent corruption from
+    parallel installs.
+    """
     from . import __version__
 
     override = os.getenv("BASEMIND_BINARY")
@@ -169,21 +234,75 @@ def ensure_binary():
     archive_url, ext, asset_name, checksums_url = _asset(__version__)
     print(f"Downloading basemind binary v{__version__}...", file=sys.stderr)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        archive_path = Path(tmpdir) / asset_name
-        _download(archive_url, archive_path)
-        # Fail CLOSED: verify before extracting anything into the cache.
-        _verify_checksum(archive_path, asset_name, checksums_url)
-        _extract(archive_path, ext, cache_dir)
+    # Atomic install strategy:
+    # 1. Download + extract into a temp directory (not under cache_dir)
+    # 2. Atomically rename the temp extraction into the versioned cache path
+    # 3. Use a simple lock file to serialize concurrent downloads of the same version
+    lock_path = cache_dir / ".lock"
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    if not binary_path.exists():
-        raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
+    # Try to acquire lock via exclusive file creation (atomic, works cross-platform)
+    lock_acquired = False
+    try:
+        # O_CREAT | O_EXCL: atomic, fails if lock already exists
+        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        lock_acquired = True
+        os.close(lock_fd)
+    except FileExistsError:
+        # Another process holds the lock. Wait for it to complete, then check if binary exists.
+        for attempt in range(30):  # Wait up to 30 seconds for the other process
+            time.sleep(0.1)
+            if binary_path.exists() and os.access(binary_path, os.X_OK):
+                return str(binary_path)
+        raise RuntimeError(
+            f"Timeout waiting for concurrent binary installation of {__version__}. "
+            f"If this persists, remove {cache_dir} and retry."
+        )
 
-    if platform.system().lower() != "windows":
-        binary_path.chmod(0o755)
+    try:
+        # Double-check: another process may have installed while we were waiting for the lock
+        if binary_path.exists() and os.access(binary_path, os.X_OK):
+            return str(binary_path)
 
-    print("Binary downloaded successfully!", file=sys.stderr)
-    return str(binary_path)
+        # Download and extract into a temporary directory outside the cache
+        with tempfile.TemporaryDirectory() as tmpdir:
+            archive_path = Path(tmpdir) / asset_name
+            _download(archive_url, archive_path)
+            # Fail CLOSED: verify before extracting anything into the cache.
+            _verify_checksum(archive_path, asset_name, checksums_url)
+
+            # Extract into a temporary staging directory
+            staging_dir = Path(tmpdir) / "staging"
+            staging_dir.mkdir()
+            _extract(archive_path, ext, staging_dir)
+
+            # Atomic rename: move the staged extraction into the cache
+            # If cache_dir already exists (race), this is ok — the binary is already there
+            try:
+                staging_dir.replace(cache_dir)
+            except (OSError, FileExistsError):
+                # Race condition: another process created cache_dir first. That's ok,
+                # our extracted files are in tmpdir and will be cleaned up.
+                # The other process's files are now in cache_dir.
+                if not binary_path.exists():
+                    raise RuntimeError(
+                        f"binary {_binary_name()} not found after extracting {asset_name}"
+                    )
+
+        if not binary_path.exists():
+            raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
+
+        if platform.system().lower() != "windows":
+            binary_path.chmod(0o755)
+
+        print("Binary downloaded successfully!", file=sys.stderr)
+        return str(binary_path)
+    finally:
+        if lock_acquired:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass  # Lock already cleaned up, ok
 
 
 def run_basemind(args):

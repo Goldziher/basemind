@@ -104,6 +104,104 @@ fi
 # Cargo.lock follows from a build.
 cargo build --quiet 2>/dev/null || true
 
+# Post-bump validation: ensure ALL surfaces have been updated
+echo
+echo "Validating version consistency across all surfaces..."
+validation_failed=0
+
+cargo_version="$(grep -E '^version = "' Cargo.toml | head -1 | cut -d'"' -f2)"
+if [ "$cargo_version" != "$VERSION" ]; then
+  echo "✗ Cargo.toml: expected $VERSION, got $cargo_version"
+  validation_failed=1
+fi
+
+if [ -f npm-package/package.json ]; then
+  npm_version="$(jq -r '.version' npm-package/package.json 2>/dev/null || echo '')"
+  if [ "$npm_version" != "$VERSION" ]; then
+    echo "✗ npm-package/package.json: expected $VERSION, got $npm_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f pip-package/pyproject.toml ]; then
+  pypi_version="$(grep -E '^version = "' pip-package/pyproject.toml | head -1 | cut -d'"' -f2)"
+  if [ "$pypi_version" != "$PY_VERSION" ]; then
+    echo "✗ pip-package/pyproject.toml: expected $PY_VERSION, got $pypi_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f pip-package/basemind/__init__.py ]; then
+  init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
+  if [ "$init_version" != "$PY_VERSION" ]; then
+    echo "✗ pip-package/basemind/__init__.py: expected $PY_VERSION, got $init_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f package.json ]; then
+  root_version="$(jq -r '.version' package.json 2>/dev/null || echo '')"
+  if [ "$root_version" != "$VERSION" ]; then
+    echo "✗ package.json (root): expected $VERSION, got $root_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f opencode-plugin/package.json ]; then
+  opencode_version="$(jq -r '.version' opencode-plugin/package.json 2>/dev/null || echo '')"
+  if [ "$opencode_version" != "$VERSION" ]; then
+    echo "✗ opencode-plugin/package.json: expected $VERSION, got $opencode_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f .claude-plugin/plugin.json ]; then
+  claude_version="$(jq -r '.version' .claude-plugin/plugin.json 2>/dev/null || echo '')"
+  if [ "$claude_version" != "$VERSION" ]; then
+    echo "✗ .claude-plugin/plugin.json: expected $VERSION, got $claude_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f .claude-plugin/marketplace.json ]; then
+  marketplace_version="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json 2>/dev/null || echo '')"
+  if [ "$marketplace_version" != "$VERSION" ]; then
+    echo "✗ .claude-plugin/marketplace.json: expected $VERSION, got $marketplace_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f .codex-plugin/plugin.json ]; then
+  codex_version="$(jq -r '.version' .codex-plugin/plugin.json 2>/dev/null || echo '')"
+  if [ "$codex_version" != "$VERSION" ]; then
+    echo "✗ .codex-plugin/plugin.json: expected $VERSION, got $codex_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f .cursor-plugin/plugin.json ]; then
+  cursor_version="$(jq -r '.version' .cursor-plugin/plugin.json 2>/dev/null || echo '')"
+  if [ "$cursor_version" != "$VERSION" ]; then
+    echo "✗ .cursor-plugin/plugin.json: expected $VERSION, got $cursor_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f gemini-extension.json ]; then
+  gemini_version="$(jq -r '.version' gemini-extension.json 2>/dev/null || echo '')"
+  if [ "$gemini_version" != "$VERSION" ]; then
+    echo "✗ gemini-extension.json: expected $VERSION, got $gemini_version"
+    validation_failed=1
+  fi
+fi
+
+if [ $validation_failed -eq 0 ]; then
+  echo "✓ All version surfaces are consistent: $VERSION"
+else
+  echo "error: version validation failed. Review the above and fix manually." >&2
+  exit 1
+fi
+
 echo
 echo "Done. Review with: git diff"
 echo "Next: cargo test --workspace && git commit -am 'chore(release): v$VERSION'"
