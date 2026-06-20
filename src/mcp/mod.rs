@@ -666,15 +666,22 @@ impl ServerHandler for BasemindServer {
              tree-sitter code map across 300+ languages (symbols, references, callers, call \
              graphs, implementations), git history + blame at symbol resolution, full-text + \
              semantic search, document RAG over 90+ file formats, and shared cross-session \
-             memory. Prefer these tools over reading files when navigating large or unfamiliar \
-             codebases.\n\
+             memory. basemind first, shell/grep/git fallback: prefer these tools over reading \
+             files, over grep, and over naked `git` — and use them for document extraction, web \
+             crawling, and code parsing too. You may be one of several agents in this repo: on \
+             start, check the comms room and post status as you work (see Agent comms below).\n\
              Context economy — these tools return paths, line numbers, and signatures, not \
              file bodies, so they cost a fraction of the tokens of reading source. Default to \
              them: `outline` a file before you open it (then read only the span you need); \
              `search_symbols` instead of grep for a definition; `find_references` / \
              `find_callers` instead of grepping call sites; `workspace_grep` instead of \
              shelling out to ripgrep; `rescan` after edits instead of reconnecting. Do not \
-             re-read a file basemind already mapped.\n\
+             re-read a file basemind already mapped. Same discipline beyond code: use the git \
+             tools (`recent_changes` / `blame_*` / `diff_*` / `commits_touching`) instead of \
+             shelling out to `git log`/`git blame`; `search_documents` and the documents \
+             pipeline for extraction, RAG, keyword + entity (NER), and summary instead of \
+             opening files; `web_scrape` / `web_crawl` / `web_map` for scraping, crawling, and \
+             sitemaps.\n\
              Routing: \
              \"where is X defined?\" → `search_symbols`; \
              \"what calls X?\" → `find_references` (any name) or `find_callers` (specific def); \
@@ -687,7 +694,9 @@ impl ServerHandler for BasemindServer {
              `memory_search`; \
              \"remember this for later sessions?\" → `memory_put` (delete with `memory_delete`); \
              \"refresh the index after editing code?\" → `rescan` (or `rescan { paths: [...] }` \
-             to limit to changed files).\n\
+             to limit to changed files); \
+             \"any other agents working here / leave a note for the next session?\" → \
+             `room_list` / `inbox_read` / `room_post`.\n\
              \"got a truncated result? fetch the next page?\" → pass `next_cursor` from the prior \
              response back as `cursor`.\n\
              \"need regex over file contents?\" → `workspace_grep`.\n\
@@ -704,6 +713,15 @@ impl ServerHandler for BasemindServer {
              `web_crawl` (follow links from a seed URL), `web_map` (sitemap-only discovery). \
              Crawled pages land in the same LanceDB documents table as on-disk docs, scoped \
              under `web:<host>` — find them later with `search_documents`. \
+             Agent comms (require build with `--features comms`): you may share this repo's \
+             rooms with other agents working alongside you. On start, check `room_list` + \
+             `inbox_read` (and recent `room_history`) for what's been said; `room_history` and \
+             `inbox_read` return front-matter only (subject / from / id) — call `message_get` \
+             with an id for a body. Post a concise `room_post {room, subject, body, reply_to?}` \
+             when you begin, finish, or hit a decision, and reply (`reply_to`) to messages \
+             about your work — do not stay silent when collaborating. Tools: `room_list`, \
+             `room_join`, `room_post`, `room_history`, `inbox_read`, `message_get`, \
+             `room_create`, `room_leave`, `agent_register`, `agent_list`. \
              All paths are repository-relative with forward-slash separators. \
              If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )

@@ -285,4 +285,124 @@ mod tests {
             other => panic!("expected Inbox, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn inbox_excludes_self_authored_but_history_keeps_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
+        let broker = Arc::new(Broker::new(store));
+        let frontend = InProcFrontend::new(broker.clone());
+
+        let mut writer = frontend.connect();
+        let mut reader = frontend.connect();
+
+        for (link, name) in [(&mut writer, "author"), (&mut reader, "other")] {
+            link.send_request(CommsRequest::Hello {
+                agent: AgentId::parse(name).expect("agent"),
+                proto_ver: PROTO_VER,
+                remote: None,
+                cwd: None,
+            })
+            .await
+            .expect("hello");
+            assert!(matches!(
+                expect_response(link).await,
+                CommsResponse::Welcome { .. }
+            ));
+        }
+
+        // A global room both agents auto-join (Global scope matches every chain).
+        let room = RoomId::parse("team").expect("room");
+        writer
+            .send_request(CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Global,
+                title: Some("Team".to_string()),
+            })
+            .await
+            .expect("create");
+        assert!(matches!(
+            expect_response(&mut writer).await,
+            CommsResponse::Room(_)
+        ));
+
+        // The author posts to the room.
+        writer
+            .send_request(CommsRequest::Post {
+                room: room.clone(),
+                subject: "mine".to_string(),
+                tags: vec![],
+                reply_to: None,
+                body: b"self note".to_vec(),
+            })
+            .await
+            .expect("post");
+        let message_id = match expect_response(&mut writer).await {
+            CommsResponse::Posted { message_id } => message_id,
+            other => panic!("expected Posted, got {other:?}"),
+        };
+
+        // The author's OWN inbox excludes the message (auto-join subscribed them to the room).
+        writer
+            .send_request(CommsRequest::Inbox {
+                remote: None,
+                cwd: None,
+                cursor: None,
+                limit: Some(10),
+                mark_read: false,
+            })
+            .await
+            .expect("inbox");
+        match expect_response(&mut writer).await {
+            CommsResponse::Inbox {
+                messages, unread, ..
+            } => {
+                assert!(
+                    messages.is_empty(),
+                    "an agent's own post must not appear in its inbox"
+                );
+                assert_eq!(
+                    unread, 0,
+                    "self-authored messages are not unread for the author"
+                );
+            }
+            other => panic!("expected Inbox, got {other:?}"),
+        }
+
+        // But room_history still shows it for the author — the full log is not filtered.
+        writer
+            .send_request(CommsRequest::History {
+                room: room.clone(),
+                cursor: None,
+                limit: Some(10),
+            })
+            .await
+            .expect("history");
+        match expect_response(&mut writer).await {
+            CommsResponse::History { messages, .. } => {
+                assert_eq!(messages.len(), 1, "history keeps self-authored messages");
+                assert_eq!(messages[0].id, message_id);
+            }
+            other => panic!("expected History, got {other:?}"),
+        }
+
+        // A different agent DOES see the message in their inbox.
+        reader
+            .send_request(CommsRequest::Inbox {
+                remote: None,
+                cwd: None,
+                cursor: None,
+                limit: Some(10),
+                mark_read: false,
+            })
+            .await
+            .expect("inbox");
+        match expect_response(&mut reader).await {
+            CommsResponse::Inbox { messages, .. } => {
+                assert_eq!(messages.len(), 1, "a different agent sees the message");
+                assert_eq!(messages[0].subject, "mine");
+            }
+            other => panic!("expected Inbox, got {other:?}"),
+        }
+    }
 }

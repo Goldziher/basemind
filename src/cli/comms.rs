@@ -142,11 +142,23 @@ fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
-/// Resolve the CLI agent identity. `BASEMIND_AGENT_ID` when valid, else a fixed `basemind-cli`
-/// handle so one-shot CLI invocations share a stable broker identity.
-fn cli_agent_id() -> Result<AgentId> {
+/// Resolve the CLI agent identity, tiered to MATCH the `serve` resolver so CLI-driven comms (the
+/// notification hooks + the background monitor) share the session's identity — without that, a
+/// poller would see the session's own posts as unread (server-side self-exclusion keys on the
+/// requesting agent id).
+///
+/// 1. `BASEMIND_AGENT_ID` env — explicit override.
+/// 2. The persisted `<root>/.basemind/agent-id` written by `serve` — read-only here (the CLI never
+///    mints a new identity), so polls from the same repo resolve to the running session's id.
+/// 3. `basemind-cli` — fixed fallback when no session has run in this repo.
+fn cli_agent_id(root: &Path) -> Result<AgentId> {
     if let Ok(raw) = std::env::var("BASEMIND_AGENT_ID")
         && let Ok(id) = AgentId::parse(raw)
+    {
+        return Ok(id);
+    }
+    if let Ok(existing) = std::fs::read_to_string(root.join(".basemind").join("agent-id"))
+        && let Ok(id) = AgentId::parse(existing.trim())
     {
         return Ok(id);
     }
@@ -161,7 +173,7 @@ pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
         .build()
         .context("build tokio runtime")?;
     runtime.block_on(async move {
-        let agent = cli_agent_id()?;
+        let agent = cli_agent_id(root)?;
         let (remote, cwd) = scope_context_for(root);
         let mut client = CommsClient::ensure_and_connect(agent, remote.clone(), cwd.clone())
             .await

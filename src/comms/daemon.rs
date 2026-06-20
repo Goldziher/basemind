@@ -431,6 +431,14 @@ impl Broker {
             let want = remaining.saturating_add(1).max(1);
             let rows = self.store.history_with_seq(room, after, want)?;
             for (seq, meta) in rows {
+                // The agent's own posts are not "inbox" for their author — skip them from the
+                // page and the unread count, but still record the seq so `mark_read` advances the
+                // read cursor past them (they must never resurface). `room_history` is unaffected:
+                // the full log still shows self-authored messages.
+                if meta.from == agent {
+                    upsert_high(&mut delivered_high, room, seq);
+                    continue;
+                }
                 if collected.len() < limit {
                     collected.push(meta);
                     upsert_high(&mut delivered_high, room, seq);
