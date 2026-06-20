@@ -41,8 +41,34 @@ const SSE_CHANNEL_CAPACITY: usize = 64;
 /// the error as a plain JSON response rather than opening an empty SSE stream.
 pub(crate) async fn jsonrpc_handler(
     State(state): State<A2aState>,
-    Json(req): Json<JsonRpcRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // Parse the envelope by hand (rather than via the `Json` extractor) so a
+    // malformed body returns a JSON-RPC `parse_error` envelope instead of axum's
+    // bare 400 — the binding stays spec-correct on bad input.
+    let req: JsonRpcRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(_) => {
+            return Json(JsonRpcResponse::failure(
+                serde_json::Value::Null,
+                protocol::parse_error(),
+            ))
+            .into_response();
+        }
+    };
+
+    // JSON-RPC 2.0 requires the version marker to be exactly "2.0".
+    if req.jsonrpc != "2.0" {
+        return Json(JsonRpcResponse::failure(
+            req.id.clone(),
+            protocol::invalid_request(format!(
+                "unsupported jsonrpc version: '{}', expected '2.0'",
+                req.jsonrpc
+            )),
+        ))
+        .into_response();
+    }
+
     match req.method.as_str() {
         "message/stream" => stream_message(&state, req.params, req.id).await,
         "tasks/resubscribe" => resubscribe(&state, req.params, req.id).await,

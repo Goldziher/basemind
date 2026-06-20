@@ -1,10 +1,10 @@
 //! Shared state backing the A2A transport adapters.
 //!
 //! [`A2aState`] owns the single [`TaskFacade`] instance, the [`MessageBus`],
-//! and the push-notification store shared by every transport binding. The gRPC
-//! service ([`crate::a2a::grpc`]) is the first consumer; phase B3 layers the
-//! axum HTTP server on top of the same state — keep this holder transport-
-//! agnostic.
+//! the push-notification store, and the optional bearer token shared by every
+//! transport binding. Both the gRPC service ([`crate::a2a::grpc`]) and the
+//! JSON-RPC/SSE handlers consume the same state through the shared axum app —
+//! keep this holder transport-agnostic.
 
 use std::sync::Arc;
 
@@ -38,6 +38,9 @@ pub struct AgentCardInfo {
     /// Advertised JSON-RPC/HTTP endpoint URL — the agent card's primary
     /// interface (empty until the axum server binds an address).
     pub http_url: String,
+    /// Whether the server requires bearer auth. Drives the card's advertised
+    /// `securitySchemes`; set in lock-step with [`A2aState::auth_token`].
+    pub requires_auth: bool,
 }
 
 impl Default for AgentCardInfo {
@@ -48,6 +51,7 @@ impl Default for AgentCardInfo {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             grpc_url: String::new(),
             http_url: String::new(),
+            requires_auth: false,
         }
     }
 }
@@ -67,10 +71,15 @@ pub struct A2aState {
     pub push_notifications: Arc<RwLock<PushNotificationStore>>,
     /// Static agent-card descriptor.
     pub card: AgentCardInfo,
+    /// Expected bearer token, or `None` when auth is disabled. Shared (`Arc`)
+    /// so the auth middleware reads it without copying the secret per request.
+    pub auth_token: Option<Arc<str>>,
 }
 
 impl A2aState {
     /// Build the full A2A domain graph wired around a fresh [`MessageBus`].
+    ///
+    /// Auth is disabled by default; enable it with [`A2aState::with_auth_token`].
     pub fn new(card: AgentCardInfo) -> Self {
         let bus = Arc::new(MessageBus::new(BUS_CAPACITY));
         let task_manager = Arc::new(RwLock::new(TaskManager::new(Arc::clone(&bus))));
@@ -87,7 +96,17 @@ impl A2aState {
             bus,
             push_notifications,
             card,
+            auth_token: None,
         }
+    }
+
+    /// Enable (or disable) bearer auth, keeping [`AgentCardInfo::requires_auth`]
+    /// in lock-step so the advertised card matches what the server enforces.
+    #[must_use]
+    pub fn with_auth_token(mut self, token: Option<Arc<str>>) -> Self {
+        self.card.requires_auth = token.is_some();
+        self.auth_token = token;
+        self
     }
 }
 

@@ -8,10 +8,8 @@
 //! ([`handlers`]) that dispatch the 10 methods onto the shared
 //! [`TaskFacade`](crate::a2a::core::task_facade::TaskFacade).
 //!
-//! Like [`crate::a2a::grpc`], this surface is implemented and unit-tested but
-//! only mounted on a running listener by [`crate::a2a::server`]; drop the
-//! module-level allow once `basemind serve` starts the A2A server.
-#![allow(dead_code)]
+//! Mounted on the shared axum listener by [`crate::a2a::server::build_router`]
+//! ([`handlers::jsonrpc_handler`] + [`handlers::agent_card_handler`]).
 
 pub(crate) mod convert;
 pub(crate) mod dto;
