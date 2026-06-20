@@ -10,5 +10,7 @@
 // no non-test callers yet. Allow dead_code module-wide until those waves land.
 #![allow(dead_code)]
 
+pub mod bus;
+pub mod router;
 pub mod task_types;
 pub mod types;
