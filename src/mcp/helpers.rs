@@ -736,20 +736,15 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
         .ok_or_else(|| McpError::internal_error("repository has no HEAD", None))
 }
 
-/// Body for the `rescan` MCP tool. Runs the scanner in-process against the
-/// server's own `Store` so we never need to release the Fjall lock — and so
-/// the agent can refresh the index without disconnecting MCP.
-///
-/// Holds the `state.store` write lock for the duration of the scan. MCP query
-/// tools block while it runs (acceptable for small/medium repos; rescan is
-/// agent-triggered, not on every request).
 /// Run the scanner in-process and refresh the in-RAM caches, returning the raw
-/// [`crate::scanner::ScanReport`]. Shared by the `rescan` MCP tool and the
-/// startup auto-scan in [`super::BasemindServer::new`] so both go through the
-/// exact same scan + cache-swap path (and never collide with the Fjall lock the
-/// `serve` process already holds — this scans inside that same process).
+/// [`crate::scanner::ScanReport`]. Shared by the `rescan` MCP tool and the startup
+/// auto-scan in [`super::BasemindServer::new`] so both go through the exact same scan +
+/// cache-swap path against the server's own `Store` — never releasing or colliding with
+/// the Fjall lock the `serve` process already holds.
 ///
-/// `scoped_paths` limits the scan to those repo-relative paths; `None` runs a
+/// Holds the `state.store` write lock for the duration of the scan; MCP query tools block
+/// while it runs (acceptable for small/medium repos — rescan is agent-triggered, not
+/// per-request). `scoped_paths` limits the scan to those repo-relative paths; `None` runs a
 /// full working-tree scan.
 pub(super) async fn scan_and_refresh(
     state: Arc<ServerState>,
@@ -806,9 +801,14 @@ pub(super) async fn run_rescan(
     params: super::types::RescanParams,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
+    // `full` forces a complete working-tree scan even when `paths` is supplied (full wins);
+    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Repo-relative request
+    // paths are joined to the absolute root — `scan_paths` strips the root prefix and silently
+    // drops anything that is not under it, so a bare relative path would be a no-op scan.
     let scoped_paths: Option<Vec<std::path::PathBuf>> = params
         .paths
-        .map(|v| v.into_iter().map(std::path::PathBuf::from).collect());
+        .filter(|_| !params.full)
+        .map(|v| v.into_iter().map(|p| state.root.join(p)).collect());
 
     let root = state.root.display().to_string();
     let report = scan_and_refresh(state, scoped_paths).await?;

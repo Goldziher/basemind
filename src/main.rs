@@ -36,7 +36,7 @@ struct Cli {
 
     /// Emit machine-readable JSON instead of the human-readable rendering. Applies
     /// to the tool subcommands (query / git / memory / web / telemetry / cache) and
-    /// is ignored — with a warning — on init / scan / watch / hook / lang.
+    /// is ignored — with a warning — on init / scan / rescan / watch / hook / lang.
     #[arg(long, global = true)]
     json: bool,
 
@@ -56,6 +56,9 @@ enum Cmd {
     Init,
     /// Run a one-shot scan over the repository and write the code map.
     Scan(ScanArgs),
+    /// Re-index the working tree (full) or only the given paths (incremental). Use after
+    /// edits, or to rebuild a stale/empty index without starting the server.
+    Rescan(RescanArgs),
     /// Long-running watcher; keeps the code map current as files change.
     Watch,
     /// Query the code map (outline, search, references, call-graph, …).
@@ -142,6 +145,18 @@ struct ScanArgs {
 }
 
 #[derive(clap::Args, Debug)]
+struct RescanArgs {
+    /// Repo-relative paths to re-index incrementally. When omitted (or with `--full`),
+    /// the entire working tree is re-indexed. Paths are forward-slash with no leading `/`.
+    #[arg(value_name = "PATH")]
+    paths: Vec<String>,
+    /// Force a full working-tree re-index even when paths are supplied. Use to rebuild a
+    /// stale or empty index from scratch.
+    #[arg(long)]
+    full: bool,
+}
+
+#[derive(clap::Args, Debug)]
 struct ServeArgs {
     // The view to serve comes from the global `--view` flag (see `Cli::view`), passed
     // into `cmd_serve` — a single source of truth so the two cannot diverge.
@@ -221,6 +236,7 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Init => cmd_init(&root),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
+        Cmd::Rescan(args) => cmd_rescan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Query(q) => {
             let _ = basemind::lang::ensure_grammars();
@@ -630,6 +646,39 @@ fn cmd_scan(
         basemind::scanner::ScanSource::WorkingTree,
     )
     .context("scan")?;
+    render::render_report(&mut out, &report, verbosity);
+    if report.stats.read_failed + report.stats.extract_failed > 0 {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+fn cmd_rescan(
+    root: &std::path::Path,
+    args: &RescanArgs,
+    verbosity: Verbosity,
+    no_color: bool,
+) -> Result<()> {
+    bootstrap_grammars(verbosity, no_color)?;
+    let config = load_or_default(root)?;
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).context("open store")?;
+    let mut out = render::stdout(no_color);
+
+    // `--full` or no paths → full working-tree re-index. Otherwise re-index only the
+    // supplied paths incrementally. `scan_paths` resolves paths against `root`, so make
+    // each path absolute first (repo-relative input is the documented contract).
+    let report = if args.full || args.paths.is_empty() {
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            basemind::scanner::ScanSource::WorkingTree,
+        )
+        .context("rescan (full)")?
+    } else {
+        let abs: Vec<PathBuf> = args.paths.iter().map(|p| root.join(p)).collect();
+        basemind::scanner::scan_paths(root, &mut store, &config, &abs).context("rescan (paths)")?
+    };
     render::render_report(&mut out, &report, verbosity);
     if report.stats.read_failed + report.stats.extract_failed > 0 {
         std::process::exit(2);

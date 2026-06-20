@@ -25,7 +25,9 @@ impl BasemindServer {
             Holds an exclusive lock for the duration of the scan — other MCP queries block \
             until it returns. Cheap on small repos (<1s for ~100 files). Use after editing \
             code when you need new symbols / calls / outlines to show up without restarting \
-            the MCP server. Returns scanned / updated / removed counts and elapsed time."
+            the MCP server. Pass `full: true` to force a complete re-index when the index is \
+            stale or reports 'no indexed files' (a full scan overrides any `paths`). \
+            Returns scanned / updated / removed counts and elapsed time."
     )]
     pub(crate) async fn rescan(
         &self,

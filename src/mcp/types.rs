@@ -694,6 +694,11 @@ pub struct RescanParams {
     /// the full repo is walked. Paths are forward-slash with no leading `/`.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
+    /// Force a complete working-tree re-index even when `paths` is supplied (full wins).
+    /// Use when the index is stale or reports "no indexed files" and a scoped rescan won't
+    /// rebuild it.
+    #[serde(default)]
+    pub full: bool,
 }
 
 #[derive(Debug, Serialize)]

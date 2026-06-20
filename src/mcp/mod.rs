@@ -316,8 +316,28 @@ impl BasemindServer {
         // so the agent never has to run `basemind scan` by hand — the scan runs
         // in-process below, after the server is up, so it never contends for the
         // Fjall lock this `serve` already holds.
-        let needs_initial_scan =
-            store.view == crate::store::VIEW_WORKING && cache.by_path.is_empty();
+        //
+        // Two distinct "needs a scan" signals, both working-view only:
+        //   1. The in-RAM map cache is empty — a fresh repo with no `index.msgpack`.
+        //   2. The map cache is populated (msgpack survived) BUT the Fjall secondary
+        //      index holds no symbols. `index.msgpack` and `index.fjall/` are separate
+        //      on-disk artifacts written together by the scanner; they can diverge if the
+        //      Fjall dir is removed or wiped out-of-band (manual `rm -rf`, a crash mid-wipe,
+        //      or an independent index-schema bump) while the msgpack index stays current.
+        //      In that state the RAM cache looks healthy but `find_references` /
+        //      `search_symbols` silently return nothing. Detect it cheaply and rescan.
+        let view_is_working = store.view == crate::store::VIEW_WORKING;
+        // `None` index_db means Fjall failed to OPEN (not that it is empty); an auto-scan writes to
+        // the same broken path and would just fail in a loop, so treat that as "not empty" and let
+        // the failure surface elsewhere rather than triggering a futile rescan.
+        let fjall_index_empty = store
+            .index_db
+            .as_ref()
+            .map(|db| db.symbols_index_is_empty())
+            .unwrap_or(false);
+        // NOTE: a genuinely empty repo (zero source files) satisfies this every startup and
+        // re-runs a trivially fast no-op scan; that is acceptable and not worth a freshness flag.
+        let needs_initial_scan = view_is_working && (cache.by_path.is_empty() || fjall_index_empty);
         tracing::info!(
             files = cache.by_path.len(),
             corpus_bytes,
