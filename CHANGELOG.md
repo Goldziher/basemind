@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.6.0] — 2026-06-20
+
+Minor release: `RELEASE_MINOR` bumps 5 → 6, so the blob, Fjall-index, and LanceDB schema versions
+advance — the first `basemind scan` / `serve` after upgrading **wipes and rebuilds the `.basemind/`
+cache and the LanceDB store in place**. Headline: an **experimental, opt-in Agent-to-Agent (A2A)
+task server**, plus scanner/query hot-path perf wins and release-pipeline hardening.
+
+### Added
+
+- **Experimental A2A server** — `basemind a2a serve`, gated behind `--features a2a` and intentionally
+  excluded from the default and `full` builds and from the shipped release binary. One axum listener
+  serves the A2A task protocol three ways — gRPC `A2AService`, JSON-RPC 2.0, and SSE streaming — with
+  the agent card at `/.well-known/agent-card.json`. Hardened surfaces: **bearer-token auth** (constant-
+  time compare, non-loopback bind refused without a token), **TLS termination** (`--tls-cert` /
+  `--tls-key`, ALPN h2 + http/1.1), and **push-notification webhook delivery** behind a real **SSRF
+  guard** (rejects loopback, RFC-1918, link-local, and the cloud-metadata IP; re-checks the resolved
+  address and pins it on connect).
+- **`rescan` levers** (CLI + MCP) plus robust auto-rescan on an empty working-view index.
+- **comms `inbox_ack`** — advances the per-agent read cursor (idempotent, non-destructive; the shared
+  append-only room log is untouched) — and **richer message front-matter** (`ts_micros`, `tags`,
+  `reply_to`, `seq`, and an optional `scope` path/glob set for relevance filtering).
+
+### Changed
+
+- **Scanner/query perf** — cache the parse-timeout env lookup, pre-classify L1 captures, and defer the
+  walk allocation in the scanner inner loop; serve `outline` from the in-RAM cache to cut query-path
+  allocations; bounded-concurrent crawl indexing aligned with the kreuzberg parallelism pool.
+
+### Fixed
+
+- **Atomic release publishing + resilient wrappers** — a version-consistency gate across all shipped
+  surfaces, an unconditional checksums job asserting every archive, `needs`/`result == success` guards
+  on each publish job, and fail-closed retrying npm/pip installers with an atomic cache. Fixes the
+  v0.5.0 broken-install regression (missing checksums file → every wrapper install failed).
+- **comms daemon** reconnects and respawns on a broken pipe instead of failing the request.
+
 ## [0.5.0] — 2026-06-20
 
 Minor release: `RELEASE_MINOR` bumps 4 → 5, so the blob, Fjall-index, and LanceDB schema versions

@@ -29,6 +29,9 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
       - id: detect-private-key
+        # src/a2a/mod.rs TLS tests write a bare PEM begin-marker line (no key
+        # material) to assert the loader rejects malformed key files.
+        exclude: ^src/a2a/mod\.rs$
       - id: check-case-conflict
       - id: check-executables-have-shebangs
         # run-hook.cmd is an intentional cmd/bash polyglot: executable on Unix
