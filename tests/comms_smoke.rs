@@ -218,3 +218,108 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
     let err = bob.ack_inbox(vec![], None, None).await;
     assert!(err.is_err(), "empty ack must be rejected");
 }
+
+/// Regression: a long-lived client must transparently recover when the daemon dies mid-session.
+///
+/// Reproduces the `Broken pipe (os error 32)` failure: the MCP server caches one `CommsClient`
+/// for the whole session, so when the detached daemon is killed (crash / reap / `Stop`), the
+/// cached stream goes stale and every subsequent `room_post` write hits EPIPE with no recovery.
+/// The fix makes the client respawn the daemon + reconnect + retry once on a broken connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn client_recovers_when_daemon_dies_mid_session() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+
+    // Spawn the FIRST daemon and connect a client that knows how to respawn the real `basemind`
+    // binary against this isolated comms dir (production `ensure_and_connect` would respawn the
+    // test binary, which has no `comms daemon` subcommand — so inject the real binary spawn).
+    let mut daemon = Daemon::start(&comms_dir);
+    let paths = CommsPaths {
+        comms_dir: comms_dir.clone(),
+        socket_path: comms_socket_path(&comms_dir),
+    };
+    let spawn_dir = comms_dir.clone();
+    let mut client = CommsClient::connect_with_respawn(
+        &paths,
+        AgentId::parse("agent-resilient").expect("agent id"),
+        None,
+        Some(root.clone()),
+        move |_paths: &CommsPaths| {
+            Command::new(BIN)
+                .args(["comms", "daemon"])
+                .env("BASEMIND_COMMS_DIR", &spawn_dir)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|_| ())
+        },
+    )
+    .await
+    .expect("connect with respawn");
+
+    let room = RoomId::parse("team").expect("room");
+    client
+        .create_room(room.clone(), RoomScope::Global, Some("Team".to_string()))
+        .await
+        .expect("create room");
+    let first = client
+        .post_message(
+            room.clone(),
+            "before".to_string(),
+            b"first".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("post before death");
+    assert!(!first.is_empty(), "first post returns an id");
+
+    // Kill the daemon hard (no drain): the cached client stream is now stale. Wait until the
+    // socket stops answering so the next post genuinely races a dead daemon.
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && probe_alive(&paths.socket_path) {
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !probe_alive(&paths.socket_path),
+        "daemon must be dead before the recovery post"
+    );
+
+    // The post that previously failed with EPIPE forever: the client must respawn + reconnect +
+    // retry, and the post must succeed against the fresh daemon.
+    let second = client
+        .post_message(
+            room.clone(),
+            "after".to_string(),
+            b"second".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("post after death must transparently recover");
+    assert!(!second.is_empty(), "recovered post returns an id");
+    assert_ne!(first, second, "recovered post is a distinct message");
+
+    // The shared log is intact and reachable through the respawned daemon: both posts land.
+    let (history, _next) = client
+        .read_history(room.clone(), None, 100)
+        .await
+        .expect("history after recovery");
+    assert_eq!(
+        history.len(),
+        2,
+        "both the pre-death and post-recovery messages are in the log"
+    );
+
+    // Reap the respawned daemon (the original `Daemon` Drop targets the dead child).
+    let _ = Command::new(BIN)
+        .args(["comms", "stop"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .output();
+}

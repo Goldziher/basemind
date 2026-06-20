@@ -24,6 +24,11 @@ use super::transport::MAX_FRAME_BYTES;
 
 const READ_CHUNK: usize = 8 * 1024;
 
+/// Strategy for (re)spawning the daemon when a reconnect finds the socket dead. Defaults to the
+/// production [`singleton::spawn_detached_daemon`]; tests inject a closure that launches the real
+/// `basemind` binary against an isolated comms dir (the test binary has no `comms daemon` verb).
+type SpawnFn = Box<dyn Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync>;
+
 /// Errors surfaced by the client.
 #[derive(Debug, thiserror::Error)]
 pub enum CommsClientError {
@@ -75,46 +80,61 @@ pub struct CommsClient {
     /// Notifications received while waiting for a response are queued here so the caller can
     /// drain them via [`CommsClient::next_notification`].
     pending_notifications: std::collections::VecDeque<CommsNotification>,
+    /// Connection context retained so the client can transparently re-establish the link (and
+    /// re-spawn the daemon) after the daemon dies mid-session.
+    paths: CommsPaths,
+    /// Scope context replayed on the `Hello` of a reconnect.
+    remote: Option<String>,
+    /// Working directory replayed on the `Hello` of a reconnect.
+    cwd: Option<PathBuf>,
+    /// Respawn strategy used by [`CommsClient::reconnect`] when the socket is dead.
+    spawn: SpawnFn,
 }
 
 impl CommsClient {
     /// Connect to an already-running daemon at `paths` and complete the `Hello` handshake.
     /// Use [`CommsClient::ensure_and_connect`] to spawn the daemon first when needed.
+    ///
+    /// The returned client re-spawns the daemon via [`singleton::spawn_detached_daemon`] when a
+    /// reconnect finds the socket dead. Use [`CommsClient::connect_with_respawn`] to inject a
+    /// different spawn strategy.
     pub async fn connect(
         paths: &CommsPaths,
         agent: AgentId,
         remote: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Self, CommsClientError> {
-        let stream = UnixStream::connect(&paths.socket_path).await?;
-        let mut codec = LengthDelimitedCodec::new();
-        codec.set_max_frame_length(MAX_FRAME_BYTES);
+        Self::connect_with_respawn(paths, agent, remote, cwd, |paths| {
+            singleton::spawn_detached_daemon(paths)
+        })
+        .await
+    }
+
+    /// Connect like [`CommsClient::connect`], but inject the daemon respawn strategy used by the
+    /// transparent reconnect path. The production [`CommsClient::connect`] supplies
+    /// [`singleton::spawn_detached_daemon`]; tests inject a closure that launches the real
+    /// `basemind` binary so the reconnect can resurrect an isolated daemon.
+    pub async fn connect_with_respawn(
+        paths: &CommsPaths,
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        spawn: impl Fn(&CommsPaths) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Result<Self, CommsClientError> {
+        let (stream, codec) = Self::dial(paths).await?;
         let mut client = Self {
             stream,
             codec,
             read_buf: BytesMut::with_capacity(READ_CHUNK),
-            agent: agent.clone(),
+            agent,
             pending_notifications: std::collections::VecDeque::new(),
+            paths: paths.clone(),
+            remote,
+            cwd,
+            spawn: Box::new(spawn),
         };
-        let resp = client
-            .request(CommsRequest::Hello {
-                agent,
-                proto_ver: PROTO_VER,
-                remote,
-                cwd,
-            })
-            .await?;
-        match resp {
-            CommsResponse::Welcome { proto_ver, .. } if proto_ver == PROTO_VER => Ok(client),
-            CommsResponse::Welcome { proto_ver, .. } => Err(CommsClientError::ProtoSkew {
-                daemon: proto_ver,
-                client: PROTO_VER,
-            }),
-            CommsResponse::Error { code, message } => {
-                Err(CommsClientError::Broker { code, message })
-            }
-            _ => Err(CommsClientError::Unexpected { request: "hello" }),
-        }
+        client.handshake().await?;
+        Ok(client)
     }
 
     /// Resolve the per-user paths, ensure a daemon is running (spawning it if needed), then
@@ -127,6 +147,57 @@ impl CommsClient {
         let paths = singleton::resolve_paths()?;
         singleton::ensure_daemon(&paths).await?;
         Self::connect(&paths, agent, remote, cwd).await
+    }
+
+    /// Dial the socket and build the framing codec. No handshake yet.
+    async fn dial(
+        paths: &CommsPaths,
+    ) -> Result<(UnixStream, LengthDelimitedCodec), CommsClientError> {
+        let stream = UnixStream::connect(&paths.socket_path).await?;
+        let mut codec = LengthDelimitedCodec::new();
+        codec.set_max_frame_length(MAX_FRAME_BYTES);
+        Ok((stream, codec))
+    }
+
+    /// Send the `Hello` and validate the `Welcome`, using this client's retained scope context.
+    async fn handshake(&mut self) -> Result<(), CommsClientError> {
+        let resp = self
+            .send_and_await(CommsRequest::Hello {
+                agent: self.agent.clone(),
+                proto_ver: PROTO_VER,
+                remote: self.remote.clone(),
+                cwd: self.cwd.clone(),
+            })
+            .await?;
+        match resp {
+            CommsResponse::Welcome { proto_ver, .. } if proto_ver == PROTO_VER => Ok(()),
+            CommsResponse::Welcome { proto_ver, .. } => Err(CommsClientError::ProtoSkew {
+                daemon: proto_ver,
+                client: PROTO_VER,
+            }),
+            CommsResponse::Error { code, message } => {
+                Err(CommsClientError::Broker { code, message })
+            }
+            _ => Err(CommsClientError::Unexpected { request: "hello" }),
+        }
+    }
+
+    /// Re-establish the link after a broken/closed connection: ensure the daemon is alive
+    /// (re-spawning it if the socket is gone), re-dial, and replay the `Hello` handshake. Any
+    /// buffered notifications from the dead link are dropped — they belong to a connection that
+    /// no longer exists.
+    async fn reconnect(&mut self) -> Result<(), CommsClientError> {
+        // `spawn` is a borrow of `self`, but `ensure_daemon_with` only needs it as `FnOnce`;
+        // borrow it through a closure so we do not move it out of `self`.
+        let spawn = &self.spawn;
+        singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths))
+            .await?;
+        let (stream, codec) = Self::dial(&self.paths).await?;
+        self.stream = stream;
+        self.codec = codec;
+        self.read_buf.clear();
+        self.pending_notifications.clear();
+        self.handshake().await
     }
 
     /// The agent id this client authenticated as.
@@ -387,9 +458,48 @@ impl CommsClient {
         }
     }
 
-    /// Send a request and read frames until the direct response arrives, buffering any
-    /// notifications seen in the meantime.
+    /// Send a request and await its direct response, transparently recovering from a dead daemon.
+    ///
+    /// On the first attempt, a broken/closed connection (`BrokenPipe` / `ConnectionReset` /
+    /// unexpected EOF / a clean close before any reply) triggers exactly ONE reconnect — which
+    /// re-spawns the daemon if its socket is gone — followed by a single retry. A second failure
+    /// (or any non-connection error) is surfaced. This single-shot bound rules out an infinite
+    /// reconnect loop against a daemon that keeps dying.
+    ///
+    /// Replay safety: the retry only fires when the connection broke, and most requests are
+    /// trivially replayable — history / inbox / status / get_body are pure reads, and ack only
+    /// advances a monotonic per-agent cursor idempotently. The dominant failure this fixes is a
+    /// dead/stale daemon: the WRITE fails before any daemon sees the request, so the post-reconnect
+    /// replay is the *first* delivery, not a duplicate.
+    ///
+    /// The one residual window is a `Post` (or other mutation) that the old daemon committed to the
+    /// shared, persistent Fjall log and *then* crashed before its reply reached us: because the
+    /// reconnected daemon reads that same log, the replay would append a SECOND copy. This window
+    /// is narrow (a crash between store-commit and socket-write) and the worst case is a duplicate
+    /// coordination message — not corruption — which is an accepted trade-off for making `room_post`
+    /// survive the daemon dying at all. (A client-supplied idempotency key would close it; deferred.)
     async fn request(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
+        match self.send_and_await(req.clone()).await {
+            Ok(resp) => Ok(resp),
+            Err(err) if is_connection_lost(&err) => {
+                // The link to the broker is gone. Re-spawn the daemon if its socket is dead,
+                // re-dial, replay the `Hello`, then retry the request exactly once. A second
+                // failure (connection or otherwise) is surfaced — this single-shot bound rules
+                // out an infinite reconnect loop against a daemon that keeps dying.
+                self.reconnect().await?;
+                self.send_and_await(req).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Write the request and read frames until the direct response arrives, buffering any
+    /// notifications seen in the meantime. No reconnect — the single-shot retry lives in
+    /// [`CommsClient::request`].
+    async fn send_and_await(
+        &mut self,
+        req: CommsRequest,
+    ) -> Result<CommsResponse, CommsClientError> {
         self.write_request(&req).await?;
         loop {
             match self.read_frame().await? {
@@ -426,6 +536,25 @@ impl CommsClient {
                 )));
             }
         }
+    }
+}
+
+/// Classify an error as "the link to the broker is gone" — the only class the single-shot
+/// reconnect+retry fires on. Covers the kernel signals for a dead peer (`BrokenPipe`,
+/// `ConnectionReset`, `ConnectionAborted`, `NotConnected`), an unexpected mid-frame EOF, and the
+/// clean-close [`CommsClientError::Closed`] (the daemon dropped the link before replying).
+fn is_connection_lost(err: &CommsClientError) -> bool {
+    match err {
+        CommsClientError::Closed => true,
+        CommsClientError::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
     }
 }
 
