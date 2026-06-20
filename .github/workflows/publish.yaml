@@ -66,6 +66,113 @@ jobs:
           echo "Cargo/npm version: $version"
           echo "Python version: $python_version"
 
+      - name: Verify version consistency across all surfaces
+        run: |
+          set -euo pipefail
+          target_version="${{ steps.version.outputs.version }}"
+          target_python_version="${{ steps.version.outputs.python_version }}"
+
+          echo "Verifying version consistency for: $target_version (Python form: $target_python_version)"
+
+          # Check Cargo.toml
+          cargo_version="$(grep -E '^version = "' Cargo.toml | head -1 | cut -d'"' -f2)"
+          if [ "$cargo_version" != "$target_version" ]; then
+            echo "::error::Cargo.toml version mismatch: expected $target_version, got $cargo_version"
+            exit 1
+          fi
+
+          # Check npm-package/package.json
+          if [ -f npm-package/package.json ]; then
+            npm_version="$(jq -r '.version' npm-package/package.json)"
+            if [ "$npm_version" != "$target_version" ]; then
+              echo "::error::npm-package/package.json version mismatch: expected $target_version, got $npm_version"
+              exit 1
+            fi
+          fi
+
+          # Check pip-package/pyproject.toml (PyPI form)
+          if [ -f pip-package/pyproject.toml ]; then
+            pypi_version="$(grep -E '^version = "' pip-package/pyproject.toml | head -1 | cut -d'"' -f2)"
+            if [ "$pypi_version" != "$target_python_version" ]; then
+              echo "::error::pip-package/pyproject.toml version mismatch: expected $target_python_version, got $pypi_version"
+              exit 1
+            fi
+          fi
+
+          # Check pip-package/basemind/__init__.py
+          if [ -f pip-package/basemind/__init__.py ]; then
+            init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
+            if [ "$init_version" != "$target_python_version" ]; then
+              echo "::error::pip-package/basemind/__init__.py version mismatch: expected $target_python_version, got $init_version"
+              exit 1
+            fi
+          fi
+
+          # Check root package.json
+          if [ -f package.json ]; then
+            root_version="$(jq -r '.version' package.json)"
+            if [ "$root_version" != "$target_version" ]; then
+              echo "::error::package.json (root) version mismatch: expected $target_version, got $root_version"
+              exit 1
+            fi
+          fi
+
+          # Check opencode-plugin/package.json
+          if [ -f opencode-plugin/package.json ]; then
+            opencode_version="$(jq -r '.version' opencode-plugin/package.json)"
+            if [ "$opencode_version" != "$target_version" ]; then
+              echo "::error::opencode-plugin/package.json version mismatch: expected $target_version, got $opencode_version"
+              exit 1
+            fi
+          fi
+
+          # Check .claude-plugin/plugin.json
+          if [ -f .claude-plugin/plugin.json ]; then
+            claude_version="$(jq -r '.version' .claude-plugin/plugin.json)"
+            if [ "$claude_version" != "$target_version" ]; then
+              echo "::error::.claude-plugin/plugin.json version mismatch: expected $target_version, got $claude_version"
+              exit 1
+            fi
+          fi
+
+          # Check .claude-plugin/marketplace.json
+          if [ -f .claude-plugin/marketplace.json ]; then
+            marketplace_version="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)"
+            if [ "$marketplace_version" != "$target_version" ]; then
+              echo "::error::.claude-plugin/marketplace.json version mismatch: expected $target_version, got $marketplace_version"
+              exit 1
+            fi
+          fi
+
+          # Check .codex-plugin/plugin.json
+          if [ -f .codex-plugin/plugin.json ]; then
+            codex_version="$(jq -r '.version' .codex-plugin/plugin.json)"
+            if [ "$codex_version" != "$target_version" ]; then
+              echo "::error::.codex-plugin/plugin.json version mismatch: expected $target_version, got $codex_version"
+              exit 1
+            fi
+          fi
+
+          # Check .cursor-plugin/plugin.json
+          if [ -f .cursor-plugin/plugin.json ]; then
+            cursor_version="$(jq -r '.version' .cursor-plugin/plugin.json)"
+            if [ "$cursor_version" != "$target_version" ]; then
+              echo "::error::.cursor-plugin/plugin.json version mismatch: expected $target_version, got $cursor_version"
+              exit 1
+            fi
+          fi
+
+          # Check gemini-extension.json
+          if [ -f gemini-extension.json ]; then
+            gemini_version="$(jq -r '.version' gemini-extension.json)"
+            if [ "$gemini_version" != "$target_version" ]; then
+              echo "::error::gemini-extension.json version mismatch: expected $target_version, got $gemini_version"
+              exit 1
+            fi
+          fi
+
+          echo "✓ All version surfaces match: $target_version"
+
       - name: Detect already-published versions
         id: published
         run: |
@@ -221,7 +328,6 @@ jobs:
   checksums:
     name: Generate and upload checksums
     needs: [meta, build-binaries]
-    if: needs.meta.outputs.release_assets_exist != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -229,27 +335,57 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - name: Download checksums from release
+      - name: Verify all 4 expected archives are present
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${{ needs.meta.outputs.tag }}"
 
-          # Download all release assets and compute checksums
-          gh release view "$tag" --json assets -q '.assets[].name' | while read -r asset; do
+          # Expected archives for the 4 build targets
+          expected=(
+            "basemind-x86_64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-apple-darwin.tar.gz"
+            "basemind-x86_64-pc-windows-msvc.zip"
+          )
+
+          # Fetch the list of release assets
+          gh release view "$tag" --json assets -q '.assets[].name' > /tmp/release_assets.txt || true
+
+          missing_count=0
+          for expected_asset in "${expected[@]}"; do
+            if ! grep -q "^${expected_asset}$" /tmp/release_assets.txt 2>/dev/null; then
+              echo "::error::Missing expected archive: $expected_asset"
+              missing_count=$((missing_count + 1))
+            fi
+          done
+
+          if [ $missing_count -gt 0 ]; then
+            echo "::error::Release is incomplete: $missing_count of 4 platform archives missing. The release must have all 4 binaries before checksums can be generated."
+            exit 1
+          fi
+
+          echo "✓ All 4 expected archives present"
+
+      - name: Download archives and generate checksums
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.meta.outputs.tag }}"
+
+          # Download all archives from the release
+          gh release view "$tag" --json assets -q '.assets[] | select(.name | test("basemind-.+\\.(tar\\.gz|zip)$")).name' | while read -r asset; do
+            echo "Downloading $asset..."
             gh release download "$tag" -p "$asset" -O "$asset"
           done
 
-          # Generate checksums file. Fail loudly if no archives were downloaded
-          # rather than uploading an empty checksums file (which would make every
-          # install fail closed with no diagnostic).
-          shopt -s nullglob
-          archives=(basemind-*.tar.gz basemind-*.zip)
-          if [ ${#archives[@]} -eq 0 ]; then
-            echo "::error::no release archives found to checksum" >&2
-            exit 1
-          fi
-          sha256sum "${archives[@]}" | sort > "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
+          # Generate checksums file with explicit platform list for clarity
+          sha256sum basemind-*.tar.gz basemind-*.zip | sort > "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
+
+          echo "✓ Generated checksums file"
+          cat "basemind_${{ needs.meta.outputs.version }}_checksums.txt"
 
       - name: Upload checksums to release
         env:
@@ -257,6 +393,7 @@ jobs:
         run: |
           tag="${{ needs.meta.outputs.tag }}"
           gh release upload "$tag" basemind_${{ needs.meta.outputs.version }}_checksums.txt --clobber
+          echo "✓ Uploaded checksums to release"
 
   publish_crates:
     name: Publish crates.io
@@ -296,8 +433,8 @@ jobs:
 
   publish_npm:
     name: Publish npm
-    needs: meta
-    if: needs.meta.outputs.npm_exists != 'true'
+    needs: [meta, checksums]
+    if: needs.meta.outputs.npm_exists != 'true' && needs.checksums.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -332,8 +469,8 @@ jobs:
 
   publish_opencode:
     name: Publish npm (basemind-opencode)
-    needs: meta
-    if: needs.meta.outputs.opencode_exists != 'true'
+    needs: [meta, checksums]
+    if: needs.meta.outputs.opencode_exists != 'true' && needs.checksums.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -368,8 +505,8 @@ jobs:
 
   publish_pypi:
     name: Publish PyPI
-    needs: meta
-    if: needs.meta.outputs.pypi_exists != 'true'
+    needs: [meta, checksums]
+    if: needs.meta.outputs.pypi_exists != 'true' && needs.checksums.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -400,13 +537,9 @@ jobs:
   publish_homebrew:
     name: Update Homebrew formula
     # Stable releases only — rc/beta/alpha pre-releases do not update the tap.
-    # Needs the binaries + checksums to exist first.
+    # Requires checksums job to succeed (which ensures all 4 binaries exist).
     needs: [meta, checksums]
-    if: >-
-      !cancelled() && needs.checksums.result == 'success' &&
-      !contains(needs.meta.outputs.version, '-rc') &&
-      !contains(needs.meta.outputs.version, '-beta') &&
-      !contains(needs.meta.outputs.version, '-alpha')
+    if: needs.checksums.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

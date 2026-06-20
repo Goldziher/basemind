@@ -6,12 +6,43 @@ const fs = require("node:fs");
 
 const binaryName = os.type() === "Windows_NT" ? "basemind.exe" : "basemind";
 const binaryPath = path.join(__dirname, binaryName);
+const packageJsonPath = path.join(__dirname, "..", "package.json");
 
-if (!fs.existsSync(binaryPath)) {
+function ensureBinaryExists() {
+  if (fs.existsSync(binaryPath)) {
+    return true;
+  }
+
+  // Binary is missing. Attempt a one-time self-heal by running the postinstall script.
+  console.error(`basemind: binary not found at ${binaryPath}. Running install...`);
+
+  const installScriptPath = path.join(__dirname, "..", "install.js");
+  if (!fs.existsSync(installScriptPath)) {
+    console.error(`basemind: install script not found at ${installScriptPath}`);
+    return false;
+  }
+
+  // Run the install script with stdio inherit so the user sees progress/errors
+  const installResult = spawnSync(process.execPath, [installScriptPath], {
+    stdio: "inherit",
+    cwd: path.dirname(packageJsonPath),
+  });
+
+  // Check if the install succeeded and the binary now exists
+  if (installResult.status === 0 && fs.existsSync(binaryPath)) {
+    return true;
+  }
+
+  return false;
+}
+
+if (!ensureBinaryExists()) {
   console.error(
     `basemind: native binary not found at ${binaryPath}.\n` +
       `The postinstall step that downloads the binary from GitHub releases may have failed.\n` +
-      `Reinstall with: npm install -g basemind`,
+      `You can try:\n` +
+      `  1. Reinstall: npm install -g basemind\n` +
+      `  2. Use cargo: cargo install basemind`,
   );
   process.exit(1);
 }

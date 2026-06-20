@@ -98,6 +98,34 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
   });
 }
 
+// Retry-with-exponential-backoff wrapper. Retries on network errors, 5xx, and timeout.
+// Does NOT retry on 404 (deterministic failure). Returns error on 4xx (except retryable timeout).
+function retryWithBackoff(fn, maxAttempts = 3) {
+  const delays = [1000, 2000, 4000]; // exponential: 1s, 2s, 4s
+  return async function attempt(index = 0) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isRetryable =
+        err.message.includes("Download timeout") ||
+        err.message.includes("ECONNREFUSED") ||
+        err.message.includes("ECONNRESET") ||
+        err.message.includes("ETIMEDOUT") ||
+        err.message.includes("EHOSTUNREACH") ||
+        (err.message.match(/HTTP ([0-9]+)/) && parseInt(RegExp.$1) >= 500);
+
+      if (!isRetryable || index >= maxAttempts - 1) {
+        throw err;
+      }
+
+      const delay = delays[index];
+      console.log(`Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      return attempt(index + 1);
+    }
+  }();
+}
+
 // Download a (small) text resource into memory, following redirects.
 function fetchTextWithRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
@@ -141,6 +169,11 @@ function fetchTextWithRedirects(url, maxRedirects = 5) {
   });
 }
 
+// Retry wrapper for text fetches (same retry policy as binary downloads).
+function retryFetchText(url) {
+  return retryWithBackoff(() => fetchTextWithRedirects(url));
+}
+
 function sha256File(filePath) {
   const hash = crypto.createHash("sha256");
   hash.update(fs.readFileSync(filePath));
@@ -165,11 +198,11 @@ function expectedDigest(checksumsText, assetName) {
 
 // Verify the downloaded archive against the release checksums file. Fails CLOSED:
 // any failure to fetch the checksums, locate the entry, or match the digest
-// aborts the install.
+// aborts the install. Uses retry-with-backoff for transient failures.
 async function verifyChecksum(archivePath, assetName, checksumsUrl) {
   let checksumsText;
   try {
-    checksumsText = await fetchTextWithRedirects(checksumsUrl);
+    checksumsText = await retryFetchText(checksumsUrl);
   } catch (error) {
     throw new Error(
       `could not fetch checksums (${checksumsUrl}): ${error.message} — refusing to install unverified binary`,
@@ -210,7 +243,7 @@ async function installBinary() {
 
     console.log(`Downloading basemind binary from ${archiveUrl}...`);
 
-    await downloadWithRedirects(archiveUrl, archivePath);
+    await retryWithBackoff(() => downloadWithRedirects(archiveUrl, archivePath));
 
     // Fail CLOSED: verify the archive against the release checksums before
     // extracting anything. Any fetch/parse/mismatch failure aborts the install.
