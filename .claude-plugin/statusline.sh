@@ -63,6 +63,7 @@ fi
 brand=$'\033[38;2;249;115;22m' # brand orange
 cyan=$'\033[38;5;51m'          # file count, scan-age, intel
 magenta=$'\033[38;5;201m'      # calls, tokens saved
+green=$'\033[38;5;46m'         # comms: unread messages
 label=$'\033[38;5;255m'        # units / labels
 sep=$'\033[38;5;240m'          # separators
 muted=$'\033[38;5;244m'        # context line text
@@ -84,6 +85,40 @@ fmt_count() { # 1234 → 1.2k, 14200 → 14k, 1500000 → 1M
 fmt_thousands() {
   local n="$1"
   LC_ALL=en_US.UTF-8 printf "%'d" "$n" 2>/dev/null || printf '%d' "$n"
+}
+
+# Agent-comms state — prints "<unread> <agent>" or nothing. Cheap and side-effect-free:
+#   * only runs when a comms-capable `basemind` is on PATH (the cargo `--features comms`
+#     build) AND the broker daemon is ALREADY running — never auto-spawns it;
+#   * TTL-cached (8s) per cwd so a tight refreshInterval hits the daemon at most once
+#     per window;
+#   * one bounded `comms inbox --limit 1` call yields the total unread count
+#     (page length + the `unread` remainder); identity comes from the env or the cheap
+#     persisted `.basemind/agent-id` read.
+comms_state() {
+  command -v basemind >/dev/null 2>&1 || return 1
+  command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
+  [[ $have_jq -eq 1 ]] || return 1
+
+  local cache now cts cu ca json unread agent
+  cache="${TMPDIR:-/tmp}/basemind-sl-comms-$(printf '%s' "$cwd" | cksum | cut -d' ' -f1)"
+  now="$(date +%s)"
+  if [[ -f "$cache" ]]; then
+    read -r cts cu ca <"$cache" 2>/dev/null || true
+    if [[ -n "${cts:-}" && "$cts" =~ ^[0-9]+$ ]] && ((now - cts < 8)); then
+      printf '%s %s' "${cu:-0}" "${ca:-}"
+      return 0
+    fi
+  fi
+
+  json="$(timeout 2 basemind comms inbox --root "$cwd" --json --limit 1 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 1
+  unread="$(printf '%s' "$json" | jq -r '((.messages | length) + (.unread // 0))' 2>/dev/null | tr -cd '0-9' || true)"
+  [[ -n "$unread" ]] || unread=0
+  agent="${BASEMIND_AGENT_ID:-}"
+  [[ -z "$agent" ]] && agent="$(tr -d '[:space:]' <"${bm_dir}/agent-id" 2>/dev/null || true)"
+  printf '%s %s %s\n' "$now" "$unread" "${agent:-}" >"$cache" 2>/dev/null || true
+  printf '%s %s' "$unread" "${agent:-}"
 }
 
 # ─── Line 1: Claude context ────────────────────────────────────────────────────
@@ -203,6 +238,15 @@ build_basemind_line() {
   else dot_color=$'\033[38;5;196m'; fi
   local dot="${dot_color}●${reset}"
 
+  # Agent-comms: unread count + identity, only when the broker is live.
+  local comms_unread="" comms_agent="" comms_raw
+  comms_raw="$(comms_state 2>/dev/null || true)"
+  if [[ -n "$comms_raw" ]]; then
+    comms_unread="${comms_raw%% *}"
+    comms_agent="${comms_raw#* }"
+    [[ "$comms_agent" == "$comms_raw" ]] && comms_agent=""
+  fi
+
   # Compose by tier.
   local searches=$((code))
   local out
@@ -212,6 +256,9 @@ build_basemind_line() {
     out+="${bold}${cyan}${scan_age% ago}${reset} ${sep}│${reset} "
     out+="${bold}${magenta}$(fmt_count "$calls")${reset}${label}c${reset} ${sep}·${reset} "
     out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
+    if [[ -n "$comms_unread" && "$comms_unread" -gt 0 ]]; then
+      out+=" ${sep}·${reset} ${bold}${green}✉${comms_unread}${reset}"
+    fi
     printf '%s' "$out"
     return
   fi
@@ -236,6 +283,17 @@ build_basemind_line() {
 
   out+="  ${sep}│${reset}  "
   out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
+
+  # Comms segment: unread (bright when >0, dim at zero) + identity in the full tier.
+  if [[ -n "$comms_unread" ]]; then
+    out+="  ${sep}│${reset}  "
+    if [[ "$comms_unread" -gt 0 ]]; then
+      out+="${bold}${green}✉ $(fmt_count "$comms_unread")${reset}"
+    else
+      out+="${muted}✉ 0${reset}"
+    fi
+    [[ "$tier" == "full" && -n "$comms_agent" ]] && out+=" ${muted}@${comms_agent:0:16}${reset}"
+  fi
   printf '%s' "$out"
 }
 
