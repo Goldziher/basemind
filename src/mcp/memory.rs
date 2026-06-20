@@ -706,9 +706,14 @@ async fn attach_doc_metadata(
     // Phase 2: read blobs off the async runtime. Each blob is a synchronous
     // `std::fs::read` + msgpack decode — exactly the work `spawn_blocking` is
     // for. The async path keeps making progress while we crunch metadata.
+    //
+    // `Arc` wrap: multiple chunks of the same doc map to the same path. Storing
+    // an `Arc<DocMeta>` means N chunk-hits from the same doc pay one atomic
+    // increment each instead of cloning the full `(Vec<DocKeyword>, Vec<DocEntity>,
+    // Option<DocSummary>)` triple N times.
     type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
-    let meta: ahash::AHashMap<String, DocMeta> = tokio::task::spawn_blocking(move || {
-        let mut out: ahash::AHashMap<String, DocMeta> =
+    let meta: ahash::AHashMap<String, Arc<DocMeta>> = tokio::task::spawn_blocking(move || {
+        let mut out: ahash::AHashMap<String, Arc<DocMeta>> =
             ahash::AHashMap::with_capacity(pairs.len());
         for (path, blob_path) in pairs {
             if !blob_path.exists() {
@@ -723,7 +728,10 @@ async fn attach_doc_metadata(
             };
             match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
                 Ok(doc) => {
-                    out.insert(path, (doc.keywords, doc.entities, doc.summary));
+                    out.insert(
+                        path,
+                        Arc::new((doc.keywords, doc.entities, doc.summary)),
+                    );
                 }
                 Err(e) => {
                     tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
@@ -740,29 +748,34 @@ async fn attach_doc_metadata(
     let kw_needle = keywords_contains.map(|s| s.to_lowercase());
 
     hits.retain_mut(|hit| {
-        let (kws, ents, summary) = meta
-            .get(&hit.path)
-            .cloned()
-            .unwrap_or_else(|| (Vec::new(), Vec::new(), None));
+        // `Arc::clone` = one atomic increment per hit vs cloning the full
+        // `(Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>)` triple.
+        // Filter checks borrow through the Arc; only surviving hits pay a clone.
+        let meta_arc = meta.get(&hit.path).cloned();
 
-        // Apply filters first; if a filter is set and the parent doc has no
-        // matching metadata, drop the hit before paying the clone cost.
-        if let Some(needle) = cat_needle.as_deref()
-            && !ents
+        // Apply filters first via borrows — drop the hit before any owned clone.
+        if let Some(needle) = cat_needle.as_deref() {
+            let ents = meta_arc.as_ref().map(|m| m.1.as_slice()).unwrap_or(&[]);
+            if !ents
                 .iter()
                 .any(|e| e.category.to_lowercase().contains(needle))
-        {
-            return false;
+            {
+                return false;
+            }
         }
-        if let Some(needle) = kw_needle.as_deref()
-            && !kws.iter().any(|k| k.text.to_lowercase().contains(needle))
-        {
-            return false;
+        if let Some(needle) = kw_needle.as_deref() {
+            let kws = meta_arc.as_ref().map(|m| m.0.as_slice()).unwrap_or(&[]);
+            if !kws.iter().any(|k| k.text.to_lowercase().contains(needle)) {
+                return false;
+            }
         }
 
-        hit.keywords = kws;
-        hit.entities = ents;
-        hit.summary = summary;
+        // Hit survived all filters — now pay the clone (once per surviving hit).
+        if let Some(m) = meta_arc {
+            hit.keywords = m.0.clone();
+            hit.entities = m.1.clone();
+            hit.summary = m.2.clone();
+        }
         true
     });
     Ok(())
