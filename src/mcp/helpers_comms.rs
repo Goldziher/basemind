@@ -16,10 +16,10 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::types_comms::{
     AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary,
-    InboxReadParams, InboxReadResponse, MessageFrontMatter, MessageGetParams, MessageGetResponse,
-    RoomCreateParams, RoomCreateResponse, RoomHistoryParams, RoomHistoryResponse, RoomJoinParams,
-    RoomLeaveParams, RoomListParams, RoomListResponse, RoomMembershipResponse, RoomPostParams,
-    RoomPostResponse, RoomSummary,
+    CursorAdvance, InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse,
+    MessageFrontMatter, MessageGetParams, MessageGetResponse, RoomCreateParams, RoomCreateResponse,
+    RoomHistoryParams, RoomHistoryResponse, RoomJoinParams, RoomLeaveParams, RoomListParams,
+    RoomListResponse, RoomMembershipResponse, RoomPostParams, RoomPostResponse, RoomSummary,
 };
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::cursor::Cursor;
@@ -180,10 +180,18 @@ pub(super) async fn run_room_post(
 ) -> Result<CallToolResult, McpError> {
     let body = params.body.unwrap_or_default().into_bytes();
     let tags = params.tags.unwrap_or_default();
+    let scope = params.scope.unwrap_or_default();
     let mut guard = comms_client(state).await?;
     let client = client_mut(&mut guard)?;
     let message_id = client
-        .post_message(params.room, params.subject, body, tags, params.reply_to)
+        .post_message(
+            params.room,
+            params.subject,
+            body,
+            tags,
+            params.reply_to,
+            scope,
+        )
         .await
         .map_err(comms_err)?;
     json_result(&RoomPostResponse { message_id })
@@ -248,5 +256,33 @@ pub(super) async fn run_inbox_read(
         unread,
         messages,
         next_cursor,
+    })
+}
+
+pub(super) async fn run_inbox_ack(
+    state: &ServerState,
+    params: InboxAckParams,
+) -> Result<CallToolResult, McpError> {
+    // Validate up front: at least one mode must be supplied (the broker also guards this, but
+    // failing fast here gives a clearer MCP error than a round-trip).
+    let has_bulk = params.room.is_some() && params.to_seq.is_some();
+    if params.message_ids.is_empty() && !has_bulk {
+        return Err(comms_err(
+            "inbox_ack requires message_ids or a (room, to_seq) pair",
+        ));
+    }
+    let mut guard = comms_client(state).await?;
+    let client = client_mut(&mut guard)?;
+    let (acked, cursors) = client
+        .ack_inbox(params.message_ids, params.room, params.to_seq)
+        .await
+        .map_err(comms_err)?;
+    let cursors_advanced: Vec<CursorAdvance> = cursors
+        .into_iter()
+        .map(|(room, seq)| CursorAdvance { room, seq })
+        .collect();
+    json_result(&InboxAckResponse {
+        acked: acked as usize,
+        cursors_advanced,
     })
 }

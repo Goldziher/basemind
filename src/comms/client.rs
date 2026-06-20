@@ -15,9 +15,9 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use super::cursor::Cursor;
 use super::ids::{AgentId, RoomId};
-use super::model::{AgentCard, AgentRecord, MessageMeta, Room, RoomScope};
+use super::model::{AgentCard, AgentRecord, Room, RoomScope};
 use super::protocol::{
-    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport,
+    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport,
 };
 use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
@@ -196,7 +196,9 @@ impl CommsClient {
             .await
     }
 
-    /// Post a message to a room. Returns the new message id.
+    /// Post a message to a room. Returns the new message id. `scope` carries optional glob / path
+    /// patterns describing where the message applies (empty when unscoped).
+    #[allow(clippy::too_many_arguments)]
     pub async fn post_message(
         &mut self,
         room: RoomId,
@@ -204,6 +206,7 @@ impl CommsClient {
         body: Vec<u8>,
         tags: Vec<String>,
         reply_to: Option<String>,
+        scope: Vec<String>,
     ) -> Result<String, CommsClientError> {
         match self
             .request(CommsRequest::Post {
@@ -211,12 +214,40 @@ impl CommsClient {
                 subject,
                 tags,
                 reply_to,
+                scope,
                 body,
             })
             .await?
         {
             CommsResponse::Posted { message_id } => Ok(message_id),
             other => Err(self.shape_err(other, "post_message")),
+        }
+    }
+
+    /// Acknowledge inbox messages by advancing this agent's per-room read cursors. Pass
+    /// `message_ids` to ack specific messages (each resolved to its `(room, seq)`), and/or a
+    /// `(room, to_seq)` pair to bulk-ack everything up to `to_seq` in that room. Returns the count
+    /// of acked ids and the `(room, new_seq)` cursors that advanced. Never deletes from the shared
+    /// log and never affects another agent.
+    pub async fn ack_inbox(
+        &mut self,
+        message_ids: Vec<String>,
+        room: Option<RoomId>,
+        to_seq: Option<u64>,
+    ) -> Result<(u32, Vec<(String, u64)>), CommsClientError> {
+        match self
+            .request(CommsRequest::AckInbox {
+                message_ids,
+                room,
+                to_seq,
+            })
+            .await?
+        {
+            CommsResponse::Acked {
+                acked,
+                cursors_advanced,
+            } => Ok((acked, cursors_advanced)),
+            other => Err(self.shape_err(other, "ack_inbox")),
         }
     }
 
@@ -227,7 +258,7 @@ impl CommsClient {
         room: RoomId,
         cursor: Option<Cursor>,
         limit: u32,
-    ) -> Result<(Vec<MessageMeta>, Option<Cursor>), CommsClientError> {
+    ) -> Result<(Vec<SeqMeta>, Option<Cursor>), CommsClientError> {
         match self
             .request(CommsRequest::History {
                 room,
@@ -265,7 +296,7 @@ impl CommsClient {
         cursor: Option<Cursor>,
         limit: u32,
         mark_read: bool,
-    ) -> Result<(Vec<MessageMeta>, u32, Option<Cursor>), CommsClientError> {
+    ) -> Result<(Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
         match self
             .request(CommsRequest::Inbox {
                 remote,

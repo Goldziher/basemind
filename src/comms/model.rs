@@ -91,6 +91,13 @@ pub struct MessageMeta {
     pub tags: Vec<String>,
     /// Optional id of the message this one replies to (threading).
     pub reply_to: Option<String>,
+    /// Glob / path patterns (or repo / workspace tags) describing WHERE this message applies,
+    /// so agents can filter relevance without fetching the body. Empty when unscoped.
+    ///
+    /// Additive: `#[serde(default)]` keeps older blobs (written before this field existed)
+    /// deserializable, so adding it required no comms schema-version bump.
+    #[serde(default)]
+    pub scope: Vec<String>,
     /// Length of the separately-stored body in bytes.
     pub body_len: u32,
     /// Hex-encoded SHA-256 of the body for integrity / dedup.
@@ -247,11 +254,46 @@ mod tests {
             subject: "hello".to_string(),
             tags: vec!["t1".to_string()],
             reply_to: None,
+            scope: vec!["src/**".to_string()],
             body_len: 5,
             body_sha: "abc".to_string(),
         };
         let bytes = rmp_serde::to_vec_named(&meta).expect("encode");
         let back: MessageMeta = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(meta, back);
+    }
+
+    /// `scope` is additive: a msgpack record written before the field existed (i.e. a map with
+    /// no `scope` key) still deserializes, defaulting `scope` to an empty vec. This is what lets
+    /// the field land without a `COMMS_SCHEMA_VER` bump.
+    #[test]
+    fn message_meta_without_scope_field_deserializes_to_empty() {
+        #[derive(serde::Serialize)]
+        struct LegacyMeta {
+            id: String,
+            room: RoomId,
+            from: AgentId,
+            ts_micros: i64,
+            subject: String,
+            tags: Vec<String>,
+            reply_to: Option<String>,
+            body_len: u32,
+            body_sha: String,
+        }
+        let legacy = LegacyMeta {
+            id: "m-old".to_string(),
+            room: RoomId::parse("room-1").expect("room"),
+            from: AgentId::parse("agent-1").expect("agent"),
+            ts_micros: 1,
+            subject: "legacy".to_string(),
+            tags: vec![],
+            reply_to: None,
+            body_len: 0,
+            body_sha: "z".to_string(),
+        };
+        let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy");
+        let back: MessageMeta = rmp_serde::from_slice(&bytes).expect("decode legacy");
+        assert_eq!(back.id, "m-old");
+        assert!(back.scope.is_empty(), "missing scope defaults to empty");
     }
 }

@@ -23,7 +23,8 @@ use serde_json::json;
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::{AgentId, RoomId};
-use crate::comms::model::{AgentCard, MessageMeta, Room, RoomScope};
+use crate::comms::model::{AgentCard, Room, RoomScope};
+use crate::comms::protocol::SeqMeta;
 
 /// Default page size for `history` / `inbox` when `--limit` is omitted.
 const DEFAULT_LIMIT: u32 = 100;
@@ -313,7 +314,7 @@ async fn dispatch(
             let room_id = RoomId::parse(room).context("room id")?;
             let body = body.unwrap_or_default().into_bytes();
             let message_id = client
-                .post_message(room_id, subject, body, tags, reply_to)
+                .post_message(room_id, subject, body, tags, reply_to, Vec::new())
                 .await
                 .map_err(|e| anyhow::anyhow!("post: {e}"))?;
             if json {
@@ -397,7 +398,7 @@ fn render_room(room: &Room, json: bool, out: &mut impl Write) -> Result<()> {
 
 /// Render a page of message FRONT-MATTER (never bodies). `unread` is `Some` for inbox output.
 fn render_front_matter(
-    messages: &[MessageMeta],
+    messages: &[SeqMeta],
     next_cursor: Option<&Cursor>,
     unread: Option<u32>,
     json: bool,
@@ -406,7 +407,8 @@ fn render_front_matter(
     if json {
         let rows: Vec<_> = messages
             .iter()
-            .map(|m| {
+            .map(|sm| {
+                let m = &sm.meta;
                 json!({
                     "id": m.id,
                     "room": m.room.as_str(),
@@ -414,7 +416,9 @@ fn render_front_matter(
                     "ts_micros": m.ts_micros,
                     "subject": m.subject,
                     "tags": m.tags,
+                    "scope": m.scope,
                     "reply_to": m.reply_to,
+                    "seq": sm.seq,
                     "body_len": m.body_len,
                 })
             })
@@ -436,7 +440,8 @@ fn render_front_matter(
         writeln!(out, "(no messages)")?;
     } else {
         // Front-matter table: subject, from, ts, id — bodies are fetched with `read`.
-        for m in messages {
+        for sm in messages {
+            let m = &sm.meta;
             writeln!(
                 out,
                 "{}\t{}\t{}\t{}",
