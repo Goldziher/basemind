@@ -22,7 +22,7 @@ agent-to-agent comms
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Quickstart](#quickstart) · [Performance](#performance) · [Install](#installation)
+[Quickstart](#quickstart) · [Install](#installation) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Performance](#performance)
 
 </div>
 
@@ -184,6 +184,24 @@ flowchart TB
 
 ## Quickstart
 
+basemind indexes ~81k files in ~22s and answers symbol/reference queries in sub-millisecond time —
+see [Performance](#performance) for the full benchmarks.
+
+<!-- TODO(asciinema): embed a short demo cast here once recorded. -->
+
+**Install in one line** (full reference in the [Installation](#installation) section):
+
+```bash
+npm install -g basemind        # or: pip install basemind, cargo install basemind --locked
+```
+
+For the Claude Code plugin, paste these into the **Claude Code session** (not your shell):
+
+```text
+/plugin marketplace add Goldziher/basemind
+/plugin install basemind@basemind
+```
+
 Choose the path that fits your workflow. Both paths use the same on-disk index at `.basemind/`.
 
 ### Path A: MCP plugin (Claude Code and other harnesses)
@@ -193,11 +211,12 @@ in-session function calls. Zero config — install and start using tools immedia
 
 #### Claude Code
 
-Run these two commands in order:
+In the Claude Code session (not your shell), run these two slash commands in order — the first
+registers the marketplace, the second installs the plugin:
 
 ```text
-/plugin marketplace add Goldziher/basemind   # 1. register the marketplace
-/plugin install basemind@basemind            # 2. install the plugin
+/plugin marketplace add Goldziher/basemind
+/plugin install basemind@basemind
 ```
 
 Restart the session after installing. The basemind binary installs automatically on first use
