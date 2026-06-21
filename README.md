@@ -75,6 +75,38 @@ The live statusline surfaces the payoff: estimated tokens saved vs a grep + read
 
 ---
 
+## Token reduction
+
+basemind reduces tokens via **code-aware structural compression**, not lossy prose-style dropping. The
+`compress` tool handles both: for source code it returns signatures + imports (no file bodies) via the L1
+outline; for prose text it applies lexical passes (whitespace collapse, conservative filler removal, paragraph dedup).
+Both yield honest before/after token counts and byte-for-byte integrity on code.
+
+**Why this matters:** tools that prune tokens via LM-based pruning or aggressive phrase removal sacrifice code
+correctness (a function signature is useless without its shape). basemind's approach leverages the tree-sitter
+code map to understand structure — what's a symbol vs a comment vs a docstring — so compression never corrupts
+working code.
+
+Compare against the current landscape:
+
+<!-- markdownlint-disable MD013 -->
+
+| Tool | Approach | Code-aware? | Interface | Lossless for code |
+|---|---|---|---|---|
+| **basemind** | Structural elision (L1 outline) + lexical prose pass | Yes (tree-sitter) | MCP + CLI | Yes |
+| LLMLingua-2 | LM token-pruning (PyTorch, 124M–7B) | No | Python lib | No |
+| token-optimizer | Behavioral + bash-output compression, delta reads | No | CLI / MCP | Partial |
+| token-optimizer-mcp | SQLite cache + Brotli + smart tool replacement | No (caching-driven) | MCP | Partial |
+| mcp-compressor | MCP tool-schema overhead deferral | No (schema-only) | MCP | Yes |
+| CodePromptZip | Research-grade code pruning | Yes (static analysis) | Research / paper | No |
+
+<!-- markdownlint-enable MD013 -->
+
+**Roadmap:** per-call `max_tokens` budgets, semantic prose reduction (via kreuzberg), and MCP tool-schema
+compression (struct/field trimming for deeply-nested responses) land in the next release.
+
+---
+
 ## Architecture
 
 One `basemind scan` walks the working tree in parallel (rayon), extracts structure with
