@@ -155,6 +155,20 @@ macos)
   done
   install_name_tool -add_rpath "@loader_path/lib" "$BIN_IN_STAGING" 2>/dev/null || true
 
+  # install_name_tool rewrites the Mach-O load commands in place, which invalidates
+  # the linker-applied ad-hoc code signature. An unmatched signature makes the kernel
+  # SIGKILL the process on first page-in ("Code Signature Invalid" / Invalid Page), so
+  # re-sign every modified Mach-O ad-hoc AFTER all rewrites. Dependencies first, then
+  # the main binary. This MUST succeed — a silent failure ships an unrunnable binary.
+  echo "Re-signing bundled dylibs + binary (ad-hoc) after install_name_tool..."
+  for dylib in "$STAGING_DIR/lib/"*.dylib; do
+    [ -f "$dylib" ] || continue
+    codesign --force --sign - "$dylib"
+  done
+  codesign --force --sign - "$BIN_IN_STAGING"
+  # Verify the binary's signature is valid on disk before packaging.
+  codesign --verify --strict "$BIN_IN_STAGING"
+
   tar czf "basemind-${TRIPLE}.tar.gz" -C "$STAGING_DIR" .
   echo "✓ Created basemind-${TRIPLE}.tar.gz"
   ;;
