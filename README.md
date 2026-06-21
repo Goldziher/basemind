@@ -187,7 +187,15 @@ flowchart TB
 basemind indexes ~81k files in ~22s and answers symbol/reference queries in sub-millisecond time —
 see [Performance](#performance) for the full benchmarks.
 
-<!-- TODO(asciinema): embed a short demo cast here once recorded. -->
+<!--
+  Demo assets. Uncomment each block once its asset exists (see docs/media/).
+  CLI GIF:   generate with `task demo:record`, which writes docs/media/demo.gif.
+  MCP video: capture per docs/media/MCP_DEMO.md, then paste the user-attachments URL.
+
+<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI demo: scan a repo, then query symbols, references, call graphs, git blame, and the token-savings dashboard" width="800"></p>
+
+<p align="center"><video src="https://github.com/user-attachments/assets/REPLACE-ME" controls width="800"></video></p>
+-->
 
 **Install in one line** (full reference in the [Installation](#installation) section):
 
