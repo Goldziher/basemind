@@ -15,6 +15,7 @@
 #   opencode-plugin/package.json          "version" (basemind-opencode npm pkg)
 #   .claude-plugin/plugin.json            "version"
 #   .claude-plugin/marketplace.json       plugins[0].version
+#   .agents/plugins/marketplace.json      plugins[0].version (Codex marketplace)
 #   .codex-plugin/plugin.json             "version"
 #   .cursor-plugin/plugin.json            "version"
 #   gemini-extension.json                 "version"
@@ -92,6 +93,7 @@ bump_json_version .codex-plugin/plugin.json
 bump_json_version .cursor-plugin/plugin.json
 bump_json_version gemini-extension.json
 bump_json_version .claude-plugin/marketplace.json
+bump_json_version .agents/plugins/marketplace.json
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then
   echo "→ RELEASE_MINOR      $CURRENT_RELEASE_MINOR → $RELEASE_MINOR (minor bump — schema wipe on next scan)"
@@ -167,6 +169,14 @@ if [ -f .claude-plugin/marketplace.json ]; then
   marketplace_version="$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json 2>/dev/null || echo '')"
   if [ "$marketplace_version" != "$VERSION" ]; then
     echo "✗ .claude-plugin/marketplace.json: expected $VERSION, got $marketplace_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f .agents/plugins/marketplace.json ]; then
+  codex_marketplace_version="$(jq -r '.plugins[0].version' .agents/plugins/marketplace.json 2>/dev/null || echo '')"
+  if [ "$codex_marketplace_version" != "$VERSION" ]; then
+    echo "✗ .agents/plugins/marketplace.json: expected $VERSION, got $codex_marketplace_version"
     validation_failed=1
   fi
 fi
