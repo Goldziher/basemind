@@ -345,18 +345,20 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         .expect("each proposal must have an 'id' string field");
     assert!(!id.is_empty(), "proposal id must not be empty");
 
-    // ── Step 3: accept — must write a memory and return accepted=true ─────────
+    // ── Step 3: accept — must write a memory, return accepted=true, exit 0 ────
     //
-    // Note: `proposal_accept` embeds the skill into LanceDB via kreuzberg, which
-    // initialises an inner tokio runtime (SharedEmbedder). When the outer CLI
-    // runtime drops, tokio panics with "cannot drop a runtime in a context where
-    // blocking is not allowed". This is a known limitation of the embedder inside
-    // the CLI single-shot server (the serve path is not affected). The DATA write
-    // succeeds and is verifiable via `memory get` (which exits 0). We therefore
-    // assert on the stdout JSON and on the subsequent `memory get`, not on the
-    // exit code of `accept`.
-    let (accept_stdout, _accept_stderr, _accept_ok) =
+    // `proposal_accept` materialises the cached `LanceStore`, which owns a tokio
+    // runtime. That store is dropped at the end of the CLI's outer `block_on`, i.e.
+    // inside an async context — which used to panic the process on teardown ("Cannot
+    // drop a runtime in a context where blocking is not allowed") and exit 101 even
+    // though the data write succeeded. `LanceStoreInner`'s `Drop` now calls
+    // `Runtime::shutdown_background`, so the command exits cleanly. We assert on that.
+    let (accept_stdout, accept_stderr, accept_ok) =
         run_full(root, &["--json", "governance", "accept", id]);
+    assert!(
+        accept_ok,
+        "governance accept must exit 0 (no runtime-drop panic); stderr: {accept_stderr}"
+    );
     let accept_v: Value = serde_json::from_str(accept_stdout.trim()).unwrap_or_else(|e| {
         panic!("governance accept did not emit JSON: {e}\nstdout: {accept_stdout}")
     });

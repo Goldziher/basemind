@@ -116,11 +116,37 @@ pub struct LanceStore {
 }
 
 struct LanceStoreInner {
-    runtime: Runtime,
+    /// `Some` for the whole lifetime; taken in `Drop` so the runtime can be torn
+    /// down off the current async context (see the `Drop` impl).
+    runtime: Option<Runtime>,
     connection: Connection,
     dim: u16,
     embedding_model: String,
     dir: PathBuf,
+}
+
+impl LanceStoreInner {
+    /// The owned tokio runtime. Present until `Drop` takes it.
+    fn rt(&self) -> &Runtime {
+        self.runtime
+            .as_ref()
+            .expect("LanceStore runtime is present until drop")
+    }
+}
+
+impl Drop for LanceStoreInner {
+    fn drop(&mut self) {
+        // This runtime is owned by `LanceStore`, which is cached in the MCP
+        // `ServerState`. In the single-shot CLI path that whole server is dropped at
+        // the end of the outer `block_on`, i.e. *inside* an async context — and the
+        // default `Runtime` drop blocks waiting for the blocking pool, which panics
+        // with "Cannot drop a runtime in a context where blocking is not allowed".
+        // `shutdown_background` is tokio's sanctioned escape hatch: it tears the
+        // runtime down without blocking, so the drop is safe from any context.
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 impl LanceStore {
@@ -162,7 +188,7 @@ impl LanceStore {
 
         Ok(Self {
             inner: Arc::new(LanceStoreInner {
-                runtime,
+                runtime: Some(runtime),
                 connection,
                 dim,
                 embedding_model: embedding_model.to_string(),
@@ -186,7 +212,7 @@ impl LanceStore {
     /// Replace all documents rows for the given `(scope, path)` pair and insert
     /// the supplied rows. Used by the scanner during incremental re-extract.
     pub fn replace_document(&self, scope: &str, path: &str, rows: Vec<DocumentRow>) -> Result<()> {
-        self.inner.runtime.block_on(async {
+        self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
@@ -224,7 +250,7 @@ impl LanceStore {
     /// Insert / upsert one memory row keyed by `(scope, key)`. Existing rows
     /// with the same key are removed first.
     pub fn upsert_memory(&self, row: MemoryRow) -> Result<()> {
-        self.inner.runtime.block_on(async {
+        self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
@@ -262,7 +288,7 @@ impl LanceStore {
         agent_id: &str,
         key: &str,
     ) -> Result<u64> {
-        self.inner.runtime.block_on(async {
+        self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
@@ -294,7 +320,7 @@ impl LanceStore {
                 self.inner.dim
             ));
         }
-        self.inner.runtime.block_on(async {
+        self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
@@ -343,7 +369,7 @@ impl LanceStore {
                 self.inner.dim
             ));
         }
-        self.inner.runtime.block_on(async {
+        self.inner.rt().block_on(async {
             let table = self
                 .inner
                 .connection
