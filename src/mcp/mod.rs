@@ -44,6 +44,7 @@ mod types_admin;
 mod types_comms;
 mod types_compress;
 mod types_documents;
+mod types_git;
 mod types_graph;
 mod types_impls;
 mod types_memory;
