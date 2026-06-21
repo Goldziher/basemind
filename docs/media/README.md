@@ -24,8 +24,9 @@ what the demo shows, then re-record. Preview without recording:
 ./scripts/demo.sh
 ```
 
-## MCP-session video
+## `mcp-demo.gif` — agent (MCP) demo
 
-The live agent demo is captured manually — see [`MCP_DEMO.md`](./MCP_DEMO.md).
-The MP4 is **not** committed here; it is hosted via GitHub user-attachments and
-embedded by URL in the top-level `README.md`.
+A live Claude Code session using the basemind MCP tools (`outline` +
+`find_references`) to answer a question from structure, not file reads. Captured
+manually (a live session can't be scripted) — see [`MCP_DEMO.md`](./MCP_DEMO.md)
+for the capture + conversion steps.

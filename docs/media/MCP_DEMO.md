@@ -1,10 +1,10 @@
-# MCP-session video — capture checklist
+# Agent (MCP) demo — capture checklist
 
 The CLI GIF (`demo.gif`) shows the command-line surface, but basemind's real
 value is the **MCP tools an agent calls** — and `basemind serve` is a stdio
-JSON-RPC server with nothing to _see_. This short screen recording captures the
-agent experience the GIF can't. It is a manual capture (a live Claude Code
-session can't be scripted).
+JSON-RPC server with nothing to _see_. The `mcp-demo.gif` screen recording
+captures the agent experience the CLI GIF can't. It is a manual capture (a live
+Claude Code session can't be scripted).
 
 ## What to show (~20–25s)
 
@@ -18,18 +18,21 @@ session can't be scripted).
 
 Keep it tight: one clear question → tool calls → the savings dashboard.
 
-## Record + embed
+## Record, convert, embed
 
-1. Screen-record to MP4 (macOS: `⇧⌘5`, "Record Selected Portion"). Trim to
-   ≤25s; crop to the terminal/session pane.
-2. Upload the MP4 as a comment attachment on any GitHub issue or PR in the repo.
-   GitHub rehosts it under a `user-attachments` URL — copy that URL. Do **not**
-   commit the MP4 to the repo.
-3. In the top-level `README.md`, replace the video placeholder with the embed:
+1. Screen-record (macOS: `⇧⌘5`, "Record Selected Portion") to a `.mov`. Keep it
+   ≤~30s; crop to the terminal/session pane.
+2. Convert to an optimized GIF with ffmpeg (two-pass palette — scaled to 1000px
+   wide, 12 fps keeps it small and crisp):
 
-   ```html
-   <video src="https://github.com/user-attachments/assets/REPLACE-ME"
-          controls width="800"></video>
+   ```bash
+   SRC="$HOME/Desktop/your-recording.mov"
+   PAL="$(mktemp -d)/palette.png"
+   ffmpeg -y -i "$SRC" -vf "fps=12,scale=1000:-1:flags=lanczos,palettegen=stats_mode=diff" "$PAL"
+   ffmpeg -y -i "$SRC" -i "$PAL" \
+     -lavfi "fps=12,scale=1000:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3" \
+     docs/media/mcp-demo.gif
    ```
 
-   GitHub renders an inline player from a `user-attachments` video URL.
+3. The top-level `README.md` already embeds `docs/media/mcp-demo.gif` in the
+   Quickstart section — just commit the regenerated GIF.
