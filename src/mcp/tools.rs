@@ -169,7 +169,8 @@ impl BasemindServer {
 
     /// Substring search across symbol names, optionally filtered by kind.
     #[tool(
-        description = "Search every indexed file for symbols whose name contains `needle`. \
+        description = "Search every indexed file for symbols whose name contains the `needle` \
+                       argument (substring, case-sensitive). \
                        Optional `kind` filter (function/struct/class/...). Returns up to `limit` \
                        (default 100, max 1000) results, each with path + line/column + signature. \
                        Pass `cursor` from a previous response to fetch the next page; absent \
@@ -401,7 +402,7 @@ impl BasemindServer {
 
     /// Heuristic reverse-dependency lookup via import statements.
     #[tool(
-        description = "Return the list of indexed files whose imports mention `module`. \
+        description = "Return the list of indexed files whose imports mention the `module` argument. \
                        Heuristic — matches by substring against the recorded module path of each import."
     )]
     pub(crate) async fn dependents(
@@ -488,7 +489,7 @@ impl BasemindServer {
     /// Incoming call sites for any callee whose identifier contains `name`.
     #[tool(
         description = "List call sites of any function/method whose callee identifier contains \
-                       `name` (case-sensitive substring match). Backed by the Fjall inverted \
+                       the `name` argument (case-sensitive substring match). Backed by the Fjall inverted \
                        index over L2 call captures — returns hits as (path, line, column, exact \
                        callee). No scope-aware resolution: `Foo::bar()` and `bar()` both match \
                        name=\"bar\". Returns up to `limit` results (default 100, max 1000); \
@@ -522,7 +523,7 @@ impl BasemindServer {
 
     /// Callers of a specific definition (path + name + optional kind).
     #[tool(
-        description = "Given a definition (path + name + optional kind), list every call site \
+        description = "Given a definition (`path` + `name` + optional kind), list every call site \
                        whose callee identifier matches. Resolves the definition via the symbols \
                        index first (echoed back in `definition`), then does the same name-based \
                        scan as `find_references`. Useful when you need to anchor the search on a \
@@ -556,7 +557,7 @@ impl BasemindServer {
 
     /// Regex content search across indexed files.
     #[tool(
-        description = "Regex search across indexed files (Rust regex syntax). Returns line + \
+        description = "Regex search across indexed files: the `pattern` argument is Rust regex syntax. Returns line + \
                        column + matched text plus optional 1-line context. Prefer \
                        `search_symbols` when the pattern is a plain substring identifier — \
                        that's index-backed and faster. Bounded by `scan_cap = limit * 8` files; \
@@ -584,8 +585,8 @@ impl BasemindServer {
 
     /// Types / classes that implement, extend, or inherit from a name containing `trait_name`.
     #[tool(
-        description = "Find types that implement, extend, or inherit from a given trait / interface \
-                       / base class. Returns each (trait, implementor, file, line, column) pair. \
+        description = "Find types that implement, extend, or inherit from the `trait_name` argument \
+                       (a trait / interface / base class). Returns each (trait, implementor, file, line, column) pair. \
                        Matching: `trait_name` is a case-sensitive substring match against captured \
                        identifiers (full-partition scan). Covers Rust (`impl Trait for Type`), \
                        Python (`class Foo(Bar):`), TypeScript / TSX (`class X extends Y`, \

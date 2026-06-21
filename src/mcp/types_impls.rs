@@ -13,6 +13,13 @@ use crate::path::RelPath;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsParams {
     /// The trait / interface / base-class name to find implementations of.
+    #[serde(
+        alias = "name",
+        alias = "needle",
+        alias = "query",
+        alias = "trait",
+        alias = "type"
+    )]
     pub trait_name: String,
     /// Optional language filter (e.g. "rust", "typescript"). When set, only matches
     /// from files in that language are returned.
