@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.6.3] — 2026-06-21
+
+Patch release: schema unchanged (`RELEASE_MINOR` stays 6). Reworks the plugin MCP launcher so it
+no longer depends on `npx`/`uvx` at runtime — fixing intermittent start-up failures when several
+agent sessions (or the comms-monitor poll loop) launch basemind concurrently.
+
+### Fixed
+
+- **Plugin launcher npx/uvx race** — `scripts/mcp-launch.sh` previously exec'd `npx basemind@<ver>`
+  (then `uvx`) as the runtime. npx stages into a shared, spec-hashed `~/.npm/_npx/<hash>` directory,
+  so two concurrent launches raced on it and failed with `ENOENT … package.json`; the binary was also
+  never cached, so every launch re-resolved over the network and inherited node/python start-up cost
+  plus lavamoat postinstall blocks. The launcher now has a single install method: download the
+  checksum-verified prebuilt release binary once into a stable per-user cache
+  (`${XDG_CACHE_HOME:-~/.cache}/basemind/bin/<version>/`), serialized with an atomic lock, and exec it
+  directly on every subsequent launch. `npx`/`uvx` and the `BASEMIND_LAUNCHER` override are removed;
+  set `BASEMIND_BIN=/path/to/basemind` to point at a local dev build. The npm/PyPI/Homebrew/cargo
+  install channels are unchanged.
+
 ## [0.6.2] — 2026-06-21
 
 Patch release: schema unchanged (`RELEASE_MINOR` stays 6). Fixes the macOS binary so the

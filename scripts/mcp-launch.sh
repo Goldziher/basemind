@@ -2,19 +2,28 @@
 # basemind MCP launcher — ensures a version-matched basemind binary is available,
 # then exec's it with the forwarded arguments (the plugin passes `serve`).
 #
-# Why this exists: the Claude Code plugin ships manifests + scripts, not a
-# compiled binary. Rather than require users to install basemind first, this
-# launcher locates or installs a version-matched binary on first run, preferring
-# tools the user likely already has, in this order:
+# Why this exists: the Claude Code / Cursor / Gemini plugins ship manifests +
+# scripts, not a compiled binary. This launcher installs a version-matched
+# prebuilt binary on first run and exec's it directly on every run thereafter.
 #
-#   1. An existing version-matched binary (cached in the plugin, or on PATH from
-#      a prior brew/cargo/global-npm install) — fastest, no network.
-#   2. `npx`  — runs the published npm package, which self-installs the binary.
-#   3. `uvx`  — runs the published PyPI package, which self-installs the binary.
-#   4. Direct download of the prebuilt release binary from GitHub (last resort,
-#      for hosts with neither node nor uv), verified against release checksums.
+# Install model (single method, by design):
 #
-# Override the selection with BASEMIND_LAUNCHER=auto|npx|uvx|download (default auto).
+#   1. A version-matched binary already present — the managed cache, a pre-seeded
+#      plugin `bin/`, an explicit $BASEMIND_BIN, or one on PATH. Fastest, no network.
+#   2. Otherwise, download the prebuilt release binary from GitHub, verify it
+#      against the release checksums, install it into a stable per-user cache, and
+#      exec it. Concurrent launches serialize on a lock; the download happens once
+#      per version per machine.
+#
+# Why not npx/uvx: earlier revisions exec'd `npx basemind@VERSION` / `uvx ...` as
+# the runtime. npx stages into a shared, spec-hashed `_npx/<hash>` dir, so two
+# concurrent basemind launches (multiple agent sessions, or the comms-monitor
+# poll loop) raced on it and failed with `ENOENT package.json`. It also never
+# populated the fast-path cache (so every launch re-resolved over the network) and
+# inherited node/python startup cost plus lavamoat postinstall blocks. A direct,
+# checksum-verified download to a stable cache has none of those failure modes.
+#
+# Override the binary with BASEMIND_BIN=/path/to/basemind (e.g. a local dev build).
 #
 # CRITICAL: stdout is the MCP stdio protocol channel. Every diagnostic in this
 # script MUST go to stderr (>&2). Only the exec'd binary may write to stdout.
@@ -25,8 +34,6 @@ die() {
   log "error: $*"
   exit 1
 }
-
-LAUNCHER="${BASEMIND_LAUNCHER:-auto}"
 
 # Resolve the plugin root: prefer the value Claude Code injects, else derive it
 # from this script's location (scripts/ lives one level under the plugin root).
@@ -39,57 +46,46 @@ BINARY_NAME="basemind"
 case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN* | Windows_NT) BINARY_NAME="basemind.exe" ;;
 esac
-BIN_DIR="$PLUGIN_ROOT/bin"
-BIN="$BIN_DIR/$BINARY_NAME"
 
 # Desired version = the plugin's declared version (single source of truth).
 MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
 [ -f "$MANIFEST" ] || die "plugin manifest not found at $MANIFEST"
 VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -n1)"
 [ -n "$VERSION" ] || die "could not read version from $MANIFEST"
-# PyPI normalizes pre-release tags: 0.2.1-rc.1 (npm/cargo) -> 0.2.1rc1 (PyPI).
-PYPI_VERSION="${VERSION//-rc./rc}"
+
+# Stable per-user, per-version install dir — downloaded once per machine and
+# shared across every launcher invocation (plugin snapshot, repo comms-monitor,
+# other repos). Lives outside any git working tree and survives plugin updates.
+CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/bin/$VERSION"
+MANAGED_BIN="$CACHE_ROOT/$BINARY_NAME"
 
 # Return the X.Y.Z reported by a basemind binary, or empty if it can't run.
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
-
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# ---- 1. Existing version-matched binary (cached or on PATH) -----------------
-# The version check also rejects a stale binary (e.g. an old global cargo
-# install), so we never serve mismatched code.
-if [ "$LAUNCHER" != "npx" ] && [ "$LAUNCHER" != "uvx" ] && [ "$LAUNCHER" != "download" ]; then
-  if [ -x "$BIN" ] && [ "$(binary_version "$BIN")" = "$VERSION" ]; then
-    exec "$BIN" "$@"
+# Exec the candidate (first arg) with the forwarded launcher args if it exists and
+# its version matches the manifest. The candidate is shifted off before exec so it
+# is not re-passed as an argument to itself.
+try_exec() {
+  local cand="$1"
+  shift
+  if [ -n "$cand" ] && [ -x "$cand" ] && [ "$(binary_version "$cand")" = "$VERSION" ]; then
+    exec "$cand" "$@"
   fi
-  if have "$BINARY_NAME"; then
-    PATH_BIN="$(command -v "$BINARY_NAME")"
-    if [ "$(binary_version "$PATH_BIN")" = "$VERSION" ]; then
-      exec "$PATH_BIN" "$@"
-    fi
-  fi
+}
+
+# ---- 1. Existing version-matched binary -------------------------------------
+# Explicit override first (dev builds), then the managed cache, a pre-seeded
+# plugin bin/, and finally a matching binary already on PATH (brew/cargo/npm).
+try_exec "${BASEMIND_BIN:-}" "$@"
+try_exec "$MANAGED_BIN" "$@"
+try_exec "$PLUGIN_ROOT/bin/$BINARY_NAME" "$@"
+if have "$BINARY_NAME"; then
+  try_exec "$(command -v "$BINARY_NAME")" "$@"
 fi
 
-# ---- 2. npx (published npm package self-installs the binary) ----------------
-# npx resolves a same-named local package.json before the registry, so in a repo
-# named "basemind" (e.g. dogfooding, or this very repo) `npx basemind` finds the
-# local package with no bin and fails. Run npx from a scratch cwd to dodge that,
-# and hand basemind the real workspace via its global `--root` option.
-if { [ "$LAUNCHER" = "auto" ] || [ "$LAUNCHER" = "npx" ]; } && have npx; then
-  log "launching via npx basemind@$VERSION"
-  REPO="$PWD"
-  cd "$(mktemp -d)"
-  exec npx -y "basemind@$VERSION" --root "$REPO" "$@"
-fi
-
-# ---- 3. uvx (published PyPI package self-installs the binary) ---------------
-if { [ "$LAUNCHER" = "auto" ] || [ "$LAUNCHER" = "uvx" ]; } && have uvx; then
-  log "launching via uvx basemind==$PYPI_VERSION"
-  exec uvx --from "basemind==$PYPI_VERSION" basemind "$@"
-fi
-
-# ---- 4. Direct prebuilt download (last resort) ------------------------------
-# Map uname → target triple (matches npm-package/install.js).
+# ---- 2. Download the checksum-verified prebuilt release binary --------------
+# Map uname → target triple (matches npm-package/install.js and the pip downloader).
 arch="$(uname -m)"
 case "$(uname -s)" in
 Darwin)
@@ -123,7 +119,7 @@ if have curl; then
 elif have wget; then
   fetch() { wget -q -O "$2" "$1"; }
 else
-  die "no install method available: need npx, uvx, curl, or wget"
+  die "no download tool available: need curl or wget"
 fi
 
 if have sha256sum; then
@@ -135,15 +131,47 @@ else
   die "no sha256 tool available (need sha256sum or shasum) — refusing to install unverified binary"
 fi
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# Concurrency: many launchers may race the first install (agent sessions, the
+# comms-monitor poll loop). Serialize with an atomic mkdir lock — portable, since
+# flock is absent on macOS. The winner downloads; losers wait for the managed
+# binary to appear, then exec it.
+PARENT="$(dirname "$CACHE_ROOT")"
+mkdir -p "$PARENT"
+LOCK="$PARENT/.lock-$VERSION"
+STAGING=""
+release_lock() { [ -n "${LOCK_HELD:-}" ] && rmdir "$LOCK" 2>/dev/null || true; }
+cleanup() {
+  release_lock
+  [ -n "${TMP:-}" ] && rm -rf "$TMP" 2>/dev/null || true
+  [ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
+}
+trap cleanup EXIT
 
-log "no managed runtime found; downloading $ASSET ..."
+LOCK_HELD=""
+waited=0
+while ! mkdir "$LOCK" 2>/dev/null; do
+  # Another launcher is installing. The moment the managed binary lands, use it.
+  try_exec "$MANAGED_BIN" "$@"
+  sleep 0.2
+  waited=$((waited + 1))
+  # ~120s with no progress ⇒ assume a crashed holder and break the stale lock.
+  if [ "$waited" -ge 600 ]; then
+    rmdir "$LOCK" 2>/dev/null || true
+    waited=0
+  fi
+done
+LOCK_HELD=1
+
+# Double-check under the lock: another launcher may have finished while we waited.
+try_exec "$MANAGED_BIN" "$@"
+
+TMP="$(mktemp -d)"
+log "downloading $ASSET ..."
 fetch "$ASSET_URL" "$TMP/$ASSET" || die "download failed: $ASSET_URL"
 
-# Fail CLOSED: the checksums file MUST be fetchable and MUST contain an entry
-# for this asset. A missing file or absent entry aborts the install rather than
-# proceeding with an unverified binary.
+# Fail CLOSED: the checksums file MUST be fetchable and MUST contain an entry for
+# this asset. A missing file or absent entry aborts rather than installing an
+# unverified binary.
 fetch "$SUMS_URL" "$TMP/checksums.txt" ||
   die "could not fetch checksums ($SUMS_URL) — refusing to install unverified binary"
 EXPECTED="$(awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) print $1}' "$TMP/checksums.txt")"
@@ -154,29 +182,46 @@ ACTUAL="$(sha256 "$TMP/$ASSET")"
 [ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
 log "checksum verified"
 
+# Extract into a staging dir on the SAME filesystem as the cache, so the final
+# install is a single atomic rename (no window where a reader sees a half-tree).
+# Archives carry the binary plus a lib/ tree of bundled native libraries (Windows
+# co-locates DLLs next to the exe) — install the whole tree, not just the binary.
 log "extracting ..."
-EX="$TMP/extracted"
-mkdir -p "$EX"
+STAGING="$PARENT/.staging-$VERSION-$$"
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
 case "$EXT" in
-tar.gz) tar -xzf "$TMP/$ASSET" -C "$EX" ;;
+tar.gz) tar -xzf "$TMP/$ASSET" -C "$STAGING" ;;
 zip)
+  # Windows git-bash ships no `unzip`. Try it first, then bsdtar (Windows 10+
+  # system tar.exe extracts zip), then PowerShell's Expand-Archive.
   if have unzip; then
-    unzip -qo "$TMP/$ASSET" -d "$EX"
+    unzip -qo "$TMP/$ASSET" -d "$STAGING"
+  elif tar -xf "$TMP/$ASSET" -C "$STAGING" 2>/dev/null; then
+    :
+  elif have powershell; then
+    powershell -NoProfile -Command \
+      "Expand-Archive -Path '$TMP/$ASSET' -DestinationPath '$STAGING' -Force" ||
+      die "Expand-Archive failed to extract $ASSET"
   else
-    die "need unzip to extract $ASSET"
+    die "no zip extractor available (need unzip, bsdtar, or powershell)"
   fi
   ;;
 esac
-# Archives now carry the binary plus a lib/ tree of bundled native libraries
-# (found via rpath; Windows co-locates DLLs next to the exe). Install the whole
-# extracted tree, not just the bare binary.
-[ -f "$EX/$BINARY_NAME" ] || die "binary $BINARY_NAME not found in $ASSET"
+[ -f "$STAGING/$BINARY_NAME" ] || die "binary $BINARY_NAME not found in $ASSET"
+chmod +x "$STAGING/$BINARY_NAME"
 
-rm -rf "$BIN_DIR"
-mkdir -p "$BIN_DIR"
-# Move every extracted entry (binary + lib/) into BIN_DIR.
-mv "$EX"/* "$BIN_DIR"/
-chmod +x "$BIN"
-log "installed basemind $VERSION to $BIN"
+# Atomic swap into place. CACHE_ROOT is version-scoped, so on a fresh version it
+# does not exist and this is a pure rename; only a partial/corrupt prior dir is
+# cleared first (under the lock, so no concurrent installer collides).
+[ -e "$CACHE_ROOT" ] && rm -rf "$CACHE_ROOT"
+mv "$STAGING" "$CACHE_ROOT"
+STAGING=""
+log "installed basemind $VERSION to $CACHE_ROOT"
 
-exec "$BIN" "$@"
+rm -rf "$TMP"
+TMP=""
+release_lock
+LOCK_HELD=""
+
+exec "$MANAGED_BIN" "$@"
