@@ -25,6 +25,14 @@ pub struct OutlineParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchSymbolsParams {
     /// Substring matched against symbol name (case-sensitive).
+    #[serde(
+        alias = "query",
+        alias = "pattern",
+        alias = "name",
+        alias = "q",
+        alias = "term",
+        alias = "symbol"
+    )]
     pub needle: String,
     /// Optional kind filter: function, method, struct, enum, class, interface,
     /// trait, type, const, module, macro.
@@ -59,6 +67,7 @@ pub struct ListFilesParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DependentsParams {
     /// Module / import target (e.g. "tokio::sync" or "react").
+    #[serde(alias = "name", alias = "query", alias = "import")]
     pub module: String,
 }
 
@@ -184,6 +193,13 @@ pub struct FindReferencesParams {
     /// The callee identifier to look up. Substring match — case-sensitive, no scope
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
     /// caution on common names like `new` or `get`.
+    #[serde(
+        alias = "needle",
+        alias = "pattern",
+        alias = "query",
+        alias = "symbol",
+        alias = "q"
+    )]
     pub name: String,
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
@@ -199,6 +215,7 @@ pub struct FindCallersParams {
     /// Repository-relative path of the definition file.
     pub path: RelPath,
     /// Name of the definition.
+    #[serde(alias = "needle", alias = "query", alias = "symbol")]
     pub name: String,
     /// Optional kind filter for resolving the definition (function/method/class/...).
     #[serde(default)]
@@ -628,6 +645,13 @@ pub(super) struct RepoInfoResponse {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceGrepParams {
     /// Rust regex syntax (`regex` crate). Required.
+    #[serde(
+        alias = "query",
+        alias = "needle",
+        alias = "regex",
+        alias = "q",
+        alias = "search"
+    )]
     pub pattern: String,
     /// Optional language filter (e.g. `"rust"`, `"typescript"`). Same ID convention as
     /// `list_files`.
@@ -883,3 +907,22 @@ pub use super::types_documents::SearchDocumentsParams;
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_graph::CallGraphParams;
 pub use super::types_impls::FindImplementationsParams;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_grep_accepts_query_alias_for_pattern() {
+        let params: WorkspaceGrepParams =
+            serde_json::from_value(serde_json::json!({ "query": "foo" })).unwrap();
+        assert_eq!(params.pattern, "foo");
+    }
+
+    #[test]
+    fn search_symbols_accepts_pattern_alias_for_needle() {
+        let params: SearchSymbolsParams =
+            serde_json::from_value(serde_json::json!({ "pattern": "x" })).unwrap();
+        assert_eq!(params.needle, "x");
+    }
+}
