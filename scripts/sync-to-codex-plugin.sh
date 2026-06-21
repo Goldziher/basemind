@@ -91,7 +91,12 @@ EXCLUDES=(
   "/opencode-plugin/"
   "/pip-package/"
   "/schema/"
-  "/scripts/"
+  # /scripts/ is dropped wholesale EXCEPT mcp-launch.sh — the Codex plugin's
+  # .codex-plugin/.mcp.json execs ${PLUGIN_ROOT}/scripts/mcp-launch.sh, so the
+  # launcher MUST ship for the installed MCP server to start. A matching
+  # --include for the dir node + the launcher is prepended to RSYNC_ARGS below
+  # (rsync evaluates includes before this excludes the rest of the tree).
+  "/scripts/*"
   "/src/"
   "/target/"
   "/tests/"
@@ -381,6 +386,10 @@ fi
 # =============================================================================
 
 RSYNC_ARGS=(-av --delete --delete-excluded)
+# Ship the MCP launcher even though /scripts/* is excluded below. rsync applies
+# rules in order, so these includes must precede the exclude loop: keep the
+# scripts/ dir node and mcp-launch.sh, then the "/scripts/*" exclude drops the rest.
+RSYNC_ARGS+=(--include="/scripts/" --include="/scripts/mcp-launch.sh")
 for pat in "${EXCLUDES[@]}"; do RSYNC_ARGS+=(--exclude="$pat"); done
 append_git_ignored_directory_excludes
 append_git_ignored_file_excludes

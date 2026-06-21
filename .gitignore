@@ -43,3 +43,13 @@ AGENTS.md
 CLAUDE.md
 GEMINI.md
 # END ai-rulez
+
+# Codex plugin: tracked manifests that live under otherwise-ignored paths.
+# `.mcp.json` (line above) and `.agents/` (ai-rulez block) are ignored broadly,
+# but these two files are hand-authored, version-controlled Codex plugin surfaces
+# and MUST ship — re-include them explicitly.
+!.codex-plugin/.mcp.json
+!.agents/
+.agents/*
+!.agents/plugins/
+!.agents/plugins/marketplace.json

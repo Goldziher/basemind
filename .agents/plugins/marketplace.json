@@ -1,0 +1,30 @@
+{
+  "name": "basemind",
+  "interface": {
+    "displayName": "basemind"
+  },
+  "plugins": [
+    {
+      "name": "basemind",
+      "version": "0.6.3",
+      "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 8 coding-agent harnesses, content-addressed Fjall + LanceDB.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Goldziher/basemind.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools",
+      "license": "MIT",
+      "homepage": "https://github.com/Goldziher/basemind",
+      "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
+      "author": {
+        "name": "Na'aman Hirschfeld",
+        "email": "nhirschfeld@gmail.com"
+      }
+    }
+  ]
+}

@@ -606,8 +606,8 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 |---|---|
 | Claude Code | `/plugin marketplace add Goldziher/basemind` then `/plugin install basemind@basemind` |
 | Cursor | See Cursor docs for plugin install flow; `basemind` manifest at `.cursor-plugin/plugin.json` |
-| Codex CLI | `/plugins` then search for `basemind` |
-| Codex App | Plugins panel → Coding category → basemind → `+` |
+| Codex CLI | `codex plugin marketplace add Goldziher/basemind` then install `basemind` via `/plugins` |
+| Codex App | Plugins panel → Developer Tools category → basemind → `+` |
 | Gemini CLI | `gemini extensions install https://github.com/Goldziher/basemind` |
 | OpenCode | Add `{ "plugin": ["basemind-opencode@latest"] }` to `opencode.json` |
 | Factory Droid | `droid plugin --help` (manifest at `.claude-plugin/marketplace.json`) |
