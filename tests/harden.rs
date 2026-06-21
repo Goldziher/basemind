@@ -655,6 +655,20 @@ fn assert_passing(
                     "django canary: find_references(\"get\") returned {hits} hits (expected ≥ 50)"
                 ));
             }
+            // Governance canary — enforced only when mining actually ran (the `proposals_mined`
+            // value is present, i.e. the harness was built with `--features memory`). Django
+            // yields several co-change candidates at the default thresholds; ≥ 1 is a
+            // conservative, churn-stable lower bound.
+            if let Some(mined) = repo_record
+                .canaries
+                .get("proposals_mined")
+                .and_then(Value::as_u64)
+                && mined < 1
+            {
+                failures.push(format!(
+                    "django canary: proposals_mine (default thresholds) returned {mined} candidates (expected ≥ 1)"
+                ));
+            }
         }
         _ => {}
     }
@@ -798,6 +812,25 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("get_hits".into(), json!(hits));
+            }
+            // Governance canary — only populated under `--features memory`; with the feature
+            // off, `proposals_mine` returns an MCP error and the canary stays absent (so the
+            // assertion below is skipped on default-feature runs). Django's co-change history
+            // yields several candidates at the harness default thresholds (measured ~4 at
+            // window=100/support=5/conf=0.6).
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "proposals_mine",
+                    &json!({ "window": 100, "min_support": 5, "min_confidence": 0.6 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                if let Some(mined) = body.get("mined").and_then(Value::as_u64) {
+                    record
+                        .canaries
+                        .insert("proposals_mined".into(), json!(mined));
+                }
             }
         }
         _ => {}
