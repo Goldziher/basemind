@@ -391,6 +391,58 @@ pub fn parse_memory_key_only(buf: &[u8]) -> Option<&str> {
     std::str::from_utf8(key).ok()
 }
 
+// ─── proposals ─────────────────────────────────────────────────────────────
+//
+// The `proposals` keyspace holds propose-don't-commit governance candidates (W11). Archived
+// stale memories (W10) live in a separate `memory_archive` keyspace but reuse the
+// `memory_by_key` encoder above — archive rows are keyed identically to their live form.
+
+/// Proposal kind ordinal for a **memory** candidate. Stable, append-only.
+pub const PROPOSAL_KIND_MEMORY: u8 = 0;
+/// Proposal kind ordinal for a **skill** candidate. Stable, append-only.
+pub const PROPOSAL_KIND_SKILL: u8 = 1;
+
+/// `proposal_by_id`: `u16:scope_len ‖ scope ‖ NUL ‖ kind_byte ‖ u16:id_len ‖ id`.
+///
+/// `(scope, kind_byte)` is the namespace; `id` is the content-addressed proposal id (hex blake3
+/// of the normalized candidate) so re-mining the same candidate overwrites rather than dupes.
+/// Layout mirrors [`memory_by_key`]: the namespace prefix sorts contiguously, so a
+/// [`proposal_ns_prefix`] range scan returns exactly one `(scope, kind)` namespace.
+pub fn proposal_by_id(scope: &str, kind_byte: u8, id: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1 + 2 + id.len());
+    let _ = write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out.push(kind_byte);
+    let _ = write_len_prefixed(&mut out, id.as_bytes());
+    out
+}
+
+/// Prefix bytes for "all proposals in this `(scope, kind_byte)` namespace" — feed to a range scan.
+pub fn proposal_ns_prefix(scope: &str, kind_byte: u8) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1 + 1);
+    let _ = write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out.push(kind_byte);
+    out
+}
+
+/// Decode `(scope, kind_byte, id)` from a raw `proposal_by_id` key buffer.
+pub fn parse_proposal_by_id(buf: &[u8]) -> Option<(String, u8, String)> {
+    let mut c = 0;
+    let scope = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
+    if buf.len() <= c {
+        return None;
+    }
+    c += 1; // skip NUL separator after scope
+    if buf.len() <= c {
+        return None;
+    }
+    let kind_byte = buf[c];
+    c += 1;
+    let id = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
+    Some((scope, kind_byte, id))
+}
+
 /// One-byte ordinal for a `SymbolKind`. Stable across releases so existing keys stay valid;
 /// new variants extend the tail. Keep the explicit assignments — accidentally reordering
 /// would silently miscategorize cached entries.

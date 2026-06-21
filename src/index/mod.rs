@@ -84,6 +84,15 @@ pub struct IndexDb {
     /// Always created for DB stability; used by `memory` feature tools.
     #[allow(dead_code)]
     pub(crate) memory_by_key: Keyspace,
+    /// `memory_archive`: same key shape as `memory_by_key` — holds memories the W10 audit
+    /// auto-archived after going stale > 90 days. Recoverable; never read on the hot path.
+    /// Always created for DB stability; used by `memory` feature governance tools.
+    #[allow(dead_code)]
+    pub(crate) memory_archive: Keyspace,
+    /// `proposals`: scope + kind + content-addressed id → msgpack proposal record. Backs the
+    /// W11 propose-don't-commit skill-mining surface. Always created for DB stability.
+    #[allow(dead_code)]
+    pub(crate) proposals: Keyspace,
 }
 
 impl IndexDb {
@@ -121,6 +130,8 @@ impl IndexDb {
             db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
         let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
+        let memory_archive = db.keyspace("memory_archive", KeyspaceCreateOptions::default)?;
+        let proposals = db.keyspace("proposals", KeyspaceCreateOptions::default)?;
 
         // Stamp the version on a fresh open. We do this every time because rewriting one
         // 4-byte row is essentially free and saves us from a "was it really empty?" race.
@@ -139,6 +150,8 @@ impl IndexDb {
             implementations_by_path,
             embeddings,
             memory_by_key,
+            memory_archive,
+            proposals,
         })
     }
 
