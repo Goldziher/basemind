@@ -38,6 +38,7 @@ pub(super) fn run_workspace_grep(
                     total_files_matched: 0,
                     total_matches: 0,
                     truncated: false,
+                    budgeted: false,
                     hits: Vec::new(),
                     next_cursor: None,
                     cursor_invalidated: true,
@@ -60,6 +61,10 @@ pub(super) fn run_workspace_grep(
     let cache = state.cache.load_full();
 
     let mut hits: Vec<GrepHit> = Vec::with_capacity(limit.min(64));
+    // Parallel to `hits`: the 1-based `files_seen` index of the file that produced each hit.
+    // Lets a token budget re-anchor the cursor to the file of the last KEPT hit so no hit is
+    // permanently lost when the budget cuts mid-file (that boundary file is re-scanned).
+    let mut hit_file_idx: Vec<usize> = Vec::with_capacity(limit.min(64));
     let mut total_matches: u32 = 0;
     let mut total_files_matched: usize = 0;
     let mut truncated = false;
@@ -154,6 +159,7 @@ pub(super) fn run_workspace_grep(
                 context_before,
                 context_after,
             });
+            hit_file_idx.push(files_seen);
         }
 
         if file_had_match {
@@ -173,11 +179,32 @@ pub(super) fn run_workspace_grep(
         None
     };
 
+    // Apply the token budget over the materialised hits. When it drops trailing hits,
+    // re-anchor the cursor to RE-SCAN the file of the last kept hit (offset = that file's
+    // index minus one) so no hit is permanently lost — the boundary file may re-emit a few
+    // already-returned hits, which is the safe trade-off for a file-granular cursor.
+    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let (hits, budgeted, next_cursor) = if budget.budgeted {
+        let kept = budget.items.len();
+        let resume_offset = hit_file_idx[kept - 1].saturating_sub(1);
+        (
+            budget.items,
+            true,
+            Some(super::cursor::Cursor::encode_in_memory(
+                resume_offset as u64,
+                generation,
+            )),
+        )
+    } else {
+        (budget.items, false, next_cursor)
+    };
+
     json_result(&WorkspaceGrepResponse {
         pattern: params.pattern,
         total_files_matched,
         total_matches,
         truncated,
+        budgeted,
         hits,
         next_cursor,
         cursor_invalidated: false,

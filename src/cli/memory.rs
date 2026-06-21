@@ -166,6 +166,7 @@ pub async fn run(
             let p = SearchDocumentsParams {
                 query,
                 limit,
+                max_tokens: None,
                 mime_type,
                 entity_category: None,
                 keywords_contains: None,

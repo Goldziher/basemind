@@ -20,6 +20,11 @@ pub struct OutlineParams {
     /// arrays if no L2 blob exists for the file's current content.
     #[serde(default)]
     pub l2: bool,
+    /// Optional token budget bounding the returned `symbols` list (not the whole envelope,
+    /// and not `imports` / `calls` / `docs`). Symbols are kept in file order until the
+    /// budget is hit; the rest are dropped and the response carries `budgeted: true`.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -41,6 +46,11 @@ pub struct SearchSymbolsParams {
     /// Cap the number of results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned result list (not the whole envelope).
+    /// Items are kept best-first until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     #[serde(default)]
@@ -58,6 +68,11 @@ pub struct ListFilesParams {
     /// Cap. Default 200, max 5000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned file list (not the whole envelope).
+    /// Entries are kept in order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     #[serde(default)]
@@ -204,6 +219,11 @@ pub struct FindReferencesParams {
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
+    /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
@@ -223,6 +243,11 @@ pub struct FindCallersParams {
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
+    /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
@@ -260,6 +285,10 @@ pub(super) struct OutlineResponse {
     pub size_bytes: u64,
     pub had_errors: bool,
     pub error_count: u32,
+    /// True when a `max_tokens` budget dropped trailing `symbols`. Outline has no cursor;
+    /// raise `max_tokens` (or omit it) to retrieve the full symbol list.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub symbols: Vec<SymbolView>,
     pub imports: Vec<ImportView>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -317,6 +346,10 @@ pub(super) struct SearchHitView {
 pub(super) struct SearchResponse {
     pub total: usize,
     pub truncated: bool,
+    /// True when a `max_tokens` budget dropped trailing results. The kept prefix is
+    /// best-first; page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub results: Vec<SearchHitView>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -339,6 +372,9 @@ pub(super) struct ListFilesResponse {
     pub total: usize,
     pub returned: usize,
     pub truncated: bool,
+    /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub files: Vec<ListFilesEntry>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -600,6 +636,9 @@ pub(super) struct FindReferencesResponse {
     /// True when `total` was capped at `limit` and more matches exist on disk.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
+    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub hits: Vec<ReferenceHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.
@@ -614,6 +653,9 @@ pub(super) struct FindCallersResponse {
     pub total: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
+    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub hits: Vec<ReferenceHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.
@@ -664,6 +706,11 @@ pub struct WorkspaceGrepParams {
     /// by `scan_cap = limit * 8`.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
+    /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Include 1 line of context before + after each hit. Default true.
     #[serde(default = "default_true")]
     pub include_context: bool,
@@ -700,6 +747,9 @@ pub(super) struct WorkspaceGrepResponse {
     pub total_matches: u32,
     /// True when the result was cut short by `limit` or `scan_cap`.
     pub truncated: bool,
+    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub hits: Vec<GrepHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]

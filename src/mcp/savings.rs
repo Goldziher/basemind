@@ -21,8 +21,9 @@ pub struct SavingsRow {
     pub baseline: &'static str,
 }
 
-/// `bytes / 4` token estimate, saturating.
-fn bytes_to_tokens(bytes: u64) -> u64 {
+/// `bytes / 4` token estimate, saturating. `pub(super)` so the budget helper
+/// ([`super::budget`]) shares the exact same bytes→token factor the telemetry estimator uses.
+pub(super) fn bytes_to_tokens(bytes: u64) -> u64 {
     bytes / 4
 }
 

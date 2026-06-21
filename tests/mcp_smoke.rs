@@ -583,6 +583,64 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
+    // search_symbols token budgeting (W3): a generous limit returns several "a" hits, but a
+    // tiny `max_tokens` drops all but the first (one hit always exceeds a 1-token budget).
+    // The response must carry fewer results than an unbudgeted call, `budgeted: true`, and a
+    // non-null cursor so the dropped tail is pageable.
+    let unbudgeted = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 100 }),
+            ))
+            .await
+            .expect("search_symbols unbudgeted"),
+    );
+    let unbudgeted_len = unbudgeted
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("unbudgeted results")
+        .len();
+    assert!(
+        unbudgeted_len >= 2,
+        "fixture must have ≥2 'a' symbols to exercise budgeting, got {unbudgeted_len}"
+    );
+    let budgeted = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "a", "limit": 100, "max_tokens": 1 }),
+            ))
+            .await
+            .expect("search_symbols budgeted"),
+    );
+    let budgeted_results = budgeted
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("budgeted results");
+    assert_eq!(
+        budgeted_results.len(),
+        1,
+        "max_tokens=1 keeps exactly the first hit: {budgeted}"
+    );
+    assert!(
+        budgeted_results.len() < unbudgeted_len,
+        "budgeted page must be smaller than the unbudgeted page ({} < {unbudgeted_len})",
+        budgeted_results.len()
+    );
+    assert_eq!(
+        budgeted.get("budgeted").and_then(Value::as_bool),
+        Some(true),
+        "budgeted response must set budgeted=true: {budgeted}"
+    );
+    assert!(
+        budgeted
+            .get("next_cursor")
+            .and_then(Value::as_str)
+            .is_some(),
+        "budgeted response must carry a non-null next_cursor: {budgeted}"
+    );
+
     // list_files pagination (Phase 5): fixture has 5 files; limit=4 paginates (4+1).
     let page1 = decode_text(
         &service
