@@ -501,6 +501,24 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    // proposals_mine: co-change mining over recent history. MCP error when memory feature is
+    // off is ok (same gate as memory_audit). On success we just verify the call completes
+    // without error — candidate count varies wildly per repo and mining threshold.
+    call(
+        svc,
+        &mut records,
+        "proposals_mine",
+        json!({ "window": 100, "min_support": 5, "min_confidence": 0.6 }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "proposals_list",
+        json!({ "kind": "skill", "limit": 20 }),
+    )
+    .await;
+
     // Cache admin tools: both must succeed on every repo. cache_stats is read-only;
     // cache_gc reclaims orphaned blobs (safe in-process under the server's lock).
     call(svc, &mut records, "cache_stats", json!({})).await;

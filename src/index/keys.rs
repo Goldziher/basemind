@@ -410,8 +410,11 @@ pub fn parse_memory_key_only(buf: &[u8]) -> Option<&str> {
 
 /// Proposal kind ordinal for a **memory** candidate. Stable, append-only.
 pub const PROPOSAL_KIND_MEMORY: u8 = 0;
-/// Proposal kind ordinal for a **skill** candidate. Stable, append-only.
+/// Proposal kind ordinal for a **skill** candidate (co-change association-rule). Stable, append-only.
 pub const PROPOSAL_KIND_SKILL: u8 = 1;
+/// Tombstone kind — written when a proposal is rejected so re-mining cannot resurface it.
+/// Value bytes are empty (marker only). Stable, append-only.
+pub const PROPOSAL_KIND_TOMBSTONE: u8 = 2;
 
 /// `proposal_by_id`: `u16:scope_len ‖ scope ‖ NUL ‖ kind_byte ‖ u16:id_len ‖ id`.
 ///

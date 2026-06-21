@@ -41,7 +41,7 @@ const MAX_AUDIT_LIMIT: u32 = 1000;
 // ─── Helpers from memory.rs (re-exported here to avoid duplication) ───────────
 
 /// Write a `MemoryRecord` into the **live** `memory_by_key` keyspace.
-fn write_live(
+pub(super) fn write_live(
     idx: &crate::index::IndexDb,
     scope: &str,
     vis_byte: u8,

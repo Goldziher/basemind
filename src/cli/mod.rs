@@ -17,6 +17,7 @@ pub mod codemap;
 pub mod comms;
 pub mod context;
 pub mod git;
+pub mod governance;
 pub mod memory;
 pub mod render;
 pub mod web;
@@ -43,6 +44,9 @@ pub enum ToolCmd {
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
+    /// Governance: mine co-change proposals, list, accept, reject (needs `--features memory`).
+    #[command(subcommand)]
+    Governance(governance::GovernanceCmd),
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(web::WebCmd),
@@ -91,6 +95,7 @@ pub fn run(
             ToolCmd::Query(q) => codemap::run(&server, q, json, &mut out).await?,
             ToolCmd::Git(g) => git::run(&server, g, json, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, json, &mut out).await?,
+            ToolCmd::Governance(g) => governance::run(&server, g, json, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, json, &mut out).await?,
             ToolCmd::Telemetry { window, tool } => {
                 admin::run_telemetry(&server, window, tool, json, &mut out).await?

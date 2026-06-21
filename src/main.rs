@@ -70,6 +70,9 @@ enum Cmd {
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
+    /// Governance: mine co-change proposals, list, accept, reject (needs `--features memory`).
+    #[command(subcommand)]
+    Governance(basemind::cli::governance::GovernanceCmd),
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(basemind::cli::web::WebCmd),
@@ -295,6 +298,12 @@ fn main() -> Result<()> {
     // Query reads cached extracts; grammars are not strictly needed, but the L2
     // escalation path falls back to live extraction. Bootstrap quietly for the
     // tool subcommands so first-time L2 doesn't stall.
+    //
+    // `dispatch` collapses the identical `cli::run` tool arms (same root/view/json/overrides,
+    // differing only in the `ToolCmd` variant) into one call site — removes the duplication and
+    // keeps main.rs under the per-file line cap.
+    let dispatch =
+        |tc| basemind::cli::run(&root, &view, DocumentsCliOverrides::default(), json, tc);
     match cli.cmd {
         Cmd::Init => cmd_init(&root),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
@@ -302,42 +311,15 @@ fn main() -> Result<()> {
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),
         Cmd::Query(q) => {
             let _ = basemind::lang::ensure_grammars();
-            basemind::cli::run(
-                &root,
-                &view,
-                DocumentsCliOverrides::default(),
-                json,
-                basemind::cli::ToolCmd::Query(q),
-            )
+            dispatch(basemind::cli::ToolCmd::Query(q))
         }
-        Cmd::Git(g) => basemind::cli::run(
-            &root,
-            &view,
-            DocumentsCliOverrides::default(),
-            json,
-            basemind::cli::ToolCmd::Git(g),
-        ),
-        Cmd::Memory(m) => basemind::cli::run(
-            &root,
-            &view,
-            DocumentsCliOverrides::default(),
-            json,
-            basemind::cli::ToolCmd::Memory(m),
-        ),
-        Cmd::Web(w) => basemind::cli::run(
-            &root,
-            &view,
-            DocumentsCliOverrides::default(),
-            json,
-            basemind::cli::ToolCmd::Web(w),
-        ),
-        Cmd::Telemetry { window, tool } => basemind::cli::run(
-            &root,
-            &view,
-            DocumentsCliOverrides::default(),
-            json,
-            basemind::cli::ToolCmd::Telemetry { window, tool },
-        ),
+        Cmd::Git(g) => dispatch(basemind::cli::ToolCmd::Git(g)),
+        Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
+        Cmd::Governance(g) => dispatch(basemind::cli::ToolCmd::Governance(g)),
+        Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
+        Cmd::Telemetry { window, tool } => {
+            dispatch(basemind::cli::ToolCmd::Telemetry { window, tool })
+        }
         Cmd::Hook { action } => match action {
             HookCmd::Install => cmd_hook_install(&root),
         },

@@ -1177,6 +1177,291 @@ async fn mcp_server_exercises_representative_tools() {
             .expect("memory_delete audit_probe");
     }
 
+    // ── W11 governance: proposals_mine / proposals_list / proposal_accept / proposal_reject ──
+    //
+    // The fixture's `init` commit stages all 5 files together, so co-change at the default
+    // min_support=5 yields nothing, but min_support=1 deterministically yields the 5-file
+    // cluster. Tests assert:
+    //  (a) proposals_mine returns a well-formed response (default thresholds → zero candidates).
+    //  (b) proposals_list returns a well-formed empty list after a no-candidate mine.
+    //  (c) proposals_mine(min_support=1) mines >= 1 candidate (hard — guards the wedge below).
+    //  (d) W11 Stale-wedge (run first, unconditional): accept → memory gains file provenance →
+    //      delete a referenced file → rescan → memory_audit flips to "stale"; then restore the
+    //      file so later assertions see a pristine fixture. The relocated W10b gap test.
+    //  (e) proposal_reject tombstones a re-mined candidate; the next mine does not re-emit it.
+    #[cfg(feature = "memory")]
+    {
+        // (a) Mine with default thresholds — 2-commit fixture → zero co-change candidates.
+        let mine_body = decode_text(
+            &service
+                .call_tool(call_params("proposals_mine", json!({})))
+                .await
+                .expect("proposals_mine default"),
+        );
+        assert!(
+            mine_body.get("mined").and_then(Value::as_u64).is_some(),
+            "proposals_mine must return `mined` field: {mine_body}"
+        );
+        assert_eq!(
+            mine_body.get("window_inspected").and_then(Value::as_u64),
+            Some(200),
+            "proposals_mine must echo window_inspected=200 (default): {mine_body}"
+        );
+        assert!(
+            mine_body
+                .get("skipped_bulk")
+                .and_then(Value::as_u64)
+                .is_some(),
+            "proposals_mine must return `skipped_bulk` field: {mine_body}"
+        );
+
+        // (b) proposals_list after zero-candidate mine returns a well-formed empty list.
+        let list_body = decode_text(
+            &service
+                .call_tool(call_params(
+                    "proposals_list",
+                    json!({ "kind": "skill", "limit": 50 }),
+                ))
+                .await
+                .expect("proposals_list after default mine"),
+        );
+        assert_eq!(
+            list_body.get("total").and_then(Value::as_u64),
+            Some(0),
+            "proposals_list must return total=0 after a no-candidate mine: {list_body}"
+        );
+        assert_eq!(
+            list_body.get("truncated").and_then(Value::as_bool),
+            Some(false),
+            "proposals_list must return truncated=false for an empty list: {list_body}"
+        );
+        assert!(
+            list_body
+                .get("proposals")
+                .and_then(Value::as_array)
+                .map(Vec::is_empty)
+                == Some(true),
+            "proposals array must be empty: {list_body}"
+        );
+
+        // (c) Mine with min_support=1 — the fixture has 2 commits both touching a.rs;
+        //     c.rs and e.rs each appear once. min_support=1 + max_files_per_commit=10
+        //     may yield some candidates (depends on co-occurrence in each commit), but
+        //     we only assert the call succeeds and the shape is correct.
+        let mine_low = decode_text(
+            &service
+                .call_tool(call_params(
+                    "proposals_mine",
+                    json!({
+                        "min_support": 1,
+                        "min_confidence": 0.1,
+                        "max_files_per_commit": 10,
+                        "window": 50,
+                    }),
+                ))
+                .await
+                .expect("proposals_mine min_support=1"),
+        );
+        let mined_low = mine_low.get("mined").and_then(Value::as_u64).unwrap_or(0);
+        // Hard lower bound: the fixture's `init` commit stages all 5 files together
+        // (a.rs b.ts c.rs d.py e.rs), so min_support=1 ALWAYS yields the 5-file co-change
+        // cluster. A zero here means mining is broken — fail loudly rather than skip the wedge.
+        assert!(
+            mined_low >= 1,
+            "proposals_mine(min_support=1) must mine the fixture's co-change cluster: {mine_low}"
+        );
+
+        // (d) W11 Stale-wedge — the headline proof, run FIRST and unconditionally (mined_low >= 1
+        //     is guaranteed above). Accept a candidate → it becomes a memory carrying the cluster's
+        //     file provenance → delete a referenced file → rescan → memory_audit flips it to Stale.
+        //     This is the code-grounded-staleness wedge no other memory system can do, and the
+        //     test W10b couldn't write (memory_put can't inject provenance; proposal_accept can).
+        let list2 = decode_text(
+            &service
+                .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+                .await
+                .expect("proposals_list after low-threshold mine"),
+        );
+        let proposals = list2
+            .get("proposals")
+            .and_then(Value::as_array)
+            .expect("proposals array");
+        assert_eq!(
+            proposals.len() as u64,
+            mined_low,
+            "proposals_list count must match mined count: {list2}"
+        );
+        let accept_id = proposals[0]
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("accept id")
+            .to_string();
+        let accept_files: Vec<String> = proposals[0]
+            .get("files")
+            .and_then(Value::as_array)
+            .expect("proposal files")
+            .iter()
+            .filter_map(|f| f.as_str().map(String::from))
+            .collect();
+        assert!(
+            !accept_files.is_empty(),
+            "a co-change proposal must carry at least one file: {list2}"
+        );
+
+        let accept_body = decode_text(
+            &service
+                .call_tool(call_params("proposal_accept", json!({ "id": accept_id })))
+                .await
+                .expect("proposal_accept"),
+        );
+        assert_eq!(
+            accept_body.get("accepted").and_then(Value::as_bool),
+            Some(true),
+            "proposal_accept must return accepted=true: {accept_body}"
+        );
+        let memory_key = accept_body
+            .get("memory_key")
+            .and_then(Value::as_str)
+            .expect("memory_key from proposal_accept")
+            .to_string();
+        assert!(
+            memory_key.starts_with("skill/cochange-"),
+            "auto-derived key must start with skill/cochange-: {memory_key}"
+        );
+
+        // Live audit: every referenced file still exists → Verified (provenance is non-empty).
+        let audit_live = decode_text(
+            &service
+                .call_tool(call_params("memory_audit", json!({ "key": &memory_key })))
+                .await
+                .expect("memory_audit after accept"),
+        );
+        let live_results = audit_live
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("live audit results");
+        assert_eq!(
+            live_results.len(),
+            1,
+            "memory_audit must return one result for the accepted key: {audit_live}"
+        );
+        assert_eq!(
+            live_results[0].get("state").and_then(Value::as_str),
+            Some("verified"),
+            "freshly accepted skill (all files present) must audit as verified: {audit_live}"
+        );
+
+        // The wedge: delete a referenced file, rescan, audit → Stale. Save its bytes first and
+        // RESTORE them afterward so the post-block rescan assertions still see a pristine fixture.
+        let probe_file = accept_files[0].clone();
+        let probe_abs = root.join(&probe_file);
+        let saved = std::fs::read(&probe_abs).expect("read probe file before delete");
+        std::fs::remove_file(&probe_abs).expect("remove probe file");
+        let _ = service
+            .call_tool(call_params("rescan", json!({})))
+            .await
+            .expect("rescan after file deletion");
+        let stale_audit = decode_text(
+            &service
+                .call_tool(call_params(
+                    "memory_audit",
+                    json!({ "key": &memory_key, "dry_run": true }),
+                ))
+                .await
+                .expect("memory_audit stale wedge"),
+        );
+        let stale_results = stale_audit
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("stale audit results");
+        assert_eq!(stale_results.len(), 1, "stale audit must have one result");
+        assert_eq!(
+            stale_results[0].get("state").and_then(Value::as_str),
+            Some("stale"),
+            "memory_audit must return state=stale after a referenced file is deleted: \
+             {stale_results:?} (file: {probe_file})"
+        );
+
+        // Restore the fixture: rewrite the file (identical bytes) and rescan so later
+        // assertions in this test see the original working tree.
+        std::fs::write(&probe_abs, &saved).expect("restore probe file");
+        let _ = service
+            .call_tool(call_params("rescan", json!({})))
+            .await
+            .expect("rescan after restore");
+        let _ = service
+            .call_tool(call_params("memory_delete", json!({ "key": &memory_key })))
+            .await;
+
+        // (e) Reject + tombstone idempotency. Git history is immutable, so re-mining
+        //     regenerates the same cluster the accept consumed; reject it and confirm the
+        //     tombstone suppresses it on the next mine.
+        let mine_e = decode_text(
+            &service
+                .call_tool(call_params(
+                    "proposals_mine",
+                    json!({
+                        "min_support": 1,
+                        "min_confidence": 0.1,
+                        "max_files_per_commit": 10,
+                        "window": 50,
+                    }),
+                ))
+                .await
+                .expect("proposals_mine for reject test"),
+        );
+        let mined_e = mine_e.get("mined").and_then(Value::as_u64).unwrap_or(0);
+        assert!(
+            mined_e >= 1,
+            "re-mine must regenerate the cluster (git history is immutable): {mine_e}"
+        );
+        let list_e = decode_text(
+            &service
+                .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+                .await
+                .expect("proposals_list for reject"),
+        );
+        let reject_id = list_e["proposals"][0]
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("reject id")
+            .to_string();
+        let reject_body = decode_text(
+            &service
+                .call_tool(call_params(
+                    "proposal_reject",
+                    json!({ "id": reject_id, "reason": "smoke-test rejection" }),
+                ))
+                .await
+                .expect("proposal_reject"),
+        );
+        assert_eq!(
+            reject_body.get("rejected").and_then(Value::as_bool),
+            Some(true),
+            "proposal_reject must return rejected=true: {reject_body}"
+        );
+        let mine_after = decode_text(
+            &service
+                .call_tool(call_params(
+                    "proposals_mine",
+                    json!({
+                        "min_support": 1,
+                        "min_confidence": 0.1,
+                        "max_files_per_commit": 10,
+                        "window": 50,
+                    }),
+                ))
+                .await
+                .expect("proposals_mine after reject"),
+        );
+        let mined_after = mine_after.get("mined").and_then(Value::as_u64).unwrap_or(0);
+        assert!(
+            mined_after < mined_e,
+            "re-mine after reject must produce fewer candidates (tombstone suppressed): \
+             mined_after={mined_after} mined_e={mined_e}"
+        );
+    }
+
     // rescan: trigger an in-process scan via MCP. With no working-tree changes
     // since the smoke fixture was built, expectation is scanned > 0 and
     // updated == 0 (everything matched the existing blob hashes).

@@ -23,6 +23,8 @@ mod helpers_governance;
 mod helpers_graph;
 mod helpers_grep;
 mod helpers_impls;
+#[cfg(feature = "memory")]
+mod helpers_proposals;
 #[cfg(feature = "crawl")]
 mod helpers_web;
 mod lean;
@@ -90,6 +92,10 @@ pub mod params {
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_governance::{
+        MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams,
+        ProposalsMineParams,
+    };
     pub use super::types_graph::CallGraphParams;
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
