@@ -248,11 +248,19 @@ pub(super) async fn run_memory_put(
             .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
         let existing = read_memory_record(idx, &state.scope, vis_byte, owner, &params.key);
         let created_at = existing.map(|r| r.created_at).unwrap_or(now);
+        // A plain put carries no code references, so the W10 governance fields default:
+        // an unaudited memory with empty provenance simply has nothing to verify. A value
+        // change resets `verified` to `Unverified` (any prior verdict no longer applies);
+        // the governance accept-path stamps provenance/importance directly when it needs to.
         let record = MemoryRecord {
             value: params.value.clone(),
             tags: tags.clone(),
             created_at,
             updated_at: now,
+            provenance: super::types_memory::Provenance::default(),
+            verified: super::types_memory::VerifyState::Unverified,
+            last_verified: 0,
+            importance: 0.0,
         };
         write_memory_record(idx, &state.scope, vis_byte, owner, &params.key, &record)?;
         created_at
