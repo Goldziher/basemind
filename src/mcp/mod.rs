@@ -14,6 +14,7 @@ mod helpers_admin;
 mod helpers_calls;
 #[cfg(all(feature = "comms", unix))]
 mod helpers_comms;
+mod helpers_compress;
 #[cfg(feature = "documents")]
 mod helpers_documents;
 mod helpers_graph;
@@ -29,6 +30,7 @@ mod tools;
 mod tools_admin;
 #[cfg(all(feature = "comms", unix))]
 mod tools_comms;
+mod tools_compress;
 mod tools_git;
 mod tools_memory;
 #[cfg(feature = "crawl")]
@@ -37,6 +39,7 @@ mod types;
 mod types_admin;
 #[cfg(all(feature = "comms", unix))]
 mod types_comms;
+mod types_compress;
 mod types_documents;
 mod types_graph;
 mod types_impls;
@@ -441,7 +444,8 @@ impl BasemindServer {
         let mut router = Self::tool_router_core()
             + Self::tool_router_git()
             + Self::tool_router_memory()
-            + Self::tool_router_admin();
+            + Self::tool_router_admin()
+            + Self::tool_router_compress();
         #[cfg(feature = "crawl")]
         {
             router += Self::tool_router_web();

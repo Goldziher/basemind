@@ -1366,6 +1366,105 @@ async fn mcp_server_exercises_representative_tools() {
         "search_symbols with empty needle must return 0 results, got {results:?}"
     );
 
+    // compress (structural): compressing an indexed code file returns the L1 outline —
+    // symbols + imports only, no bodies. The fixture a.rs is small, so we only assert
+    // shape (strategy, positive sizes, symbol presence, no body leak) — not byte reduction
+    // (a 7-symbol outline with comment lines can exceed a short source file in bytes).
+    let body = decode_text(
+        &service
+            .call_tool(call_params("compress", json!({ "path": "a.rs" })))
+            .await
+            .expect("compress(path=a.rs)"),
+    );
+    assert_eq!(
+        body.get("strategy").and_then(Value::as_str),
+        Some("structural"),
+        "code-file compress must use strategy=structural: {body}"
+    );
+    let original_bytes = body
+        .get("original_bytes")
+        .and_then(Value::as_u64)
+        .expect("original_bytes");
+    let compressed_bytes = body
+        .get("compressed_bytes")
+        .and_then(Value::as_u64)
+        .expect("compressed_bytes");
+    assert!(
+        original_bytes > 0,
+        "original_bytes must be positive for a.rs: {body}"
+    );
+    assert!(
+        compressed_bytes > 0,
+        "compressed_bytes must be positive for a non-empty outline: {body}"
+    );
+    let output = body.get("output").and_then(Value::as_str).expect("output");
+    assert!(
+        output.contains("alpha") || output.contains("Beta"),
+        "structural output must reference indexed symbols: {output:?}"
+    );
+    // Verify no body content leaked — the fixture function body is `{ let _ = 1; }` in the
+    // second commit; the structural outline must not include that literal.
+    assert!(
+        !output.contains("let _ = 1"),
+        "structural output must NOT include function body literals: {output:?}"
+    );
+    let tokens_note = body
+        .get("tokens_note")
+        .and_then(Value::as_str)
+        .expect("tokens_note");
+    assert!(
+        tokens_note.contains("bytes/4"),
+        "tokens_note must disclose the bytes/4 heuristic: {tokens_note:?}"
+    );
+
+    // compress (prose): compressing a prose string with repeated filler applies the
+    // lexical pass and returns a smaller output.
+    let prose = "It is worth noting that this is a test paragraph.\n\n\
+                 It is worth noting that this is a test paragraph.\n\n\
+                 The code runs correctly.";
+    let body = decode_text(
+        &service
+            .call_tool(call_params("compress", json!({ "text": prose })))
+            .await
+            .expect("compress(text prose)"),
+    );
+    assert_eq!(
+        body.get("strategy").and_then(Value::as_str),
+        Some("lexical"),
+        "prose compress must use strategy=lexical: {body}"
+    );
+    let prose_compressed = body
+        .get("compressed_bytes")
+        .and_then(Value::as_u64)
+        .expect("compressed_bytes");
+    let prose_original = body
+        .get("original_bytes")
+        .and_then(Value::as_u64)
+        .expect("original_bytes");
+    assert!(
+        prose_compressed < prose_original,
+        "lexical pass must reduce size for a repeated-filler prose input: {prose_original} → {prose_compressed}"
+    );
+
+    // compress: supplying both text and path must be rejected with an error.
+    let err = service
+        .call_tool(call_params(
+            "compress",
+            json!({ "text": "hello", "path": "a.rs" }),
+        ))
+        .await;
+    assert!(
+        err.is_err(),
+        "compress with both text and path must be rejected: {err:?}"
+    );
+
+    // compress: supplying neither text nor path must be rejected with an error.
+    let err = service.call_tool(call_params("compress", json!({}))).await;
+    assert!(
+        err.is_err(),
+        "compress with neither text nor path must be rejected: {err:?}"
+    );
+
     let _ = service.cancel().await;
 }
 
