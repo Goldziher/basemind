@@ -9,6 +9,7 @@ use std::io::{Read, Write};
 use anyhow::{Context, Result};
 
 use super::compress_output;
+use super::delta::delta;
 
 /// Arguments for `basemind compress-output`.
 #[derive(clap::Args, Debug)]
@@ -55,6 +56,55 @@ pub fn run(args: &CompressOutputArgs) -> Result<()> {
         outcome.original_bytes,
         outcome.compressed_bytes,
         pct,
+    );
+    Ok(())
+}
+
+/// Arguments for `basemind delta`.
+///
+/// The NEW content is read from stdin; the OLD content is read from the
+/// `--old` file path. The stateless [`delta`] primitive emits a compact
+/// `+N/-M` line-diff (or a full-content bail marker on oversize input).
+#[derive(clap::Args, Debug)]
+pub struct DeltaArgs {
+    /// Path to the OLD (previously seen) content. The NEW content is read from
+    /// stdin.
+    #[arg(long)]
+    pub old: std::path::PathBuf,
+}
+
+/// Read the OLD content from `--old` and the NEW content from stdin, run the
+/// stateless delta primitive, write the diff (or bail marker + full content) to
+/// stdout, and a one-line stat to stderr. Both sides are read lossily so
+/// non-UTF-8 content never aborts the pipe.
+pub fn run_delta(args: &DeltaArgs) -> Result<()> {
+    let old_raw = std::fs::read(&args.old)
+        .with_context(|| format!("read old content from {}", args.old.display()))?;
+    let old = String::from_utf8_lossy(&old_raw);
+
+    let mut new_raw = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut new_raw)
+        .context("read new content from stdin")?;
+    let new = String::from_utf8_lossy(&new_raw);
+
+    let outcome = delta(old.as_ref(), new.as_ref());
+
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(outcome.output.as_bytes())
+        .context("write delta output")?;
+    stdout.write_all(b"\n").context("write trailing newline")?;
+    stdout.flush().context("flush stdout")?;
+
+    eprintln!(
+        "delta: changed={} bailed={} old_lines={} new_lines={} +{}/-{}",
+        outcome.changed,
+        outcome.bailed,
+        outcome.old_lines,
+        outcome.new_lines,
+        outcome.added,
+        outcome.removed,
     );
     Ok(())
 }

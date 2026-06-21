@@ -19,6 +19,7 @@
 //! the command — it only sees output).
 
 pub mod cli;
+pub mod delta;
 mod detect;
 mod handlers;
 mod safety;
