@@ -23,6 +23,7 @@ mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "crawl")]
 mod helpers_web;
+mod lean;
 mod lenient;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
@@ -690,6 +691,50 @@ fn spawn_view_watcher(state: Arc<ServerState>) {
 
 #[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for BasemindServer {
+    /// `tools/list`. Default (the overwhelming case): delegate to the static router exactly as
+    /// the `#[tool_handler]` macro would, advertising every real tool. When `BASEMIND_MCP_LEAN`
+    /// is set, advertise only the three lean wrapper tools instead. The macro detects this
+    /// hand-written method and skips generating its own, so the default branch must remain a
+    /// faithful copy of the generated body to keep the unset-flag surface byte-for-byte identical.
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        if lean::lean_mode_enabled() {
+            return Ok(lean::lean_list_tools());
+        }
+        Ok(rmcp::model::ListToolsResult {
+            tools: self.tool_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    /// `tools/call`. Default: dispatch through the static router exactly as the macro would.
+    /// In lean mode, route the three wrapper tools through [`lean::lean_call_tool`], which itself
+    /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
+    async fn call_tool(
+        &self,
+        request: rmcp::model::CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
+        if lean::lean_mode_enabled() {
+            return lean::lean_call_tool(self, &self.tool_router, request, context).await;
+        }
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        self.tool_router.call(tcc).await
+    }
+
+    /// `get_tool` introspection. Default mirrors the macro (router lookup); in lean mode it
+    /// reports the three wrapper tools so task-support validation matches the advertised surface.
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        if lean::lean_mode_enabled() {
+            return lean::lean_get_tool(name);
+        }
+        self.tool_router.get(name).cloned()
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "basemind is the indexed context layer for this repository, served over MCP: a \

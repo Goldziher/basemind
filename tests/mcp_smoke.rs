@@ -2467,3 +2467,149 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     let _ = shutdown_tx.send(true);
     let _ = serve.await;
 }
+
+/// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
+/// connected rmcp client service.
+async fn spawn_serve(
+    root: &Path,
+    lean: Option<&str>,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let lean = lean.map(str::to_string);
+    let root = root.to_path_buf();
+    let cmd = AsyncCommand::new(bin).configure(move |c| {
+        c.arg("--root")
+            .arg(&root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+        // Mirror env so the lean toggle is read by the child only when requested; the unset
+        // case must reproduce the default full surface exactly.
+        c.env_remove("BASEMIND_MCP_LEAN");
+        if let Some(v) = &lean {
+            c.env("BASEMIND_MCP_LEAN", v);
+        }
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    ().serve(transport).await.expect("rmcp handshake")
+}
+
+/// W5 slice 3: the lean MCP surface is STRICTLY opt-in.
+///
+/// * `BASEMIND_MCP_LEAN=1` → exactly the three wrapper tools are advertised, and
+///   `invoke_tool { search_symbols }` returns the same payload as a direct `search_symbols` call.
+/// * flag UNSET → the full surface is advertised unchanged (well over the three wrappers, and
+///   `search_symbols` is callable directly).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    // ── Default surface (flag unset): full tool list, direct dispatch. ──────────────
+    let full = spawn_serve(root, None).await;
+    let full_tools = full.list_all_tools().await.expect("list tools (full)");
+    let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
+    assert!(
+        full_tools.len() > 10,
+        "default surface should advertise the full tool set, got {}: {full_names:?}",
+        full_tools.len()
+    );
+    assert!(
+        full_names.contains(&"search_symbols"),
+        "default surface lists search_symbols: {full_names:?}"
+    );
+    assert!(
+        !full_names.contains(&"invoke_tool"),
+        "default surface must NOT expose the lean wrappers: {full_names:?}"
+    );
+    // Baseline result from a direct call on the full surface.
+    let direct = decode_text(
+        &full
+            .call_tool(call_params(
+                "search_symbols",
+                json!({ "needle": "Greet", "limit": 10 }),
+            ))
+            .await
+            .expect("direct search_symbols"),
+    );
+    let _ = full.cancel().await;
+
+    // ── Lean surface (flag set): exactly three wrappers. ────────────────────────────
+    let lean = spawn_serve(root, Some("1")).await;
+    let lean_tools = lean.list_all_tools().await.expect("list tools (lean)");
+    let mut lean_names: Vec<&str> = lean_tools.iter().map(|t| t.name.as_ref()).collect();
+    lean_names.sort_unstable();
+    assert_eq!(
+        lean_names,
+        vec!["get_tool_schema", "invoke_tool", "list_tools"],
+        "lean mode advertises exactly the three wrapper tools"
+    );
+
+    // `list_tools` wrapper returns a compressed listing of the real tools.
+    let listing = decode_text(
+        &lean
+            .call_tool(call_params("list_tools", json!({})))
+            .await
+            .expect("lean list_tools"),
+    );
+    let listed = listing
+        .get("tools")
+        .and_then(Value::as_array)
+        .expect("tools array");
+    assert!(
+        listed
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some("search_symbols")),
+        "lean list_tools should surface the real search_symbols tool: {listing}"
+    );
+
+    // `get_tool_schema` returns the real tool's input schema.
+    let schema = decode_text(
+        &lean
+            .call_tool(call_params(
+                "get_tool_schema",
+                json!({ "tool_name": "search_symbols" }),
+            ))
+            .await
+            .expect("lean get_tool_schema"),
+    );
+    assert_eq!(
+        schema.get("name").and_then(Value::as_str),
+        Some("search_symbols"),
+        "schema echoes the tool name: {schema}"
+    );
+    assert!(
+        schema.get("input_schema").is_some(),
+        "schema carries the input_schema: {schema}"
+    );
+
+    // `invoke_tool` dispatches to the real handler — same payload as the direct call.
+    let via_invoke = decode_text(
+        &lean
+            .call_tool(call_params(
+                "invoke_tool",
+                json!({
+                    "tool_name": "search_symbols",
+                    "tool_input": { "needle": "Greet", "limit": 10 }
+                }),
+            ))
+            .await
+            .expect("lean invoke_tool"),
+    );
+    assert_eq!(
+        via_invoke, direct,
+        "invoke_tool result must match a direct search_symbols call"
+    );
+
+    // Unknown tool names are rejected, not silently passed through.
+    let bad = lean
+        .call_tool(call_params(
+            "invoke_tool",
+            json!({ "tool_name": "definitely_not_a_tool", "tool_input": {} }),
+        ))
+        .await;
+    assert!(bad.is_err(), "invoke_tool rejects unknown tool names");
+
+    let _ = lean.cancel().await;
+}
