@@ -19,6 +19,11 @@ pub struct SearchDocumentsParams {
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
+    /// Hits are kept best-first until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true`.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub mime_type: Option<String>,
     /// Optional case-insensitive substring match against `DocEntity.category`.
@@ -75,5 +80,9 @@ pub(crate) struct DocumentSearchHit {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct SearchDocumentsResponse {
     pub query: String,
+    /// True when a `max_tokens` budget dropped trailing `hits`. `search_documents` has no
+    /// cursor; raise `max_tokens` (or omit it) to retrieve more hits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub hits: Vec<DocumentSearchHit>,
 }

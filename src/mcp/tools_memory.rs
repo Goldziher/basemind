@@ -203,7 +203,9 @@ impl BasemindServer {
     #[tool(
         description = "Semantic search over indexed document chunks (PDF/Office/HTML). \
         Embeds the `query` argument, KNN in LanceDB documents table (scope-filtered). \
-        mime_type is exact filter. Default 10 max 100. Needs --features documents."
+        mime_type is exact filter. Default 10 max 100. Optional `max_tokens` bounds the \
+        returned hits (best-first); when it drops hits the response sets `budgeted: true` \
+        (no cursor — raise `max_tokens` for more). Needs --features documents."
     )]
     pub(crate) async fn search_documents(
         &self,

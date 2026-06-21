@@ -28,6 +28,11 @@ pub struct FindImplementationsParams {
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional token budget bounding the returned `hits` list (not the whole envelope).
+    /// Hits are kept in scan order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
@@ -43,6 +48,9 @@ pub struct FindImplementationsResponse {
     /// True when `total` was capped by `scan_cap` and more matches exist on disk.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
+    /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
     pub hits: Vec<ImplementationHit>,
     /// Opaque cursor to pass back on the next call when more results are available.
     /// Stable across rescans.

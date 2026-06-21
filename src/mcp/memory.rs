@@ -650,10 +650,14 @@ pub(super) async fn run_search_documents(
             .collect::<Result<Vec<_>, _>>()?;
     }
 
+    // Token budget bounds the returned hits list (best-first after any rerank). No cursor
+    // for search_documents — `budgeted: true` signals the caller to raise `max_tokens`.
+    let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_response(
         &SearchDocumentsResponse {
             query: params.query,
-            hits,
+            budgeted: budget.budgeted,
+            hits: budget.items,
         },
         output_format,
     )

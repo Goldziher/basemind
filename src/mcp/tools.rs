@@ -24,7 +24,9 @@ impl BasemindServer {
         description = "Return the structural outline of a file: every symbol with name, kind, \
                        and start row/column, plus imports. Set `l2: true` to also include calls \
                        and doc comments (only returned if an L2 blob already exists for the \
-                       file's current content)."
+                       file's current content). Optional `max_tokens` bounds the returned \
+                       `symbols` list (not imports/calls/docs); when it drops symbols the \
+                       response sets `budgeted: true`."
     )]
     pub(crate) async fn outline(
         &self,
@@ -73,6 +75,7 @@ impl BasemindServer {
                     size_bytes: l1.size_bytes,
                     had_errors: l1.had_errors,
                     error_count: l1.error_count,
+                    budgeted: false,
                     symbols,
                     imports,
                     calls: None,
@@ -128,6 +131,7 @@ impl BasemindServer {
                         size_bytes: l1.size_bytes,
                         had_errors: l1.had_errors,
                         error_count: l1.error_count,
+                        budgeted: false,
                         symbols,
                         imports,
                         calls: None,
@@ -150,6 +154,7 @@ impl BasemindServer {
                         size_bytes: l1.size_bytes,
                         had_errors: l1.had_errors,
                         error_count: l1.error_count,
+                        budgeted: false,
                         symbols,
                         imports,
                         calls: None,
@@ -159,8 +164,16 @@ impl BasemindServer {
                 }
             };
 
-            // Suppress the unused-mut lint: `response` is mutated only on the l2 branch.
-            let _ = &mut response;
+            // Token budget bounds the symbols list (the high-volume part of an outline);
+            // imports / calls / docs are left intact. Applied before serializing.
+            if params.max_tokens.is_some() {
+                let budgeted = super::budget::apply_budget(
+                    std::mem::take(&mut response.symbols),
+                    params.max_tokens,
+                );
+                response.symbols = budgeted.items;
+                response.budgeted = budgeted.budgeted;
+            }
             json_result(&response)
         }
         .await;
@@ -176,7 +189,9 @@ impl BasemindServer {
                        (default 100, max 1000) results, each with path + line/column + signature. \
                        Pass `cursor` from a previous response to fetch the next page; absent \
                        means no more results. Cursors invalidate on rescan — caller must \
-                       restart when `cursor_invalidated` is set."
+                       restart when `cursor_invalidated` is set. Optional `max_tokens` bounds \
+                       the response: results are kept best-first until the budget is hit, then \
+                       `budgeted: true` + a `next_cursor` signal the dropped tail is pageable."
     )]
     pub(crate) async fn search_symbols(
         &self,
@@ -203,6 +218,7 @@ impl BasemindServer {
                         return json_result(&SearchResponse {
                             total: 0,
                             truncated: false,
+                            budgeted: false,
                             results: Vec::new(),
                             next_cursor: None,
                             cursor_invalidated: true,
@@ -219,6 +235,7 @@ impl BasemindServer {
                 return json_result(&SearchResponse {
                     total: 0,
                     truncated: false,
+                    budgeted: false,
                     results: Vec::new(),
                     next_cursor: None,
                     cursor_invalidated: false,
@@ -267,7 +284,15 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit || total_is_partial;
-            // `next_cursor` advances by the page size (results.len()) past the skip offset.
+            // Apply the token budget AFTER the limit page is built but BEFORE computing the
+            // cursor, so the cursor advances by the *kept* count — the next page resumes
+            // exactly at the first dropped item with no gap or overlap.
+            let budget = super::budget::apply_budget(results, params.max_tokens);
+            let results = budget.items;
+            let budgeted = budget.budgeted;
+            // `next_cursor` advances by the kept page size (results.len()) past the skip
+            // offset. More remains when the scan saw more than we kept (limit cap) OR the
+            // budget dropped items from this page.
             let next_cursor = if total > results.len() {
                 Some(super::cursor::Cursor::encode_in_memory(
                     (skip + results.len()) as u64,
@@ -279,6 +304,7 @@ impl BasemindServer {
             json_result(&SearchResponse {
                 total,
                 truncated,
+                budgeted,
                 results,
                 next_cursor,
                 cursor_invalidated: false,
@@ -301,7 +327,9 @@ impl BasemindServer {
                        substring filter and `language` filter (rust/python/typescript/tsx/javascript/go). \
                        Default limit 200, max 5000. Pass `cursor` from a previous response to \
                        fetch the next page; absent means no more results. Cursors invalidate on \
-                       rescan — caller must restart when `cursor_invalidated` is set."
+                       rescan — caller must restart when `cursor_invalidated` is set. Optional \
+                       `max_tokens` bounds the response: files are kept in order until the \
+                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest."
     )]
     pub(crate) async fn list_files(
         &self,
@@ -329,6 +357,7 @@ impl BasemindServer {
                             total: 0,
                             returned: 0,
                             truncated: false,
+                            budgeted: false,
                             files: Vec::new(),
                             next_cursor: None,
                             cursor_invalidated: true,
@@ -372,6 +401,11 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit;
+            // Budget the file list before computing the cursor so the next page resumes at
+            // the first dropped entry (cursor advances by the kept count, not the scanned count).
+            let budget = super::budget::apply_budget(files, params.max_tokens);
+            let files = budget.items;
+            let budgeted = budget.budgeted;
             let next_cursor = if total > files.len() {
                 Some(super::cursor::Cursor::encode_in_memory(
                     (skip + files.len()) as u64,
@@ -385,6 +419,7 @@ impl BasemindServer {
                 total,
                 returned: files.len(),
                 truncated,
+                budgeted,
                 files,
                 next_cursor,
                 cursor_invalidated: false,
@@ -497,7 +532,9 @@ impl BasemindServer {
                        scan is bounded by `scan_cap = limit * 8` matching entries. Requires the \
                        index to have been populated by a scan with `eager_l2=true` (the default). \
                        Pass `cursor` from a previous response to fetch the next page; absent \
-                       means no more results."
+                       means no more results. Optional `max_tokens` bounds the response: hits \
+                       are kept best-first until the budget is hit, then `budgeted: true` + a \
+                       `next_cursor` page the dropped tail."
     )]
     pub(crate) async fn find_references(
         &self,
@@ -530,7 +567,9 @@ impl BasemindServer {
                        scan as `find_references`. Useful when you need to anchor the search on a \
                        specific symbol rather than a bare name. Same scope-resolution caveat \
                        applies. Default limit 100, max 1000. Pass `cursor` from a previous \
-                       response to fetch the next page; absent means no more results."
+                       response to fetch the next page; absent means no more results. Optional \
+                       `max_tokens` bounds the response: hits are kept best-first until the \
+                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest."
     )]
     pub(crate) async fn find_callers(
         &self,
@@ -564,7 +603,10 @@ impl BasemindServer {
                        that's index-backed and faster. Bounded by `scan_cap = limit * 8` files; \
                        pass `language` or `path_contains` to narrow the scan. Default limit 100, \
                        max 1000. Pass `cursor` from a previous response to fetch the next page; \
-                       absent means no more results. Cursors invalidate on rescan."
+                       absent means no more results. Cursors invalidate on rescan. Optional \
+                       `max_tokens` bounds the response: hits are kept best-first until the \
+                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest \
+                       (the boundary file may re-appear on the next page)."
     )]
     pub(crate) async fn workspace_grep(
         &self,
@@ -595,7 +637,9 @@ impl BasemindServer {
                        (`class X extends Y`). Go interface satisfaction is structural and not \
                        detected. Bounded by `scan_cap = limit * 8` — pass `cursor` from a \
                        previous response to fetch the next page; cursors remain stable across \
-                       rescans (Fjall-backed)."
+                       rescans (Fjall-backed). Optional `max_tokens` bounds the response: hits \
+                       are kept best-first until the budget is hit, then `budgeted: true` + a \
+                       `next_cursor` page the rest."
     )]
     pub(crate) async fn find_implementations(
         &self,

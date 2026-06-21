@@ -117,6 +117,7 @@ pub async fn run(
             let p = OutlineParams {
                 path: path.as_str().into(),
                 l2,
+                max_tokens: None,
             };
             let r = run_tool("outline", server.outline(Parameters(Lenient(p))).await)?;
             emit("outline", &r, json, out)
@@ -135,6 +136,7 @@ pub async fn run(
                 needle,
                 kind,
                 limit,
+                max_tokens: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -147,6 +149,7 @@ pub async fn run(
             let p = FindReferencesParams {
                 name,
                 limit,
+                max_tokens: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -166,6 +169,7 @@ pub async fn run(
                 name,
                 kind,
                 limit,
+                max_tokens: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -183,6 +187,7 @@ pub async fn run(
                 trait_name,
                 language,
                 limit,
+                max_tokens: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -220,6 +225,7 @@ pub async fn run(
                 language,
                 path_contains,
                 limit,
+                max_tokens: None,
                 include_context: !no_context,
                 cursor: None,
             };
@@ -238,6 +244,7 @@ pub async fn run(
                 path_contains,
                 language,
                 limit,
+                max_tokens: None,
                 cursor: None,
             };
             let r = run_tool("list_files", server.list_files(Parameters(p)).await)?;

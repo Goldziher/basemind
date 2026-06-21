@@ -8,6 +8,7 @@
 //!
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
+mod budget;
 pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;

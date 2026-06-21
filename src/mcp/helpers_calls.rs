@@ -53,6 +53,7 @@ pub(super) fn run_find_references(
             name: params.name,
             total: 0,
             total_is_partial: false,
+            budgeted: false,
             hits: Vec::new(),
             next_cursor: None,
         });
@@ -63,12 +64,16 @@ pub(super) fn run_find_references(
         .map(|c| c.decode_fjall())
         .transpose()?;
     let scan = scan_calls_by_name(idx, &params.name, limit, cursor_bytes.as_deref())?;
+    let total = scan.total;
+    let total_is_partial = scan.total_is_partial;
+    let budgeted = budget_call_page(scan, params.max_tokens);
     json_result(&FindReferencesResponse {
         name: params.name,
-        total: scan.total,
-        total_is_partial: scan.total_is_partial,
-        hits: scan.hits,
-        next_cursor: scan.next_cursor,
+        total,
+        total_is_partial,
+        budgeted: budgeted.budgeted,
+        hits: budgeted.hits,
+        next_cursor: budgeted.next_cursor,
     })
 }
 
@@ -90,6 +95,7 @@ pub(super) fn run_find_callers(
             definition: None,
             total: 0,
             total_is_partial: false,
+            budgeted: false,
             hits: Vec::new(),
             next_cursor: None,
         });
@@ -115,12 +121,16 @@ pub(super) fn run_find_callers(
         .map(|c| c.decode_fjall())
         .transpose()?;
     let scan = scan_calls_by_name(idx, &params.name, limit, cursor_bytes.as_deref())?;
+    let total = scan.total;
+    let total_is_partial = scan.total_is_partial;
+    let budgeted = budget_call_page(scan, params.max_tokens);
     json_result(&FindCallersResponse {
         definition,
-        total: scan.total,
-        total_is_partial: scan.total_is_partial,
-        hits: scan.hits,
-        next_cursor: scan.next_cursor,
+        total,
+        total_is_partial,
+        budgeted: budgeted.budgeted,
+        hits: budgeted.hits,
+        next_cursor: budgeted.next_cursor,
     })
 }
 
@@ -129,6 +139,49 @@ pub(super) struct CallScanPage {
     pub total_is_partial: bool,
     pub hits: Vec<ReferenceHit>,
     pub next_cursor: Option<Cursor>,
+    /// Parallel to `hits`: the Fjall key for each emitted hit. Retained so a token budget can
+    /// re-anchor `next_cursor` to the last KEPT hit, not the last scanned one.
+    pub hit_keys: Vec<Vec<u8>>,
+}
+
+/// Result of applying a `max_tokens` budget to a call-scan page.
+pub(super) struct BudgetedCallPage {
+    pub hits: Vec<ReferenceHit>,
+    pub next_cursor: Option<Cursor>,
+    pub budgeted: bool,
+}
+
+/// Apply a `max_tokens` budget to an already-built call-scan page and recompute its cursor.
+///
+/// Hits are best-first (scan order). When the budget drops trailing hits the cursor is
+/// re-anchored to the last KEPT hit's Fjall key so the next page resumes immediately after
+/// it with no gap or overlap. `max_tokens = None` is a no-op (original page passes through).
+pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> BudgetedCallPage {
+    if max_tokens.is_none() {
+        return BudgetedCallPage {
+            hits: page.hits,
+            next_cursor: page.next_cursor,
+            budgeted: false,
+        };
+    }
+    let budget = super::budget::apply_budget(page.hits, max_tokens);
+    if !budget.budgeted {
+        // Budget kept every hit on the page — leave the original scan cursor untouched.
+        return BudgetedCallPage {
+            hits: budget.items,
+            next_cursor: page.next_cursor,
+            budgeted: false,
+        };
+    }
+    // Re-anchor the cursor to the last kept hit. `budgeted` implies at least one drop and a
+    // non-empty page, so `kept >= 1` and the index is in range.
+    let kept = budget.items.len();
+    let next_cursor = page.hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
+    BudgetedCallPage {
+        hits: budget.items,
+        next_cursor,
+        budgeted: true,
+    }
 }
 
 /// Shared inner loop for `find_references` / `find_callers`: full-partition scan of
@@ -153,6 +206,9 @@ fn scan_calls_by_name(
         None => Bound::Unbounded,
     };
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
+    // Parallel to `hits`: the Fjall key for each emitted hit, so a later token budget can
+    // re-anchor the cursor to the last KEPT hit instead of the last scanned one.
+    let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
     let mut total: u32 = 0;
     let mut total_is_partial = false;
     let scan_cap = limit.saturating_mul(8).max(2_000);
@@ -183,6 +239,7 @@ fn scan_calls_by_name(
                 column,
                 callee,
             });
+            hit_keys.push(k.to_vec());
             last_emitted_key = Some(k.to_vec());
         } else {
             // We collected a full page; this extra entry proves more remain on disk.
@@ -203,5 +260,6 @@ fn scan_calls_by_name(
         total_is_partial,
         hits,
         next_cursor,
+        hit_keys,
     })
 }

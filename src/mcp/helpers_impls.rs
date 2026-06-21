@@ -34,6 +34,7 @@ pub(super) fn run_find_implementations(
             trait_name: params.trait_name,
             total: 0,
             total_is_partial: false,
+            budgeted: false,
             hits: Vec::new(),
             next_cursor: None,
         });
@@ -55,6 +56,9 @@ pub(super) fn run_find_implementations(
 
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut hits: Vec<ImplementationHit> = Vec::with_capacity(limit.min(64));
+    // Parallel to `hits`: the Fjall key for each emitted hit, so a token budget can re-anchor
+    // the cursor to the last KEPT hit instead of the last scanned one.
+    let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
     let mut total_is_partial = false;
     let mut last_emitted_key: Option<Vec<u8>> = None;
@@ -102,6 +106,7 @@ pub(super) fn run_find_implementations(
                 start_row,
                 start_col,
             });
+            hit_keys.push(k.to_vec());
             last_emitted_key = Some(k.to_vec());
         } else {
             has_more = true;
@@ -119,10 +124,23 @@ pub(super) fn run_find_implementations(
         None
     };
 
+    // Apply the token budget. When it drops trailing hits, re-anchor the cursor to the last
+    // KEPT hit's Fjall key so the next page resumes exactly after it. A no-op when
+    // `max_tokens` is None or every hit fit.
+    let budget = super::budget::apply_budget(hits, params.max_tokens);
+    let (hits, budgeted, next_cursor) = if budget.budgeted {
+        let kept = budget.items.len();
+        let cursor = hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
+        (budget.items, true, cursor)
+    } else {
+        (budget.items, false, next_cursor)
+    };
+
     json_result(&FindImplementationsResponse {
         trait_name: params.trait_name,
         total,
         total_is_partial,
+        budgeted,
         hits,
         next_cursor,
     })
