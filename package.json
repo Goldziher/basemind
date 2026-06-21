@@ -2,7 +2,10 @@
   "name": "basemind",
   "version": "0.6.3",
   "private": true,
-  "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin).",
+  "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin). Also carries the pi extension manifest (.pi/extensions, skills/).",
+  "keywords": [
+    "pi-package"
+  ],
   "homepage": "https://github.com/Goldziher/basemind",
   "license": "MIT",
   "author": {
@@ -13,5 +16,13 @@
     "type": "git",
     "url": "git+https://github.com/Goldziher/basemind.git"
   },
-  "type": "module"
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./.pi/extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
 }
