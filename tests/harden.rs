@@ -415,6 +415,26 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    // compress (structural): sweep with the sample file path when available.
+    if let Some(sample) = sample {
+        call(
+            svc,
+            &mut records,
+            "compress",
+            json!({ "path": &sample.path }),
+        )
+        .await;
+    }
+
+    // compress (prose): always available, no feature gate.
+    call(
+        svc,
+        &mut records,
+        "compress",
+        json!({ "text": "It is worth noting that basemind provides code-aware compression. The index is fast." }),
+    )
+    .await;
+
     // Memory + document tools: sweep unconditionally (MCP error when features off is ok).
     call(
         svc,
