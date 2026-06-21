@@ -1,8 +1,8 @@
 //! A2A (Agent-to-Agent) protocol bindings.
 //!
 //! Official A2A gRPC service (`lf.a2a.v1.A2AService`, 11 RPCs) + a JSON-RPC 2.0 /
-//! agent-card / SSE binding, both served on one axum app ([`server`]) backed by
-//! the [`core`] task domain through the shared [`state::A2aState`]. The binary
+//! agent-card / SSE binding, both served on one axum app (`server`) backed by
+//! the `core` task domain through the shared `state::A2aState`. The binary
 //! reaches it through the public [`run_server`] entry point (`basemind a2a serve`).
 
 pub(crate) mod auth;
