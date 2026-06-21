@@ -1093,6 +1093,90 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
+    // memory_audit (W10b governance): verify audit semantics end-to-end.
+    // `memory_put` writes a record with empty provenance (the only path via MCP).
+    // An empty-provenance audit always returns state="unverified".
+    #[cfg(feature = "memory")]
+    {
+        // Step 1: write a key so the audit has something to inspect.
+        let _ = service
+            .call_tool(call_params(
+                "memory_put",
+                json!({
+                    "key": "audit_probe",
+                    "value": "a memory note with no code refs",
+                    "embed": false,
+                }),
+            ))
+            .await
+            .expect("memory_put audit_probe");
+
+        // Step 2: single-key audit — should return audited=1, state="unverified" (no provenance).
+        let body = decode_text(
+            &service
+                .call_tool(call_params("memory_audit", json!({ "key": "audit_probe" })))
+                .await
+                .expect("memory_audit single-key"),
+        );
+        assert_eq!(
+            body.get("audited").and_then(Value::as_u64),
+            Some(1),
+            "memory_audit single-key must report audited=1: {body}"
+        );
+        let results = body
+            .get("results")
+            .and_then(Value::as_array)
+            .expect("results");
+        assert_eq!(results.len(), 1, "single-key audit must return one result");
+        assert_eq!(
+            results[0].get("state").and_then(Value::as_str),
+            Some("unverified"),
+            "empty-provenance memory must audit as unverified: {results:?}"
+        );
+
+        // Step 3: dry_run=true — must return verdict without error and without mutating the record.
+        let dry_body = decode_text(
+            &service
+                .call_tool(call_params(
+                    "memory_audit",
+                    json!({ "key": "audit_probe", "dry_run": true }),
+                ))
+                .await
+                .expect("memory_audit dry_run"),
+        );
+        assert_eq!(
+            dry_body.get("audited").and_then(Value::as_u64),
+            Some(1),
+            "dry_run audit must still report audited=1: {dry_body}"
+        );
+
+        // Step 4: range-scan audit — include all written keys (pagination not required for
+        // the small fixture set). At least the audit_probe key should appear.
+        let range_body = decode_text(
+            &service
+                .call_tool(call_params("memory_audit", json!({ "limit": 50 })))
+                .await
+                .expect("memory_audit range"),
+        );
+        let range_audited = range_body
+            .get("audited")
+            .and_then(Value::as_u64)
+            .expect("audited");
+        assert!(
+            range_audited >= 1,
+            "range audit must cover at least the audit_probe key: {range_body}"
+        );
+
+        // Clean up.
+        let _ = service
+            .call_tool(call_params(
+                "memory_delete",
+                json!({ "key": "audit_probe" }),
+            ))
+            .await
+            .expect("memory_delete audit_probe");
+    }
+
     // rescan: trigger an in-process scan via MCP. With no working-tree changes
     // since the smoke fixture was built, expectation is scanned > 0 and
     // updated == 0 (everything matched the existing blob hashes).
