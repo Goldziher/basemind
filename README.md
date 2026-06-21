@@ -71,6 +71,11 @@ for search: by default (`BASEMIND_GUARD=nudge`) it points `Grep`/`Glob` calls at
 basemind tool, once per session. Set `BASEMIND_GUARD=redirect` to enforce it (the call is blocked
 with a pointer to the basemind tool) or `BASEMIND_GUARD=off` to disable.
 
+An opt-in PostToolUse **output compressor** (default off) is also shipped: set
+`BASEMIND_COMPRESS_OUTPUT=1` to pipe verbose `Bash` output through `basemind compress-output`
+before the agent sees it. It is fail-open and credential-preserving — output is left untouched on
+any error, on detected credentials, or whenever it would save less than 10%.
+
 The live statusline surfaces the payoff: estimated tokens saved vs a grep + read baseline.
 
 ---
