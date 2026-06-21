@@ -243,11 +243,23 @@ pub enum CommsResponse {
 /// A front-matter record paired with its per-room `seq`. The `seq` is the position the message
 /// occupies in its room's append-only log; callers surface it so they can drive `inbox_ack`'s
 /// `to_seq` bulk mode and `message_ids` resolution without an extra round-trip.
+///
+/// Back-compat: `seq` is `#[serde(default)]` and `meta` is `#[serde(flatten)]`, so a payload
+/// from a pre-W7 daemon — which sent bare [`MessageMeta`] front-matter with no `seq` wrapper —
+/// still decodes here (the front-matter fields land in `meta`, `seq` defaults to `0`). W7
+/// changed the `History` / `Inbox` response element shape without bumping [`PROTO_VER`], so a
+/// stale daemon and a fresh client both negotiate proto `1` and the skew surfaces only on
+/// decode; these attributes make that skew tolerant rather than a hard `missing field 'seq'`
+/// error. `seq == 0` is a safe legacy sentinel — a legacy message simply sorts first and its
+/// `inbox_ack` bulk `to_seq` is a no-op for that message; nothing divides by or indexes on it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeqMeta {
-    /// The message's per-room sequence number.
+    /// The message's per-room sequence number. Defaults to `0` for legacy records that predate
+    /// the `seq`-bearing wrapper.
+    #[serde(default)]
     pub seq: u64,
-    /// The front-matter record.
+    /// The front-matter record. Flattened so a bare legacy `MessageMeta` map decodes directly.
+    #[serde(flatten)]
     pub meta: MessageMeta,
 }
 
@@ -327,5 +339,78 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&out).expect("encode");
         let back: CommsOut = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(out, back);
+    }
+
+    fn sample_meta(id: &str) -> MessageMeta {
+        MessageMeta {
+            id: id.to_string(),
+            room: RoomId::parse("room-1").expect("room"),
+            from: AgentId::parse("agent-1").expect("agent"),
+            ts_micros: 7,
+            subject: "subj".to_string(),
+            tags: vec!["t".to_string()],
+            reply_to: None,
+            scope: vec!["src/**".to_string()],
+            body_len: 3,
+            body_sha: "abc".to_string(),
+        }
+    }
+
+    #[test]
+    fn seq_meta_round_trips_through_msgpack() {
+        let value = SeqMeta {
+            seq: 42,
+            meta: sample_meta("m-1"),
+        };
+        let bytes = rmp_serde::to_vec_named(&value).expect("encode");
+        let back: SeqMeta = rmp_serde::from_slice(&bytes).expect("decode");
+        assert_eq!(value, back);
+    }
+
+    /// A pre-W7 daemon sent `History` / `Inbox` elements as a bare [`MessageMeta`] map with no
+    /// `seq` wrapper. W7 changed the element to [`SeqMeta`] WITHOUT bumping [`PROTO_VER`], so a
+    /// stale daemon + a fresh client both negotiate proto `1` and the skew surfaces as a decode
+    /// error (`missing field 'seq'`). `#[serde(default)] seq` + `#[serde(flatten)] meta` make
+    /// the legacy bare-`MessageMeta` payload decode here, with `seq` defaulting to `0`.
+    #[test]
+    fn seq_meta_decodes_legacy_bare_message_meta_with_seq_zero() {
+        let legacy = sample_meta("m-old");
+        // The exact bytes a pre-W7 daemon emitted for one `History`/`Inbox` element.
+        let legacy_bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy MessageMeta");
+        let back: SeqMeta = rmp_serde::from_slice(&legacy_bytes).expect("decode legacy as SeqMeta");
+        assert_eq!(back.seq, 0, "missing seq defaults to 0 for legacy records");
+        assert_eq!(
+            back.meta, legacy,
+            "front-matter flattens into meta unchanged"
+        );
+    }
+
+    /// End-to-end skew shape: a full pre-W7 `History` response (element = bare `MessageMeta`)
+    /// decodes against the W7 `CommsResponse` whose element type is `SeqMeta`.
+    #[test]
+    fn legacy_history_response_decodes_against_seq_meta_element() {
+        #[derive(Serialize)]
+        #[serde(tag = "result", content = "data", rename_all = "snake_case")]
+        enum LegacyResponse {
+            History {
+                messages: Vec<MessageMeta>,
+                next_cursor: Option<Cursor>,
+            },
+        }
+        let legacy = LegacyResponse::History {
+            messages: vec![sample_meta("m-a"), sample_meta("m-b")],
+            next_cursor: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy History");
+        let back: CommsResponse = rmp_serde::from_slice(&bytes).expect("decode as W7 History");
+        match back {
+            CommsResponse::History { messages, .. } => {
+                assert_eq!(messages.len(), 2);
+                assert_eq!(messages[0].seq, 0);
+                assert_eq!(messages[0].meta.id, "m-a");
+                assert_eq!(messages[1].meta.id, "m-b");
+            }
+            other => panic!("expected History, got {other:?}"),
+        }
     }
 }
