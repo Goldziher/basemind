@@ -22,7 +22,7 @@ agent-to-agent comms
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Quickstart](#quickstart) · [Install](#installation) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Performance](#performance)
+[Install](#installation) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Performance](#performance)
 
 </div>
 
@@ -30,7 +30,7 @@ agent-to-agent comms
 
 ## Capabilities
 
-Four pillars give an agent **context**; a fifth lets agents **coordinate**.
+Five pillars give an agent **context**; a sixth lets agents **coordinate**.
 
 **Code** — Tree-sitter outlines, symbol search, reference + caller + implementation graphs,
 call chains, git history per symbol, blame at symbol-level resolution.
@@ -43,6 +43,10 @@ All ONNX bundled — no system install needed.
 tier and a per-agent **individual** tier. Clones of the same git origin automatically share
 memory; unrelated repos isolated.
 
+**Governance** — Mines co-change patterns from git history into propose-don't-commit skill/memory
+candidates; an accepted proposal becomes a searchable memory with file provenance, re-audited against
+the live index (`proposals_mine` / `proposal_accept`).
+
 **Web** — On-demand HTTP scrape + follow-link crawl. Pages chunk, embed, and land in the
 documents store under scope `web:<host>` for unified search.
 
@@ -52,11 +56,35 @@ questions, and avoid collisions. See [Agent coordination](#agent-coordination).
 
 ---
 
-## Context economy
+## Demos
 
-basemind tools return **paths, line numbers, and signatures — not file bodies** — so a
-structural answer costs a fraction of the tokens of reading source. The plugin ships this as
-the agent's default operating discipline (carried in the MCP server instructions, the
+<!-- markdownlint-disable MD013 -->
+
+<p align="center"><img src="docs/media/mcp-demo.gif" alt="basemind in a Claude Code session: an agent answers a question with outline + find_references — structured results, not file reads" width="900"></p>
+
+<p align="center"><em>An agent reasoning from structure — <code>outline</code> + <code>find_references</code> in a live Claude Code session, the statusline tracking tokens saved.</em></p>
+
+<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI demo: scan a repo, then query symbols, references, call graphs, git blame, and the token-savings dashboard" width="800"></p>
+
+<p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / call-graph / blame queries and the token-savings dashboard.</em></p>
+
+<p align="center"><img src="docs/media/semantic-demo.gif" alt="basemind semantic search: an agent searches indexed documents by meaning, not keywords, over the documents store" width="900"></p>
+
+<p align="center"><em>Semantic search over the documents store — meaning, not keywords, across 90+ ingested file formats.</em></p>
+
+<!-- markdownlint-enable MD013 -->
+
+---
+
+## Token economy
+
+basemind tools return **paths, line numbers, and signatures — not file bodies** — so a structural
+answer costs a fraction of the tokens of reading source. The live statusline surfaces the payoff:
+estimated tokens saved vs a grep + read baseline.
+
+### Operating discipline
+
+The plugin ships token discipline as the agent's default (carried in the MCP server instructions, the
 `basemind` skill, and the SessionStart hook):
 
 - `outline` a file before opening it — then read only the span you need.
@@ -66,36 +94,26 @@ the agent's default operating discipline (carried in the MCP server instructions
 - `rescan` after edits instead of reconnecting the server.
 - Don't re-read a file basemind already mapped.
 
-The plugin also ships a PreToolUse **guard hook** that reaches the agent at the moment it reaches
-for search: by default (`BASEMIND_GUARD=nudge`) it points `Grep`/`Glob` calls at the matching
-basemind tool, once per session. Set `BASEMIND_GUARD=redirect` to enforce it (the call is blocked
-with a pointer to the basemind tool) or `BASEMIND_GUARD=off` to disable.
+Three hooks enforce this at the tool boundary:
 
-An opt-in PostToolUse **output compressor** (default off) is also shipped: set
-`BASEMIND_COMPRESS_OUTPUT=1` to pipe verbose `Bash` output through `basemind compress-output`
-before the agent sees it. It is fail-open and credential-preserving — output is left untouched on
-any error, on detected credentials, or whenever it would save less than 10%.
+- **Guard** (PreToolUse) — `BASEMIND_GUARD=nudge` (default) points `Grep`/`Glob` at the matching
+  basemind tool once per session; `redirect` blocks the call with a pointer; `off` disables.
+- **Output compressor** (PostToolUse, opt-in) — `BASEMIND_COMPRESS_OUTPUT=1` pipes verbose `Bash`
+  output through `basemind compress-output`. Fail-open and credential-preserving (left untouched on
+  any error, on detected credentials, or <10% savings).
+- **Read-cache delta** (PostToolUse, opt-in) — `BASEMIND_DELTA_READS=1` serves a compact `basemind
+  delta` line-diff when an agent re-reads a file it already read this session. Fail-open.
 
-An opt-in PostToolUse **read-cache delta** (default off) is shipped alongside it: set
-`BASEMIND_DELTA_READS=1` to serve a compact `basemind delta` line-diff when an agent re-reads a file
-it already read this session, saving the tokens of a full re-read. It is fail-open — the full read
-stands on any error, on a first read, or whenever the diff is not meaningfully smaller.
+### Compression
 
-The live statusline surfaces the payoff: estimated tokens saved vs a grep + read baseline.
-
----
-
-## Token reduction
-
-basemind reduces tokens via **code-aware structural compression**, not lossy prose-style dropping. The
-`compress` tool handles both: for source code it returns signatures + imports (no file bodies) via the L1
-outline; for prose text it applies lexical passes (whitespace collapse, conservative filler removal, paragraph dedup).
-Both yield honest before/after token counts and byte-for-byte integrity on code.
-
-**Why this matters:** tools that prune tokens via LM-based pruning or aggressive phrase removal sacrifice code
-correctness (a function signature is useless without its shape). basemind's approach leverages the tree-sitter
-code map to understand structure — what's a symbol vs a comment vs a docstring — so compression never corrupts
-working code.
+basemind compresses via **code-aware structural elision**, not lossy prose dropping — because a
+function signature is useless without its shape. The `compress` tool returns signatures + imports (no
+bodies) from the L1 outline for source code, and a lexical pass (whitespace collapse, conservative
+filler removal, paragraph dedup) for prose, with honest before/after token counts and byte-for-byte
+integrity on code. `expand` is the companion: it pulls one symbol's full body back from the L1 byte
+range — compress to outline, expand only what you need. A soft per-call `target_tokens` hint is
+accepted today. `compress` / `expand` are MCP tools; the CLI-side compression primitives are
+`compress-output` and `delta` (the hook backends above).
 
 Compare against the current landscape:
 
@@ -112,8 +130,9 @@ Compare against the current landscape:
 
 <!-- markdownlint-enable MD013 -->
 
-**Roadmap:** per-call `max_tokens` budgets, semantic prose reduction (via kreuzberg), and MCP tool-schema
-compression (struct/field trimming for deeply-nested responses) land in the next release.
+**Roadmap:** hard `max_tokens` caps (beyond today's soft `target_tokens` hint), semantic prose
+reduction (via kreuzberg), and MCP tool-schema compression (struct/field trimming for deeply-nested
+responses).
 
 ---
 
@@ -140,7 +159,7 @@ flowchart LR
   end
   subgraph store[".basemind/ · content-addressed"]
     BLOB["msgpack blob store"]
-    IDX["Fjall LSM<br/>inverted index"]
+    IDX["Fjall LSM<br/>index · memory · proposals"]
     VEC["LanceDB vectors<br/>documents · memory"]
   end
   subgraph serve["basemind serve · MCP + CLI"]
@@ -226,48 +245,47 @@ flowchart TB
 
 ---
 
-## Quickstart
+## Installation
 
 basemind indexes ~81k files in ~22s and answers symbol/reference queries in sub-millisecond time —
 see [Performance](#performance) for the full benchmarks.
 
+There are three ways to run basemind, in order of how much they wire up for you — **as a plugin**,
+**as an MCP server**, or **as a CLI**. All three share the same on-disk `.basemind/` index and are
+safe to run side by side (the plugin/server watch and incrementally update the index; the CLI opens
+it read-only).
+
+### Install the binary
+
+The MCP-server and CLI paths need the `basemind` binary on your `PATH`. **The plugin path downloads
+it automatically on first use** (verified checksums) — skip this step if you install via a plugin.
+
 <!-- markdownlint-disable MD013 -->
 
-<p align="center"><img src="docs/media/mcp-demo.gif" alt="basemind in a Claude Code session: an agent answers a question with outline + find_references — structured results, not file reads" width="900"></p>
-
-<p align="center"><em>An agent reasoning from structure — <code>outline</code> + <code>find_references</code> in a live Claude Code session, the statusline tracking tokens saved.</em></p>
-
-<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI demo: scan a repo, then query symbols, references, call graphs, git blame, and the token-savings dashboard" width="800"></p>
-
-<p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / call-graph / blame queries and the token-savings dashboard.</em></p>
-
-<p align="center"><img src="docs/media/semantic-demo.gif" alt="basemind semantic search: an agent searches indexed documents by meaning, not keywords, over the documents store" width="900"></p>
-
-<p align="center"><em>Semantic search over the documents store — meaning, not keywords, across 90+ ingested file formats.</em></p>
+| Channel | Command | Platforms | Features |
+|---|---|---|---|
+| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | documents + memory + crawl |
+| npm | `npm install -g basemind` | any Node 14+ platform | documents + memory + crawl |
+| pip | `pip install basemind` | any Python 3.8+ platform | documents + memory + crawl |
+| cargo | `cargo install basemind --locked` | any Rust platform | base |
+| cargo (full) | `cargo install basemind --features full --locked` | any Rust platform | documents + memory + crawl |
+| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | documents + memory + crawl |
 
 <!-- markdownlint-enable MD013 -->
 
-**Install in one line** (full reference in the [Installation](#installation) section):
+Prebuilt binaries (npm / pip / brew / GH releases) ship the full feature set — 90+ document formats,
+OCR, embeddings, reranker, semantic search, web crawl, shared memory — so first run downloads the ML
+models over the network. `cargo install` without `--features full` builds the base code-map + git
+tier only.
 
-```bash
-npm install -g basemind        # or: pip install basemind, cargo install basemind --locked
-```
+### As a plugin (recommended)
 
-For the Claude Code plugin, paste these into the **Claude Code session** (not your shell):
+The plugin is the richest install: it bundles the MCP server (auto-downloading the binary above on
+first use), the `basemind` / `basemind-cli` / `basemind-comms` skills, the agent-comms hooks, and
+the slash commands. Pick your harness.
 
-```text
-/plugin marketplace add Goldziher/basemind
-/plugin install basemind@basemind
-```
-
-Choose the path that fits your workflow. Both paths use the same on-disk index at `.basemind/`.
-
-### Path A: MCP plugin (Claude Code and other harnesses)
-
-MCP (Model Context Protocol) runs the basemind server in-process and exposes all tools as
-in-session function calls. Zero config — install and start using tools immediately.
-
-#### Claude Code
+<details>
+<summary><strong>Claude Code</strong></summary>
 
 In the Claude Code session (not your shell), run these two slash commands in order — the first
 registers the marketplace, the second installs the plugin:
@@ -277,77 +295,386 @@ registers the marketplace, the second installs the plugin:
 /plugin install basemind@basemind
 ```
 
-Restart the session after installing. The basemind binary installs automatically on first use
-(via npx, uvx, or direct download with verified checksums) — no manual `cargo install` needed.
-Prebuilt binaries ship with the full feature set enabled (96 document formats, OCR, embeddings,
-reranker, semantic search, web crawl, shared memory), so first use downloads ML models over the
-network; binaries are larger as a result.
+Restart the session afterwards. Run `/bm-statusline` once to enable the live statusline (a one-time
+opt-in — Claude Code plugins cannot set the main statusline themselves; see [Statusline](#statusline)).
 
-To enable the optional live statusline (showing context % and per-capability metrics), run `/bm-statusline` once.
-This is a one-time opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation.
-See the [Statusline](#statusline) section for details.
+</details>
 
-#### Any MCP client (Cursor, Codex, Gemini, OpenCode, Continue, Cline, etc.)
+<details>
+<summary><strong>Codex (CLI &amp; app)</strong></summary>
+
+basemind ships a Codex plugin — `.codex-plugin/plugin.json` plus a Codex-native
+`.agents/plugins/marketplace.json` (skills, MCP server, hooks). In the CLI, register the marketplace
+and install:
 
 ```bash
-cargo install basemind --features full --locked
+codex plugin marketplace add Goldziher/basemind
+codex plugin add basemind@basemind
 ```
 
-Add to your MCP config:
+In the Codex app, open **Plugins** in the sidebar and add basemind. The CLI and IDE extension share
+`~/.codex/config.toml`, so the raw [MCP server](#as-an-mcp-server) path works too.
+
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+basemind ships a Cursor plugin (`.cursor-plugin/plugin.json` — skills + MCP server). In Cursor Agent
+chat, install it from the marketplace (once listed):
+
+```text
+/add-plugin basemind
+```
+
+Or add it as a team marketplace — **Dashboard → Settings → Plugins → Team Marketplaces → Add
+Marketplace → Import from Repo**, pointed at `https://github.com/Goldziher/basemind`. Prefer no
+marketplace step? Use the [MCP server](#as-an-mcp-server) path below.
+
+</details>
+
+<details>
+<summary><strong>Factory Droid</strong></summary>
+
+```bash
+droid plugin marketplace add https://github.com/Goldziher/basemind
+droid plugin install basemind@basemind
+```
+
+Or use the `/mcp` manager / raw config — see [Factory Droid under MCP server](#as-an-mcp-server).
+
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini extensions install https://github.com/Goldziher/basemind
+```
+
+Installs the basemind extension (`gemini-extension.json`) — the MCP server, the `GEMINI.md` context
+file, and the SessionStart / per-turn comms hooks. Update later with `gemini extensions update basemind`.
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+```bash
+copilot plugin marketplace add Goldziher/basemind
+copilot plugin install basemind@basemind
+```
+
+Or register the raw server with `/mcp add` — see [GitHub Copilot CLI under MCP server](#as-an-mcp-server).
+
+</details>
+
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+Add the npm plugin to `opencode.json` (project root) or `~/.config/opencode/opencode.json` (global):
+
+```json
+{
+  "plugin": ["basemind-opencode@latest"]
+}
+```
+
+The `basemind-opencode` package ships the skills + slash commands and registers the MCP server.
+
+</details>
+
+<details>
+<summary><strong>Kimi Code</strong></summary>
+
+```text
+/plugins install https://github.com/Goldziher/basemind
+```
+
+Installs the plugin from `kimi.plugin.json` — the MCP server (auto-downloading the binary on first
+use) plus the basemind skills, loaded at session start. Or run `/plugins`, open **Marketplace**, and
+install basemind. Kimi plugin manifests don't carry hooks, so the agent-comms auto-injection isn't
+wired here (the MCP `room_*` tools still work).
+
+</details>
+
+<details>
+<summary><strong>Antigravity</strong></summary>
+
+Antigravity (CLI &amp; IDE) shares one MCP config at `~/.gemini/config/mcp_config.json` (or **Settings
+→ Customizations → Add MCP+**). [Install the binary](#install-the-binary) first, then:
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+If you already use the Gemini extension, `agy plugin import gemini` pulls its MCP registrations across.
+
+</details>
+
+<details>
+<summary><strong>pi</strong></summary>
+
+```bash
+pi install git:github.com/Goldziher/basemind
+```
+
+Loads the basemind skills + a session-start bootstrap (the repo-root `package.json` `pi` manifest and
+`.pi/extensions/basemind.ts`). pi has no native MCP, so basemind runs through its **CLI** here
+(`basemind query …` via pi's `bash` tool — see [As a CLI](#as-a-cli)); to expose the MCP tools,
+register `basemind serve` in `<cwd>/.pi/mcp.json` with a pi MCP extension.
+
+</details>
+
+### As an MCP server
+
+If your client speaks MCP but you are not using the basemind plugin, register the stdio server
+yourself. [Install the binary](#install-the-binary) first, then add this — the command is `basemind`
+and the only argument is `serve`:
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+If `basemind` is not on your `PATH`, use the absolute path from `which basemind`. Per-client
+specifics:
+
+<details>
+<summary><strong>Claude Code</strong></summary>
+
+```bash
+claude mcp add basemind -- basemind serve                # this project (local scope)
+claude mcp add --scope user basemind -- basemind serve   # all your projects
+```
+
+The `--` separator is required — everything after it is the command and its args. Or commit a
+project-shared `.mcp.json` at the repo root:
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "type": "stdio", "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Cursor</strong></summary>
+
+`.cursor/mcp.json` (this project) or `~/.cursor/mcp.json` (all projects):
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+The command must be on `PATH` or an absolute path. Cursor asks to approve MCP tools on first use.
+
+</details>
+
+<details>
+<summary><strong>Windsurf</strong></summary>
+
+Edit `~/.codeium/windsurf/mcp_config.json` (or **Cascade panel → MCP servers → manage**):
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+Click **Refresh** in the Cascade MCP panel after saving.
+
+</details>
+
+<details>
+<summary><strong>Codex (CLI &amp; IDE)</strong></summary>
+
+```bash
+codex mcp add basemind -- basemind serve
+```
+
+The `--` separator is required. This writes to `~/.codex/config.toml`, which the CLI and the IDE
+extension share:
+
+```toml
+[mcp_servers.basemind]
+command = "basemind"
+args = ["serve"]
+```
+
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini mcp add basemind basemind serve
+```
+
+Or edit `~/.gemini/settings.json` (or project `.gemini/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+Run `/mcp add` inside a Copilot CLI session (Tab between fields, **Ctrl+S** to save), or edit
+`~/.copilot/mcp-config.json`:
 
 ```json
 {
   "mcpServers": {
     "basemind": {
+      "type": "local",
       "command": "basemind",
-      "args": ["serve"]
+      "args": ["serve"],
+      "tools": ["*"]
     }
   }
 }
 ```
 
-Each harness has setup instructions in the [Installation](#installation) section.
+The `tools` key is required; `["*"]` exposes all basemind tools.
 
-### Path B: CLI + skill (scriptable, headless, CI)
+</details>
 
-Use the standalone `basemind` CLI binary and the `basemind-cli` skill for query-driven exploration.
-Same index, same tools, different interface — faster for scripting and batch operations.
+<details>
+<summary><strong>Factory Droid</strong></summary>
 
 ```bash
-# Install the binary
-npm install -g basemind    # or: pip install basemind, cargo install basemind, brew install Goldziher/tap/basemind
-basemind scan               # index the working tree once
+droid mcp add basemind "basemind serve"
 ```
 
-Then use the CLI:
+Or use the `/mcp` manager inside droid, or edit `~/.factory/mcp.json` (user) or `.factory/mcp.json`
+(project):
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "type": "stdio", "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Cline</strong></summary>
+
+Click the **MCP Servers** icon → **Configure** → **Configure MCP Servers**, then add to
+`cline_mcp_settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Continue</strong></summary>
+
+Create `.continue/mcpServers/basemind.yaml` (MCP works in **agent** mode):
+
+```yaml
+name: basemind
+version: 0.0.1
+schema: v1
+mcpServers:
+  - name: basemind
+    type: stdio
+    command: basemind
+    args:
+      - serve
+```
+
+</details>
+
+<details>
+<summary><strong>OpenCode (raw MCP, without the plugin)</strong></summary>
+
+Add to `opencode.json` — note the key is `mcp` and `command` is an array:
+
+```json
+{
+  "mcp": {
+    "basemind": {
+      "type": "local",
+      "command": ["basemind", "serve"],
+      "enabled": true
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><strong>Any other MCP client</strong></summary>
+
+basemind speaks MCP over stdio. Point your client's server config at the command `basemind` with
+args `["serve"]` (the generic block above). Anything that can launch a stdio MCP subprocess works.
+
+</details>
+
+### As a CLI
+
+The standalone binary plus the `basemind-cli` skill — for scripting, headless runs, and CI. Same
+`.basemind/` index and the same tools as MCP, driven from the shell. [Install the
+binary](#install-the-binary), then:
 
 ```bash
+basemind scan                                 # index the working tree once
 basemind query outline path/file.rs           # inspect file structure
-basemind query symbol "parseQuery"            # find symbol by name
+basemind query symbol "parseQuery"            # find a symbol by name
 basemind query references "processFile"       # find all call sites
-basemind git blame-file src/main.rs           # show per-line blame
-basemind cache stats                          # cache stats
+basemind git blame-file src/main.rs           # per-line blame
 basemind cache gc                             # reclaim orphaned blobs
-basemind rescan                               # full re-index (rebuild a stale/empty index)
 basemind rescan src/main.rs                   # incremental re-index of one path
-basemind watch --no-serve                     # live re-index on file change (no MCP server)
+basemind watch                                # live re-index on change (no MCP server)
 ```
 
-Add the `basemind-cli` skill to route CLI commands efficiently.
 See the [CLI command reference](#cli-command-reference) below for the full command surface.
 
 ### MCP vs CLI
 
-Both paths share the same `.basemind/` index and are safe to run alongside each other (the CLI opens
-the index read-only; `basemind serve` watches and incrementally updates in the background).
+- **MCP**: wired as in-session tool calls. Zero config beyond registration. Best for interactive
+  agent workflows.
+- **CLI**: scriptable, headless, CI-friendly. Best for batch queries, integration into non-MCP
+  harnesses, and when you want to control tool routing explicitly.
 
-- **MCP**: Wired as in-session tool calls. Zero config. Best for interactive agent workflows.
-- **CLI**: Scriptable, headless, CI-friendly. Best for batch queries, integration into non-MCP harnesses,
-  and when you want to control the tool routing explicitly.
+The choice is not exclusive — the CLI opens the index read-only while `basemind serve` watches and
+incrementally updates it, so use MCP for interactive sessions and the CLI for scripting in the same
+repo at the same time.
 
-The choice is not binary — use MCP for interactive sessions and CLI for scripting in the same repo.
-
-#### Statusline
+### Statusline
 
 To enable the live statusline in Claude Code (MCP only), run `/bm-statusline` once. This is a one-time
 opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation, not a basemind choice:
@@ -546,6 +873,15 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `delete <key>` | Delete a key. |
 | `search-documents <query>` | Semantic search over documents + memory (scoped to repo). |
 
+### Governance commands (`basemind governance`)
+
+| Command | Purpose |
+|---|---|
+| `mine [--commits --min-count --min-confidence --max-files]` | Mine co-change skill/memory proposals from recent git history. |
+| `proposals [--kind --limit]` | List pending proposals (filter by `skill` / `memory`). |
+| `accept <id> [--key]` | Accept a proposal and promote it to a searchable memory. |
+| `reject <id> [--reason]` | Reject a proposal and suppress it from future mining. |
+
 ### Cache commands (`basemind cache`)
 
 | Command | Purpose |
@@ -581,43 +917,19 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | Command | Purpose |
 |---|---|
 | `scan` | Full index scan. |
-| `watch [--no-serve]` | Live re-index on file change. Run `--no-serve` for continuous background watch without the MCP server. |
-| `serve [--no-watch]` | Start the MCP server. By default, watches and incrementally refreshes the index in the background. Run `--no-watch` to disable for very large repos or CI. |
-| `init` | Initialize a `.basemind/` directory (optional — `scan` creates it). |
+| `watch` | Live re-index on file change — standalone watcher, no MCP server. |
+| `serve [--no-watch]` | Start the MCP server. By default watches and incrementally refreshes the index in the background; `--no-watch` disables it for very large repos or CI. |
+| `init` | Initialize a `.basemind/` directory with a default config (optional — `scan` creates it). |
+| `lang <list\|install\|clean>` | Manage downloaded tree-sitter grammars (show / force-download / clear cache). |
+| `hook install` | Install a git pre-commit hook that runs `basemind scan`. |
+| `compress-output` | Compress verbose command output from stdin (output-compressor hook backend; fail-open, credential-preserving). |
+| `delta --old <path>` | Emit a compact line-diff from a prior file version (read-cache hook backend). |
 | `telemetry` | Show per-tool telemetry histogram + estimated tokens saved. |
 
 <!-- markdownlint-enable MD013 -->
 
 ---
 
-## Installation
+## License
 
-<!-- markdownlint-disable MD013 -->
-
-| Channel | Command | Platforms | Features |
-|---|---|---|---|
-| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | documents + memory + crawl |
-| npm | `npm install -g basemind` | any Node 14+ platform | documents + memory + crawl |
-| pip | `pip install basemind` | any Python 3.8+ platform | documents + memory + crawl |
-| cargo | `cargo install basemind --locked` | any Rust platform | base |
-| cargo (full) | `cargo install basemind --features full --locked` | any Rust platform | documents + memory + crawl |
-| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | documents + memory + crawl |
-
-<!-- markdownlint-enable MD013 -->
-
-<details>
-<summary><strong>Harness-specific setup</strong></summary>
-
-| Harness | Install command |
-|---|---|
-| Claude Code | `/plugin marketplace add Goldziher/basemind` then `/plugin install basemind@basemind` |
-| Cursor | See Cursor docs for plugin install flow; `basemind` manifest at `.cursor-plugin/plugin.json` |
-| Codex CLI | `codex plugin marketplace add Goldziher/basemind` then install `basemind` via `/plugins` |
-| Codex App | Plugins panel → Developer Tools category → basemind → `+` |
-| Gemini CLI | `gemini extensions install https://github.com/Goldziher/basemind` |
-| OpenCode | Add `{ "plugin": ["basemind-opencode@latest"] }` to `opencode.json` |
-| Factory Droid | `droid plugin --help` (manifest at `.claude-plugin/marketplace.json`) |
-| GitHub Copilot CLI | `copilot plugin --help` (same manifest) |
-| Generic MCP | See "Any MCP client" section above |
-
-</details>
+MIT — see [LICENSE](LICENSE).
