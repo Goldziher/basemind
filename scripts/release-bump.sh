@@ -19,6 +19,7 @@
 #   .codex-plugin/plugin.json             "version"
 #   .cursor-plugin/plugin.json            "version"
 #   gemini-extension.json                 "version"
+#   kimi.plugin.json                      "version" (Kimi Code plugin manifest)
 #
 # If the minor component changed, RELEASE_MINOR is also bumped to track. Patch-only
 # bumps leave RELEASE_MINOR alone so existing user caches don't wipe on patch upgrade.
@@ -92,6 +93,7 @@ bump_json_version .claude-plugin/plugin.json
 bump_json_version .codex-plugin/plugin.json
 bump_json_version .cursor-plugin/plugin.json
 bump_json_version gemini-extension.json
+bump_json_version kimi.plugin.json
 bump_json_version .claude-plugin/marketplace.json
 bump_json_version .agents/plugins/marketplace.json
 
@@ -201,6 +203,14 @@ if [ -f gemini-extension.json ]; then
   gemini_version="$(jq -r '.version' gemini-extension.json 2>/dev/null || echo '')"
   if [ "$gemini_version" != "$VERSION" ]; then
     echo "✗ gemini-extension.json: expected $VERSION, got $gemini_version"
+    validation_failed=1
+  fi
+fi
+
+if [ -f kimi.plugin.json ]; then
+  kimi_version="$(jq -r '.version' kimi.plugin.json 2>/dev/null || echo '')"
+  if [ "$kimi_version" != "$VERSION" ]; then
+    echo "✗ kimi.plugin.json: expected $VERSION, got $kimi_version"
     validation_failed=1
   fi
 fi
