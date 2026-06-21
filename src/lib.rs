@@ -26,6 +26,7 @@ pub mod scanner;
 pub mod scanner_docs;
 pub mod store;
 pub mod store_gc;
+pub mod textcompress;
 #[cfg(feature = "crawl")]
 pub mod url;
 pub mod version;

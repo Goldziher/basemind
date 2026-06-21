@@ -92,6 +92,9 @@ enum Cmd {
         #[command(subcommand)]
         action: LangCmd,
     },
+    /// Compress verbose command output read from stdin into a compact summary,
+    /// failing open (raw passthrough) on errors and preserving credentials.
+    CompressOutput(basemind::textcompress::cli::CompressOutputArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
@@ -340,6 +343,7 @@ fn main() -> Result<()> {
             LangCmd::Install => cmd_lang_install(verbosity, no_color),
             LangCmd::Clean => cmd_lang_clean(),
         },
+        Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(all(feature = "comms", unix))]

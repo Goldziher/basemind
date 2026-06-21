@@ -31,7 +31,10 @@ repos:
       - id: detect-private-key
         # src/a2a/mod.rs TLS tests write a bare PEM begin-marker line (no key
         # material) to assert the loader rejects malformed key files.
-        exclude: ^src/a2a/mod\.rs$
+        # src/textcompress/{safety,mod}.rs hold the credential-detection regexes
+        # and their tests — they intentionally contain PEM header patterns (no key
+        # material) so the output compressor never leaks a real key.
+        exclude: ^(src/a2a/mod\.rs|src/textcompress/(safety|mod)\.rs)$
       - id: check-case-conflict
       - id: check-executables-have-shebangs
         # run-hook.cmd is an intentional cmd/bash polyglot: executable on Unix
