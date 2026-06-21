@@ -19,15 +19,12 @@ use super::types::{
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
     #[tool(
-        description = "Refresh basemind's index by running the scanner in-process. \
-            Walks the working tree (or only the supplied `paths`), re-parses changed files, \
-            updates the Fjall index, and rebuilds the in-RAM map cache. \
-            Holds an exclusive lock for the duration of the scan — other MCP queries block \
-            until it returns. Cheap on small repos (<1s for ~100 files). Use after editing \
-            code when you need new symbols / calls / outlines to show up without restarting \
-            the MCP server. Pass `full: true` to force a complete re-index when the index is \
-            stale or reports 'no indexed files' (a full scan overrides any `paths`). \
-            Returns scanned / updated / removed counts and elapsed time."
+        description = "Re-scan the working tree (or only `paths`) in-process: re-parses changed \
+            files, updates the Fjall index, rebuilds the in-RAM cache. Holds an exclusive lock — \
+            other MCP queries block until it returns (<1s for ~100 files). Use after editing code \
+            to surface new symbols/calls/outlines without restarting. `full: true` forces a \
+            complete re-index (overrides `paths`) when the index is stale or 'no indexed files'. \
+            Returns scanned / updated / removed counts + elapsed time."
     )]
     pub(crate) async fn rescan(
         &self,
@@ -42,13 +39,10 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Aggregate `.basemind/telemetry.jsonl` into a usage summary: \
-            total tool calls, per-tool histogram, total response bytes, and \
-            estimated tokens saved vs the disclosed grep+Read baseline. Optional \
-            `window` (`today` default, `1h`, `24h`, `all`) and `tool` filter. \
-            The `est_tokens_saved` numbers are heuristics — every row carries a \
-            `saved_baseline` label disclosing the assumption. Pairs with the \
-            shipped `plugins/basemind/statusline.sh` and the `/basemind-stats` skill."
+        description = "Aggregate `.basemind/telemetry.jsonl` into a usage summary: total tool \
+            calls, per-tool histogram, total response bytes, estimated tokens saved vs the \
+            grep+Read baseline. Optional `window` (`today` default, `1h`, `24h`, `all`) and `tool` \
+            filter. `est_tokens_saved` is heuristic — each row carries a `saved_baseline` label."
     )]
     pub(crate) async fn telemetry_summary(
         &self,
@@ -69,11 +63,10 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Report on-disk size + blob accounting for the `.basemind/` cache. \
-            Returns recursive byte sizes per component (blobs / views / lance / git-cache / \
-            telemetry), the total blob-file count, the orphaned-blob count (blobs no view \
-            references — reclaimable via `cache_gc`), and per-view indexed file counts. \
-            Read-only; safe to run anytime."
+        description = "On-disk size + blob accounting for the `.basemind/` cache: recursive byte \
+            sizes per component (blobs / views / lance / git-cache / telemetry), total blob-file \
+            count, orphaned-blob count (unreferenced, reclaimable via `cache_gc`), and per-view \
+            indexed file counts. Read-only; safe anytime."
     )]
     pub(crate) async fn cache_stats(
         &self,
@@ -96,12 +89,11 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Garbage-collect orphaned extraction blobs from `.basemind/blobs/`. \
-            Blobs are content-addressed and shared across views; re-scans and branch switches \
-            leave behind blobs that no view's index references anymore. This mark-and-sweep \
-            reclaims exactly those orphans (referenced blobs are never touched). Runs \
-            in-process under the live server's lock — safe to run anytime, including against a \
-            busy server. Returns scanned / removed / bytes_freed counts."
+        description = "Garbage-collect orphaned extraction blobs from `.basemind/blobs/`. Blobs are \
+            content-addressed and shared across views; re-scans and branch switches orphan blobs \
+            no view references. Mark-and-sweep reclaims only those (referenced blobs untouched). \
+            Runs under the live server's lock — safe anytime. Returns scanned / removed / \
+            bytes_freed counts."
     )]
     pub(crate) async fn cache_gc(
         &self,
@@ -123,15 +115,12 @@ impl BasemindServer {
         __result
     }
 
-    #[tool(description = "Clear a whole `.basemind/` cache component: \
-            `blobs|views|lance|git-cache|telemetry|all`. The non-live caches \
-            (`git-cache`, `telemetry`, `lance`) clear freely. `blobs` backs the code map but is \
-            content-addressed files (not an open handle), so it requires `confirm=true` and an \
-            in-process rescan rebuilds it afterwards. `views` and `all` remove the live Fjall \
-            index (and, for `all`, the lock) out from under the running server, so they are \
-            refused in-process — stop the server and run \
-            `basemind cache clear --component views|all` instead. Returns the targeted \
-            component and whether it was cleared.")]
+    #[tool(description = "Clear a `.basemind/` cache component: \
+            `blobs|views|lance|git-cache|telemetry|all`. Non-live caches (`git-cache`, \
+            `telemetry`, `lance`) clear freely. `blobs` needs `confirm=true` (an in-process \
+            rescan rebuilds it). `views`/`all` would yank the live Fjall index from under the \
+            server, so they are refused in-process — stop it and run `basemind cache clear \
+            --component views|all`. Returns the component and whether it was cleared.")]
     pub(crate) async fn cache_clear(
         &self,
         Parameters(p): Parameters<CacheClearParams>,

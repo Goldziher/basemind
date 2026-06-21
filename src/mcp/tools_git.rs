@@ -18,9 +18,9 @@ use super::types::*;
 impl BasemindServer {
     /// `git status --porcelain` shape for an agent.
     #[tool(
-        description = "Return what's dirty in the working tree: staged adds/modifies/deletes, \
-                       working-tree modifications, and untracked files. `is_clean: true` if all five \
-                       buckets are empty. Requires `basemind serve` to be run inside a git repository."
+        description = "What's dirty in the working tree: staged adds/modifies/deletes, working-tree \
+                       modifications, untracked files. `is_clean: true` if all five buckets are \
+                       empty. Requires a git repo."
     )]
     pub(crate) async fn working_tree_status(
         &self,
@@ -60,12 +60,11 @@ impl BasemindServer {
 
     /// Walk HEAD ancestry and return the last N commits.
     #[tool(
-        description = "Last N commits on the current branch, newest first. Each commit comes with \
-                       sha, summary (first line of message), author, unix timestamp, and — when \
-                       `include_files=true` (default) — the per-file change list relative to its first \
-                       parent. `limit` is the page size (default 20, max 100). Pass `cursor` from a \
-                       previous response to fetch the next page; cursors invalidate when HEAD moves \
-                       (caller restarts on `cursor_invalidated`). Cached by HEAD sha."
+        description = "Last N commits on the current branch, newest first. Each: sha, summary \
+                       (first message line), author, unix timestamp, and — when \
+                       `include_files=true` (default) — the per-file change list vs first parent. \
+                       `limit` is page size (default 20, max 100). `cursor` pages results \
+                       (invalidate when HEAD moves, `cursor_invalidated`). Cached by HEAD sha."
     )]
     pub(crate) async fn recent_changes(
         &self,
@@ -139,10 +138,10 @@ impl BasemindServer {
 
     /// Filter the log to commits whose tree differs from the parent at `path`.
     #[tool(
-        description = "Commits that modified `path`, newest first. Returns the same per-commit \
-                       shape as `recent_changes` without the per-file list (the path is implicit). \
-                       `limit` is the page size (default 20, max 100). Pass `cursor` from a previous \
-                       response to fetch the next page; cursors invalidate when HEAD moves."
+        description = "Commits that modified `path`, newest first. Same per-commit shape as \
+                       `recent_changes` minus the per-file list (path is implicit). `limit` is \
+                       page size (default 20, max 100). `cursor` pages results (invalidate when \
+                       HEAD moves)."
     )]
     pub(crate) async fn commits_touching(
         &self,
@@ -215,10 +214,9 @@ impl BasemindServer {
 
     /// Symbol-level diff between the served view and another rev.
     #[tool(
-        description = "Diff the symbol set of `path` between the current view and another revision \
-                       (`rev`, defaults to HEAD). Returns three lists: `added` (in the current view, \
-                       not at `rev`), `removed` (at `rev`, not in current view), and `common`. Useful \
-                       for 'what symbols did this branch add' style questions without reading source."
+        description = "Diff the symbol set of `path` between the current view and `rev` (default \
+                       HEAD): `added` (in view, not at `rev`), `removed` (at `rev`, not in view), \
+                       `common` — 'what symbols did this branch add' without reading source."
     )]
     pub(crate) async fn diff_outline(
         &self,
@@ -364,12 +362,11 @@ impl BasemindServer {
 
     /// Cheap pickaxe: regex over changed file paths in HEAD ancestry.
     #[tool(
-        description = "Walk recent commits (default last 200, max 1000) and return those whose \
-                       changed-file list contains any path matching the regex `pattern`. Cheaper \
-                       than `git log -G` because we only match paths, not patch text. `limit` is \
-                       the page size (default 50, max 500). Pass `cursor` from a previous response \
-                       to fetch the next page; cursors invalidate when HEAD moves. Cached via \
-                       the same `commit_files` cache as `recent_changes`."
+        description = "Recent commits (default last 200, max 1000) whose changed-file list has a \
+                       path matching the regex `pattern`. Matches paths only, not patch text \
+                       (cheaper than `git log -G`). `limit` is page size (default 50, max 500). \
+                       `cursor` pages results (invalidate when HEAD moves). Shares the \
+                       `recent_changes` commit-files cache."
     )]
     pub(crate) async fn find_commits_by_path(
         &self,
@@ -455,9 +452,8 @@ impl BasemindServer {
     /// Most-changed files in a recent commit window.
     #[tool(
         description = "Top-K files most-frequently modified in the last `window` commits on the \
-                       current branch (default 200, max 2000). Each entry returns the per-kind \
-                       breakdown (added/modified/deleted). Useful for a churn map of where the \
-                       activity is concentrated."
+                       current branch (default 200, max 2000). Each entry: per-kind breakdown \
+                       (added/modified/deleted) — a repo churn map."
     )]
     pub(crate) async fn hot_files(
         &self,
@@ -528,10 +524,10 @@ impl BasemindServer {
 
     /// Content-level diff between two revs for one file.
     #[tool(
-        description = "Hunks for `path` between `rev_old` and `rev_new`. Each hunk reports old/new \
-                       1-based line ranges plus the changed text (lines prefixed with '-'/'+' for \
-                       modifications). When the file is absent on one side, `present_at_old` or \
-                       `present_at_new` indicates so and hunks describe the full add/remove."
+        description = "Hunks for `path` between `rev_old` and `rev_new`. Each hunk: old/new 1-based \
+                       line ranges plus changed text ('-'/'+' prefixed). If the file is absent on \
+                       one side, `present_at_old` / `present_at_new` flag it and hunks describe \
+                       the full add/remove."
     )]
     pub(crate) async fn diff_file(
         &self,
@@ -584,11 +580,10 @@ impl BasemindServer {
 
     /// Tree-sitter × git: commits where a specific symbol's body changed.
     #[tool(
-        description = "List commits where the named symbol's body bytes changed (or where it was \
-                       added/removed). Combines tree-sitter outline extraction with the commit log: \
-                       a `recent_changes` filtered by symbol identity rather than file identity. \
-                       `limit` is the page size (default 20, max 100). Pass `cursor` from a \
-                       previous response to fetch the next page; cursors invalidate when HEAD moves."
+        description = "Commits where the named symbol's body bytes changed (or it was \
+                       added/removed): `recent_changes` filtered by symbol identity, not file \
+                       identity, via tree-sitter outlines. `limit` is page size (default 20, max \
+                       100). `cursor` pages results (invalidate when HEAD moves)."
     )]
     pub(crate) async fn symbol_history(
         &self,
@@ -730,13 +725,12 @@ impl BasemindServer {
 
     /// Line-level blame, optionally clamped to a 1-based inclusive line range.
     #[tool(
-        description = "Blame the file at the given revision (default HEAD), returning one hunk per \
-                       consecutive run of lines that share a source commit. Optional 1-based \
-                       `line_start`/`line_end` clamp to a range. Each hunk carries commit sha, \
-                       author, unix time, summary, and the renamed source path if applicable. \
-                       Pass `limit` (default unbounded, max 1000) to page through hunks; the \
-                       returned `next_cursor` encodes the last hunk's `start_line`. Cached \
-                       forever by (suspect_sha, path, range)."
+        description = "Blame the file at `rev` (default HEAD): one hunk per consecutive run of \
+                       lines sharing a source commit. Optional 1-based `line_start`/`line_end` \
+                       clamp a range. Each hunk: commit sha, author, unix time, summary, renamed \
+                       source path if any. `limit` (default unbounded, max 1000) pages hunks; \
+                       `next_cursor` encodes the last hunk's `start_line`. Cached by \
+                       (suspect_sha, path, range)."
     )]
     pub(crate) async fn blame_file(
         &self,
@@ -813,12 +807,11 @@ impl BasemindServer {
 
     /// Blame clamped to a specific tree-sitter symbol.
     #[tool(
-        description = "Blame only the lines that belong to a named symbol in a file. Resolves the \
-                       symbol via the cached L1 outline (must be indexed in the current view) and \
-                       feeds its line range to `blame_file`. `kind` disambiguates same-named \
-                       symbols of different kinds. Pass `limit` (default unbounded, max 1000) \
-                       to page through hunks; the returned `next_cursor` encodes the last hunk's \
-                       `start_line`."
+        description = "Blame only the lines of a named symbol in a file. Resolves the symbol via \
+                       the cached L1 outline (must be indexed in the current view) and feeds its \
+                       line range to `blame_file`. `kind` disambiguates same-named symbols. \
+                       `limit` (default unbounded, max 1000) pages hunks; `next_cursor` encodes \
+                       the last hunk's `start_line`."
     )]
     pub(crate) async fn blame_symbol(
         &self,

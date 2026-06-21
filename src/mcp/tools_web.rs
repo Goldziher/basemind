@@ -21,10 +21,9 @@ use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_web")]
 impl BasemindServer {
     #[tool(
-        description = "Fetch a single http/https URL, extract markdown, chunk + embed, write \
-        to the documents vector store (under scope `web:<host>`). Respects robots.txt by \
-        default. Set `index=false` to fetch metadata only without paying the embedding cost. \
-        Use for pulling a known doc / spec / blog post into RAG. \
+        description = "Fetch one http/https URL, extract markdown, chunk + embed into the documents \
+        vector store (scope `web:<host>`). Respects robots.txt by default. `index=false` fetches \
+        metadata only, skipping embedding. Use to pull a known doc/spec/blog post into RAG. \
         Needs --features crawl."
     )]
     pub(crate) async fn web_scrape(
@@ -46,12 +45,10 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Crawl a website starting from `url`, following links up to the configured \
-        depth; index each visited page into the documents vector store under one shared scope. \
-        Bounded by `[crawl].max_pages` / `max_depth` in basemind.toml (per-call overrides are \
-        currently advisory). Respects robots.txt by default. Use when an agent needs a section \
-        of a docs site, not a single page. \
-        Needs --features crawl."
+        description = "Crawl a site from `url` to the configured depth; index each page into the \
+        documents vector store under one shared scope. Bounded by `[crawl].max_pages` / \
+        `max_depth` in basemind.toml (per-call overrides advisory). Respects robots.txt by \
+        default. Use for a section of a docs site, not a single page. Needs --features crawl."
     )]
     pub(crate) async fn web_crawl(
         &self,
@@ -72,10 +69,9 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Discover URLs on a site by sitemap + link map without fetching the page \
-        bodies. Returns each URL with its lastmod / changefreq / priority hints when present. \
-        Use this to scope a follow-up `web_crawl` or to pick targeted `web_scrape` calls. \
-        Needs --features crawl."
+        description = "Discover URLs on a site via sitemap + link map without fetching page bodies. \
+        Returns each URL with lastmod / changefreq / priority hints when present. Use to scope a \
+        follow-up `web_crawl` or pick targeted `web_scrape` calls. Needs --features crawl."
     )]
     pub(crate) async fn web_map(
         &self,

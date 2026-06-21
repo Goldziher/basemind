@@ -21,13 +21,10 @@ use crate::query;
 impl BasemindServer {
     /// File outline: symbols + imports (L1), optionally calls + docs (L2).
     #[tool(
-        description = "Return the structural outline of a file: every symbol with name, kind, \
-                       and start row/column, plus imports. Set `l2: true` to also include calls \
-                       and doc comments (only returned if an L2 blob already exists for the \
-                       file's current content). Optional `max_tokens` bounds the returned \
-                       `symbols` list (not imports/calls/docs); when it drops symbols the \
-                       response sets `budgeted: true`. Optional `format: \"toon\"` returns the \
-                       response as compact TOON (token-saving tabular encoding) instead of JSON."
+        description = "Structural outline of a file: each symbol (name, kind, start row/col) plus \
+                       imports. `l2: true` adds calls + doc comments (only if an L2 blob exists for \
+                       the current content). `max_tokens` budgets the `symbols` list (not \
+                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn outline(
         &self,
@@ -187,17 +184,12 @@ impl BasemindServer {
 
     /// Substring search across symbol names, optionally filtered by kind.
     #[tool(
-        description = "Search every indexed file for symbols whose name contains the `needle` \
-                       argument (substring, case-sensitive). \
-                       Optional `kind` filter (function/struct/class/...). Returns up to `limit` \
-                       (default 100, max 1000) results, each with path + line/column + signature. \
-                       Pass `cursor` from a previous response to fetch the next page; absent \
-                       means no more results. Cursors invalidate on rescan — caller must \
-                       restart when `cursor_invalidated` is set. Optional `max_tokens` bounds \
-                       the response: results are kept best-first until the budget is hit, then \
-                       `budgeted: true` + a `next_cursor` signal the dropped tail is pageable. \
-                       Optional `format: \"toon\"` returns compact TOON (token-saving tabular \
-                       encoding) instead of JSON."
+        description = "Search indexed symbols whose name contains `needle` (case-sensitive \
+                       substring). Optional `kind` filter (function/struct/class/...). Up to \
+                       `limit` hits (default 100, max 1000): path + line/col + signature. \
+                       `cursor` pages results (invalidate on rescan, `cursor_invalidated`). \
+                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`). \
+                       `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn search_symbols(
         &self,
@@ -339,15 +331,11 @@ impl BasemindServer {
 
     /// List indexed files, optionally filtered by path substring and/or language.
     #[tool(
-        description = "List indexed files with their language and size. Optional `path_contains` \
-                       substring filter and `language` filter (rust/python/typescript/tsx/javascript/go). \
-                       Default limit 200, max 5000. Pass `cursor` from a previous response to \
-                       fetch the next page; absent means no more results. Cursors invalidate on \
-                       rescan — caller must restart when `cursor_invalidated` is set. Optional \
-                       `max_tokens` bounds the response: files are kept in order until the \
-                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest. \
-                       Optional `format: \"toon\"` returns compact TOON (token-saving tabular \
-                       encoding) instead of JSON."
+        description = "List indexed files with language + size. Optional `path_contains` substring \
+                       and `language` filter (rust/python/typescript/tsx/javascript/go). Default \
+                       limit 200, max 5000. `cursor` pages results (invalidate on rescan, \
+                       `cursor_invalidated`). `max_tokens` budgets the response (sets `budgeted` \
+                       + `next_cursor`). `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn list_files(
         &self,
@@ -463,8 +451,8 @@ impl BasemindServer {
 
     /// Heuristic reverse-dependency lookup via import statements.
     #[tool(
-        description = "Return the list of indexed files whose imports mention the `module` argument. \
-                       Heuristic — matches by substring against the recorded module path of each import."
+        description = "Indexed files whose imports mention `module`. Heuristic: substring match \
+                       against each import's recorded module path."
     )]
     pub(crate) async fn dependents(
         &self,
@@ -498,8 +486,8 @@ impl BasemindServer {
 
     /// High-level repo + cache state.
     #[tool(
-        description = "Quick report on the repo basemind has indexed: file count, total bytes, \
-                       per-language breakdown, root path, grammar cache directory, schema version."
+        description = "Indexed-repo report: file count, total bytes, per-language breakdown, root \
+                       path, grammar cache directory, schema version."
     )]
     pub(crate) async fn status(
         &self,
@@ -549,18 +537,13 @@ impl BasemindServer {
 
     /// Incoming call sites for any callee whose identifier contains `name`.
     #[tool(
-        description = "List call sites of any function/method whose callee identifier contains \
-                       the `name` argument (case-sensitive substring match). Backed by the Fjall inverted \
-                       index over L2 call captures — returns hits as (path, line, column, exact \
-                       callee). No scope-aware resolution: `Foo::bar()` and `bar()` both match \
-                       name=\"bar\". Returns up to `limit` results (default 100, max 1000); \
-                       scan is bounded by `scan_cap = limit * 8` matching entries. Requires the \
-                       index to have been populated by a scan with `eager_l2=true` (the default). \
-                       Pass `cursor` from a previous response to fetch the next page; absent \
-                       means no more results. Optional `max_tokens` bounds the response: hits \
-                       are kept best-first until the budget is hit, then `budgeted: true` + a \
-                       `next_cursor` page the dropped tail. Optional `format: \"toon\"` returns \
-                       compact TOON (token-saving tabular encoding) instead of JSON."
+        description = "Call sites whose callee identifier contains `name` (case-sensitive \
+                       substring). Fjall-backed over L2 captures; hits are (path, line, column, \
+                       exact callee). Name-only, no scope resolution: `Foo::bar()` and `bar()` \
+                       both match name=\"bar\". Up to `limit` hits (default 100, max 1000); scan \
+                       bounded by `scan_cap = limit * 8`. Needs `eager_l2=true` (default). \
+                       `cursor` pages results. `max_tokens` budgets the response (sets `budgeted` \
+                       + `next_cursor`). `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn find_references(
         &self,
@@ -587,15 +570,11 @@ impl BasemindServer {
 
     /// Callers of a specific definition (path + name + optional kind).
     #[tool(
-        description = "Given a definition (`path` + `name` + optional kind), list every call site \
-                       whose callee identifier matches. Resolves the definition via the symbols \
-                       index first (echoed back in `definition`), then does the same name-based \
-                       scan as `find_references`. Useful when you need to anchor the search on a \
-                       specific symbol rather than a bare name. Same scope-resolution caveat \
-                       applies. Default limit 100, max 1000. Pass `cursor` from a previous \
-                       response to fetch the next page; absent means no more results. Optional \
-                       `max_tokens` bounds the response: hits are kept best-first until the \
-                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest."
+        description = "Call sites of a specific definition (`path` + `name` + optional kind). \
+                       Resolves it via the symbols index (echoed in `definition`), then runs the \
+                       same name-based scan as `find_references` (same name-only, no-scope \
+                       caveat). Default limit 100, max 1000. `cursor` pages results. `max_tokens` \
+                       budgets the response (sets `budgeted` + `next_cursor`)."
     )]
     pub(crate) async fn find_callers(
         &self,
@@ -623,18 +602,13 @@ impl BasemindServer {
 
     /// Regex content search across indexed files.
     #[tool(
-        description = "Regex search across indexed files: the `pattern` argument is Rust regex syntax. Returns line + \
-                       column + matched text plus optional 1-line context. Prefer \
-                       `search_symbols` when the pattern is a plain substring identifier — \
-                       that's index-backed and faster. Bounded by `scan_cap = limit * 8` files; \
-                       pass `language` or `path_contains` to narrow the scan. Default limit 100, \
-                       max 1000. Pass `cursor` from a previous response to fetch the next page; \
-                       absent means no more results. Cursors invalidate on rescan. Optional \
-                       `max_tokens` bounds the response: hits are kept best-first until the \
-                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest \
-                       (the boundary file may re-appear on the next page). Optional \
-                       `format: \"toon\"` returns compact TOON (token-saving tabular encoding) \
-                       instead of JSON."
+        description = "Regex search across indexed files (`pattern` is Rust regex syntax). Returns \
+                       line + column + matched text plus optional 1-line context. Prefer \
+                       `search_symbols` for a plain substring identifier (index-backed, faster). \
+                       Bounded by `scan_cap = limit * 8` files; narrow with `language` / \
+                       `path_contains`. Default limit 100, max 1000. `cursor` pages results \
+                       (invalidate on rescan). `max_tokens` budgets the response (sets `budgeted` \
+                       + `next_cursor`). `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn workspace_grep(
         &self,
@@ -656,18 +630,13 @@ impl BasemindServer {
 
     /// Types / classes that implement, extend, or inherit from a name containing `trait_name`.
     #[tool(
-        description = "Find types that implement, extend, or inherit from the `trait_name` argument \
-                       (a trait / interface / base class). Returns each (trait, implementor, file, line, column) pair. \
-                       Matching: `trait_name` is a case-sensitive substring match against captured \
-                       identifiers (full-partition scan). Covers Rust (`impl Trait for Type`), \
-                       Python (`class Foo(Bar):`), TypeScript / TSX (`class X extends Y`, \
-                       `class X implements Y`, `interface X extends Y`), and JavaScript \
-                       (`class X extends Y`). Go interface satisfaction is structural and not \
-                       detected. Bounded by `scan_cap = limit * 8` — pass `cursor` from a \
-                       previous response to fetch the next page; cursors remain stable across \
-                       rescans (Fjall-backed). Optional `max_tokens` bounds the response: hits \
-                       are kept best-first until the budget is hit, then `budgeted: true` + a \
-                       `next_cursor` page the rest."
+        description = "Types that implement/extend/inherit `trait_name` (trait / interface / base \
+                       class). Returns (trait, implementor, file, line, column). `trait_name` is a \
+                       case-sensitive substring match (full-partition scan). Covers Rust, Python, \
+                       TS/TSX, JS class/interface extends/implements; Go structural satisfaction \
+                       not detected. Bounded by `scan_cap = limit * 8`. `cursor` pages results \
+                       (Fjall-backed, stable across rescans). `max_tokens` budgets the response \
+                       (sets `budgeted` + `next_cursor`)."
     )]
     pub(crate) async fn find_implementations(
         &self,
@@ -695,14 +664,12 @@ impl BasemindServer {
 
     /// Transitive call-graph walk from a root function.
     #[tool(
-        description = "Walk the call graph from a function. `direction=\"callers\"` (default) \
-                       BFS-walks who calls into `name` up to `max_depth` levels; \
-                       `direction=\"callees\"` walks what `name` itself calls. Returns a DAG \
+        description = "BFS the call graph from a function. `direction=\"callers\"` (default) walks \
+                       who calls `name`; `\"callees\"` walks what `name` calls. Returns a DAG \
                        (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
-                       and `max_nodes` (default 100, max 500). Substring-aware? No — `name` is \
-                       an exact match against captured call-site identifiers. Use `path` to \
-                       disambiguate overloaded names. Cycles detected via name-visited set; \
-                       recursive functions surface as a self-edge on the root."
+                       and `max_nodes` (default 100, max 500). `name` is exact (not substring); \
+                       use `path` to disambiguate overloads. Cycles detected; recursion surfaces \
+                       as a self-edge on the root."
     )]
     pub(crate) async fn call_graph(
         &self,
@@ -730,8 +697,8 @@ impl BasemindServer {
 
     /// Workdir + branch + HEAD sha.
     #[tool(
-        description = "Repository identity: workdir path, current branch name (if HEAD is on one), \
-                       full HEAD sha, short HEAD sha. Pairs well with `working_tree_status`."
+        description = "Repository identity: workdir path, current branch (if HEAD is on one), full \
+                       + short HEAD sha. Pairs with `working_tree_status`."
     )]
     pub(crate) async fn repo_info(
         &self,

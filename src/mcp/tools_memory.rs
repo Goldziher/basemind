@@ -28,9 +28,9 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
     #[tool(
-        description = "Persist key-value in scoped memory (scope = git remote URL). \
-        embed=true stores in LanceDB for memory_search. Upsert semantics. \
-        Needs --features memory."
+        description = "Persist a key-value in scoped memory (scope = git remote URL). Upsert \
+        semantics. `embed=true` also stores in LanceDB for `memory_search`. Needs --features \
+        memory."
     )]
     pub(crate) async fn memory_put(
         &self,
@@ -96,10 +96,9 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "List scoped memory entries. prefix is key-prefix filter \
-        (not substring). tag is exact. Values truncated ~200 chars. \
-        Default 100 max 1000. Pass `cursor` from a previous response to fetch the \
-        next page; absent means no more results. Needs --features memory."
+        description = "List scoped memory entries. `prefix` is a key-prefix filter (not \
+        substring); `tag` is exact. Values truncated ~200 chars. Default 100, max 1000. \
+        `cursor` pages results. Needs --features memory."
     )]
     pub(crate) async fn memory_list(
         &self,
@@ -132,9 +131,9 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Vector KNN over stored memory. Embeds query, KNN in LanceDB \
-        memory table (scope-filtered). tag is post-KNN exact filter. \
-        Default 10 max 100 by L2 distance. Needs --features memory."
+        description = "Vector KNN over stored memory. Embeds `query`, KNN in the scope-filtered \
+        LanceDB memory table; `tag` is a post-KNN exact filter. Default 10, max 100 by L2 \
+        distance. Needs --features memory."
     )]
     pub(crate) async fn memory_search(
         &self,
@@ -201,12 +200,10 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Semantic search over indexed document chunks (PDF/Office/HTML). \
-        Embeds the `query` argument, KNN in LanceDB documents table (scope-filtered). \
-        mime_type is exact filter. Default 10 max 100. Optional `max_tokens` bounds the \
-        returned hits (best-first); when it drops hits the response sets `budgeted: true` \
-        (no cursor — raise `max_tokens` for more). Optional `format: \"toon\"` returns compact \
-        TOON (token-saving tabular encoding) instead of JSON, overriding the config default. \
+        description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
+        `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
+        filter. Default 10, max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`; \
+        no cursor — raise it for more). `format:\"toon\"` for compact rows (overrides config). \
         Needs --features documents."
     )]
     pub(crate) async fn search_documents(
