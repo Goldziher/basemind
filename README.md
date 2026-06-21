@@ -76,6 +76,11 @@ An opt-in PostToolUse **output compressor** (default off) is also shipped: set
 before the agent sees it. It is fail-open and credential-preserving — output is left untouched on
 any error, on detected credentials, or whenever it would save less than 10%.
 
+An opt-in PostToolUse **read-cache delta** (default off) is shipped alongside it: set
+`BASEMIND_DELTA_READS=1` to serve a compact `basemind delta` line-diff when an agent re-reads a file
+it already read this session, saving the tokens of a full re-read. It is fail-open — the full read
+stands on any error, on a first read, or whenever the diff is not meaningfully smaller.
+
 The live statusline surfaces the payoff: estimated tokens saved vs a grep + read baseline.
 
 ---
