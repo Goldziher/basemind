@@ -775,13 +775,9 @@ pub(super) async fn scan_and_refresh(
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
 
-    // Rebuild the in-RAM MapCache immediately so the next query sees fresh data.
-    // The view-watcher would do this too on the index.msgpack mtime change, but
-    // we don't want to race the watcher debounce window.
+    // Rebuild MapCache immediately so the next query sees fresh data; don't race the watcher.
     let new_cache = {
         let store = state.store.read().await;
-        // Refresh the corpus-bytes counter that feeds the savings estimator. Cheap — a
-        // single pass over the in-RAM index map.
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         state
             .corpus_bytes
@@ -792,6 +788,9 @@ pub(super) async fn scan_and_refresh(
     state
         .cache_generation
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    #[cfg(feature = "memory")]
+    super::helpers_governance::audit_scope_on_rescan(&state).await;
 
     Ok(report)
 }

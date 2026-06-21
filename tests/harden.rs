@@ -471,6 +471,28 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "key": "harden_probe" }),
     )
     .await;
+    // memory_audit: write a probe key then sweep; MCP error when memory feature is off is ok.
+    call(
+        svc,
+        &mut records,
+        "memory_put",
+        json!({ "key": "harden_audit_probe", "value": "audit probe", "embed": false }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "memory_audit",
+        json!({ "key": "harden_audit_probe", "dry_run": true }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "memory_delete",
+        json!({ "key": "harden_audit_probe" }),
+    )
+    .await;
     call(
         svc,
         &mut records,

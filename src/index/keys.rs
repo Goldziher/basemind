@@ -349,6 +349,17 @@ pub fn memory_by_key_ns_prefix(scope: &str, vis_byte: u8, owner: &str) -> Vec<u8
     out
 }
 
+/// Prefix bytes for "every memory entry in this `scope`" — across all visibility tiers and
+/// owners. Because `scope` is length-prefixed, this prefix bounds exactly one scope's keys
+/// (a longer scope encodes a different `u16` length, so no spillover). Used by the background
+/// rescan audit to scope its scan to one repo without enumerating per-agent owners.
+pub fn memory_scope_prefix(scope: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + scope.len() + 1);
+    let _ = write_len_prefixed(&mut out, scope.as_bytes());
+    out.push(0u8);
+    out
+}
+
 /// Decode `(scope, vis_byte, owner, key)` from a raw `memory_by_key` key buffer.
 pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
     let mut c = 0;
