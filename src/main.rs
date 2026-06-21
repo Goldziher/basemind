@@ -655,6 +655,23 @@ fn load_or_default_with(
     }
 }
 
+/// Open the store for a writer command (`scan` / `rescan`), translating lock contention
+/// into actionable guidance. Two distinct holders can deny the lock — our own `fs2`
+/// advisory lock and Fjall's internal exclusive open lock — and a raw `FjallError: Locked`
+/// or bare "Locked" is opaque to a user whose editor plugin is quietly running `serve`.
+/// `is_lock_contention` collapses both into one friendly message that leads with what to
+/// do; the underlying `StoreError` is preserved as the error source (visible under `-v` /
+/// the full anyhow chain) so we never swallow the cause.
+fn open_store_for_write(root: &std::path::Path, view: &str, what: &str) -> Result<Store> {
+    Store::open(root, view).map_err(|err| {
+        if err.is_lock_contention() {
+            anyhow::Error::new(err).context(basemind::store::LOCK_CONTENTION_HELP.to_string())
+        } else {
+            anyhow::Error::new(err).context(format!("open store ({what})"))
+        }
+    })
+}
+
 fn cmd_scan(
     root: &std::path::Path,
     args: &ScanArgs,
@@ -670,8 +687,7 @@ fn cmd_scan(
     if args.staged {
         let repo = basemind::git::Repo::discover(root)
             .context("`--staged` requires being inside a git repository")?;
-        let mut store =
-            Store::open(root, basemind::store::VIEW_STAGED).context("open store (staged)")?;
+        let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged")?;
         render::render_scan_header(&mut out, "staged index", verbosity);
         let report = basemind::scanner::scan(
             root,
@@ -692,7 +708,7 @@ fn cmd_scan(
         let sha = repo.resolve_rev(rev_spec).context("resolve rev")?;
         let short = &sha[..7.min(sha.len())];
         let view = basemind::store::view_name_for_rev(short);
-        let mut store = Store::open(root, &view).context("open store (rev)")?;
+        let mut store = open_store_for_write(root, &view, "rev")?;
         render::render_scan_header(&mut out, &format!("rev {short}"), verbosity);
         let report = basemind::scanner::scan(
             root,
@@ -711,7 +727,7 @@ fn cmd_scan(
         return Ok(());
     }
 
-    let mut store = Store::open(root, basemind::store::VIEW_WORKING).context("open store")?;
+    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan")?;
     let report = basemind::scanner::scan(
         root,
         &mut store,
@@ -734,7 +750,7 @@ fn cmd_rescan(
 ) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
-    let mut store = Store::open(root, basemind::store::VIEW_WORKING).context("open store")?;
+    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan")?;
     let mut out = render::stdout(no_color);
 
     // `--full` or no paths → full working-tree re-index. Otherwise re-index only the

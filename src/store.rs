@@ -46,11 +46,38 @@ pub enum StoreError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("schema version mismatch: stored {found}, current {expected}")]
     SchemaMismatch { found: u16, expected: u16 },
-    #[error("another basemind process holds the lock on {0} (likely `basemind watch` is running)")]
+    #[error(
+        "another basemind process holds the lock on {0} (usually the `basemind serve` MCP server from your editor plugin, or `basemind watch`)"
+    )]
     Locked(PathBuf),
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
 }
+
+impl StoreError {
+    /// True when this error is lock contention from another live basemind process,
+    /// not a corrupt store or a logic bug. Two distinct holders surface here:
+    ///
+    /// - [`StoreError::Locked`]: our own `fs2` advisory lock on `.basemind/.lock`,
+    ///   taken by every writer (`scan` / `rescan` / `watch` / `serve`).
+    /// - [`StoreError::Index`] wrapping [`fjall::Error::Locked`]: Fjall's *own*
+    ///   exclusive lock taken when it opens the `index.fjall/` database. A reader can
+    ///   slip past our advisory lock yet still trip this one, so the CLI must treat
+    ///   both as the same "index is busy" condition and surface the same guidance.
+    pub fn is_lock_contention(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Locked(_) | StoreError::Index(IndexError::Fjall(fjall::Error::Locked))
+        )
+    }
+}
+
+/// Actionable guidance printed when a CLI writer (`scan` / `rescan`) can't acquire the
+/// store lock because another basemind process is holding it. Kept as a constant so the
+/// scan and rescan paths emit identical wording and a test can assert the contract.
+pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another process \
+(likely the MCP server). If an editor/plugin is serving this repo, use its `rescan` tool \
+to refresh the index, or stop that server before running `basemind scan`.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Index {
@@ -595,5 +622,49 @@ fn check_schema(found: u16) -> Result<(), StoreError> {
             found,
             expected: SCHEMA_VER,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn locked_display_names_the_serve_holder() {
+        let err = StoreError::Locked(PathBuf::from("/repo/.basemind/.lock"));
+        let msg = err.to_string();
+        // The common holder is the editor plugin's `serve` process; the message must
+        // name it so the user knows what to stop (W8: the old text said only `watch`).
+        assert!(
+            msg.contains("serve"),
+            "Locked message should name the `serve` holder, got: {msg}"
+        );
+        assert!(
+            msg.contains("watch"),
+            "Locked message should still mention `watch`, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn fs2_advisory_lock_is_lock_contention() {
+        let err = StoreError::Locked(PathBuf::from("/repo/.basemind/.lock"));
+        assert!(err.is_lock_contention());
+    }
+
+    #[test]
+    fn fjall_internal_lock_is_lock_contention() {
+        // A reader can slip past the fs2 advisory lock yet still trip Fjall's own
+        // exclusive open lock; both must route to the same actionable guidance.
+        let err = StoreError::Index(IndexError::Fjall(fjall::Error::Locked));
+        assert!(err.is_lock_contention());
+    }
+
+    #[test]
+    fn schema_mismatch_is_not_lock_contention() {
+        let err = StoreError::SchemaMismatch {
+            found: 1,
+            expected: 2,
+        };
+        assert!(!err.is_lock_contention());
     }
 }
