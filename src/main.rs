@@ -95,6 +95,9 @@ enum Cmd {
     /// Compress verbose command output read from stdin into a compact summary,
     /// failing open (raw passthrough) on errors and preserving credentials.
     CompressOutput(basemind::textcompress::cli::CompressOutputArgs),
+    /// Emit a compact `+N/-M` line-diff from a prior file version (`--old`) to
+    /// new content read from stdin — the stateless delta re-read primitive.
+    Delta(basemind::textcompress::cli::DeltaArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
@@ -344,6 +347,7 @@ fn main() -> Result<()> {
             LangCmd::Clean => cmd_lang_clean(),
         },
         Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),
+        Cmd::Delta(args) => basemind::textcompress::cli::run_delta(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(all(feature = "comms", unix))]
