@@ -1588,6 +1588,82 @@ async fn mcp_server_exercises_representative_tools() {
         "compress with neither text nor path must be rejected: {err:?}"
     );
 
+    // expand: pulling the full body of `alpha` from a.rs must return the source slice.
+    // After the second commit, alpha's body is `{ let _ = 1; }` — the literal that compress
+    // explicitly excludes from its output. expand must include it.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "expand",
+                json!({ "path": "a.rs", "name": "alpha" }),
+            ))
+            .await
+            .expect("expand(path=a.rs, name=alpha)"),
+    );
+    assert_eq!(
+        body.get("name").and_then(Value::as_str),
+        Some("alpha"),
+        "expand must echo the resolved name: {body}"
+    );
+    assert_eq!(
+        body.get("kind").and_then(Value::as_str),
+        Some("function"),
+        "alpha is a function: {body}"
+    );
+    let expand_body = body.get("body").and_then(Value::as_str).expect("body");
+    assert!(
+        expand_body.contains("alpha"),
+        "expanded body must contain the function source: {expand_body:?}"
+    );
+    // This is the literal that compress omits — expand must include it.
+    assert!(
+        expand_body.contains("let _ = 1"),
+        "expanded body must include the function body literal (compress omits it, expand includes it): {expand_body:?}"
+    );
+    let start_row = body
+        .get("start_row")
+        .and_then(Value::as_u64)
+        .expect("start_row");
+    let end_row = body
+        .get("end_row")
+        .and_then(Value::as_u64)
+        .expect("end_row");
+    assert!(start_row >= 1, "start_row must be one-based: {body}");
+    assert!(end_row >= start_row, "end_row must be >= start_row: {body}");
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "small function must not be truncated: {body}"
+    );
+
+    // expand: symbol not found must return an error (not panic).
+    let err = service
+        .call_tool(call_params(
+            "expand",
+            json!({ "path": "a.rs", "name": "nonexistent_symbol_xyz" }),
+        ))
+        .await;
+    assert!(
+        err.is_err(),
+        "expand with unknown symbol must be rejected: {err:?}"
+    );
+
+    // expand: `kind` alias `symbol` must work (serde alias).
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "expand",
+                json!({ "path": "a.rs", "symbol": "alpha" }),
+            ))
+            .await
+            .expect("expand(path=a.rs, symbol=alpha via alias)"),
+    );
+    assert_eq!(
+        body.get("name").and_then(Value::as_str),
+        Some("alpha"),
+        "expand via `symbol` alias must resolve correctly: {body}"
+    );
+
     let _ = service.cancel().await;
 }
 
