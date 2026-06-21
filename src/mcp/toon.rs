@@ -85,7 +85,13 @@ pub(super) fn encode(value: &Value) -> String {
 /// JSON on their own line so the envelope stays lossless.
 fn encode_envelope(map: &serde_json::Map<String, Value>) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(map.len());
-    for (key, val) in map {
+    // Iterate keys in sorted order so the output is deterministic regardless of whether
+    // `serde_json`'s `preserve_order` feature is active in the dependency graph (it is pulled
+    // transitively by the lancedb/arrow stack). Sorting here keeps TOON byte-stable for agents.
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let val = &map[key];
         match val {
             Value::Array(items) => {
                 if let Some(table) = encode_table_block(key, items) {
@@ -140,14 +146,18 @@ fn encode_table(items: &[Value]) -> Option<String> {
 /// Requirements (any violation → `None`, caller falls back to JSON):
 /// - the array is non-empty;
 /// - every element is an object;
-/// - every element has the exact same set of keys as the first (order taken from the first);
+/// - every element has the exact same set of keys as the first;
 /// - every value is a scalar (null / bool / number / string) — no nested objects or arrays.
+///
+/// Columns are emitted in sorted order so the header is deterministic regardless of the
+/// `serde_json` `preserve_order` feature (pulled transitively by the lancedb/arrow stack).
 fn table_parts(items: &[Value]) -> Option<(Vec<String>, Vec<String>)> {
     let first = items.first()?.as_object()?;
     if first.is_empty() {
         return None;
     }
-    let columns: Vec<String> = first.keys().cloned().collect();
+    let mut columns: Vec<String> = first.keys().cloned().collect();
+    columns.sort_unstable();
     let mut rows: Vec<String> = Vec::with_capacity(items.len());
     for item in items {
         let obj = item.as_object()?;
@@ -243,10 +253,11 @@ mod tests {
         assert_eq!(ResponseFormat::parse(Some("garbage")), ResponseFormat::Json);
     }
 
-    // NOTE: `serde_json::Map` is backed by a `BTreeMap` (no `preserve_order` feature), so both
-    // object field order and table column order come out alphabetically sorted. That is valid
-    // TOON — the header names the columns — and deterministic, so the exact-output tests below
-    // assert the sorted form.
+    // NOTE: the encoder sorts envelope keys and table columns explicitly (see `encode_envelope`
+    // / `table_parts`), so the output is alphabetically sorted and deterministic regardless of
+    // whether `serde_json`'s `preserve_order` feature is active in the dependency graph (it is,
+    // transitively, via the lancedb/arrow stack). That is valid TOON — the header names the
+    // columns — so the exact-output tests below assert the sorted form.
     #[test]
     fn encodes_uniform_array_as_exact_table() {
         let value = json!([

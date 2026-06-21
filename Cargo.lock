@@ -936,9 +936,9 @@ dependencies = [
 
 [[package]]
 name = "bitvec"
-version = "1.0.1"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"
+checksum = "ddcec3d12c579d40898fe0a9a358a803c23e9c52ca3c425707f81c9436211837"
 dependencies = [
  "funty",
  "radium",
@@ -4785,9 +4785,9 @@ dependencies = [
 
 [[package]]
 name = "html-to-markdown-rs"
-version = "3.6.13"
+version = "3.6.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d0a55cab9887aeafa306d3b67aa3eb432b4be9dcf56bac3f34078a608936e33"
+checksum = "431f3fb7ca04ef93edce23a14ebf45bf80d47cdafc9a63ea9166cdb736d5cca4"
 dependencies = [
  "ahash 0.8.12",
  "astral-tl",
@@ -5436,6 +5436,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5700,9 +5709,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg"
-version = "5.0.0-rc.18"
+version = "5.0.0-rc.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4379698c051e9c7280bfcbe9d37758320f47fcd2d2a6659dc0aba01bd93d79"
+checksum = "0bdb3d5edae024b3c4be8646e655b66153597292c8ec77e2ac61e1a87b6ab56a"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -5737,7 +5746,7 @@ dependencies = [
  "image",
  "indexmap 2.14.0",
  "infer",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jotdown",
  "kreuzberg-gliner-rs",
  "kreuzberg-libheif",
@@ -5819,9 +5828,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-libheif"
-version = "5.0.0-rc.20"
+version = "5.0.0-rc.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b576e6a3f4bb5004ef92d5de9cf56675dfdfa933d10e3f3750e154bb9d4b5509"
+checksum = "5189ef9d6d5dcb5f628c3ebe1a2cb3080b49d0e6d6d9d63c87ec0a8d2e2e80fe"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -5843,9 +5852,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.20"
+version = "5.0.0-rc.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30350fec36976d0962c0c52ffdea3579036e363151c16632554076dd78355a36"
+checksum = "562ebf906848b119cfd1ad8ebde361782c072e167f59ed92529fa9d5d5574cdd"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -5859,9 +5868,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-tesseract"
-version = "5.0.0-rc.20"
+version = "5.0.0-rc.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b70bee536f50469b78781e77dc7415e60775d579ecc7ee9aedd0dd6f0ea030e5"
+checksum = "90b8bd3b855ed5d53e6a2abfb4f6675abe352c902926902d14468d191268908c"
 dependencies = [
  "cc",
  "cmake",
@@ -6701,9 +6710,9 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "liter-llm"
-version = "1.6.4"
+version = "1.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82177d82ab01638c1567473be387c83492e6201bc59b399c12a254bde133d4ee"
+checksum = "02fcb7fb3b9516e13ec8671d9483f79a098e797e17f2e6b91a7686cc099a02a9"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -7745,9 +7754,9 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.65"
+version = "0.3.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "509a9b7e66e42b2e776ddc89dcf40ddb8c8f3c3a1828e3cf7f8dc1e14dc92441"
+checksum = "ebe40b26fba42c41c162dbfd33a6d4a6f90a57b6f114dddaa1806d973f909c66"
 dependencies = [
  "aes 0.9.1",
  "base64 0.22.1",
@@ -10182,9 +10191,9 @@ dependencies = [
 
 [[package]]
 name = "taffy"
-version = "0.10.1"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aea22054047c16c3f34d3ac473a2170be1424b1115b2a3adcf28cfb067c88859"
+checksum = "dfde4e2f8595f222ceaae1fb16b4963952e9b33e358869dc4cd6316b0e0790cd"
 dependencies = [
  "arrayvec",
  "grid",

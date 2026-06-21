@@ -185,7 +185,7 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
-kreuzberg = { version = "=5.0.0-rc.18", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+kreuzberg = { version = "=5.0.0-rc.27", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 # kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
 # same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
 # we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
