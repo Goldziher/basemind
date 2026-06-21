@@ -68,6 +68,11 @@ tasks:
     cmds:
       - ./scripts/harden.sh
 
+  demo:record:
+    desc: "Record the CLI demo to an asciinema cast and render docs/media/demo.gif (needs asciinema + agg)"
+    cmds:
+      - ./scripts/demo-record.sh
+
   release:sync-version:
     desc: 'Sync version across every shipped surface (Cargo, npm wrappers, PyPI, plugin manifests). Usage: task release:sync-version VERSION=0.1.0'
     cmds:
