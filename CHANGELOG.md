@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.6.2] — 2026-06-21
+
+Patch release: schema unchanged (`RELEASE_MINOR` stays 6). Fixes the macOS binary so the
+npm/PyPI/Homebrew/cargo wrappers actually run — 0.6.0 and 0.6.1 shipped an unrunnable macOS binary.
+
+### Fixed
+
+- **macOS binary SIGKILL on launch** — the release packaging bundles non-system dylibs into `lib/`
+  and rewrites their `@loader_path` install names with `install_name_tool`, which edits the Mach-O in
+  place and invalidates the linker's ad-hoc code signature. macOS then killed the process on first
+  page-in (`SIGKILL`, "Code Signature Invalid") with no output, so the binary downloaded by every
+  wrapper was unrunnable. The packaging now re-signs each dylib and the binary ad-hoc **after** the
+  rewrites and verifies `--strict` before packaging.
+- **pip/uvx downloader** — a stale or partial `~/.cache/basemind/<ver>/` made `os.replace()` fail with
+  `Errno 66` (cannot overwrite a non-empty directory), wedging installs until a manual cache wipe. The
+  downloader now clears a stale cache dir under its lock and retries the atomic move.
+
 ## [0.6.1] — 2026-06-21
 
 Patch release: blob/index/comms schema unchanged (`RELEASE_MINOR` stays 6), so no
