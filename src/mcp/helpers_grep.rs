@@ -7,7 +7,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
+use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX};
 use super::types::{GrepHit, WorkspaceGrepParams, WorkspaceGrepResponse};
 
 /// Body of the `workspace_grep` MCP tool.
@@ -20,6 +20,7 @@ pub(super) fn run_workspace_grep(
     state: &ServerState,
     params: WorkspaceGrepParams,
 ) -> Result<CallToolResult, McpError> {
+    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params
         .limit
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
@@ -33,16 +34,19 @@ pub(super) fn run_workspace_grep(
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
             if snapshot_id != generation {
-                return json_result(&WorkspaceGrepResponse {
-                    pattern: params.pattern,
-                    total_files_matched: 0,
-                    total_matches: 0,
-                    truncated: false,
-                    budgeted: false,
-                    hits: Vec::new(),
-                    next_cursor: None,
-                    cursor_invalidated: true,
-                });
+                return super::toon::format_result(
+                    &WorkspaceGrepResponse {
+                        pattern: params.pattern,
+                        total_files_matched: 0,
+                        total_matches: 0,
+                        truncated: false,
+                        budgeted: false,
+                        hits: Vec::new(),
+                        next_cursor: None,
+                        cursor_invalidated: true,
+                    },
+                    format,
+                );
             }
             offset as usize
         }
@@ -199,16 +203,19 @@ pub(super) fn run_workspace_grep(
         (budget.items, false, next_cursor)
     };
 
-    json_result(&WorkspaceGrepResponse {
-        pattern: params.pattern,
-        total_files_matched,
-        total_matches,
-        truncated,
-        budgeted,
-        hits,
-        next_cursor,
-        cursor_invalidated: false,
-    })
+    super::toon::format_result(
+        &WorkspaceGrepResponse {
+            pattern: params.pattern,
+            total_files_matched,
+            total_matches,
+            truncated,
+            budgeted,
+            hits,
+            next_cursor,
+            cursor_invalidated: false,
+        },
+        format,
+    )
 }
 
 /// Extract the content of line `line_idx` from `source`, stripping the trailing

@@ -26,7 +26,8 @@ impl BasemindServer {
                        and doc comments (only returned if an L2 blob already exists for the \
                        file's current content). Optional `max_tokens` bounds the returned \
                        `symbols` list (not imports/calls/docs); when it drops symbols the \
-                       response sets `budgeted: true`."
+                       response sets `budgeted: true`. Optional `format: \"toon\"` returns the \
+                       response as compact TOON (token-saving tabular encoding) instead of JSON."
     )]
     pub(crate) async fn outline(
         &self,
@@ -174,7 +175,10 @@ impl BasemindServer {
                 response.symbols = budgeted.items;
                 response.budgeted = budgeted.budgeted;
             }
-            json_result(&response)
+            super::toon::format_result(
+                &response,
+                super::toon::ResponseFormat::parse(params.format.as_deref()),
+            )
         }
         .await;
         record_call(&self.state, "outline", &__params_json, __started, &__result);
@@ -191,7 +195,9 @@ impl BasemindServer {
                        means no more results. Cursors invalidate on rescan — caller must \
                        restart when `cursor_invalidated` is set. Optional `max_tokens` bounds \
                        the response: results are kept best-first until the budget is hit, then \
-                       `budgeted: true` + a `next_cursor` signal the dropped tail is pageable."
+                       `budgeted: true` + a `next_cursor` signal the dropped tail is pageable. \
+                       Optional `format: \"toon\"` returns compact TOON (token-saving tabular \
+                       encoding) instead of JSON."
     )]
     pub(crate) async fn search_symbols(
         &self,
@@ -202,6 +208,7 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             use std::sync::atomic::Ordering;
 
+            let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params
                 .limit
@@ -215,14 +222,17 @@ impl BasemindServer {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
                     if snapshot_id != generation {
-                        return json_result(&SearchResponse {
-                            total: 0,
-                            truncated: false,
-                            budgeted: false,
-                            results: Vec::new(),
-                            next_cursor: None,
-                            cursor_invalidated: true,
-                        });
+                        return super::toon::format_result(
+                            &SearchResponse {
+                                total: 0,
+                                truncated: false,
+                                budgeted: false,
+                                results: Vec::new(),
+                                next_cursor: None,
+                                cursor_invalidated: true,
+                            },
+                            format,
+                        );
                     }
                     offset as usize
                 }
@@ -232,14 +242,17 @@ impl BasemindServer {
             // Empty needle matches every symbol — never what the caller wants and
             // expensive on large repos. Return immediately.
             if params.needle.is_empty() {
-                return json_result(&SearchResponse {
-                    total: 0,
-                    truncated: false,
-                    budgeted: false,
-                    results: Vec::new(),
-                    next_cursor: None,
-                    cursor_invalidated: false,
-                });
+                return super::toon::format_result(
+                    &SearchResponse {
+                        total: 0,
+                        truncated: false,
+                        budgeted: false,
+                        results: Vec::new(),
+                        next_cursor: None,
+                        cursor_invalidated: false,
+                    },
+                    format,
+                );
             }
             let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
             let max_total = limit.saturating_mul(64).max(2_000);
@@ -301,14 +314,17 @@ impl BasemindServer {
             } else {
                 None
             };
-            json_result(&SearchResponse {
-                total,
-                truncated,
-                budgeted,
-                results,
-                next_cursor,
-                cursor_invalidated: false,
-            })
+            super::toon::format_result(
+                &SearchResponse {
+                    total,
+                    truncated,
+                    budgeted,
+                    results,
+                    next_cursor,
+                    cursor_invalidated: false,
+                },
+                format,
+            )
         }
         .await;
         record_call(
@@ -329,7 +345,9 @@ impl BasemindServer {
                        fetch the next page; absent means no more results. Cursors invalidate on \
                        rescan — caller must restart when `cursor_invalidated` is set. Optional \
                        `max_tokens` bounds the response: files are kept in order until the \
-                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest."
+                       budget is hit, then `budgeted: true` + a `next_cursor` page the rest. \
+                       Optional `format: \"toon\"` returns compact TOON (token-saving tabular \
+                       encoding) instead of JSON."
     )]
     pub(crate) async fn list_files(
         &self,
@@ -340,6 +358,7 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             use std::sync::atomic::Ordering;
 
+            let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let limit = params
                 .limit
                 .unwrap_or(LIST_LIMIT_DEFAULT)
@@ -353,15 +372,18 @@ impl BasemindServer {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
                     if snapshot_id != generation {
-                        return json_result(&ListFilesResponse {
-                            total: 0,
-                            returned: 0,
-                            truncated: false,
-                            budgeted: false,
-                            files: Vec::new(),
-                            next_cursor: None,
-                            cursor_invalidated: true,
-                        });
+                        return super::toon::format_result(
+                            &ListFilesResponse {
+                                total: 0,
+                                returned: 0,
+                                truncated: false,
+                                budgeted: false,
+                                files: Vec::new(),
+                                next_cursor: None,
+                                cursor_invalidated: true,
+                            },
+                            format,
+                        );
                     }
                     offset as usize
                 }
@@ -415,15 +437,18 @@ impl BasemindServer {
                 None
             };
 
-            json_result(&ListFilesResponse {
-                total,
-                returned: files.len(),
-                truncated,
-                budgeted,
-                files,
-                next_cursor,
-                cursor_invalidated: false,
-            })
+            super::toon::format_result(
+                &ListFilesResponse {
+                    total,
+                    returned: files.len(),
+                    truncated,
+                    budgeted,
+                    files,
+                    next_cursor,
+                    cursor_invalidated: false,
+                },
+                format,
+            )
         }
         .await;
         record_call(
@@ -534,7 +559,8 @@ impl BasemindServer {
                        Pass `cursor` from a previous response to fetch the next page; absent \
                        means no more results. Optional `max_tokens` bounds the response: hits \
                        are kept best-first until the budget is hit, then `budgeted: true` + a \
-                       `next_cursor` page the dropped tail."
+                       `next_cursor` page the dropped tail. Optional `format: \"toon\"` returns \
+                       compact TOON (token-saving tabular encoding) instead of JSON."
     )]
     pub(crate) async fn find_references(
         &self,
@@ -606,7 +632,9 @@ impl BasemindServer {
                        absent means no more results. Cursors invalidate on rescan. Optional \
                        `max_tokens` bounds the response: hits are kept best-first until the \
                        budget is hit, then `budgeted: true` + a `next_cursor` page the rest \
-                       (the boundary file may re-appear on the next page)."
+                       (the boundary file may re-appear on the next page). Optional \
+                       `format: \"toon\"` returns compact TOON (token-saving tabular encoding) \
+                       instead of JSON."
     )]
     pub(crate) async fn workspace_grep(
         &self,

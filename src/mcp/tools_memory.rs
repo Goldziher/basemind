@@ -205,7 +205,9 @@ impl BasemindServer {
         Embeds the `query` argument, KNN in LanceDB documents table (scope-filtered). \
         mime_type is exact filter. Default 10 max 100. Optional `max_tokens` bounds the \
         returned hits (best-first); when it drops hits the response sets `budgeted: true` \
-        (no cursor — raise `max_tokens` for more). Needs --features documents."
+        (no cursor — raise `max_tokens` for more). Optional `format: \"toon\"` returns compact \
+        TOON (token-saving tabular encoding) instead of JSON, overriding the config default. \
+        Needs --features documents."
     )]
     pub(crate) async fn search_documents(
         &self,

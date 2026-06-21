@@ -24,6 +24,11 @@ pub struct SearchDocumentsParams {
     /// response carries `budgeted: true`.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
+    /// Overrides the `[documents.output] format` config knob for this call.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,
     /// Optional case-insensitive substring match against `DocEntity.category`.

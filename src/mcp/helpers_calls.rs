@@ -44,19 +44,23 @@ pub(super) fn run_find_references(
     params: super::types::FindReferencesParams,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
+    let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params
         .limit
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
         .min(SEARCH_LIMIT_MAX) as usize;
     let Some(idx) = idx else {
-        return json_result(&FindReferencesResponse {
-            name: params.name,
-            total: 0,
-            total_is_partial: false,
-            budgeted: false,
-            hits: Vec::new(),
-            next_cursor: None,
-        });
+        return super::toon::format_result(
+            &FindReferencesResponse {
+                name: params.name,
+                total: 0,
+                total_is_partial: false,
+                budgeted: false,
+                hits: Vec::new(),
+                next_cursor: None,
+            },
+            format,
+        );
     };
     let cursor_bytes = params
         .cursor
@@ -67,14 +71,17 @@ pub(super) fn run_find_references(
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
-    json_result(&FindReferencesResponse {
-        name: params.name,
-        total,
-        total_is_partial,
-        budgeted: budgeted.budgeted,
-        hits: budgeted.hits,
-        next_cursor: budgeted.next_cursor,
-    })
+    super::toon::format_result(
+        &FindReferencesResponse {
+            name: params.name,
+            total,
+            total_is_partial,
+            budgeted: budgeted.budgeted,
+            hits: budgeted.hits,
+            next_cursor: budgeted.next_cursor,
+        },
+        format,
+    )
 }
 
 /// Body of the `find_callers` MCP tool. Resolves the definition via the in-RAM cache (the

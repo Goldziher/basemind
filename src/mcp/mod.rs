@@ -37,6 +37,7 @@ mod tools_git;
 mod tools_memory;
 #[cfg(feature = "crawl")]
 mod tools_web;
+mod toon;
 mod types;
 mod types_admin;
 #[cfg(all(feature = "comms", unix))]

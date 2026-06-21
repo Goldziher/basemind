@@ -25,6 +25,10 @@ pub struct OutlineParams {
     /// budget is hit; the rest are dropped and the response carries `budgeted: true`.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `symbols` list — far fewer tokens than JSON for large outlines.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -51,6 +55,10 @@ pub struct SearchSymbolsParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `results` list — far fewer tokens than JSON for large hit sets.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     #[serde(default)]
@@ -73,6 +81,10 @@ pub struct ListFilesParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
     /// the in-RAM index snapshot and invalidate on rescan.
     #[serde(default)]
@@ -224,6 +236,10 @@ pub struct FindReferencesParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
     /// Resume token returned by the previous call's `next_cursor`. Stable across rescans
     /// because the underlying Fjall keys are content-addressed.
     #[serde(default)]
@@ -711,6 +727,10 @@ pub struct WorkspaceGrepParams {
     /// response carries `budgeted: true` plus a `next_cursor` to page them.
     #[serde(default, alias = "token_budget", alias = "budget")]
     pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `hits` list — far fewer tokens than JSON for large hit sets.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
     /// Include 1 line of context before + after each hit. Default true.
     #[serde(default = "default_true")]
     pub include_context: bool,

@@ -127,6 +127,20 @@ fn decode_text(result: &CallToolResult) -> Value {
     serde_json::from_str(&raw).unwrap_or(Value::Null)
 }
 
+/// Return the first text content item verbatim (no JSON parse) — used to inspect the
+/// raw TOON payload a tool emits when `format="toon"`.
+fn raw_text(result: &CallToolResult) -> String {
+    use rmcp::model::RawContent;
+    result
+        .content
+        .iter()
+        .find_map(|c| match &c.raw {
+            RawContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut params = CallToolRequestParams::new(name);
     if let Some(obj) = args.as_object() {
@@ -235,6 +249,57 @@ async fn mcp_server_exercises_representative_tools() {
         Some("function"),
         "Stage 2 arrow-fn const should be kind=function"
     );
+
+    // TOON encoding (W5 slice 1): `format="toon"` must produce a smaller payload than the JSON
+    // form and round-trip the same hit data. Use a needle with several hits to exercise the
+    // tabular block.
+    let json_result = service
+        .call_tool(call_params(
+            "search_symbols",
+            json!({ "needle": "draw", "limit": 50 }),
+        ))
+        .await
+        .expect("search_symbols json");
+    let json_body = decode_text(&json_result);
+    let json_raw = raw_text(&json_result);
+    let json_results = json_body
+        .get("results")
+        .and_then(Value::as_array)
+        .expect("json results")
+        .clone();
+    assert!(
+        !json_results.is_empty(),
+        "expected draw hits: {json_body:?}"
+    );
+
+    let toon_result = service
+        .call_tool(call_params(
+            "search_symbols",
+            json!({ "needle": "draw", "limit": 50, "format": "toon" }),
+        ))
+        .await
+        .expect("search_symbols toon");
+    let toon_raw = raw_text(&toon_result);
+    assert!(
+        toon_raw.len() < json_raw.len(),
+        "TOON payload ({} bytes) should be smaller than JSON ({} bytes)\nTOON:\n{toon_raw}",
+        toon_raw.len(),
+        json_raw.len(),
+    );
+    // Round-trip: the TOON table header carries the same column set and every JSON hit's
+    // (path, name) pair must appear verbatim as a row cell in the TOON body.
+    assert!(
+        toon_raw.contains("results[") && toon_raw.contains("name") && toon_raw.contains("path"),
+        "TOON should carry a labeled results table with name + path columns:\n{toon_raw}"
+    );
+    for hit in &json_results {
+        let name = hit.get("name").and_then(Value::as_str).expect("hit name");
+        let path = hit.get("path").and_then(Value::as_str).expect("hit path");
+        assert!(
+            toon_raw.contains(name) && toon_raw.contains(path),
+            "TOON body should round-trip hit ({path}, {name}):\n{toon_raw}"
+        );
+    }
 
     // recent_changes: should return 2 commits; not shallow → no truncated flag
     let body = decode_text(

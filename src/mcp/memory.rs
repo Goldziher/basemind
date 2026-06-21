@@ -650,6 +650,14 @@ pub(super) async fn run_search_documents(
             .collect::<Result<Vec<_>, _>>()?;
     }
 
+    // Per-call `format` param overrides the `[documents.output] format` config knob when set;
+    // an absent / unrecognized value keeps the config-derived default.
+    let output_format = match params.format.as_deref().map(str::trim) {
+        Some(f) if f.eq_ignore_ascii_case("toon") => crate::config::OutputFormat::Toon,
+        Some(f) if f.eq_ignore_ascii_case("json") => crate::config::OutputFormat::Json,
+        _ => output_format,
+    };
+
     // Token budget bounds the returned hits list (best-first after any rerank). No cursor
     // for search_documents — `budgeted: true` signals the caller to raise `max_tokens`.
     let budget = super::budget::apply_budget(hits, params.max_tokens);

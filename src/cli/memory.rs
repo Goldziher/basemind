@@ -167,6 +167,7 @@ pub async fn run(
                 query,
                 limit,
                 max_tokens: None,
+                format: None,
                 mime_type,
                 entity_category: None,
                 keywords_contains: None,

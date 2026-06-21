@@ -118,6 +118,7 @@ pub async fn run(
                 path: path.as_str().into(),
                 l2,
                 max_tokens: None,
+                format: None,
             };
             let r = run_tool("outline", server.outline(Parameters(Lenient(p))).await)?;
             emit("outline", &r, json, out)
@@ -137,6 +138,7 @@ pub async fn run(
                 kind,
                 limit,
                 max_tokens: None,
+                format: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -150,6 +152,7 @@ pub async fn run(
                 name,
                 limit,
                 max_tokens: None,
+                format: None,
                 cursor: None,
             };
             let r = run_tool(
@@ -226,6 +229,7 @@ pub async fn run(
                 path_contains,
                 limit,
                 max_tokens: None,
+                format: None,
                 include_context: !no_context,
                 cursor: None,
             };
@@ -245,6 +249,7 @@ pub async fn run(
                 language,
                 limit,
                 max_tokens: None,
+                format: None,
                 cursor: None,
             };
             let r = run_tool("list_files", server.list_files(Parameters(p)).await)?;
