@@ -197,6 +197,10 @@ see [Performance](#performance) for the full benchmarks.
 
 <p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / call-graph / blame queries and the token-savings dashboard.</em></p>
 
+<p align="center"><img src="docs/media/semantic-demo.gif" alt="basemind semantic search: an agent searches indexed documents by meaning, not keywords, over the documents store" width="900"></p>
+
+<p align="center"><em>Semantic search over the documents store — meaning, not keywords, across 90+ ingested file formats.</em></p>
+
 <!-- markdownlint-enable MD013 -->
 
 **Install in one line** (full reference in the [Installation](#installation) section):
