@@ -22,6 +22,7 @@ mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "crawl")]
 mod helpers_web;
+mod lenient;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
 mod savings;
@@ -68,6 +69,8 @@ use crate::store::Store;
 /// code an MCP client would dispatch.
 pub mod params {
     pub use rmcp::handler::server::wrapper::Parameters;
+
+    pub(crate) use super::lenient::Lenient;
 
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams,

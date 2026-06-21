@@ -173,7 +173,7 @@ pub async fn run(
             };
             let r = run_tool(
                 "search_documents",
-                server.search_documents(Parameters(p)).await,
+                server.search_documents(Parameters(Lenient(p))).await,
             )?;
             emit("search_documents", &r, json, out)
         }

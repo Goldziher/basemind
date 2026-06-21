@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
+use super::lenient::Lenient;
 use super::types::SearchDocumentsParams;
 use super::types_memory::{
     MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
@@ -206,7 +207,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn search_documents(
         &self,
-        Parameters(p): Parameters<SearchDocumentsParams>,
+        Parameters(Lenient(p)): Parameters<Lenient<SearchDocumentsParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);

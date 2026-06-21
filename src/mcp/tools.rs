@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::*;
+use super::lenient::Lenient;
 use super::types::*;
 use crate::query;
 
@@ -27,7 +28,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn outline(
         &self,
-        Parameters(params): Parameters<OutlineParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<OutlineParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -179,7 +180,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn search_symbols(
         &self,
-        Parameters(params): Parameters<SearchSymbolsParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<SearchSymbolsParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -407,7 +408,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn dependents(
         &self,
-        Parameters(params): Parameters<DependentsParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<DependentsParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -500,7 +501,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn find_references(
         &self,
-        Parameters(params): Parameters<FindReferencesParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<FindReferencesParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -533,7 +534,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn find_callers(
         &self,
-        Parameters(params): Parameters<FindCallersParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<FindCallersParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -567,7 +568,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn workspace_grep(
         &self,
-        Parameters(params): Parameters<WorkspaceGrepParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<WorkspaceGrepParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
@@ -598,7 +599,7 @@ impl BasemindServer {
     )]
     pub(crate) async fn find_implementations(
         &self,
-        Parameters(params): Parameters<FindImplementationsParams>,
+        Parameters(Lenient(params)): Parameters<Lenient<FindImplementationsParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
