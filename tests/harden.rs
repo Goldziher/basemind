@@ -424,6 +424,19 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             json!({ "path": &sample.path }),
         )
         .await;
+
+        // expand: pull the first symbol's body from the same sample file.
+        // We only call expand when a sample_symbol is available; errors on
+        // languages without indexed symbols are expected and tolerated.
+        if let Some(sym) = &sample.sample_symbol {
+            call(
+                svc,
+                &mut records,
+                "expand",
+                json!({ "path": &sample.path, "name": sym }),
+            )
+            .await;
+        }
     }
 
     // compress (prose): always available, no feature gate.
