@@ -269,7 +269,8 @@ struct EntryOutcome {
 }
 
 /// Read-only context shared across all `evaluate_one` calls in a single `run_memory_audit`.
-struct AuditCtx<'a> {
+/// `pub(super)` so the testable `audit_scope_persist` can take it as a parameter.
+pub(super) struct AuditCtx<'a> {
     cache: &'a super::MapCache,
     store: &'a crate::store::Store,
     root: &'a std::path::Path,
@@ -468,6 +469,9 @@ pub(super) async fn run_memory_audit(
     json_result(&MemoryAuditResponse { audited, results })
 }
 
+#[cfg(all(test, feature = "memory"))]
+mod tests;
+
 // ─── Background maintenance ───────────────────────────────────────────────────
 
 /// Lightweight background audit pass injected by `scan_and_refresh` after every rescan.
@@ -499,11 +503,28 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
         now: crate::lance::now_micros(),
     };
 
+    audit_scope_persist(idx, &ctx, &state.scope, DEFAULT_AUDIT_LIMIT as usize);
+}
+
+/// Sync core of [`audit_scope_on_rescan`], split out so it is testable without standing up a
+/// full `ServerState`: it takes the concrete dependencies (the open index, a prepared
+/// [`AuditCtx`], the scope, and a record cap) and drives the scope-bounded persist loop.
+///
+/// Scans up to `limit` live records under `scope`, runs each through [`evaluate_one`], and writes
+/// back **only** Stale records (decay always; archive once stale > `ARCHIVE_AFTER_MICROS`). The
+/// scope-prefix scan guarantees every key belongs to `scope`, so foreign-scope records are never
+/// touched. Fail-open: any per-record error is warn-logged and the loop continues.
+pub(super) fn audit_scope_persist(
+    idx: &crate::index::IndexDb,
+    ctx: &AuditCtx<'_>,
+    scope: &str,
+    limit: usize,
+) {
     // Scope-bounded prefix scan — never iterates another repo's keys (the prefix encodes this
     // repo's scope across every visibility tier / owner), so the per-key scope check is needless.
-    let scope_prefix = crate::index::keys::memory_scope_prefix(&state.scope);
+    let scope_prefix = crate::index::keys::memory_scope_prefix(scope);
     for (count, guard) in idx.memory_by_key.prefix(&scope_prefix).enumerate() {
-        if count >= DEFAULT_AUDIT_LIMIT as usize {
+        if count >= limit {
             break;
         }
         let (raw_key_bytes, raw_val) = match guard.into_inner() {
@@ -518,7 +539,7 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
         else {
             continue;
         };
-        let Some(outcome) = evaluate_one(&ctx, &key_str, &raw_val, false) else {
+        let Some(outcome) = evaluate_one(ctx, &key_str, &raw_val, false) else {
             continue;
         };
         // Persist only Stale records (decay always; archive once stale > 90 days). Verified /
@@ -526,26 +547,12 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
         if outcome.record.verified != VerifyState::Stale {
             continue;
         }
-        // `state.scope` is safe here — the prefix scan guarantees every key is in this scope.
+        // `scope` is safe here — the prefix scan guarantees every key is in this scope.
         let write = if outcome.audit_result.archived {
-            write_archive(
-                idx,
-                &state.scope,
-                vis_byte,
-                &owner,
-                &key_str,
-                &outcome.record,
-            )
-            .and_then(|()| delete_live(idx, &state.scope, vis_byte, &owner, &key_str))
+            write_archive(idx, scope, vis_byte, &owner, &key_str, &outcome.record)
+                .and_then(|()| delete_live(idx, scope, vis_byte, &owner, &key_str))
         } else {
-            write_live(
-                idx,
-                &state.scope,
-                vis_byte,
-                &owner,
-                &key_str,
-                &outcome.record,
-            )
+            write_live(idx, scope, vis_byte, &owner, &key_str, &outcome.record)
         };
         if let Err(e) = write {
             tracing::warn!(key = key_str, error = ?e, "audit_scope_on_rescan: persist failed");
