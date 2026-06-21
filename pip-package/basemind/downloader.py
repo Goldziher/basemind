@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import platform
+import shutil
 import ssl
 import subprocess
 import sys
@@ -276,14 +277,17 @@ def ensure_binary():
             staging_dir.mkdir()
             _extract(archive_path, ext, staging_dir)
 
-            # Atomic rename: move the staged extraction into the cache
-            # If cache_dir already exists (race), this is ok — the binary is already there
+            # Atomic rename: move the staged extraction into the cache.
             try:
                 staging_dir.replace(cache_dir)
             except (OSError, FileExistsError):
-                # Race condition: another process created cache_dir first. That's ok,
-                # our extracted files are in tmpdir and will be cleaned up.
-                # The other process's files are now in cache_dir.
+                # cache_dir already exists. Either another process won the race and a
+                # runnable binary is present (use it), or it is a stale/partial dir.
+                # os.replace() cannot overwrite a non-empty directory (raises Errno 66),
+                # so under the lock we hold here, clear the stale dir and retry the move.
+                if not (binary_path.exists() and os.access(binary_path, os.X_OK)):
+                    shutil.rmtree(cache_dir, ignore_errors=True)
+                    staging_dir.replace(cache_dir)
                 if not binary_path.exists():
                     raise RuntimeError(
                         f"binary {_binary_name()} not found after extracting {asset_name}"
