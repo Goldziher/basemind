@@ -8,6 +8,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.8.0] — 2026-06-22
+
+Minor release: `RELEASE_MINOR` bumps 7 → 8, so the on-disk index version changes and every
+`.basemind/` cache rebuilds from source on the next `scan` (one-time; the blob/index formats are
+unchanged, so the rebuild is harmless). Deepens the MCP surface — prompts, argument completions,
+logging, and progress notifications — and hardens the consumer experience: cleaner document-tier
+scans, a cold-start scan path agents can invoke, serve diagnostics, and a recovery runbook. Bumps
+kreuzberg to `5.0.0-rc.29`.
+
+### Added
+
+- **MCP prompts** (`prompts/list` + `prompts/get`) — four reusable, parameterized workflows that
+  teach a client to drive basemind structure-first: `onboard-repo`, `trace-symbol`, `explain-file`,
+  `review-working-tree`.
+- **MCP argument completion** (`completion/complete`) — autocompletes prompt arguments from the
+  in-RAM code map: `trace-symbol`'s `symbol` against indexed symbol names, `explain-file`'s `path`
+  against indexed file paths (pure prefix scan, no store lock).
+- **MCP logging + progress** — `logging/setLevel` plus a `rescan_complete` log with scan counts,
+  and start/done progress notifications on `rescan` when the client supplies a progress token.
+- **Tool annotations** on every MCP tool (`read_only_hint` / `destructive_hint` / `idempotent_hint`
+  / `open_world_hint`) so clients (Claude Code et al.) can auto-approve read-only tools and only
+  prompt for mutating ones.
+- **Cold-start indexing for agents** — a `bm-scan` command + `basemind-scan` skill that run
+  `basemind scan` via the CLI (no MCP server required), so an agent can build the index when
+  basemind reports "no index".
+- **Recovery runbook** — a `bm-doctor` command + `basemind-doctor` skill: diagnose the index, detect
+  a stale lock via the `.lock.meta` holder pid, rebuild via scan, and reconnect the MCP server
+  (client-specific). Plus `basemind serve` now logs its lifecycle (startup pid/version/view and the
+  exact exit reason) to its stderr / the client's MCP server logs.
+
+### Changed
+
+- Bump **kreuzberg to `5.0.0-rc.29`** — picks up the TLS-certificate fix for model downloads behind
+  corporate TLS-MITM proxies (`hf-hub` now uses the platform `native-tls` provider, honoring the OS
+  cert store + `SSL_CERT_FILE`/`SSL_CERT_DIR`). Resolves #14.
+
+### Fixed
+
+- The document tier no longer counts non-extractable files as failures. A file tree-sitter doesn't
+  recognize as code (e.g. an Erlang `.app.src`, which `mime_guess` maps to
+  `application/x-wais-source`) is now **skipped** — and logged at debug — instead of inflating the
+  failed count; genuine extraction errors on real documents still count as failures.
+
 ## [0.7.0] — 2026-06-22
 
 Minor release: `RELEASE_MINOR` bumps 6 → 7, so the on-disk index version changes and every
