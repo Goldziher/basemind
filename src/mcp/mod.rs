@@ -9,6 +9,7 @@
 //! Transport: stdio (the canonical MCP transport). Spawn via `basemind serve`.
 
 mod budget;
+mod completions;
 pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
@@ -70,8 +71,8 @@ use rmcp::ServerHandler;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{
-    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo,
+    CompleteRequestParams, CompleteResult, GetPromptRequestParams, GetPromptResult,
+    ListPromptsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::tool_handler;
 use tokio::sync::RwLock;
@@ -787,11 +788,22 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
+    /// `completion/complete`: autocomplete a prompt argument from the indexed code map (symbol
+    /// names for `trace-symbol`, file paths for `explain-file`). Pure in-RAM prefix scan.
+    async fn complete(
+        &self,
+        request: CompleteRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CompleteResult, rmcp::ErrorData> {
+        Ok(self.complete_argument(&request))
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
+                .enable_completions()
                 .build(),
         )
         .with_instructions(
