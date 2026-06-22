@@ -18,6 +18,7 @@
 //! adapted to a pure read-only `text -> text` transform (this tool never runs
 //! the command — it only sees output).
 
+pub mod checkpoint;
 pub mod cli;
 pub mod delta;
 mod detect;

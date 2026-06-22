@@ -924,6 +924,7 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `hook install` | Install a git pre-commit hook that runs `basemind scan`. |
 | `compress-output` | Compress verbose command output from stdin (output-compressor hook backend; fail-open, credential-preserving). |
 | `delta --old <path>` | Emit a compact line-diff from a prior file version (read-cache hook backend). |
+| `checkpoint` | Extract a credential-safe checkpoint (decisions / errors / changed files) from session text on stdin; changed files come from the git working tree, not the text. |
 | `telemetry` | Show per-tool telemetry histogram + estimated tokens saved. |
 
 <!-- markdownlint-enable MD013 -->
