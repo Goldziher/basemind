@@ -8,6 +8,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.7.0] — 2026-06-22
+
+Minor release: `RELEASE_MINOR` bumps 6 → 7, so the on-disk index version changes and every
+`.basemind/` cache rebuilds from source on the next `scan` (intentional, one-time). The headline is a
+first-class **code-aware token-reduction** surface (the `compress`/`expand` tools, per-call budgets,
+TOON encoding, behavioral output compression) plus **code-grounded memory/skill governance**
+(`memory_audit` + git-mined skill proposals). Also ships MCP tool annotations so clients can
+auto-approve read-only tools, and a sweep of CLI/MCP bug fixes.
+
+### Added
+
+- **`compress` MCP tool** — code-aware compression (tree-sitter structural elision + cheap lexical
+  passes) with an honest before/after token report; **`expand`** pulls a single symbol's body back.
+- **Per-call `max_tokens` budgets** on high-volume tools (`outline`, `search_*`, `find_references`,
+  `workspace_grep`, `search_documents`, …): rank-to-fit with an explicit truncation marker + cursor.
+- **Opt-in TOON encoding** (`format:"toon"`) for high-volume list responses, and an opt-in **lean
+  tool surface** (`BASEMIND_MCP_LEAN`) that advertises three wrapper tools instead of the full set.
+- **Behavioral output compression** (`basemind compress-output`/`delta`/`checkpoint`/`detect-waste`)
+  with credential-safe, fail-open semantics, plus opt-in plugin hooks (Bash-output compression,
+  read-cache deltas).
+- **Code-grounded governance** — `memory_audit` verifies stored memories against the live code map
+  (structural-hash drift → stale, decay + 90-day auto-archive) and git-mined **skill proposals**
+  (`proposals_mine`/`proposals_list`/`proposal_accept`/`proposal_reject`); additive
+  provenance/verification fields on `MemoryRecord` and two new lazy Fjall keyspaces.
+- **MCP tool annotations** on all tools (`read_only_hint`/`destructive_hint`/`idempotent_hint`/
+  `open_world_hint`) so consumers (Claude Code et al.) can auto-approve read-only tools.
+- **Real tokenizer-backed token counts** (o200k under `documents`) in the compress report and
+  telemetry, and instructive `-32602` parameter errors via a `Lenient<T>` wrapper + serde aliases
+  (accept `query`/`pattern`/`needle`/`name`/`regex`/… across the search tools).
+- Plugin integrations for **Kimi Code** and **pi**, and a Codex-readable marketplace manifest.
+
+### Changed
+
+- Bump **kreuzberg to `5.0.0-rc.28`**.
+- Honest telemetry: `est_tokens_saved` now credits document/list/web tools instead of reporting 0,
+  and `search_symbols.total` (`total_is_partial`) / `list_files.limit_clamped` / `status.blob_count`
+  expose what was previously silent.
+- `scan` / `rescan` exit `0` when per-file read failures occur but the index was still updated
+  (previously exit 2 masked a successful scan); `scan --rev` skips submodule gitlinks instead of
+  failing; `-q`/`--quiet` now suppresses subsystem INFO/WARN logs.
+- `cache clear` gains a `views:<name>` selector to clear a single view without nuking all of them.
+- Slimmer tool descriptions to cut per-session schema tokens.
+
+### Fixed
+
+- Lock-contention errors now name the actual holder (`serve`/`watch`/`scan`/`rescan`) via a `.lock`
+  sidecar instead of always guessing `watch` (#11).
+- `query` commands resolve absolute and `./`-prefixed paths to the indexed key (#19); serving or
+  querying a never-scanned named view now errors instead of silently returning empty (#18).
+- `comms status` gives an actionable "daemon not running — start with `basemind comms start`" message
+  (#21); comms verbs no longer emit a false "`--json` has no effect" warning (#20).
+- `git_cache_bytes` documented as the disk layer only (#23); CLI lock / LanceStore-shutdown crashes
+  and legacy comms front-matter decoding fixed.
+- Known upstream issues in the document tier (OCR `tessdata` path #12, model download behind a
+  TLS-MITM proxy #14) are documented with workarounds; fixes tracked in kreuzberg and picked up on a
+  later bump.
+
 ## [0.6.3] — 2026-06-21
 
 Patch release: schema unchanged (`RELEASE_MINOR` stays 6). Reworks the plugin MCP launcher so it
