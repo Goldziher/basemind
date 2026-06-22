@@ -24,11 +24,13 @@ SKILLS=(
   "basemind"
   "basemind-cli"
   "basemind-comms"
+  "basemind-scan"
   "basemind-stats"
 )
 # Canonical slash commands mirrored into every non-Claude tree.
 COMMANDS=(
   "bm"
+  "bm-scan"
   "bm-stats"
 )
 # Canonical agent-comms hook scripts. These are identical across the harness trees that consume
