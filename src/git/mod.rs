@@ -235,6 +235,12 @@ impl Repo {
             })?;
         let mut out = Vec::with_capacity(recorder.len());
         for entry in recorder {
+            // Only real file blobs (regular/executable/symlink) are readable content. Skip
+            // submodule gitlinks (mode 0o160000 = commit) and sub-tree entries — handing those
+            // to `read_blob_at_rev_with_oid`'s `try_into_blob()` would error (bug #24).
+            if !entry.mode.is_blob_or_symlink() {
+                continue;
+            }
             if let Ok(s) = std::str::from_utf8(&entry.filepath) {
                 out.push(s.to_string());
             }
