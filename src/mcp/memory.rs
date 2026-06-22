@@ -8,6 +8,7 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 #[cfg(feature = "documents")]
 use super::helpers::format_response;
+#[cfg(feature = "memory")]
 use super::helpers::json_result;
 #[cfg(feature = "documents")]
 use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResponse};
