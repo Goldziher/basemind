@@ -522,9 +522,15 @@ pub(super) fn audit_scope_persist(
 ) {
     // Scope-bounded prefix scan — never iterates another repo's keys (the prefix encodes this
     // repo's scope across every visibility tier / owner), so the per-key scope check is needless.
+    //
+    // Two bounds (project-standard, mirrors `audit_scope`/`memory_list`): `limit` caps the records
+    // we evaluate, and `scan_cap = limit * 8` caps the entries *examined* so a dense partition
+    // can't over-walk before `evaluated` trips — a skipped (parse-fail) entry still costs a step.
     let scope_prefix = crate::index::keys::memory_scope_prefix(scope);
-    for (count, guard) in idx.memory_by_key.prefix(&scope_prefix).enumerate() {
-        if count >= limit {
+    let scan_cap = limit.saturating_mul(8).max(1_000);
+    let mut evaluated = 0usize;
+    for (scanned, guard) in idx.memory_by_key.prefix(&scope_prefix).enumerate() {
+        if evaluated >= limit || scanned >= scan_cap {
             break;
         }
         let (raw_key_bytes, raw_val) = match guard.into_inner() {
@@ -542,6 +548,7 @@ pub(super) fn audit_scope_persist(
         let Some(outcome) = evaluate_one(ctx, &key_str, &raw_val, false) else {
             continue;
         };
+        evaluated += 1;
         // Persist only Stale records (decay always; archive once stale > 90 days). Verified /
         // Unverified rows are left as-is so a rescan doesn't rewrite the whole store.
         if outcome.record.verified != VerifyState::Stale {

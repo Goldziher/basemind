@@ -109,19 +109,24 @@ fn proposal_id(sorted_files: &[RelPath]) -> String {
 /// which keeps the cluster small and avoids the O(n²) explosion of full transitive closure on
 /// large co-change graphs. The anchor is always the file with the highest `freq[file]` in the
 /// pair, which biases toward "when you change X, also check Y" rather than the reverse.
+///
+/// Works on interned file indices (`files[i]`) so the co-change map is keyed by cheap
+/// `(usize, usize)` pairs — no `RelPath` heap clones in the hot loop. `RelPath`s are only
+/// materialized into the returned sorted file-set.
 #[cfg(feature = "memory")]
 fn build_cluster(
-    anchor: &RelPath,
-    cochange: &AHashMap<(RelPath, RelPath), u32>,
-    freq: &AHashMap<RelPath, u32>,
+    anchor: usize,
+    files: &[RelPath],
+    cochange: &AHashMap<(usize, usize), u32>,
+    freq: &[u32],
     min_support: u32,
     min_confidence: f32,
 ) -> Vec<RelPath> {
-    let anchor_freq = *freq.get(anchor).unwrap_or(&1);
-    let mut cluster: AHashSet<RelPath> = AHashSet::new();
-    cluster.insert(anchor.clone());
+    let anchor_freq = freq.get(anchor).copied().unwrap_or(1).max(1);
+    let mut cluster: AHashSet<usize> = AHashSet::new();
+    cluster.insert(anchor);
 
-    for ((a, b), &count) in cochange {
+    for (&(a, b), &count) in cochange {
         let partner = if a == anchor {
             b
         } else if b == anchor {
@@ -134,11 +139,11 @@ fn build_cluster(
         }
         let confidence = count as f32 / anchor_freq as f32;
         if confidence >= min_confidence {
-            cluster.insert(partner.clone());
+            cluster.insert(partner);
         }
     }
 
-    let mut sorted: Vec<RelPath> = cluster.into_iter().collect();
+    let mut sorted: Vec<RelPath> = cluster.into_iter().map(|i| files[i].clone()).collect();
     sorted.sort();
     sorted
 }
@@ -212,41 +217,68 @@ pub(super) async fn run_proposals_mine(
 
     // ── Co-change counting ────────────────────────────────────────────────────
     //
-    // `freq[file]`: how many commits touched this file.
-    // `cochange[(a,b)]`: how many commits touched both a and b (pair is sorted a < b).
-    let mut freq: AHashMap<RelPath, u32> = AHashMap::new();
-    let mut cochange: AHashMap<(RelPath, RelPath), u32> = AHashMap::new();
+    // Each distinct `RelPath` is interned once into `files` (the owned-path arena); `freq` and the
+    // `cochange` pair map are then keyed by the cheap `usize` index instead of cloning the heap
+    // `bstr::BString` per pair. At defaults (window=200, max=25 files) the old code cloned a
+    // `RelPath` for every one of the ~62.5k pair updates; interning drops that to one clone per
+    // distinct path at first sight.
+    //
+    // `files[id]`: the interned path. `freq[id]`: how many commits touched it.
+    // `cochange[(a,b)]`: how many commits touched both, with the smaller index first so
+    // `(a,b) == (b,a)` collapses to one canonical key.
+    let mut interner: AHashMap<RelPath, usize> = AHashMap::new();
+    let mut files: Vec<RelPath> = Vec::new();
+    let mut freq: Vec<u32> = Vec::new();
+    let mut cochange: AHashMap<(usize, usize), u32> = AHashMap::new();
     let mut skipped_bulk: u32 = 0;
 
+    // Reused per-commit scratch buffer of interned indices — avoids reallocating each iteration.
+    let mut commit_ids: Vec<usize> = Vec::new();
+
     for commit in commits.as_ref() {
-        // Collect the set of Changed/Added/Modified files for this commit (no Deleted).
-        let files: Vec<RelPath> = commit
+        // Changed/Added/Modified files for this commit (no Deleted).
+        let is_changed =
+            |kind: &crate::git::ChangeKind| !matches!(kind, crate::git::ChangeKind::Deleted);
+
+        // Bulk/vendor guard: count changed files before interning so a skipped commit costs nothing.
+        let changed_count = commit
             .files
             .iter()
-            .filter(|(_, kind)| !matches!(kind, crate::git::ChangeKind::Deleted))
-            .map(|(path, _)| path.clone())
-            .collect();
-
-        if files.len() > max_files_per_commit as usize {
+            .filter(|(_, kind)| is_changed(kind))
+            .count();
+        if changed_count > max_files_per_commit as usize {
             skipped_bulk += 1;
             continue;
         }
 
-        // Update per-file frequency.
-        for f in &files {
-            *freq.entry(f.clone()).or_insert(0) += 1;
+        // Intern each changed path and record per-file frequency. One clone per distinct path
+        // (only when first seen); repeat sightings reuse the existing index.
+        commit_ids.clear();
+        for (path, _) in commit.files.iter().filter(|(_, kind)| is_changed(kind)) {
+            let id = match interner.get(path) {
+                Some(&id) => id,
+                None => {
+                    let id = files.len();
+                    files.push(path.clone());
+                    freq.push(0);
+                    interner.insert(path.clone(), id);
+                    id
+                }
+            };
+            freq[id] += 1;
+            commit_ids.push(id);
         }
 
         // Update pair co-change counts (O(files²) per commit — bounded by max_files_per_commit).
-        for i in 0..files.len() {
-            for j in (i + 1)..files.len() {
-                // Sort pair so (a,b) == (b,a) for the AHashMap key.
-                let pair = if files[i] <= files[j] {
-                    (files[i].clone(), files[j].clone())
+        for i in 0..commit_ids.len() {
+            for j in (i + 1)..commit_ids.len() {
+                // Canonical key: smaller index first so (a,b) == (b,a).
+                let (a, b) = if commit_ids[i] <= commit_ids[j] {
+                    (commit_ids[i], commit_ids[j])
                 } else {
-                    (files[j].clone(), files[i].clone())
+                    (commit_ids[j], commit_ids[i])
                 };
-                *cochange.entry(pair).or_insert(0) += 1;
+                *cochange.entry((a, b)).or_insert(0) += 1;
             }
         }
     }
@@ -258,24 +290,24 @@ pub(super) async fn run_proposals_mine(
     // co-changed file" rather than the reverse. We deduplicate by cluster id (content-addressed
     // blake3 of the sorted file-set) to avoid emitting the same cluster from both ends.
 
-    // Identify anchors with at least one partner exceeding thresholds.
-    let mut anchor_candidates: AHashSet<RelPath> = AHashSet::new();
-    for ((a, b), &count) in &cochange {
+    // Identify anchors (interned indices) with at least one partner exceeding thresholds.
+    let mut anchor_candidates: AHashSet<usize> = AHashSet::new();
+    for (&(a, b), &count) in &cochange {
         if count < min_support {
             continue;
         }
-        let fa = *freq.get(a).unwrap_or(&1);
-        let fb = *freq.get(b).unwrap_or(&1);
+        let fa = freq.get(a).copied().unwrap_or(1).max(1);
+        let fb = freq.get(b).copied().unwrap_or(1).max(1);
         // Use the higher-frequency file as anchor.
         if fa >= fb {
             let conf = count as f32 / fa as f32;
             if conf >= min_confidence {
-                anchor_candidates.insert(a.clone());
+                anchor_candidates.insert(a);
             }
         } else {
             let conf = count as f32 / fb as f32;
             if conf >= min_confidence {
-                anchor_candidates.insert(b.clone());
+                anchor_candidates.insert(b);
             }
         }
     }
@@ -291,8 +323,16 @@ pub(super) async fn run_proposals_mine(
     let mut seen_ids: AHashSet<String> = AHashSet::new();
     let mut mined: usize = 0;
 
-    for anchor in &anchor_candidates {
-        let cluster = build_cluster(anchor, &cochange, &freq, min_support, min_confidence);
+    for &anchor in &anchor_candidates {
+        let anchor_path = &files[anchor];
+        let cluster = build_cluster(
+            anchor,
+            &files,
+            &cochange,
+            &freq,
+            min_support,
+            min_confidence,
+        );
         if cluster.len() < 2 {
             // Degenerate cluster (no qualifying partner survived) — skip.
             continue;
@@ -318,15 +358,19 @@ pub(super) async fn run_proposals_mine(
 
         // Find the co-change count for the anchor ↔ each partner pair (use the max support
         // across pairs in the cluster as the representative support for the description).
-        let anchor_freq = *freq.get(anchor).unwrap_or(&1);
+        // Partners are mapped back to their interned index via the interner to key `cochange`.
+        let anchor_freq = freq.get(anchor).copied().unwrap_or(1).max(1);
         let max_support = cluster
             .iter()
-            .filter(|f| *f != anchor)
+            .filter(|f| *f != anchor_path)
             .map(|partner| {
-                let pair = if anchor <= partner {
-                    (anchor.clone(), partner.clone())
+                let Some(&p) = interner.get(partner) else {
+                    return 0;
+                };
+                let pair = if anchor <= p {
+                    (anchor, p)
                 } else {
-                    (partner.clone(), anchor.clone())
+                    (p, anchor)
                 };
                 *cochange.get(&pair).unwrap_or(&0)
             })
@@ -336,7 +380,7 @@ pub(super) async fn run_proposals_mine(
         let confidence = max_support as f32 / anchor_freq as f32;
         // Importance: support / window (normalised to [0,1)).
         let importance = (max_support as f32 / window as f32).min(0.99);
-        let description = build_description(anchor, &cluster, max_support, anchor_freq);
+        let description = build_description(anchor_path, &cluster, max_support, anchor_freq);
 
         let record = ProposalRecord {
             kind: PROPOSAL_KIND_SKILL,

@@ -118,7 +118,7 @@ fn ansi_osc8_re() -> &'static Regex {
 /// codes the cost is one allocation, which is acceptable on this cold path.
 pub fn strip_ansi(text: &str) -> String {
     // Fast path: no ESC byte means nothing to strip.
-    if !text.as_bytes().contains(&0x1b) {
+    if memchr::memchr(0x1b, text.as_bytes()).is_none() {
         return text.to_string();
     }
     let delinked = ansi_osc8_re().replace_all(text, "$1");

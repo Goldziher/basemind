@@ -112,6 +112,8 @@ fn lexical_pass(text: &str) -> String {
     let text = fillers_re().replace_all(&text, "");
 
     // Step 4: dedup identical paragraphs (split on double-newline).
+    // Cold path: runs once per compress call over a single string, so the stdlib `split`
+    // is fine — a reusable `memmem::Finder` would add machinery for no measurable win here.
     let mut seen: ahash::AHashSet<String> = ahash::AHashSet::new();
     let mut out_paras: Vec<&str> = Vec::new();
     for para in text.split("\n\n") {
