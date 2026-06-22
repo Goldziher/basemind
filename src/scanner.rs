@@ -587,7 +587,7 @@ fn process_file(
 
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
-        && store.blob_path_l1(&hash).exists()
+        && store.blob_path_l1_hex(hash_hex_str).exists()
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -613,7 +613,7 @@ fn process_file(
             }
         };
 
-    if let Err(e) = store.write_l1(&hash, &l1) {
+    if let Err(e) = store.write_l1_hex(hash_hex_str, &l1) {
         return FileResult::bare(
             rel.to_string(),
             FileStatus::ExtractFailed { msg: e.to_string() },
@@ -622,7 +622,7 @@ fn process_file(
 
     // Persist L2 blob when we extracted it eagerly.
     let l2: Option<FileMapL2> = if let Some(map) = l2_opt {
-        let _ = store.write_l2(&hash, &map);
+        let _ = store.write_l2_hex(hash_hex_str, &map);
         Some(map)
     } else {
         None

@@ -435,6 +435,17 @@ impl Store {
         write_blob(self.blob_path_l2(hash), map)
     }
 
+    /// Write an L1 blob given its already-hex-encoded hash. Mirrors [`Self::write_l1`] but
+    /// skips the `Hash → hex` encode the scanner already performed for the unchanged-file check.
+    pub fn write_l1_hex(&self, hash_hex: &str, map: &FileMapL1) -> Result<(), StoreError> {
+        write_blob(self.blob_path_l1_hex(hash_hex), map)
+    }
+
+    /// Write an L2 blob given its already-hex-encoded hash. See [`Self::write_l1_hex`].
+    pub fn write_l2_hex(&self, hash_hex: &str, map: &FileMapL2) -> Result<(), StoreError> {
+        write_blob(self.blob_path_l2_hex(hash_hex), map)
+    }
+
     #[cfg(feature = "documents")]
     pub fn write_doc(
         &self,
@@ -707,6 +718,17 @@ fn peek_blob_schema(path: &Path) -> Option<u16> {
         .map(|peek| peek.schema_ver)
 }
 
+thread_local! {
+    /// Per-thread `"<pid>.<thread-id>.tmp"` suffix for blob tmp files. The process id and
+    /// thread id never change for the lifetime of a worker thread, so we build the string
+    /// once and reuse it across every `write_blob` call on that thread.
+    static TMP_SUFFIX: String = format!(
+        "{}.{:?}.tmp",
+        std::process::id(),
+        std::thread::current().id()
+    );
+}
+
 fn write_blob<T: Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     // Content-addressed: the blob is keyed by *source-content* hash, so an existing blob at
     // this path holds the extraction of identical source bytes. If it was written under the
@@ -725,13 +747,10 @@ fn write_blob<T: Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> 
     let bytes = rmp_serde::to_vec_named(value)?;
     // Unique tmp suffix per writer thread + process so two workers racing on the same
     // content-hash never share a tmp path. The rename below is atomic on POSIX and
-    // will safely clobber any blob that landed in the meantime.
-    let suffix = format!(
-        "{}.{:?}.tmp",
-        std::process::id(),
-        std::thread::current().id()
-    );
-    let tmp = path.with_extension(format!("msgpack.{suffix}"));
+    // will safely clobber any blob that landed in the meantime. The process-id +
+    // thread-id portion is invariant for a given worker thread, so compute it once and
+    // cache it per thread; only the final per-call extension is formatted on the hot path.
+    let tmp = TMP_SUFFIX.with(|suffix| path.with_extension(format!("msgpack.{suffix}")));
     {
         let mut f = OpenOptions::new()
             .create(true)
