@@ -278,6 +278,23 @@ OCR, embeddings, reranker, semantic search, web crawl, shared memory — so firs
 models over the network. `cargo install` without `--features full` builds the base code-map + git
 tier only.
 
+#### Troubleshooting the document tier
+
+These two known issues live in the upstream `kreuzberg` dependency; fixes are in progress and basemind
+will pick them up on the next dependency bump. Workarounds in the meantime:
+
+- **Model download fails behind a corporate proxy (TLS interception).** First run fetches ML models
+  from Hugging Face; on a network with a TLS-MITM proxy the download can fail with a certificate
+  error because the HTTP client does not yet accept a custom CA. Install your corporate root CA into
+  the OS trust store, try `SSL_CERT_FILE` / `SSL_CERT_DIR` (effective only on some TLS backends), or
+  download the models once on an unproxied network and reuse the Hugging Face cache. Tracked upstream:
+  [kreuzberg-dev/kreuzberg#1146](https://github.com/kreuzberg-dev/kreuzberg/issues/1146).
+- **OCR fails with a missing `tessdata` path.** A released binary can reference a Tesseract `tessdata`
+  path from the build machine rather than yours. If OCR errors about missing trained data, set
+  `TESSDATA_PREFIX` to your local tessdata directory (e.g. `/opt/homebrew/share/tessdata` after
+  `brew install tesseract`). Tracked upstream:
+  [kreuzberg-dev/kreuzberg#1145](https://github.com/kreuzberg-dev/kreuzberg/issues/1145).
+
 ### As a plugin (recommended)
 
 The plugin is the richest install: it bundles the MCP server (auto-downloading the binary above on
