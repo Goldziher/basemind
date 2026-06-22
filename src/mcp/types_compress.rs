@@ -52,8 +52,8 @@ pub struct ExpandParams {
     /// Repo-relative path of the indexed source file.
     pub path: RelPath,
     /// Symbol name to expand. Matched exactly (case-sensitive) against the L1 outline.
-    /// Aliases: `symbol`, `needle`.
-    #[serde(alias = "symbol", alias = "needle")]
+    /// Aliases: `symbol`, `needle`, `query`.
+    #[serde(alias = "symbol", alias = "needle", alias = "query")]
     pub name: String,
     /// Optional kind filter to disambiguate when `name` matches multiple symbols
     /// (e.g. `"function"`, `"method"`, `"struct"`, …). Same values as `search_symbols`.
@@ -112,4 +112,33 @@ pub(super) struct CompressResponse {
     pub output: String,
     /// Disclosure note about token counting accuracy.
     pub tokens_note: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_accepts_symbol_alias_for_name() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" }))
+                .unwrap();
+        assert_eq!(params.name, "scan");
+    }
+
+    #[test]
+    fn expand_accepts_query_alias_for_name() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "query": "scan" }))
+                .unwrap();
+        assert_eq!(params.name, "scan");
+    }
+
+    #[test]
+    fn expand_canonical_name_still_binds() {
+        let params: ExpandParams =
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "name": "scan" }))
+                .unwrap();
+        assert_eq!(params.name, "scan");
+    }
 }

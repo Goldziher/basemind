@@ -250,6 +250,16 @@ mod tests {
     }
 
     #[test]
+    fn aliased_param_name_deserializes_through_lenient() {
+        // The serde alias on `pattern` (`query`/`regex`/`needle`/…) must survive the
+        // Lenient wrapper: a caller using the "wrong but aliased" key still succeeds.
+        let value = serde_json::json!({ "query": "needle" });
+        let lenient: Lenient<WorkspaceGrepParams> =
+            serde_json::from_value(value).expect("aliased `query` should deserialize");
+        assert_eq!(lenient.0.pattern, "needle");
+    }
+
+    #[test]
     fn missing_required_field_without_near_miss_still_lists_fields() {
         // An unrelated key (no near-miss) still surfaces the expected-field list
         // so the agent learns the contract, even without a suggestion.
