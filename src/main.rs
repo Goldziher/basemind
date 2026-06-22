@@ -906,7 +906,16 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         background: true,
         watch: !args.no_watch,
     };
-    runtime.block_on(async move {
+    // Lifecycle logging (stderr → the MCP client's server logs) so a serve that "fails for some
+    // reason" leaves a diagnosable trace: who started, against what, and exactly why it exited.
+    tracing::info!(
+        pid = std::process::id(),
+        version = env!("CARGO_PKG_VERSION"),
+        view,
+        root = %root.display(),
+        "basemind serve: MCP server starting"
+    );
+    let outcome = runtime.block_on(async move {
         use rmcp::ServiceExt;
         let server = basemind::mcp::BasemindServer::new_with_options(
             store, root_buf, config, repo, git_cache, options,
@@ -922,7 +931,20 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
             .await
             .map_err(|e| anyhow::anyhow!("rmcp waiting: {e}"))?;
         Ok::<(), anyhow::Error>(())
-    })
+    });
+    match &outcome {
+        // Clean shutdown is the normal exit: the MCP client closed the stdio transport. Restarting
+        // a stdio server is the client's responsibility — a new process can't resume the client's
+        // initialize handshake — so we exit cleanly and let the client relaunch on its next call.
+        Ok(()) => tracing::info!(
+            pid = std::process::id(),
+            "basemind serve: client disconnected, exiting"
+        ),
+        Err(error) => {
+            tracing::error!(pid = std::process::id(), %error, "basemind serve: exiting on error")
+        }
+    }
+    outcome
 }
 
 fn cmd_hook_install(root: &std::path::Path) -> Result<()> {

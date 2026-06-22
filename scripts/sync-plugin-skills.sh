@@ -24,12 +24,14 @@ SKILLS=(
   "basemind"
   "basemind-cli"
   "basemind-comms"
+  "basemind-doctor"
   "basemind-scan"
   "basemind-stats"
 )
 # Canonical slash commands mirrored into every non-Claude tree.
 COMMANDS=(
   "bm"
+  "bm-doctor"
   "bm-scan"
   "bm-stats"
 )
