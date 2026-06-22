@@ -251,6 +251,9 @@ url = { version = "2", features = ["serde"], optional = true }
 uuid = { version = "1", features = ["v4", "serde"], optional = true }
 
 [dev-dependencies]
+# Criterion microbenchmark harness for the v0.9.0 performance cycle. `html_reports`
+# emits the per-bench HTML under target/criterion for before/after comparison.
+criterion = { version = "0.5", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
 # Self-signed cert/key generation for the A2A TLS tests (no committed secrets).
@@ -272,3 +275,19 @@ wiremock = "0.6"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# ─── Microbenchmarks (v0.9.0 performance cycle) ──────────────────────────────
+# Criterion-driven hot-path micro-baselines. `harness = false` hands main() to
+# criterion. Run: `cargo bench --bench <name>`.
+
+[[bench]]
+name = "extract"
+harness = false
+
+[[bench]]
+name = "hashing"
+harness = false
+
+[[bench]]
+name = "query"
+harness = false
