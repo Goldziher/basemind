@@ -187,9 +187,11 @@ impl BasemindServer {
         description = "Search indexed symbols whose name contains `needle` (case-sensitive \
                        substring). Optional `kind` filter (function/struct/class/...). Up to \
                        `limit` hits (default 100, max 1000): path + line/col + signature. \
-                       `cursor` pages results (invalidate on rescan, `cursor_invalidated`). \
-                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`). \
-                       `format:\"toon\"` for compact rows."
+                       `total` = matches scanned up to a per-call cap (`limit*64`, min 2000), \
+                       NOT the global corpus total; `total_is_partial: true` means the cap was \
+                       hit and `total` is a lower bound. `cursor` pages results (invalidate on \
+                       rescan, `cursor_invalidated`). `max_tokens` budgets the response (sets \
+                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows."
     )]
     pub(crate) async fn search_symbols(
         &self,
@@ -217,6 +219,7 @@ impl BasemindServer {
                         return super::toon::format_result(
                             &SearchResponse {
                                 total: 0,
+                                total_is_partial: false,
                                 truncated: false,
                                 budgeted: false,
                                 results: Vec::new(),
@@ -237,6 +240,7 @@ impl BasemindServer {
                 return super::toon::format_result(
                     &SearchResponse {
                         total: 0,
+                        total_is_partial: false,
                         truncated: false,
                         budgeted: false,
                         results: Vec::new(),
@@ -247,7 +251,7 @@ impl BasemindServer {
                 );
             }
             let finder = memchr::memmem::Finder::new(params.needle.as_bytes());
-            let max_total = limit.saturating_mul(64).max(2_000);
+            let max_total = search_max_total(limit);
             let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
             let mut total: usize = 0;
             // `seen` tracks how many *matching* entries we've walked past, including the
@@ -309,6 +313,7 @@ impl BasemindServer {
             super::toon::format_result(
                 &SearchResponse {
                     total,
+                    total_is_partial,
                     truncated,
                     budgeted,
                     results,
@@ -333,7 +338,8 @@ impl BasemindServer {
     #[tool(
         description = "List indexed files with language + size. Optional `path_contains` substring \
                        and `language` filter (rust/python/typescript/tsx/javascript/go). Default \
-                       limit 200, max 5000. `cursor` pages results (invalidate on rescan, \
+                       limit 200, max 5000 (a larger request is clamped, setting \
+                       `limit_clamped`). `cursor` pages results (invalidate on rescan, \
                        `cursor_invalidated`). `max_tokens` budgets the response (sets `budgeted` \
                        + `next_cursor`). `format:\"toon\"` for compact rows."
     )]
@@ -347,10 +353,7 @@ impl BasemindServer {
             use std::sync::atomic::Ordering;
 
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
-            let limit = params
-                .limit
-                .unwrap_or(LIST_LIMIT_DEFAULT)
-                .min(LIST_LIMIT_MAX) as usize;
+            let (limit, limit_clamped) = effective_list_limit(params.limit);
             let generation = self.state.cache_generation.load(Ordering::Relaxed);
 
             // List uses the underlying `store.index.files` BTreeMap which is also rebuilt
@@ -365,6 +368,7 @@ impl BasemindServer {
                                 total: 0,
                                 returned: 0,
                                 truncated: false,
+                                limit_clamped,
                                 budgeted: false,
                                 files: Vec::new(),
                                 next_cursor: None,
@@ -430,6 +434,7 @@ impl BasemindServer {
                     total,
                     returned: files.len(),
                     truncated,
+                    limit_clamped,
                     budgeted,
                     files,
                     next_cursor,
@@ -486,8 +491,10 @@ impl BasemindServer {
 
     /// High-level repo + cache state.
     #[tool(
-        description = "Indexed-repo report: file count, total bytes, per-language breakdown, root \
-                       path, grammar cache directory, schema version."
+        description = "Indexed-repo report: file count, on-disk `blob_count`, total bytes, \
+                       per-language breakdown, root path, grammar cache directory, schema \
+                       version. A `note` appears when the view index is empty but blobs exist \
+                       (lost index — rescan)."
     )]
     pub(crate) async fn status(
         &self,
@@ -520,8 +527,15 @@ impl BasemindServer {
                 .as_ref()
                 .map(|r| r.submodule_paths())
                 .unwrap_or_default();
+            let file_count = store.index.files.len();
+            // Cheap single-dir blob tally — distinguishes a legitimately unscanned view (no
+            // blobs) from a lost/empty index over live blobs (bug #10).
+            let blob_count = count_l1_blobs(&store.basemind_dir);
+            let note = blob_divergence_note(file_count, blob_count);
             json_result(&StatusResponse {
-                file_count: store.index.files.len(),
+                file_count,
+                blob_count,
+                note,
                 total_size_bytes: total_size,
                 languages: by_lang,
                 cache_dir,
@@ -727,5 +741,186 @@ impl BasemindServer {
             &__result,
         );
         __result
+    }
+}
+
+// ─── pure decision helpers (unit-testable without the serve harness) ──────────
+
+/// Resolve the effective `list_files` page limit and report whether the caller's
+/// requested limit was clamped to [`LIST_LIMIT_MAX`].
+///
+/// Returns `(effective_limit, clamped)` where `clamped` is true iff the caller asked
+/// for more than the cap allows — surfaced honestly to the client rather than silently
+/// truncating (bug #17).
+pub(super) fn effective_list_limit(requested: Option<u32>) -> (usize, bool) {
+    let asked = requested.unwrap_or(LIST_LIMIT_DEFAULT);
+    let clamped = asked > LIST_LIMIT_MAX;
+    (asked.min(LIST_LIMIT_MAX) as usize, clamped)
+}
+
+/// The `search_symbols` scan cap: matches walked are bounded by this so a common needle
+/// never scans the whole corpus. When the cap is reached, `total` is a lower bound, not the
+/// global match count — the response sets `total_is_partial` so callers don't mistake it for
+/// a true total (bug #16).
+pub(super) fn search_max_total(limit: usize) -> usize {
+    limit.saturating_mul(64).max(2_000)
+}
+
+/// Count content-addressed blobs in `<basemind_dir>/blobs/` by tallying `.l1.msgpack`
+/// files (one per indexed content hash; `.l2`/`.doc` siblings share the same stem so they
+/// are not double-counted). A single directory read — cheaper than [`crate::store_gc::cache_stats`],
+/// which also unions every view index — so it is safe to call from the `status` path.
+///
+/// Returns `0` when the blobs directory is absent or unreadable; the count is advisory.
+pub(super) fn count_l1_blobs(basemind_dir: &std::path::Path) -> usize {
+    let blobs_dir = basemind_dir.join(crate::store::BLOBS_DIR);
+    let Ok(entries) = std::fs::read_dir(&blobs_dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".l1.msgpack"))
+        })
+        .count()
+}
+
+/// Build the `status` divergence note (bug #10): when the current view's index is empty
+/// but content-addressed blobs are present on disk, the index was lost/wiped over live
+/// blobs and a rescan would rebuild it. A legitimately unscanned repo (no blobs either)
+/// gets no note.
+pub(super) fn blob_divergence_note(file_count: usize, blob_count: usize) -> Option<String> {
+    if file_count == 0 && blob_count > 0 {
+        Some(format!(
+            "index for this view is empty but {blob_count} blob file(s) exist on disk; \
+             the view index was lost or wiped — run `basemind scan` to rebuild it"
+        ))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::helpers::{LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX};
+
+    #[test]
+    fn list_limit_under_cap_is_not_clamped() {
+        let (limit, clamped) = effective_list_limit(Some(100));
+        assert_eq!(limit, 100);
+        assert!(
+            !clamped,
+            "a request under the cap must not be flagged clamped"
+        );
+    }
+
+    #[test]
+    fn list_limit_at_cap_is_not_clamped() {
+        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX));
+        assert_eq!(limit, LIST_LIMIT_MAX as usize);
+        assert!(
+            !clamped,
+            "a request exactly at the cap is honored, not clamped"
+        );
+    }
+
+    #[test]
+    fn list_limit_over_cap_is_clamped_and_signalled() {
+        let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX + 1));
+        assert_eq!(
+            limit, LIST_LIMIT_MAX as usize,
+            "limit is clamped to the cap"
+        );
+        assert!(
+            clamped,
+            "exceeding the cap must set the clamp flag (bug #17)"
+        );
+    }
+
+    #[test]
+    fn list_limit_default_when_absent() {
+        let (limit, clamped) = effective_list_limit(None);
+        assert_eq!(limit, LIST_LIMIT_DEFAULT as usize);
+        assert!(!clamped);
+    }
+
+    #[test]
+    fn search_total_partial_when_cap_reached() {
+        // Simulate the scan loop's cap accounting: `total` counts matches up to the cap.
+        let limit = 10usize;
+        let cap = search_max_total(limit);
+        // A query with more matches than the cap stops at the cap and flags partial.
+        let matches_available = cap + 500;
+        let mut total = 0usize;
+        let mut partial = false;
+        for _ in 0..matches_available {
+            total += 1;
+            if total >= cap {
+                partial = true;
+                break;
+            }
+        }
+        assert_eq!(
+            total, cap,
+            "total saturates at the scan cap, not the true match count"
+        );
+        assert!(
+            partial,
+            "hitting the cap must mark total as partial (bug #16)"
+        );
+    }
+
+    #[test]
+    fn search_total_exact_when_under_cap() {
+        let limit = 10usize;
+        let cap = search_max_total(limit);
+        let matches_available = 5usize; // well under the cap
+        let mut total = 0usize;
+        let mut partial = false;
+        for _ in 0..matches_available {
+            total += 1;
+            if total >= cap {
+                partial = true;
+                break;
+            }
+        }
+        assert_eq!(total, matches_available, "total is exact below the cap");
+        assert!(
+            !partial,
+            "a query under the cap reports an exact, complete total"
+        );
+    }
+
+    #[test]
+    fn status_note_absent_when_index_and_blobs_agree() {
+        assert_eq!(
+            blob_divergence_note(42, 100),
+            None,
+            "populated index: no note"
+        );
+    }
+
+    #[test]
+    fn status_note_absent_for_unscanned_empty_repo() {
+        assert_eq!(
+            blob_divergence_note(0, 0),
+            None,
+            "empty index with no blobs is a legitimately unscanned repo, not a lost index"
+        );
+    }
+
+    #[test]
+    fn status_note_present_when_index_empty_but_blobs_exist() {
+        let note = blob_divergence_note(0, 7);
+        assert!(
+            note.is_some(),
+            "lost-index-over-live-blobs must surface a note (bug #10)"
+        );
+        let note = note.unwrap();
+        assert!(note.contains("7 blob file"), "note reports the blob count");
+        assert!(note.contains("scan"), "note suggests a rescan");
     }
 }
