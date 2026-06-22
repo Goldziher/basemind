@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use super::checkpoint::extract_checkpoint;
 use super::compress_output;
 use super::delta::delta;
+use super::waste::{detect_waste, parse_calls};
 
 /// Arguments for `basemind compress-output`.
 #[derive(clap::Args, Debug)]
@@ -177,4 +178,44 @@ fn changed_files(root: &std::path::Path) -> Vec<String> {
         .chain(&status.untracked)
         .map(|p| p.to_string())
         .collect()
+}
+
+/// Arguments for `basemind detect-waste`.
+///
+/// A JSON-Lines log of tool invocations is read from stdin; the analysis is
+/// pure (no repo root needed) and never executes anything.
+#[derive(clap::Args, Debug)]
+pub struct DetectWasteArgs {}
+
+/// Read a JSON-Lines tool-call log from stdin, leniently parse it (malformed or
+/// `tool`-less lines are skipped), run the pure
+/// [`detect_waste`](super::waste::detect_waste) analysis, emit the
+/// [`WasteReport`](super::waste::WasteReport) as pretty JSON to stdout, and a
+/// one-line stat to stderr. stdin is read lossily so non-UTF-8 content never
+/// aborts the pipe.
+pub fn run_detect_waste(_args: &DetectWasteArgs) -> Result<()> {
+    let mut raw = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut raw)
+        .context("read stdin")?;
+    let text = String::from_utf8_lossy(&raw);
+
+    let calls = parse_calls(text.as_ref());
+    let report = detect_waste(&calls);
+
+    let json = serde_json::to_string_pretty(&report).context("serialize waste report")?;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(json.as_bytes())
+        .context("write waste report json")?;
+    stdout.write_all(b"\n").context("write trailing newline")?;
+    stdout.flush().context("flush stdout")?;
+
+    eprintln!(
+        "detect-waste: findings={} waste_bytes={} truncated={}",
+        report.findings.len(),
+        report.total_estimated_waste_bytes,
+        report.truncated,
+    );
+    Ok(())
 }

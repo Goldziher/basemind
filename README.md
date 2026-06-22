@@ -925,6 +925,7 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 | `compress-output` | Compress verbose command output from stdin (output-compressor hook backend; fail-open, credential-preserving). |
 | `delta --old <path>` | Emit a compact line-diff from a prior file version (read-cache hook backend). |
 | `checkpoint` | Extract a credential-safe checkpoint (decisions / errors / changed files) from session text on stdin; changed files come from the git working tree, not the text. |
+| `detect-waste` | Flag wasteful tool usage (redundant reads, repeated queries, oversized reads) from a JSONL tool-call log on stdin. |
 | `telemetry` | Show per-tool telemetry histogram + estimated tokens saved. |
 
 <!-- markdownlint-enable MD013 -->
