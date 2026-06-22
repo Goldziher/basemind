@@ -131,43 +131,43 @@ fn run_combined(
 /// → `Function`) both fire on one declaration. Higher `specificity()` wins; document
 /// order is preserved.
 ///
-/// O(n) via an `AHashMap` keyed by `(start_byte, name)`. The earlier O(n²) `iter_mut().find`
-/// implementation cost ~100 µs on files with >500 symbols; this hash-lookup form stays under
-/// 5 µs on the same input. `entry()` performs one hash probe per symbol; on the common
-/// no-collision (new-symbol) path the name clone goes straight into the key with no second
-/// lookup. On collision, we extract the stored index and update in place.
+/// O(n) via an `AHashMap` keyed by `start_byte`, with a small inner `Vec<(name, kept_index)>`
+/// to disambiguate the (near-impossible) case of two distinct names sharing one `start_byte`.
+/// The earlier O(n²) `iter_mut().find` implementation cost ~100 µs on files with >500 symbols;
+/// this hash-lookup form stays under 5 µs on the same input. Probing by `start_byte` lets us
+/// match against a borrowed `&str` name, so the name is cloned only when inserting a brand-new
+/// entry — not on every probe. The inner Vec is almost always length 1 (name collisions at the
+/// same start byte are vanishingly rare), so the linear scan is effectively O(1).
 fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     let mut keep: Vec<Symbol> = Vec::with_capacity(syms.len());
-    let mut index: ahash::AHashMap<(u32, String), usize> =
+    let mut index: ahash::AHashMap<u32, Vec<(String, usize)>> =
         ahash::AHashMap::with_capacity(syms.len());
     for sym in syms {
-        use std::collections::hash_map::Entry;
-        match index.entry((sym.start_byte, sym.name.clone())) {
-            Entry::Occupied(e) => {
-                let idx = *e.get();
-                let existing = &mut keep[idx];
-                if sym.kind.specificity() > existing.kind.specificity() {
-                    existing.kind = sym.kind;
-                    // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
-                    // captures the whole `const F = (x) => …` line, which is the useful signature.
-                    if sym.signature.is_some() {
-                        existing.signature = sym.signature;
-                    }
-                }
-                // Decorator captures travel one-per-match (tree-sitter fires the
-                // `(decorator) @symbol.decorator` pattern once per decorator child of a
-                // decorated_definition), so on collision we union the lists — deduplicated by
-                // string, preserving first-seen order.
-                for d in sym.decorators {
-                    if !existing.decorators.contains(&d) {
-                        existing.decorators.push(d);
-                    }
+        let slot = index.entry(sym.start_byte).or_default();
+        // Probe the inner Vec with a borrowed name — no clone on the lookup path.
+        if let Some(&(_, idx)) = slot.iter().find(|(name, _)| name == &sym.name) {
+            let existing = &mut keep[idx];
+            if sym.kind.specificity() > existing.kind.specificity() {
+                existing.kind = sym.kind;
+                // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
+                // captures the whole `const F = (x) => …` line, which is the useful signature.
+                if sym.signature.is_some() {
+                    existing.signature = sym.signature;
                 }
             }
-            Entry::Vacant(e) => {
-                e.insert(keep.len());
-                keep.push(sym);
+            // Decorator captures travel one-per-match (tree-sitter fires the
+            // `(decorator) @symbol.decorator` pattern once per decorator child of a
+            // decorated_definition), so on collision we union the lists — deduplicated by
+            // string, preserving first-seen order.
+            for d in sym.decorators {
+                if !existing.decorators.contains(&d) {
+                    existing.decorators.push(d);
+                }
             }
+        } else {
+            // First sighting of this (start_byte, name): clone the name into the index once.
+            slot.push((sym.name.clone(), keep.len()));
+            keep.push(sym);
         }
     }
     keep
@@ -261,15 +261,26 @@ fn detect_accessor(slice: &str) -> Option<SymbolKind> {
 fn signature_slice(text: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let mut end = bytes.len();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'{' || b == b';' {
-            end = i;
-            break;
-        }
+    if let Some(i) = memchr::memchr2(b'{', b';', bytes) {
+        end = i;
     }
-    // Collapse whitespace runs without an intermediate Vec allocation.
-    let mut collapsed = String::new();
-    for word in text[..end].split_whitespace() {
+    let slice = &text[..end];
+
+    // Fast path: when the slice is already in its collapsed form — no leading/trailing
+    // whitespace, and every whitespace run is a single ASCII space — `split_whitespace`
+    // would reproduce it byte-for-byte. Detect that cheaply and skip the collapse loop.
+    if is_already_collapsed(slice) {
+        return if slice.is_empty() {
+            None
+        } else {
+            Some(slice.to_string())
+        };
+    }
+
+    // Slow path: collapse whitespace runs to single spaces. Pre-size to the slice length;
+    // the collapsed form is never longer than the input.
+    let mut collapsed = String::with_capacity(slice.len());
+    for word in slice.split_whitespace() {
         if !collapsed.is_empty() {
             collapsed.push(' ');
         }
@@ -280,6 +291,37 @@ fn signature_slice(text: &str) -> Option<String> {
     } else {
         Some(collapsed)
     }
+}
+
+/// True when `split_whitespace` would reproduce `slice` byte-for-byte: the slice is pure ASCII,
+/// has no leading/trailing whitespace, and contains no run of two-or-more whitespace bytes nor
+/// any whitespace byte other than a single space (tab, newline, etc.). Conservatively requires
+/// ASCII so byte-level whitespace checks fully cover Unicode-whitespace semantics.
+fn is_already_collapsed(slice: &str) -> bool {
+    let bytes = slice.as_bytes();
+    if bytes.is_empty() {
+        return true;
+    }
+    if !slice.is_ascii() {
+        return false;
+    }
+    // No leading or trailing ASCII whitespace.
+    if bytes[0].is_ascii_whitespace() || bytes[bytes.len() - 1].is_ascii_whitespace() {
+        return false;
+    }
+    let mut prev_ws = false;
+    for &b in bytes {
+        if b.is_ascii_whitespace() {
+            // Any whitespace byte must be a plain space, and never adjacent to another.
+            if b != b' ' || prev_ws {
+                return false;
+            }
+            prev_ws = true;
+        } else {
+            prev_ws = false;
+        }
+    }
+    true
 }
 
 /// Build an `Implementation` from a query match that contains:
