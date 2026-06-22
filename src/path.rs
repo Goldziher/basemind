@@ -188,6 +188,59 @@ impl std::borrow::Borrow<BStr> for RelPath {
     }
 }
 
+/// Normalize a user-supplied CLI path into the repo-relative key the index is
+/// keyed by (scanner-produced: no leading `./`, never absolute, `/`-separated).
+///
+/// Rules:
+/// - Absolute paths are made relative by stripping `repo_root`; a path that does
+///   not live under `repo_root` yields `None`.
+/// - A leading `./` is dropped; lone `.` components and redundant separators are
+///   collapsed.
+/// - `..` is honored only while it stays inside the repo; any `..` that would
+///   escape the root boundary yields `None` (we never resolve across the root).
+///
+/// Returns the normalized key, or `None` when the path escapes / falls outside
+/// the repository. An empty result (path resolves to the repo root itself) also
+/// yields `None` since there is no file key for the root.
+pub(crate) fn normalize_query_path(user_path: &str, repo_root: &std::path::Path) -> Option<String> {
+    use std::path::Component;
+
+    let path = std::path::Path::new(user_path);
+
+    // For absolute inputs, re-root against `repo_root` first. We compare on the
+    // logical (non-canonicalized) prefix so the helper stays pure and testable
+    // without touching the filesystem.
+    let relative: &std::path::Path = if path.is_absolute() {
+        path.strip_prefix(repo_root).ok()?
+    } else {
+        path
+    };
+
+    let mut parts: Vec<&str> = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(os) => {
+                // CLI paths are UTF-8; bail to None on the rare non-UTF-8 component
+                // rather than corrupting the key.
+                parts.push(os.to_str()?);
+            }
+            Component::ParentDir => {
+                // Popping past the root escapes the repo — reject (`?` yields None).
+                parts.pop()?;
+            }
+            // An absolute remainder or a Windows prefix after stripping means the
+            // path is not a clean repo-relative key.
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
 // ─── serde — discriminated wire format ──────────────────────────────────────
 
 impl Serialize for RelPath {
@@ -318,6 +371,70 @@ mod tests {
         let s = format!("{bad}");
         // U+FFFD takes 3 bytes in UTF-8.
         assert!(s.contains('\u{FFFD}'), "got {s:?}");
+    }
+
+    #[test]
+    fn normalize_absolute_inside_repo_becomes_relative() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            normalize_query_path("/abs/repo/src/foo.rs", root),
+            Some("src/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_dot_slash_prefix_is_stripped() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            normalize_query_path("./src/foo.rs", root),
+            Some("src/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_already_relative_is_unchanged() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            normalize_query_path("src/foo.rs", root),
+            Some("src/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_absolute_outside_repo_is_none() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(normalize_query_path("/other/place/foo.rs", root), None);
+    }
+
+    #[test]
+    fn normalize_collapses_redundant_separators_and_dots() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            normalize_query_path("src/./bar/foo.rs", root),
+            Some("src/bar/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_parent_inside_repo_resolves() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(
+            normalize_query_path("src/sub/../foo.rs", root),
+            Some("src/foo.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_parent_escaping_root_is_none() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(normalize_query_path("../outside.rs", root), None);
+    }
+
+    #[test]
+    fn normalize_root_itself_is_none() {
+        let root = std::path::Path::new("/abs/repo");
+        assert_eq!(normalize_query_path("/abs/repo", root), None);
+        assert_eq!(normalize_query_path(".", root), None);
     }
 
     #[test]

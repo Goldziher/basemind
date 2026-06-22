@@ -11,9 +11,24 @@ use clap::Subcommand;
 
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
+use crate::path::{RelPath, normalize_query_path};
 
 use super::render::emit;
 use super::run_tool;
+
+/// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the
+/// index is keyed by (scanner-produced: no leading `./`, never absolute).
+///
+/// `query outline /abs/repo/src/foo.rs` and `query outline ./src/foo.rs` both
+/// resolve to `src/foo.rs`. Paths that escape or fall outside the repository
+/// can't match an indexed file, so we fall back to the raw input and let the
+/// downstream tool report "file not indexed" rather than silently mangling it.
+fn resolve_path(server: &BasemindServer, path: &str) -> RelPath {
+    match normalize_query_path(path, &server.state.root) {
+        Some(rel) => RelPath::from(rel),
+        None => RelPath::from(path),
+    }
+}
 
 #[derive(Subcommand, Debug)]
 pub enum QueryCmd {
@@ -115,7 +130,7 @@ pub async fn run(
     match cmd {
         QueryCmd::Outline { path, l2 } => {
             let p = OutlineParams {
-                path: path.as_str().into(),
+                path: resolve_path(server, &path),
                 l2,
                 max_tokens: None,
                 format: None,
@@ -168,7 +183,7 @@ pub async fn run(
             limit,
         } => {
             let p = FindCallersParams {
-                path: path.as_str().into(),
+                path: resolve_path(server, &path),
                 name,
                 kind,
                 limit,
@@ -209,7 +224,7 @@ pub async fn run(
             let p = CallGraphParams {
                 name,
                 direction,
-                path: path.map(|s| s.as_str().into()),
+                path: path.map(|s| resolve_path(server, &s)),
                 max_depth,
                 max_nodes,
             };
