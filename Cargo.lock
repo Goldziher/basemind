@@ -4751,7 +4751,9 @@ dependencies = [
  "indicatif 0.18.4",
  "libc",
  "log",
+ "native-tls",
  "rand 0.9.4",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -5709,9 +5711,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg"
-version = "5.0.0-rc.28"
+version = "5.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bffa97781f353353c03e89abf194f5e2766f714521a7f96149efbb6637385ffe"
+checksum = "3de4a2bd449a807b93bd5cd83e99f7048ca0dcad0aa171cbd7a20169abb9d47a"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -5828,9 +5830,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-libheif"
-version = "5.0.0-rc.28"
+version = "5.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55727ee9eac9bf4ba16db6d8c8388e90093f216793ffce7749462dcb5f47f1fe"
+checksum = "7e66de98e0b086040140c899e107648f5c248fc9a857b1cd14370f08f65bc0eb"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -5852,9 +5854,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.28"
+version = "5.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "570a09fffbe208ac7d03fcba9a2f2ebfd2eea8f0d43ac7ce974343e36b535e57"
+checksum = "4aa0a3def168a5e332a3d62e6798030b2a9e8c5e86d71837d73e28b438ccda33"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -5868,9 +5870,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-tesseract"
-version = "5.0.0-rc.28"
+version = "5.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d68dfa92bb2d01a691b07bd71d7247a570513be0ed36d0bcf529d37401b703e1"
+checksum = "ac8866f50233fd57e3efe8519e0a09f4d2a861668be22e13dbaf7b8bb594fb4c"
 dependencies = [
  "cc",
  "cmake",
@@ -6611,6 +6613,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d2593dda939875015d3e1a9deccdb57381d4ef1fc9a96120731b25990579689"
 dependencies = [
  "cfg-if",
+ "cmake",
  "libc",
  "system-deps",
  "vcpkg",
@@ -8823,11 +8826,13 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-rustls",
+ "hyper-tls",
  "hyper-util",
  "js-sys",
  "log",
  "mime",
  "mime_guess",
+ "native-tls",
  "percent-encoding",
  "pin-project-lite",
  "quinn",
@@ -8839,6 +8844,7 @@ dependencies = [
  "serde_urlencoded",
  "sync_wrapper",
  "tokio",
+ "tokio-native-tls",
  "tokio-rustls",
  "tokio-util",
  "tower 0.5.3",
