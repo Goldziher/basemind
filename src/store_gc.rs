@@ -127,7 +127,12 @@ pub struct CacheStats {
     pub views_bytes: u64,
     /// Recursive byte size of `lance/`.
     pub lance_bytes: u64,
-    /// Recursive byte size of `git-cache/`.
+    /// Recursive byte size of the **on-disk** git cache (`git-cache/`). The git cache is a
+    /// two-layer cache (RAM LRU + optional disk); this counts only the disk layer. A `0`
+    /// therefore means nothing has been *persisted* — either no disk-backed git tool has run
+    /// yet, or the server was started with `--no-git-cache-disk` (RAM-only by design), in
+    /// which case live git-tool results are cached in RAM and legitimately leave no disk
+    /// footprint. It is not, on its own, evidence that the git cache is unused.
     pub git_cache_bytes: u64,
     /// Byte size of `telemetry.jsonl`.
     pub telemetry_bytes: u64,
@@ -271,6 +276,30 @@ pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result
         CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
     }
     Ok(())
+}
+
+/// Clear a single view by name: removes only `views/<name>/` (its `index.msgpack` + Fjall
+/// trees), leaving every other view and the shared blob store intact. This is the targeted
+/// counterpart to [`clear_component`]`(CacheComponent::Views)`, which removes the whole
+/// `views/` directory.
+///
+/// The blobs a view referenced are NOT touched here — they are content-addressed and may be
+/// shared with other views. Run [`run_gc`] afterwards to reclaim any now-orphaned blobs.
+///
+/// `name` is validated to be a single path component (no separators, no `..`) so a caller
+/// can never escape the `views/` directory. Returns `Ok(())` even when the view does not
+/// exist (idempotent), but errors on an invalid name.
+pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err(GcError::Io {
+            path: basemind_dir.join(VIEWS_DIR).join(name),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid view name {name:?}: must be a single path component"),
+            ),
+        });
+    }
+    remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR).join(name))
 }
 
 /// Gather per-component sizes and blob accounting without mutating anything. The orphan
@@ -605,6 +634,73 @@ mod tests {
             fx.basemind_dir.join(TELEMETRY_FILENAME).exists(),
             "telemetry untouched by Blobs clear"
         );
+    }
+
+    /// Build a fixture with two scanned views (`working` + `rev-abc`), each with a real
+    /// `index.msgpack`, sharing the blob store. Returns the basemind dir.
+    fn build_two_view_fixture() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let basemind_dir = tmp.path().join(".basemind");
+        for view in ["working", "rev-abc"] {
+            let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
+            fs::create_dir_all(&view_dir).expect("mk view");
+            let mut index = Index::empty();
+            index.files.insert(
+                crate::path::RelPath::from("src/main.rs"),
+                FileEntry {
+                    hash_hex: "a".repeat(64),
+                    language: "rust".to_string(),
+                    size_bytes: 2,
+                    mtime: 0,
+                },
+            );
+            let bytes = rmp_serde::to_vec_named(&index).expect("encode");
+            fs::write(view_dir.join(INDEX_FILE), bytes).expect("write index");
+        }
+        (tmp, basemind_dir)
+    }
+
+    #[test]
+    fn should_clear_single_view_and_leave_others_intact() {
+        // bug #22: clearing one view by name must NOT nuke every view.
+        let (_tmp, basemind_dir) = build_two_view_fixture();
+
+        clear_single_view(&basemind_dir, "rev-abc").expect("clear one view");
+
+        assert!(
+            !basemind_dir.join(VIEWS_DIR).join("rev-abc").exists(),
+            "named view removed"
+        );
+        assert!(
+            basemind_dir
+                .join(VIEWS_DIR)
+                .join("working")
+                .join(INDEX_FILE)
+                .exists(),
+            "other view survives single-view clear"
+        );
+    }
+
+    #[test]
+    fn clear_single_view_is_idempotent_for_missing_view() {
+        let (_tmp, basemind_dir) = build_two_view_fixture();
+        clear_single_view(&basemind_dir, "rev-does-not-exist").expect("missing view is a no-op");
+        // Existing views untouched.
+        assert!(basemind_dir.join(VIEWS_DIR).join("working").exists());
+        assert!(basemind_dir.join(VIEWS_DIR).join("rev-abc").exists());
+    }
+
+    #[test]
+    fn clear_single_view_rejects_path_traversal() {
+        let (_tmp, basemind_dir) = build_two_view_fixture();
+        for bad in ["..", "a/b", "../escape", ""] {
+            assert!(
+                clear_single_view(&basemind_dir, bad).is_err(),
+                "invalid view name {bad:?} must be rejected"
+            );
+        }
+        // The legitimate views are untouched by the rejected calls.
+        assert!(basemind_dir.join(VIEWS_DIR).join("working").exists());
     }
 
     #[test]

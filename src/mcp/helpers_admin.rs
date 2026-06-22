@@ -76,9 +76,36 @@ pub(super) async fn run_cache_clear(
     state: Arc<ServerState>,
     params: CacheClearParams,
 ) -> Result<CallToolResult, McpError> {
+    // `views:<name>` clears a single view (bug #22). Safe in-process for any view EXCEPT the
+    // one this server currently has open (deleting its live Fjall handle's dir would break it
+    // — same hazard as `views`/`all`). Reclaims disk from stale rev/staged views while serving.
+    if let Some(name) = params.component.strip_prefix("views:") {
+        let name = name.to_string();
+        let active_view = state.store.read().await.view.clone();
+        if name == active_view {
+            return Err(McpError::invalid_request(
+                format!(
+                    "view `{name}` is the one this server is serving; clearing it would break \
+                     the live index. Stop the server and run `basemind cache clear --component \
+                     views:{name}`, or serve a different view."
+                ),
+                None,
+            ));
+        }
+        let dir = state.store.read().await.basemind_dir.clone();
+        tokio::task::spawn_blocking(move || store_gc::clear_single_view(&dir, &name))
+            .await
+            .map_err(|e| McpError::internal_error(format!("cache_clear join: {e}"), None))?
+            .map_err(|e| McpError::invalid_request(format!("cache_clear: {e}"), None))?;
+        return json_result(&CacheClearResponse {
+            component: params.component.clone(),
+            cleared: true,
+        });
+    }
+
     let component: CacheComponent = params.component.parse().map_err(|e: String| {
         McpError::invalid_request(
-            format!("{e} (valid: blobs|views|lance|git-cache|telemetry|all)"),
+            format!("{e} (valid: blobs|views|lance|git-cache|telemetry|all, or views:<name>)"),
             None,
         )
     })?;

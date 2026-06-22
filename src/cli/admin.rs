@@ -26,12 +26,14 @@ pub enum CacheCmd {
     Gc,
     /// Report on-disk size + blob accounting for the `.basemind/` cache.
     Stats,
-    /// Clear a cache component (`blobs|views|lance|git-cache|telemetry|all`).
+    /// Clear a cache component (`blobs|views|lance|git-cache|telemetry|all`), or a
+    /// single view with `views:<name>` (e.g. `views:rev-abc1234`).
     ///
     /// Run with no `--component` to clear `git-cache` (back-compat with the old
     /// `basemind cache clear`).
     Clear {
-        /// Component to clear. Defaults to `git-cache` for back-compat.
+        /// Component to clear (`blobs|views|lance|git-cache|telemetry|all`), or
+        /// `views:<name>` for a single view. Defaults to `git-cache` for back-compat.
         #[arg(long, default_value = "git-cache")]
         component: String,
     },
@@ -80,13 +82,20 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             }
         }
         CacheCmd::Clear { component } => {
-            let comp = CacheComponent::from_str(&component).map_err(|e| anyhow::anyhow!(e))?;
-            store_gc::clear_component(&basemind_dir, comp)
-                .with_context(|| format!("clear cache component {component}"))?;
-            let value = serde_json::json!({
-                "component": comp.as_str(),
-                "cleared": true,
-            });
+            // `views:<name>` clears a single view, leaving the others + shared blobs intact
+            // (bug #22 — `--component views` removes ALL views). Offline + lock-free like the
+            // other components; clearing a view a running server is serving will break that
+            // server's open handle, same caveat as `--component views`.
+            let value = if let Some(name) = component.strip_prefix("views:") {
+                store_gc::clear_single_view(&basemind_dir, name)
+                    .with_context(|| format!("clear single view {name}"))?;
+                serde_json::json!({ "component": format!("views:{name}"), "cleared": true })
+            } else {
+                let comp = CacheComponent::from_str(&component).map_err(|e| anyhow::anyhow!(e))?;
+                store_gc::clear_component(&basemind_dir, comp)
+                    .with_context(|| format!("clear cache component {component}"))?;
+                serde_json::json!({ "component": comp.as_str(), "cleared": true })
+            };
             if json {
                 render_json(&value, out)
             } else {
