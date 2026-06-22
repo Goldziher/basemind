@@ -32,6 +32,7 @@ mod lean;
 mod lenient;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
+mod prompts;
 mod savings;
 mod telemetry;
 mod tokens;
@@ -66,8 +67,12 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use lru::LruCache;
 use rmcp::ServerHandler;
+use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
-use rmcp::model::{ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    GetPromptRequestParams, GetPromptResult, ListPromptsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerInfo,
+};
 use rmcp::tool_handler;
 use tokio::sync::RwLock;
 
@@ -133,6 +138,9 @@ pub struct BasemindServer {
     // Touched by macro-generated dispatch; dead_code can't see that.
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
+    /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
+    /// `#[prompt_router]` macro in [`prompts`]; `list_prompts` / `get_prompt` delegate here.
+    prompt_router: PromptRouter<Self>,
 }
 
 pub(crate) struct ServerState {
@@ -477,6 +485,7 @@ impl BasemindServer {
         Self {
             state,
             tool_router: router,
+            prompt_router: Self::prompt_router(),
         }
     }
 }
@@ -748,8 +757,44 @@ impl ServerHandler for BasemindServer {
         self.tool_router.get(name).cloned()
     }
 
+    /// `prompts/list`: advertise the reusable prompt templates. Delegates to the
+    /// `#[prompt_router]`-built router (basemind can't use `#[prompt_handler]` — it would
+    /// regenerate `get_info`).
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListPromptsResult, rmcp::ErrorData> {
+        Ok(ListPromptsResult {
+            prompts: self.prompt_router.list_all(),
+            meta: None,
+            next_cursor: None,
+        })
+    }
+
+    /// `prompts/get`: render one prompt template with its arguments, via the prompt router.
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<GetPromptResult, rmcp::ErrorData> {
+        let prompt_context = rmcp::handler::server::prompt::PromptContext::new(
+            self,
+            request.name,
+            request.arguments,
+            context,
+        );
+        self.prompt_router.get_prompt(prompt_context).await
+    }
+
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .build(),
+        )
+        .with_instructions(
             "basemind is the indexed context layer for this repository, served over MCP: a \
              tree-sitter code map across 300+ languages (symbols, references, callers, call \
              graphs, implementations), git history + blame at symbol resolution, full-text + \
