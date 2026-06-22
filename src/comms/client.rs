@@ -153,7 +153,9 @@ impl CommsClient {
     async fn dial(
         paths: &CommsPaths,
     ) -> Result<(UnixStream, LengthDelimitedCodec), CommsClientError> {
-        let stream = UnixStream::connect(&paths.socket_path).await?;
+        let stream = UnixStream::connect(&paths.socket_path)
+            .await
+            .map_err(|source| daemon_unreachable_error(&paths.socket_path, source))?;
         let mut codec = LengthDelimitedCodec::new();
         codec.set_max_frame_length(MAX_FRAME_BYTES);
         Ok((stream, codec))
@@ -555,6 +557,61 @@ fn is_connection_lost(err: &CommsClientError) -> bool {
                 | std::io::ErrorKind::UnexpectedEof
         ),
         _ => false,
+    }
+}
+
+#[cfg(all(test, feature = "comms", unix))]
+mod tests {
+    use super::*;
+
+    /// Dialing a socket path that no daemon is listening on must surface an actionable error
+    /// naming that the comms daemon is not running and how to start it — not a bare OS string.
+    #[tokio::test]
+    async fn dial_missing_socket_reports_daemon_not_running_with_start_hint() {
+        let dir = std::env::temp_dir().join(format!("basemind-comms-test-{}", std::process::id()));
+        let paths = CommsPaths {
+            comms_dir: dir.clone(),
+            socket_path: dir.join("definitely-absent.sock"),
+        };
+
+        let err = match CommsClient::dial(&paths).await {
+            Ok(_) => panic!("dialing an absent socket must fail"),
+            Err(err) => err,
+        };
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("comms daemon is not running"),
+            "error should name that the daemon is not running, got: {msg}"
+        );
+        assert!(
+            msg.contains("basemind comms start"),
+            "error should name the start command, got: {msg}"
+        );
+        assert!(
+            !msg.starts_with("comms transport error: No such file or directory"),
+            "error must not be the bare OS string, got: {msg}"
+        );
+    }
+}
+
+/// Map a `UnixStream::connect` failure into an actionable error. A missing socket file
+/// (`NotFound`) or a refused connection (`ConnectionRefused`) means no daemon is listening, so we
+/// wrap it with a message naming that the comms daemon is not running and the start command
+/// (`basemind comms start`). Any other connect error keeps its original `io::Error` context.
+fn daemon_unreachable_error(socket_path: &Path, source: std::io::Error) -> CommsClientError {
+    match source.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            CommsClientError::Io(std::io::Error::new(
+                source.kind(),
+                format!(
+                    "comms daemon is not running (no socket at {}); start it with \
+                     `basemind comms start`",
+                    socket_path.display()
+                ),
+            ))
+        }
+        _ => CommsClientError::Io(source),
     }
 }
 
