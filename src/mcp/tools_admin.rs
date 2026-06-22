@@ -35,11 +35,22 @@ impl BasemindServer {
     pub(crate) async fn rescan(
         &self,
         Parameters(p): Parameters<RescanParams>,
+        peer: rmcp::Peer<rmcp::RoleServer>,
+        meta: rmcp::model::Meta,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            async { super::helpers::run_rescan(std::sync::Arc::clone(&self.state), p).await }.await;
+        let progress_token = meta.get_progress_token();
+        let __result: Result<CallToolResult, McpError> = async {
+            super::helpers_admin::run_rescan(
+                std::sync::Arc::clone(&self.state),
+                p,
+                &peer,
+                progress_token,
+            )
+            .await
+        }
+        .await;
         record_call(&self.state, "rescan", &__params_json, __started, &__result);
         __result
     }

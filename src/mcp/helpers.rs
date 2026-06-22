@@ -759,35 +759,6 @@ pub(super) async fn scan_and_refresh(
     Ok(report)
 }
 
-pub(super) async fn run_rescan(
-    state: Arc<ServerState>,
-    params: super::types::RescanParams,
-) -> Result<CallToolResult, McpError> {
-    let started = std::time::Instant::now();
-    // `full` forces a complete working-tree scan even when `paths` is supplied (full wins);
-    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Repo-relative request
-    // paths are joined to the absolute root — `scan_paths` strips the root prefix and silently
-    // drops anything that is not under it, so a bare relative path would be a no-op scan.
-    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
-        .paths
-        .filter(|_| !params.full)
-        .map(|v| v.into_iter().map(|p| state.root.join(p)).collect());
-
-    let root = state.root.display().to_string();
-    let report = scan_and_refresh(state, scoped_paths).await?;
-
-    json_result(&super::types::RescanResponse {
-        scanned: report.stats.scanned,
-        updated: report.stats.updated,
-        removed: report.stats.removed,
-        skipped_unchanged: report.stats.skipped_unchanged,
-        skipped_no_lang: report.stats.skipped_no_lang,
-        extract_failed: report.stats.extract_failed,
-        elapsed_ms: started.elapsed().as_millis(),
-        root,
-    })
-}
-
 /// Body for the `telemetry_summary` MCP tool. Thin wrapper — the aggregation logic
 /// lives in [`super::telemetry::summarize`] so this module stays under the line cap.
 pub(super) async fn run_telemetry_summary(

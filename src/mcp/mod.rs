@@ -33,6 +33,7 @@ mod lean;
 mod lenient;
 #[cfg(any(feature = "memory", feature = "documents"))]
 mod memory;
+mod notifications;
 mod prompts;
 mod savings;
 mod telemetry;
@@ -207,6 +208,10 @@ pub(crate) struct ServerState {
     /// failure surfaces as an MCP error on the call, never at server boot.
     #[cfg(all(feature = "comms", unix))]
     pub(crate) comms_client: tokio::sync::Mutex<Option<crate::comms::client::CommsClient>>,
+    /// Minimum logging severity the client asked for via `logging/setLevel`, as an ordinal
+    /// (see [`notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
+    /// the server honors the client's verbosity preference.
+    pub(crate) log_level: std::sync::atomic::AtomicU8,
 }
 
 pub(crate) struct MapCache {
@@ -412,6 +417,7 @@ impl BasemindServer {
             crawl_engine,
             #[cfg(all(feature = "comms", unix))]
             comms_client: tokio::sync::Mutex::new(None),
+            log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
         // no auto-scan, no background GC. They preload the map cache (above) and
@@ -788,6 +794,20 @@ impl ServerHandler for BasemindServer {
         self.prompt_router.get_prompt(prompt_context).await
     }
 
+    /// `logging/setLevel`: record the minimum severity the client wants. Subsequent log
+    /// notifications (e.g. from `rescan`) are gated on this threshold.
+    async fn set_level(
+        &self,
+        request: rmcp::model::SetLevelRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        self.state.log_level.store(
+            notifications::level_ordinal(request.level),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(())
+    }
+
     /// `completion/complete`: autocomplete a prompt argument from the indexed code map (symbol
     /// names for `trace-symbol`, file paths for `explain-file`). Pure in-RAM prefix scan.
     async fn complete(
@@ -804,6 +824,7 @@ impl ServerHandler for BasemindServer {
                 .enable_tools()
                 .enable_prompts()
                 .enable_completions()
+                .enable_logging()
                 .build(),
         )
         .with_instructions(

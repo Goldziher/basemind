@@ -169,3 +169,81 @@ async fn clear_live_component(
     .map_err(|e| McpError::internal_error(format!("cache_clear join: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("cache_clear: {e}"), None))
 }
+
+/// Body for the `rescan` MCP tool. Re-indexes the working tree (or `paths`) in-process and,
+/// because it is one of the few genuinely slow tools, emits MCP progress (when the client
+/// supplies a token) and a completion logging notification. Lives here with the other admin-tool
+/// bodies so `helpers.rs` stays under the line cap.
+pub(super) async fn run_rescan(
+    state: Arc<ServerState>,
+    params: super::types::RescanParams,
+    peer: &rmcp::Peer<rmcp::RoleServer>,
+    progress_token: Option<rmcp::model::ProgressToken>,
+) -> Result<CallToolResult, McpError> {
+    let started = std::time::Instant::now();
+    // `full` forces a complete working-tree scan even when `paths` is supplied (full wins);
+    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Repo-relative request
+    // paths are joined to the absolute root — `scan_paths` strips the root prefix and silently
+    // drops anything that is not under it, so a bare relative path would be a no-op scan.
+    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
+        .paths
+        .filter(|_| !params.full)
+        .map(|v| v.into_iter().map(|p| state.root.join(p)).collect());
+
+    let root = state.root.display().to_string();
+
+    // Tell the client the rescan has started (progress is indeterminate up front — the scanner
+    // discovers the file count as it walks).
+    if let Some(token) = progress_token.clone() {
+        super::notifications::emit_progress(
+            peer,
+            token,
+            0.0,
+            None,
+            "rescan: scanning working tree",
+        )
+        .await;
+    }
+
+    let report = scan_and_refresh(Arc::clone(&state), scoped_paths).await?;
+
+    // Surface the outcome as a logging notification (gated on the client's level) and close out
+    // progress with the discovered file count as both value and total.
+    super::notifications::emit_log(
+        peer,
+        &state.log_level,
+        rmcp::model::LoggingLevel::Info,
+        "basemind.rescan",
+        serde_json::json!({
+            "event": "rescan_complete",
+            "scanned": report.stats.scanned,
+            "updated": report.stats.updated,
+            "removed": report.stats.removed,
+            "extract_failed": report.stats.extract_failed,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        }),
+    )
+    .await;
+    if let Some(token) = progress_token {
+        let scanned = report.stats.scanned as f64;
+        super::notifications::emit_progress(
+            peer,
+            token,
+            scanned,
+            Some(scanned),
+            format!("rescan: done, {} files", report.stats.scanned),
+        )
+        .await;
+    }
+
+    json_result(&super::types::RescanResponse {
+        scanned: report.stats.scanned,
+        updated: report.stats.updated,
+        removed: report.stats.removed,
+        skipped_unchanged: report.stats.skipped_unchanged,
+        skipped_no_lang: report.stats.skipped_no_lang,
+        extract_failed: report.stats.extract_failed,
+        elapsed_ms: started.elapsed().as_millis(),
+        root,
+    })
+}
