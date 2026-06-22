@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use basemind::config::{self, Config, DocumentsCliOverrides};
 use basemind::render::{self, Verbosity};
-use basemind::store::Store;
+use basemind::store::{LockHolder, Store};
 use basemind::watcher::{BatchKind, WatchBatch};
 
 #[derive(Parser, Debug)]
@@ -261,12 +261,32 @@ enum HookCmd {
     Install,
 }
 
+/// Default tracing directive when `RUST_LOG` is unset, derived from the parsed
+/// verbosity. `--quiet` raises the threshold to `warn` so subsystem INFO logs are
+/// suppressed during a scan; `--verbose` lowers it to `debug`; otherwise `info`.
+/// An explicit `RUST_LOG` always wins (callers honor it before this fallback).
+fn default_log_directive(verbosity: Verbosity) -> &'static str {
+    match verbosity {
+        Verbosity::Quiet => "warn",
+        Verbosity::Default => "info",
+        Verbosity::Verbose => "debug",
+    }
+}
+
 fn main() -> Result<()> {
+    // Parse before initializing tracing so the verbosity flag can feed the default
+    // log threshold. `Cli::parse()` exits on `--help`/errors and logs nothing, so
+    // running it ahead of subscriber init is safe.
+    let cli = Cli::parse();
+    let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
+
     // Diagnostics → stderr so they never collide with subcommand output (especially `serve`,
-    // whose stdout is the MCP JSON-RPC transport).
+    // whose stdout is the MCP JSON-RPC transport). An explicit `RUST_LOG` wins; otherwise the
+    // default threshold tracks `--quiet` / `--verbose` so `-q` actually silences subsystem logs.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new(default_log_directive(verbosity))),
         )
         .with_target(false)
         .with_writer(std::io::stderr)
@@ -280,8 +300,6 @@ fn main() -> Result<()> {
     #[cfg(feature = "a2a")]
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
-    let cli = Cli::parse();
-    let verbosity = Verbosity::from_flags(cli.quiet, cli.verbose);
     let no_color = cli.no_color;
     let start = cli
         .root
@@ -584,6 +602,10 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             | Cmd::Telemetry { .. }
             | Cmd::Cache(_)
     );
+    // Comms verbs emit JSON when `--json` is passed (each verb checks `if json`), so they
+    // consume the flag too. Feature-gated + unix-only to match the `Cmd::Comms` definition.
+    #[cfg(all(feature = "comms", unix))]
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. });
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));
 
     if json && !consumes_json {
@@ -661,8 +683,13 @@ fn load_or_default_with(
 /// `is_lock_contention` collapses both into one friendly message that leads with what to
 /// do; the underlying `StoreError` is preserved as the error source (visible under `-v` /
 /// the full anyhow chain) so we never swallow the cause.
-fn open_store_for_write(root: &std::path::Path, view: &str, what: &str) -> Result<Store> {
-    Store::open(root, view).map_err(|err| {
+fn open_store_for_write(
+    root: &std::path::Path,
+    view: &str,
+    what: &str,
+    holder: LockHolder,
+) -> Result<Store> {
+    Store::open_with_holder(root, view, holder).map_err(|err| {
         if err.is_lock_contention() {
             anyhow::Error::new(err).context(basemind::store::LOCK_CONTENTION_HELP.to_string())
         } else {
@@ -686,7 +713,12 @@ fn cmd_scan(
     if args.staged {
         let repo = basemind::git::Repo::discover(root)
             .context("`--staged` requires being inside a git repository")?;
-        let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged")?;
+        let mut store = open_store_for_write(
+            root,
+            basemind::store::VIEW_STAGED,
+            "staged",
+            LockHolder::Scan,
+        )?;
         render::render_scan_header(&mut out, "staged index", verbosity);
         let report = basemind::scanner::scan(
             root,
@@ -696,9 +728,8 @@ fn cmd_scan(
         )
         .context("scan staged")?;
         render::render_report(&mut out, &report, verbosity);
-        if report.stats.read_failed + report.stats.extract_failed > 0 {
-            std::process::exit(2);
-        }
+        // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
+        // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
         return Ok(());
     }
     if let Some(rev_spec) = &args.rev {
@@ -707,7 +738,7 @@ fn cmd_scan(
         let sha = repo.resolve_rev(rev_spec).context("resolve rev")?;
         let short = &sha[..7.min(sha.len())];
         let view = basemind::store::view_name_for_rev(short);
-        let mut store = open_store_for_write(root, &view, "rev")?;
+        let mut store = open_store_for_write(root, &view, "rev", LockHolder::Scan)?;
         render::render_scan_header(&mut out, &format!("rev {short}"), verbosity);
         let report = basemind::scanner::scan(
             root,
@@ -720,13 +751,16 @@ fn cmd_scan(
         )
         .context("scan rev")?;
         render::render_report(&mut out, &report, verbosity);
-        if report.stats.read_failed + report.stats.extract_failed > 0 {
-            std::process::exit(2);
-        }
+        // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
         return Ok(());
     }
 
-    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan")?;
+    let mut store = open_store_for_write(
+        root,
+        basemind::store::VIEW_WORKING,
+        "scan",
+        LockHolder::Scan,
+    )?;
     let report = basemind::scanner::scan(
         root,
         &mut store,
@@ -735,9 +769,8 @@ fn cmd_scan(
     )
     .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
-    if report.stats.read_failed + report.stats.extract_failed > 0 {
-        std::process::exit(2);
-    }
+    // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
+    // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
     Ok(())
 }
 
@@ -749,7 +782,12 @@ fn cmd_rescan(
 ) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
-    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan")?;
+    let mut store = open_store_for_write(
+        root,
+        basemind::store::VIEW_WORKING,
+        "rescan",
+        LockHolder::Rescan,
+    )?;
     let mut out = render::stdout(no_color);
 
     // `--full` or no paths → full working-tree re-index. Otherwise re-index only the
@@ -768,9 +806,8 @@ fn cmd_rescan(
         basemind::scanner::scan_paths(root, &mut store, &config, &abs).context("rescan (paths)")?
     };
     render::render_report(&mut out, &report, verbosity);
-    if report.stats.read_failed + report.stats.extract_failed > 0 {
-        std::process::exit(2);
-    }
+    // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0
+    // (matches `cmd_scan`; a genuine failure-to-update aborts earlier via `?`). Bug #24.
     Ok(())
 }
 
@@ -778,7 +815,8 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     bootstrap_grammars(verbosity, no_color)?;
     let config = Arc::new(load_or_default(root)?);
     let store = Arc::new(Mutex::new(
-        Store::open(root, basemind::store::VIEW_WORKING).context("open store")?,
+        Store::open_with_holder(root, basemind::store::VIEW_WORKING, LockHolder::Watch)
+            .context("open store")?,
     ));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -818,11 +856,29 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 }
 
 fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
+    // A named, non-working view (`rev-<sha>`, `staged`) that was never scanned has no
+    // index; serving it would silently fall back to an empty index (bug #18). The writer
+    // `Store::open` would auto-create the view dir, so guard here BEFORE opening: refuse a
+    // named view with no `index.msgpack`. The working view is exempt — it legitimately
+    // starts empty and `serve` auto-scans it on first run.
+    if view != basemind::store::VIEW_WORKING {
+        let index_path = root
+            .join(basemind::config::BASEMIND_DIR)
+            .join(basemind::store::VIEWS_DIR)
+            .join(view)
+            .join(basemind::store::INDEX_FILE);
+        if !index_path.exists() {
+            anyhow::bail!(
+                "view {view:?} has not been scanned; run `basemind scan --view {view}` first \
+                 (or omit --view to serve the working view)"
+            );
+        }
+    }
     // Open the store in writable mode so the `rescan` MCP tool can run the
     // scanner in-process. The MCP server is the canonical Fjall owner; the
     // standalone `basemind scan` / `basemind watch` CLIs intentionally fail
     // with a lock error when a server is already running against the repo.
-    let store = Store::open(root, view).context("open store")?;
+    let store = Store::open_with_holder(root, view, LockHolder::Serve).context("open store")?;
     let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
     let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);

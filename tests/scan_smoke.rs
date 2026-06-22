@@ -291,7 +291,7 @@ fn store_lock_prevents_concurrent_open() {
     let err = Store::open(root, basemind::store::VIEW_WORKING)
         .err()
         .expect("second open must fail");
-    assert!(matches!(err, basemind::store::StoreError::Locked(_)));
+    assert!(matches!(err, basemind::store::StoreError::Locked { .. }));
     drop(first);
     // After dropping, open succeeds again.
     Store::open(root, basemind::store::VIEW_WORKING).unwrap();

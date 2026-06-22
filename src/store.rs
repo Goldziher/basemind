@@ -17,6 +17,10 @@ use crate::path::RelPath;
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
+/// Sidecar JSON written next to `.lock` naming the live lock holder (command + pid +
+/// timestamp). Read on contention so the error can name the *actual* holder instead of a
+/// hardcoded guess. Best-effort: a missing/corrupt sidecar degrades to a generic message.
+pub const LOCK_META_FILE: &str = ".lock.meta";
 pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
@@ -30,6 +34,51 @@ pub const VIEW_STAGED: &str = "staged";
 /// Build the view name used for an arbitrary rev. Slash-free so it's a single directory.
 pub fn view_name_for_rev(short_sha: &str) -> String {
     format!("rev-{short_sha}")
+}
+
+/// Which basemind command is taking the exclusive store lock. Threaded from the caller
+/// (`scan` / `rescan` / `watch` / `serve`) into [`Store::open_with_holder`] so a lock
+/// contention error can name the *actual* holder rather than a hardcoded guess.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockHolder {
+    /// `basemind serve` — the long-running MCP server (the common holder; an editor plugin).
+    Serve,
+    /// `basemind watch` — the filesystem watcher / incremental re-indexer.
+    Watch,
+    /// `basemind scan` — a one-shot full index.
+    Scan,
+    /// `basemind rescan` — an incremental re-index.
+    Rescan,
+    /// GC / cache maintenance or any caller that did not specify a more precise identity.
+    Maintenance,
+}
+
+impl LockHolder {
+    /// The exact CLI command a user would run for this holder, used verbatim in the error
+    /// message so the guidance is actionable ("stop `basemind serve`").
+    pub fn command(self) -> &'static str {
+        match self {
+            LockHolder::Serve => "basemind serve",
+            LockHolder::Watch => "basemind watch",
+            LockHolder::Scan => "basemind scan",
+            LockHolder::Rescan => "basemind rescan",
+            LockHolder::Maintenance => "a basemind cache/maintenance task",
+        }
+    }
+}
+
+/// On-disk sidecar describing who currently holds the store lock. Written atomically when
+/// the exclusive lock is acquired and read on contention. Additive, non-load-bearing: a
+/// missing or corrupt sidecar simply falls back to the generic lock message, so it never
+/// trips schema wipe-on-mismatch (it lives outside the versioned index/blob stores).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockMeta {
+    /// The CLI command of the holder (`basemind serve`, etc.).
+    pub command: String,
+    /// OS process id of the holder.
+    pub pid: u32,
+    /// Unix-epoch seconds when the lock was acquired.
+    pub acquired_unix: i64,
 }
 
 #[derive(Debug, Error)]
@@ -46,12 +95,21 @@ pub enum StoreError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("schema version mismatch: stored {found}, current {expected}")]
     SchemaMismatch { found: u16, expected: u16 },
-    #[error(
-        "another basemind process holds the lock on {0} (usually the `basemind serve` MCP server from your editor plugin, or `basemind watch`)"
-    )]
-    Locked(PathBuf),
+    #[error("{}", lock_contention_message(.path, .holder))]
+    Locked {
+        /// The `.lock` path whose acquisition failed.
+        path: PathBuf,
+        /// The live holder read from the `.lock.meta` sidecar, when present. `None` when the
+        /// sidecar is missing/corrupt — the message then falls back to a generic guess.
+        holder: Option<LockMeta>,
+    },
     #[error("inverted index error: {0}")]
     Index(#[from] IndexError),
+    #[error(
+        "view {view:?} has not been scanned; run `basemind scan --view {view}` \
+         (or omit --view to use the working view)"
+    )]
+    ViewNotScanned { view: String },
 }
 
 impl StoreError {
@@ -67,8 +125,27 @@ impl StoreError {
     pub fn is_lock_contention(&self) -> bool {
         matches!(
             self,
-            StoreError::Locked(_) | StoreError::Index(IndexError::Fjall(fjall::Error::Locked))
+            StoreError::Locked { .. } | StoreError::Index(IndexError::Fjall(fjall::Error::Locked))
         )
+    }
+}
+
+/// Render the lock-contention message, naming the live holder from the `.lock.meta` sidecar
+/// when it is available and falling back to the generic guess otherwise. Kept as a free fn so
+/// the `thiserror` `#[error(...)]` attribute can call it for [`StoreError::Locked`].
+fn lock_contention_message(path: &Path, holder: &Option<LockMeta>) -> String {
+    match holder {
+        Some(meta) => format!(
+            "another basemind process holds the lock on {} (`{}`, pid {})",
+            path.display(),
+            meta.command,
+            meta.pid
+        ),
+        None => format!(
+            "another basemind process holds the lock on {} (usually the `basemind serve` MCP \
+             server from your editor plugin, or `basemind watch`)",
+            path.display()
+        ),
     }
 }
 
@@ -129,6 +206,16 @@ impl Store {
     /// `"staged"`, `"rev-<sha7>"`. Each view has its own `index.msgpack` under
     /// `.basemind/views/<view>/`; blobs are shared in `.basemind/blobs/`.
     pub fn open(root: &Path, view: &str) -> Result<Self, StoreError> {
+        Self::open_with_holder(root, view, LockHolder::Maintenance)
+    }
+
+    /// Like [`Store::open`] but records which command (`serve` / `watch` / `scan` / `rescan`)
+    /// is taking the lock, so a concurrent acquirer's contention error names the live holder.
+    pub fn open_with_holder(
+        root: &Path,
+        view: &str,
+        holder: LockHolder,
+    ) -> Result<Self, StoreError> {
         let basemind_dir = root.join(crate::config::BASEMIND_DIR);
         ensure_dir(&basemind_dir)?;
         ensure_gitignore(&basemind_dir)?;
@@ -138,7 +225,7 @@ impl Store {
 
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         ensure_dir(&view_dir)?;
-        let lock = acquire_lock(&basemind_dir)?;
+        let lock = acquire_lock_as(&basemind_dir, holder)?;
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
@@ -191,6 +278,16 @@ impl Store {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
         }
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
+        // An explicitly-named view (e.g. `rev-<sha>`, `staged`) that has never been scanned
+        // has no `index.msgpack`. Reading it would silently return an empty, working-like
+        // index — masking a typo'd `--view` or an unscanned rev as "0 results" (bug #18).
+        // Error instead so the caller knows to scan it. The default working view is exempt:
+        // it legitimately reads empty before the first scan, and `serve` auto-scans it.
+        if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
+            return Err(StoreError::ViewNotScanned {
+                view: view.to_string(),
+            });
+        }
         // A read-only consumer cannot wipe + rebuild like `Store::open` does, so a schema
         // bump must degrade gracefully rather than propagate a hard error: an out-of-date
         // index reads as empty until the next `basemind scan` / `serve` refreshes it in
@@ -516,6 +613,12 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
 /// Reused by `store_gc::run_gc` so the mark+sweep races neither a concurrent scan
 /// nor a `basemind watch`.
 pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
+    acquire_lock_as(basemind_dir, LockHolder::Maintenance)
+}
+
+/// Acquire the store lock, recording `holder` in the `.lock.meta` sidecar on success and
+/// reading the *existing* holder's sidecar on contention so the error names the live holder.
+pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result<File, StoreError> {
     let path = basemind_dir.join(LOCK_FILE);
     let file = OpenOptions::new()
         .create(true)
@@ -537,12 +640,53 @@ pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
     for attempt in 0..LOCK_ATTEMPTS {
         match file.try_lock_exclusive() {
-            Ok(()) => return Ok(file),
+            Ok(()) => {
+                // Won the lock — record who we are. Best-effort; a write failure here must
+                // not fail an otherwise-successful acquisition (the sidecar is advisory).
+                write_lock_meta(basemind_dir, holder);
+                return Ok(file);
+            }
             Err(_) if attempt + 1 < LOCK_ATTEMPTS => std::thread::sleep(LOCK_BACKOFF),
-            Err(_) => return Err(StoreError::Locked(path)),
+            Err(_) => {
+                return Err(StoreError::Locked {
+                    holder: read_lock_meta(basemind_dir),
+                    path,
+                });
+            }
         }
     }
     unreachable!("loop returns on the final attempt")
+}
+
+/// Write the `.lock.meta` sidecar naming the current holder. Best-effort and atomic
+/// (tmp + rename): the lock itself is already held when this runs, so a failure here only
+/// degrades the *next* contender's error message to the generic guess — never a correctness
+/// issue. Errors are swallowed deliberately.
+fn write_lock_meta(basemind_dir: &Path, holder: LockHolder) {
+    let acquired_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let meta = LockMeta {
+        command: holder.command().to_string(),
+        pid: std::process::id(),
+        acquired_unix,
+    };
+    let Ok(bytes) = serde_json::to_vec(&meta) else {
+        return;
+    };
+    let final_path = basemind_dir.join(LOCK_META_FILE);
+    let tmp_path = basemind_dir.join(format!("{LOCK_META_FILE}.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp_path, &bytes).is_ok() {
+        let _ = std::fs::rename(&tmp_path, &final_path);
+    }
+}
+
+/// Read the `.lock.meta` sidecar to identify the live holder. `None` when it is absent or
+/// unparseable, so the caller falls back to the generic lock message.
+fn read_lock_meta(basemind_dir: &Path) -> Option<LockMeta> {
+    let bytes = std::fs::read(basemind_dir.join(LOCK_META_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Minimal peek struct: decode only a blob's leading `schema_ver` field. Every blob map
@@ -631,7 +775,11 @@ mod tests {
 
     #[test]
     fn locked_display_names_the_serve_holder() {
-        let err = StoreError::Locked(PathBuf::from("/repo/.basemind/.lock"));
+        // With no sidecar, the generic fallback still names both serve and watch.
+        let err = StoreError::Locked {
+            path: PathBuf::from("/repo/.basemind/.lock"),
+            holder: None,
+        };
         let msg = err.to_string();
         // The common holder is the editor plugin's `serve` process; the message must
         // name it so the user knows what to stop (W8: the old text said only `watch`).
@@ -646,8 +794,92 @@ mod tests {
     }
 
     #[test]
+    fn locked_message_names_actual_holder_from_sidecar() {
+        // When the sidecar is present, the message names the ACTUAL holder command + pid,
+        // not the hardcoded serve/watch guess (bug #11).
+        let err = StoreError::Locked {
+            path: PathBuf::from("/repo/.basemind/.lock"),
+            holder: Some(LockMeta {
+                command: "basemind scan".to_string(),
+                pid: 4321,
+                acquired_unix: 1_700_000_000,
+            }),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("basemind scan"),
+            "message should name the actual holder command, got: {msg}"
+        );
+        assert!(
+            msg.contains("4321"),
+            "message should name the holder pid, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn second_acquisition_names_first_holders_command() {
+        // Simulate two acquisitions of the same store lock: the first wins as `scan`, the
+        // second must surface a Locked error naming `basemind scan` (bug #11 contract).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let basemind_dir = tmp.path().join(".basemind");
+        std::fs::create_dir_all(&basemind_dir).expect("mkdir");
+
+        let _held = acquire_lock_as(&basemind_dir, LockHolder::Scan).expect("first lock");
+        let err = acquire_lock_as(&basemind_dir, LockHolder::Serve)
+            .expect_err("second acquisition must fail while the first holds the lock");
+        assert!(err.is_lock_contention(), "must be a contention error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("basemind scan"),
+            "second error should name the FIRST holder (scan), got: {msg}"
+        );
+    }
+
+    #[test]
+    fn open_read_only_errors_on_never_scanned_named_view() {
+        // Opening an explicitly-named view that was never scanned must error rather than
+        // silently return an empty working-like index (bug #18).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let err = match Store::open_read_only(tmp.path(), "rev-deadbee") {
+            Ok(_) => panic!("named unscanned view must error, not silently open empty"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(&err, StoreError::ViewNotScanned { view } if view == "rev-deadbee"),
+            "expected ViewNotScanned, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("rev-deadbee"),
+            "error names the view, got: {err}"
+        );
+    }
+
+    #[test]
+    fn open_read_only_allows_unscanned_working_view() {
+        // The default working view legitimately reads empty before the first scan — it must
+        // NOT error (would break `serve` auto-scan-on-empty + first-run query).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open_read_only(tmp.path(), VIEW_WORKING)
+            .expect("working view opens even when never scanned");
+        assert!(store.index.files.is_empty(), "empty working index");
+    }
+
+    #[test]
+    fn open_writer_creates_named_view_for_first_scan() {
+        // The writer path (scan/serve) must still be able to create a named view fresh —
+        // that is how `basemind scan --rev <sha>` first materializes `rev-<sha>`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(tmp.path(), "rev-cafe000")
+            .expect("writer creates a named view on first scan");
+        assert!(store.view_dir.exists(), "named view dir created by writer");
+    }
+
+    #[test]
     fn fs2_advisory_lock_is_lock_contention() {
-        let err = StoreError::Locked(PathBuf::from("/repo/.basemind/.lock"));
+        let err = StoreError::Locked {
+            path: PathBuf::from("/repo/.basemind/.lock"),
+            holder: None,
+        };
         assert!(err.is_lock_contention());
     }
 
