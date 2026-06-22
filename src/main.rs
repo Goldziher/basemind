@@ -105,6 +105,9 @@ enum Cmd {
     /// changed files) from session text read from stdin; changed files come
     /// from the git working tree, not the text.
     Checkpoint(basemind::textcompress::cli::CheckpointArgs),
+    /// Flag wasteful tool usage (redundant reads, repeated queries, oversized
+    /// reads) from a JSON-Lines tool-call log read from stdin. Pure analysis.
+    DetectWaste(basemind::textcompress::cli::DetectWasteArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
@@ -335,6 +338,7 @@ fn main() -> Result<()> {
         Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),
         Cmd::Delta(args) => basemind::textcompress::cli::run_delta(&args),
         Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
+        Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(all(feature = "comms", unix))]

@@ -24,6 +24,7 @@ pub mod delta;
 mod detect;
 mod handlers;
 mod safety;
+pub mod waste;
 
 pub use detect::Family;
 
