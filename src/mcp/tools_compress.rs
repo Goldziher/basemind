@@ -25,7 +25,8 @@ impl BasemindServer {
             (function/method/struct/enum/class/trait/type/const/module/macro) to disambiguate. \
             The body is the raw source slice `file_bytes[start_byte..end_byte]` from the L1 \
             outline. Bodies larger than 128 KiB are truncated and `truncated` is set to `true`. \
-            Requires the file to be indexed; call `rescan` first if the path is not found."
+            Requires the file to be indexed; call `rescan` first if the path is not found.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn expand(
         &self,
@@ -39,7 +40,8 @@ impl BasemindServer {
         __result
     }
 
-    #[tool(description = "Code-aware token compression. \
+    #[tool(
+        description = "Code-aware token compression. \
             For indexed source files (supply `path`): returns the L1 structural outline \
             (imports + symbol signatures) from the code map — bodies are never included. \
             This is lossless for navigation purposes: signatures are returned verbatim, \
@@ -55,7 +57,9 @@ impl BasemindServer {
             hard-cap output. \
             Token counts are estimated as bytes/4 (disclosed in `tokens_note`). \
             The structural path requires the file to be indexed; call `rescan` first if \
-            `path` is not found.")]
+            `path` is not found.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
     pub(crate) async fn compress(
         &self,
         Parameters(p): Parameters<CompressParams>,

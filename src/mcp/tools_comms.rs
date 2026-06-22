@@ -26,7 +26,13 @@ impl BasemindServer {
     #[tool(
         description = "Register or update this agent's A2A card (name/description/version/skills) \
         with the user-global comms broker. Spawns the broker daemon on first use. \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn agent_register(
         &self,
@@ -48,7 +54,8 @@ impl BasemindServer {
     #[tool(
         description = "List agents known to the comms broker, optionally restricted to the \
         subscribers of one room. Returns front-matter (id, card fields, first/last seen). \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn agent_list(
         &self,
@@ -70,7 +77,13 @@ impl BasemindServer {
     #[tool(
         description = "Create (and register) a comms room with an explicit scope: `global`, \
         `remote` (a git remote — every clone auto-joins), or `path_prefix` (agents at/below a \
-        path auto-join). Idempotent. Needs --features comms."
+        path auto-join). Idempotent. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn room_create(
         &self,
@@ -91,7 +104,8 @@ impl BasemindServer {
 
     #[tool(
         description = "List rooms whose scope matches this server's repo (git remote + cwd). \
-        Returns room front-matter (id, title, created_at). Needs --features comms."
+        Returns room front-matter (id, title, created_at). Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn room_list(
         &self,
@@ -112,7 +126,13 @@ impl BasemindServer {
 
     #[tool(
         description = "Subscribe this agent to a room (durable membership; drives the inbox). \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn room_join(
         &self,
@@ -131,7 +151,15 @@ impl BasemindServer {
         __result
     }
 
-    #[tool(description = "Unsubscribe this agent from a room. Needs --features comms.")]
+    #[tool(
+        description = "Unsubscribe this agent from a room. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
     pub(crate) async fn room_leave(
         &self,
         Parameters(p): Parameters<RoomLeaveParams>,
@@ -152,7 +180,13 @@ impl BasemindServer {
     #[tool(
         description = "Post a message (subject + optional markdown body + tags + reply_to) to a \
         room. Returns the new message_id. The body is stored separately from front-matter. \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn room_post(
         &self,
@@ -174,7 +208,8 @@ impl BasemindServer {
     #[tool(
         description = "Read a room's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
         ts, tags) — bodies are NOT included; fetch them with message_get. Paginated: pass \
-        `cursor` from the previous response. Default 100 max 1000. Needs --features comms."
+        `cursor` from the previous response. Default 100 max 1000. Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn room_history(
         &self,
@@ -196,7 +231,8 @@ impl BasemindServer {
     #[tool(
         description = "Fetch a single message BODY by id (the only body path; history/inbox \
         return front-matter only). Body is returned as a UTF-8 (lossy) markdown string. \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn message_get(
         &self,
@@ -219,7 +255,13 @@ impl BasemindServer {
         description = "Read this agent's inbox: new FRONT-MATTER across all subscribed rooms \
         (bodies NOT included — use message_get). `mark_read=true` advances read cursors. \
         Returns the page plus remaining unread count. Default 100 max 1000. \
-        Needs --features comms."
+        Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn inbox_read(
         &self,
@@ -244,7 +286,13 @@ impl BasemindServer {
         agent's inbox (message_get and room_history still return acked messages). Two modes, \
         combinable: pass `message_ids` to ack specific messages (each resolved to its room+seq), \
         and/or `room` + `to_seq` to bulk-ack everything up to `to_seq` in one room (stale-room \
-        cleanup). At least one mode is required. Needs --features comms."
+        cleanup). At least one mode is required. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn inbox_ack(
         &self,

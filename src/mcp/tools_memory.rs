@@ -20,7 +20,11 @@ use super::types_memory::{
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
     Err(McpError::invalid_request(
-        format!("{feature} feature not enabled — rebuild with --features {feature}"),
+        format!(
+            "this tool requires the `{feature}` feature, which is not compiled into this \
+             basemind binary. Rebuild with `--features {feature}` (the published release \
+             binary includes it)."
+        ),
         None,
     ))
 }
@@ -30,7 +34,13 @@ impl BasemindServer {
     #[tool(
         description = "Persist a key-value in scoped memory (scope = git remote URL). Upsert \
         semantics. `embed=true` also stores in LanceDB for `memory_search`. Needs --features \
-        memory."
+        memory.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn memory_put(
         &self,
@@ -62,9 +72,12 @@ impl BasemindServer {
         __result
     }
 
-    #[tool(description = "Exact-key lookup in scoped memory. Returns entry \
+    #[tool(
+        description = "Exact-key lookup in scoped memory. Returns entry \
         (key,value,tags,timestamps) or null. Fjall only, no vector touch. \
-        Needs --features memory.")]
+        Needs --features memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
     pub(crate) async fn memory_get(
         &self,
         Parameters(p): Parameters<MemoryGetParams>,
@@ -98,7 +111,8 @@ impl BasemindServer {
     #[tool(
         description = "List scoped memory entries. `prefix` is a key-prefix filter (not \
         substring); `tag` is exact. Values truncated ~200 chars. Default 100, max 1000. \
-        `cursor` pages results. Needs --features memory."
+        `cursor` pages results. Needs --features memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn memory_list(
         &self,
@@ -133,7 +147,8 @@ impl BasemindServer {
     #[tool(
         description = "Vector KNN over stored memory. Embeds `query`, KNN in the scope-filtered \
         LanceDB memory table; `tag` is a post-KNN exact filter. Default 10, max 100 by L2 \
-        distance. Needs --features memory."
+        distance. Needs --features memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn memory_search(
         &self,
@@ -167,7 +182,13 @@ impl BasemindServer {
 
     #[tool(
         description = "Delete memory entry by exact key from Fjall and LanceDB. \
-        Returns {deleted:true} when found. Needs --features memory."
+        Returns {deleted:true} when found. Needs --features memory.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn memory_delete(
         &self,
@@ -204,7 +225,8 @@ impl BasemindServer {
         `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
         filter. Default 10, max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`; \
         no cursor — raise it for more). `format:\"toon\"` for compact rows (overrides config). \
-        Needs --features documents."
+        Needs --features documents.",
+        annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub(crate) async fn search_documents(
         &self,
