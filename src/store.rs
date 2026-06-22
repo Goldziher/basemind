@@ -683,7 +683,7 @@ fn write_lock_meta(basemind_dir: &Path, holder: LockHolder) {
 }
 
 /// Read the `.lock.meta` sidecar to identify the live holder. `None` when it is absent or
-/// unparseable, so the caller falls back to the generic lock message.
+/// unparsable, so the caller falls back to the generic lock message.
 fn read_lock_meta(basemind_dir: &Path) -> Option<LockMeta> {
     let bytes = std::fs::read(basemind_dir.join(LOCK_META_FILE)).ok()?;
     serde_json::from_slice(&bytes).ok()
