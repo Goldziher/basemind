@@ -40,6 +40,7 @@ impl Visibility {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryPutParams {
+    #[serde(alias = "name")]
     pub key: String,
     pub value: String,
     #[serde(default)]
@@ -61,6 +62,7 @@ pub(super) struct MemoryPutResponse {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryGetParams {
+    #[serde(alias = "name")]
     pub key: String,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent).
     #[serde(default)]
@@ -108,6 +110,7 @@ pub(super) struct MemoryListResponse {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemorySearchParams {
+    #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "search")]
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,
@@ -137,6 +140,7 @@ pub(super) struct MemorySearchResponse {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryDeleteParams {
+    #[serde(alias = "name")]
     pub key: String,
     /// Memory tier: `group` (shared, default) or `individual` (per-agent).
     #[serde(default)]
@@ -212,6 +216,40 @@ pub(super) struct MemoryRecord {
     /// Git-derived importance in `[0,1)`; decays when the memory goes stale. Never an LLM rating.
     #[serde(default)]
     pub importance: f32,
+}
+
+#[cfg(test)]
+mod param_alias_tests {
+    use super::*;
+
+    #[test]
+    fn memory_search_accepts_query_aliases() {
+        let by_needle: MemorySearchParams =
+            serde_json::from_value(serde_json::json!({ "needle": "retry" })).unwrap();
+        assert_eq!(by_needle.query, "retry");
+        let by_q: MemorySearchParams =
+            serde_json::from_value(serde_json::json!({ "q": "retry" })).unwrap();
+        assert_eq!(by_q.query, "retry");
+        // Canonical name still binds after the alias additions.
+        let by_query: MemorySearchParams =
+            serde_json::from_value(serde_json::json!({ "query": "retry" })).unwrap();
+        assert_eq!(by_query.query, "retry");
+    }
+
+    #[test]
+    fn memory_get_accepts_name_alias_for_key() {
+        let params: MemoryGetParams =
+            serde_json::from_value(serde_json::json!({ "name": "skill/foo" })).unwrap();
+        assert_eq!(params.key, "skill/foo");
+    }
+
+    #[test]
+    fn memory_put_accepts_name_alias_for_key() {
+        let params: MemoryPutParams =
+            serde_json::from_value(serde_json::json!({ "name": "k", "value": "v" })).unwrap();
+        assert_eq!(params.key, "k");
+        assert_eq!(params.value, "v");
+    }
 }
 
 #[cfg(all(test, feature = "memory"))]

@@ -20,7 +20,7 @@ use super::types_memory::Visibility;
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryAuditParams {
     /// When set, audit exactly this one key instead of the whole scope.
-    #[serde(default)]
+    #[serde(default, alias = "name")]
     pub key: Option<String>,
     /// Memory tier to audit: `group` (shared, default) or `individual` (per-agent).
     #[serde(default)]

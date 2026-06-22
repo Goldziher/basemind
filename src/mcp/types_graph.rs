@@ -16,6 +16,13 @@ fn default_direction() -> String {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CallGraphParams {
     /// Root function name. Exact match against captured call-site identifiers.
+    #[serde(
+        alias = "needle",
+        alias = "query",
+        alias = "symbol",
+        alias = "function",
+        alias = "q"
+    )]
     pub name: String,
     /// `"callers"` (default) BFS-walks upward (who calls into `name`).
     /// `"callees"` walks downward (what `name` itself calls).
