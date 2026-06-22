@@ -3277,3 +3277,109 @@ async fn completes_prompt_arguments_from_the_code_map() {
 
     let _ = server.cancel().await;
 }
+
+/// 0.8.0: `rescan` emits a logging notification (with counts) and progress notifications when
+/// the client supplies a progress token. Uses a capturing client handler to observe both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rescan_emits_logging_and_progress_notifications() {
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+
+    use rmcp::model::{LoggingMessageNotificationParam, NumberOrString, ProgressNotificationParam};
+    use rmcp::service::NotificationContext;
+    use rmcp::{ClientHandler, RoleClient};
+
+    #[derive(Clone, Default)]
+    struct Capture {
+        logs: Arc<StdMutex<Vec<LoggingMessageNotificationParam>>>,
+        progress: Arc<StdMutex<Vec<ProgressNotificationParam>>>,
+    }
+
+    impl ClientHandler for Capture {
+        async fn on_logging_message(
+            &self,
+            params: LoggingMessageNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            self.logs.lock().unwrap().push(params);
+        }
+        async fn on_progress(
+            &self,
+            params: ProgressNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            self.progress.lock().unwrap().push(params);
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let capture = Capture::default();
+    let logs = Arc::clone(&capture.logs);
+    let progress = Arc::clone(&capture.progress);
+
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let root_buf = root.to_path_buf();
+    let cmd = AsyncCommand::new(bin).configure(move |c| {
+        c.arg("--root")
+            .arg(&root_buf)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+        c.env_remove("BASEMIND_MCP_LEAN");
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let server = capture.serve(transport).await.expect("rmcp handshake");
+
+    // Call rescan WITH a progress token so the server emits progress.
+    let mut params = call_params("rescan", json!({}));
+    rmcp::model::RequestParamsMeta::set_progress_token(
+        &mut params,
+        rmcp::model::ProgressToken(NumberOrString::String("rescan-1".into())),
+    );
+    server.call_tool(params).await.expect("rescan call");
+
+    // Give the notifications a moment to arrive over the transport.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Snapshot the captured notifications, dropping the guards before the later await.
+    let captured_logs = logs.lock().unwrap().clone();
+    let captured_progress = progress.lock().unwrap().clone();
+
+    assert!(
+        captured_logs
+            .iter()
+            .any(|l| l.data.get("event").and_then(|v| v.as_str()) == Some("rescan_complete")),
+        "rescan must emit a `rescan_complete` logging notification, got: {:?}",
+        captured_logs.iter().map(|l| &l.data).collect::<Vec<_>>()
+    );
+
+    // The client supplied a progress token, so the server emits start + done progress for it.
+    // rmcp assigns the concrete token value; we assert the shape: a start (total: None) and a
+    // completion that reports the discovered file count as both progress and total.
+    assert!(
+        captured_progress.len() >= 2,
+        "rescan with a progress token must emit start + done progress, got {}",
+        captured_progress.len()
+    );
+    assert!(
+        captured_progress.iter().any(|p| p.total.is_none()),
+        "expected an indeterminate start progress (total: None)"
+    );
+    assert!(
+        captured_progress
+            .iter()
+            .any(|p| p.total == Some(p.progress) && p.total.is_some()),
+        "expected a completion progress where progress == total (file count)"
+    );
+    // All progress shares the one request's token.
+    let first = &captured_progress[0].progress_token;
+    assert!(
+        captured_progress.iter().all(|p| &p.progress_token == first),
+        "all progress notifications must carry the same request token"
+    );
+
+    let _ = server.cancel().await;
+}
