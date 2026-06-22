@@ -51,6 +51,21 @@ const GREP_READ_MULTIPLIER: u64 = 3;
 /// less follow-up file reading than a name search, so this is lower than `GREP_READ_MULTIPLIER`.
 const DEPENDENTS_READ_MULTIPLIER: u64 = 2;
 
+/// `search_documents` baseline multiplier. The agent's alternative is reading whole documents
+/// to find the relevant passages; the response returns just the matching chunks. Modelled like
+/// `outline` (~5×) — the source documents are typically several times the extracted snippet.
+const DOCUMENT_READ_MULTIPLIER: u64 = 5;
+
+/// `list_files` baseline multiplier. The alternative is shelling out to `find` / `ls -R` and
+/// then reading the (unfiltered, noisier) listing the agent must scan by hand. A modest 2× —
+/// basemind returns the already-filtered set, saving the agent the extra listing it reads.
+const LIST_FILES_READ_MULTIPLIER: u64 = 2;
+
+/// Web-ingestion baseline multiplier (`web_scrape` / `web_crawl` / `web_map`). The alternative
+/// is the agent browsing the page(s) and pasting raw page text into context; the cleaned/extracted
+/// response is a fraction of that. Modelled conservatively at 3× the returned payload.
+const WEB_INGEST_MULTIPLIER: u64 = 3;
+
 /// Estimate baseline + actual tokens for one tool call from the full response **text**.
 ///
 /// The live telemetry entry point. The `actual` count routes through [`tokens_for_text`] — a
@@ -90,9 +105,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         // Implementation lookups: alternative is `rg 'impl.*Trait'` / `grep class.*extends`
         // plus manual filtering across languages. Same grep-output-plus-confirm model —
         // the response is the filtered result, the multiplier covers confirming a few hits.
-        "find_implementations" => {
-            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
-        }
+        "find_implementations" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
         // Dependents = grep imports across the corpus. Imports are sparse and the
         // result needs less follow-up reading than a name search, so it uses the
@@ -122,14 +135,39 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         // step to the agent. Record the call, claim zero savings.
         "call_graph" => (actual, "no_baseline"),
 
+        // search_documents: the agent's alternative is reading whole documents
+        // to locate the relevant passages. The response is just the matching
+        // chunks, so model the saving like outline (~5× the snippet).
+        "search_documents" => (
+            actual.saturating_mul(DOCUMENT_READ_MULTIPLIER),
+            "full_document_read",
+        ),
+
+        // list_files: alternative is `find` / `ls -R` then reading the listing
+        // the agent filters by hand. basemind returns the filtered set, so a
+        // modest 2× over the response covers the extra listing read.
+        "list_files" => (
+            actual.saturating_mul(LIST_FILES_READ_MULTIPLIER),
+            "find_plus_filter",
+        ),
+
+        // Web ingestion: alternative is the agent browsing the page(s) and
+        // pasting raw page text into context. The extracted response is a
+        // fraction of that — model conservatively at 3× the payload.
+        "web_scrape" | "web_crawl" | "web_map" => (
+            actual.saturating_mul(WEB_INGEST_MULTIPLIER),
+            "manual_browse_paste",
+        ),
+
         // Tools where basemind is the only practical path — no honest grep+read
-        // baseline. Record the call but don't claim savings.
+        // baseline. Record the call but don't claim savings. The git tools have
+        // no clean grep/read alternative (you'd shell out to git anyway), and
+        // memory / cache / status are basemind-internal state with no analogue.
         "memory_get"
         | "memory_put"
         | "memory_list"
         | "memory_search"
         | "memory_delete"
-        | "search_documents"
         | "telemetry_summary"
         | "rescan"
         | "cache_stats"
@@ -137,7 +175,6 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         | "cache_clear"
         | "status"
         | "repo_info"
-        | "list_files"
         | "working_tree_status"
         | "recent_changes"
         | "commits_touching"
@@ -145,13 +182,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         | "diff_file"
         | "diff_outline"
         | "blame_file"
-        | "blame_symbol"
-        // Web ingestion: the alternative ("agent browses + copies the text in")
-        // isn't a tokenizable baseline. Surface the calls in telemetry but
-        // claim no savings.
-        | "web_scrape"
-        | "web_crawl"
-        | "web_map" => (actual, "no_baseline"),
+        | "blame_symbol" => (actual, "no_baseline"),
 
         // Unknown tool name (e.g. an upstream addition we haven't classified
         // yet) — be conservative.
@@ -251,16 +282,83 @@ mod tests {
         for tool in [
             "memory_get",
             "memory_put",
-            "search_documents",
             "status",
-            "web_scrape",
-            "web_crawl",
-            "web_map",
+            "repo_info",
+            "telemetry_summary",
+            "rescan",
+            "cache_stats",
+            "recent_changes",
+            "commits_touching",
+            "diff_file",
+            "blame_file",
+            "working_tree_status",
             "workspace_grep",
+            "call_graph",
         ] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
             assert_eq!(s.baseline, "no_baseline", "{tool} must label no_baseline");
+        }
+    }
+
+    #[test]
+    fn search_documents_models_full_document_read_at_5x() {
+        let s = estimate_from_text("search_documents", 1_000_000, &"a".repeat(400));
+        assert_eq!(s.baseline, "full_document_read");
+        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
+        assert_eq!(
+            s.est_tokens_saved,
+            s.baseline_tokens.saturating_sub(s.actual_tokens)
+        );
+        #[cfg(not(feature = "documents"))]
+        {
+            // 400 bytes → 100 actual; baseline = 100 * 5 = 500; saved = 400.
+            assert_eq!(s.actual_tokens, 100);
+            assert_eq!(s.baseline_tokens, 500);
+            assert_eq!(s.est_tokens_saved, 400);
+        }
+    }
+
+    #[test]
+    fn list_files_models_find_plus_filter_at_2x() {
+        let s = estimate_from_text("list_files", 1_000_000, &"a".repeat(400));
+        assert_eq!(s.baseline, "find_plus_filter");
+        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(2));
+        assert_eq!(
+            s.est_tokens_saved,
+            s.baseline_tokens.saturating_sub(s.actual_tokens)
+        );
+        #[cfg(not(feature = "documents"))]
+        {
+            // 400 bytes → 100 actual; baseline = 100 * 2 = 200; saved = 100.
+            assert_eq!(s.actual_tokens, 100);
+            assert_eq!(s.baseline_tokens, 200);
+            assert_eq!(s.est_tokens_saved, 100);
+        }
+    }
+
+    #[test]
+    fn web_ingest_models_manual_browse_paste_at_3x() {
+        for tool in ["web_scrape", "web_crawl", "web_map"] {
+            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
+            assert_eq!(s.baseline, "manual_browse_paste", "{tool} baseline name");
+            assert_eq!(
+                s.baseline_tokens,
+                s.actual_tokens.saturating_mul(3),
+                "{tool} multiplier"
+            );
+            assert_eq!(
+                s.est_tokens_saved,
+                s.baseline_tokens.saturating_sub(s.actual_tokens),
+                "{tool} savings"
+            );
+            #[cfg(not(feature = "documents"))]
+            {
+                // 400 bytes → 100 actual; baseline = 100 * 3 = 300; saved = 200.
+                assert_eq!(s.actual_tokens, 100, "{tool} actual");
+                assert_eq!(s.baseline_tokens, 300, "{tool} baseline");
+                assert_eq!(s.est_tokens_saved, 200, "{tool} saved");
+            }
         }
     }
 
