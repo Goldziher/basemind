@@ -231,7 +231,13 @@ pub(super) struct SearchHitView {
 
 #[derive(Debug, Serialize)]
 pub(super) struct SearchResponse {
+    /// Matches scanned up to the per-call cap (`limit * 64`, min 2000) — NOT the global
+    /// corpus total. When the cap is hit this is a lower bound; see `total_is_partial`.
     pub total: usize,
+    /// True when the scan stopped at the cap, so `total` is a lower bound rather than the
+    /// exact number of matching symbols in the corpus (bug #16).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub total_is_partial: bool,
     pub truncated: bool,
     /// True when a `max_tokens` budget dropped trailing results. The kept prefix is
     /// best-first; page the rest with `next_cursor`.
@@ -259,6 +265,10 @@ pub(super) struct ListFilesResponse {
     pub total: usize,
     pub returned: usize,
     pub truncated: bool,
+    /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
+    /// was clamped down to it. Surfaced so callers know the page size was reduced (bug #17).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
     /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
@@ -281,6 +291,15 @@ pub(super) struct DependentsResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct StatusResponse {
     pub file_count: usize,
+    /// Count of content-addressed blob files in `.basemind/blobs/` (one `.l1.msgpack` per
+    /// indexed content hash). Reported alongside `file_count` so a lost/empty view index over
+    /// live blobs is visible rather than silently reading `file_count: 0` (bug #10).
+    pub blob_count: usize,
+    /// One-line advisory, present only when the view index is empty but blobs exist on disk
+    /// (index lost/wiped) — suggests a rescan. Absent for a populated or legitimately
+    /// unscanned (no-blobs) view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     pub cache_dir: String,
