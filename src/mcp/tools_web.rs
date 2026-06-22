@@ -25,7 +25,12 @@ impl BasemindServer {
         vector store (scope `web:<host>`). Respects robots.txt by default. `index=false` fetches \
         metadata only, skipping embedding. Use to pull a known doc/spec/blog post into RAG. \
         Needs --features crawl.",
-        annotations(read_only_hint = true, open_world_hint = true)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn web_scrape(
         &self,
@@ -50,7 +55,12 @@ impl BasemindServer {
         documents vector store under one shared scope. Bounded by `[crawl].max_pages` / \
         `max_depth` in basemind.toml (per-call overrides advisory). Respects robots.txt by \
         default. Use for a section of a docs site, not a single page. Needs --features crawl.",
-        annotations(read_only_hint = true, open_world_hint = true)
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
     )]
     pub(crate) async fn web_crawl(
         &self,

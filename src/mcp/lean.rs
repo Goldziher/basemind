@@ -20,7 +20,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult, Tool, object,
+    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult, Tool,
+    ToolAnnotations, object,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -70,7 +71,8 @@ fn lean_tool_definitions() -> Vec<Tool> {
                 "properties": {},
                 "additionalProperties": false
             })),
-        ),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             TOOL_GET_SCHEMA,
             "Lean-mode schema fetch: return the full input JSON schema (and description) for \
@@ -86,7 +88,8 @@ fn lean_tool_definitions() -> Vec<Tool> {
                 "required": ["tool_name"],
                 "additionalProperties": false
             })),
-        ),
+        )
+        .annotate(ToolAnnotations::new().read_only(true).open_world(false)),
         Tool::new(
             TOOL_INVOKE,
             "Lean-mode dispatch: run a real basemind tool. Pass its name and the arguments \
@@ -107,7 +110,11 @@ fn lean_tool_definitions() -> Vec<Tool> {
                 "required": ["tool_name"],
                 "additionalProperties": false
             })),
-        ),
+        )
+        // Dispatches to ANY real tool (read or mutating, incl. web), so it cannot be marked
+        // read-only — clients should gate it like a mutating tool; the target's own annotation
+        // governs once resolved.
+        .annotate(ToolAnnotations::new().read_only(false).open_world(true)),
     ]
 }
 
