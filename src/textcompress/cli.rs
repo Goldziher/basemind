@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 
 use anyhow::{Context, Result};
 
+use super::checkpoint::extract_checkpoint;
 use super::compress_output;
 use super::delta::delta;
 
@@ -107,4 +108,73 @@ pub fn run_delta(args: &DeltaArgs) -> Result<()> {
         outcome.removed,
     );
     Ok(())
+}
+
+/// Arguments for `basemind checkpoint`.
+///
+/// The session text (a transcript chunk or concatenated tool output) is read
+/// from stdin; the changed-file list is fetched from the git working tree at
+/// the repo root, never scraped from the text.
+#[derive(clap::Args, Debug)]
+pub struct CheckpointArgs {}
+
+/// Read session text from stdin, fetch changed files from the git working tree
+/// at `root`, extract a credential-safe
+/// [`Checkpoint`](super::checkpoint::Checkpoint), emit it as pretty JSON to
+/// stdout, and a one-line stat to stderr.
+///
+/// Fail-open on git: if `root` is not a git repository or git errors, the
+/// changed-file list is empty and extraction proceeds — a checkpoint is never
+/// aborted because the working tree could not be read. stdin is read lossily so
+/// non-UTF-8 content never aborts the pipe.
+pub fn run_checkpoint(root: &std::path::Path, _args: &CheckpointArgs) -> Result<()> {
+    let mut raw = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut raw)
+        .context("read stdin")?;
+    let text = String::from_utf8_lossy(&raw);
+
+    let files_changed = changed_files(root);
+
+    let checkpoint = extract_checkpoint(text.as_ref(), files_changed);
+
+    let json = serde_json::to_string_pretty(&checkpoint).context("serialize checkpoint")?;
+    let mut stdout = std::io::stdout().lock();
+    stdout
+        .write_all(json.as_bytes())
+        .context("write checkpoint json")?;
+    stdout.write_all(b"\n").context("write trailing newline")?;
+    stdout.flush().context("flush stdout")?;
+
+    eprintln!(
+        "checkpoint: decisions={} errors={} files={} decisions_truncated={} errors_truncated={}",
+        checkpoint.decisions.len(),
+        checkpoint.errors.len(),
+        checkpoint.files_changed.len(),
+        checkpoint.decisions_truncated,
+        checkpoint.errors_truncated,
+    );
+    Ok(())
+}
+
+/// List the working-tree change set (staged + unstaged + untracked) at `root`
+/// via the shared git porcelain helper. Fail-open: a missing repo or any git
+/// error yields an empty list rather than an error, because a checkpoint must
+/// not fail just because the working tree is unreadable.
+fn changed_files(root: &std::path::Path) -> Vec<String> {
+    let Ok(repo) = crate::git::Repo::discover(root) else {
+        return Vec::new();
+    };
+    let Ok(status) = repo.status_porcelain() else {
+        return Vec::new();
+    };
+    status
+        .staged_added
+        .iter()
+        .chain(&status.staged_modified)
+        .chain(&status.staged_deleted)
+        .chain(&status.modified)
+        .chain(&status.untracked)
+        .map(|p| p.to_string())
+        .collect()
 }

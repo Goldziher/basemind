@@ -150,6 +150,15 @@ pub fn contains_credential(text: &str) -> bool {
     text.lines().any(|line| creds.is_match(line))
 }
 
+/// Return `true` when a single `line` carries an error marker.
+///
+/// Reuses the same compiled [`error_set`] that [`looks_like_failure`] and
+/// [`preserved_line_indices`] consult, so callers (e.g. checkpoint extraction)
+/// classify a line as an error without duplicating the pattern list.
+pub fn is_error_line(line: &str) -> bool {
+    error_set().is_match(line)
+}
+
 /// Return `true` when the text shows the command failed and its output must NOT
 /// be compressed (fail-open). Triggers on any error marker anywhere in the body.
 ///

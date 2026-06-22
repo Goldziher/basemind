@@ -101,6 +101,10 @@ enum Cmd {
     /// Emit a compact `+N/-M` line-diff from a prior file version (`--old`) to
     /// new content read from stdin — the stateless delta re-read primitive.
     Delta(basemind::textcompress::cli::DeltaArgs),
+    /// Extract a compact, credential-safe checkpoint (decisions / errors /
+    /// changed files) from session text read from stdin; changed files come
+    /// from the git working tree, not the text.
+    Checkpoint(basemind::textcompress::cli::CheckpointArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
@@ -330,6 +334,7 @@ fn main() -> Result<()> {
         },
         Cmd::CompressOutput(args) => basemind::textcompress::cli::run(&args),
         Cmd::Delta(args) => basemind::textcompress::cli::run_delta(&args),
+        Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(all(feature = "comms", unix))]
