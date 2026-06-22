@@ -225,17 +225,33 @@ pub(crate) struct MapCache {
 
 impl MapCache {
     fn build(store: &Store) -> Self {
-        let mut by_path = BTreeMap::new();
-        for (path, entry) in &store.index.files {
-            match store.read_l1_by_hex(&entry.hash_hex) {
-                Ok(Some(l1)) => {
-                    by_path.insert(path.clone(), l1);
-                }
-                Ok(None) | Err(_) => continue,
-            }
-        }
+        use rayon::prelude::*;
+
+        // Finding #4: deserialize every L1 msgpack blob in parallel. The reads are
+        // pure file I/O + decode (`Store::read_l1_by_hex` takes `&self` and never
+        // mutates), so sharing `&Store` across rayon workers is sound. `BTreeMap`
+        // implements `FromParallelIterator`, so the result is still path-sorted —
+        // matching the serial build's ordering. Files whose blob is missing or fails
+        // to decode are dropped (same as the serial `continue`).
+        let by_path: BTreeMap<crate::path::RelPath, FileMapL1> = store
+            .index
+            .files
+            .par_iter()
+            .filter_map(|(path, entry)| {
+                store
+                    .read_l1_by_hex(&entry.hash_hex)
+                    .ok()
+                    .flatten()
+                    .map(|l1| (path.clone(), l1))
+            })
+            .collect();
+        // Finding #5: the `dependents` tool consumes `imports_index` through
+        // `extract::l3::dependents_of`, whose signature owns `Vec<Import>` per entry
+        // (`&[(P, Vec<Import>)]`). That forces a per-file clone of the import list here;
+        // an `Arc`-shared view would require changing the `l3` signature. We at least
+        // parallelize the clone (was a serial second pass) so it scales with cores.
         let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
-            .iter()
+            .par_iter()
             .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
             .collect();
         Self {
