@@ -461,6 +461,11 @@ and the only argument is `serve`:
 }
 ```
 
+Every MCP tool advertises rmcp `ToolAnnotations` — `read_only_hint`, `destructive_hint`,
+`idempotent_hint`, `open_world_hint` — so MCP clients can auto-approve read-only tools and prompt
+for mutating ones, reducing permission friction. A client-side denial still never reaches the
+server.
+
 If `basemind` is not on your `PATH`, use the absolute path from `which basemind`. Per-client
 specifics:
 
@@ -905,7 +910,7 @@ CLI commands mirror MCP tools, grouped by capability. Run with `--json` for mach
 |---|---|
 | `stats` | On-disk cache size + orphan accounting (blob store + index + git cache). |
 | `gc` | Reclaim orphaned blobs (safe to run while serve is running). |
-| `clear --component <blobs\|views\|lance\|git-cache\|telemetry\|all>` | Selective or full cache clear. Destructive to `views` and `all` — use CLI, not MCP. |
+| `clear --component <comp>` | Clear component (`views`, `views:<name>`, `blobs`, `lance`, `git-cache`, `telemetry`, `all`). CLI only for destructive ops. |
 
 ### Web commands (`basemind web`, requires `--features crawl`)
 
