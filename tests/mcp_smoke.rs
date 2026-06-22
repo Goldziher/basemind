@@ -3228,3 +3228,52 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
 
     let _ = server.cancel().await;
 }
+
+/// 0.8.0: the server completes prompt arguments from the indexed code map.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completes_prompt_arguments_from_the_code_map() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let server = spawn_serve(root, None).await;
+
+    // `trace-symbol` / `symbol` completes against indexed symbol names (prefix `al` → `alpha`).
+    let symbols = server
+        .complete_prompt_argument("trace-symbol", "symbol", "al", None)
+        .await
+        .expect("complete symbol argument");
+    assert!(
+        symbols.values.iter().any(|v| v == "alpha"),
+        "symbol completion for `al` must include `alpha`, got: {:?}",
+        symbols.values
+    );
+    assert!(
+        symbols.values.iter().all(|v| v.starts_with("al")),
+        "every symbol completion must honor the prefix, got: {:?}",
+        symbols.values
+    );
+
+    // `explain-file` / `path` completes against indexed file paths (prefix `a` → `a.rs`).
+    let paths = server
+        .complete_prompt_argument("explain-file", "path", "a", None)
+        .await
+        .expect("complete path argument");
+    assert!(
+        paths.values.iter().any(|v| v == "a.rs"),
+        "path completion for `a` must include `a.rs`, got: {:?}",
+        paths.values
+    );
+
+    // An argument basemind doesn't complete returns nothing, not an error.
+    let none = server
+        .complete_prompt_argument("onboard-repo", "nope", "x", None)
+        .await
+        .expect("complete unknown argument is not an error");
+    assert!(
+        none.values.is_empty(),
+        "uncompletable argument yields no values, got: {:?}",
+        none.values
+    );
+
+    let _ = server.cancel().await;
+}
