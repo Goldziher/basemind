@@ -3028,6 +3028,44 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         !full_names.contains(&"invoke_tool"),
         "default surface must NOT expose the lean wrappers: {full_names:?}"
     );
+
+    // Tool annotations drive client-side permission gating (Claude Code auto-approves
+    // read-only tools). Assert the contract: read-only tools advertise `read_only_hint=true`,
+    // mutating tools advertise `read_only_hint=false`, and a destructive one is flagged.
+    let annotations_of = |name: &str| {
+        full_tools
+            .iter()
+            .find(|t| t.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("tool {name} present in full surface"))
+            .annotations
+            .clone()
+            .unwrap_or_else(|| panic!("tool {name} must carry ToolAnnotations"))
+    };
+    for read_only in [
+        "outline",
+        "search_symbols",
+        "find_references",
+        "status",
+        "list_files",
+    ] {
+        assert_eq!(
+            annotations_of(read_only).read_only_hint,
+            Some(true),
+            "read-only tool {read_only} must advertise read_only_hint=true"
+        );
+    }
+    for mutating in ["rescan", "cache_clear"] {
+        assert_eq!(
+            annotations_of(mutating).read_only_hint,
+            Some(false),
+            "mutating tool {mutating} must advertise read_only_hint=false"
+        );
+    }
+    assert_eq!(
+        annotations_of("cache_clear").destructive_hint,
+        Some(true),
+        "cache_clear must advertise destructive_hint=true"
+    );
     // Baseline result from a direct call on the full surface.
     let direct = decode_text(
         &full

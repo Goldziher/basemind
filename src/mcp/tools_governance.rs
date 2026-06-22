@@ -20,7 +20,11 @@ use super::types_governance::{
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
     Err(McpError::invalid_request(
-        format!("{feature} feature not enabled — rebuild with --features {feature}"),
+        format!(
+            "this tool requires the `{feature}` feature, which is not compiled into this \
+             basemind binary. Rebuild with `--features {feature}` (the published release \
+             binary includes it)."
+        ),
         None,
     ))
 }
@@ -35,7 +39,13 @@ impl BasemindServer {
         Auto-archives records continuously Stale for > 90 days (moved to `memory_archive`, \
         never deleted). `dry_run=true` previews verdicts without mutations. \
         `key` audits one specific record; omit for a full scope range scan. \
-        Capped at `limit` records (default 100, max 1000). Needs --features memory."
+        Capped at `limit` records (default 100, max 1000). Needs --features memory.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn memory_audit(
         &self,
@@ -76,7 +86,8 @@ impl BasemindServer {
         Proposals are content-addressed (blake3 of the sorted file-set) so re-mining is idempotent. \
         Previously rejected proposals are suppressed via tombstone. \
         Returns counts only — use `proposals_list` to browse, `proposal_accept` / \
-        `proposal_reject` to act. Requires git + --features memory."
+        `proposal_reject` to act. Requires git + --features memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn proposals_mine(
         &self,
@@ -115,7 +126,8 @@ impl BasemindServer {
         Pass `cursor` from a previous response's `next_cursor` for the next page; cursors are \
         Fjall-backed and stable across rescans. Propose-don't-commit: proposals are not yet \
         searchable — use `proposal_accept` to promote to memory or `proposal_reject` to suppress. \
-        Needs --features memory."
+        Needs --features memory.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn proposals_list(
         &self,
@@ -154,7 +166,13 @@ impl BasemindServer {
         index) so a later `memory_audit` will mark it Stale if any referenced file disappears. \
         The proposal is deleted from the proposals keyspace after promotion. \
         Optional `key` overrides the auto-derived `\"skill/cochange-<short_id>\"` memory key. \
-        Returns `{ accepted: true, memory_key }`. Needs --features memory."
+        Returns `{ accepted: true, memory_key }`. Needs --features memory.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn proposal_accept(
         &self,
@@ -191,7 +209,13 @@ impl BasemindServer {
         a tombstone so `proposals_mine` will not resurface the same candidate in future runs. \
         Optional `reason` is logged but not persisted. \
         Returns `{ rejected: true }`. Idempotent — calling on an already-rejected id is safe. \
-        Needs --features memory."
+        Needs --features memory.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn proposal_reject(
         &self,

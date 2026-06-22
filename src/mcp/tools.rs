@@ -24,7 +24,8 @@ impl BasemindServer {
         description = "Structural outline of a file: each symbol (name, kind, start row/col) plus \
                        imports. `l2: true` adds calls + doc comments (only if an L2 blob exists for \
                        the current content). `max_tokens` budgets the `symbols` list (not \
-                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows."
+                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn outline(
         &self,
@@ -191,7 +192,8 @@ impl BasemindServer {
                        NOT the global corpus total; `total_is_partial: true` means the cap was \
                        hit and `total` is a lower bound. `cursor` pages results (invalidate on \
                        rescan, `cursor_invalidated`). `max_tokens` budgets the response (sets \
-                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows."
+                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_symbols(
         &self,
@@ -341,7 +343,8 @@ impl BasemindServer {
                        limit 200, max 5000 (a larger request is clamped, setting \
                        `limit_clamped`). `cursor` pages results (invalidate on rescan, \
                        `cursor_invalidated`). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows."
+                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn list_files(
         &self,
@@ -457,7 +460,8 @@ impl BasemindServer {
     /// Heuristic reverse-dependency lookup via import statements.
     #[tool(
         description = "Indexed files whose imports mention `module`. Heuristic: substring match \
-                       against each import's recorded module path."
+                       against each import's recorded module path.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn dependents(
         &self,
@@ -494,7 +498,8 @@ impl BasemindServer {
         description = "Indexed-repo report: file count, on-disk `blob_count`, total bytes, \
                        per-language breakdown, root path, grammar cache directory, schema \
                        version. A `note` appears when the view index is empty but blobs exist \
-                       (lost index — rescan)."
+                       (lost index — rescan).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn status(
         &self,
@@ -557,7 +562,8 @@ impl BasemindServer {
                        both match name=\"bar\". Up to `limit` hits (default 100, max 1000); scan \
                        bounded by `scan_cap = limit * 8`. Needs `eager_l2=true` (default). \
                        `cursor` pages results. `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows."
+                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_references(
         &self,
@@ -588,7 +594,8 @@ impl BasemindServer {
                        Resolves it via the symbols index (echoed in `definition`), then runs the \
                        same name-based scan as `find_references` (same name-only, no-scope \
                        caveat). Default limit 100, max 1000. `cursor` pages results. `max_tokens` \
-                       budgets the response (sets `budgeted` + `next_cursor`)."
+                       budgets the response (sets `budgeted` + `next_cursor`).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_callers(
         &self,
@@ -622,7 +629,8 @@ impl BasemindServer {
                        Bounded by `scan_cap = limit * 8` files; narrow with `language` / \
                        `path_contains`. Default limit 100, max 1000. `cursor` pages results \
                        (invalidate on rescan). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows."
+                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn workspace_grep(
         &self,
@@ -650,7 +658,8 @@ impl BasemindServer {
                        TS/TSX, JS class/interface extends/implements; Go structural satisfaction \
                        not detected. Bounded by `scan_cap = limit * 8`. `cursor` pages results \
                        (Fjall-backed, stable across rescans). `max_tokens` budgets the response \
-                       (sets `budgeted` + `next_cursor`)."
+                       (sets `budgeted` + `next_cursor`).",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_implementations(
         &self,
@@ -683,7 +692,8 @@ impl BasemindServer {
                        (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
                        and `max_nodes` (default 100, max 500). `name` is exact (not substring); \
                        use `path` to disambiguate overloads. Cycles detected; recursion surfaces \
-                       as a self-edge on the root."
+                       as a self-edge on the root.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn call_graph(
         &self,
@@ -712,7 +722,8 @@ impl BasemindServer {
     /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch (if HEAD is on one), full \
-                       + short HEAD sha. Pairs with `working_tree_status`."
+                       + short HEAD sha. Pairs with `working_tree_status`.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn repo_info(
         &self,

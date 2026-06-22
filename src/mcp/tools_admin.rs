@@ -24,7 +24,13 @@ impl BasemindServer {
             other MCP queries block until it returns (<1s for ~100 files). Use after editing code \
             to surface new symbols/calls/outlines without restarting. `full: true` forces a \
             complete re-index (overrides `paths`) when the index is stale or 'no indexed files'. \
-            Returns scanned / updated / removed counts + elapsed time."
+            Returns scanned / updated / removed counts + elapsed time.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn rescan(
         &self,
@@ -42,7 +48,8 @@ impl BasemindServer {
         description = "Aggregate `.basemind/telemetry.jsonl` into a usage summary: total tool \
             calls, per-tool histogram, total response bytes, estimated tokens saved vs the \
             grep+Read baseline. Optional `window` (`today` default, `1h`, `24h`, `all`) and `tool` \
-            filter. `est_tokens_saved` is heuristic — each row carries a `saved_baseline` label."
+            filter. `est_tokens_saved` is heuristic — each row carries a `saved_baseline` label.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn telemetry_summary(
         &self,
@@ -66,7 +73,8 @@ impl BasemindServer {
         description = "On-disk size + blob accounting for the `.basemind/` cache: recursive byte \
             sizes per component (blobs / views / lance / git-cache / telemetry), total blob-file \
             count, orphaned-blob count (unreferenced, reclaimable via `cache_gc`), and per-view \
-            indexed file counts. Read-only; safe anytime."
+            indexed file counts. Read-only; safe anytime.",
+        annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn cache_stats(
         &self,
@@ -93,7 +101,13 @@ impl BasemindServer {
             content-addressed and shared across views; re-scans and branch switches orphan blobs \
             no view references. Mark-and-sweep reclaims only those (referenced blobs untouched). \
             Runs under the live server's lock — safe anytime. Returns scanned / removed / \
-            bytes_freed counts."
+            bytes_freed counts.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
     pub(crate) async fn cache_gc(
         &self,
@@ -115,12 +129,19 @@ impl BasemindServer {
         __result
     }
 
-    #[tool(description = "Clear a `.basemind/` cache component: \
+    #[tool(
+        description = "Clear a `.basemind/` cache component: \
             `blobs|views|lance|git-cache|telemetry|all`. Non-live caches (`git-cache`, \
             `telemetry`, `lance`) clear freely. `blobs` needs `confirm=true` (an in-process \
             rescan rebuilds it). `views`/`all` would yank the live Fjall index from under the \
             server, so they are refused in-process — stop it and run `basemind cache clear \
-            --component views|all`. Returns the component and whether it was cleared.")]
+            --component views|all`. Returns the component and whether it was cleared.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            open_world_hint = false
+        )
+    )]
     pub(crate) async fn cache_clear(
         &self,
         Parameters(p): Parameters<CacheClearParams>,
