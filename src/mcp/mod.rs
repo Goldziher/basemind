@@ -33,6 +33,7 @@ mod lenient;
 mod memory;
 mod savings;
 mod telemetry;
+mod tokens;
 mod tools;
 mod tools_admin;
 #[cfg(all(feature = "comms", unix))]

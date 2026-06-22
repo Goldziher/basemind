@@ -13,9 +13,10 @@
 //!    paragraph deduplication). Regexes are compiled once into a `OnceLock`.
 //!    strategy = `"lexical"`.
 //!
-//! The token count is estimated as `bytes / 4` (the same `bytes_to_tokens`
-//! heuristic used in `src/mcp/savings.rs`). The response carries a `tokens_note`
-//! field disclosing this.
+//! Token counts come from [`super::tokens::count_tokens`]: a real o200k (gpt-4o)
+//! tokenizer when built with the `documents` feature, and a `bytes/4` heuristic
+//! otherwise. The response carries `tokens_counted` + a `tokens_note` field
+//! disclosing which path was used.
 //!
 //! # Governing principle
 //!
@@ -31,6 +32,7 @@ use rmcp::ErrorData as McpError;
 
 use super::ServerState;
 use super::helpers::{json_result, kind_to_str, parse_kind};
+use super::tokens;
 use super::types_compress::{CompressParams, CompressResponse, ExpandParams, ExpandResponse};
 use crate::query;
 
@@ -43,11 +45,23 @@ use crate::query;
 /// MCP response sizes sane. Agents that need more can read the file directly.
 const EXPAND_BODY_CAP: usize = 128 * 1024;
 
-// ─── Token estimate ─────────────────────────────────────────────────────────
+// ─── Token-note disclosure strings ───────────────────────────────────────────
 
-/// `bytes / 4` token estimate, matching the heuristic in `src/mcp/savings.rs`.
-fn bytes_to_tokens(bytes: usize) -> u64 {
-    (bytes / 4) as u64
+/// Disclosure note for the real-tokenizer path (`documents` feature).
+const TOKENS_NOTE_REAL: &str =
+    "tokens counted with the o200k (gpt-4o) tokenizer; offline runs fall back to a word estimate";
+
+/// Disclosure note for the `bytes/4` heuristic path.
+const TOKENS_NOTE_HEURISTIC: &str =
+    "estimate (bytes/4); build with --features documents for real token counts";
+
+/// Pick the disclosure note matching the compiled token-counting path.
+fn tokens_note() -> String {
+    if tokens::TOKENS_ARE_COUNTED {
+        TOKENS_NOTE_REAL.to_string()
+    } else {
+        TOKENS_NOTE_HEURISTIC.to_string()
+    }
 }
 
 // ─── Lexical-pass regexes (compiled once) ───────────────────────────────────
@@ -276,6 +290,15 @@ async fn run_structural(
     // Read the original source bytes to compute the original size.
     let original_bytes = l1.size_bytes as usize;
 
+    // Count the original tokens from the source on disk (mirrors the `expand` read
+    // path). Fail-open: if the read fails, fall back to the `bytes/4` estimate over
+    // the recorded size rather than erroring the compress call.
+    let abs = state.root.join(path.to_path_buf());
+    let original_tokens = match std::fs::read(&abs) {
+        Ok(source) => tokens::count_tokens(&String::from_utf8_lossy(&source)),
+        Err(_) => (l1.size_bytes) / 4,
+    };
+
     // Build the structural output: imports then symbols (name, kind, signature).
     // This mirrors what the `outline` tool returns but in a compact text form
     // rather than the full structured JSON — the agent needs a navigable skeleton,
@@ -302,6 +325,7 @@ async fn run_structural(
     }
     let output = lines.join("\n");
     let compressed_bytes = output.len();
+    let compressed_tokens = tokens::count_tokens(&output);
 
     let ratio = if original_bytes == 0 {
         1.0_f32
@@ -311,13 +335,15 @@ async fn run_structural(
 
     let response = CompressResponse {
         original_bytes,
-        original_tokens_est: bytes_to_tokens(original_bytes),
+        original_tokens,
         compressed_bytes,
-        compressed_tokens_est: bytes_to_tokens(compressed_bytes),
+        compressed_tokens,
+        tokens_reduced: original_tokens.saturating_sub(compressed_tokens),
+        tokens_counted: tokens::TOKENS_ARE_COUNTED,
         ratio,
         strategy: "structural".to_string(),
         output,
-        tokens_note: "estimate (bytes/4); accurate tokenizer pending".to_string(),
+        tokens_note: tokens_note(),
     };
 
     json_result(&response)
@@ -330,8 +356,10 @@ fn run_prose(
     _params: &CompressParams,
 ) -> Result<rmcp::model::CallToolResult, McpError> {
     let original_bytes = text.len();
+    let original_tokens = tokens::count_tokens(text);
     let output = lexical_pass(text);
     let compressed_bytes = output.len();
+    let compressed_tokens = tokens::count_tokens(&output);
 
     let ratio = if original_bytes == 0 {
         1.0_f32
@@ -341,13 +369,15 @@ fn run_prose(
 
     let response = CompressResponse {
         original_bytes,
-        original_tokens_est: bytes_to_tokens(original_bytes),
+        original_tokens,
         compressed_bytes,
-        compressed_tokens_est: bytes_to_tokens(compressed_bytes),
+        compressed_tokens,
+        tokens_reduced: original_tokens.saturating_sub(compressed_tokens),
+        tokens_counted: tokens::TOKENS_ARE_COUNTED,
         ratio,
         strategy: "lexical".to_string(),
         output,
-        tokens_note: "estimate (bytes/4); accurate tokenizer pending".to_string(),
+        tokens_note: tokens_note(),
     };
 
     json_result(&response)
@@ -400,10 +430,47 @@ mod tests {
         );
     }
 
+    /// `tokens_reduced` must equal `original_tokens - compressed_tokens` (saturating)
+    /// and, on the heuristic path, the counts must be exactly `bytes / 4`.
     #[test]
-    fn bytes_to_tokens_matches_savings_heuristic() {
-        assert_eq!(bytes_to_tokens(400), 100);
-        assert_eq!(bytes_to_tokens(4000), 1000);
-        assert_eq!(bytes_to_tokens(0), 0);
+    fn compress_response_reports_consistent_reduced_tokens() {
+        let original = "word ".repeat(40); // 200 bytes
+        let compressed = "word"; // 4 bytes
+        let original_tokens = tokens::count_tokens(&original);
+        let compressed_tokens = tokens::count_tokens(compressed);
+        let response = CompressResponse {
+            original_bytes: original.len(),
+            original_tokens,
+            compressed_bytes: compressed.len(),
+            compressed_tokens,
+            tokens_reduced: original_tokens.saturating_sub(compressed_tokens),
+            tokens_counted: tokens::TOKENS_ARE_COUNTED,
+            ratio: compressed.len() as f32 / original.len() as f32,
+            strategy: "lexical".to_string(),
+            output: compressed.to_string(),
+            tokens_note: tokens_note(),
+        };
+        assert_eq!(
+            response.tokens_reduced,
+            response.original_tokens - response.compressed_tokens,
+            "tokens_reduced must equal original - compressed"
+        );
+        assert!(response.original_tokens >= response.compressed_tokens);
+    }
+
+    /// On the `bytes/4` heuristic build, a known string counts to exactly `len / 4`.
+    #[cfg(not(feature = "documents"))]
+    #[test]
+    fn heuristic_count_is_bytes_over_four() {
+        let text = "a".repeat(400);
+        assert_eq!(tokens::count_tokens(&text), 100);
+        assert!(tokens_note().contains("bytes/4"));
+    }
+
+    /// On the real-tokenizer build, the disclosure note names the tokenizer.
+    #[cfg(feature = "documents")]
+    #[test]
+    fn real_count_note_names_tokenizer() {
+        assert!(tokens_note().contains("tokenizer"));
     }
 }

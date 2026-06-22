@@ -1900,13 +1900,47 @@ async fn mcp_server_exercises_representative_tools() {
         !output.contains("let _ = 1"),
         "structural output must NOT include function body literals: {output:?}"
     );
+    let tokens_counted = body
+        .get("tokens_counted")
+        .and_then(Value::as_bool)
+        .expect("tokens_counted");
+    assert_eq!(
+        tokens_counted,
+        cfg!(feature = "documents"),
+        "tokens_counted must track the documents feature"
+    );
     let tokens_note = body
         .get("tokens_note")
         .and_then(Value::as_str)
         .expect("tokens_note");
-    assert!(
-        tokens_note.contains("bytes/4"),
-        "tokens_note must disclose the bytes/4 heuristic: {tokens_note:?}"
+    if cfg!(feature = "documents") {
+        assert!(
+            tokens_note.contains("tokenizer"),
+            "real-count note must mention the tokenizer: {tokens_note:?}"
+        );
+    } else {
+        assert!(
+            tokens_note.contains("bytes/4"),
+            "heuristic note must disclose bytes/4: {tokens_note:?}"
+        );
+    }
+    // actually-reduced counter is present and consistent
+    let original_tokens = body
+        .get("original_tokens")
+        .and_then(Value::as_u64)
+        .expect("original_tokens");
+    let compressed_tokens = body
+        .get("compressed_tokens")
+        .and_then(Value::as_u64)
+        .expect("compressed_tokens");
+    let tokens_reduced = body
+        .get("tokens_reduced")
+        .and_then(Value::as_u64)
+        .expect("tokens_reduced");
+    assert_eq!(
+        tokens_reduced,
+        original_tokens.saturating_sub(compressed_tokens),
+        "tokens_reduced must equal original - compressed"
     );
 
     // compress (prose): compressing a prose string with repeated filler applies the
@@ -1936,6 +1970,32 @@ async fn mcp_server_exercises_representative_tools() {
     assert!(
         prose_compressed < prose_original,
         "lexical pass must reduce size for a repeated-filler prose input: {prose_original} → {prose_compressed}"
+    );
+    let prose_tokens_counted = body
+        .get("tokens_counted")
+        .and_then(Value::as_bool)
+        .expect("tokens_counted");
+    assert_eq!(
+        prose_tokens_counted,
+        cfg!(feature = "documents"),
+        "tokens_counted must track the documents feature"
+    );
+    let prose_orig_tokens = body
+        .get("original_tokens")
+        .and_then(Value::as_u64)
+        .expect("original_tokens");
+    let prose_comp_tokens = body
+        .get("compressed_tokens")
+        .and_then(Value::as_u64)
+        .expect("compressed_tokens");
+    let prose_reduced = body
+        .get("tokens_reduced")
+        .and_then(Value::as_u64)
+        .expect("tokens_reduced");
+    assert_eq!(
+        prose_reduced,
+        prose_orig_tokens.saturating_sub(prose_comp_tokens),
+        "tokens_reduced must equal original - compressed"
     );
 
     // compress: supplying both text and path must be rejected with an error.

@@ -87,12 +87,20 @@ pub(super) struct ExpandResponse {
 pub(super) struct CompressResponse {
     /// Byte length of the original input (file contents or text).
     pub original_bytes: usize,
-    /// Rough token estimate of the original input (bytes / 4).
-    pub original_tokens_est: u64,
+    /// Token count of the original input — a real tokenizer count when built with
+    /// `documents`, else a `bytes/4` estimate.
+    pub original_tokens: u64,
     /// Byte length of the compressed output.
     pub compressed_bytes: usize,
-    /// Rough token estimate of the compressed output (bytes / 4).
-    pub compressed_tokens_est: u64,
+    /// Token count of the compressed input — a real tokenizer count when built with
+    /// `documents`, else a `bytes/4` estimate.
+    pub compressed_tokens: u64,
+    /// Tokens actually removed by compression: `original_tokens - compressed_tokens`
+    /// (saturating, never negative).
+    pub tokens_reduced: u64,
+    /// `true` when [`original_tokens`] / [`compressed_tokens`] were produced by a
+    /// real tokenizer (the `documents` feature), `false` for the `bytes/4` estimate.
+    pub tokens_counted: bool,
     /// Compression ratio: `compressed_bytes as f32 / original_bytes as f32`.
     /// Values below 1.0 indicate a reduction; 1.0 means no change.
     pub ratio: f32,
