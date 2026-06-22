@@ -706,13 +706,31 @@ fn process_doc(
             }
         }
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
-        Err(error) => FileResult::bare(
-            rel.to_string(),
-            FileStatus::ExtractFailed {
-                msg: format!("document extract: {error:#}"),
-            },
-        ),
+        Err(error) => {
+            let msg = format!("document extract: {error:#}");
+            // "Unsupported format" means kreuzberg has no extractor for this MIME — i.e. the
+            // file is not an extractable document (e.g. a source file in a language tree-sitter
+            // didn't recognize, which `mime_guess` maps to `application/x-wais-source`). That's a
+            // skip, not a failure: it shouldn't inflate the failed count or read as a real error.
+            // Genuine extraction errors (corrupt PDF, OCR failure, …) still surface as failures.
+            if is_unsupported_format_error(&msg) {
+                // Skip, but log it — a non-extractable file shouldn't vanish silently.
+                tracing::debug!(path = rel, reason = %msg, "skipping file: not an extractable document");
+                FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang)
+            } else {
+                tracing::debug!(path = rel, error = %msg, "document extraction failed");
+                FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg })
+            }
+        }
     }
+}
+
+/// True when a document-extraction error means the file's format simply has no kreuzberg
+/// extractor (kreuzberg's `UnsupportedFormat` → "Unsupported format: <mime>"), as opposed to a
+/// genuine extraction failure on a real document. Such files are skipped, not failed.
+#[cfg(feature = "documents")]
+fn is_unsupported_format_error(msg: &str) -> bool {
+    msg.to_ascii_lowercase().contains("unsupported format")
 }
 
 fn read_working_tree(
@@ -819,6 +837,27 @@ fn flush_doc_batches_if_any(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "documents")]
+    #[test]
+    fn unsupported_format_error_is_a_skip_not_a_failure() {
+        // kreuzberg's UnsupportedFormat for a non-document (e.g. an `.app.src` source file that
+        // `mime_guess` maps to `application/x-wais-source`) → skip, not a counted failure.
+        assert!(is_unsupported_format_error(
+            "document extract: Unsupported format: application/x-wais-source"
+        ));
+        // Case-insensitive on the kreuzberg phrasing.
+        assert!(is_unsupported_format_error(
+            "Unsupported Format: text/x-foo"
+        ));
+        // A genuine extraction failure on a real document stays a failure.
+        assert!(!is_unsupported_format_error(
+            "document extract: failed to parse PDF: corrupt xref table"
+        ));
+        assert!(!is_unsupported_format_error(
+            "document extract: OCR engine returned no text"
+        ));
+    }
 
     #[test]
     fn looks_binary_detects_nul_in_first_kib() {
