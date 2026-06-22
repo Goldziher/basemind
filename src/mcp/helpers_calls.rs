@@ -219,7 +219,6 @@ fn scan_calls_by_name(
     let mut total: u32 = 0;
     let mut total_is_partial = false;
     let scan_cap = limit.saturating_mul(8).max(2_000);
-    let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
     let mut matched: usize = 0;
     for guard in idx
@@ -247,7 +246,6 @@ fn scan_calls_by_name(
                 callee,
             });
             hit_keys.push(k.to_vec());
-            last_emitted_key = Some(k.to_vec());
         } else {
             // We collected a full page; this extra entry proves more remain on disk.
             has_more = true;
@@ -258,7 +256,7 @@ fn scan_calls_by_name(
         }
     }
     let next_cursor = if has_more {
-        last_emitted_key.as_deref().map(Cursor::encode_fjall)
+        hit_keys.last().map(|k| Cursor::encode_fjall(k))
     } else {
         None
     };

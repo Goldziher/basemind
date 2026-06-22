@@ -189,7 +189,7 @@ pub(super) struct OutlineResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct SymbolView {
     pub name: String,
-    pub kind: String,
+    pub kind: &'static str,
     pub start_row: u32,
     pub start_col: u32,
     pub start_byte: u32,
@@ -222,7 +222,7 @@ pub(super) struct DocView {
 pub(super) struct SearchHitView {
     pub path: RelPath,
     pub name: String,
-    pub kind: String,
+    pub kind: &'static str,
     pub start_row: u32,
     pub start_col: u32,
     #[serde(skip_serializing_if = "Option::is_none")]

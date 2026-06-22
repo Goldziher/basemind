@@ -41,7 +41,7 @@ impl BasemindServer {
                     .iter()
                     .map(|s| SymbolView {
                         name: s.name.clone(),
-                        kind: kind_to_str(s.kind).to_string(),
+                        kind: kind_to_str(s.kind),
                         start_row: s.start_row,
                         start_col: s.start_col,
                         start_byte: s.start_byte,
@@ -282,7 +282,7 @@ impl BasemindServer {
                         results.push(SearchHitView {
                             path: path.clone(),
                             name: sym.name.clone(),
-                            kind: kind_to_str(sym.kind).to_string(),
+                            kind: kind_to_str(sym.kind),
                             start_row: sym.start_row,
                             start_col: sym.start_col,
                             signature: sym.signature.clone(),
