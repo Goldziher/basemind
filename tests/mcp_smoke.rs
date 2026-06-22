@@ -3156,3 +3156,75 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
 
     let _ = lean.cancel().await;
 }
+
+/// 0.8.0: the server advertises reusable prompt templates and renders them with arguments.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompts_are_listed_and_rendered_with_arguments() {
+    use rmcp::model::GetPromptRequestParams;
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let server = spawn_serve(root, None).await;
+
+    // prompts/list advertises the curated templates.
+    let prompts = server.list_all_prompts().await.expect("list_all_prompts");
+    let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
+    for expected in [
+        "onboard-repo",
+        "trace-symbol",
+        "explain-file",
+        "review-working-tree",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "prompt `{expected}` must be advertised, got: {names:?}"
+        );
+    }
+
+    // `trace-symbol` exposes a `symbol` argument (the reference the completion handler fills).
+    let trace = prompts
+        .iter()
+        .find(|p| p.name == "trace-symbol")
+        .expect("trace-symbol present");
+    let args = trace
+        .arguments
+        .as_ref()
+        .expect("trace-symbol has arguments");
+    assert!(
+        args.iter().any(|a| a.name == "symbol"),
+        "trace-symbol must declare a `symbol` argument, got: {:?}",
+        args.iter().map(|a| &a.name).collect::<Vec<_>>()
+    );
+
+    // prompts/get renders the template, interpolating the argument into the message.
+    let rendered = server
+        .get_prompt(
+            GetPromptRequestParams::new("trace-symbol").with_arguments(
+                serde_json::json!({ "symbol": "Greeter" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .expect("get_prompt trace-symbol");
+    assert!(
+        !rendered.messages.is_empty(),
+        "rendered prompt must carry at least one message"
+    );
+    let body = rendered
+        .messages
+        .iter()
+        .filter_map(|m| match &m.content {
+            rmcp::model::PromptMessageContent::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    assert!(
+        body.contains("Greeter") && body.contains("search_symbols"),
+        "rendered trace-symbol must interpolate the symbol and name basemind tools, got: {body}"
+    );
+
+    let _ = server.cancel().await;
+}
