@@ -2,8 +2,12 @@
 //! grep + Read baseline?". Honest about being a heuristic — every row carries the baseline name
 //! so the dashboard can disclose the assumption.
 //!
-//! Bytes → tokens uses the standard `bytes / 4` rule of thumb for English source code with the
-//! Claude tokenizer. Same factor as basemind's existing scan-cost reporting.
+//! Token counting has two tiers. When the **full response text** is in hand, the figures route
+//! through [`super::tokens::count_tokens`] — a real o200k (gpt-4o) tokenizer under the `documents`
+//! feature, a `bytes / 4` heuristic otherwise. When only a **byte length** is available (the live
+//! telemetry path, whose caller has already collapsed the response to a byte count), there is no
+//! text to tokenize, so it falls back to the same `bytes / 4` rule of thumb basemind's scan-cost
+//! reporting uses. Under default features the two tiers are numerically identical.
 
 use serde::Serialize;
 
@@ -21,10 +25,19 @@ pub struct SavingsRow {
     pub baseline: &'static str,
 }
 
-/// `bytes / 4` token estimate, saturating. `pub(super)` so the budget helper
-/// ([`super::budget`]) shares the exact same bytes→token factor the telemetry estimator uses.
+/// `bytes / 4` token estimate, saturating. The byte-only fallback used wherever the full text
+/// is NOT in hand — only a byte length. `pub(super)` so the budget helper ([`super::budget`])
+/// shares the exact same bytes→token factor for its per-item ranking heuristic.
 pub(super) fn bytes_to_tokens(bytes: u64) -> u64 {
     bytes / 4
+}
+
+/// Real token count of `text`, routed through [`super::tokens::count_tokens`]: a true o200k
+/// (gpt-4o) tokenizer under the `documents` feature, `bytes / 4` otherwise. Use this — not
+/// [`bytes_to_tokens`] — wherever the full response text is available, so telemetry reports
+/// honest token figures when a tokenizer is compiled in.
+fn tokens_for_text(text: &str) -> u64 {
+    super::tokens::count_tokens(text)
 }
 
 /// Grep-style name search (`search_symbols`, `find_references`, `find_callers`,
@@ -38,15 +51,19 @@ const GREP_READ_MULTIPLIER: u64 = 3;
 /// less follow-up file reading than a name search, so this is lower than `GREP_READ_MULTIPLIER`.
 const DEPENDENTS_READ_MULTIPLIER: u64 = 2;
 
-/// Estimate baseline + actual tokens for one tool call.
+/// Estimate baseline + actual tokens for one tool call from the full response **text**.
+///
+/// The live telemetry entry point. The `actual` count routes through [`tokens_for_text`] — a
+/// real o200k tokenizer under the `documents` feature, the `bytes / 4` heuristic otherwise —
+/// so telemetry reports honest counts when a tokenizer is compiled in. The byte-only fallback
+/// ([`bytes_to_tokens`]) remains for paths that hold only a byte length, e.g. the budget loop.
 ///
 /// `corpus_bytes` is the total byte count of every indexed file (held on `ServerState` and
 /// recomputed after each rescan). Retained for signature stability and potential future
 /// per-tool models; the grep-style baselines are now corpus-independent (derived from the
 /// response payload), so this argument currently goes unused.
-pub fn estimate(tool: &str, _corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
-    let actual = bytes_to_tokens(resp_bytes);
-
+pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
+    let actual = tokens_for_text(resp_text);
     let (baseline, baseline_name) = match tool {
         // Outline replaces a full Read of the file. We don't know which file
         // without re-deserialising params, so use the response bytes as a
@@ -153,51 +170,79 @@ pub fn estimate(tool: &str, _corpus_bytes: u64, resp_bytes: u64) -> SavingsRow {
 mod tests {
     use super::*;
 
+    /// Baseline-model assertions that hold for both tiers: the per-tool multiplier and the
+    /// saturating-subtraction savings, expressed relative to whatever `actual` was counted.
+    /// Used by the structural tests so they pass under `documents` (real o200k) too.
+    fn assert_grep_model(s: &SavingsRow, expected_baseline: &str) {
+        assert_eq!(s.baseline, expected_baseline);
+        assert_eq!(
+            s.baseline_tokens,
+            s.actual_tokens.saturating_mul(GREP_READ_MULTIPLIER)
+        );
+        assert_eq!(
+            s.est_tokens_saved,
+            s.baseline_tokens.saturating_sub(s.actual_tokens)
+        );
+    }
+
     #[test]
     fn outline_baseline_is_5x_response() {
-        let s = estimate("outline", 1_000_000, 400);
-        assert_eq!(s.actual_tokens, 100);
-        assert_eq!(s.baseline_tokens, 500);
-        assert_eq!(s.est_tokens_saved, 400);
+        // 400-byte text → 100 actual tokens under the heuristic tier; baseline = 5×.
+        let s = estimate_from_text("outline", 1_000_000, &"a".repeat(400));
+        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.baseline, "full_file_read");
+        #[cfg(not(feature = "documents"))]
+        {
+            assert_eq!(s.actual_tokens, 100);
+            assert_eq!(s.baseline_tokens, 500);
+            assert_eq!(s.est_tokens_saved, 400);
+        }
     }
 
     #[test]
     fn search_symbols_savings_independent_of_corpus() {
         // Same response payload, wildly different corpus sizes → identical savings.
-        let big = estimate("search_symbols", 1_000_000, 400);
-        let empty = estimate("search_symbols", 0, 400);
+        let text = "a".repeat(400);
+        let big = estimate_from_text("search_symbols", 1_000_000, &text);
+        let empty = estimate_from_text("search_symbols", 0, &text);
         assert_eq!(big.est_tokens_saved, empty.est_tokens_saved);
-        // 400 bytes → 100 actual tokens; baseline = 100 * 3 = 300; saved = 200.
-        assert_eq!(big.actual_tokens, 100);
-        assert_eq!(big.baseline_tokens, 300);
-        assert_eq!(big.est_tokens_saved, 200);
-        assert_eq!(big.baseline, "grep_plus_read_top_hits");
+        assert_grep_model(&big, "grep_plus_read_top_hits");
+        #[cfg(not(feature = "documents"))]
+        {
+            // 400 bytes → 100 actual tokens; baseline = 100 * 3 = 300; saved = 200.
+            assert_eq!(big.actual_tokens, 100);
+            assert_eq!(big.baseline_tokens, 300);
+            assert_eq!(big.est_tokens_saved, 200);
+        }
     }
 
     #[test]
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
         // Corpus is now irrelevant; savings derive from the response payload.
-        let s = estimate("find_references", 0, 200);
-        // 200 bytes → 50 actual; baseline = 50 * 3 = 150; saved = 100.
-        assert_eq!(s.actual_tokens, 50);
-        assert_eq!(s.baseline_tokens, 150);
-        assert_eq!(s.est_tokens_saved, 100);
-        assert_eq!(s.baseline, "grep_top_hits");
+        let s = estimate_from_text("find_references", 0, &"a".repeat(200));
+        assert_grep_model(&s, "grep_top_hits");
+        #[cfg(not(feature = "documents"))]
+        {
+            // 200 bytes → 50 actual; baseline = 50 * 3 = 150; saved = 100.
+            assert_eq!(s.actual_tokens, 50);
+            assert_eq!(s.baseline_tokens, 150);
+            assert_eq!(s.est_tokens_saved, 100);
+        }
     }
 
     #[test]
     fn grep_savings_scale_with_response_not_corpus() {
         // Larger hit payload → larger savings, holding corpus fixed.
-        let small = estimate("search_symbols", 1_000_000, 400);
-        let large = estimate("search_symbols", 1_000_000, 4_000);
+        let small = estimate_from_text("search_symbols", 1_000_000, &"a".repeat(400));
+        let large = estimate_from_text("search_symbols", 1_000_000, &"a".repeat(4_000));
         assert!(
             large.est_tokens_saved > small.est_tokens_saved,
             "bigger response must yield bigger savings: {} !> {}",
             large.est_tokens_saved,
             small.est_tokens_saved
         );
-        // 4_000 bytes → 1_000 actual; baseline = 3_000; saved = 2_000.
+        // 4_000 bytes → 1_000 actual; baseline = 3_000; saved = 2_000 (heuristic tier).
+        #[cfg(not(feature = "documents"))]
         assert_eq!(large.est_tokens_saved, 2_000);
     }
 
@@ -213,7 +258,7 @@ mod tests {
             "web_map",
             "workspace_grep",
         ] {
-            let s = estimate(tool, 1_000_000, 500);
+            let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");
             assert_eq!(s.baseline, "no_baseline", "{tool} must label no_baseline");
         }
@@ -221,8 +266,20 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_unclassified() {
-        let s = estimate("not_a_real_tool", 1_000_000, 100);
+        let s = estimate_from_text("not_a_real_tool", 1_000_000, &"a".repeat(100));
         assert_eq!(s.baseline, "unclassified");
         assert_eq!(s.est_tokens_saved, 0);
+    }
+
+    /// Under the heuristic tier (no `documents`), counting the full text is byte-for-byte
+    /// `len / 4` — the telemetry numbers are identical to the old `bytes / 4` estimate.
+    #[cfg(not(feature = "documents"))]
+    #[test]
+    fn estimate_from_text_is_bytes_over_four_under_heuristic() {
+        let s = estimate_from_text("outline", 0, &"x".repeat(800));
+        // 800 bytes → 200 actual; baseline = 200 * 5 = 1_000; saved = 800.
+        assert_eq!(s.actual_tokens, 200);
+        assert_eq!(s.baseline_tokens, 1_000);
+        assert_eq!(s.est_tokens_saved, 800);
     }
 }

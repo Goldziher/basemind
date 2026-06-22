@@ -25,6 +25,7 @@ mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
+mod helpers_telemetry;
 #[cfg(feature = "crawl")]
 mod helpers_web;
 mod lean;
@@ -164,7 +165,7 @@ pub(crate) struct ServerState {
     pub(crate) telemetry: Arc<telemetry::Telemetry>,
     /// Sum of `size_bytes` across every indexed file. Captured at boot and
     /// after each `rescan`. Feeds the corpus-baseline cost in
-    /// [`super::savings::estimate`].
+    /// [`super::savings::estimate_from_text`].
     pub(crate) corpus_bytes: std::sync::atomic::AtomicU64,
     /// Monotonic counter bumped every time `cache` is swapped (boot, rescan, view watcher).
     /// In-memory pagination cursors embed this value as a snapshot id so a resume call

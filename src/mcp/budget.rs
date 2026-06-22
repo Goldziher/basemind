@@ -50,6 +50,9 @@ pub(super) fn apply_budget<T: Serialize>(items: Vec<T>, max_tokens: Option<u32>)
     let mut kept: Vec<T> = Vec::with_capacity(total);
     let mut used: u64 = 0;
     for item in items {
+        // Deliberately the cheap `bytes/4` heuristic, not the real tokenizer: this loop runs
+        // per-item on every budgeted tool call (a hot path) and only ranks/fits items — it is
+        // not user-facing telemetry, so a tokenizer call per item would be an unjustified cost.
         let cost = match serde_json::to_vec(&item) {
             Ok(bytes) => bytes_to_tokens(bytes.len() as u64),
             // A serialize failure here is unexpected (every response item is plain JSON),
