@@ -12,6 +12,9 @@ ignore = [
   "RUSTSEC-2025-0119",
   # paste — unmaintained, widely-used proc-macro; still functional, no migration path.
   "RUSTSEC-2024-0436",
+  # rustls-pemfile — unmaintained, transitive via the rustls/reqwest stack; functional,
+  # folded into rustls upstream, no migration needed here.
+  "RUSTSEC-2025-0134",
 ]
 
 [licenses]
