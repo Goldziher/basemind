@@ -2,12 +2,10 @@
 //! block stays focused on dispatch logic. Everything here is `pub(super)`.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, Content, RawContent};
+use rmcp::model::{CallToolResult, Content};
 use serde::Serialize;
-use serde_json::Value;
 
 use super::types::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
 use super::{OutlineCache, OutlineEntry, ServerState};
@@ -20,6 +18,7 @@ pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_graph::run_call_graph;
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
+pub(super) use super::helpers_telemetry::record_call;
 
 pub(super) const SEARCH_LIMIT_DEFAULT: u32 = 100;
 pub(super) const SEARCH_LIMIT_MAX: u32 = 1000;
@@ -120,41 +119,6 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
     let content = Content::json(value)
         .map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
     Ok(CallToolResult::success(vec![content]))
-}
-
-/// Sum the byte length of every `Content::text` / `Content::json` field on the result.
-/// Image / resource / link content is skipped — basemind tools only ever return text.
-fn result_text_bytes(result: &CallToolResult) -> u64 {
-    let mut total: u64 = 0;
-    for c in &result.content {
-        if let RawContent::Text(t) = &c.raw {
-            total = total.saturating_add(t.text.len() as u64);
-        }
-    }
-    total
-}
-
-/// Record one tool-call row to `.basemind/telemetry.jsonl`. Best-effort:
-/// errors are logged via `tracing::warn!` and swallowed so a misbehaving
-/// telemetry write can never break a tool response. Only successful calls
-/// produce rows — error responses don't carry a meaningful "saved" number.
-pub(super) fn record_call(
-    state: &ServerState,
-    tool: &'static str,
-    params: &Value,
-    started: Instant,
-    result: &Result<CallToolResult, McpError>,
-) {
-    let Ok(r) = result else { return };
-    let elapsed_ms: u64 = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let resp_bytes = result_text_bytes(r);
-    let corpus = state
-        .corpus_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let savings = super::savings::estimate(tool, corpus, resp_bytes);
-    state
-        .telemetry
-        .record(tool, params, resp_bytes, elapsed_ms, &savings);
 }
 
 pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
