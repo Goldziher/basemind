@@ -21,4 +21,7 @@ start, check `room_list` + `inbox_read` (and recent `room_history`) for what's b
 `room_history` and `inbox_read` return front-matter only (subject / from / id) — call `message_get`
 with an id to read a body. Post a concise `room_post {room, subject, body, reply_to?}` when you
 begin, finish, or hit a decision, and reply (`reply_to`) to messages about your work. Don't stay
-silent when collaborating. Comms tools require a build with `--features comms`.
+silent when collaborating. An orchestrator can drive many named subagents via `as_agent` (each
+with its own identity and inbox), send direct messages with `dm_send`, and discover peers via
+`agent_list`. See the `multi-agent-room` skill for coordinating a team. Comms tools require a
+build with `--features comms`.
