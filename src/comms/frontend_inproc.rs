@@ -220,6 +220,7 @@ mod tests {
                 room: room.clone(),
                 cursor: None,
                 limit: Some(10),
+                since_micros: None,
             })
             .await
             .expect("history");
@@ -255,6 +256,7 @@ mod tests {
                 cursor: None,
                 limit: Some(10),
                 mark_read: true,
+                since_micros: None,
             })
             .await
             .expect("inbox");
@@ -278,6 +280,7 @@ mod tests {
                 cursor: None,
                 limit: Some(10),
                 mark_read: false,
+                since_micros: None,
             })
             .await
             .expect("inbox");
@@ -356,6 +359,7 @@ mod tests {
                 cursor: None,
                 limit: Some(10),
                 mark_read: false,
+                since_micros: None,
             })
             .await
             .expect("inbox");
@@ -381,6 +385,7 @@ mod tests {
                 room: room.clone(),
                 cursor: None,
                 limit: Some(10),
+                since_micros: None,
             })
             .await
             .expect("history");
@@ -400,6 +405,7 @@ mod tests {
                 cursor: None,
                 limit: Some(10),
                 mark_read: false,
+                since_micros: None,
             })
             .await
             .expect("inbox");

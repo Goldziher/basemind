@@ -115,6 +115,12 @@ pub enum CommsRequest {
         /// Maximum messages to return.
         #[serde(default)]
         limit: Option<u32>,
+        /// Absolute recency cutoff in microseconds since the unix epoch: only messages whose
+        /// `ts_micros >= since_micros` are returned. `None` returns ALL history. Additive: older
+        /// clients omit it and get the full log; an ADDITIONAL filter that composes with the
+        /// cursor/seq pagination window rather than replacing it.
+        #[serde(default)]
+        since_micros: Option<i64>,
     },
     /// Fetch a single message's body by id.
     GetBody {
@@ -138,6 +144,12 @@ pub enum CommsRequest {
         /// When true, advance the agent's read cursors past the returned messages.
         #[serde(default)]
         mark_read: bool,
+        /// Absolute recency cutoff in microseconds since the unix epoch: only messages whose
+        /// `ts_micros >= since_micros` surface. `None` returns ALL unread. Additive: older clients
+        /// omit it and get every unread message; an ADDITIONAL filter on top of the cursor window
+        /// and per-room read cursors — it never advances a cursor or breaks `inbox_ack`.
+        #[serde(default)]
+        since_micros: Option<i64>,
     },
     /// Acknowledge inbox messages by ADVANCING the calling agent's per-room read cursors. This
     /// never deletes from the shared append-only log nor affects any other agent — it only moves

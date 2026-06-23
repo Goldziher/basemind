@@ -2855,7 +2855,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
 
     // B reads history → FRONT-MATTER only: subject present, NO body field on the meta record.
     let (history, _next) = b
-        .read_history(room.clone(), None, 10)
+        .read_history(room.clone(), None, 10, None)
         .await
         .expect("history");
     assert_eq!(history.len(), 1, "exactly one posted message");
@@ -2896,7 +2896,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
 
     // B's inbox shows the unread message, then mark_read clears it to 0 unread.
     let (inbox, unread, _c) = b
-        .read_inbox(None, None, None, 10, true)
+        .read_inbox(None, None, None, 10, true, None)
         .await
         .expect("inbox read+mark");
     assert_eq!(inbox.len(), 1, "the posted message is in B's inbox");
@@ -2908,7 +2908,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
 
     // A second inbox read after mark_read returns nothing new.
     let (inbox2, unread2, _c2) = b
-        .read_inbox(None, None, None, 10, false)
+        .read_inbox(None, None, None, 10, false, None)
         .await
         .expect("inbox re-read");
     assert!(
@@ -2931,7 +2931,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("post second");
     let (inbox3, _u3, _c3) = b
-        .read_inbox(None, None, None, 10, false)
+        .read_inbox(None, None, None, 10, false, None)
         .await
         .expect("inbox shows second");
     assert_eq!(inbox3.len(), 1, "the second message is unread in B's inbox");
@@ -2952,14 +2952,14 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     );
 
     let (inbox4, _u4, _c4) = b
-        .read_inbox(None, None, None, 10, false)
+        .read_inbox(None, None, None, 10, false, None)
         .await
         .expect("inbox after ack");
     assert!(inbox4.is_empty(), "ack removed the message from B's inbox");
 
     // The acked message is still in the shared, append-only history.
     let (history_after, _n) = b
-        .read_history(room.clone(), None, 10)
+        .read_history(room.clone(), None, 10, None)
         .await
         .expect("history after ack");
     assert_eq!(

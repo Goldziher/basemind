@@ -575,6 +575,7 @@ mod tests {
                 scope: super::super::model::RoomScope::Global,
                 title: "t".to_string(),
                 created_at: now_micros(),
+                last_activity: 0,
             })
             .expect("put room");
 

@@ -154,7 +154,7 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
 
     // (5) Front-matter now carries ts_micros + tags + scope + seq.
     let (bob_inbox, _unread, _c) = bob
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("bob inbox");
     assert_eq!(bob_inbox.len(), 2, "both messages are unread for Bob");
@@ -181,7 +181,7 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
 
     // Bob's next inbox no longer shows the acked message; only "second" remains.
     let (bob_after, _u, _c) = bob
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("bob inbox after ack");
     assert_eq!(bob_after.len(), 1, "acked message dropped from Bob's inbox");
@@ -189,14 +189,14 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
 
     // (2) The shared log is intact — room_history STILL returns BOTH messages.
     let (history, _next) = bob
-        .read_history(room.clone(), None, 100)
+        .read_history(room.clone(), None, 100, None)
         .await
         .expect("history");
     assert_eq!(history.len(), 2, "ack must not delete from the shared log");
 
     // (3) Carol's inbox is unaffected by Bob's ack — per-agent isolation.
     let (carol_inbox, _u, _c) = carol
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("carol inbox");
     assert_eq!(carol_inbox.len(), 2, "another agent's inbox is untouched");
@@ -209,7 +209,7 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
     assert_eq!(acked2, 0, "bulk mode acks no specific ids");
     assert_eq!(cursors2, vec![("team".to_string(), 2)]);
     let (carol_after, _u, _c) = carol
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("carol inbox after bulk ack");
     assert!(carol_after.is_empty(), "to_seq bulk-acked the whole room");
@@ -308,7 +308,7 @@ async fn client_recovers_when_daemon_dies_mid_session() {
 
     // The shared log is intact and reachable through the respawned daemon: both posts land.
     let (history, _next) = client
-        .read_history(room.clone(), None, 100)
+        .read_history(room.clone(), None, 100, None)
         .await
         .expect("history after recovery");
     assert_eq!(
@@ -386,7 +386,7 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
         .expect("parent posts to child");
 
     let (child_inbox, _unread, _cursor) = child
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("child inbox");
     assert_eq!(
@@ -399,7 +399,7 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
     // A control agent with NO session context is not auto-joined and sees nothing.
     let mut outsider = connect(&socket, "outsider-agent", &root).await;
     let (outsider_inbox, _u, _c) = outsider
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("outsider inbox");
     assert!(
@@ -554,7 +554,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .expect("tester post");
 
     let (history, _next) = reviewer
-        .read_history(room.clone(), None, 100)
+        .read_history(room.clone(), None, 100, None)
         .await
         .expect("history");
     let forms: Vec<String> = history
@@ -598,7 +598,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
 
     // The recipient sees the DM in its cross-room inbox.
     let (tester_inbox, _u, _c) = tester
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("tester inbox");
     assert!(
@@ -610,7 +610,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
 
     // A third agent, in neither room, never sees it.
     let (outsider_inbox, _u, _c) = outsider
-        .read_inbox(None, None, None, 100, false)
+        .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("outsider inbox");
     assert!(
@@ -618,5 +618,106 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
             .iter()
             .any(|sm| sm.meta.subject == "private note"),
         "the DM must not leak to an agent outside the pairwise room"
+    );
+}
+
+/// Recency-aware `read_history` and room freshness, pinned DETERMINISTICALLY: the client passes an
+/// ABSOLUTE `since_micros` cutoff, so we control the recency window without backdating any clock.
+///
+/// * Two posts, then `read_history` with a cutoff AFTER both (`now + 1h`) returns ZERO — recency
+///   elides everything older than the cutoff;
+/// * the same read with `since_micros = None` (and `Some(0)`, a cutoff before the epoch) returns
+///   BOTH — the append-only log is intact and reachable when recency is opted out;
+/// * after a post, the room's `last_activity` is populated and recent (`> 0`, within the window),
+///   while a far-past `last_activity` would trip the 7-day staleness threshold — asserted at the
+///   arithmetic level so the freshness rule is pinned independent of a wall clock.
+#[tokio::test(flavor = "multi_thread")]
+async fn read_history_recency_cutoff_and_room_freshness() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let room = RoomId::parse("freshness").expect("room");
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    let created = alice
+        .create_room(room.clone(), RoomScope::Global, Some("Fresh".to_string()))
+        .await
+        .expect("create room");
+    assert_eq!(
+        created.last_activity, 0,
+        "a freshly-created room has no activity yet"
+    );
+
+    // now_micros() is read BEFORE the posts so `now + 1h` is strictly after both their timestamps.
+    let before_posts = basemind::comms::model::now_micros();
+    for subject in ["first", "second"] {
+        alice
+            .post_message(
+                room.clone(),
+                subject.to_string(),
+                format!("body of {subject}").into_bytes(),
+                vec![],
+                None,
+                vec![],
+            )
+            .await
+            .unwrap_or_else(|e| panic!("post {subject}: {e}"));
+    }
+
+    const ONE_HOUR_MICROS: i64 = 3_600_000_000;
+
+    // (1) A cutoff strictly AFTER both posts returns nothing — recency elides the older messages.
+    let (future, _next) = alice
+        .read_history(
+            room.clone(),
+            None,
+            100,
+            Some(before_posts + ONE_HOUR_MICROS),
+        )
+        .await
+        .expect("history with future cutoff");
+    assert!(
+        future.is_empty(),
+        "a cutoff after both posts elides every message, got {}",
+        future.len()
+    );
+
+    // (2) No cutoff returns the full log — the append-only history is intact.
+    let (all_none, _n) = alice
+        .read_history(room.clone(), None, 100, None)
+        .await
+        .expect("history with no cutoff");
+    assert_eq!(all_none.len(), 2, "None cutoff returns the whole log");
+
+    // (2b) A cutoff at 0 (before the epoch) is equivalent to no cutoff for real messages.
+    let (all_zero, _n) = alice
+        .read_history(room.clone(), None, 100, Some(0))
+        .await
+        .expect("history with zero cutoff");
+    assert_eq!(all_zero.len(), 2, "a 0 cutoff also returns the whole log");
+
+    // (3) The room's freshness clock is populated and recent after the posts. `create_room` is an
+    // idempotent upsert that carries the accrued `last_activity` forward, so re-creating reads it.
+    let refreshed = alice
+        .create_room(room.clone(), RoomScope::Global, Some("Fresh".to_string()))
+        .await
+        .expect("re-create room reads carried-forward activity");
+    assert!(
+        refreshed.last_activity > 0,
+        "last_activity is stamped after a post"
+    );
+    let now = basemind::comms::model::now_micros();
+    const STALE_WINDOW_MICROS: i64 = 168 * ONE_HOUR_MICROS; // 7 days
+    assert!(
+        now - refreshed.last_activity <= STALE_WINDOW_MICROS,
+        "a just-posted room is within the freshness window (not stale)"
+    );
+    // A far-past last_activity WOULD be stale — pin the arithmetic the summary/CLI use.
+    let far_past = now - STALE_WINDOW_MICROS - ONE_HOUR_MICROS;
+    assert!(
+        now - far_past > STALE_WINDOW_MICROS,
+        "a last_activity older than the 7-day window is stale"
     );
 }

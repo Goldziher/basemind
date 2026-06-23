@@ -470,18 +470,22 @@ impl CommsClient {
     }
 
     /// Read a room's history (front-matter only), oldest-first. Returns the page plus the next
-    /// cursor when more remain.
+    /// cursor when more remain. `since_micros` is an absolute recency cutoff (microseconds since the
+    /// unix epoch): when `Some(cut)`, only messages with `ts_micros >= cut` surface; `None` returns
+    /// the full log. The cutoff is an additional filter that composes with the cursor pagination.
     pub async fn read_history(
         &mut self,
         room: RoomId,
         cursor: Option<Cursor>,
         limit: u32,
+        since_micros: Option<i64>,
     ) -> Result<(Vec<SeqMeta>, Option<Cursor>), CommsClientError> {
         match self
             .request(CommsRequest::History {
                 room,
                 cursor,
                 limit: Some(limit),
+                since_micros,
             })
             .await?
         {
@@ -506,7 +510,7 @@ impl CommsClient {
 
     /// Read this agent's inbox across subscribed rooms. Returns the page, the count of unread
     /// remaining after the page, and the next cursor.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     pub async fn read_inbox(
         &mut self,
         remote: Option<String>,
@@ -514,6 +518,7 @@ impl CommsClient {
         cursor: Option<Cursor>,
         limit: u32,
         mark_read: bool,
+        since_micros: Option<i64>,
     ) -> Result<(Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
         match self
             .request(CommsRequest::Inbox {
@@ -522,6 +527,7 @@ impl CommsClient {
                 cursor,
                 limit: Some(limit),
                 mark_read,
+                since_micros,
             })
             .await?
         {

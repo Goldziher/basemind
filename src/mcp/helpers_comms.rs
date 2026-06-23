@@ -28,10 +28,31 @@ use super::types_comms::{
 use crate::comms::client::{CommsClient, SessionContext, scope_context_for};
 use crate::comms::cursor::Cursor;
 use crate::comms::ids::{AgentId, RoomId};
-use crate::comms::model::RoomScope;
+use crate::comms::model::{RoomScope, now_micros};
 
 /// Default page size when a comms tool omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
+
+/// Default recency window for `room_history` / `inbox_read` when the caller omits `since_hours`:
+/// only the last 24 hours of messages are returned, so stale chatter does not drown out current
+/// work. Pass `since_hours = 0` to opt back into the full log.
+const DEFAULT_SINCE_HOURS: u32 = 24;
+
+/// Microseconds in one hour — the scale factor for translating a `since_hours` window into the
+/// absolute `since_micros` cutoff the broker filters on.
+const MICROS_PER_HOUR: i64 = 3_600_000_000;
+
+/// Translate a caller-supplied `since_hours` window into the absolute `since_micros` cutoff the
+/// broker filters on. `None` ⇒ the [`DEFAULT_SINCE_HOURS`] default; `Some(0)` ⇒ `None` (all
+/// history, no cutoff); otherwise `now - hours`.
+fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
+    let hours = since_hours.unwrap_or(DEFAULT_SINCE_HOURS);
+    if hours == 0 {
+        None
+    } else {
+        Some(now_micros() - i64::from(hours) * MICROS_PER_HOUR)
+    }
+}
 
 /// Map a [`CommsClientError`](crate::comms::client::CommsClientError) into an MCP error with a
 /// stable `comms:` prefix so agents can route on it.
@@ -148,7 +169,7 @@ pub(super) async fn run_room_create(
         .await
         .map_err(comms_err)?;
     json_result(&RoomCreateResponse {
-        room: RoomSummary::from(&room),
+        room: RoomSummary::from_room(&room, now_micros()),
     })
 }
 
@@ -160,7 +181,11 @@ pub(super) async fn run_room_list(
     let handle = resolve_comms_client(state, None).await?;
     let mut client = handle.lock().await;
     let rooms = client.list_rooms(remote, cwd).await.map_err(comms_err)?;
-    let summaries: Vec<RoomSummary> = rooms.iter().map(RoomSummary::from).collect();
+    let now = now_micros();
+    let summaries: Vec<RoomSummary> = rooms
+        .iter()
+        .map(|room| RoomSummary::from_room(room, now))
+        .collect();
     json_result(&RoomListResponse {
         total: summaries.len(),
         rooms: summaries,
@@ -226,13 +251,18 @@ pub(super) async fn run_room_history(
 ) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(Cursor);
+    let since = since_cutoff(params.since_hours);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let (metas, next_cursor) = client
-        .read_history(params.room, cursor, limit)
+        .read_history(params.room, cursor, limit, since)
         .await
         .map_err(comms_err)?;
-    let messages: Vec<MessageFrontMatter> = metas.iter().map(MessageFrontMatter::from).collect();
+    let now = now_micros();
+    let messages: Vec<MessageFrontMatter> = metas
+        .iter()
+        .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
+        .collect();
     json_result(&RoomHistoryResponse {
         total: messages.len(),
         messages,
@@ -266,14 +296,19 @@ pub(super) async fn run_inbox_read(
 ) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(Cursor);
+    let since = since_cutoff(params.since_hours);
     let (remote, cwd) = scope_context_for(&state.root);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let (metas, unread, next_cursor) = client
-        .read_inbox(remote, cwd, cursor, limit, params.mark_read)
+        .read_inbox(remote, cwd, cursor, limit, params.mark_read, since)
         .await
         .map_err(comms_err)?;
-    let messages: Vec<MessageFrontMatter> = metas.iter().map(MessageFrontMatter::from).collect();
+    let now = now_micros();
+    let messages: Vec<MessageFrontMatter> = metas
+        .iter()
+        .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
+        .collect();
     json_result(&InboxReadResponse {
         total: messages.len(),
         unread,

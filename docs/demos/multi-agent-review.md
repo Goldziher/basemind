@@ -188,6 +188,7 @@ Expected response (front-matter only, no bodies):
       "from": "security",
       "subject": "SQL injection risk in user lookup",
       "ts_micros": <ts1>,
+      "age_secs": 12,
       "body_len": 145,
       "body_sha": "<hash1>"
     },
@@ -210,6 +211,13 @@ Expected response (front-matter only, no bodies):
   ]
 }
 ```
+
+Reads are RECENCY-AWARE: `room_history` and `inbox_read` return only the **last 24 hours** by
+default, and each row carries `age_secs` so a stale message is obvious at a glance. For a longer
+window pass `since_hours: N`, or `since_hours: 0` to read the full append-only log (nothing is ever
+deleted). When picking a room to coordinate in, `room_list` flags each room `stale: true` after 7
+days of silence (the CLI prints `ACTIVE` / `STALE`) so the orchestrator skips dead rooms. Reserve
+`Global` for machine-wide ops coordination, not this kind of per-repo review chat.
 
 ## Step 4: Orchestrator fetches bodies selectively
 
@@ -309,12 +317,16 @@ basemind comms post code-review-panel "SQL injection risk in user lookup" \
 basemind comms dm correctness --to-agent correctness --as-agent security \
   --subject "Cross-check my SQL fix" --body "I flagged..."
 
-# History (orchestrator-side)
+# History (orchestrator-side) — last 24h by default; --since-hours 0 for the full log
 basemind comms history code-review-panel
+basemind comms history code-review-panel --since-hours 0
+
+# Rooms with freshness (ACTIVE / STALE per room)
+basemind comms rooms
 
 # Read message body (orchestrator-side)
 basemind comms read msg-sec-1
 
-# Inbox (subagent-side)
+# Inbox (subagent-side) — also recency-filtered; --since-hours 0 for everything
 basemind comms inbox --as-agent security
 ```

@@ -127,10 +127,27 @@ message_get {message_id: "msg-dm-perf-1"}  # Get perf's DM body
 # Synthesize: "Security + perf sign off. Ready to merge."
 ```
 
+## Recency and room freshness
+
+Reads default to RECENT so stale chatter never confuses an agent:
+
+- `room_history` / `inbox_read` return only the **last 24 hours** of messages by default. Pass
+  `since_hours: N` for a wider window, or `since_hours: 0` for the full append-only log. Nothing is
+  ever deleted — older history stays reachable explicitly.
+- Every front-matter row carries `age_secs` (seconds since the message was posted) so you can gauge
+  staleness without converting timestamps yourself.
+- `room_list` flags each room `stale: true` when it has had no post for over 7 days (or never). The
+  CLI renders this as an `ACTIVE` / `STALE` marker per room. Skip stale rooms unless you are
+  intentionally reviewing old context.
+- `Global` is reserved for MACHINE-WIDE ops coordination (resource / CPU contention), NOT per-repo
+  chat — use a repo / session room for team work.
+
 ## Notes
 
 - Each subagent auto-joins the room when it first posts (if the room's scope applies).
 - DMs use private pairwise rooms (`dm:<lo>:<hi>`) that both ends auto-join.
 - Front-matter-only reads (history, inbox) are cheap. Fetch bodies only when needed.
 - The CLI offers parity: `basemind comms post --as-agent security …`,
-  `basemind comms dm --to perf --as-agent security …`.
+  `basemind comms dm --to perf --as-agent security …`,
+  `basemind comms history <room> --since-hours 0` (all history),
+  `basemind comms rooms` (shows ACTIVE / STALE per room).

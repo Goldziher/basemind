@@ -78,6 +78,14 @@ pub struct Room {
     pub title: String,
     /// Creation time in microseconds since the unix epoch.
     pub created_at: i64,
+    /// Last-post time in microseconds since the unix epoch; `0` when the room has never had a post.
+    /// Drives room-freshness (ACTIVE / STALE) surfacing so agents can skip dead rooms.
+    ///
+    /// Additive: `#[serde(default)]` keeps rooms persisted before this field existed deserializable
+    /// (they default to `0` — treated as stale until the next post stamps them), so adding it
+    /// required no `COMMS_SCHEMA_VER` bump.
+    #[serde(default)]
+    pub last_activity: i64,
 }
 
 /// Condensed message front-matter — the ONLY record history/inbox lookups decode.

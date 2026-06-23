@@ -37,6 +37,14 @@ use crate::comms::protocol::SeqMeta;
 const DEFAULT_LIMIT: u32 = 100;
 /// Hard page cap, mirroring the broker's `MAX_LIMIT`.
 const MAX_LIMIT: u32 = 1000;
+/// Default recency window for `history` / `inbox` when `--since-hours` is omitted: only the last
+/// 24 hours of messages are returned. Pass `--since-hours 0` for the full log.
+const DEFAULT_SINCE_HOURS: u32 = 24;
+/// Microseconds in one hour — scale factor for `--since-hours` → absolute `since_micros` cutoff.
+const MICROS_PER_HOUR: i64 = 3_600_000_000;
+/// Room-freshness window in hours: a room whose last post is older than this — or which has never
+/// had a post — renders as STALE in `rooms`. 168h = 7 days, matching the MCP `RoomSummary` rule.
+const STALE_AFTER_HOURS: i64 = 168;
 
 /// Agent-comms verbs that talk to the broker daemon directly.
 #[derive(Subcommand, Debug)]
@@ -161,6 +169,9 @@ pub enum CommsAgentCmd {
         /// Maximum messages to return (default 100, max 1000).
         #[arg(long)]
         limit: Option<u32>,
+        /// Only return messages from the last N hours (default 24). Pass 0 for ALL history.
+        #[arg(long)]
+        since_hours: Option<u32>,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
@@ -181,6 +192,9 @@ pub enum CommsAgentCmd {
         /// Advance read cursors past the returned messages.
         #[arg(long)]
         mark_read: bool,
+        /// Only return messages from the last N hours (default 24). Pass 0 for ALL history.
+        #[arg(long)]
+        since_hours: Option<u32>,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
@@ -204,6 +218,17 @@ fn parse_scope(raw: &str) -> Result<RoomScope> {
 /// Clamp a caller limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
+}
+
+/// Translate `--since-hours` into the absolute `since_micros` cutoff the broker filters on. `None`
+/// ⇒ the [`DEFAULT_SINCE_HOURS`] default; `Some(0)` ⇒ `None` (all history); otherwise `now - hours`.
+fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
+    let hours = since_hours.unwrap_or(DEFAULT_SINCE_HOURS);
+    if hours == 0 {
+        None
+    } else {
+        Some(crate::comms::model::now_micros() - i64::from(hours) * MICROS_PER_HOUR)
+    }
 }
 
 /// Resolve the CLI agent identity, tiered to MATCH the `serve` resolver so CLI-driven comms (the
@@ -347,14 +372,23 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .list_rooms(remote, cwd)
                 .await
                 .map_err(|e| anyhow::anyhow!("list rooms: {e}"))?;
+            let now = crate::comms::model::now_micros();
             if json {
-                let rows: Vec<_> = rooms.iter().map(room_json).collect();
+                let rows: Vec<_> = rooms.iter().map(|r| room_json(r, now)).collect();
                 writeln!(out, "{}", json!({ "total": rows.len(), "rooms": rows }))?;
             } else if rooms.is_empty() {
                 writeln!(out, "no rooms")?;
             } else {
                 for r in &rooms {
-                    writeln!(out, "{}\t{}", r.room_id.as_str(), r.title)?;
+                    let marker = if is_stale(r, now) { "STALE" } else { "ACTIVE" };
+                    writeln!(
+                        out,
+                        "{}\t{}\t{}\t{}",
+                        r.room_id.as_str(),
+                        r.title,
+                        r.last_activity,
+                        marker
+                    )?;
                 }
             }
         }
@@ -423,12 +457,18 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
             room,
             cursor,
             limit,
+            since_hours,
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let (messages, next_cursor) = client
-                .read_history(room_id, cursor.map(Cursor), clamp_limit(limit))
+                .read_history(
+                    room_id,
+                    cursor.map(Cursor),
+                    clamp_limit(limit),
+                    since_cutoff(since_hours),
+                )
                 .await
                 .map_err(|e| anyhow::anyhow!("history: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), None, json, out)?;
@@ -458,6 +498,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
             cursor,
             limit,
             mark_read,
+            since_hours,
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
@@ -469,6 +510,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                     cursor.map(Cursor),
                     clamp_limit(limit),
                     mark_read,
+                    since_cutoff(since_hours),
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!("inbox: {e}"))?;
@@ -615,19 +657,32 @@ async fn room_for_path(
     Ok(())
 }
 
-/// JSON view of a room front-matter row.
-fn room_json(room: &Room) -> serde_json::Value {
+/// Whether a room reads as STALE at `now_micros`: no posts yet (`last_activity == 0`) or its last
+/// post is older than the [`STALE_AFTER_HOURS`] window. Mirrors the MCP `RoomSummary` rule.
+fn is_stale(room: &Room, now_micros: i64) -> bool {
+    room.last_activity == 0
+        || (now_micros - room.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
+}
+
+/// JSON view of a room front-matter row, including freshness (`last_activity` + `stale`).
+fn room_json(room: &Room, now_micros: i64) -> serde_json::Value {
     json!({
         "room_id": room.room_id.as_str(),
         "title": room.title,
         "created_at": room.created_at,
+        "last_activity": room.last_activity,
+        "stale": is_stale(room, now_micros),
     })
 }
 
 /// Render a single room (created / fetched).
 fn render_room(room: &Room, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
-        writeln!(out, "{}", json!({ "room": room_json(room) }))?;
+        writeln!(
+            out,
+            "{}",
+            json!({ "room": room_json(room, crate::comms::model::now_micros()) })
+        )?;
     } else {
         writeln!(out, "{}\t{}", room.room_id.as_str(), room.title)?;
     }

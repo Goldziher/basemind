@@ -106,7 +106,9 @@ impl BasemindServer {
 
     #[tool(
         description = "List rooms whose scope matches this server's repo (git remote + cwd). \
-        Returns room front-matter (id, title, created_at). Needs --features comms.",
+        Returns room front-matter (id, title, created_at, last_activity_micros, stale). A room is \
+        `stale` when it has never had a post or its last post is older than 7 days — skip those. \
+        Needs --features comms.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn room_list(
@@ -263,8 +265,10 @@ impl BasemindServer {
 
     #[tool(
         description = "Read a room's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
-        ts, tags) — bodies are NOT included; fetch them with message_get. Paginated: pass \
-        `cursor` from the previous response. Default 100 max 1000. Needs --features comms.",
+        ts, age_secs, tags) — bodies are NOT included; fetch them with message_get. Defaults to the \
+        last 24h of messages so stale chatter does not drown out current work; pass `since_hours` \
+        for a different window or `since_hours=0` for ALL history. Paginated: pass `cursor` from the \
+        previous response. Default 100 max 1000. Needs --features comms.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn room_history(
@@ -309,9 +313,10 @@ impl BasemindServer {
 
     #[tool(
         description = "Read this agent's inbox: new FRONT-MATTER across all subscribed rooms \
-        (bodies NOT included — use message_get). `mark_read=true` advances read cursors. \
-        Returns the page plus remaining unread count. Default 100 max 1000. \
-        Needs --features comms.",
+        (bodies NOT included — use message_get). Each row carries `age_secs` so you can gauge \
+        staleness. Defaults to the last 24h; pass `since_hours` for a different window or \
+        `since_hours=0` for ALL unread. `mark_read=true` advances read cursors. Returns the page \
+        plus remaining unread count. Default 100 max 1000. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

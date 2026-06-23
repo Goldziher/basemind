@@ -148,14 +148,32 @@ pub(super) struct RoomSummary {
     pub title: String,
     /// Creation time, microseconds since the unix epoch.
     pub created_at: i64,
+    /// Last post time, microseconds since the unix epoch. `0` when the room has never had a post.
+    pub last_activity_micros: i64,
+    /// True when the room is STALE: either it has never had a post (`last_activity == 0`) or its
+    /// last post is older than the staleness window. A stale room's chatter is unlikely to be
+    /// relevant to current work — surface but de-prioritise it.
+    pub stale: bool,
 }
 
-impl From<&Room> for RoomSummary {
-    fn from(room: &Room) -> Self {
+/// The staleness window for a room, in hours. A room whose last post is older than this — or which
+/// has never had a post — is flagged `stale` in a [`RoomSummary`]. 168h = 7 days.
+pub(super) const STALE_AFTER_HOURS: i64 = 168;
+
+impl RoomSummary {
+    /// Build a room summary, computing `stale` against `now_micros` (microseconds since the unix
+    /// epoch). A room with no activity (`last_activity == 0`) is treated as stale: there is no
+    /// recent chatter to anchor it to current work.
+    pub(super) fn from_room(room: &Room, now_micros: i64) -> Self {
+        let last = room.last_activity;
+        let window_micros = STALE_AFTER_HOURS * 3_600_000_000;
+        let stale = last == 0 || (now_micros - last) > window_micros;
         Self {
             room_id: room.room_id.as_str().to_string(),
             title: room.title.clone(),
             created_at: room.created_at,
+            last_activity_micros: last,
+            stale,
         }
     }
 }
@@ -268,6 +286,9 @@ pub struct RoomHistoryParams {
     /// Maximum messages to return (default 100, max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Only return messages from the last N hours; defaults to 24. Pass 0 for ALL history.
+    #[serde(default)]
+    pub since_hours: Option<u32>,
     /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
     /// drive many named subagents.
     #[serde(default)]
@@ -289,6 +310,9 @@ pub(super) struct MessageFrontMatter {
     pub subject: String,
     /// Post time, microseconds since the unix epoch.
     pub ts_micros: i64,
+    /// Age of the message in whole seconds at read time (`now - ts`, floored at 0). Lets an agent
+    /// gauge staleness without converting `ts_micros` against a wall clock itself.
+    pub age_secs: i64,
     /// Free-form tags.
     pub tags: Vec<String>,
     /// Glob / path patterns describing where the message applies (empty when unscoped).
@@ -304,8 +328,11 @@ pub(super) struct MessageFrontMatter {
     pub body_sha: String,
 }
 
-impl From<&SeqMeta> for MessageFrontMatter {
-    fn from(sm: &SeqMeta) -> Self {
+impl MessageFrontMatter {
+    /// Build a front-matter row from a [`SeqMeta`], stamping `age_secs` against `now_micros`
+    /// (microseconds since the unix epoch). `now` is threaded in rather than read here so a whole
+    /// page shares one clock reading and the conversion stays testable.
+    pub(super) fn from_seq_meta(sm: &SeqMeta, now_micros: i64) -> Self {
         let meta = &sm.meta;
         Self {
             id: meta.id.clone(),
@@ -313,6 +340,7 @@ impl From<&SeqMeta> for MessageFrontMatter {
             from: meta.from.as_str().to_string(),
             subject: meta.subject.clone(),
             ts_micros: meta.ts_micros,
+            age_secs: ((now_micros - meta.ts_micros) / 1_000_000).max(0),
             tags: meta.tags.clone(),
             scope: meta.scope.clone(),
             reply_to: meta.reply_to.clone(),
@@ -374,6 +402,9 @@ pub struct InboxReadParams {
     /// When true, advance read cursors past the returned messages.
     #[serde(default)]
     pub mark_read: bool,
+    /// Only return messages from the last N hours; defaults to 24. Pass 0 for ALL history.
+    #[serde(default)]
+    pub since_hours: Option<u32>,
     /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
     /// drive many named subagents.
     #[serde(default)]

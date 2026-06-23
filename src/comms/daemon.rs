@@ -244,7 +244,8 @@ impl Broker {
                 room,
                 cursor,
                 limit,
-            } => self.on_history(room, cursor, limit),
+                since_micros,
+            } => self.on_history(room, cursor, limit, since_micros),
             CommsRequest::GetBody { message_id } => self.on_get_body(message_id),
             CommsRequest::Inbox {
                 remote,
@@ -252,8 +253,9 @@ impl Broker {
                 cursor,
                 limit,
                 mark_read,
+                since_micros,
             } => {
-                self.on_inbox(session, remote, cwd, cursor, limit, mark_read)
+                self.on_inbox(session, remote, cwd, cursor, limit, mark_read, since_micros)
                     .await
             }
             CommsRequest::AckInbox {
@@ -441,11 +443,20 @@ impl Broker {
         scope: RoomScope,
         title: Option<String>,
     ) -> Result<CommsResponse, CommsStoreError> {
+        // A freshly-created room has no posts yet, so `last_activity` starts at 0 (⇒ flagged stale
+        // until the first post stamps it). An idempotent re-create of an EXISTING room must not
+        // clobber its accrued activity, so carry the prior `last_activity` forward when present.
+        let last_activity = self
+            .store
+            .get_room(&room)?
+            .map(|existing| existing.last_activity)
+            .unwrap_or(0);
         let record = Room {
             room_id: room.clone(),
             scope,
             title: title.unwrap_or_else(|| room.as_str().to_string()),
             created_at: now_micros(),
+            last_activity,
         };
         self.store.put_room(&record)?;
         Ok(CommsResponse::Room(record))
@@ -517,6 +528,14 @@ impl Broker {
             &body,
         );
         let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
+        // Stamp the room's freshness clock. Read-modify-write via the store is fine here — posting
+        // is not a hot path, and the daemon is the sole writer so no CAS is needed. The room may not
+        // exist yet (a post to a never-registered id); skip the stamp in that case rather than
+        // synthesising a room, leaving room registration to the create/auto-join paths.
+        if let Some(mut record) = self.store.get_room(&room)? {
+            record.last_activity = stored.ts_micros;
+            self.store.put_room(&record)?;
+        }
         self.fan_out(&room, &stored).await;
         Ok(CommsResponse::Posted {
             message_id: stored.id,
@@ -528,6 +547,7 @@ impl Broker {
         room: RoomId,
         cursor: Option<Cursor>,
         limit: Option<u32>,
+        since_micros: Option<i64>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let after = decode_after(cursor.as_ref(), room.as_str());
         let limit = clamp_limit(limit);
@@ -535,9 +555,13 @@ impl Broker {
         let next = page
             .more
             .then(|| Cursor::encode(room.as_str(), page.last_seq));
+        // Recency is an ADDITIONAL filter applied AFTER the cursor/seq window: drop messages older
+        // than the cutoff but keep `next_cursor` driven by the (unfiltered) seq scan so pagination
+        // resumes from the same point regardless of how many rows the recency filter elided.
         let messages = page
             .messages
             .into_iter()
+            .filter(|(_, meta)| keep_since(meta.ts_micros, since_micros))
             .map(|(seq, meta)| SeqMeta { seq, meta })
             .collect();
         Ok(CommsResponse::History {
@@ -551,6 +575,7 @@ impl Broker {
         Ok(CommsResponse::Body { body })
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn on_inbox(
         &self,
         session: &mut Session,
@@ -559,6 +584,7 @@ impl Broker {
         cursor: Option<Cursor>,
         limit: Option<u32>,
         mark_read: bool,
+        since_micros: Option<i64>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
@@ -599,6 +625,14 @@ impl Broker {
                 // read cursor past them (they must never resurface). `room_history` is unaffected:
                 // the full log still shows self-authored messages.
                 if meta.from == agent {
+                    upsert_high(&mut delivered_high, room, seq);
+                    continue;
+                }
+                // Recency filter: a message older than the cutoff is elided from the page and the
+                // unread count, but its seq still records into `delivered_high` so `mark_read`
+                // advances the read cursor past it (a stale message must not resurface or block the
+                // cursor). This composes with the per-room read cursor rather than replacing it.
+                if !keep_since(meta.ts_micros, since_micros) {
                     upsert_high(&mut delivered_high, room, seq);
                     continue;
                 }
@@ -882,6 +916,15 @@ fn decode_after(cursor: Option<&Cursor>, room: &str) -> u64 {
     match cursor.and_then(|c| c.decode().ok()) {
         Some(pos) if pos.room == room || pos.room.is_empty() => pos.seq,
         _ => 0,
+    }
+}
+
+/// Whether a message with `ts_micros` passes the optional recency cutoff. `None` cutoff keeps
+/// everything; otherwise the message is kept iff it is at or after the cutoff (`ts >= since`).
+fn keep_since(ts_micros: i64, since_micros: Option<i64>) -> bool {
+    match since_micros {
+        Some(cut) => ts_micros >= cut,
+        None => true,
     }
 }
 
