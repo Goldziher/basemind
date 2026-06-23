@@ -132,9 +132,11 @@ pub struct Subscription {
 /// it (if any), and the session-scoped room they share. Persisted in the `sessions` keyspace
 /// keyed by [`SessionLineage::session_id`], so a future tree view can reconstruct the
 /// spawn graph.
-// TODO(S4): the lineage write from `shell_spawn` is not yet implemented; it lands with the tree
-// view. Today only the session-scoped room is created — the broker needs the room to exist, but
-// no `SessionLineage` row is persisted yet.
+///
+/// The row is written by the broker at the child's `Hello`: the daemon then knows the
+/// `session_id` and `parent_agent` (both carried on the Hello) and the `child_agent` (the Hello's
+/// agent), and resolves the session-scoped room the child was just auto-joined to. The write is
+/// best-effort — a store failure logs and is swallowed so the handshake still completes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLineage {
     /// The terminal session id this lineage describes (also the `sessions` key).

@@ -406,23 +406,119 @@ pub(super) async fn run_shell_broadcast(
     json_result(&ShellBroadcastResponse { delivered })
 }
 
-/// `shell_list`: enumerate the sessions this server spawned, flagged by liveness.
+/// `shell_list`: enumerate sessions across the full comms lineage, flagged by this server's
+/// liveness.
+///
+/// Two sources are merged by `session_id`:
+/// - `ShellRuntime::list()` — always present; contributes the rmux `name` + `alive` flag for the
+///   sessions THIS server spawned (the only ones it holds a live rmux handle for).
+/// - The shared comms broker's session lineage — present only when comms is built. It is the
+///   source of truth for the parent -> child chain, so a top-level server sees grandchildren
+///   spawned deeper in the chain (sessions it did not spawn directly are reported with
+///   `alive = false`, since this server has no rmux handle for them).
+///
+/// The comms enrichment is best-effort: if the client is unavailable or the call fails, the
+/// runtime-only list is returned rather than failing `shell_list`.
 pub(super) async fn run_shell_list(
     state: &ServerState,
     _params: ShellListParams,
 ) -> Result<CallToolResult, McpError> {
-    let sessions = state
+    let runtime = state
         .shell_runtime
         .list()
         .await
         .map_err(|e| mcp_internal("list shell sessions", e))?;
-    let sessions = sessions
+
+    // Seed the merge map from this server's own sessions (name + liveness; lineage unknown here).
+    // `mut` is only exercised by the comms-on lineage enrichment below; the attribute keeps the
+    // headless `shells`-only build free of an `unused_mut` warning.
+    #[cfg_attr(not(all(feature = "comms", unix)), allow(unused_mut))]
+    let mut by_id: ahash::AHashMap<String, ShellSessionView> = runtime
         .into_iter()
-        .map(|info| ShellSessionView {
-            session_id: info.session_id.to_string(),
-            name: info.name.as_str().to_string(),
-            alive: info.alive,
+        .map(|info| {
+            let session_id = info.session_id.to_string();
+            (
+                session_id.clone(),
+                ShellSessionView {
+                    session_id,
+                    name: info.name.as_str().to_string(),
+                    alive: info.alive,
+                    parent_agent: None,
+                    child_agent: None,
+                    room_id: None,
+                },
+            )
         })
         .collect();
+
+    // Enrich with the broker's lineage when comms is built. Best-effort: a comms failure leaves
+    // `by_id` as the runtime-only view rather than failing the whole tool.
+    #[cfg(all(feature = "comms", unix))]
+    enrich_with_lineage(state, &mut by_id).await;
+
+    let mut sessions: Vec<ShellSessionView> = by_id.into_values().collect();
+    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
     json_result(&ShellListResponse { sessions })
+}
+
+/// Fold the shared comms broker's session lineage into `by_id`, keyed by `session_id`.
+///
+/// For each lineage row: if the session is already present (this server spawned it) keep its
+/// runtime `name` / `alive` and just attach the lineage fields; otherwise insert a new view with
+/// `name = session_id` and `alive = false` (this server holds no rmux handle for it).
+///
+/// Best-effort: acquiring the client or the `list_sessions` call failing is logged at WARN and
+/// swallowed, so `shell_list` still returns the runtime-only view when comms is down.
+#[cfg(all(feature = "comms", unix))]
+async fn enrich_with_lineage(
+    state: &ServerState,
+    by_id: &mut ahash::AHashMap<String, ShellSessionView>,
+) {
+    use super::helpers_comms::{client_mut, comms_client};
+
+    let lineage = async {
+        let mut guard = comms_client(state).await?;
+        let client = client_mut(&mut guard)?;
+        client
+            .list_sessions()
+            .await
+            .map_err(super::helpers_comms::comms_err)
+    }
+    .await;
+
+    let lineage = match lineage {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "shell_list: comms lineage unavailable; returning this server's own sessions only"
+            );
+            return;
+        }
+    };
+
+    for row in lineage {
+        let parent_agent = row.parent_agent.map(|agent| agent.into_string());
+        let child_agent = row.child_agent.into_string();
+        let room_id = row.room_id.into_string();
+        by_id
+            .entry(row.session_id.clone())
+            .and_modify(|view| {
+                view.parent_agent.clone_from(&parent_agent);
+                view.child_agent = Some(child_agent.clone());
+                view.room_id = Some(room_id.clone());
+            })
+            // A session only in the broker lineage was spawned elsewhere in the chain (e.g. a
+            // grandchild this server did not spawn), so this process has no live rmux handle for
+            // it: `alive` is false and `name` is a placeholder (the session id, not a real rmux
+            // session name — this server cannot resolve the latter without the spawning handle).
+            .or_insert_with(|| ShellSessionView {
+                name: row.session_id.clone(),
+                session_id: row.session_id,
+                alive: false,
+                parent_agent,
+                child_agent: Some(child_agent),
+                room_id: Some(room_id),
+            });
+    }
 }
