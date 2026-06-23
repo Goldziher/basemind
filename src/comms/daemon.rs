@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use tokio::sync::Mutex;
@@ -38,6 +38,15 @@ use super::store::{self, CommsStore, CommsStoreError};
 pub const DEFAULT_LIMIT: u32 = 100;
 /// Hard cap on a page, mirroring the MCP `limit` ceiling.
 pub const MAX_LIMIT: u32 = 1000;
+
+/// Idle window after which a daemon with no connected links and no activity self-terminates.
+/// Without this, daemons orphaned by a dead session (reparented to pid 1) linger forever and
+/// pile up across sessions. The reaper in `cmd_comms_daemon` drives the normal drain path, so
+/// the socket + flock are released cleanly on the way out. A live client (even a quiet
+/// subscriber holding an open link) keeps the daemon alive; only a fully-unused daemon reaps.
+pub const IDLE_REAP_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How often the idle reaper re-checks the broker. Small relative to [`IDLE_REAP_AFTER`].
+pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
 
 /// Lifecycle state of the broker. See the module docs for the transition rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +90,13 @@ pub struct Broker {
     registry: Mutex<Registry>,
     /// Count of live notification subscribers; drives the Active⇄Idle edge.
     subscriber_count: AtomicUsize,
+    /// Count of connected front-end links (clients). Drives the idle reaper: a daemon with
+    /// zero links and no recent activity past [`IDLE_REAP_AFTER`] self-terminates.
+    link_count: AtomicUsize,
+    /// Millis since `started` at the last request / link connect / disconnect. Compared against
+    /// [`IDLE_REAP_AFTER`] so a daemon serving frequent one-shot calls (which hold no long-lived
+    /// subscriber) is not reaped mid-use.
+    last_activity_ms: AtomicU64,
     /// Monotonic source of subscription handles.
     next_sub: AtomicU64,
     /// When the broker started, for uptime reporting.
@@ -99,6 +115,8 @@ impl Broker {
                 state: LifecycleState::Starting,
             }),
             subscriber_count: AtomicUsize::new(0),
+            link_count: AtomicUsize::new(0),
+            last_activity_ms: AtomicU64::new(0),
             next_sub: AtomicU64::new(1),
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -118,6 +136,43 @@ impl Broker {
         self.subscriber_count.load(Ordering::Relaxed)
     }
 
+    /// Record a newly connected front-end link and stamp activity.
+    pub fn link_connected(&self) {
+        self.link_count.fetch_add(1, Ordering::Relaxed);
+        self.touch();
+    }
+
+    /// Record a front-end link closing and stamp activity.
+    pub fn link_disconnected(&self) {
+        self.link_count.fetch_sub(1, Ordering::Relaxed);
+        self.touch();
+    }
+
+    /// Stamp "now" as the last-activity time. Called on every handled request and on link
+    /// connect / disconnect, so the idle reaper measures from genuine quiescence.
+    pub fn touch(&self) {
+        self.last_activity_ms
+            .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// True when the broker has no connected links and no activity within `idle_for` — the
+    /// signal for the daemon to self-terminate. Never true while draining or stopped, and never
+    /// while a client link is open (a quiet subscriber must not be reaped out from under itself).
+    pub async fn is_idle_for(&self, idle_for: Duration) -> bool {
+        if self.link_count.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        if matches!(
+            self.state().await,
+            LifecycleState::Draining | LifecycleState::Stopped
+        ) {
+            return false;
+        }
+        let now_ms = self.started.elapsed().as_millis() as u64;
+        let last = self.last_activity_ms.load(Ordering::Relaxed);
+        now_ms.saturating_sub(last) >= idle_for.as_millis() as u64
+    }
+
     /// Handle one request on a link. `link_tx` is the link's outbound sink, used both for the
     /// direct response (returned) and to register notification streams. `agent`/`chain` are
     /// the per-link session context established by `Hello`. Returns the direct response, or
@@ -128,6 +183,7 @@ impl Broker {
         session: &mut Session,
         link_tx: &mpsc::Sender<CommsOut>,
     ) -> CommsResponse {
+        self.touch();
         match self.dispatch(req, session, link_tx).await {
             Ok(resp) => resp,
             Err(e) => CommsResponse::Error {

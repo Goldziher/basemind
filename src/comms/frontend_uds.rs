@@ -167,6 +167,9 @@ mod imp {
     /// Drive one Unix-socket link: pump requests through the broker, write responses, and
     /// drain the broker's notification sink for this link onto the same socket.
     async fn serve_uds_link(broker: Arc<Broker>, mut link: UdsLink) {
+        // Track the link for the idle reaper: a daemon with no open links and no recent
+        // activity self-terminates instead of lingering orphaned (reparented to pid 1).
+        broker.link_connected();
         let (link_tx, mut link_rx) = mpsc::channel::<CommsOut>(CHANNEL_DEPTH);
         let mut session = Session::default();
         loop {
@@ -194,6 +197,7 @@ mod imp {
                 }
             }
         }
+        broker.link_disconnected();
     }
 
     /// Read the peer's credentials from a connected stream. Best-effort: returns an empty

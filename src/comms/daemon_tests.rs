@@ -402,3 +402,43 @@ async fn ack_with_no_input_is_rejected() {
         .await;
     assert!(matches!(resp, CommsResponse::Error { code, .. } if code == "empty_ack"));
 }
+
+#[tokio::test]
+async fn idle_reaper_tracks_links_and_activity() {
+    use std::time::Duration;
+    let (_d, broker) = temp_broker();
+
+    // A fresh, unused broker is immediately idle past a zero window — the reaper would
+    // self-terminate a daemon that was spawned but never used.
+    assert!(
+        broker.is_idle_for(Duration::ZERO).await,
+        "an unused broker is idle past a zero window"
+    );
+
+    // A connected link is never idle, even past the window.
+    broker.link_connected();
+    assert!(
+        !broker.is_idle_for(Duration::ZERO).await,
+        "a connected link keeps the daemon alive"
+    );
+
+    // After the last link closes the broker is idle again.
+    broker.link_disconnected();
+    assert!(
+        broker.is_idle_for(Duration::ZERO).await,
+        "the broker is idle once every link has closed"
+    );
+
+    // Recent activity (the disconnect just touched it) keeps it out of a real reap window.
+    assert!(
+        !broker.is_idle_for(Duration::from_secs(3600)).await,
+        "recent activity keeps the broker out of the reap window"
+    );
+
+    // A draining broker is never reaped — the clean-shutdown path is already underway.
+    broker.begin_drain().await;
+    assert!(
+        !broker.is_idle_for(Duration::ZERO).await,
+        "a draining broker is never reaped"
+    );
+}

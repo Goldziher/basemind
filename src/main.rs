@@ -454,6 +454,28 @@ fn cmd_comms_daemon() -> Result<()> {
             let _ = shutdown_for_signal.send(true);
         });
 
+        // Idle reaper: self-terminate once the daemon has no connected links and no activity
+        // for `IDLE_REAP_AFTER`, so a daemon orphaned by a dead session does not linger. Drives
+        // the same clean drain path as a `Stop` RPC / SIGTERM.
+        let broker_for_reaper = broker.clone();
+        let shutdown_for_reaper = shutdown_tx.clone();
+        tokio::spawn(async move {
+            use basemind::comms::daemon::{IDLE_REAP_AFTER, IDLE_REAP_CHECK_EVERY};
+            let mut tick = tokio::time::interval(IDLE_REAP_CHECK_EVERY);
+            tick.tick().await; // consume the immediate first tick
+            loop {
+                tick.tick().await;
+                if broker_for_reaper.is_idle_for(IDLE_REAP_AFTER).await {
+                    tracing::info!(
+                        "comms: idle with no clients past the reap window; self-terminating"
+                    );
+                    broker_for_reaper.begin_drain().await;
+                    let _ = shutdown_for_reaper.send(true);
+                    break;
+                }
+            }
+        });
+
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
             basemind::comms::frontend_uds::UdsFrontend::from_listener(
                 listener,
