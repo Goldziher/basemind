@@ -516,7 +516,7 @@ CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 | `register --name <handle>` / `agents` | Set your handle / list active agents. |
 | `status` / `start` / `stop` | The shared service: check, start, or stop it. |
 
-## Other
+**Other commands (`scan`, `serve`, `watch`, …)**
 
 | Command | Purpose |
 |---|---|
