@@ -11,6 +11,7 @@
 //! The whole module is gated on `feature = "shells"`.
 
 pub mod daemon;
+pub mod launcher;
 pub mod session;
 
 use std::path::PathBuf;
@@ -89,7 +90,7 @@ fn next_session_id() -> SessionId {
 /// basemind minted rather than the raw rmux name.
 pub struct ShellRuntime {
     /// Unix socket the embedded daemon binds. Owned by basemind; defaults to a
-    /// per-uid path under the system temp dir, overridable for test isolation.
+    /// per-user private path under the data dir, overridable for test isolation.
     socket_path: PathBuf,
     /// Lazily-initialized rmux handle. The first call to [`Self::rmux`] runs
     /// `connect_or_start`, which spawns the embedded daemon if absent.
@@ -107,8 +108,8 @@ pub const SHELLS_SOCKET_ENV: &str = "BASEMIND_SHELLS_SOCKET";
 
 impl ShellRuntime {
     /// Construct a runtime that binds the embedded daemon at the default
-    /// basemind-owned socket path (`<temp_dir>/basemind-shells-<user>.sock`),
-    /// unless [`SHELLS_SOCKET_ENV`] overrides it.
+    /// basemind-owned socket path (`<data_dir>/shells/rmux.sock` under the
+    /// per-user data dir), unless [`SHELLS_SOCKET_ENV`] overrides it.
     #[must_use]
     pub fn new() -> Self {
         let socket = std::env::var_os(SHELLS_SOCKET_ENV)
@@ -149,16 +150,32 @@ impl ShellRuntime {
             .await
     }
 
-    /// Spawn a detached headless session and register it under a fresh
-    /// [`SessionId`]. Returns the minted id and the rmux session name.
+    /// Mint the next deterministic [`SessionId`] for this runtime's process.
+    ///
+    /// Exposed so the MCP layer can mint ONE id up front and thread it through
+    /// both the comms coupling (which keys the session-scoped room) and
+    /// [`Self::spawn`] (which addresses the rmux session). Keeping a single id
+    /// means the room the child auto-joins and the id the client addresses are
+    /// provably the same value, not two counters that happen to stay in step.
+    #[must_use]
+    pub fn mint_session_id(&self) -> SessionId {
+        next_session_id()
+    }
+
+    /// Spawn a detached headless session under the pre-minted [`SessionId`] and
+    /// register it. Returns the id (echoed back) and the rmux session name.
+    ///
+    /// The id is minted by the caller (via [`Self::mint_session_id`]) rather than
+    /// here, so the comms-coupling env built before the spawn and the rmux session
+    /// addressed after it share one identifier.
     pub async fn spawn(
         &self,
+        session_id: SessionId,
         command: ShellCommand,
         working_directory: Option<String>,
         environment: Vec<String>,
     ) -> Result<(SessionId, SessionName)> {
         let rmux = self.rmux().await?;
-        let session_id = next_session_id();
         let name = SessionName::new(session_id.as_str())
             .map_err(|e| anyhow::anyhow!("mint rmux session name: {e}"))?;
         let spec = SpawnSpec {
@@ -215,6 +232,11 @@ impl ShellRuntime {
     /// for its live sessions once, then flags each mapped entry as alive when its
     /// name appears in the live set. Entries whose session has exited (or was
     /// killed without [`Self::forget`]) surface as `alive = false`.
+    ///
+    /// As a side effect, dead entries are pruned from the in-process map so it
+    /// cannot grow unbounded across a long-lived `serve`. The pruned entries are
+    /// still returned in this snapshot (the caller sees each dead session once),
+    /// but a subsequent `list` no longer reports them.
     pub async fn list(&self) -> Result<Vec<ShellSessionInfo>> {
         let mapped: Vec<(SessionId, SessionName)> = {
             let map = self.sessions.lock().await;
@@ -225,7 +247,7 @@ impl ShellRuntime {
         let rmux = self.rmux().await?;
         let live = session::list_sessions(rmux).await?;
         let live: ahash::AHashSet<&SessionName> = live.iter().collect();
-        Ok(mapped
+        let infos: Vec<ShellSessionInfo> = mapped
             .into_iter()
             .map(|(session_id, name)| {
                 let alive = live.contains(&name);
@@ -235,7 +257,21 @@ impl ShellRuntime {
                     alive,
                 }
             })
-            .collect())
+            .collect();
+
+        // Prune dead entries so the map does not leak across a long `serve`.
+        // Re-checks liveness under the lock to avoid evicting a session that was
+        // (re)spawned between the snapshot above and acquiring the lock here.
+        {
+            let mut map = self.sessions.lock().await;
+            for info in &infos {
+                if !info.alive {
+                    map.remove(&info.session_id);
+                }
+            }
+        }
+
+        Ok(infos)
     }
 }
 
@@ -245,23 +281,80 @@ impl Default for ShellRuntime {
     }
 }
 
-/// Default basemind-owned socket path: `<temp_dir>/basemind-shells-<user>.sock`.
+/// Subdirectory under the per-user data dir that holds the shells daemon socket.
+const SHELLS_SUBDIR: &str = "shells";
+/// The Unix socket file name within [`SHELLS_SUBDIR`].
+const SHELLS_SOCKET_FILE: &str = "rmux.sock";
+/// Owner-only directory mode for the private shells data dir (mirrors comms).
+#[cfg(unix)]
+const OWNER_ONLY_DIR: u32 = 0o700;
+
+/// Default basemind-owned socket path under the per-user PRIVATE data dir:
+/// `<data_dir>/shells/rmux.sock`.
 ///
-/// Namespaced by the current user so two users on a shared host get distinct
-/// daemons; under the system temp dir so it is writable without extra setup.
+/// Mirrors the comms daemon's socket placement (`directories::ProjectDirs`, an
+/// owner-only `0o700` parent dir) so the control socket never lands in
+/// world-writable `/tmp`, where another local user could pre-create it. Falls
+/// back to a per-user-namespaced path under the system temp dir only when
+/// `ProjectDirs` cannot resolve a data dir (no `HOME` etc.).
 fn default_socket_path() -> PathBuf {
+    if let Some(path) = project_dirs_socket_path() {
+        return path;
+    }
     let mut dir = std::env::temp_dir();
     dir.push(format!("basemind-shells-{}.sock", user_namespace()));
     dir
 }
 
-/// Best-effort per-user namespace token for the socket path. Reads `USER` (unix)
-/// / `USERNAME` (windows); falls back to the pid when neither is set so the path
-/// is still unique-enough rather than panicking.
+/// Resolve the private `<data_dir>/shells/rmux.sock` path, creating the parent
+/// dir with owner-only mode first. `None` when `ProjectDirs` cannot resolve a
+/// data dir (so the caller falls back to the temp dir).
+fn project_dirs_socket_path() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "basemind")?;
+    let shells_dir = dirs.data_dir().join(SHELLS_SUBDIR);
+    if std::fs::create_dir_all(&shells_dir).is_err() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort: tighten the dir to owner-only so a co-tenant cannot read
+        // or pre-create the socket. A permissions failure does not abort — the
+        // socket is still under the per-user data dir, not shared /tmp.
+        let _ =
+            std::fs::set_permissions(&shells_dir, std::fs::Permissions::from_mode(OWNER_ONLY_DIR));
+    }
+    Some(shells_dir.join(SHELLS_SOCKET_FILE))
+}
+
+/// Best-effort per-user namespace token for the temp-dir fallback socket path.
+/// Reads `USER` (unix) / `USERNAME` (windows); falls back to the pid when neither
+/// is set so the path is still unique-enough rather than panicking.
+///
+/// The token is sanitized to `[A-Za-z0-9_-]` (every other byte replaced with
+/// `_`) so a hostile `USER` value can never inject a newline / `;` / `$` / quote
+/// / NUL into the socket path. Belt-and-suspenders with the private-dir placement
+/// in [`default_socket_path`].
 fn user_namespace() -> String {
-    std::env::var("USER")
+    let raw = std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| process_id().to_string())
+        .unwrap_or_else(|_| process_id().to_string());
+    sanitize_namespace(&raw)
+}
+
+/// Replace every byte outside `[A-Za-z0-9_-]` with `_`. Keeps the token a safe
+/// path component. An all-invalid input collapses to underscores, which is still
+/// a valid (if uninformative) path component.
+fn sanitize_namespace(raw: &str) -> String {
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -284,5 +377,24 @@ mod tests {
         let name = SessionName::new(id.as_str()).expect("valid name");
         // The id contains no `:` or `.`, so sanitization is a no-op.
         assert_eq!(name.as_str(), id.as_str());
+    }
+
+    #[test]
+    fn sanitize_namespace_strips_shell_metacharacters() {
+        // A hostile USER value containing newline, `;`, `$`, quote, NUL must
+        // collapse to a safe `[A-Za-z0-9_-]` token.
+        assert_eq!(sanitize_namespace("alice"), "alice");
+        assert_eq!(sanitize_namespace("a-b_c"), "a-b_c");
+        assert_eq!(sanitize_namespace("a;b\nc"), "a_b_c");
+        assert_eq!(sanitize_namespace("evil$(whoami)"), "evil__whoami_");
+        assert_eq!(sanitize_namespace("x\0y\"z"), "x_y_z");
+    }
+
+    #[test]
+    fn mint_session_id_yields_distinct_ids() {
+        let runtime = ShellRuntime::with_socket_path(PathBuf::from("/tmp/unused.sock"));
+        let a = runtime.mint_session_id();
+        let b = runtime.mint_session_id();
+        assert_ne!(a, b, "each mint yields a fresh id");
     }
 }

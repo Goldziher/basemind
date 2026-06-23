@@ -136,6 +136,18 @@
         "user_agent": "basemind/0.9.0 (+https://github.com/Goldziher/basemind)"
       }
     },
+    "shells": {
+      "description": "Visual / headless agent-shell presentation config. Consumed by the `shells` feature's\nvisual launcher; the schema is stable regardless of feature gating.",
+      "$ref": "#/$defs/ShellsConfig",
+      "default": {
+        "enabled": true,
+        "visual": "current",
+        "terminal": "auto",
+        "default_cols": 200,
+        "default_rows": 50,
+        "keep_on_exit": true
+      }
+    },
     "llm": {
       "description": "Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,\nVLM OCR, and any future LLM-backed capability. Off by default — leaving\n`api_key` `Unset` short-circuits any LLM-backed feature.",
       "$ref": "#/$defs/LlmConfig",
@@ -765,6 +777,129 @@
         }
       },
       "additionalProperties": false
+    },
+    "ShellsConfig": {
+      "description": "`[shells]` config sub-tree. See module docs for context.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Master switch. Only meaningful when the `shells` cargo feature is compiled in; when\n`false` the shell MCP / CLI tools are wired but no session is ever spawned.",
+          "type": "boolean",
+          "default": true
+        },
+        "visual": {
+          "description": "How a visual session is surfaced. Defaults to [`VisualMode::Current`] — a new tab in the\nterminal that is already open.",
+          "$ref": "#/$defs/VisualMode",
+          "default": "current"
+        },
+        "terminal": {
+          "description": "Which terminal emulator to drive. [`TerminalChoice::Auto`] (the default) detects the\nrunning terminal from the environment and falls back gracefully.",
+          "$ref": "#/$defs/TerminalChoice",
+          "default": "auto"
+        },
+        "default_cols": {
+          "description": "Initial column count for the session's pseudo-terminal.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 200
+        },
+        "default_rows": {
+          "description": "Initial row count for the session's pseudo-terminal.",
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 50
+        },
+        "keep_on_exit": {
+          "description": "Keep the session alive after the visual surface is closed. When `false` the session is\ntorn down once its presentation exits.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "VisualMode": {
+      "description": "How a visual shell session is presented to the user.",
+      "oneOf": [
+        {
+          "description": "Open the session as a new tab in the terminal that is already open. The default — it keeps\nthe user's window layout intact.",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "Open the session in a brand-new terminal window.",
+          "type": "string",
+          "const": "window"
+        },
+        {
+          "description": "Surface the session over a web frontend (wired by the lead; command-building is a no-op).",
+          "type": "string",
+          "const": "web"
+        },
+        {
+          "description": "Do not present the session at all; it runs headless.",
+          "type": "string",
+          "const": "headless"
+        }
+      ]
+    },
+    "TerminalChoice": {
+      "description": "Which terminal emulator the visual launcher should drive.\n\n[`TerminalChoice::Auto`] inspects the environment (`TERM_PROGRAM`, `$TERMINAL`, and platform\ndefaults) to pick a concrete emulator. The explicit variants force a specific emulator\nregardless of detection.",
+      "oneOf": [
+        {
+          "description": "Detect the running terminal from the environment and fall back gracefully.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "iTerm2 (macOS).",
+          "type": "string",
+          "const": "iterm2"
+        },
+        {
+          "description": "Terminal.app (macOS).",
+          "type": "string",
+          "const": "terminal_app"
+        },
+        {
+          "description": "Windows Terminal (`wt.exe`).",
+          "type": "string",
+          "const": "windows_terminal"
+        },
+        {
+          "description": "GNOME Terminal (Linux).",
+          "type": "string",
+          "const": "gnome_terminal"
+        },
+        {
+          "description": "Konsole (Linux / KDE).",
+          "type": "string",
+          "const": "konsole"
+        },
+        {
+          "description": "WezTerm (cross-platform).",
+          "type": "string",
+          "const": "wezterm"
+        },
+        {
+          "description": "Alacritty (cross-platform).",
+          "type": "string",
+          "const": "alacritty"
+        },
+        {
+          "description": "kitty (cross-platform).",
+          "type": "string",
+          "const": "kitty"
+        },
+        {
+          "description": "xterm (Linux / X11 fallback).",
+          "type": "string",
+          "const": "xterm"
+        }
+      ]
     },
     "LlmConfig": {
       "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing kreuzberg's struct.",

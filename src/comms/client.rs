@@ -87,8 +87,62 @@ pub struct CommsClient {
     remote: Option<String>,
     /// Working directory replayed on the `Hello` of a reconnect.
     cwd: Option<PathBuf>,
+    /// Terminal session lineage replayed on the `Hello` of a reconnect. Populated for an agent
+    /// running inside a basemind-spawned shell session so it auto-joins its session-scoped room.
+    session: SessionContext,
     /// Respawn strategy used by [`CommsClient::reconnect`] when the socket is dead.
     spawn: SpawnFn,
+}
+
+/// Terminal session lineage carried on the `Hello`: the `session_id` of the basemind-spawned
+/// shell this agent runs inside (so it auto-joins the matching session-scoped room) and the
+/// `parent_agent` that spawned it (for lineage bookkeeping). Both `None` for a top-level agent.
+///
+/// Read once at the client-construction boundary — either explicitly (the spawning parent threads
+/// the values it already holds) or from the environment ([`SessionContext::from_env`]) for a child
+/// process that basemind launched with `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionContext {
+    /// The terminal session id (`bmsh-<pid>-<n>`), if this agent runs inside one.
+    pub session_id: Option<String>,
+    /// The agent that spawned this one, if any.
+    pub parent_agent: Option<String>,
+}
+
+/// Environment variable carrying the basemind shell `session_id` for a spawned child agent.
+pub const SESSION_ID_ENV: &str = "BASEMIND_SESSION_ID";
+/// Environment variable carrying the spawning parent's agent id for a spawned child agent.
+pub const PARENT_AGENT_ENV: &str = "BASEMIND_PARENT_AGENT_ID";
+
+impl SessionContext {
+    /// Read the session lineage from the process environment. Empty / unset variables map to
+    /// `None`. This is the single boundary at which the child's session context is sourced from
+    /// the environment; everywhere else the context is passed explicitly.
+    ///
+    // NOTE: this is race-free. The `BASEMIND_*` variables are inherited at child-process start
+    // (basemind sets them in the spawn env, never with `set_var` in the running process) and the
+    // server never mutates them afterward, so reading them here cannot race a concurrent writer.
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self {
+            session_id: non_empty_env(SESSION_ID_ENV),
+            parent_agent: non_empty_env(PARENT_AGENT_ENV),
+        }
+    }
+
+    /// `true` when no session lineage is present (a top-level agent).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.session_id.is_none() && self.parent_agent.is_none()
+    }
+}
+
+/// Read an environment variable, mapping the unset / empty-string cases to `None`.
+fn non_empty_env(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) if !value.is_empty() => Some(value),
+        _ => None,
+    }
 }
 
 impl CommsClient {
@@ -131,7 +185,36 @@ impl CommsClient {
             paths: paths.clone(),
             remote,
             cwd,
+            session: SessionContext::default(),
             spawn: Box::new(spawn),
+        };
+        client.handshake().await?;
+        Ok(client)
+    }
+
+    /// Connect (without spawning) and complete the `Hello` carrying an explicit session lineage,
+    /// so the broker auto-joins the matching session-scoped room during the handshake. The
+    /// explicit-argument seam exercised by tests; production callers use
+    /// [`CommsClient::ensure_and_connect`], which sources the same context from the environment.
+    pub async fn connect_with_session(
+        paths: &CommsPaths,
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        session: SessionContext,
+    ) -> Result<Self, CommsClientError> {
+        let (stream, codec) = Self::dial(paths).await?;
+        let mut client = Self {
+            stream,
+            codec,
+            read_buf: BytesMut::with_capacity(READ_CHUNK),
+            agent,
+            pending_notifications: std::collections::VecDeque::new(),
+            paths: paths.clone(),
+            remote,
+            cwd,
+            session,
+            spawn: Box::new(singleton::spawn_detached_daemon),
         };
         client.handshake().await?;
         Ok(client)
@@ -146,7 +229,11 @@ impl CommsClient {
     ) -> Result<Self, CommsClientError> {
         let paths = singleton::resolve_paths()?;
         singleton::ensure_daemon(&paths).await?;
-        Self::connect(&paths, agent, remote, cwd).await
+        // The session lineage is sourced from the environment at this single boundary: a child
+        // agent that basemind spawned in a shell session inherits `BASEMIND_SESSION_ID` /
+        // `BASEMIND_PARENT_AGENT_ID` and presents them on its `Hello` so the broker auto-joins it
+        // to the matching session-scoped room. A top-level agent has neither var set.
+        Self::connect_with_session(&paths, agent, remote, cwd, SessionContext::from_env()).await
     }
 
     /// Dial the socket and build the framing codec. No handshake yet.
@@ -169,10 +256,8 @@ impl CommsClient {
                 proto_ver: PROTO_VER,
                 remote: self.remote.clone(),
                 cwd: self.cwd.clone(),
-                // Session lineage is threaded by `shell_spawn` (wired by the lead); the base
-                // client carries no terminal session context.
-                session_id: None,
-                parent_agent: None,
+                session_id: self.session.session_id.clone(),
+                parent_agent: self.session.parent_agent.clone(),
             })
             .await?;
         match resp {
@@ -596,6 +681,71 @@ mod tests {
             !msg.starts_with("comms transport error: No such file or directory"),
             "error must not be the bare OS string, got: {msg}"
         );
+    }
+
+    /// An explicitly-built [`SessionContext`] carries the session lineage verbatim, and the
+    /// `is_empty` predicate distinguishes a top-level agent from a session child. This is the
+    /// seam the broker-level auto-join test drives, kept free of env races.
+    #[test]
+    fn session_context_explicit_seam_carries_lineage() {
+        let top = SessionContext::default();
+        assert!(top.is_empty(), "a default context is a top-level agent");
+
+        let child = SessionContext {
+            session_id: Some("bmsh-1-0".to_string()),
+            parent_agent: Some("parent".to_string()),
+        };
+        assert!(!child.is_empty(), "a session child is not empty");
+        assert_eq!(child.session_id.as_deref(), Some("bmsh-1-0"));
+        assert_eq!(child.parent_agent.as_deref(), Some("parent"));
+    }
+
+    /// `SessionContext::from_env` reads the two `BASEMIND_*` variables at the single env boundary,
+    /// mapping unset / empty values to `None`. Serialized so the temporary env mutation cannot race
+    /// other tests in this multi-threaded binary; prior values are restored on the way out.
+    #[test]
+    fn session_context_from_env_reads_the_boundary_variables() {
+        // SAFETY: env access is serialized by this static mutex and the prior values are restored,
+        // so no other test observes the temporary mutation. `set_var`/`remove_var` are otherwise
+        // unsound under multi-threading; the lock makes this access exclusive.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        let prior_session = std::env::var(SESSION_ID_ENV).ok();
+        let prior_parent = std::env::var(PARENT_AGENT_ENV).ok();
+
+        // SAFETY: serialized by ENV_LOCK (see above).
+        unsafe {
+            std::env::set_var(SESSION_ID_ENV, "bmsh-9-3");
+            std::env::set_var(PARENT_AGENT_ENV, "lead-agent");
+        }
+        let present = SessionContext::from_env();
+        assert_eq!(present.session_id.as_deref(), Some("bmsh-9-3"));
+        assert_eq!(present.parent_agent.as_deref(), Some("lead-agent"));
+
+        // Empty values collapse to `None` (a top-level agent).
+        // SAFETY: serialized by ENV_LOCK (see above).
+        unsafe {
+            std::env::set_var(SESSION_ID_ENV, "");
+            std::env::remove_var(PARENT_AGENT_ENV);
+        }
+        assert!(
+            SessionContext::from_env().is_empty(),
+            "empty / unset env maps to a top-level (empty) context"
+        );
+
+        // Restore the prior environment so sibling tests are unaffected.
+        // SAFETY: serialized by ENV_LOCK (see above).
+        unsafe {
+            match prior_session {
+                Some(v) => std::env::set_var(SESSION_ID_ENV, v),
+                None => std::env::remove_var(SESSION_ID_ENV),
+            }
+            match prior_parent {
+                Some(v) => std::env::set_var(PARENT_AGENT_ENV, v),
+                None => std::env::remove_var(PARENT_AGENT_ENV),
+            }
+        }
     }
 }
 

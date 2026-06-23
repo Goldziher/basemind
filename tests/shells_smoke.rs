@@ -41,6 +41,7 @@ async fn spawn_capture_kill_roundtrip() {
     // under test.
     let (keepalive_id, keepalive_name) = runtime
         .spawn(
+            runtime.mint_session_id(),
             ShellCommand::Shell("sleep 60".to_string()),
             None,
             Vec::new(),
@@ -52,6 +53,7 @@ async fn spawn_capture_kill_roundtrip() {
     // it before the pane process exits.
     let (session_id, name) = runtime
         .spawn(
+            runtime.mint_session_id(),
             ShellCommand::Shell("echo basemind-hi; sleep 5".to_string()),
             None,
             Vec::new(),
@@ -136,6 +138,7 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
     // stdin, so a broadcast line is read, executed, and the marker rendered.
     let (id_a, name_a) = runtime
         .spawn(
+            runtime.mint_session_id(),
             ShellCommand::Argv(vec!["bash".to_string()]),
             None,
             Vec::new(),
@@ -144,6 +147,7 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
         .expect("spawn session A");
     let (id_b, name_b) = runtime
         .spawn(
+            runtime.mint_session_id(),
             ShellCommand::Argv(vec!["bash".to_string()]),
             None,
             Vec::new(),

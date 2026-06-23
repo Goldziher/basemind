@@ -131,7 +131,10 @@ pub struct Subscription {
 /// Lineage record for a terminal session: which agent owns it, the parent agent that spawned
 /// it (if any), and the session-scoped room they share. Persisted in the `sessions` keyspace
 /// keyed by [`SessionLineage::session_id`], so a future tree view can reconstruct the
-/// spawn graph. The WRITES happen from `shell_spawn`; the broker only needs the room to exist.
+/// spawn graph.
+// TODO(S4): the lineage write from `shell_spawn` is not yet implemented; it lands with the tree
+// view. Today only the session-scoped room is created — the broker needs the room to exist, but
+// no `SessionLineage` row is persisted yet.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionLineage {
     /// The terminal session id this lineage describes (also the `sessions` key).

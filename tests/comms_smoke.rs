@@ -323,3 +323,87 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         .env("BASEMIND_COMMS_DIR", &comms_dir)
         .output();
 }
+
+/// A child agent connected with an explicit [`SessionContext`] presents its `session_id` on the
+/// `Hello`, so the broker auto-joins it to the matching `RoomScope::Session` room — and a post by
+/// the parent into that room lands in the child's inbox. This pins the agent-shells coupling end to
+/// end: the env-sourced session context (here driven through the explicit-argument seam, avoiding
+/// `set_var` races) makes the parent and child share a session-scoped room without either issuing
+/// an explicit `join`.
+#[tokio::test(flavor = "multi_thread")]
+async fn child_with_session_context_auto_joins_parents_session_room() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let paths = CommsPaths {
+        comms_dir: socket.parent().expect("socket parent").to_path_buf(),
+        socket_path: socket.clone(),
+    };
+
+    let session_id = "bmsh-1234-0";
+    let room = RoomId::parse("shell-session-room").expect("room");
+
+    // The parent creates a session-scoped room and joins it (mirrors `shell_spawn`).
+    let mut parent = connect(&socket, "parent-agent", &root).await;
+    parent
+        .create_room(
+            room.clone(),
+            RoomScope::Session(session_id.to_string()),
+            Some("shell session".to_string()),
+        )
+        .await
+        .expect("create session room");
+    parent.join_room(room.clone()).await.expect("parent joins");
+
+    // The child connects carrying the SAME session_id via the explicit-argument seam: its `Hello`
+    // presents the session context, and the broker auto-joins it to the matching session room.
+    let mut child = CommsClient::connect_with_session(
+        &paths,
+        AgentId::parse("parent-agent-bmsh1234").expect("child agent"),
+        None,
+        Some(root.clone()),
+        basemind::comms::client::SessionContext {
+            session_id: Some(session_id.to_string()),
+            parent_agent: Some("parent-agent".to_string()),
+        },
+    )
+    .await
+    .expect("child connect");
+
+    // The parent posts into the session room → the child sees it WITHOUT an explicit join.
+    parent
+        .post_message(
+            room.clone(),
+            "hello-child".to_string(),
+            b"work to do".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("parent posts to child");
+
+    let (child_inbox, _unread, _cursor) = child
+        .read_inbox(None, None, None, 100, false)
+        .await
+        .expect("child inbox");
+    assert_eq!(
+        child_inbox.len(),
+        1,
+        "child auto-joined the session room and received the parent's post"
+    );
+    assert_eq!(child_inbox[0].meta.subject, "hello-child");
+
+    // A control agent with NO session context is not auto-joined and sees nothing.
+    let mut outsider = connect(&socket, "outsider-agent", &root).await;
+    let (outsider_inbox, _u, _c) = outsider
+        .read_inbox(None, None, None, 100, false)
+        .await
+        .expect("outsider inbox");
+    assert!(
+        outsider_inbox.is_empty(),
+        "an agent with no session context must not join the session room"
+    );
+}

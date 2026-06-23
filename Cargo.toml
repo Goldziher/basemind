@@ -147,8 +147,9 @@ a2a = [
 # itself as the daemon, no external `rmux` binary) and expose MCP tools to spawn a
 # headless shell session, send stdin, capture output, and kill it. Pulls the
 # rmux-sdk / rmux-server / rmux-client trio with default features off (no `web`
-# frontend). Opt in with --features shells.
-shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
+# frontend). Pulls `directories` for the per-user private socket dir (same crate
+# the comms daemon uses). Opt in with --features shells.
+shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client", "dep:directories"]
 
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms,shells`. Use this when you want one flag

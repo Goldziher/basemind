@@ -2,6 +2,7 @@ mod comms;
 mod documents;
 pub(crate) mod layered;
 mod overrides;
+mod shells;
 mod source;
 mod v1;
 mod validate;
@@ -18,6 +19,7 @@ pub use documents::{
 };
 pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
 pub use overrides::DocumentsCliOverrides;
+pub use shells::{ShellsConfig, TerminalChoice, VisualMode};
 pub use source::{ConfigSource, ProvenanceMap};
 pub use v1::{ConfigV1, CrawlConfig};
 

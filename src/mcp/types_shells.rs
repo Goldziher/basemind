@@ -53,6 +53,15 @@ pub struct ShellSpawnResponse {
     /// A `rmux attach -t <name>` command an operator can run in a terminal to
     /// attach to (observe) the otherwise-headless session.
     pub attach_command: String,
+    /// The comms room id coupling this session's parent and child agents, when the server was
+    /// built with comms enabled. The spawned child auto-joins it on startup; the parent (this
+    /// server) is already subscribed. `None` when comms is disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
+    /// The agent id assigned to the spawned child, derived from the parent + session, when comms
+    /// is enabled. `None` when comms is disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent: Option<String>,
 }
 
 /// Parameters for `shell_send`.

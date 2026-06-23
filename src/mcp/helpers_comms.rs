@@ -29,7 +29,7 @@ const DEFAULT_LIMIT: u32 = 100;
 
 /// Map a [`CommsClientError`](crate::comms::client::CommsClientError) into an MCP error with a
 /// stable `comms:` prefix so agents can route on it.
-fn comms_err(error: impl std::fmt::Display) -> McpError {
+pub(super) fn comms_err(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("comms: {error}"), None)
 }
 
@@ -38,7 +38,7 @@ fn comms_err(error: impl std::fmt::Display) -> McpError {
 /// The connection is keyed to the server's resolved `agent_id` (already validated through
 /// `AgentId` at boot — "anon" is valid) and the server root's scope context. Connecting is
 /// best-effort: a failure surfaces here as an MCP error on the triggering call, never at boot.
-async fn comms_client(
+pub(super) async fn comms_client(
     state: &ServerState,
 ) -> Result<MutexGuard<'_, Option<CommsClient>>, McpError> {
     let mut guard = state.comms_client.lock().await;
@@ -55,7 +55,7 @@ async fn comms_client(
 }
 
 /// Borrow the connected client out of the guard. Infallible after [`comms_client`] returned Ok.
-fn client_mut(guard: &mut Option<CommsClient>) -> Result<&mut CommsClient, McpError> {
+pub(super) fn client_mut(guard: &mut Option<CommsClient>) -> Result<&mut CommsClient, McpError> {
     guard
         .as_mut()
         .ok_or_else(|| comms_err("client unexpectedly disconnected"))

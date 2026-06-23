@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
+use super::shells::ShellsConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +28,10 @@ pub struct ConfigV1 {
     pub comms: CommsConfig,
     #[serde(default)]
     pub crawl: CrawlConfig,
+    /// Visual / headless agent-shell presentation config. Consumed by the `shells` feature's
+    /// visual launcher; the schema is stable regardless of feature gating.
+    #[serde(default)]
+    pub shells: ShellsConfig,
     /// Shared LLM configuration. Consumed by reranker-llm, ner-llm, summarization-llm,
     /// VLM OCR, and any future LLM-backed capability. Off by default — leaving
     /// `api_key` `Unset` short-circuits any LLM-backed feature.
@@ -327,6 +332,7 @@ impl ConfigV1 {
             memory: MemoryConfig::default(),
             comms: CommsConfig::default(),
             crawl: CrawlConfig::default(),
+            shells: ShellsConfig::default(),
             llm: LlmConfig::default(),
         }
     }

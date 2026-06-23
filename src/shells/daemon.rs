@@ -17,9 +17,9 @@
 //! daemon with `ConfigFileSelection::Disabled` and no web port.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Inspect the process arguments and, when basemind was re-execed as the
 /// embedded rmux daemon, run the daemon and return its result.
@@ -105,6 +105,7 @@ where
 {
     let socket_path = parse_socket_path(args)
         .context("the embedded rmux daemon requires a socket path argument")?;
+    validate_socket_path(&socket_path)?;
 
     let config = rmux_server::DaemonConfig::new(socket_path);
 
@@ -144,9 +145,55 @@ where
     None
 }
 
+/// Reject a daemon socket path that is not an absolute, traversal-free path.
+///
+/// The path arrives as a process argument when basemind is re-execed as the
+/// embedded daemon. Although the SDK only ever passes a basemind-owned absolute
+/// path, validating defends against argument confusion (e.g. an external caller
+/// invoking `basemind --__internal-daemon ../evil`): a relative path or one
+/// containing a `..` component is refused so the daemon can only bind where it
+/// was legitimately told to.
+fn validate_socket_path(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        bail!(
+            "embedded rmux daemon socket path must be absolute, got {}",
+            path.display()
+        );
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        bail!(
+            "embedded rmux daemon socket path must not contain `..`, got {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_socket_path_accepts_absolute_traversal_free_path() {
+        assert!(validate_socket_path(Path::new("/tmp/basemind/shells/rmux.sock")).is_ok());
+    }
+
+    #[test]
+    fn validate_socket_path_rejects_relative_path() {
+        let err = validate_socket_path(Path::new("relative/evil.sock"))
+            .expect_err("relative path must be rejected");
+        assert!(err.to_string().contains("must be absolute"), "{err}");
+    }
+
+    #[test]
+    fn validate_socket_path_rejects_parent_dir_traversal() {
+        let err = validate_socket_path(Path::new("/var/run/../../evil.sock"))
+            .expect_err("`..` component must be rejected");
+        assert!(err.to_string().contains("must not contain `..`"), "{err}");
+    }
 
     #[test]
     fn parses_first_positional_as_socket_path() {
