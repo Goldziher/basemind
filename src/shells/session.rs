@@ -8,7 +8,9 @@
 //! helpers) can map them to MCP errors at the boundary.
 
 use anyhow::{Context, Result};
-use rmux_sdk::{EnsureSession, Rmux, Session, SessionName, TerminalSizeSpec};
+use rmux_sdk::{
+    EnsureSession, Input, Pane, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec,
+};
 
 /// Default terminal geometry for a headless session. Wide enough that typical
 /// command output is not wrapped, tall enough to hold a screenful for snapshot
@@ -119,6 +121,56 @@ pub async fn capture(session: &Session, lines: Option<usize>) -> Result<String> 
 /// List the names of all sessions currently known to the daemon.
 pub async fn list_sessions(rmux: &Rmux) -> Result<Vec<SessionName>> {
     rmux.list_sessions().await.context("list rmux sessions")
+}
+
+/// Broadcast `text` to the primary pane of each named session at once.
+///
+/// Resolves every `SessionName` to its first pane (`pane(0, 0)`), then delivers
+/// the same input to all of them via [`Rmux::broadcast`]. When `enter` is true a
+/// trailing newline is appended so each shell executes the line (matching
+/// [`send_text`]). Returns the number of panes that accepted the input.
+///
+/// A partial failure (some panes rejected the input) is surfaced as an error that
+/// reports how many of the targeted panes succeeded versus failed, so the caller
+/// learns the broadcast was not fully delivered rather than silently losing it.
+pub async fn broadcast(
+    rmux: &Rmux,
+    names: &[SessionName],
+    text: &str,
+    enter: bool,
+) -> Result<usize> {
+    if names.is_empty() {
+        return Ok(0);
+    }
+
+    let mut panes: Vec<Pane> = Vec::with_capacity(names.len());
+    for name in names {
+        let session = rmux
+            .session(name.clone())
+            .await
+            .with_context(|| format!("open session {:?} for broadcast", name.as_str()))?;
+        panes.push(session.pane(0, 0));
+    }
+
+    let payload = if enter {
+        format!("{text}\n")
+    } else {
+        text.to_string()
+    };
+
+    match rmux.broadcast(&panes, Input::text(&payload)).await {
+        Ok(result) => Ok(result.len()),
+        Err(RmuxError::PartialBroadcast { source, .. }) => {
+            let delivered = source.successes().len();
+            let failed = source.failures().len();
+            Err(anyhow::anyhow!(
+                "broadcast partially failed: {delivered} of {} panes accepted the input, \
+                 {failed} rejected it",
+                delivered + failed
+            ))
+        }
+        Err(other) => Err(anyhow::Error::new(other).context("broadcast input to rmux panes")),
+    }
 }
 
 /// Kill `session`. Returns `true` when a session existed and was terminated,

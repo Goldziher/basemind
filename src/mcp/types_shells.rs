@@ -106,3 +106,48 @@ pub struct ShellKillResponse {
     /// gone (already exited or never existed).
     pub killed: bool,
 }
+
+/// Parameters for `shell_broadcast`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ShellBroadcastParams {
+    /// The `session_id`s (from `shell_spawn`) to deliver `text` to. Every id must
+    /// be a known, live session of this server; an unknown id fails the whole
+    /// broadcast without sending to any pane.
+    pub session_ids: Vec<String>,
+    /// Text to write to each session's stdin.
+    pub text: String,
+    /// When `true` (default), a trailing newline is appended so each line is
+    /// executed. Set `false` to send a raw keystroke fragment without a return.
+    #[serde(default = "default_true")]
+    pub enter: bool,
+}
+
+/// Response from `shell_broadcast`.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ShellBroadcastResponse {
+    /// The number of session panes that accepted the input.
+    pub delivered: usize,
+}
+
+/// Parameters for `shell_list`. Takes no arguments.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ShellListParams {}
+
+/// One session in a `shell_list` response.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ShellSessionView {
+    /// The basemind-minted `session_id` for this session.
+    pub session_id: String,
+    /// The underlying rmux session name.
+    pub name: String,
+    /// `true` when the daemon still reports this session as live, `false` when it
+    /// has exited but the mapping has not been forgotten yet.
+    pub alive: bool,
+}
+
+/// Response from `shell_list`.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ShellListResponse {
+    /// The sessions this server spawned, each flagged with its liveness.
+    pub sessions: Vec<ShellSessionView>,
+}
