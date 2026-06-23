@@ -112,9 +112,26 @@ impl ShellRuntime {
     /// per-user data dir), unless [`SHELLS_SOCKET_ENV`] overrides it.
     #[must_use]
     pub fn new() -> Self {
+        // An env override must clear the same absolute, traversal-free bar the re-exec daemon path
+        // enforces (`validate_socket_path`). A rejected override falls back to the safe default
+        // rather than failing — `new()` stays infallible so `ServerState` construction cannot break
+        // on a hostile env var.
+        // Residual: an absolute, `..`-free but otherwise hostile path (e.g. a symlink to a shared
+        // location) still passes — `BASEMIND_SHELLS_SOCKET` is documented as test-only / trusted.
         let socket = std::env::var_os(SHELLS_SOCKET_ENV)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
+            .filter(|path| match daemon::validate_socket_path(path) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        path = %path.display(),
+                        "BASEMIND_SHELLS_SOCKET rejected; falling back to the default socket path"
+                    );
+                    false
+                }
+            })
             .unwrap_or_else(default_socket_path);
         Self::with_socket_path(socket)
     }
@@ -174,6 +191,8 @@ impl ShellRuntime {
         command: ShellCommand,
         working_directory: Option<String>,
         environment: Vec<String>,
+        cols: u16,
+        rows: u16,
     ) -> Result<(SessionId, SessionName)> {
         let rmux = self.rmux().await?;
         let name = SessionName::new(session_id.as_str())
@@ -183,6 +202,8 @@ impl ShellRuntime {
             command,
             working_directory,
             environment,
+            cols,
+            rows,
         };
         let _session = session::spawn_session(rmux, spec).await?;
         self.sessions
@@ -259,9 +280,12 @@ impl ShellRuntime {
             })
             .collect();
 
-        // Prune dead entries so the map does not leak across a long `serve`.
-        // Re-checks liveness under the lock to avoid evicting a session that was
-        // (re)spawned between the snapshot above and acquiring the lock here.
+        // Prune dead entries so the map does not leak across a long `serve`. This reuses the
+        // `alive` flags computed before the lock, NOT a fresh liveness check. That is safe because
+        // [`SessionId`]s are minted from a monotonic counter and never reused: a key flagged dead
+        // here can never be re-bound to a live session under the same id, so removing it cannot
+        // evict a concurrently (re)spawned session — at worst a brand-new session under a *fresh*
+        // id was inserted between the snapshot and the lock, and that entry is untouched.
         {
             let mut map = self.sessions.lock().await;
             for info in &infos {

@@ -153,7 +153,7 @@ where
 /// invoking `basemind --__internal-daemon ../evil`): a relative path or one
 /// containing a `..` component is refused so the daemon can only bind where it
 /// was legitimately told to.
-fn validate_socket_path(path: &Path) -> Result<()> {
+pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!(
             "embedded rmux daemon socket path must be absolute, got {}",

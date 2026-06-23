@@ -322,11 +322,11 @@ impl Broker {
         self.store.put_agent(&record)?;
 
         // Auto-join every scope-matching room and the default per-repo room.
-        if let Some(chain) = session.chain.clone() {
-            let session_room = self.auto_join(&agent, &chain)?;
+        if let Some(ref chain) = session.chain {
+            let session_room = self.auto_join(&agent, chain)?;
             // Persist the session lineage row now that the child is joined to its session room.
             // Best-effort: a store failure here must not fail the handshake.
-            if let Err(e) = self.record_session_lineage(&agent, &chain, session_room) {
+            if let Err(e) = self.record_session_lineage(&agent, chain, session_room) {
                 tracing::warn!(error = %e, "comms: failed to record session lineage");
             }
         }
@@ -342,6 +342,10 @@ impl Broker {
     /// the child to — passing it in (rather than re-scanning) means the lineage points at the exact
     /// room the child joined and the room keyspace is scanned once per `Hello`. The `created_at` of
     /// an existing row is preserved across reconnects so a re-`Hello` does not rewrite first-seen.
+    ///
+    /// Child-Hello-before-room race: when the child `Hello`s before its parent has created the
+    /// `RoomScope::Session` room, `session_room` is `None` and no lineage row is written — the row
+    /// is deferred until the child reconnects after the room exists (a later `Hello` records it).
     fn record_session_lineage(
         &self,
         agent: &AgentId,

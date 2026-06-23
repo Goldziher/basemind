@@ -276,7 +276,7 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 }
 
 fn main() -> Result<()> {
-    #[cfg(feature = "shells")] // re-exec-as-daemon (shells) runs + exits before clap parses
+    #[cfg(all(feature = "shells", unix))]
     if let Some(result) = basemind::shells::daemon::intercept_from_env() {
         return result;
     }
