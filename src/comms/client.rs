@@ -235,13 +235,26 @@ impl CommsClient {
         remote: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Self, CommsClientError> {
-        let paths = singleton::resolve_paths()?;
-        singleton::ensure_daemon(&paths).await?;
         // The session lineage is sourced from the environment at this single boundary: a child
         // agent that basemind spawned in a shell session inherits `BASEMIND_SESSION_ID` /
         // `BASEMIND_PARENT_AGENT_ID` and presents them on its `Hello` so the broker auto-joins it
         // to the matching session-scoped room. A top-level agent has neither var set.
-        Self::connect_with_session(&paths, agent, remote, cwd, SessionContext::from_env()).await
+        Self::ensure_and_connect_with_session(agent, remote, cwd, SessionContext::from_env()).await
+    }
+
+    /// Resolve the per-user paths, ensure a daemon is running (spawning it if needed), then
+    /// connect + handshake carrying an EXPLICIT session lineage. Used by the per-identity comms
+    /// registry to parent a sub-identity to its orchestrator's session, where the lineage is
+    /// threaded explicitly rather than sourced from the environment.
+    pub async fn ensure_and_connect_with_session(
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        session: SessionContext,
+    ) -> Result<Self, CommsClientError> {
+        let paths = singleton::resolve_paths()?;
+        singleton::ensure_daemon(&paths).await?;
+        Self::connect_with_session(&paths, agent, remote, cwd, session).await
     }
 
     /// Dial the endpoint and build the framing codec. No handshake yet. The connect is

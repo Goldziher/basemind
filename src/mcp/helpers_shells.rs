@@ -272,7 +272,7 @@ async fn try_couple_session_room(
     session_id: &str,
     environment: &mut Vec<String>,
 ) -> Result<(String, String), McpError> {
-    use super::helpers_comms::{client_mut, comms_client, comms_err};
+    use super::helpers_comms::{comms_err, resolve_comms_client};
     use crate::comms::ids::{AgentId, RoomId};
     use crate::comms::model::RoomScope;
 
@@ -313,8 +313,8 @@ async fn try_couple_session_room(
     let title = format!("shell session {comms_session_id} ({parent} -> {child_agent})");
 
     {
-        let mut guard = comms_client(state).await?;
-        let client = client_mut(&mut guard)?;
+        let handle = resolve_comms_client(state, None).await?;
+        let mut client = handle.lock().await;
         client
             .create_room(
                 room.clone(),
@@ -357,7 +357,7 @@ async fn try_couple_session_room(
 /// only the parent's membership is reclaimed here.
 #[cfg(all(feature = "comms", unix))]
 async fn rollback_session_room(state: &ServerState, room_id: &str) {
-    use super::helpers_comms::{client_mut, comms_client};
+    use super::helpers_comms::resolve_comms_client;
     use crate::comms::ids::RoomId;
 
     let Ok(room) = RoomId::parse(room_id.to_string()) else {
@@ -365,8 +365,8 @@ async fn rollback_session_room(state: &ServerState, room_id: &str) {
         return;
     };
     let leave = async {
-        let mut guard = comms_client(state).await?;
-        let client = client_mut(&mut guard)?;
+        let handle = resolve_comms_client(state, None).await?;
+        let mut client = handle.lock().await;
         client
             .leave_room(room)
             .await
@@ -455,11 +455,11 @@ pub(super) async fn run_shell_kill(
 /// swallowed — the session is already dead, so a leftover lineage row is cosmetic, not a kill error.
 #[cfg(all(feature = "comms", unix))]
 async fn delete_session_lineage(state: &ServerState, session_id: &str) {
-    use super::helpers_comms::{client_mut, comms_client};
+    use super::helpers_comms::resolve_comms_client;
 
     let result = async {
-        let mut guard = comms_client(state).await?;
-        let client = client_mut(&mut guard)?;
+        let handle = resolve_comms_client(state, None).await?;
+        let mut client = handle.lock().await;
         client
             .delete_session(session_id)
             .await
@@ -572,11 +572,11 @@ async fn enrich_with_lineage(
     state: &ServerState,
     by_id: &mut ahash::AHashMap<String, ShellSessionView>,
 ) {
-    use super::helpers_comms::{client_mut, comms_client};
+    use super::helpers_comms::resolve_comms_client;
 
     let lineage = async {
-        let mut guard = comms_client(state).await?;
-        let client = client_mut(&mut guard)?;
+        let handle = resolve_comms_client(state, None).await?;
+        let mut client = handle.lock().await;
         client
             .list_sessions()
             .await

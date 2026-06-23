@@ -32,6 +32,10 @@ pub struct AgentRegisterParams {
     /// Optional skill labels advertised to peers.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Response for `agent_register`.
@@ -51,6 +55,10 @@ pub struct AgentListParams {
     /// Restrict to subscribers of this room when set.
     #[serde(default)]
     pub room: Option<RoomId>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// One agent row in an `agent_list` response (front-matter view of an `AgentRecord`).
@@ -123,6 +131,10 @@ pub struct RoomCreateParams {
     /// Optional human-readable title.
     #[serde(default)]
     pub title: Option<String>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// A room front-matter view shared by `room_create` and `room_list`.
@@ -176,6 +188,10 @@ pub(super) struct RoomListResponse {
 pub struct RoomJoinParams {
     /// The room to join (subscribe to).
     pub room: RoomId,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Params for `room_leave`.
@@ -183,6 +199,10 @@ pub struct RoomJoinParams {
 pub struct RoomLeaveParams {
     /// The room to leave (unsubscribe from).
     pub room: RoomId,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Response for `room_join` / `room_leave`.
@@ -220,6 +240,10 @@ pub struct RoomPostParams {
     /// peers can filter relevance from front-matter without fetching the body. Empty when omitted.
     #[serde(default)]
     pub scope: Option<Vec<String>>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Response for `room_post`.
@@ -242,6 +266,10 @@ pub struct RoomHistoryParams {
     /// Maximum messages to return (default 100, max 1000).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-room `seq`
@@ -312,6 +340,10 @@ pub(super) struct RoomHistoryResponse {
 pub struct MessageGetParams {
     /// The message id (the `id` of a front-matter record).
     pub message_id: String,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Response for `message_get`.
@@ -340,6 +372,10 @@ pub struct InboxReadParams {
     /// When true, advance read cursors past the returned messages.
     #[serde(default)]
     pub mark_read: bool,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// Response for `inbox_read`.
@@ -378,6 +414,10 @@ pub struct InboxAckParams {
     /// Advance `room`'s cursor straight to this seq (mode b). Requires `room`.
     #[serde(default)]
     pub to_seq: Option<u64>,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
 }
 
 /// One `(room, new_seq)` cursor advance recorded by `inbox_ack`.

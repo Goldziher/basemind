@@ -8,9 +8,11 @@
 
 #![cfg(all(feature = "comms", unix))]
 
+use std::sync::Arc;
+
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
-use tokio::sync::MutexGuard;
+use tokio::sync::Mutex;
 
 use super::ServerState;
 use super::helpers::json_result;
@@ -21,8 +23,9 @@ use super::types_comms::{
     RoomHistoryParams, RoomHistoryResponse, RoomJoinParams, RoomLeaveParams, RoomListParams,
     RoomListResponse, RoomMembershipResponse, RoomPostParams, RoomPostResponse, RoomSummary,
 };
-use crate::comms::client::{CommsClient, scope_context_for};
+use crate::comms::client::{CommsClient, SessionContext, scope_context_for};
 use crate::comms::cursor::Cursor;
+use crate::comms::ids::AgentId;
 
 /// Default page size when a comms tool omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
@@ -33,32 +36,49 @@ pub(super) fn comms_err(error: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("comms: {error}"), None)
 }
 
-/// Lazily connect (spawning the daemon on first use) and return a guard over the cached client.
+/// Resolve (lazily connecting + caching) the comms-broker client for the requested identity.
 ///
-/// The connection is keyed to the server's resolved `agent_id` (already validated through
-/// `AgentId` at boot — "anon" is valid) and the server root's scope context. Connecting is
-/// best-effort: a failure surfaces here as an MCP error on the triggering call, never at boot.
-pub(super) async fn comms_client(
+/// `as_agent` selects a sub-identity to act as; `None` resolves the server's own `agent_id`
+/// (the pre-registry behavior). The server's OWN identity connects with its env-derived session
+/// (today's behavior). A SUB-identity is parented to the server and shares the orchestration
+/// session id so the broker records lineage and (optionally) auto-joins a session-scoped room.
+///
+/// The first connect for a given identity is serialized under the registry map lock — acceptable,
+/// since it only blocks concurrent FIRST-connects of the SAME process, not steady-state traffic.
+/// Each returned handle is an `Arc<Mutex<CommsClient>>`; callers `lock().await` it per call.
+pub(super) async fn resolve_comms_client(
     state: &ServerState,
-) -> Result<MutexGuard<'_, Option<CommsClient>>, McpError> {
-    let mut guard = state.comms_client.lock().await;
-    if guard.is_none() {
-        let agent = crate::comms::ids::AgentId::parse(state.agent_id.clone())
-            .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?;
-        let (remote, cwd) = scope_context_for(&state.root);
-        let client = CommsClient::ensure_and_connect(agent, remote, cwd)
-            .await
-            .map_err(comms_err)?;
-        *guard = Some(client);
+    as_agent: Option<String>,
+) -> Result<Arc<Mutex<CommsClient>>, McpError> {
+    // Target identity: as_agent (validated) or the server's own agent_id.
+    let target = match as_agent {
+        Some(raw) => AgentId::parse(raw.clone())
+            .map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
+        None => AgentId::parse(state.agent_id.clone())
+            .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
+    };
+    let mut map = state.comms_clients.lock().await;
+    if let Some(handle) = map.get(&target) {
+        return Ok(handle.clone());
     }
-    Ok(guard)
-}
-
-/// Borrow the connected client out of the guard. Infallible after [`comms_client`] returned Ok.
-pub(super) fn client_mut(guard: &mut Option<CommsClient>) -> Result<&mut CommsClient, McpError> {
-    guard
-        .as_mut()
-        .ok_or_else(|| comms_err("client unexpectedly disconnected"))
+    let (remote, cwd) = scope_context_for(&state.root);
+    let is_self = target.as_str() == state.agent_id;
+    let client = if is_self {
+        CommsClient::ensure_and_connect(target.clone(), remote, cwd)
+            .await
+            .map_err(comms_err)?
+    } else {
+        let session = SessionContext {
+            session_id: Some(state.orchestration_session.clone()),
+            parent_agent: Some(state.agent_id.clone()),
+        };
+        CommsClient::ensure_and_connect_with_session(target.clone(), remote, cwd, session)
+            .await
+            .map_err(comms_err)?
+    };
+    let handle = Arc::new(Mutex::new(client));
+    map.insert(target, handle.clone());
+    Ok(handle)
 }
 
 /// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`, defaulting when absent.
@@ -78,8 +98,8 @@ pub(super) async fn run_agent_register(
         version: params.version,
         skills: params.skills,
     };
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let agent_id = client.agent().as_str().to_string();
     client.register_agent(card).await.map_err(comms_err)?;
     json_result(&AgentRegisterResponse {
@@ -92,8 +112,8 @@ pub(super) async fn run_agent_list(
     state: &ServerState,
     params: AgentListParams,
 ) -> Result<CallToolResult, McpError> {
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let records = client.list_agents(params.room).await.map_err(comms_err)?;
     let agents: Vec<AgentSummary> = records
         .iter()
@@ -118,8 +138,8 @@ pub(super) async fn run_room_create(
     params: RoomCreateParams,
 ) -> Result<CallToolResult, McpError> {
     let scope = params.scope.into();
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let room = client
         .create_room(params.room, scope, params.title)
         .await
@@ -134,8 +154,8 @@ pub(super) async fn run_room_list(
     _params: RoomListParams,
 ) -> Result<CallToolResult, McpError> {
     let (remote, cwd) = scope_context_for(&state.root);
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, None).await?;
+    let mut client = handle.lock().await;
     let rooms = client.list_rooms(remote, cwd).await.map_err(comms_err)?;
     let summaries: Vec<RoomSummary> = rooms.iter().map(RoomSummary::from).collect();
     json_result(&RoomListResponse {
@@ -149,8 +169,8 @@ pub(super) async fn run_room_join(
     params: RoomJoinParams,
 ) -> Result<CallToolResult, McpError> {
     let room_label = params.room.as_str().to_string();
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     client.join_room(params.room).await.map_err(comms_err)?;
     json_result(&RoomMembershipResponse {
         room: room_label,
@@ -164,8 +184,8 @@ pub(super) async fn run_room_leave(
     params: RoomLeaveParams,
 ) -> Result<CallToolResult, McpError> {
     let room_label = params.room.as_str().to_string();
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     client.leave_room(params.room).await.map_err(comms_err)?;
     json_result(&RoomMembershipResponse {
         room: room_label,
@@ -181,8 +201,8 @@ pub(super) async fn run_room_post(
     let body = params.body.unwrap_or_default().into_bytes();
     let tags = params.tags.unwrap_or_default();
     let scope = params.scope.unwrap_or_default();
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let message_id = client
         .post_message(
             params.room,
@@ -203,8 +223,8 @@ pub(super) async fn run_room_history(
 ) -> Result<CallToolResult, McpError> {
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(Cursor);
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let (metas, next_cursor) = client
         .read_history(params.room, cursor, limit)
         .await
@@ -222,8 +242,8 @@ pub(super) async fn run_message_get(
     params: MessageGetParams,
 ) -> Result<CallToolResult, McpError> {
     let message_id = params.message_id.clone();
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let body = client
         .get_body(params.message_id)
         .await
@@ -244,8 +264,8 @@ pub(super) async fn run_inbox_read(
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(Cursor);
     let (remote, cwd) = scope_context_for(&state.root);
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let (metas, unread, next_cursor) = client
         .read_inbox(remote, cwd, cursor, limit, params.mark_read)
         .await
@@ -271,8 +291,8 @@ pub(super) async fn run_inbox_ack(
             "inbox_ack requires message_ids or a (room, to_seq) pair",
         ));
     }
-    let mut guard = comms_client(state).await?;
-    let client = client_mut(&mut guard)?;
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
     let (acked, cursors) = client
         .ack_inbox(params.message_ids, params.room, params.to_seq)
         .await

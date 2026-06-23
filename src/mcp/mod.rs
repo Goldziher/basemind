@@ -208,12 +208,23 @@ pub(crate) struct ServerState {
     /// will return an MCP error rather than crash).
     #[cfg(feature = "crawl")]
     pub(crate) crawl_engine: Option<kreuzcrawl::CrawlEngineHandle>,
-    /// Lazily-connected client to the user-global comms broker. The first comms tool call
-    /// spawns the daemon if absent (via `ensure_and_connect`) and caches the connected client
-    /// here; subsequent calls reuse it. `None` until the first call. Best-effort: a connect
-    /// failure surfaces as an MCP error on the call, never at server boot.
+    /// Per-identity registry of lazily-connected comms-broker clients, keyed by `AgentId`. The
+    /// server's own identity (`agent_id`) connects with its env-derived session; a sub-identity
+    /// (driven via a tool's `as_agent` param) gets its own broker connection parented to the
+    /// server and sharing `orchestration_session`, so one `serve` process can act as many named
+    /// agents. Entries are created on first use; a connect failure surfaces as an MCP error on
+    /// the triggering call, never at server boot.
     #[cfg(all(feature = "comms", unix))]
-    pub(crate) comms_client: tokio::sync::Mutex<Option<crate::comms::client::CommsClient>>,
+    pub(crate) comms_clients: tokio::sync::Mutex<
+        ahash::AHashMap<
+            crate::comms::ids::AgentId,
+            std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
+        >,
+    >,
+    /// Session id shared by every sub-identity this server drives, so the broker records their
+    /// lineage under one orchestration session. Derived once at boot from the process id.
+    #[cfg(all(feature = "comms", unix))]
+    pub(crate) orchestration_session: String,
     /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
     /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
     /// hold otherwise (no daemon spawn until first use).
@@ -443,7 +454,9 @@ impl BasemindServer {
             #[cfg(feature = "crawl")]
             crawl_engine,
             #[cfg(all(feature = "comms", unix))]
-            comms_client: tokio::sync::Mutex::new(None),
+            comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
+            #[cfg(all(feature = "comms", unix))]
+            orchestration_session: format!("orch-{}", std::process::id()),
             #[cfg(all(feature = "shells", unix))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
