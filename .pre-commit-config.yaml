@@ -16,7 +16,7 @@ repos:
           - commit-msg
 
   - repo: https://github.com/kreuzberg-dev/pre-commit-hooks
-    rev: v2.2.0
+    rev: v2.3.0
     hooks:
       # File safety
       - id: trailing-whitespace
