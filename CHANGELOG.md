@@ -21,8 +21,12 @@ harmless** — the blob and index formats are unchanged.
   (write stdin), `shell_capture` (visible screen), `shell_broadcast` (multicast input), `shell_list`
   (enumerate with liveness), and `shell_kill` (terminate). basemind embeds the daemon (re-execs
   itself with `--__internal-daemon` — no external `rmux` binary). Sessions are long-lived across
-  tool calls and driven headless via MCP; the `attach_command` in the spawn response is reserved
-  for a forthcoming visual attach client and does not attach yet.
+  tool calls and driven headless via MCP.
+- **Visual attach** (Unix) — when `[shells].visual` is not `headless`, `shell_spawn` opens the
+  session in a terminal tab/window attached to it via a hidden `basemind --__internal-attach`
+  re-exec (basemind ships no external `rmux` binary). Presentation is best-effort — a spawn never
+  fails just because no terminal could be driven — and the response's `attach_command` is returned
+  for manual re-attach.
 - **Comms-coupled session rooms** (Unix + `comms` feature) — spawned children auto-join a
   session-scoped comms room via inherited `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` /
   `BASEMIND_AGENT_ID`, enabling bidirectional parent↔child messaging and forming parent→child
@@ -32,6 +36,30 @@ harmless** — the blob and index formats are unchanged.
   (`auto` / `iterm2` / `terminal_app` / `windows_terminal` / `gnome_terminal` / `konsole` /
   `wezterm` / `alacritty` / `kitty` / `xterm`), and session pty dimensions (`default_cols` /
   `default_rows`) and lifecycle (`keep_on_exit`). Requires `--features shells`.
+
+### Changed
+
+- **Linux release binaries target glibc 2.28** (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux
+  2023) — the two `*-unknown-linux-gnu` artifacts are built with `cargo-zigbuild` (zig as the
+  linker), pinning the required glibc symbol floor without changing runtime behaviour (still
+  dynamically linked). A CI `objdump` guard fails the build if a dependency pulls a newer symbol.
+  macOS / Windows artifacts are unchanged.
+
+### Fixed
+
+- **Agent-shells hardening** — `shell_spawn` now honours the `[shells].enabled` master switch,
+  confines `cwd` to the repository root (rejecting `..` / absolute escapes), threads the configured
+  `default_cols` / `default_rows` into the spawned pty, validates `BASEMIND_SHELLS_SOCKET` on the
+  client path, rejects carriage returns in env keys/values, and widens the loader-injection warning
+  list (`LD_AUDIT`, `DYLD_FALLBACK_LIBRARY_PATH`). The shells modules are now Unix-gated so a
+  non-Unix `--features full` build excludes them cleanly (as `comms` already is).
+
+### Security
+
+- **`quinn-proto` bumped to 0.11.15** (RUSTSEC-2026-0185) — fixes a remote memory-exhaustion vector
+  via unbounded out-of-order QUIC stream reassembly, pulled transitively under `--features full`.
+- Known/tracked advisories carried this release (no fix available yet): `bincode` 1.3.3 unmaintained
+  (via `rmux-proto`), `memmap2` 0.9.10 unsound pointer offset (via `lancedb`, documents/memory).
 
 ## [0.9.0] — 2026-06-23
 
