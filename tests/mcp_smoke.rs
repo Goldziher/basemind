@@ -2973,6 +2973,117 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     let _ = serve.await;
 }
 
+// ─── embedded agent shells round-trip (feature = "shells") ──────────────────
+
+/// End-to-end MCP contract for the headless-shell tools through a real
+/// `basemind serve` child process. The child binary carries the
+/// `--__internal-daemon` intercept, so `shell_spawn` actually re-execs basemind
+/// as the embedded rmux daemon. `BASEMIND_SHELLS_SOCKET` sandboxes that daemon on
+/// a per-test temp socket so parallel runs and the user's environment never
+/// collide.
+///
+/// Proves the wired surface: `shell_spawn` → poll `shell_capture` until the
+/// sentinel appears → `shell_kill`.
+#[cfg(all(feature = "shells", unix))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_tools_spawn_capture_kill_through_mcp() {
+    use std::time::{Duration, Instant};
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let socket = dir.path().join("shells.sock");
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let socket_for_env = socket.clone();
+    let cmd = AsyncCommand::new(bin).configure(move |c| {
+        c.arg("--root")
+            .arg(root)
+            .arg("serve")
+            .arg("--view")
+            .arg("working");
+        c.env("BASEMIND_SHELLS_SOCKET", &socket_for_env);
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    // Spawn a headless session that prints a sentinel then idles.
+    let spawned = service
+        .call_tool(call_params(
+            "shell_spawn",
+            json!({ "command": "echo basemind-hi; sleep 5" }),
+        ))
+        .await
+        .expect("shell_spawn call");
+    let spawned = decode_text(&spawned);
+    let session_id = spawned
+        .get("session_id")
+        .and_then(Value::as_str)
+        .expect("session_id in shell_spawn response")
+        .to_string();
+    assert!(
+        spawned
+            .get("attach_command")
+            .and_then(Value::as_str)
+            .is_some_and(|c| c.starts_with("rmux attach -t ")),
+        "attach_command should be a rmux attach line: {spawned:?}"
+    );
+
+    // Poll capture until the sentinel shows up (bounded — not flaky).
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let captured = service
+            .call_tool(call_params(
+                "shell_capture",
+                json!({ "session_id": session_id }),
+            ))
+            .await
+            .expect("shell_capture call");
+        let text = decode_text(&captured)
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        if text.contains("basemind-hi") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for sentinel via shell_capture; last text {text:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Kill the session and assert it reports killed.
+    let killed = service
+        .call_tool(call_params(
+            "shell_kill",
+            json!({ "session_id": session_id }),
+        ))
+        .await
+        .expect("shell_kill call");
+    let killed = decode_text(&killed);
+    assert_eq!(
+        killed.get("killed").and_then(Value::as_bool),
+        Some(true),
+        "shell_kill should report killed=true for a live session: {killed:?}"
+    );
+
+    // A second kill (now-unknown id) must be an error, proving the mapping was forgotten.
+    let second = service
+        .call_tool(call_params(
+            "shell_kill",
+            json!({ "session_id": session_id }),
+        ))
+        .await;
+    assert!(
+        second.is_err(),
+        "killing an already-forgotten session_id should error"
+    );
+
+    let _ = service.cancel().await;
+}
+
 /// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
 /// connected rmcp client service.
 async fn spawn_serve(

@@ -26,6 +26,8 @@ mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
+#[cfg(feature = "shells")]
+mod helpers_shells;
 mod helpers_telemetry;
 #[cfg(feature = "crawl")]
 mod helpers_web;
@@ -46,6 +48,8 @@ mod tools_compress;
 mod tools_git;
 mod tools_governance;
 mod tools_memory;
+#[cfg(feature = "shells")]
+mod tools_shells;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod toon;
@@ -60,6 +64,8 @@ mod types_governance;
 mod types_graph;
 mod types_impls;
 mod types_memory;
+#[cfg(feature = "shells")]
+mod types_shells;
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -208,6 +214,11 @@ pub(crate) struct ServerState {
     /// failure surfaces as an MCP error on the call, never at server boot.
     #[cfg(all(feature = "comms", unix))]
     pub(crate) comms_client: tokio::sync::Mutex<Option<crate::comms::client::CommsClient>>,
+    /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
+    /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
+    /// hold otherwise (no daemon spawn until first use).
+    #[cfg(feature = "shells")]
+    pub(crate) shell_runtime: crate::shells::ShellRuntime,
     /// Minimum logging severity the client asked for via `logging/setLevel`, as an ordinal
     /// (see [`notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
     /// the server honors the client's verbosity preference.
@@ -433,6 +444,8 @@ impl BasemindServer {
             crawl_engine,
             #[cfg(all(feature = "comms", unix))]
             comms_client: tokio::sync::Mutex::new(None),
+            #[cfg(feature = "shells")]
+            shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
@@ -504,6 +517,10 @@ impl BasemindServer {
         #[cfg(all(feature = "comms", unix))]
         {
             router += Self::tool_router_comms();
+        }
+        #[cfg(feature = "shells")]
+        {
+            router += Self::tool_router_shells();
         }
         Self {
             state,

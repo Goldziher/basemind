@@ -276,6 +276,10 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 }
 
 fn main() -> Result<()> {
+    #[cfg(feature = "shells")] // re-exec-as-daemon (shells) runs + exits before clap parses
+    if let Some(result) = basemind::shells::daemon::intercept_from_env() {
+        return result;
+    }
     // Parse before initializing tracing so the verbosity flag can feed the default
     // log threshold. `Cli::parse()` exits on `--help`/errors and logs nothing, so
     // running it ahead of subscriber init is safe.

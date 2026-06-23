@@ -143,10 +143,17 @@ a2a = [
     "dep:subtle",
 ]
 
+# Headless agent shells: embed the rmux daemon (self-contained — basemind re-execs
+# itself as the daemon, no external `rmux` binary) and expose MCP tools to spawn a
+# headless shell session, send stdin, capture output, and kill it. Pulls the
+# rmux-sdk / rmux-server / rmux-client trio with default features off (no `web`
+# frontend). Opt in with --features shells.
+shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
+
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
-# `--features documents,memory,crawl,comms`. Use this when you want one flag that
-# always pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory", "crawl", "comms"]
+# `--features documents,memory,crawl,comms,shells`. Use this when you want one flag
+# that always pulls in the full intelligence surface as we add tiers in the future.
+full = ["documents", "memory", "crawl", "comms", "shells"]
 
 [dependencies]
 ahash = "0.8"
@@ -211,6 +218,13 @@ regex = "1.12.4"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "charset"], optional = true }
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
+# Embedded headless agent shells (shells feature only). The rmux trio is pulled
+# with default features off so the `web` frontend (and its crypto stack) never
+# enters the dep tree — basemind embeds only the daemon + SDK client. basemind
+# re-execs ITSELF as the rmux daemon, so no external `rmux` binary is required.
+rmux-client = { version = "0.6", default-features = false, optional = true }
+rmux-sdk = { version = "0.6", default-features = false, optional = true }
+rmux-server = { version = "0.6", default-features = false, optional = true }
 # A2A TLS crypto provider. rustls is already pulled transitively, but both the
 # aws-lc-rs and ring providers are enabled in the dep tree (ring via ureq), so the
 # process-default provider is ambiguous and `ServerConfig::builder()` would panic.
