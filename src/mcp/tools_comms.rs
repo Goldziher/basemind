@@ -16,9 +16,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, MessageGetParams,
-    RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams, RoomListParams,
-    RoomPostParams,
+    AgentListParams, AgentRegisterParams, DmSendParams, InboxAckParams, InboxReadParams,
+    MessageGetParams, RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams,
+    RoomListParams, RoomPostParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -202,6 +202,29 @@ impl BasemindServer {
             __started,
             &__result,
         );
+        __result
+    }
+
+    #[tool(
+        description = "Send a DIRECT message to one agent's inbox via a private pairwise room \
+        (`dm:<lo>:<hi>`) that both ends auto-join. Optional `as_agent` sends on behalf of a \
+        subagent. The recipient sees it in inbox_read(as_agent=<recipient>). Returns the \
+        message_id and the room. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn dm_send(
+        &self,
+        Parameters(p): Parameters<DmSendParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_dm_send(&self.state, p).await;
+        record_call(&self.state, "dm_send", &__params_json, __started, &__result);
         __result
     }
 

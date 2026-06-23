@@ -438,3 +438,34 @@ pub(super) struct InboxAckResponse {
     /// The `(room, new_seq)` cursor advances this call produced.
     pub cursors_advanced: Vec<CursorAdvance>,
 }
+
+// ─── dm_send ───────────────────────────────────────────────────────────────────────────────────
+
+/// Params for `dm_send` — a direct message to one agent.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DmSendParams {
+    /// Recipient agent id. The DM is delivered to this agent's inbox via a private pairwise room
+    /// that both ends auto-join.
+    pub to_agent: String,
+    /// Optional sub-identity to send AS; defaults to the server's own agent. Lets one orchestrator
+    /// send on behalf of any subagent it drives.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+    /// Short human subject line.
+    pub subject: String,
+    /// Message body (markdown). Empty when omitted.
+    #[serde(default)]
+    pub body: Option<String>,
+    /// Id of the message this one replies to, for threading.
+    #[serde(default)]
+    pub reply_to: Option<String>,
+}
+
+/// Response for `dm_send`.
+#[derive(Debug, Serialize)]
+pub(super) struct DmSendResponse {
+    /// The new message id.
+    pub message_id: String,
+    /// The private pairwise room the DM was delivered to (`dm:<lo>:<hi>`).
+    pub room: String,
+}

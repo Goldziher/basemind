@@ -18,14 +18,16 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::types_comms::{
     AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary,
-    CursorAdvance, InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse,
-    MessageFrontMatter, MessageGetParams, MessageGetResponse, RoomCreateParams, RoomCreateResponse,
-    RoomHistoryParams, RoomHistoryResponse, RoomJoinParams, RoomLeaveParams, RoomListParams,
-    RoomListResponse, RoomMembershipResponse, RoomPostParams, RoomPostResponse, RoomSummary,
+    CursorAdvance, DmSendParams, DmSendResponse, InboxAckParams, InboxAckResponse, InboxReadParams,
+    InboxReadResponse, MessageFrontMatter, MessageGetParams, MessageGetResponse, RoomCreateParams,
+    RoomCreateResponse, RoomHistoryParams, RoomHistoryResponse, RoomJoinParams, RoomLeaveParams,
+    RoomListParams, RoomListResponse, RoomMembershipResponse, RoomPostParams, RoomPostResponse,
+    RoomSummary,
 };
 use crate::comms::client::{CommsClient, SessionContext, scope_context_for};
 use crate::comms::cursor::Cursor;
-use crate::comms::ids::AgentId;
+use crate::comms::ids::{AgentId, RoomId};
+use crate::comms::model::RoomScope;
 
 /// Default page size when a comms tool omits `limit`. Mirrors the broker's `DEFAULT_LIMIT`.
 const DEFAULT_LIMIT: u32 = 100;
@@ -304,5 +306,84 @@ pub(super) async fn run_inbox_ack(
     json_result(&InboxAckResponse {
         acked: acked as usize,
         cursors_advanced,
+    })
+}
+
+/// `dm_send`: deliver a direct message to one agent's inbox via a private pairwise room.
+///
+/// There is no broker-level DM primitive; instead the orchestrator (which hosts BOTH the sender's
+/// and the recipient's broker connections in its [`resolve_comms_client`] registry) creates a
+/// canonical pairwise room `dm:<lo>:<hi>` (the two ids sorted so both directions map to one room),
+/// joins it on BOTH ends, and posts via the sender. The message then surfaces in the recipient's
+/// `inbox_read(as_agent = to_agent)` like any other subscribed-room message. The recipient's
+/// connection is created lazily if it does not exist yet.
+pub(super) async fn run_dm_send(
+    state: &ServerState,
+    params: DmSendParams,
+) -> Result<CallToolResult, McpError> {
+    // Resolve both identities up front (the sender may be a sub-identity via `as_agent`).
+    let from_agent = match &params.as_agent {
+        Some(raw) => AgentId::parse(raw.clone())
+            .map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
+        None => AgentId::parse(state.agent_id.clone())
+            .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
+    };
+    let to_agent = AgentId::parse(params.to_agent.clone())
+        .map_err(|e| comms_err(format!("invalid to_agent {:?}: {e}", params.to_agent)))?;
+    if from_agent == to_agent {
+        return Err(comms_err("cannot dm yourself"));
+    }
+
+    // Canonical pairwise room id: sort the two ids so a<->b and b<->a map to the same room.
+    let (lo, hi) = if from_agent.as_str() <= to_agent.as_str() {
+        (from_agent.as_str(), to_agent.as_str())
+    } else {
+        (to_agent.as_str(), from_agent.as_str())
+    };
+    let room = RoomId::parse(format!("dm:{lo}:{hi}"))
+        .map_err(|e| comms_err(format!("derive dm room id: {e}")))?;
+
+    // Ensure the room exists and the SENDER is subscribed (create_room is an idempotent upsert).
+    // The room is scoped to a UNIQUE session token that matches no agent's real session id, so the
+    // broker never auto-joins anyone — membership is explicit (only the two ends that `join_room`).
+    // (A `Global` scope would broadcast the DM to every agent on the machine.)
+    let dm_scope = RoomScope::Session(format!("dm:{lo}:{hi}"));
+    let sender = resolve_comms_client(state, params.as_agent.clone()).await?;
+    {
+        let mut client = sender.lock().await;
+        client
+            .create_room(room.clone(), dm_scope, Some(format!("dm {lo} <-> {hi}")))
+            .await
+            .map_err(comms_err)?;
+        client.join_room(room.clone()).await.map_err(comms_err)?;
+    }
+
+    // Subscribe the RECIPIENT via its own connection (lazily created) so the DM lands in its inbox.
+    {
+        let recipient = resolve_comms_client(state, Some(to_agent.as_str().to_string())).await?;
+        let mut client = recipient.lock().await;
+        client.join_room(room.clone()).await.map_err(comms_err)?;
+    }
+
+    // Post via the sender.
+    let body = params.body.unwrap_or_default().into_bytes();
+    let message_id = {
+        let mut client = sender.lock().await;
+        client
+            .post_message(
+                room.clone(),
+                params.subject,
+                body,
+                Vec::new(),
+                params.reply_to,
+                Vec::new(),
+            )
+            .await
+            .map_err(comms_err)?
+    };
+
+    json_result(&DmSendResponse {
+        message_id,
+        room: room.into_string(),
     })
 }
