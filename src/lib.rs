@@ -24,7 +24,7 @@ pub mod render;
 pub mod scanner;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
-#[cfg(feature = "shells")]
+#[cfg(all(feature = "shells", unix))]
 pub mod shells;
 pub mod store;
 pub mod store_blob;

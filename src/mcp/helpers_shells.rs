@@ -67,12 +67,28 @@ pub(super) async fn run_shell_spawn(
     state: &ServerState,
     params: ShellSpawnParams,
 ) -> Result<CallToolResult, McpError> {
+    // Honour the config master switch. `ShellsConfig::enabled` defaults to `true`, so a default
+    // build behaves exactly as before; an operator who set `[shells].enabled = false` gets the
+    // tool wired but inert, mirroring the documented contract on the config field.
+    if !state.config.shells.enabled {
+        return Err(McpError::invalid_params(
+            "shells are disabled in config ([shells].enabled = false)",
+            None,
+        ));
+    }
+
+    // Confine the caller-supplied working directory to the repository root. `normalize_query_path`
+    // rejects `..` traversal and absolute paths outside `root`, returning a clean repo-relative key
+    // — so a spawned shell can never be pointed at a directory outside the indexed workspace.
     let cwd = match params.cwd {
-        Some(rel) => Some(
-            rel.as_str()
-                .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))?
-                .to_string(),
-        ),
+        Some(rel) => {
+            let raw = rel
+                .as_str()
+                .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))?;
+            let normalized = crate::path::normalize_query_path(raw, &state.root)
+                .ok_or_else(|| McpError::invalid_params("cwd escapes the repository root", None))?;
+            Some(normalized)
+        }
         None => None,
     };
 
@@ -104,6 +120,8 @@ pub(super) async fn run_shell_spawn(
             ShellCommand::Shell(params.command),
             cwd,
             environment,
+            state.config.shells.default_cols,
+            state.config.shells.default_rows,
         )
         .await;
 
@@ -133,29 +151,39 @@ pub(super) async fn run_shell_spawn(
 /// Loader-injection env vars worth a heads-up when a caller supplies them: they let the child
 /// preload arbitrary shared objects. We warn rather than reject — a legitimate caller may need
 /// them — so the spawn still proceeds.
-const LOADER_VARS: [&str; 3] = ["LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH"];
+const LOADER_VARS: [&str; 5] = [
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+];
 
 /// Validate + sanitize the caller-supplied env entries, then render them as `KEY=VALUE` strings.
 ///
-/// Rejects a key that is empty or contains `=` / NUL / newline (any of which would let the entry
-/// smuggle an extra variable or a control char into the process env), and a value containing NUL /
-/// newline. A loader-injection var (`LD_PRELOAD` etc.) is allowed but logged at WARN.
+/// Rejects a key that is empty or contains `=` / NUL / newline / carriage return (any of which
+/// would let the entry smuggle an extra variable or a control char into the process env), and a
+/// value containing NUL / newline / carriage return. A loader-injection var (`LD_PRELOAD` etc.) is
+/// allowed but logged at WARN.
 fn build_environment(env: Vec<ShellEnv>) -> Result<Vec<String>, McpError> {
     let mut out = Vec::with_capacity(env.len());
     for kv in env {
         if kv.key.is_empty() {
             return Err(McpError::invalid_params("env key must not be empty", None));
         }
-        if kv.key.contains(['=', '\0', '\n']) {
+        if kv.key.contains(['=', '\0', '\n', '\r']) {
             return Err(McpError::invalid_params(
-                format!("env key {:?} must not contain '=', NUL, or newline", kv.key),
+                format!(
+                    "env key {:?} must not contain '=', NUL, newline, or carriage return",
+                    kv.key
+                ),
                 None,
             ));
         }
-        if kv.value.contains(['\0', '\n']) {
+        if kv.value.contains(['\0', '\n', '\r']) {
             return Err(McpError::invalid_params(
                 format!(
-                    "env value for key {:?} must not contain NUL or newline",
+                    "env value for key {:?} must not contain NUL, newline, or carriage return",
                     kv.key
                 ),
                 None,
@@ -232,14 +260,23 @@ async fn try_couple_session_room(
     let child_agent = match AgentId::parse(child_candidate.clone()) {
         Ok(id) => id.into_string(),
         Err(error) => {
+            // The primary id is rejected only when the parent contributes an out-of-alphabet byte.
+            // Validate the fallback through the SAME parser so we never hand an invalid id to the
+            // broker — a fallback that itself fails to parse is a hard error, not a silent pass.
             let fallback = format!("shell-{comms_session_id}");
+            let fallback_id = AgentId::parse(fallback.clone()).map_err(|fallback_err| {
+                comms_err(format!(
+                    "derive child agent id: candidate {child_candidate:?} rejected ({error}) and \
+                     fallback {fallback:?} also rejected ({fallback_err})"
+                ))
+            })?;
             tracing::warn!(
                 error = %error,
                 rejected_candidate_len = child_candidate.len(),
                 fallback = %fallback,
                 "shell_spawn: derived child agent id rejected by AgentId::parse; using fallback"
             );
-            fallback
+            fallback_id.into_string()
         }
     };
 
@@ -460,10 +497,9 @@ pub(super) async fn run_shell_list(
         .map_err(|e| mcp_internal("list shell sessions", e))?;
 
     // Seed the merge map from this server's own sessions (name + liveness; lineage unknown here).
-    // `mut` is only exercised by the comms-on lineage enrichment below; the attribute keeps the
-    // headless `shells`-only build free of an `unused_mut` warning.
-    #[cfg_attr(not(all(feature = "comms", unix)), allow(unused_mut))]
-    let mut by_id: ahash::AHashMap<String, ShellSessionView> = runtime
+    // Bound as a non-`mut` `let` so the headless `shells`-only build needs no `unused_mut`
+    // suppression (the project bans `allow`-style attributes); the comms-on path rebinds it `mut`.
+    let by_id: ahash::AHashMap<String, ShellSessionView> = runtime
         .into_iter()
         .map(|info| {
             let session_id = info.session_id.to_string();
@@ -482,9 +518,14 @@ pub(super) async fn run_shell_list(
         .collect();
 
     // Enrich with the broker's lineage when comms is built. Best-effort: a comms failure leaves
-    // `by_id` as the runtime-only view rather than failing the whole tool.
+    // `by_id` as the runtime-only view rather than failing the whole tool. The `mut` rebind lives
+    // under the same gate as the enrichment, so it is absent (and harmless) in the headless build.
     #[cfg(all(feature = "comms", unix))]
-    enrich_with_lineage(state, &mut by_id).await;
+    let by_id = {
+        let mut by_id = by_id;
+        enrich_with_lineage(state, &mut by_id).await;
+        by_id
+    };
 
     let mut sessions: Vec<ShellSessionView> = by_id.into_values().collect();
     sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -531,24 +572,23 @@ async fn enrich_with_lineage(
         let parent_agent = row.parent_agent.map(|agent| agent.into_string());
         let child_agent = row.child_agent.into_string();
         let room_id = row.room_id.into_string();
-        by_id
+        // Get-or-default first, then assign the lineage fields by MOVE. A present entry (this server
+        // spawned it) keeps its runtime `name` / `alive`; an absent one is seeded as a lineage-only
+        // row (`name = session_id`, `alive = false`) because this process holds no rmux handle for a
+        // session spawned elsewhere in the chain. Either way the three lineage values are moved in,
+        // not cloned, since each is consumed exactly once.
+        let view = by_id
             .entry(row.session_id.clone())
-            .and_modify(|view| {
-                view.parent_agent.clone_from(&parent_agent);
-                view.child_agent = Some(child_agent.clone());
-                view.room_id = Some(room_id.clone());
-            })
-            // A session only in the broker lineage was spawned elsewhere in the chain (e.g. a
-            // grandchild this server did not spawn), so this process has no live rmux handle for
-            // it: `alive` is false and `name` is a placeholder (the session id, not a real rmux
-            // session name — this server cannot resolve the latter without the spawning handle).
             .or_insert_with(|| ShellSessionView {
                 name: row.session_id.clone(),
                 session_id: row.session_id,
                 alive: false,
-                parent_agent,
-                child_agent: Some(child_agent),
-                room_id: Some(room_id),
+                parent_agent: None,
+                child_agent: None,
+                room_id: None,
             });
+        view.parent_agent = parent_agent;
+        view.child_agent = Some(child_agent);
+        view.room_id = Some(room_id);
     }
 }

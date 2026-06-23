@@ -26,7 +26,7 @@ mod helpers_grep;
 mod helpers_impls;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
-#[cfg(feature = "shells")]
+#[cfg(all(feature = "shells", unix))]
 mod helpers_shells;
 mod helpers_telemetry;
 #[cfg(feature = "crawl")]
@@ -48,7 +48,7 @@ mod tools_compress;
 mod tools_git;
 mod tools_governance;
 mod tools_memory;
-#[cfg(feature = "shells")]
+#[cfg(all(feature = "shells", unix))]
 mod tools_shells;
 #[cfg(feature = "crawl")]
 mod tools_web;
@@ -64,7 +64,7 @@ mod types_governance;
 mod types_graph;
 mod types_impls;
 mod types_memory;
-#[cfg(feature = "shells")]
+#[cfg(all(feature = "shells", unix))]
 mod types_shells;
 
 use std::collections::BTreeMap;
@@ -217,7 +217,7 @@ pub(crate) struct ServerState {
     /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
     /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
     /// hold otherwise (no daemon spawn until first use).
-    #[cfg(feature = "shells")]
+    #[cfg(all(feature = "shells", unix))]
     pub(crate) shell_runtime: crate::shells::ShellRuntime,
     /// Minimum logging severity the client asked for via `logging/setLevel`, as an ordinal
     /// (see [`notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
@@ -444,7 +444,7 @@ impl BasemindServer {
             crawl_engine,
             #[cfg(all(feature = "comms", unix))]
             comms_client: tokio::sync::Mutex::new(None),
-            #[cfg(feature = "shells")]
+            #[cfg(all(feature = "shells", unix))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
         });
@@ -518,7 +518,7 @@ impl BasemindServer {
         {
             router += Self::tool_router_comms();
         }
-        #[cfg(feature = "shells")]
+        #[cfg(all(feature = "shells", unix))]
         {
             router += Self::tool_router_shells();
         }

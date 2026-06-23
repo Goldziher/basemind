@@ -45,6 +45,8 @@ async fn spawn_capture_kill_roundtrip() {
             ShellCommand::Shell("sleep 60".to_string()),
             None,
             Vec::new(),
+            200,
+            50,
         )
         .await
         .expect("spawn keepalive session");
@@ -57,6 +59,8 @@ async fn spawn_capture_kill_roundtrip() {
             ShellCommand::Shell("echo basemind-hi; sleep 5".to_string()),
             None,
             Vec::new(),
+            200,
+            50,
         )
         .await
         .expect("spawn session");
@@ -142,6 +146,8 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
             ShellCommand::Argv(vec!["bash".to_string()]),
             None,
             Vec::new(),
+            200,
+            50,
         )
         .await
         .expect("spawn session A");
@@ -151,6 +157,8 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
             ShellCommand::Argv(vec!["bash".to_string()]),
             None,
             Vec::new(),
+            200,
+            50,
         )
         .await
         .expect("spawn session B");

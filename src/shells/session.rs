@@ -12,12 +12,17 @@ use rmux_sdk::{
     EnsureSession, Input, Pane, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec,
 };
 
-/// Default terminal geometry for a headless session. Wide enough that typical
+/// Fallback terminal geometry for a headless session. Wide enough that typical
 /// command output is not wrapped, tall enough to hold a screenful for snapshot
 /// capture. Headless sessions have no attached client driving a resize, so this
 /// is the geometry the pane keeps for its whole life.
+///
+/// The configured `[shells].default_cols` normally supplies the width; this const
+/// is the floor applied when a caller passes `0`, so a degenerate zero-sized PTY
+/// can never reach the daemon. The config default mirrors this value.
 pub(crate) const DEFAULT_COLS: u16 = 200;
-/// See [`DEFAULT_COLS`].
+/// See [`DEFAULT_COLS`]. The configured `[shells].default_rows` normally supplies
+/// the height; this const is the floor applied when a caller passes `0`.
 pub(crate) const DEFAULT_ROWS: u16 = 50;
 
 /// How a shell session's program is specified.
@@ -44,17 +49,36 @@ pub struct SpawnSpec {
     pub working_directory: Option<String>,
     /// Environment overrides as `"KEY=VALUE"` strings.
     pub environment: Vec<String>,
+    /// Terminal width in columns for the headless pane. Sourced from `[shells].default_cols` so an
+    /// operator can widen the geometry; [`DEFAULT_COLS`] is the fallback the config default mirrors.
+    pub cols: u16,
+    /// Terminal height in rows for the headless pane. Sourced from `[shells].default_rows`;
+    /// [`DEFAULT_ROWS`] is the fallback the config default mirrors.
+    pub rows: u16,
 }
 
 /// Create a detached headless session per `spec` and return the live handle.
 ///
 /// The session is created with `detached(true)` so no client is attached — it
-/// runs purely under the daemon. The pane geometry is fixed at
-/// `DEFAULT_COLS`×`DEFAULT_ROWS`.
+/// runs purely under the daemon. The pane geometry is taken from `spec.cols` ×
+/// `spec.rows` (the configured `[shells]` defaults), falling back to
+/// `DEFAULT_COLS` × `DEFAULT_ROWS` at the config layer.
 pub async fn spawn_session(rmux: &Rmux, spec: SpawnSpec) -> Result<Session> {
+    // Apply the documented fallback for a degenerate zero-sized request, so the daemon never gets a
+    // 0×0 PTY even if a caller threads through an unset geometry.
+    let cols = if spec.cols == 0 {
+        DEFAULT_COLS
+    } else {
+        spec.cols
+    };
+    let rows = if spec.rows == 0 {
+        DEFAULT_ROWS
+    } else {
+        spec.rows
+    };
     let mut ensure = EnsureSession::named(spec.name)
         .detached(true)
-        .size(TerminalSizeSpec::new(DEFAULT_COLS, DEFAULT_ROWS));
+        .size(TerminalSizeSpec::new(cols, rows));
 
     ensure = match spec.command {
         ShellCommand::Shell(command) => ensure.shell(command),
