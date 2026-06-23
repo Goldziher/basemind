@@ -502,3 +502,121 @@ async fn session_lineage_chain_records_grandparent_parent_child() {
     );
     assert_eq!(row_c.room_id, room_c, "C's row points at the real C room");
 }
+
+/// Distinct identities sharing one broker: two agents both join a room and each sees the other's
+/// posts (the multi-subagent room chat the `as_agent` registry produces), and a direct message via
+/// a private pairwise room (`dm:<lo>:<hi>`) lands ONLY in the recipient's inbox — never a third
+/// agent's. This pins the broker semantics that the MCP `dm_send` + `as_agent` tools rely on.
+#[tokio::test(flavor = "multi_thread")]
+async fn shared_room_chat_and_pairwise_dm_isolation() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut reviewer = connect(&socket, "reviewer", &root).await;
+    let mut tester = connect(&socket, "tester", &root).await;
+    let mut outsider = connect(&socket, "outsider", &root).await;
+
+    // Shared room: both join, each posts, each sees BOTH senders in the history.
+    let room = RoomId::parse("review-room").expect("room");
+    reviewer
+        .create_room(room.clone(), RoomScope::Global, Some("review".to_string()))
+        .await
+        .expect("create room");
+    reviewer
+        .join_room(room.clone())
+        .await
+        .expect("reviewer joins");
+    tester.join_room(room.clone()).await.expect("tester joins");
+    reviewer
+        .post_message(
+            room.clone(),
+            "from reviewer".to_string(),
+            b"hi".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("reviewer post");
+    tester
+        .post_message(
+            room.clone(),
+            "from tester".to_string(),
+            b"yo".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("tester post");
+
+    let (history, _next) = reviewer
+        .read_history(room.clone(), None, 100)
+        .await
+        .expect("history");
+    let forms: Vec<String> = history
+        .iter()
+        .map(|m| m.meta.from.as_str().to_string())
+        .collect();
+    assert!(
+        forms.contains(&"reviewer".to_string()) && forms.contains(&"tester".to_string()),
+        "both distinct senders appear in the shared room: {forms:?}"
+    );
+
+    // DM: the canonical pairwise room both ends join; reviewer DMs tester.
+    let dm = RoomId::parse("dm:reviewer:tester").expect("dm room");
+    // Scope the pairwise room to a unique session token that matches no agent's real session id,
+    // so the broker auto-joins NOBODY — membership is explicit (mirrors `dm_send`). A `Global`
+    // scope would broadcast the DM to every agent on the machine.
+    reviewer
+        .create_room(
+            dm.clone(),
+            RoomScope::Session("dm:reviewer:tester".to_string()),
+            Some("dm".to_string()),
+        )
+        .await
+        .expect("create dm room");
+    reviewer
+        .join_room(dm.clone())
+        .await
+        .expect("reviewer dm join");
+    tester.join_room(dm.clone()).await.expect("tester dm join");
+    reviewer
+        .post_message(
+            dm.clone(),
+            "private note".to_string(),
+            b"secret".to_vec(),
+            vec![],
+            None,
+            vec![],
+        )
+        .await
+        .expect("dm post");
+
+    // The recipient sees the DM in its cross-room inbox.
+    let (tester_inbox, _u, _c) = tester
+        .read_inbox(None, None, None, 100, false)
+        .await
+        .expect("tester inbox");
+    assert!(
+        tester_inbox
+            .iter()
+            .any(|sm| sm.meta.subject == "private note"),
+        "tester must receive the DM"
+    );
+
+    // A third agent, in neither room, never sees it.
+    let (outsider_inbox, _u, _c) = outsider
+        .read_inbox(None, None, None, 100, false)
+        .await
+        .expect("outsider inbox");
+    assert!(
+        !outsider_inbox
+            .iter()
+            .any(|sm| sm.meta.subject == "private note"),
+        "the DM must not leak to an agent outside the pairwise room"
+    );
+}
