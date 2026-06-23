@@ -901,96 +901,12 @@ fn highest_for(acc: &[(RoomId, u64)], room: &RoomId) -> Option<u64> {
     acc.iter().find(|(r, _)| r == room).map(|(_, s)| *s)
 }
 
-/// Build a scope chain from the optional remote + cwd a client supplied. When `cwd` is given
-/// we attempt git discovery to enrich the chain's remote if the client did not supply one.
-fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf>) -> ScopeChain {
-    match cwd {
-        Some(cwd) => {
-            let repo = crate::git::Repo::discover(&cwd).ok();
-            let mut chain = scope::scope_chain(&cwd, repo.as_ref());
-            if chain.remote.is_none() {
-                chain.remote = remote;
-            }
-            chain
-        }
-        None => ScopeChain {
-            remote,
-            cwd: std::path::PathBuf::new(),
-            ancestors: Vec::new(),
-            // Session context is layered on by `on_hello` after the base chain is built.
-            session_id: None,
-            parent_agent: None,
-        },
-    }
-}
-
-/// The default room every agent in a scope auto-joins on first sight. Keyed by remote when the
-/// agent is in a repo with a remote, else by the repo/workspace path, else Global.
-fn default_room_for(chain: &ScopeChain) -> Room {
-    let (room_id, scope, title) = match (&chain.remote, chain.cwd.as_os_str().is_empty()) {
-        (Some(remote), _) => (
-            RoomId::parse(sanitize_id(remote)).unwrap_or_else(|_| fallback_room()),
-            RoomScope::Remote(remote.clone()),
-            format!("workspace: {remote}"),
-        ),
-        (None, false) => {
-            let path = chain.cwd.clone();
-            (
-                RoomId::parse(sanitize_id(&path.to_string_lossy()))
-                    .unwrap_or_else(|_| fallback_room()),
-                RoomScope::PathPrefix(path.clone()),
-                format!("workspace: {}", path.display()),
-            )
-        }
-        (None, true) => (fallback_room(), RoomScope::Global, "global".to_string()),
-    };
-    Room {
-        room_id,
-        scope,
-        title,
-        created_at: now_micros(),
-    }
-}
-
-fn fallback_room() -> RoomId {
-    RoomId::parse("global").expect("`global` is a valid room id")
-}
-
-/// Map an arbitrary string to the id alphabet (`[A-Za-z0-9._:-]`), truncated to the id cap.
-fn sanitize_id(s: &str) -> String {
-    let mut out: String = s
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    if out.len() > super::ids::MAX_ID_LEN {
-        out.truncate(super::ids::MAX_ID_LEN);
-    }
-    if out.is_empty() {
-        out.push('x');
-    }
-    out
-}
-
-/// Mint a unique message id from the room, agent, and a microsecond timestamp + a process
-/// counter. Collisions are structurally impossible within a single daemon because the counter
-/// is monotonic and the daemon is the sole writer.
-fn mint_message_id(room: &RoomId, agent: &AgentId) -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{}:{}:{}:{}",
-        room.as_str(),
-        agent.as_str(),
-        now_micros(),
-        n
-    )
-}
+#[path = "daemon_rooms.rs"]
+mod rooms;
+pub(crate) use rooms::repo_room_for;
+#[cfg(test)]
+use rooms::sanitize_id;
+use rooms::{build_chain, default_room_for, mint_message_id};
 
 #[cfg(test)]
 #[path = "daemon_tests.rs"]

@@ -102,7 +102,9 @@ pub enum ScopeInput {
     PathPrefix(std::path::PathBuf),
     /// Scope to a terminal session id (a parent + child sharing the session auto-join).
     Session(String),
-    /// Scope to every agent on the machine.
+    /// Scope to every agent on the machine. Reserve `global` for MACHINE-WIDE ops coordination
+    /// (resource / CPU contention, shared-host scheduling), NOT general per-repo chat — use a repo
+    /// room (`remote` / `path_prefix`, via `get_or_create_chat_room_for_path`) for work in a repo.
     #[default]
     Global,
 }
@@ -437,6 +439,34 @@ pub(super) struct InboxAckResponse {
     pub acked: usize,
     /// The `(room, new_seq)` cursor advances this call produced.
     pub cursors_advanced: Vec<CursorAdvance>,
+}
+
+// ─── get_or_create_chat_room_for_path ────────────────────────────────────────────────────────
+
+/// Params for `get_or_create_chat_room_for_path`: resolve the repo at `path` to its canonical room
+/// (by git remote, else repo path) and join it. Lets an agent coordinate in ANOTHER repo's room.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetOrCreateRoomForPathParams {
+    /// Filesystem path inside (or naming) the target repo. Resolved to the repo ROOT so every
+    /// subdirectory of one repo maps to a single room.
+    pub path: String,
+    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
+    /// drive many named subagents.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `get_or_create_chat_room_for_path`.
+#[derive(Debug, Serialize)]
+pub(super) struct GetOrCreateRoomForPathResponse {
+    /// The canonical room id for the target repo (the one agents there auto-join).
+    pub room: String,
+    /// Short scope label: `remote`, `path`, `session`, or `global`.
+    pub scope: String,
+    /// Human-readable room title.
+    pub title: String,
+    /// True when this call created the room; false when it already existed.
+    pub created: bool,
 }
 
 // ─── dm_send ───────────────────────────────────────────────────────────────────────────────────

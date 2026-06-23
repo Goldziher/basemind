@@ -84,6 +84,16 @@ pub enum CommsAgentCmd {
     },
     /// List rooms whose scope matches this repo (git remote + cwd).
     Rooms,
+    /// Resolve the repo at a path to its canonical room (by git remote, else repo path) and join
+    /// it — get-or-create. Lets an agent coordinate in ANOTHER repo's room.
+    RoomForPath {
+        /// Filesystem path inside (or naming) the target repo. Resolved to the repo root so any
+        /// subdirectory maps to a single room.
+        path: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
     /// Subscribe this agent to a room.
     Join {
         /// Room to join.
@@ -348,6 +358,9 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
+        CommsAgentCmd::RoomForPath { path, as_agent } => {
+            room_for_path(root, json, path, as_agent, out).await?;
+        }
         CommsAgentCmd::Join { room, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
@@ -546,6 +559,58 @@ async fn dm(
         )?;
     } else {
         writeln!(out, "{message_id}\t{room_label}")?;
+    }
+    Ok(())
+}
+
+/// Resolve the repo at `path` to its canonical room — keyed by git remote when present, else the
+/// repo root path — and join it, mirroring the MCP `run_get_or_create_chat_room_for_path` body.
+/// `path` is resolved to the repo ROOT so any subdirectory maps to one room; the room id / scope /
+/// title come from [`repo_room_for`](crate::comms::daemon::repo_room_for), the SAME derivation the
+/// broker's auto-join uses.
+async fn room_for_path(
+    root: &Path,
+    json: bool,
+    path: String,
+    as_agent: Option<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    let base = crate::git::Repo::discover(Path::new(&path))
+        .ok()
+        .map(|r| r.workdir().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&path));
+    let (remote, cwd) = scope_context_for(&base);
+    let room = crate::comms::daemon::repo_room_for(remote, cwd);
+    let scope_label = match &room.scope {
+        RoomScope::Remote(_) => "remote",
+        RoomScope::PathPrefix(_) => "path",
+        RoomScope::Session(_) => "session",
+        RoomScope::Global => "global",
+    };
+
+    let mut client = connect_as(root, as_agent).await?;
+    client
+        .create_room(
+            room.room_id.clone(),
+            room.scope.clone(),
+            Some(room.title.clone()),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("create room: {e}"))?;
+    client
+        .join_room(room.room_id.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("join: {e}"))?;
+
+    let room_label = room.room_id.as_str().to_string();
+    if json {
+        writeln!(
+            out,
+            "{}",
+            json!({ "room": room_label, "scope": scope_label, "title": room.title })
+        )?;
+    } else {
+        writeln!(out, "{room_label}\t{scope_label}")?;
     }
     Ok(())
 }
