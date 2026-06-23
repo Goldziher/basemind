@@ -375,10 +375,40 @@ pub(super) async fn run_shell_kill(
         .await
         .map_err(|e| mcp_internal("kill shell session", e))?;
     state.shell_runtime.forget(&id).await;
+
+    // Best-effort: drop the broker lineage row so the `sessions` keyspace does not accumulate dead
+    // rows. A comms failure must not fail the kill — the session is already gone.
+    #[cfg(all(feature = "comms", unix))]
+    delete_session_lineage(state, id.as_str()).await;
+
     json_result(&ShellKillResponse {
         session_id: id.to_string(),
         killed,
     })
+}
+
+/// Best-effort removal of a killed session's broker lineage row. Failures are logged at WARN and
+/// swallowed — the session is already dead, so a leftover lineage row is cosmetic, not a kill error.
+#[cfg(all(feature = "comms", unix))]
+async fn delete_session_lineage(state: &ServerState, session_id: &str) {
+    use super::helpers_comms::{client_mut, comms_client};
+
+    let result = async {
+        let mut guard = comms_client(state).await?;
+        let client = client_mut(&mut guard)?;
+        client
+            .delete_session(session_id)
+            .await
+            .map_err(super::helpers_comms::comms_err)
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(
+            error = %error,
+            session_id = %session_id,
+            "shell_kill: failed to delete session lineage row; it may linger until broker restart"
+        );
+    }
 }
 
 /// `shell_broadcast`: send the same input to many sessions' primary panes.

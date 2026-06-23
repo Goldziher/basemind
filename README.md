@@ -223,6 +223,33 @@ flowchart TB
   MON -. notify .-> A
 ```
 
+### Agent shells
+
+When you need agents to run shell commands and inspect results, basemind embeds a lightweight
+terminal multiplexer daemon (rmux) so agents can spawn, drive, and observe headless shell sessions
+without external dependencies. The `shells` feature (opt-in via `--features shells`, part of the
+`full` meta-feature) exposes six MCP tools:
+
+- `shell_spawn` — create a detached session, optionally with a cwd, env overrides, and human-readable
+  title. Returns a `session_id` plus an `attach_command` string reserved for the forthcoming visual
+  attach client (see the note below — it does not attach today).
+- `shell_send` — write text (with optional newline) to a session's stdin.
+- `shell_capture` — retrieve the visible screen output (optionally last N lines).
+- `shell_broadcast` — send one input to many sessions atomically.
+- `shell_list` — enumerate all spawned sessions, flagged with liveness.
+- `shell_kill` — terminate a session and forget its mapping.
+
+When built with both `shells` and `comms` (Unix only), each spawned child auto-joins a
+session-scoped comms room via inherited `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` /
+`BASEMIND_AGENT_ID` environment variables, enabling bidirectional parent↔child messaging and
+forming inheritance chains. The `[shells]` config block controls visual presentation (default
+`current` = new tab in the open terminal; also `window` / `web` / `headless`) and terminal
+emulator choice (auto-detect, or force iTerm2 / Terminal.app / Windows Terminal / GNOME Terminal /
+Konsole / WezTerm / Alacritty / kitty / xterm).
+
+Note: visual attach is scaffolding in this release — sessions are fully drivable headless via MCP;
+the visual launcher landing is a later iteration.
+
 ---
 
 ## Feature table
@@ -238,7 +265,7 @@ flowchart TB
 | **Governance** | Co-change association-rule mining from git history: propose-don't-commit skill candidates. `proposals_mine` walks recent commits, counts file co-change pairs, and writes content-addressed proposals (blake3 of sorted file-set) to Fjall. `proposal_accept` promotes a proposal to a searchable, LanceDB-embedded memory with file provenance (W10 audit engine stamps `verified`; a later `memory_audit` turns it Stale if any file disappears). `proposal_reject` writes a tombstone so re-mining does not resurface the candidate. | `proposals_mine`, `proposals_list`, `proposal_accept`, `proposal_reject` | Fjall proposals keyspace + LanceDB |
 | **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
 | **Agent comms** | Multi-agent messaging via a user-global broker daemon: scope-auto-joined rooms (git remote / path / global), per-agent inbox, two-tier messages (front-matter scan + lazy body fetch), self-posts excluded from inbox. `room_post` takes an optional `scope` (glob / path patterns) so peers can filter relevance from front-matter; front-matter now also surfaces `seq`. `inbox_ack` advances the per-agent read cursor (by message ids or bulk `to_seq`) without touching the shared log. Delivered across harnesses via MCP instructions + the `basemind-comms` skill, SessionStart / per-turn hooks, and a ~15 s background monitor. | `agent_register`, `agent_list`, `room_create`, `room_list`, `room_join`, `room_leave`, `room_post`, `room_history`, `message_get`, `inbox_read`, `inbox_ack` | Fjall broker over a Unix socket |
-| **Agent shells** | Spawn a detached headless shell session, send stdin, capture the visible screen, and kill it. basemind embeds the rmux daemon (it re-execs itself as the daemon — no external `rmux` binary), so sessions outlive a single tool call and an operator can `rmux attach -t <name>` to observe one. Needs `--features shells`. | `shell_spawn`, `shell_send`, `shell_capture`, `shell_kill` | embedded rmux daemon + SDK over a Unix socket |
+| **Agent shells** | Spawn detached headless shell sessions, send stdin, capture visible output, broadcast input to many sessions, list sessions with parent-child lineage, and kill sessions. basemind embeds the rmux daemon (re-execs itself—no external binary). Each spawned child optionally couples to a comms room for parent↔child messaging and forms inheritance chains. Requires `--features shells`; visual attach is scaffolding (headless driven via MCP only today). | `shell_spawn`, `shell_send`, `shell_capture`, `shell_broadcast`, `shell_list`, `shell_kill` | embedded rmux daemon + SDK over Unix socket |
 | **Admin** | Live rescan, telemetry dashboard, cache introspection + GC + cleanup | `rescan`, `telemetry_summary`, `cache_stats`, `cache_gc`, `cache_clear` | — |
 | **Token compression** | Code-aware compression: structural elision (L1 outline, signatures only, no bodies) for indexed source files; lexical pass (whitespace collapse, filler removal, paragraph dedup) for prose. `expand` is the companion: given a path + symbol name it returns the full source body from the L1 byte range — the context-offloading pattern (compress to outline, expand only what you need). | `compress`, `expand` | L1 code map · Rust regex |
 

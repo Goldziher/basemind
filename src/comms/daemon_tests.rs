@@ -668,6 +668,59 @@ async fn top_level_hello_writes_no_session_lineage() {
     );
 }
 
+/// The `DeleteSession` request removes a recorded lineage row; deleting an absent id is a no-op.
+#[tokio::test]
+async fn delete_session_removes_lineage_row() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let room = RoomId::parse("session-room-s3").expect("room");
+    broker
+        .handle(
+            CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Session("s3".to_string()),
+                title: None,
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await;
+    let _ = hello_session_with_parent(&broker, &tx, "child", "s3", "parent").await;
+    assert!(broker.store.get_session("s3").expect("get").is_some());
+
+    // Deleting an absent id is a no-op (idempotent).
+    match broker
+        .handle(
+            CommsRequest::DeleteSession {
+                session_id: "does-not-exist".to_string(),
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await
+    {
+        CommsResponse::Ok => {}
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    assert!(broker.store.get_session("s3").expect("get").is_some());
+
+    // Deleting the real id removes the row.
+    match broker
+        .handle(
+            CommsRequest::DeleteSession {
+                session_id: "s3".to_string(),
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await
+    {
+        CommsResponse::Ok => {}
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    assert_eq!(broker.store.get_session("s3").expect("get"), None);
+}
+
 /// An agent that presents NO `session_id` does not auto-join a session-scoped room even when
 /// the room already exists.
 #[tokio::test]

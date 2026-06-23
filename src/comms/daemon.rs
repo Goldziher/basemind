@@ -264,6 +264,7 @@ impl Broker {
             CommsRequest::Subscribe { room } => self.on_subscribe(session, room, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::ListSessions {} => self.on_list_sessions(),
+            CommsRequest::DeleteSession { session_id } => self.on_delete_session(&session_id),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
             CommsRequest::Stop => {
@@ -379,6 +380,11 @@ impl Broker {
         Ok(CommsResponse::Sessions {
             sessions: self.store.list_sessions()?,
         })
+    }
+
+    fn on_delete_session(&self, session_id: &str) -> Result<CommsResponse, CommsStoreError> {
+        self.store.delete_session(session_id)?;
+        Ok(CommsResponse::Ok)
     }
 
     fn on_register(
