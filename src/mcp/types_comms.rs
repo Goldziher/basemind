@@ -92,6 +92,8 @@ pub enum ScopeInput {
     Remote(String),
     /// Scope to a filesystem path prefix (an agent at/below it auto-joins).
     PathPrefix(std::path::PathBuf),
+    /// Scope to a terminal session id (a parent + child sharing the session auto-join).
+    Session(String),
     /// Scope to every agent on the machine.
     #[default]
     Global,
@@ -102,6 +104,7 @@ impl From<ScopeInput> for RoomScope {
         match value {
             ScopeInput::Remote(r) => RoomScope::Remote(r),
             ScopeInput::PathPrefix(p) => RoomScope::PathPrefix(p),
+            ScopeInput::Session(s) => RoomScope::Session(s),
             ScopeInput::Global => RoomScope::Global,
         }
     }

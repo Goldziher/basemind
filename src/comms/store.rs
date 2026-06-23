@@ -14,6 +14,16 @@
 //! `messages_by_room` AND the body to `message_body`. [`CommsStore::history`] and
 //! [`CommsStore::history_with_seq`] decode ONLY the front-matter; the body is fetched lazily
 //! via [`CommsStore::get_body`]. The daemon is the sole writer, which is Fjall's happy path.
+//!
+//! ## Keyspaces
+//!
+//! `meta`, `rooms`, `messages_by_room`, `message_body`, `subs_by_room`, `cursors`, `agents`,
+//! and `sessions`. The `sessions` keyspace maps a terminal `session_id` to a
+//! [`SessionLineage`](super::model::SessionLineage) record (parent/child agent + the
+//! session-scoped room they share), so a future tree view can reconstruct the spawn graph.
+//! Adding it required no [`COMMS_SCHEMA_VER`](super::COMMS_SCHEMA_VER) bump: a brand-new
+//! keyspace leaves every existing key/value shape untouched, so an older store still opens and
+//! simply has an empty `sessions` partition.
 
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
@@ -25,7 +35,9 @@ use thiserror::Error;
 use super::COMMS_SCHEMA_VER;
 use super::ids::{AgentId, RoomId};
 use super::keys;
-use super::model::{AgentRecord, MessageBody, MessageMeta, Room, Subscription, now_micros};
+use super::model::{
+    AgentRecord, MessageBody, MessageMeta, Room, SessionLineage, Subscription, now_micros,
+};
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const STORE_DIR: &str = "store.fjall";
@@ -72,6 +84,7 @@ pub struct CommsStore {
     subs_by_room: Keyspace,
     cursors: Keyspace,
     agents: Keyspace,
+    sessions: Keyspace,
     /// Held for the lifetime of the store; released on drop (Draining → Stopped).
     _lock: File,
 }
@@ -112,6 +125,7 @@ impl CommsStore {
         let subs_by_room = db.keyspace("subs_by_room", KeyspaceCreateOptions::default)?;
         let cursors = db.keyspace("cursors", KeyspaceCreateOptions::default)?;
         let agents = db.keyspace("agents", KeyspaceCreateOptions::default)?;
+        let sessions = db.keyspace("sessions", KeyspaceCreateOptions::default)?;
 
         meta.insert(META_SCHEMA_VER, COMMS_SCHEMA_VER.to_be_bytes())?;
 
@@ -124,6 +138,7 @@ impl CommsStore {
             subs_by_room,
             cursors,
             agents,
+            sessions,
             _lock: lock,
         })
     }
@@ -178,6 +193,34 @@ impl CommsStore {
     pub fn list_agents(&self) -> Result<Vec<AgentRecord>, CommsStoreError> {
         let mut out = Vec::new();
         for guard in self.agents.iter() {
+            let (_, v) = guard.into_inner()?;
+            out.push(rmp_serde::from_slice(&v)?);
+        }
+        Ok(out)
+    }
+
+    // ─── sessions (terminal-session lineage) ──────────────────────────────────────────────
+
+    /// Insert or replace a session lineage record, keyed by its `session_id`.
+    pub fn put_session(&self, lineage: &SessionLineage) -> Result<(), CommsStoreError> {
+        let bytes = rmp_serde::to_vec_named(lineage)?;
+        self.sessions
+            .insert(keys::session_key(&lineage.session_id), bytes)?;
+        Ok(())
+    }
+
+    /// Fetch a session lineage record by `session_id`.
+    pub fn get_session(&self, session_id: &str) -> Result<Option<SessionLineage>, CommsStoreError> {
+        match self.sessions.get(keys::session_key(session_id))? {
+            Some(v) => Ok(Some(rmp_serde::from_slice(&v)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Enumerate every recorded session lineage (for a future spawn-tree view).
+    pub fn list_sessions(&self) -> Result<Vec<SessionLineage>, CommsStoreError> {
+        let mut out = Vec::new();
+        for guard in self.sessions.iter() {
             let (_, v) = guard.into_inner()?;
             out.push(rmp_serde::from_slice(&v)?);
         }
@@ -698,6 +741,38 @@ mod tests {
         );
         // Empty input short-circuits to an empty result with no scan.
         assert!(store.resolve_ids(&[]).expect("resolve_ids").is_empty());
+    }
+
+    #[test]
+    fn session_lineage_round_trips_and_lists() {
+        use crate::comms::model::SessionLineage;
+        let (_d, store) = temp_store();
+        let lineage = SessionLineage {
+            session_id: "sess-abc".to_string(),
+            parent_agent: Some(agent_id("parent")),
+            child_agent: agent_id("child"),
+            room_id: room_id("session-sess-abc"),
+            created_at: now_micros(),
+        };
+        assert_eq!(store.get_session("sess-abc").expect("get"), None);
+        store.put_session(&lineage).expect("put");
+        assert_eq!(
+            store.get_session("sess-abc").expect("get"),
+            Some(lineage.clone())
+        );
+
+        // A second, parentless session lists alongside the first.
+        let orphan = SessionLineage {
+            session_id: "sess-def".to_string(),
+            parent_agent: None,
+            child_agent: agent_id("solo"),
+            room_id: room_id("session-sess-def"),
+            created_at: now_micros(),
+        };
+        store.put_session(&orphan).expect("put");
+        let mut all = store.list_sessions().expect("list");
+        all.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        assert_eq!(all, vec![lineage, orphan]);
     }
 
     #[test]

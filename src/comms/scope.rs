@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::ids::AgentId;
 use super::model::RoomScope;
 use crate::git::Repo;
 
@@ -19,6 +20,12 @@ pub struct ScopeChain {
     pub cwd: PathBuf,
     /// `cwd` plus every ancestor directory up to the boundary, nearest-first.
     pub ancestors: Vec<PathBuf>,
+    /// The terminal session id the agent presented, if any. Drives [`RoomScope::Session`]
+    /// auto-join: a parent and a child agent sharing a `session_id` join the same room.
+    pub session_id: Option<String>,
+    /// The agent that spawned this one, when it was spawned inside another agent's session.
+    /// Carried for lineage bookkeeping; not itself a room-match key.
+    pub parent_agent: Option<AgentId>,
 }
 
 /// Build the [`ScopeChain`] for an agent rooted at `cwd`, optionally inside `repo`.
@@ -53,6 +60,10 @@ pub fn scope_chain(cwd: &Path, repo: Option<&Repo>) -> ScopeChain {
         remote,
         cwd,
         ancestors,
+        // Session context is not derivable from the filesystem; the broker populates it from
+        // the `Hello` frame after building the base chain.
+        session_id: None,
+        parent_agent: None,
     }
 }
 
@@ -85,6 +96,8 @@ fn ancestors_up_to(cwd: &Path, boundary: Option<&Path>) -> Vec<PathBuf> {
 /// * [`RoomScope::Remote`] matches when it equals the chain's remote.
 /// * [`RoomScope::PathPrefix`] matches when the path is an ANCESTOR of (prefix of) the agent's
 ///   cwd — i.e. the room sits at or above the agent in the directory tree.
+/// * [`RoomScope::Session`] matches when the chain's `session_id` equals the room's — exact
+///   equality only, so an agent with a different or absent session id never matches.
 /// * [`RoomScope::Global`] always matches.
 pub fn room_matches(room_scope: &RoomScope, chain: &ScopeChain) -> bool {
     match room_scope {
@@ -93,6 +106,7 @@ pub fn room_matches(room_scope: &RoomScope, chain: &ScopeChain) -> bool {
             let prefix = prefix.canonicalize().unwrap_or_else(|_| prefix.clone());
             chain.cwd.starts_with(&prefix)
         }
+        RoomScope::Session(session_id) => chain.session_id.as_deref() == Some(session_id.as_str()),
         RoomScope::Global => true,
     }
 }
@@ -109,7 +123,35 @@ mod tests {
                 .ancestors()
                 .map(|p| p.to_path_buf())
                 .collect(),
+            session_id: None,
+            parent_agent: None,
         }
+    }
+
+    fn chain_with_session(session_id: Option<&str>) -> ScopeChain {
+        let mut c = chain(None, "/anywhere");
+        c.session_id = session_id.map(|s| s.to_string());
+        c
+    }
+
+    #[test]
+    fn session_matches_only_the_same_session_id() {
+        assert!(room_matches(
+            &RoomScope::Session("abc".to_string()),
+            &chain_with_session(Some("abc"))
+        ));
+        assert!(!room_matches(
+            &RoomScope::Session("abc".to_string()),
+            &chain_with_session(Some("def"))
+        ));
+    }
+
+    #[test]
+    fn session_does_not_match_when_chain_has_no_session() {
+        assert!(!room_matches(
+            &RoomScope::Session("abc".to_string()),
+            &chain_with_session(None)
+        ));
     }
 
     #[test]

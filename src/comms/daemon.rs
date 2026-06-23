@@ -205,7 +205,20 @@ impl Broker {
                 proto_ver,
                 remote,
                 cwd,
-            } => self.on_hello(agent, proto_ver, remote, cwd, session).await,
+                session_id,
+                parent_agent,
+            } => {
+                self.on_hello(
+                    agent,
+                    proto_ver,
+                    remote,
+                    cwd,
+                    session_id,
+                    parent_agent,
+                    session,
+                )
+                .await
+            }
             CommsRequest::Register { card } => self.on_register(session, card),
             CommsRequest::ListAgents { room } => self.on_list_agents(room),
             CommsRequest::CreateRoom { room, scope, title } => {
@@ -261,12 +274,15 @@ impl Broker {
 
     // ─── handlers ─────────────────────────────────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn on_hello(
         &self,
         agent: AgentId,
         proto_ver: u32,
         remote: Option<String>,
         cwd: Option<std::path::PathBuf>,
+        session_id: Option<String>,
+        parent_agent: Option<String>,
         session: &mut Session,
     ) -> Result<CommsResponse, CommsStoreError> {
         if proto_ver != PROTO_VER {
@@ -276,7 +292,15 @@ impl Broker {
             });
         }
         session.agent = Some(agent.clone());
-        session.chain = Some(build_chain(remote.clone(), cwd.clone()));
+        // A malformed parent id from the wire is dropped rather than rejecting the Hello — the
+        // lineage hint is advisory; the session room match keys on `session_id` alone.
+        let parent_agent = parent_agent.and_then(|p| AgentId::parse(p).ok());
+        session.session_id = session_id.clone();
+        session.parent_agent = parent_agent.clone();
+        let mut chain = build_chain(remote.clone(), cwd.clone());
+        chain.session_id = session_id;
+        chain.parent_agent = parent_agent;
+        session.chain = Some(chain);
 
         // Record / refresh the agent.
         let now = now_micros();
@@ -761,6 +785,10 @@ pub struct Session {
     pub agent: Option<AgentId>,
     /// The scope chain captured at Hello, used for auto-join.
     pub chain: Option<ScopeChain>,
+    /// The terminal session id presented at Hello, if any. Drives session-scoped auto-join.
+    pub session_id: Option<String>,
+    /// The agent that spawned this one, captured at Hello for lineage bookkeeping.
+    pub parent_agent: Option<AgentId>,
 }
 
 fn need_hello() -> CommsResponse {
@@ -814,6 +842,9 @@ fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf>) -> Scope
             remote,
             cwd: std::path::PathBuf::new(),
             ancestors: Vec::new(),
+            // Session context is layered on by `on_hello` after the base chain is built.
+            session_id: None,
+            parent_agent: None,
         },
     }
 }

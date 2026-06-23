@@ -161,6 +161,8 @@ mod tests {
                 proto_ver: PROTO_VER,
                 remote: None,
                 cwd: None,
+                session_id: None,
+                parent_agent: None,
             })
             .await
             .expect("hello");
@@ -303,6 +305,8 @@ mod tests {
                 proto_ver: PROTO_VER,
                 remote: None,
                 cwd: None,
+                session_id: None,
+                parent_agent: None,
             })
             .await
             .expect("hello");

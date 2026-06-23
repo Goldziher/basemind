@@ -121,6 +121,13 @@ pub fn agent_key(agent: &str) -> Vec<u8> {
     agent.as_bytes().to_vec()
 }
 
+/// `sessions` primary key: the raw `session_id` bytes. Session ids are free-form terminal ids
+/// (not [`super::ids`]-validated), so the value record carries the canonical form; the key is a
+/// direct byte mapping, mirroring `room_key` / `agent_key`.
+pub fn session_key(session_id: &str) -> Vec<u8> {
+    session_id.as_bytes().to_vec()
+}
+
 /// Per-room `seq` counter key inside the `meta` keyspace: `b"seq:" ‖ room`.
 pub fn room_seq_meta_key(room: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + room.len());

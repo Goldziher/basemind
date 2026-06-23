@@ -26,6 +26,8 @@ async fn hello_rejects_proto_skew() {
                 proto_ver: PROTO_VER + 1,
                 remote: None,
                 cwd: None,
+                session_id: None,
+                parent_agent: None,
             },
             &mut session,
             &tx,
@@ -69,6 +71,8 @@ async fn subscribe_then_post_fans_out_notification() {
                 proto_ver: PROTO_VER,
                 remote: None,
                 cwd: None,
+                session_id: None,
+                parent_agent: None,
             },
             &mut session,
             &tx,
@@ -143,6 +147,8 @@ async fn hello_join(
                 proto_ver: PROTO_VER,
                 remote: None,
                 cwd: None,
+                session_id: None,
+                parent_agent: None,
             },
             &mut session,
             tx,
@@ -440,5 +446,112 @@ async fn idle_reaper_tracks_links_and_activity() {
     assert!(
         !broker.is_idle_for(Duration::ZERO).await,
         "a draining broker is never reaped"
+    );
+}
+
+/// Drive a `Hello` carrying a `session_id` and return the bound session. No cwd → the base
+/// chain is path-empty, so only the explicit session room can match.
+async fn hello_session(
+    broker: &Broker,
+    tx: &mpsc::Sender<CommsOut>,
+    who: &str,
+    session_id: Option<&str>,
+) -> Session {
+    let mut session = Session::default();
+    broker
+        .handle(
+            CommsRequest::Hello {
+                agent: agent(who),
+                proto_ver: PROTO_VER,
+                remote: None,
+                cwd: None,
+                session_id: session_id.map(|s| s.to_string()),
+                parent_agent: None,
+            },
+            &mut session,
+            tx,
+        )
+        .await;
+    session
+}
+
+/// An agent whose `Hello` carries the room's `session_id` is auto-joined to a
+/// `RoomScope::Session` room; an agent with a different / absent `session_id` is not. Verified
+/// through the broker: a post by the matching parent lands in the matching child's inbox, and
+/// never in the non-matching agent's inbox.
+#[tokio::test]
+async fn session_scoped_room_auto_joins_only_matching_session() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(64);
+    let room = RoomId::parse("session-abc").expect("room");
+
+    // A session-scoped room exists before anyone connects.
+    broker
+        .handle(
+            CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Session("abc".to_string()),
+                title: None,
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await;
+
+    // Parent + child share session "abc"; outsider has a different session.
+    let mut parent = hello_session(&broker, &tx, "parent", Some("abc")).await;
+    let mut child = hello_session(&broker, &tx, "child", Some("abc")).await;
+    let mut outsider = hello_session(&broker, &tx, "outsider", Some("zzz")).await;
+
+    // The matching session's agents were auto-joined to the room; the outsider was not.
+    let subs = broker.store.subscribers(&room).expect("subs");
+    assert!(
+        subs.contains(&agent("parent")),
+        "parent auto-joins session room"
+    );
+    assert!(
+        subs.contains(&agent("child")),
+        "child auto-joins session room"
+    );
+    assert!(
+        !subs.contains(&agent("outsider")),
+        "a different session id must not auto-join"
+    );
+
+    // Parent posts → child sees it in the inbox, outsider does not.
+    let _ = post(&broker, &mut parent, &tx, &room, "hello-child").await;
+    let child_inbox = inbox(&broker, &mut child, &tx).await;
+    assert_eq!(child_inbox.len(), 1);
+    assert_eq!(child_inbox[0].meta.subject, "hello-child");
+    assert!(
+        inbox(&broker, &mut outsider, &tx).await.is_empty(),
+        "outsider's inbox stays empty — never joined the session room"
+    );
+}
+
+/// An agent that presents NO `session_id` does not auto-join a session-scoped room even when
+/// the room already exists.
+#[tokio::test]
+async fn absent_session_id_does_not_auto_join_session_room() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let room = RoomId::parse("session-abc").expect("room");
+    broker
+        .handle(
+            CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Session("abc".to_string()),
+                title: None,
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await;
+
+    let _sessionless = hello_session(&broker, &tx, "lonely", None).await;
+    let subs = broker.store.subscribers(&room).expect("subs");
+    assert!(
+        !subs.contains(&agent("lonely")),
+        "an agent with no session id must not join a session-scoped room"
     );
 }

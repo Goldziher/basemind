@@ -39,12 +39,17 @@ pub fn now_micros() -> i64 {
 /// * [`RoomScope::PathPrefix`] — keyed by a filesystem path. An agent whose cwd is at or
 ///   below this path auto-joins. This is what lets nested repos and horizontal monorepos
 ///   share a workspace room.
+/// * [`RoomScope::Session`] — keyed by a terminal `session_id`. A parent agent and a child
+///   agent it spawned share the same `session_id` and so auto-join the same room — the basis
+///   for the agent-shells lineage chat. Distinct from `PathPrefix`: two unrelated agents in the
+///   same directory must NOT share a session room, only a shared `session_id` matches.
 /// * [`RoomScope::Global`] — every agent on the machine auto-joins.
 ///
 /// Serialized with an adjacent tag (`{"kind": …, "value": …}`) rather than an internal tag:
 /// `rmp_serde` cannot encode an internally-tagged newtype variant that wraps a scalar, and
 /// adjacent tagging round-trips cleanly through BOTH msgpack (the store) and JSON (a future
-/// A2A front-end).
+/// A2A front-end). New variants are additive — they extend the tail of the tag set, so rooms
+/// persisted before this variant existed still deserialize.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum RoomScope {
@@ -52,6 +57,8 @@ pub enum RoomScope {
     Remote(String),
     /// Filesystem path; an agent's cwd at or below this path matches.
     PathPrefix(std::path::PathBuf),
+    /// Terminal session id; an agent presenting the same `session_id` matches.
+    Session(String),
     /// Every agent on the machine.
     Global,
 }
@@ -118,6 +125,24 @@ pub struct Subscription {
     /// Room subscribed to.
     pub room: RoomId,
     /// Subscription time in microseconds since the unix epoch.
+    pub created_at: i64,
+}
+
+/// Lineage record for a terminal session: which agent owns it, the parent agent that spawned
+/// it (if any), and the session-scoped room they share. Persisted in the `sessions` keyspace
+/// keyed by [`SessionLineage::session_id`], so a future tree view can reconstruct the
+/// spawn graph. The WRITES happen from `shell_spawn`; the broker only needs the room to exist.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionLineage {
+    /// The terminal session id this lineage describes (also the `sessions` key).
+    pub session_id: String,
+    /// The agent that spawned the child, if this session was spawned by another agent.
+    pub parent_agent: Option<AgentId>,
+    /// The agent that owns this session.
+    pub child_agent: AgentId,
+    /// The session-scoped room the parent and child share.
+    pub room_id: RoomId,
+    /// Creation time in microseconds since the unix epoch.
     pub created_at: i64,
 }
 
@@ -236,6 +261,7 @@ mod tests {
         for scope in [
             RoomScope::Remote("github.com/foo/bar".to_string()),
             RoomScope::PathPrefix(std::path::PathBuf::from("/home/u/work")),
+            RoomScope::Session("sess-abc".to_string()),
             RoomScope::Global,
         ] {
             let bytes = rmp_serde::to_vec_named(&scope).expect("encode");

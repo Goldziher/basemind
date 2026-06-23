@@ -169,6 +169,10 @@ impl CommsClient {
                 proto_ver: PROTO_VER,
                 remote: self.remote.clone(),
                 cwd: self.cwd.clone(),
+                // Session lineage is threaded by `shell_spawn` (wired by the lead); the base
+                // client carries no terminal session context.
+                session_id: None,
+                parent_agent: None,
             })
             .await?;
         match resp {

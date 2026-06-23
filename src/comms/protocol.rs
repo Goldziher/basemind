@@ -37,6 +37,14 @@ pub enum CommsRequest {
         /// The agent's current working directory, if it wishes to auto-join path rooms.
         #[serde(default)]
         cwd: Option<std::path::PathBuf>,
+        /// The terminal session id, so the agent auto-joins its session-scoped room (shared
+        /// with the parent/child it shares a session with). Additive: older clients omit it.
+        #[serde(default)]
+        session_id: Option<String>,
+        /// The agent that spawned this one, for lineage bookkeeping. Additive; older clients
+        /// omit it.
+        #[serde(default)]
+        parent_agent: Option<String>,
     },
     /// Register or update the agent's card.
     Register {
