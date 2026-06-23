@@ -8,6 +8,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.10.0] — Unreleased
+
+Minor release: `RELEASE_MINOR` bumps 9 → 10, so the on-disk index version changes and every
+`.basemind/` cache rebuilds from source on the next `scan`. This rebuild is **one-time and
+harmless** — the blob and index formats are unchanged.
+
+### Added
+
+- **Agent shells: embedded rmux daemon + six MCP tools** — spawn detached headless shell sessions
+  via `shell_spawn` with optional cwd, env overrides, and title. Drive sessions with `shell_send`
+  (write stdin), `shell_capture` (visible screen), `shell_broadcast` (multicast input), `shell_list`
+  (enumerate with liveness), and `shell_kill` (terminate). basemind embeds the daemon (re-execs
+  itself with `--__internal-daemon` — no external `rmux` binary). Sessions are long-lived across
+  tool calls and driven headless via MCP; the `attach_command` in the spawn response is reserved
+  for a forthcoming visual attach client and does not attach yet.
+- **Comms-coupled session rooms** (Unix + `comms` feature) — spawned children auto-join a
+  session-scoped comms room via inherited `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` /
+  `BASEMIND_AGENT_ID`, enabling bidirectional parent↔child messaging and forming parent→child
+  inheritance chains across agents.
+- **`[shells]` configuration sub-tree** — controls visual presentation mode (`current` / `window` /
+  `web` / `headless`; default `current` = new tab in open terminal), terminal emulator choice
+  (`auto` / `iterm2` / `terminal_app` / `windows_terminal` / `gnome_terminal` / `konsole` /
+  `wezterm` / `alacritty` / `kitty` / `xterm`), and session pty dimensions (`default_cols` /
+  `default_rows`) and lifecycle (`keep_on_exit`). Requires `--features shells`.
+
 ## [0.9.0] — 2026-06-23
 
 Minor release: `RELEASE_MINOR` bumps 8 → 9, so the on-disk index version changes and every

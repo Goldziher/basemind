@@ -178,6 +178,12 @@ pub enum CommsRequest {
     /// predate the variant reject it as an unknown method, which is fine — client + daemon ship
     /// in the same binary.
     ListSessions {},
+    /// Delete the session lineage row for `session_id` (called when a session is killed so the
+    /// `sessions` keyspace does not accumulate dead rows). Idempotent. Additive — see `ListSessions`.
+    DeleteSession {
+        /// The terminal session id whose lineage row to remove.
+        session_id: String,
+    },
 }
 
 /// A response from the broker to a [`CommsRequest`].

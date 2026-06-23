@@ -524,6 +524,25 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(svc, &mut records, "cache_stats", json!({})).await;
     call(svc, &mut records, "cache_gc", json!({})).await;
 
+    // Agent shells: spawn a trivial self-exiting session, capture it, then kill it — exercising the
+    // embedded rmux daemon end-to-end. MCP error when the `shells` feature is off is ok (the tool is
+    // simply unregistered), same as the memory/document sweep above. On success we chain the real
+    // session id through capture + kill so the canary leaves no live session behind.
+    if let Some(spawned) = call(
+        svc,
+        &mut records,
+        "shell_spawn",
+        json!({ "command": "echo basemind-harden-shell" }),
+    )
+    .await
+        && let Some(session_id) = spawned.get("session_id").and_then(Value::as_str)
+    {
+        let session = json!({ "session_id": session_id });
+        call(svc, &mut records, "shell_capture", session.clone()).await;
+        call(svc, &mut records, "shell_kill", session).await;
+    }
+    call(svc, &mut records, "shell_list", json!({})).await;
+
     records
 }
 

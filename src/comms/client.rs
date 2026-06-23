@@ -512,6 +512,18 @@ impl CommsClient {
         }
     }
 
+    /// Delete the session lineage row for `session_id` (called when a session is killed so the
+    /// `sessions` keyspace does not accumulate dead rows). Idempotent on the broker side.
+    pub async fn delete_session(&mut self, session_id: &str) -> Result<(), CommsClientError> {
+        self.expect_ok(
+            CommsRequest::DeleteSession {
+                session_id: session_id.to_string(),
+            },
+            "delete_session",
+        )
+        .await
+    }
+
     /// Ask the daemon to drain and stop.
     pub async fn stop(&mut self) -> Result<(), CommsClientError> {
         self.expect_ok(CommsRequest::Stop, "stop").await

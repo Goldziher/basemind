@@ -64,6 +64,21 @@ basemind can't relaunch its own stdio server; trigger a reconnect in your client
 While disconnected, you are not blocked: use the `basemind-cli` skill (`basemind query …`,
 `basemind git …`) — it reads the same `.basemind/` index directly, no server required.
 
+## Agent shells (embedded rmux daemon)
+
+Only when the server was built with `--features shells`. Spawned shell sessions run under an
+**embedded rmux daemon** — basemind re-execs itself (`--__internal-daemon`) rather than shelling
+out to any external `rmux` binary, so there is nothing extra to install. The daemon binds a private
+per-user socket under the data dir (`<data_dir>/basemind/shells/rmux.sock`, `0o700`), overridable
+with `BASEMIND_SHELLS_SOCKET`. It is **separate** from the comms broker daemon.
+
+- `shell_list` (MCP) enumerates sessions with liveness; a dead-but-listed session was killed or
+  exited — re-run after `shell_kill` to confirm it's gone.
+- The daemon **self-terminates once it has no sessions left**, so an idle daemon disappearing is
+  expected, not a fault. A new `shell_spawn` starts a fresh one.
+- Sessions are independent of `serve`: they outlive a single MCP call but are torn down by
+  `shell_kill` (which also drops the comms lineage row) or when the daemon exits.
+
 ## When server logs help
 
 `basemind serve` logs its lifecycle to stderr (captured in your client's MCP server logs):

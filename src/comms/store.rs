@@ -227,6 +227,14 @@ impl CommsStore {
         Ok(out)
     }
 
+    /// Remove a session lineage record by `session_id`. Idempotent — removing an
+    /// absent id is a no-op. Called when a session is killed so the `sessions`
+    /// keyspace does not accumulate dead rows over a long-lived broker.
+    pub fn delete_session(&self, session_id: &str) -> Result<(), CommsStoreError> {
+        self.sessions.remove(keys::session_key(session_id))?;
+        Ok(())
+    }
+
     // ─── subscriptions ────────────────────────────────────────────────────────────────────
 
     /// Subscribe an agent to a room (idempotent).
