@@ -158,16 +158,16 @@ arc-swap = "1.9.1"
 # (lancedb → lance → datafusion → arrow 58). Depending on a newer arrow here
 # produces a dual-version skew where our `src/lance` RecordBatch/Schema types
 # don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
-arrow-array = { version = "59", optional = true }
-arrow-schema = { version = "59", optional = true }
+arrow-array = { version = "58", optional = true }
+arrow-schema = { version = "58", optional = true }
 # A2A JSON-RPC 2.0 / agent-card / SSE HTTP binding (a2a feature only). axum 0.7
 # matches the http 1 / hyper 1 / tower-service 0.3 generation tonic 0.12 resolves,
 # so the gRPC service mounts into the same app with no version skew.
-axum = { version = "0.8", optional = true }
+axum = { version = "0.7", optional = true } # a2a-only; held pending a2a 0.14/0.8 migration
 # TLS termination for the A2A server (`--tls-cert`/`--tls-key`). Wraps the same
 # axum app behind a rustls acceptor so gRPC-over-TLS negotiates HTTP/2 via ALPN.
 # 0.7 matches the hyper 1 / tower 0.5 generation axum 0.7 resolves. a2a feature only.
-axum-server = { version = "0.8", features = ["tls-rustls"], optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls"], optional = true } # a2a-only; see axum pin
 # Base64 codec for A2A `Part::Bytes` JSON round-tripping (a2a feature only).
 base64 = { version = "0.22", optional = true }
 blake3 = "1"
@@ -198,8 +198,8 @@ notify-debouncer-full = "0.7"
 # A2A gRPC runtime. prost 0.13 / tonic 0.12 match the buf remote plugins
 # (neoeinstein-prost v0.4.0 / neoeinstein-tonic v0.4.1) used to generate
 # src/a2a/generated/. Bump these in lock-step with the plugin pins in buf.gen.yaml.
-prost = { version = "0.14", optional = true }
-prost-types = { version = "0.14", optional = true }
+prost = { version = "0.13", optional = true } # a2a-only; held pending tonic-0.14 (tonic-prost) migration
+prost-types = { version = "0.13", optional = true } # a2a-only; see prost pin
 rayon = "1"
 regex = "1.12.4"
 # Outbound HTTP client for the A2A push-notification (webhook) delivery worker.
@@ -235,13 +235,13 @@ tokio-stream = { version = "0.1", optional = true }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
 # A2A gRPC service + transport. tonic 0.12 matches neoeinstein-tonic v0.4.1.
-tonic = { version = "0.14", optional = true }
+tonic = { version = "0.12", optional = true } # a2a-only; 0.14 split out tonic-prost (ProstCodec) — migration pending
 # Shared tower middleware stack for the A2A HTTP server (ServiceBuilder +
 # concurrency-limit / load-shed / timeout). a2a feature only.
 tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"], optional = true }
 # HTTP middleware layers (trace, cors, request-id, body-limit) for the A2A
 # axum server. a2a feature only.
-tower-http = { version = "0.7", features = ["trace", "cors", "request-id", "limit"], optional = true }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "limit"], optional = true } # a2a-only; see axum pin
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
