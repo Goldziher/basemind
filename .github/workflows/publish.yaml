@@ -297,8 +297,49 @@ jobs:
         with:
           key: ${{ matrix.triple }}
 
+      # Lower the glibc symbol floor of the Linux binaries to 2.28 (RHEL 8 / Debian 11 /
+      # Ubuntu 20.04+ / Amazon Linux 2023) via zig as the linker. Runtime behaviour is
+      # unchanged — still dynamically linked against glibc, only the required symbol
+      # versions are pinned older. macOS / Windows builds are untouched.
+      - name: Set up Zig (Linux glibc floor)
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild (Linux)
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
       - name: Build release binary
-        run: cargo build --release --features full --bin basemind --target ${{ matrix.triple }}
+        shell: bash
+        run: |
+          if [[ "${{ matrix.triple }}" == *-unknown-linux-gnu ]]; then
+            cargo zigbuild --release --features full --bin basemind \
+              --target "${{ matrix.triple }}.2.28"
+          else
+            cargo build --release --features full --bin basemind \
+              --target "${{ matrix.triple }}"
+          fi
+
+      # Guard: fail the build if any dependency dragged in a glibc symbol newer than the
+      # 2.28 floor (e.g. a prebuilt native lib). Catches a silent regression of the
+      # compatibility target before the artifact is published.
+      - name: Verify glibc floor (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.triple }}/release/basemind"
+          max="$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
+          echo "highest glibc symbol required: ${max:-none}"
+          if [ -n "$max" ] && \
+             [ "$(printf '%s\nGLIBC_2.28\n' "$max" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
+            echo "::error::basemind requires $max (> GLIBC_2.28); a dependency pulled a newer glibc symbol"
+            exit 1
+          fi
 
       - name: Package release
         shell: bash
