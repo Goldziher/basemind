@@ -117,3 +117,106 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
         "the explicit body path must return the body, got: {body}"
     );
 }
+
+/// The `dm` verb plus `--as-agent` deliver a direct message to one agent's inbox via the private
+/// pairwise `dm:<lo>:<hi>` room: the sender (selected with `--as-agent`) creates + joins + posts,
+/// the recipient is auto-joined by the verb, and `inbox --as-agent <recipient>` surfaces it — while
+/// the sender's own inbox stays empty (server-side self-exclusion). The default-identity process
+/// here carries neither identity; both are chosen purely via `--as-agent`.
+#[test]
+fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_string_lossy().into_owned();
+
+    let (ok, _o, err) = comms(&comms_dir, "agent-default", &["start"]);
+    assert!(ok, "comms start failed: {err}");
+
+    struct Stop<'a>(&'a Path);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new(BIN)
+                .args(["comms", "stop"])
+                .env("BASEMIND_COMMS_DIR", self.0)
+                .output();
+        }
+    }
+    let _stop = Stop(&comms_dir);
+
+    // Send a DM AS alice TO bob in one one-shot process. The recipient connection is hosted
+    // sequentially inside that same process so the DM lands in bob's inbox.
+    let (ok, send_out, e) = comms(
+        &comms_dir,
+        "agent-default",
+        &[
+            "dm",
+            "--root",
+            &root,
+            "--as-agent",
+            "alice",
+            "--to",
+            "bob",
+            "--subject",
+            "ping",
+            "--body",
+            "pong",
+            "--json",
+        ],
+    );
+    assert!(ok, "dm send failed: {e}");
+    // The pairwise room is the sorted-id canonical `dm:alice:bob`.
+    assert!(
+        send_out.contains("\"room\":\"dm:alice:bob\""),
+        "dm output should name the pairwise room, got: {send_out}"
+    );
+    assert!(
+        send_out.contains("\"message_id\""),
+        "dm output should carry the message_id, got: {send_out}"
+    );
+
+    // Bob reads the DM from his inbox (selected via --as-agent).
+    let (ok, inbox, e) = comms(
+        &comms_dir,
+        "agent-default",
+        &["inbox", "--root", &root, "--as-agent", "bob", "--json"],
+    );
+    assert!(ok, "bob inbox failed: {e}");
+    assert!(
+        inbox.contains("\"subject\":\"ping\"") && inbox.contains("\"from\":\"alice\""),
+        "bob's inbox should carry the DM front-matter, got: {inbox}"
+    );
+
+    // The sender's own inbox stays empty (self-exclusion keys on the requesting agent id).
+    let (ok, alice_inbox, e) = comms(
+        &comms_dir,
+        "agent-default",
+        &["inbox", "--root", &root, "--as-agent", "alice", "--json"],
+    );
+    assert!(ok, "alice inbox failed: {e}");
+    assert!(
+        alice_inbox.contains("\"total\":0"),
+        "the sender must not see its own DM in its inbox, got: {alice_inbox}"
+    );
+
+    // Guard: dm'ing yourself is rejected before any connection.
+    let (ok, _o, self_err) = comms(
+        &comms_dir,
+        "agent-default",
+        &[
+            "dm",
+            "--root",
+            &root,
+            "--as-agent",
+            "carol",
+            "--to",
+            "carol",
+            "--subject",
+            "x",
+        ],
+    );
+    assert!(!ok, "dm to self should fail");
+    assert!(
+        self_err.contains("cannot dm yourself"),
+        "self-dm error should be explicit, got: {self_err}"
+    );
+}

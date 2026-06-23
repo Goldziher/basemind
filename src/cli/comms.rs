@@ -10,6 +10,13 @@
 //! Human output for `history` / `inbox` prints the front-matter table (subject, from, ts, id)
 //! and never bodies; `read <message_id>` is the only verb that prints a body. `--json` emits
 //! the structured response for every verb.
+//!
+//! Multi-identity: the identity-bearing verbs accept `--as-agent <AGENT_ID>` to connect to the
+//! broker AS a named sub-identity instead of the CLI's default ([`cli_agent_id`]). Because each
+//! invocation is a ONE-SHOT process with ONE connection, "act as X" is simply "connect as X". The
+//! `dm` verb delivers a direct message to one agent's inbox via a private pairwise room
+//! (`dm:<lo>:<hi>`), hosting BOTH the sender's and the recipient's broker connections sequentially
+//! within the single process — the same trick the MCP registry uses in `run_dm_send`.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -48,12 +55,18 @@ pub enum CommsAgentCmd {
         /// Advertised skill label (repeatable).
         #[arg(long = "skill")]
         skills: Vec<String>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// List agents known to the broker, optionally restricted to one room.
     Agents {
         /// Restrict to subscribers of this room.
         #[arg(long)]
         room: Option<String>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Create (and register) a room with an explicit scope.
     RoomCreate {
@@ -65,6 +78,9 @@ pub enum CommsAgentCmd {
         /// Human-readable title.
         #[arg(long)]
         title: Option<String>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// List rooms whose scope matches this repo (git remote + cwd).
     Rooms,
@@ -72,11 +88,17 @@ pub enum CommsAgentCmd {
     Join {
         /// Room to join.
         room: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Unsubscribe this agent from a room.
     Leave {
         /// Room to leave.
         room: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Post a message to a room.
     Post {
@@ -93,6 +115,31 @@ pub enum CommsAgentCmd {
         /// Id of the message being replied to.
         #[arg(long)]
         reply_to: Option<String>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Send a direct message to one agent's inbox via a private pairwise room.
+    ///
+    /// Delivery is via a canonical `dm:<lo>:<hi>` room (the two agent ids sorted), scoped so the
+    /// broker auto-joins NOBODY — only the sender and recipient are subscribed. The message then
+    /// surfaces in the recipient's `inbox` like any other subscribed-room post.
+    Dm {
+        /// Recipient agent id (the DM lands in this agent's inbox).
+        #[arg(long)]
+        to: String,
+        /// Subject line.
+        #[arg(long)]
+        subject: String,
+        /// Message body (markdown). Empty when omitted.
+        #[arg(long)]
+        body: Option<String>,
+        /// Id of the message being replied to.
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// Act as this sub-identity (the sender) instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Read a room's history (front-matter only; bodies via `read`).
     History {
@@ -104,6 +151,9 @@ pub enum CommsAgentCmd {
         /// Maximum messages to return (default 100, max 1000).
         #[arg(long)]
         limit: Option<u32>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
     /// Print a single message BODY by id (the only body path).
     Read {
@@ -121,6 +171,9 @@ pub enum CommsAgentCmd {
         /// Advance read cursors past the returned messages.
         #[arg(long)]
         mark_read: bool,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
     },
 }
 
@@ -166,39 +219,48 @@ fn cli_agent_id(root: &Path) -> Result<AgentId> {
     AgentId::parse("basemind-cli").context("construct CLI agent id")
 }
 
-/// Dispatch one comms agent verb. Builds a small current-thread runtime, connects a
-/// [`CommsClient`] directly (spawning the daemon on first use), runs the verb, and renders.
+/// Dispatch one comms agent verb. Builds a small current-thread runtime, then runs the verb —
+/// each verb connects its own [`CommsClient`] (spawning the daemon on first use) AS the resolved
+/// identity, so a `--as-agent` override applies per-verb.
 pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("build tokio runtime")?;
     runtime.block_on(async move {
-        let agent = cli_agent_id(root)?;
-        let (remote, cwd) = scope_context_for(root);
-        let mut client = CommsClient::ensure_and_connect(agent, remote.clone(), cwd.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
         let mut out = std::io::stdout().lock();
-        dispatch(&mut client, root, json, cmd, &mut out).await
+        dispatch(root, json, cmd, &mut out).await
     })
 }
 
-/// Run the verb against a connected client and render to `out`.
-async fn dispatch(
-    client: &mut CommsClient,
-    root: &Path,
-    json: bool,
-    cmd: CommsAgentCmd,
-    out: &mut impl Write,
-) -> Result<()> {
+/// Connect a [`CommsClient`] to the broker as a resolved identity: the `--as-agent` override
+/// (validated through [`AgentId::parse`]) when supplied, otherwise the CLI's default
+/// ([`cli_agent_id`]). Spawns the daemon on first use. Threading the override through this single
+/// helper keeps every verb's identity resolution DRY.
+async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
+    let agent = match as_agent {
+        Some(raw) => {
+            AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?
+        }
+        None => cli_agent_id(root)?,
+    };
+    let (remote, cwd) = scope_context_for(root);
+    CommsClient::ensure_and_connect(agent, remote, cwd)
+        .await
+        .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))
+}
+
+/// Run the verb: resolve the identity, connect, call the client method, and render to `out`.
+async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
         CommsAgentCmd::Register {
             name,
             description,
             version,
             skills,
+            as_agent,
         } => {
+            let mut client = connect_as(root, as_agent).await?;
             let card = AgentCard {
                 name: name.unwrap_or_default(),
                 description: description.unwrap_or_default(),
@@ -220,7 +282,8 @@ async fn dispatch(
                 writeln!(out, "registered as {agent_id}")?;
             }
         }
-        CommsAgentCmd::Agents { room } => {
+        CommsAgentCmd::Agents { room, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room = room.map(RoomId::parse).transpose().context("room id")?;
             let agents = client
                 .list_agents(room)
@@ -252,7 +315,13 @@ async fn dispatch(
                 }
             }
         }
-        CommsAgentCmd::RoomCreate { room, scope, title } => {
+        CommsAgentCmd::RoomCreate {
+            room,
+            scope,
+            title,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let scope = parse_scope(&scope)?;
             let created = client
@@ -262,6 +331,7 @@ async fn dispatch(
             render_room(&created, json, out)?;
         }
         CommsAgentCmd::Rooms => {
+            let mut client = connect_as(root, None).await?;
             let (remote, cwd) = scope_context_for(root);
             let rooms = client
                 .list_rooms(remote, cwd)
@@ -278,7 +348,8 @@ async fn dispatch(
                 }
             }
         }
-        CommsAgentCmd::Join { room } => {
+        CommsAgentCmd::Join { room, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let label = room_id.as_str().to_string();
             client
@@ -291,7 +362,8 @@ async fn dispatch(
                 writeln!(out, "joined {label}")?;
             }
         }
-        CommsAgentCmd::Leave { room } => {
+        CommsAgentCmd::Leave { room, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let label = room_id.as_str().to_string();
             client
@@ -310,7 +382,9 @@ async fn dispatch(
             body,
             tags,
             reply_to,
+            as_agent,
         } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let body = body.unwrap_or_default().into_bytes();
             let message_id = client
@@ -323,11 +397,22 @@ async fn dispatch(
                 writeln!(out, "{message_id}")?;
             }
         }
+        CommsAgentCmd::Dm {
+            to,
+            subject,
+            body,
+            reply_to,
+            as_agent,
+        } => {
+            dm(root, json, to, subject, body, reply_to, as_agent, out).await?;
+        }
         CommsAgentCmd::History {
             room,
             cursor,
             limit,
+            as_agent,
         } => {
+            let mut client = connect_as(root, as_agent).await?;
             let room_id = RoomId::parse(room).context("room id")?;
             let (messages, next_cursor) = client
                 .read_history(room_id, cursor.map(Cursor), clamp_limit(limit))
@@ -336,6 +421,7 @@ async fn dispatch(
             render_front_matter(&messages, next_cursor.as_ref(), None, json, out)?;
         }
         CommsAgentCmd::Read { message_id } => {
+            let mut client = connect_as(root, None).await?;
             let id = message_id.clone();
             let body = client
                 .get_body(message_id)
@@ -359,7 +445,9 @@ async fn dispatch(
             cursor,
             limit,
             mark_read,
+            as_agent,
         } => {
+            let mut client = connect_as(root, as_agent).await?;
             let (remote, cwd) = scope_context_for(root);
             let (messages, unread, next_cursor) = client
                 .read_inbox(
@@ -373,6 +461,91 @@ async fn dispatch(
                 .map_err(|e| anyhow::anyhow!("inbox: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
         }
+    }
+    Ok(())
+}
+
+/// Send a direct message to one agent's inbox via a private pairwise room, mirroring the MCP
+/// `run_dm_send` semantics for the one-shot CLI: derive the canonical `dm:<lo>:<hi>` room (the two
+/// ids sorted), connect as the SENDER to create + join + post, then host a SECOND connection as the
+/// RECIPIENT to join — so the DM lands in the recipient's inbox. The room is scoped to a unique
+/// `Session("dm:<lo>:<hi>")` token that auto-joins nobody; membership is explicit on both ends.
+#[allow(clippy::too_many_arguments)]
+async fn dm(
+    root: &Path,
+    json: bool,
+    to: String,
+    subject: String,
+    body: Option<String>,
+    reply_to: Option<String>,
+    as_agent: Option<String>,
+    out: &mut impl Write,
+) -> Result<()> {
+    // Sender = --as-agent (validated) or the CLI default; recipient = --to.
+    let from_agent = match &as_agent {
+        Some(raw) => {
+            AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?
+        }
+        None => cli_agent_id(root)?,
+    };
+    let to_agent = AgentId::parse(to.clone()).with_context(|| format!("invalid --to {to:?}"))?;
+    if from_agent == to_agent {
+        anyhow::bail!("cannot dm yourself");
+    }
+
+    // Canonical pairwise room id: sort the two ids so a<->b and b<->a map to the same room.
+    let (lo, hi) = if from_agent.as_str() <= to_agent.as_str() {
+        (from_agent.as_str(), to_agent.as_str())
+    } else {
+        (to_agent.as_str(), from_agent.as_str())
+    };
+    let room = RoomId::parse(format!("dm:{lo}:{hi}")).context("derive dm room id")?;
+    // A unique session token (not any agent's real session id) so the broker auto-joins NOBODY;
+    // a `Global` scope would broadcast the DM to every agent on the machine.
+    let dm_scope = RoomScope::Session(format!("dm:{lo}:{hi}"));
+    let title = format!("dm {lo} <-> {hi}");
+
+    // Connect as the SENDER: idempotent create_room + join, then post.
+    let mut sender = connect_as(root, as_agent).await?;
+    sender
+        .create_room(room.clone(), dm_scope, Some(title))
+        .await
+        .map_err(|e| anyhow::anyhow!("create dm room: {e}"))?;
+    sender
+        .join_room(room.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("sender join: {e}"))?;
+
+    // Host a SECOND connection as the RECIPIENT so the DM lands in its inbox.
+    let mut recipient = connect_as(root, Some(to_agent.as_str().to_string())).await?;
+    recipient
+        .join_room(room.clone())
+        .await
+        .map_err(|e| anyhow::anyhow!("recipient join: {e}"))?;
+
+    // Post via the sender.
+    let body = body.unwrap_or_default().into_bytes();
+    let message_id = sender
+        .post_message(
+            room.clone(),
+            subject,
+            body,
+            Vec::new(),
+            reply_to,
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("dm post: {e}"))?;
+
+    let room_label = room.into_string();
+    if json {
+        writeln!(
+            out,
+            "{}",
+            json!({ "message_id": message_id, "room": room_label })
+        )?;
+    } else {
+        writeln!(out, "{message_id}\t{room_label}")?;
     }
     Ok(())
 }
