@@ -407,3 +407,98 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
         "an agent with no session context must not join the session room"
     );
 }
+
+/// A grandparent → parent → child spawn chain produces TWO lineage rows the broker writes at each
+/// child's `Hello`: one linking A→B and one linking B→C. The broker records the lineage when a
+/// child connects carrying a [`SessionContext`], reading the real session-scoped room id (distinct
+/// from the session id here) and the presented parent. `list_sessions` returns the full spawn graph.
+#[tokio::test(flavor = "multi_thread")]
+async fn session_lineage_chain_records_grandparent_parent_child() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let paths = CommsPaths {
+        comms_dir: socket.parent().expect("socket parent").to_path_buf(),
+        socket_path: socket.clone(),
+    };
+
+    // Distinct, explicit session ids and (intentionally different) room ids per generation.
+    let session_b = "sess-b";
+    let session_c = "sess-c";
+    let room_b = RoomId::parse("room-for-b").expect("room b");
+    let room_c = RoomId::parse("room-for-c").expect("room c");
+
+    // A (top-level grandparent) creates B's session room and joins it, then B connects as A's child.
+    let mut agent_a = connect(&socket, "agent-a", &root).await;
+    agent_a
+        .create_room(
+            room_b.clone(),
+            RoomScope::Session(session_b.to_string()),
+            Some("A spawns B".to_string()),
+        )
+        .await
+        .expect("A creates B's room");
+    agent_a.join_room(room_b.clone()).await.expect("A joins");
+    let mut agent_b = CommsClient::connect_with_session(
+        &paths,
+        AgentId::parse("agent-b").expect("agent b"),
+        None,
+        Some(root.clone()),
+        basemind::comms::client::SessionContext {
+            session_id: Some(session_b.to_string()),
+            parent_agent: Some("agent-a".to_string()),
+        },
+    )
+    .await
+    .expect("B connects as A's child");
+
+    // B creates C's session room and joins it, then C connects as B's child.
+    agent_b
+        .create_room(
+            room_c.clone(),
+            RoomScope::Session(session_c.to_string()),
+            Some("B spawns C".to_string()),
+        )
+        .await
+        .expect("B creates C's room");
+    agent_b.join_room(room_c.clone()).await.expect("B joins");
+    let _agent_c = CommsClient::connect_with_session(
+        &paths,
+        AgentId::parse("agent-c").expect("agent c"),
+        None,
+        Some(root.clone()),
+        basemind::comms::client::SessionContext {
+            session_id: Some(session_c.to_string()),
+            parent_agent: Some("agent-b".to_string()),
+        },
+    )
+    .await
+    .expect("C connects as B's child");
+
+    // `list_sessions` returns the two-row spawn graph: A→B and B→C.
+    let mut sessions = agent_a.list_sessions().await.expect("list sessions");
+    sessions.sort_by(|x, y| x.session_id.cmp(&y.session_id));
+    assert_eq!(sessions.len(), 2, "two lineage rows: A→B and B→C");
+
+    let row_b = &sessions[0];
+    assert_eq!(row_b.session_id, session_b);
+    assert_eq!(row_b.child_agent.as_str(), "agent-b");
+    assert_eq!(
+        row_b.parent_agent.as_ref().map(|a| a.as_str()),
+        Some("agent-a"),
+        "B's row links back to A"
+    );
+    assert_eq!(row_b.room_id, room_b, "B's row points at the real B room");
+
+    let row_c = &sessions[1];
+    assert_eq!(row_c.session_id, session_c);
+    assert_eq!(row_c.child_agent.as_str(), "agent-c");
+    assert_eq!(
+        row_c.parent_agent.as_ref().map(|a| a.as_str()),
+        Some("agent-b"),
+        "C's row links back to B"
+    );
+    assert_eq!(row_c.room_id, room_c, "C's row points at the real C room");
+}

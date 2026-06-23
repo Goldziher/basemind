@@ -25,8 +25,8 @@ use tokio::sync::mpsc;
 use super::cursor::Cursor;
 use super::ids::{AgentId, RoomId};
 use super::model::{
-    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, Subscription,
-    now_micros,
+    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, SessionLineage,
+    Subscription, now_micros,
 };
 use super::protocol::{
     CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport,
@@ -263,6 +263,7 @@ impl Broker {
             } => self.on_ack(session, message_ids, room, to_seq),
             CommsRequest::Subscribe { room } => self.on_subscribe(session, room, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
+            CommsRequest::ListSessions {} => self.on_list_sessions(),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
             CommsRequest::Stop => {
@@ -321,12 +322,62 @@ impl Broker {
 
         // Auto-join every scope-matching room and the default per-repo room.
         if let Some(chain) = session.chain.clone() {
-            self.auto_join(&agent, &chain)?;
+            let session_room = self.auto_join(&agent, &chain)?;
+            // Persist the session lineage row now that the child is joined to its session room.
+            // Best-effort: a store failure here must not fail the handshake.
+            if let Err(e) = self.record_session_lineage(&agent, &chain, session_room) {
+                tracing::warn!(error = %e, "comms: failed to record session lineage");
+            }
         }
 
         Ok(CommsResponse::Welcome {
             proto_ver: PROTO_VER,
             daemon_version: self.version.clone(),
+        })
+    }
+
+    /// Persist a [`SessionLineage`] row at the child's `Hello`. No-op when the chain carries no
+    /// `session_id` (a top-level agent). `session_room` is the room [`Self::auto_join`] just joined
+    /// the child to — passing it in (rather than re-scanning) means the lineage points at the exact
+    /// room the child joined and the room keyspace is scanned once per `Hello`. The `created_at` of
+    /// an existing row is preserved across reconnects so a re-`Hello` does not rewrite first-seen.
+    fn record_session_lineage(
+        &self,
+        agent: &AgentId,
+        chain: &ScopeChain,
+        session_room: Option<RoomId>,
+    ) -> Result<(), CommsStoreError> {
+        let Some(sid) = chain.session_id.clone() else {
+            return Ok(());
+        };
+        let Some(room_id) = session_room else {
+            // The child presented a session id but no `RoomScope::Session` room matched — the parent
+            // has not created it yet (out-of-order startup). Skip the row; a later `Hello` (after the
+            // room exists) records it. Warn so the ordering bug is diagnosable.
+            tracing::warn!(
+                session_id = %sid,
+                agent = %agent,
+                "comms: session id presented but no session room to anchor lineage; skipping"
+            );
+            return Ok(());
+        };
+        // Preserve the original first-seen time across reconnects.
+        let created_at = match self.store.get_session(&sid)? {
+            Some(existing) => existing.created_at,
+            None => now_micros(),
+        };
+        self.store.put_session(&SessionLineage {
+            session_id: sid,
+            parent_agent: chain.parent_agent.clone(),
+            child_agent: agent.clone(),
+            room_id,
+            created_at,
+        })
+    }
+
+    fn on_list_sessions(&self) -> Result<CommsResponse, CommsStoreError> {
+        Ok(CommsResponse::Sessions {
+            sessions: self.store.list_sessions()?,
         })
     }
 
@@ -684,7 +735,17 @@ impl Broker {
     /// Subscribe `agent` to every registered room whose scope matches `chain`, auto-creating
     /// and registering a default room for the agent's repo/workspace on first sight. Logs each
     /// auto-join.
-    fn auto_join(&self, agent: &AgentId, chain: &ScopeChain) -> Result<(), CommsStoreError> {
+    /// Auto-join the agent to every scope-matching room (and the default per-repo room).
+    ///
+    /// Returns the id of the `RoomScope::Session(chain.session_id)` room the agent was joined to,
+    /// if one matched — threaded into [`Self::record_session_lineage`] so the lineage row points at
+    /// the exact room the child joined (not a re-scan that could pick a different room sharing the
+    /// scope) and the room keyspace is scanned once per `Hello` rather than twice.
+    fn auto_join(
+        &self,
+        agent: &AgentId,
+        chain: &ScopeChain,
+    ) -> Result<Option<RoomId>, CommsStoreError> {
         // Ensure a default room exists for this scope.
         let default = default_room_for(chain);
         if self.store.get_room(&default.room_id)?.is_none() {
@@ -695,8 +756,12 @@ impl Broker {
             self.store.put_room(&default)?;
         }
 
+        let mut session_room = None;
         for room in self.store.list_rooms()? {
             if scope::room_matches(&room.scope, chain) {
+                if matches!(&room.scope, RoomScope::Session(_)) {
+                    session_room = Some(room.room_id.clone());
+                }
                 let already = self
                     .store
                     .subscribers(&room.room_id)?
@@ -716,7 +781,7 @@ impl Broker {
                 }
             }
         }
-        Ok(())
+        Ok(session_room)
     }
 
     /// Push a new message to every live sink subscribed to `room`. Best-effort: a sink whose

@@ -501,6 +501,17 @@ impl CommsClient {
         }
     }
 
+    /// List every recorded session lineage row (the spawn graph: each `session_id` mapped to its
+    /// parent/child agents and the session-scoped room they share).
+    pub async fn list_sessions(
+        &mut self,
+    ) -> Result<Vec<crate::comms::model::SessionLineage>, CommsClientError> {
+        match self.request(CommsRequest::ListSessions {}).await? {
+            CommsResponse::Sessions { sessions } => Ok(sessions),
+            other => Err(self.shape_err(other, "list_sessions")),
+        }
+    }
+
     /// Ask the daemon to drain and stop.
     pub async fn stop(&mut self) -> Result<(), CommsClientError> {
         self.expect_ok(CommsRequest::Stop, "stop").await

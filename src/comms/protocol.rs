@@ -174,6 +174,10 @@ pub enum CommsRequest {
     Stop,
     /// Report daemon status (pid / version / uptime / room + subscriber counts).
     Status,
+    /// List every recorded session lineage row (the spawn graph). Additive; older daemons that
+    /// predate the variant reject it as an unknown method, which is fine — client + daemon ship
+    /// in the same binary.
+    ListSessions {},
 }
 
 /// A response from the broker to a [`CommsRequest`].
@@ -239,6 +243,11 @@ pub enum CommsResponse {
     Pong,
     /// Reply to [`CommsRequest::Status`].
     Status(StatusReport),
+    /// Reply to [`CommsRequest::ListSessions`]: every recorded session lineage row.
+    Sessions {
+        /// The recorded lineage rows (parent/child agent + the session-scoped room they share).
+        sessions: Vec<crate::comms::model::SessionLineage>,
+    },
     /// A request failed. `code` is a stable machine token; `message` is human detail.
     Error {
         /// Stable error token (e.g. `proto_skew`, `unknown_room`, `peer_denied`).

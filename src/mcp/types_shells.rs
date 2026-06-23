@@ -152,6 +152,18 @@ pub struct ShellSessionView {
     /// `true` when the daemon still reports this session as live, `false` when it
     /// has exited but the mapping has not been forgotten yet.
     pub alive: bool,
+    /// The agent that spawned this session, from the shared comms lineage. `None` when comms is
+    /// disabled or the session has no recorded parent (e.g. a top-level session).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent: Option<String>,
+    /// The agent that owns this session, from the shared comms lineage. `None` when comms is
+    /// disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_agent: Option<String>,
+    /// The session-scoped comms room the parent and child share, from the shared comms lineage.
+    /// `None` when comms is disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_id: Option<String>,
 }
 
 /// Response from `shell_list`.

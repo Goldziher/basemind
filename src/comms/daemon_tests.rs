@@ -529,6 +529,145 @@ async fn session_scoped_room_auto_joins_only_matching_session() {
     );
 }
 
+/// Drive a `Hello` carrying both a `session_id` and a `parent_agent`, returning the bound
+/// session. Mirrors [`hello_session`] but threads the lineage parent the child presents.
+async fn hello_session_with_parent(
+    broker: &Broker,
+    tx: &mpsc::Sender<CommsOut>,
+    who: &str,
+    session_id: &str,
+    parent_agent: &str,
+) -> Session {
+    let mut session = Session::default();
+    broker
+        .handle(
+            CommsRequest::Hello {
+                agent: agent(who),
+                proto_ver: PROTO_VER,
+                remote: None,
+                cwd: None,
+                session_id: Some(session_id.to_string()),
+                parent_agent: Some(parent_agent.to_string()),
+            },
+            &mut session,
+            tx,
+        )
+        .await;
+    session
+}
+
+/// At the child's `Hello` the broker writes a [`SessionLineage`] row linking the child to its
+/// parent and the session-scoped room it was just auto-joined to. The `room_id` is the actual
+/// created room (not assumed equal to the `session_id`), and `list_sessions` surfaces the row.
+#[tokio::test]
+async fn child_hello_records_session_lineage_row() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    // The room id is deliberately DISTINCT from the session id to prove the write reads the real
+    // room id rather than assuming `room_id == session_id`.
+    let room = RoomId::parse("session-room-s1").expect("room");
+
+    // The parent creates the session room and joins it (mirrors `shell_spawn`). The parent itself
+    // presents no `session_id` for this session — it is the spawner, not a session child — so its
+    // own Hello records no lineage for "s1".
+    let mut parent = Session::default();
+    broker
+        .handle(
+            CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Session("s1".to_string()),
+                title: None,
+            },
+            &mut parent,
+            &tx,
+        )
+        .await;
+    let _ = hello_session(&broker, &tx, "parent", None).await;
+
+    // No lineage exists before the child says Hello.
+    assert_eq!(broker.store.get_session("s1").expect("get"), None);
+
+    // The child says Hello carrying session "s1" + parent "parent".
+    let _child = hello_session_with_parent(&broker, &tx, "child", "s1", "parent").await;
+
+    let lineage = broker
+        .store
+        .get_session("s1")
+        .expect("get")
+        .expect("lineage row written at child Hello");
+    assert_eq!(lineage.session_id, "s1");
+    assert_eq!(lineage.child_agent, agent("child"));
+    assert_eq!(lineage.parent_agent, Some(agent("parent")));
+    assert_eq!(lineage.room_id, room, "room id is the real created room");
+
+    // `list_sessions` (and the `ListSessions` request) surfaces the row.
+    let listed = broker.on_list_sessions().expect("list");
+    match listed {
+        CommsResponse::Sessions { sessions } => {
+            assert_eq!(sessions, vec![lineage.clone()]);
+        }
+        other => panic!("expected Sessions, got {other:?}"),
+    }
+    let via_request = broker
+        .handle(CommsRequest::ListSessions {}, &mut Session::default(), &tx)
+        .await;
+    match via_request {
+        CommsResponse::Sessions { sessions } => assert_eq!(sessions, vec![lineage]),
+        other => panic!("expected Sessions, got {other:?}"),
+    }
+}
+
+/// A re-`Hello` for the same session preserves the original `created_at` rather than rewriting
+/// the first-seen time. The latest `child_agent` / `parent_agent` are still upserted.
+#[tokio::test]
+async fn re_hello_preserves_session_created_at() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let room = RoomId::parse("session-room-s2").expect("room");
+    broker
+        .handle(
+            CommsRequest::CreateRoom {
+                room: room.clone(),
+                scope: RoomScope::Session("s2".to_string()),
+                title: None,
+            },
+            &mut Session::default(),
+            &tx,
+        )
+        .await;
+
+    let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
+    let first = broker
+        .store
+        .get_session("s2")
+        .expect("get")
+        .expect("first row");
+
+    // A reconnect (a second Hello) for the same session must not move `created_at`.
+    let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
+    let second = broker
+        .store
+        .get_session("s2")
+        .expect("get")
+        .expect("second row");
+    assert_eq!(
+        second.created_at, first.created_at,
+        "created_at is preserved across reconnects"
+    );
+}
+
+/// A top-level agent (no `session_id` on its Hello) writes no lineage row.
+#[tokio::test]
+async fn top_level_hello_writes_no_session_lineage() {
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let _ = hello_session(&broker, &tx, "lonely", None).await;
+    assert!(
+        broker.store.list_sessions().expect("list").is_empty(),
+        "a top-level agent records no lineage"
+    );
+}
+
 /// An agent that presents NO `session_id` does not auto-join a session-scoped room even when
 /// the room already exists.
 #[tokio::test]
