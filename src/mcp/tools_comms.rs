@@ -16,9 +16,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, DmSendParams, InboxAckParams, InboxReadParams,
-    MessageGetParams, RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams,
-    RoomListParams, RoomPostParams,
+    AgentListParams, AgentRegisterParams, DmSendParams, GetOrCreateRoomForPathParams,
+    InboxAckParams, InboxReadParams, MessageGetParams, RoomCreateParams, RoomHistoryParams,
+    RoomJoinParams, RoomLeaveParams, RoomListParams, RoomPostParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -75,9 +75,11 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Create (and register) a comms room with an explicit scope: `global`, \
-        `remote` (a git remote — every clone auto-joins), or `path_prefix` (agents at/below a \
-        path auto-join). Idempotent. Needs --features comms.",
+        description = "Create (and register) a comms room with an explicit scope: `remote` (a git \
+        remote — every clone auto-joins), `path_prefix` (agents at/below a path auto-join), or \
+        `global` (every agent on the machine — reserve it for MACHINE-WIDE ops coordination like \
+        CPU / resource contention, NOT per-repo chat). For work in a repo prefer \
+        get_or_create_chat_room_for_path / a repo room. Idempotent. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -225,6 +227,37 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_dm_send(&self.state, p).await;
         record_call(&self.state, "dm_send", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Resolve the repo at `path` to its CANONICAL room (keyed by git remote, else \
+        the repo root path) and join it — get-or-create. Use this to coordinate in ANOTHER repo's \
+        room: it returns the same room agents working in that repo auto-join. Any subdirectory of a \
+        repo maps to one room. Optional `as_agent` joins on behalf of a subagent. Returns the room \
+        id, scope label, title, and whether it was created. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn get_or_create_chat_room_for_path(
+        &self,
+        Parameters(p): Parameters<GetOrCreateRoomForPathParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result =
+            super::helpers_comms::run_get_or_create_chat_room_for_path(&self.state, p).await;
+        record_call(
+            &self.state,
+            "get_or_create_chat_room_for_path",
+            &__params_json,
+            __started,
+            &__result,
+        );
         __result
     }
 

@@ -43,7 +43,9 @@ pub fn now_micros() -> i64 {
 ///   agent it spawned share the same `session_id` and so auto-join the same room — the basis
 ///   for the agent-shells lineage chat. Distinct from `PathPrefix`: two unrelated agents in the
 ///   same directory must NOT share a session room, only a shared `session_id` matches.
-/// * [`RoomScope::Global`] — every agent on the machine auto-joins.
+/// * [`RoomScope::Global`] — every agent on the machine auto-joins. Reserved for MACHINE-WIDE
+///   ops coordination (resource / CPU contention, shared-host scheduling), NOT general per-repo
+///   chat — repo rooms ([`RoomScope::Remote`] / [`RoomScope::PathPrefix`]) are for work in a repo.
 ///
 /// Serialized with an adjacent tag (`{"kind": …, "value": …}`) rather than an internal tag:
 /// `rmp_serde` cannot encode an internally-tagged newtype variant that wraps a scalar, and
@@ -59,7 +61,8 @@ pub enum RoomScope {
     PathPrefix(std::path::PathBuf),
     /// Terminal session id; an agent presenting the same `session_id` matches.
     Session(String),
-    /// Every agent on the machine.
+    /// Every agent on the machine. Reserved for machine-wide ops coordination (resource / CPU
+    /// contention), not per-repo chat.
     Global,
 }
 

@@ -118,6 +118,61 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     );
 }
 
+/// `room-for-path` resolves a path to its canonical repo room and joins it: for a non-repo temp
+/// directory the scope is `path` and the room id is non-empty (derived from the path). A second
+/// agent resolving the SAME path lands on the identical room id — the get-or-create is idempotent.
+#[test]
+fn room_for_path_resolves_and_joins_a_path_scoped_room() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_string_lossy().into_owned();
+
+    let (ok, _o, err) = comms(&comms_dir, "agent-alice", &["start"]);
+    assert!(ok, "comms start failed: {err}");
+
+    struct Stop<'a>(&'a Path);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = Command::new(BIN)
+                .args(["comms", "stop"])
+                .env("BASEMIND_COMMS_DIR", self.0)
+                .output();
+        }
+    }
+    let _stop = Stop(&comms_dir);
+
+    // Resolve the temp dir (a non-repo path) to its canonical room.
+    let (ok, out, e) = comms(
+        &comms_dir,
+        "agent-alice",
+        &["room-for-path", "--root", &root, &root, "--json"],
+    );
+    assert!(ok, "room-for-path failed: {e}");
+    assert!(
+        out.contains("\"scope\":\"path\""),
+        "a non-repo path resolves to a path-scoped room, got: {out}"
+    );
+    // Pull the resolved room id out of the JSON and assert it is non-empty.
+    let room = out
+        .split("\"room\":\"")
+        .nth(1)
+        .and_then(|s| s.split('"').next())
+        .expect("room id in room-for-path json");
+    assert!(!room.is_empty(), "room id must be non-empty, got: {out}");
+
+    // A second agent resolving the SAME path lands on the IDENTICAL room id (idempotent).
+    let (ok, out2, e) = comms(
+        &comms_dir,
+        "agent-bob",
+        &["room-for-path", "--root", &root, &root, "--json"],
+    );
+    assert!(ok, "second room-for-path failed: {e}");
+    assert!(
+        out2.contains(&format!("\"room\":\"{room}\"")),
+        "the same path must resolve to the same room id, got: {out2}"
+    );
+}
+
 /// The `dm` verb plus `--as-agent` deliver a direct message to one agent's inbox via the private
 /// pairwise `dm:<lo>:<hi>` room: the sender (selected with `--as-agent`) creates + joins + posts,
 /// the recipient is auto-joined by the verb, and `inbox --as-agent <recipient>` surfaces it — while

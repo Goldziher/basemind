@@ -18,7 +18,8 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::types_comms::{
     AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary,
-    CursorAdvance, DmSendParams, DmSendResponse, InboxAckParams, InboxAckResponse, InboxReadParams,
+    CursorAdvance, DmSendParams, DmSendResponse, GetOrCreateRoomForPathParams,
+    GetOrCreateRoomForPathResponse, InboxAckParams, InboxAckResponse, InboxReadParams,
     InboxReadResponse, MessageFrontMatter, MessageGetParams, MessageGetResponse, RoomCreateParams,
     RoomCreateResponse, RoomHistoryParams, RoomHistoryResponse, RoomJoinParams, RoomLeaveParams,
     RoomListParams, RoomListResponse, RoomMembershipResponse, RoomPostParams, RoomPostResponse,
@@ -306,6 +307,64 @@ pub(super) async fn run_inbox_ack(
     json_result(&InboxAckResponse {
         acked: acked as usize,
         cursors_advanced,
+    })
+}
+
+/// `get_or_create_chat_room_for_path`: resolve the repo at `params.path` to its canonical room and
+/// join it, so an agent working in one repo can coordinate in ANOTHER repo's room.
+///
+/// The room id / scope / title come from [`repo_room_for`](crate::comms::daemon::repo_room_for) —
+/// the SAME derivation the broker's auto-join uses — so this returns exactly the room agents in the
+/// target repo auto-join (keyed by git remote when present, else the repo root path). `path` is
+/// first resolved to the repo ROOT so any subdirectory maps to one room. `created` is computed by
+/// listing the rooms matching that scope BEFORE the idempotent `create_room` upsert.
+pub(super) async fn run_get_or_create_chat_room_for_path(
+    state: &ServerState,
+    params: GetOrCreateRoomForPathParams,
+) -> Result<CallToolResult, McpError> {
+    // Resolve the repo root so subdirs of one repo map to a single room; fall back to the raw path
+    // when it is not inside a git repo (a path-scoped room keyed by the path itself).
+    let base = crate::git::Repo::discover(std::path::Path::new(&params.path))
+        .ok()
+        .map(|r| r.workdir().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from(&params.path));
+    let (remote, cwd) = scope_context_for(&base);
+    let room = crate::comms::daemon::repo_room_for(remote.clone(), cwd.clone());
+    let scope_label = match &room.scope {
+        RoomScope::Remote(_) => "remote",
+        RoomScope::PathPrefix(_) => "path",
+        RoomScope::Session(_) => "session",
+        RoomScope::Global => "global",
+    };
+
+    let handle = resolve_comms_client(state, params.as_agent).await?;
+    let mut client = handle.lock().await;
+    // Existence check BEFORE the idempotent upsert: list the rooms matching the target scope and
+    // see whether the derived id is already present.
+    let existed = client
+        .list_rooms(remote, cwd)
+        .await
+        .map_err(comms_err)?
+        .iter()
+        .any(|r| r.room_id == room.room_id);
+    client
+        .create_room(
+            room.room_id.clone(),
+            room.scope.clone(),
+            Some(room.title.clone()),
+        )
+        .await
+        .map_err(comms_err)?;
+    client
+        .join_room(room.room_id.clone())
+        .await
+        .map_err(comms_err)?;
+
+    json_result(&GetOrCreateRoomForPathResponse {
+        room: room.room_id.as_str().to_string(),
+        scope: scope_label.to_string(),
+        title: room.title,
+        created: !existed,
     })
 }
 
