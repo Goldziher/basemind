@@ -3,18 +3,15 @@
 
 # basemind
 
-**The context and communication layer for coding agents.** basemind is the shared brain a team of
-AI coding agents works from. It turns any repository into an always-current understanding of the
-code, documents, history, and memory an agent needs — and gives multiple agents a way to **talk to
-each other and coordinate** while they work.
+**The context and communication layer for coding agents.**
 
-The payoff is twofold: each agent reasons from **structure and search** instead of burning its
-limited context window on `grep` and file reads, and a team of agents stays **in sync** instead of
-stepping on each other's work. One server does both.
+basemind turns any repo into an always-current map of its code, documents, history, and memory —
+so agents answer from **structure and search** instead of burning their context window on `grep` and
+file reads — and gives a team of agents a **shared channel to coordinate** while they work. One
+server does both.
 
-Code map & search across **300+ languages** · document processing for **90+ file formats** ·
-semantic + full-text search · git history & blame · shared agent memory · on-demand web crawl ·
-agent-to-agent comms
+Code map across **300+ languages** · documents in **90+ formats** · semantic + full-text search ·
+git history & blame · shared memory · web crawl · agent-to-agent comms
 
 [![crates.io](https://img.shields.io/crates/v/basemind?style=flat-square)](https://crates.io/crates/basemind)
 [![npm](https://img.shields.io/npm/v/basemind?style=flat-square)](https://www.npmjs.com/package/basemind)
@@ -22,254 +19,40 @@ agent-to-agent comms
 [![CI](https://img.shields.io/github/actions/workflow/status/Goldziher/basemind/ci.yaml?style=flat-square)](https://github.com/Goldziher/basemind/actions/workflows/ci.yaml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 
-[Install](#installation) · [Capabilities](#capabilities) · [Architecture](#architecture) · [Tools](#feature-table) · [Performance](#performance)
+[Install](#installation) · [Features](#what-you-get) · [How it works](#how-it-works) · [Performance](#performance) · [CLI](#cli-reference)
 
 </div>
 
 ---
 
-## Capabilities
-
-Five pillars give an agent **context**; a sixth lets agents **coordinate**.
-
-**Code** — Tree-sitter outlines, symbol search, reference + caller + implementation graphs,
-call chains, git history per symbol, blame at symbol-level resolution.
-
-**Documents** — Ingest + semantic search over PDFs, Office (Word/Excel/iWork), HTML, email,
-archives. Built-in OCR, layout detection, keyword + NER extraction, cross-encoder reranking.
-All ONNX bundled — no system install needed.
-
-**Memory** — Per-repo scoped key-value + semantic vector storage, split into a shared **group**
-tier and a per-agent **individual** tier. Clones of the same git origin automatically share
-memory; unrelated repos isolated.
-
-**Governance** — Mines co-change patterns from git history into propose-don't-commit skill/memory
-candidates; an accepted proposal becomes a searchable memory with file provenance, re-audited against
-the live index (`proposals_mine` / `proposal_accept`).
-
-**Web** — On-demand HTTP scrape + follow-link crawl. Pages chunk, embed, and land in the
-documents store under scope `web:<host>` for unified search.
-
-**Coordination** — A user-global broker daemon hosts scoped chat rooms and a per-agent inbox, so
-multiple agents working the same code (across harnesses and repos) leave each other status, ask
-questions, and avoid collisions. See [Agent coordination](#agent-coordination).
-
----
-
-## Demos
-
 <!-- markdownlint-disable MD013 -->
-
-<p align="center"><img src="docs/media/mcp-demo.gif" alt="basemind in a Claude Code session: an agent answers a question with outline + find_references — structured results, not file reads" width="900"></p>
-
-<p align="center"><em>An agent reasoning from structure — <code>outline</code> + <code>find_references</code> in a live Claude Code session, the statusline tracking tokens saved.</em></p>
-
-<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI demo: scan a repo, then query symbols, references, call graphs, git blame, and the token-savings dashboard" width="800"></p>
-
-<p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / call-graph / blame queries and the token-savings dashboard.</em></p>
-
-<p align="center"><img src="docs/media/semantic-demo.gif" alt="basemind semantic search: an agent searches indexed documents by meaning, not keywords, over the documents store" width="900"></p>
-
-<p align="center"><em>Semantic search over the documents store — meaning, not keywords, across 90+ ingested file formats.</em></p>
-
+<p align="center"><img src="docs/media/mcp-demo.gif" alt="An agent answering from outline + find_references in a live Claude Code session" width="820"></p>
+<p align="center"><em>An agent reasoning from structure — <code>outline</code> + <code>find_references</code> in a live session, statusline tracking tokens saved.</em></p>
 <!-- markdownlint-enable MD013 -->
 
+<div align="center"><sub><a href="#demos">More demos ↓</a></sub></div>
+
 ---
 
-## Token economy
+## What you get
 
-basemind tools return **paths, line numbers, and signatures — not file bodies** — so a structural
-answer costs a fraction of the tokens of reading source. The live statusline surfaces the payoff:
-estimated tokens saved vs a grep + read baseline.
-
-### Operating discipline
-
-The plugin ships token discipline as the agent's default (carried in the MCP server instructions, the
-`basemind` skill, and the SessionStart hook):
-
-- `outline` a file before opening it — then read only the span you need.
-- `search_symbols` instead of `grep`/`rg` for a definition.
-- `find_references` / `find_callers` instead of grepping call sites.
-- `workspace_grep` instead of shelling out to ripgrep for regex over content.
-- `rescan` after edits instead of reconnecting the server.
-- Don't re-read a file basemind already mapped.
-
-Three hooks enforce this at the tool boundary:
-
-- **Guard** (PreToolUse) — `BASEMIND_GUARD=nudge` (default) points `Grep`/`Glob` at the matching
-  basemind tool once per session; `redirect` blocks the call with a pointer; `off` disables.
-- **Output compressor** (PostToolUse, opt-in) — `BASEMIND_COMPRESS_OUTPUT=1` pipes verbose `Bash`
-  output through `basemind compress-output`. Fail-open and credential-preserving (left untouched on
-  any error, on detected credentials, or <10% savings).
-- **Read-cache delta** (PostToolUse, opt-in) — `BASEMIND_DELTA_READS=1` serves a compact `basemind
-  delta` line-diff when an agent re-reads a file it already read this session. Fail-open.
-
-### Compression
-
-basemind compresses via **code-aware structural elision**, not lossy prose dropping — because a
-function signature is useless without its shape. The `compress` tool returns signatures + imports (no
-bodies) from the L1 outline for source code, and a lexical pass (whitespace collapse, conservative
-filler removal, paragraph dedup) for prose, with honest before/after token counts and byte-for-byte
-integrity on code. `expand` is the companion: it pulls one symbol's full body back from the L1 byte
-range — compress to outline, expand only what you need. A soft per-call `target_tokens` hint is
-accepted today. `compress` / `expand` are MCP tools; the CLI-side compression primitives are
-`compress-output` and `delta` (the hook backends above).
-
-Compare against the current landscape:
+basemind answers with **file paths, line numbers, and signatures — not whole files** — so a question
+about your code costs a small fraction of the tokens it takes to read the source.
 
 <!-- markdownlint-disable MD013 -->
 
-| Tool | Approach | Code-aware? | Interface | Lossless for code |
-|---|---|---|---|---|
-| **basemind** | Structural elision (L1 outline) + lexical prose pass | Yes (tree-sitter) | MCP + CLI | Yes |
-| LLMLingua-2 | LM token-pruning (PyTorch, 124M–7B) | No | Python lib | No |
-| token-optimizer | Behavioral + bash-output compression, delta reads | No | CLI / MCP | Partial |
-| token-optimizer-mcp | SQLite cache + Brotli + smart tool replacement | No (caching-driven) | MCP | Partial |
-| mcp-compressor | MCP tool-schema overhead deferral | No (schema-only) | MCP | Yes |
-| CodePromptZip | Research-grade code pruning | Yes (static analysis) | Research / paper | No |
-
-<!-- markdownlint-enable MD013 -->
-
-**Roadmap:** hard `max_tokens` caps (beyond today's soft `target_tokens` hint), semantic prose
-reduction (via kreuzberg), and MCP tool-schema compression (struct/field trimming for deeply-nested
-responses).
-
----
-
-## Architecture
-
-One `basemind scan` walks the working tree in parallel (rayon), extracts structure with
-tree-sitter and documents with the kreuzberg pipeline, and writes everything into a
-content-addressed store under `.basemind/`: msgpack blobs (deduped by content hash), a Fjall LSM
-inverted index for symbol/reference/caller lookups, and a LanceDB vector store for document +
-memory search. `basemind serve` preloads the outlines into RAM and answers MCP/CLI tool calls
-straight from the index — no disk scan per query.
-
-```mermaid
-flowchart LR
-  AGENT(["Coding agent"])
-  subgraph repo["Your repository"]
-    SRC["Source<br/>300+ languages"]
-    DOC["Documents<br/>90+ formats"]
-    GIT["Git history"]
-  end
-  subgraph scan["basemind scan · rayon-parallel"]
-    EXT["tree-sitter extract<br/>L1 outline · L2 calls · L3 hash"]
-    KZ["kreuzberg<br/>OCR · NER · chunk · embed"]
-  end
-  subgraph store[".basemind/ · content-addressed"]
-    BLOB["msgpack blob store"]
-    IDX["Fjall LSM<br/>index · memory · proposals"]
-    VEC["LanceDB vectors<br/>documents · memory"]
-  end
-  subgraph serve["basemind serve · MCP + CLI"]
-    T1["code + git tools"]
-    T2["document + memory search"]
-    T3["web crawl"]
-  end
-  SRC --> EXT
-  DOC --> KZ
-  EXT --> BLOB
-  EXT --> IDX
-  KZ --> VEC
-  T3 --> VEC
-  BLOB --> T1
-  IDX --> T1
-  GIT --> T1
-  VEC --> T2
-  AGENT <-->|tool calls| serve
-```
-
-### Agent coordination
-
-basemind is also a communication substrate for **multiple agents working the same code at once** —
-across harnesses and across repos in a shared workspace. A singleton, user-global **broker daemon**
-(its own Fjall store over a Unix socket, independent of any repo's exclusive index lock) hosts
-**scoped rooms**: an agent auto-joins every room whose scope covers it — the repo's git remote, a
-path prefix, or global. Messages are **two-tier** — a front-matter envelope (subject · from · id)
-that `room_history` / `inbox_read` scan cheaply, and a body fetched on demand by `message_get` — so
-scanning a busy room costs almost nothing. The broker excludes an agent's **own** posts from its
-inbox, so notifications never echo back.
-
-The plugin delivers comms three ways, so an agent notices traffic without being asked: the
-**MCP instructions + `basemind-comms` skill** tell it the tools exist and to post status as it
-works; **SessionStart / UserPromptSubmit hooks** inject unread front-matter on boot and per turn;
-and a **background monitor (~15 s)** surfaces new messages while the agent is working or idle.
-
-```mermaid
-flowchart TB
-  subgraph agents["Coding agents · multiple harnesses · multiple repos"]
-    A["Agent A<br/>Claude Code · repo X"]
-    B["Agent B<br/>Cursor · repo Y · same workspace"]
-  end
-  subgraph delivery["Per-session delivery (plugin)"]
-    INSTR["MCP instructions +<br/>basemind-comms skill"]
-    HOOKS["SessionStart + UserPromptSubmit hooks"]
-    MON["Background monitor · ~15s"]
-  end
-  subgraph daemon["Broker daemon · singleton · user-global"]
-    BR["Broker<br/>scope auto-join · fan-out · self-exclude"]
-    REG["Room registry<br/>scope: remote · path · global"]
-    CS["CommsStore · Fjall over UDS<br/>rooms · front-matter · bodies · cursors"]
-  end
-  A --> delivery
-  B --> delivery
-  delivery -->|room_post · room_history<br/>inbox_read · message_get| BR
-  BR --> REG
-  BR --> CS
-  CS -. unread .-> HOOKS
-  CS -. new messages .-> MON
-  HOOKS -. inject .-> A
-  MON -. notify .-> A
-```
-
-### Agent shells
-
-When you need agents to run shell commands and inspect results, basemind embeds a lightweight
-terminal multiplexer daemon (rmux) so agents can spawn, drive, and observe headless shell sessions
-without external dependencies. The `shells` feature (opt-in via `--features shells`, part of the
-`full` meta-feature) exposes six MCP tools:
-
-- `shell_spawn` — create a detached session, optionally with a repo-relative cwd, env overrides, and
-  human-readable title. Returns a `session_id` plus an `attach_command` that re-execs basemind
-  (`--__internal-attach`) to attach a terminal to the session — there is no external `rmux` binary.
-- `shell_send` — write text (with optional newline) to a session's stdin.
-- `shell_capture` — retrieve the visible screen output (optionally last N lines).
-- `shell_broadcast` — send one input to many sessions atomically.
-- `shell_list` — enumerate all spawned sessions, flagged with liveness.
-- `shell_kill` — terminate a session and forget its mapping.
-
-When built with both `shells` and `comms` (Unix only), each spawned child auto-joins a
-session-scoped comms room via inherited `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` /
-`BASEMIND_AGENT_ID` environment variables, enabling bidirectional parent↔child messaging and
-forming inheritance chains. The `[shells]` config block controls visual presentation (default
-`current` = new tab in the open terminal; also `window` / `web` / `headless`) and terminal
-emulator choice (auto-detect, or force iTerm2 / Terminal.app / Windows Terminal / GNOME Terminal /
-Konsole / WezTerm / Alacritty / kitty / xterm).
-
-When `visual` is not `headless`, `shell_spawn` opens the session in a terminal surface (a tab or
-window) attached to the live session via the embedded re-exec; presentation is best-effort, so a
-spawn never fails just because no terminal could be driven. Visual attach is Unix-only (macOS /
-Linux); on other platforms sessions remain fully drivable headless via MCP.
-
----
-
-## Feature table
-
-<!-- markdownlint-disable MD013 -->
-
-| Pillar | What it does | MCP tools | Backend |
-|---|---|---|---|
-| **Code intelligence** | Outlines, symbol search (substring), call-site lookup (substring), call graphs, impl lookup (substring), dependents, in-tree regex | `outline`, `search_symbols`, `workspace_grep`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `list_files`, `status`, `repo_info` | tree-sitter × 300+ langs · Fjall LSM index · content-addressed blob store |
-| **Git intelligence** | Symbol-level history, blame, churn, recent changes, structural diffs across revs | `symbol_history`, `blame_file`, `blame_symbol`, `hot_files`, `recent_changes`, `commits_touching`, `find_commits_by_path`, `diff_outline`, `diff_file`, `working_tree_status` | gix + sha-keyed disk cache |
-| **Document RAG** | Ingest + semantic search over 90+ file formats — PDFs, Office (Excel/Word/HWP/iWork), HTML, XML, email, archives, images. Adds OCR (Tesseract + PaddleOCR), cross-encoder reranker, keyword extraction (YAKE/RAKE), NER (gline-rs ONNX + LLM), extractive + abstractive summarization, layout detection, page auto-rotate, redaction, language detection. All ONNX models bundled — no system install needed. | `search_documents` | kreuzberg + LanceDB |
-| **Shared memory** | Per-repo scoped key-value + semantic memory. Clones of the same git origin URL automatically share memory; unrelated repos isolated. `memory_audit` verifies stored memories' code references against the live index (file/symbol/structural-hash checks), decays importance on stale records, and auto-archives records stale for > 90 days. | `memory_put`, `memory_get`, `memory_list`, `memory_search`, `memory_delete`, `memory_audit` | LanceDB + Fjall, scope-keyed |
-| **Governance** | Co-change association-rule mining from git history: propose-don't-commit skill candidates. `proposals_mine` walks recent commits, counts file co-change pairs, and writes content-addressed proposals (blake3 of sorted file-set) to Fjall. `proposal_accept` promotes a proposal to a searchable, LanceDB-embedded memory with file provenance (W10 audit engine stamps `verified`; a later `memory_audit` turns it Stale if any file disappears). `proposal_reject` writes a tombstone so re-mining does not resurface the candidate. | `proposals_mine`, `proposals_list`, `proposal_accept`, `proposal_reject` | Fjall proposals keyspace + LanceDB |
-| **Web crawl** | On-demand HTTP scrape + link-following crawl. Crawled pages route through the documents pipeline (chunk → embed → LanceDB) under scope `web:<host>`. | `web_scrape`, `web_crawl`, `web_map` | kreuzcrawl (native HTTP, no chromium) |
-| **Agent comms** | Multi-agent messaging via a user-global broker daemon: scope-auto-joined rooms (git remote / path / global), per-agent inbox, two-tier messages (front-matter scan + lazy body fetch), self-posts excluded from inbox. `room_post` takes an optional `scope` (glob / path patterns) so peers can filter relevance from front-matter; front-matter now also surfaces `seq`. `inbox_ack` advances the per-agent read cursor (by message ids or bulk `to_seq`) without touching the shared log. Delivered across harnesses via MCP instructions + the `basemind-comms` skill, SessionStart / per-turn hooks, and a ~15 s background monitor. | `agent_register`, `agent_list`, `room_create`, `room_list`, `room_join`, `room_leave`, `room_post`, `room_history`, `message_get`, `inbox_read`, `inbox_ack` | Fjall broker over a Unix socket |
-| **Agent shells** | Spawn detached headless shell sessions, send stdin, capture visible output, broadcast input to many sessions, list sessions with parent-child lineage, and kill sessions. basemind embeds the rmux daemon (re-execs itself—no external binary). Each spawned child optionally couples to a comms room for parent↔child messaging and forms inheritance chains. Requires `--features shells`; visual mode (Unix) attaches a terminal to the session via a basemind re-exec, else fully drivable headless via MCP. | `shell_spawn`, `shell_send`, `shell_capture`, `shell_broadcast`, `shell_list`, `shell_kill` | embedded rmux daemon + SDK over Unix socket |
-| **Admin** | Live rescan, telemetry dashboard, cache introspection + GC + cleanup | `rescan`, `telemetry_summary`, `cache_stats`, `cache_gc`, `cache_clear` | — |
-| **Token compression** | Code-aware compression: structural elision (L1 outline, signatures only, no bodies) for indexed source files; lexical pass (whitespace collapse, filler removal, paragraph dedup) for prose. `expand` is the companion: given a path + symbol name it returns the full source body from the L1 byte range — the context-offloading pattern (compress to outline, expand only what you need). | `compress`, `expand` | L1 code map · Rust regex |
+| Capability | What it does | Key tools |
+|---|---|---|
+| **Code intelligence** | Find where things are defined, what calls what, who implements what, and how calls chain — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `call_graph` · `find_implementations` · `workspace_grep` |
+| **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, and how a file's structure differs across commits. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` |
+| **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. | `search_documents` |
+| **Shared memory** | A per-repo memory agents can write to and search; clones of the same repo share it, unrelated repos stay separate. | `memory_put` · `memory_search` · `memory_audit` |
+| **Suggestions** | Spots files that change together and suggests notes worth saving — you approve before anything is kept. | `proposals_mine` · `proposal_accept` |
+| **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web_scrape` · `web_crawl` · `web_map` |
+| **Agent comms** | A shared chat for agents working the same code: rooms they auto-join and a personal inbox. | `room_post` · `room_history` · `inbox_read` · `message_get` |
+| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background (opt-in). | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
+| **Token saving** | Hand an agent a file's outline instead of its full text, then pull back only the one function it needs. | `compress` · `expand` |
+| **Admin** | Refresh the index, see what's been queried, and check or clean up the on-disk cache. | `rescan` · `telemetry_summary` · `cache_stats` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -277,89 +60,60 @@ Linux); on other platforms sessions remain fully drivable headless via MCP.
 
 ## Installation
 
-basemind indexes ~81k files in ~22s and answers symbol/reference queries in sub-millisecond time —
-see [Performance](#performance) for the full benchmarks.
+Three ways to run basemind, easiest first. All three share the same local index and are safe to run
+side by side.
 
-There are three ways to run basemind, in order of how much they wire up for you — **as a plugin**,
-**as an MCP server**, or **as a CLI**. All three share the same on-disk `.basemind/` index and are
-safe to run side by side (the plugin/server watch and incrementally update the index; the CLI opens
-it read-only).
+> **The plugin downloads the basemind program for you** on first use. The MCP-server and CLI paths
+> need it installed yourself — see [Install the program](#install-the-program).
 
-### Install the binary
+### 1. As a plugin (recommended)
 
-The MCP-server and CLI paths need the `basemind` binary on your `PATH`. **The plugin path downloads
-it automatically on first use** (verified checksums) — skip this step if you install via a plugin.
-
-<!-- markdownlint-disable MD013 -->
-
-| Channel | Command | Platforms | Features |
-|---|---|---|---|
-| Homebrew | `brew install Goldziher/tap/basemind` | macOS, Linux | documents + memory + crawl |
-| npm | `npm install -g basemind` | any Node 14+ platform | documents + memory + crawl |
-| pip | `pip install basemind` | any Python 3.8+ platform | documents + memory + crawl |
-| cargo | `cargo install basemind --locked` | any Rust platform | base |
-| cargo (full) | `cargo install basemind --features full --locked` | any Rust platform | documents + memory + crawl |
-| GH releases | Download binary from [releases](https://github.com/Goldziher/basemind/releases) | macOS · Linux · Windows | documents + memory + crawl |
-
-<!-- markdownlint-enable MD013 -->
-
-Prebuilt binaries (npm / pip / brew / GH releases) ship the full feature set — 90+ document formats,
-OCR, embeddings, reranker, semantic search, web crawl, shared memory — so first run downloads the ML
-models over the network. `cargo install` without `--features full` builds the base code-map + git
-tier only.
-
-### As a plugin (recommended)
-
-The plugin is the richest install: it bundles the MCP server (auto-downloading the binary above on
-first use), the `basemind` / `basemind-cli` / `basemind-comms` skills, the agent-comms hooks, and
-the slash commands. Pick your harness.
+The plugin sets up everything for you — the server, the helper skills, the agent-comms features, and
+the slash commands. Pick your coding tool.
 
 <details>
 <summary><strong>Claude Code</strong></summary>
 
-In the Claude Code session (not your shell), run these two slash commands in order — the first
-registers the marketplace, the second installs the plugin:
+In the session (not your shell), run in order:
 
 ```text
 /plugin marketplace add Goldziher/basemind
 /plugin install basemind@basemind
 ```
 
-Restart the session afterwards. Run `/bm-statusline` once to enable the live statusline (a one-time
-opt-in — Claude Code plugins cannot set the main statusline themselves; see [Statusline](#statusline)).
+Restart, then run `/bm-statusline` once to turn on the live statusline (a one-time step — see
+[Statusline](#install-the-program)).
 
 </details>
 
 <details>
-<summary><strong>Codex (CLI &amp; app)</strong></summary>
-
-basemind ships a Codex plugin — `.codex-plugin/plugin.json` plus a Codex-native
-`.agents/plugins/marketplace.json` (skills, MCP server, hooks). In the CLI, register the marketplace
-and install:
+<summary><strong>Codex</strong></summary>
 
 ```bash
 codex plugin marketplace add Goldziher/basemind
 codex plugin add basemind@basemind
 ```
 
-In the Codex app, open **Plugins** in the sidebar and add basemind. The CLI and IDE extension share
-`~/.codex/config.toml`, so the raw [MCP server](#as-an-mcp-server) path works too.
+In the app: open the **Plugins** sidebar and add basemind. The CLI and IDE share one config file.
 
 </details>
 
 <details>
 <summary><strong>Cursor</strong></summary>
 
-basemind ships a Cursor plugin (`.cursor-plugin/plugin.json` — skills + MCP server). In Cursor Agent
-chat, install it from the marketplace (once listed):
+In Agent chat: `/add-plugin basemind` (once listed), or go to **Dashboard → Settings → Plugins →
+Team Marketplaces → Import from Repo** and point it at `https://github.com/Goldziher/basemind`.
 
-```text
-/add-plugin basemind
+</details>
+
+<details>
+<summary><strong>Gemini CLI</strong></summary>
+
+```bash
+gemini extensions install https://github.com/Goldziher/basemind
 ```
 
-Or add it as a team marketplace — **Dashboard → Settings → Plugins → Team Marketplaces → Add
-Marketplace → Import from Repo**, pointed at `https://github.com/Goldziher/basemind`. Prefer no
-marketplace step? Use the [MCP server](#as-an-mcp-server) path below.
+Update later with `gemini extensions update basemind`.
 
 </details>
 
@@ -371,20 +125,6 @@ droid plugin marketplace add https://github.com/Goldziher/basemind
 droid plugin install basemind@basemind
 ```
 
-Or use the `/mcp` manager / raw config — see [Factory Droid under MCP server](#as-an-mcp-server).
-
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong></summary>
-
-```bash
-gemini extensions install https://github.com/Goldziher/basemind
-```
-
-Installs the basemind extension (`gemini-extension.json`) — the MCP server, the `GEMINI.md` context
-file, and the SessionStart / per-turn comms hooks. Update later with `gemini extensions update basemind`.
-
 </details>
 
 <details>
@@ -395,22 +135,16 @@ copilot plugin marketplace add Goldziher/basemind
 copilot plugin install basemind@basemind
 ```
 
-Or register the raw server with `/mcp add` — see [GitHub Copilot CLI under MCP server](#as-an-mcp-server).
-
 </details>
 
 <details>
 <summary><strong>OpenCode</strong></summary>
 
-Add the npm plugin to `opencode.json` (project root) or `~/.config/opencode/opencode.json` (global):
+Add to `opencode.json` (project) or `~/.config/opencode/opencode.json` (global):
 
 ```json
-{
-  "plugin": ["basemind-opencode@latest"]
-}
+{ "plugin": ["basemind-opencode@latest"] }
 ```
-
-The `basemind-opencode` package ships the skills + slash commands and registers the MCP server.
 
 </details>
 
@@ -421,18 +155,26 @@ The `basemind-opencode` package ships the skills + slash commands and registers 
 /plugins install https://github.com/Goldziher/basemind
 ```
 
-Installs the plugin from `kimi.plugin.json` — the MCP server (auto-downloading the binary on first
-use) plus the basemind skills, loaded at session start. Or run `/plugins`, open **Marketplace**, and
-install basemind. Kimi plugin manifests don't carry hooks, so the agent-comms auto-injection isn't
-wired here (the MCP `room_*` tools still work).
+Kimi doesn't support the comms auto-notifications, but the chat tools still work.
 
 </details>
 
 <details>
-<summary><strong>Antigravity</strong></summary>
+<summary><strong>Antigravity &amp; pi</strong></summary>
 
-Antigravity (CLI &amp; IDE) shares one MCP config at `~/.gemini/config/mcp_config.json` (or **Settings
-→ Customizations → Add MCP+**). [Install the binary](#install-the-binary) first, then:
+**Antigravity** uses a shared MCP config — [install the program](#install-the-program), then add the
+[generic MCP block](#2-as-an-mcp-server). If you already use the Gemini extension,
+`agy plugin import gemini` brings it across.
+
+**pi**: `pi install git:github.com/Goldziher/basemind`. pi has no MCP support, so basemind runs
+through its [CLI](#3-as-a-cli) here.
+
+</details>
+
+### 2. As an MCP server
+
+If your tool speaks MCP but you're not using the plugin, [install the program](#install-the-program),
+then register it:
 
 ```json
 {
@@ -442,356 +184,214 @@ Antigravity (CLI &amp; IDE) shares one MCP config at `~/.gemini/config/mcp_confi
 }
 ```
 
-If you already use the Gemini extension, `agy plugin import gemini` pulls its MCP registrations across.
+Each tool says whether it only reads or can change things, so your client can auto-approve the safe
+ones and ask before the rest. If `basemind` isn't found, use the full path from `which basemind`.
+
+<details>
+<summary><strong>Per-tool specifics</strong> (Claude Code · Cursor · Windsurf · Codex · Gemini · Copilot · Droid · Cline · Continue · OpenCode)</summary>
+
+- **Claude Code** — `claude mcp add basemind -- basemind serve` (add `--scope user` for all
+  projects; the `--` is required). Or commit a `.mcp.json` at the repo root with the block above.
+- **Cursor** — put the block above in `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global).
+- **Windsurf** — `~/.codeium/windsurf/mcp_config.json` (or Cascade → MCP servers → manage), then
+  **Refresh**.
+- **Codex** — `codex mcp add basemind -- basemind serve`, shared by the CLI and IDE.
+- **Gemini CLI** — `gemini mcp add basemind basemind serve`, or the block above in
+  `~/.gemini/settings.json`.
+- **GitHub Copilot CLI** — `/mcp add` in-session, or `~/.copilot/mcp-config.json` with
+  `"type": "local"` and `"tools": ["*"]`.
+- **Factory Droid** — `droid mcp add basemind "basemind serve"`, or `~/.factory/mcp.json`.
+- **Cline** — MCP Servers icon → Configure → add the block above.
+- **Continue** — `.continue/mcpServers/basemind.yaml` with `command: basemind`, `args: [serve]`.
+- **OpenCode (without the plugin)** — `opencode.json` under key `mcp`, with `command` as an array
+  `["basemind", "serve"]`.
+- **Any other tool** — point it at the command `basemind` with the argument `serve`.
 
 </details>
 
-<details>
-<summary><strong>pi</strong></summary>
+### 3. As a CLI
+
+The standalone program, for scripts, headless runs, and CI. [Install it](#install-the-program), then:
 
 ```bash
-pi install git:github.com/Goldziher/basemind
+basemind scan                          # index the project once
+basemind query symbol "parseQuery"     # find a symbol by name
+basemind query references "processFile" # find everywhere it's called
+basemind git blame-file src/main.rs    # who last changed each line
+basemind watch                         # keep the index fresh as files change
 ```
 
-Loads the basemind skills + a session-start bootstrap (the repo-root `package.json` `pi` manifest and
-`.pi/extensions/basemind.ts`). pi has no native MCP, so basemind runs through its **CLI** here
-(`basemind query …` via pi's `bash` tool — see [As a CLI](#as-a-cli)); to expose the MCP tools,
-register `basemind serve` in `<cwd>/.pi/mcp.json` with a pi MCP extension.
+Full command list in the [CLI reference](#cli-reference).
 
-</details>
+### Install the program
 
-### As an MCP server
+The MCP and CLI paths need `basemind` available on your system. (The plugin does this for you.)
 
-If your client speaks MCP but you are not using the basemind plugin, register the stdio server
-yourself. [Install the binary](#install-the-binary) first, then add this — the command is `basemind`
-and the only argument is `serve`:
+<!-- markdownlint-disable MD013 -->
 
-```json
-{
-  "mcpServers": {
-    "basemind": { "command": "basemind", "args": ["serve"] }
-  }
-}
-```
+| Channel | Command | Includes |
+|---|---|---|
+| Homebrew | `brew install Goldziher/tap/basemind` | everything |
+| npm | `npm install -g basemind` | everything |
+| pip | `pip install basemind` | everything |
+| cargo | `cargo install basemind --locked` | code + git only |
+| cargo (full) | `cargo install basemind --features full --locked` | everything |
+| GitHub releases | [Download a binary](https://github.com/Goldziher/basemind/releases) | everything |
 
-Every MCP tool advertises rmcp `ToolAnnotations` — `read_only_hint`, `destructive_hint`,
-`idempotent_hint`, `open_world_hint` — so MCP clients can auto-approve read-only tools and prompt
-for mutating ones, reducing permission friction. A client-side denial still never reaches the
-server.
+<!-- markdownlint-enable MD013 -->
 
-If `basemind` is not on your `PATH`, use the absolute path from `which basemind`. Per-client
-specifics:
+The Homebrew / npm / pip / GitHub downloads include the full feature set — documents, OCR, search,
+web crawl, and shared memory — so the first run downloads the models it needs. The plain
+`cargo install` builds the code-map and git tools only.
 
 <details>
-<summary><strong>Claude Code</strong></summary>
+<summary><strong>Statusline</strong> (Claude Code)</summary>
 
-```bash
-claude mcp add basemind -- basemind serve                # this project (local scope)
-claude mcp add --scope user basemind -- basemind serve   # all your projects
-```
+Run `/bm-statusline` once. This is a one-time step because Claude Code doesn't let plugins set the
+main statusline themselves — so basemind asks the assistant to make the one-line settings change on
+your behalf, and it sticks from then on.
 
-The `--` separator is required — everything after it is the command and its args. Or commit a
-project-shared `.mcp.json` at the repo root:
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "type": "stdio", "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Cursor</strong></summary>
-
-`.cursor/mcp.json` (this project) or `~/.cursor/mcp.json` (all projects):
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-The command must be on `PATH` or an absolute path. Cursor asks to approve MCP tools on first use.
-
-</details>
-
-<details>
-<summary><strong>Windsurf</strong></summary>
-
-Edit `~/.codeium/windsurf/mcp_config.json` (or **Cascade panel → MCP servers → manage**):
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-Click **Refresh** in the Cascade MCP panel after saving.
-
-</details>
-
-<details>
-<summary><strong>Codex (CLI &amp; IDE)</strong></summary>
-
-```bash
-codex mcp add basemind -- basemind serve
-```
-
-The `--` separator is required. This writes to `~/.codex/config.toml`, which the CLI and the IDE
-extension share:
-
-```toml
-[mcp_servers.basemind]
-command = "basemind"
-args = ["serve"]
-```
-
-</details>
-
-<details>
-<summary><strong>Gemini CLI</strong></summary>
-
-```bash
-gemini mcp add basemind basemind serve
-```
-
-Or edit `~/.gemini/settings.json` (or project `.gemini/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>GitHub Copilot CLI</strong></summary>
-
-Run `/mcp add` inside a Copilot CLI session (Tab between fields, **Ctrl+S** to save), or edit
-`~/.copilot/mcp-config.json`:
-
-```json
-{
-  "mcpServers": {
-    "basemind": {
-      "type": "local",
-      "command": "basemind",
-      "args": ["serve"],
-      "tools": ["*"]
-    }
-  }
-}
-```
-
-The `tools` key is required; `["*"]` exposes all basemind tools.
-
-</details>
-
-<details>
-<summary><strong>Factory Droid</strong></summary>
-
-```bash
-droid mcp add basemind "basemind serve"
-```
-
-Or use the `/mcp` manager inside droid, or edit `~/.factory/mcp.json` (user) or `.factory/mcp.json`
-(project):
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "type": "stdio", "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Cline</strong></summary>
-
-Click the **MCP Servers** icon → **Configure** → **Configure MCP Servers**, then add to
-`cline_mcp_settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "basemind": { "command": "basemind", "args": ["serve"] }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Continue</strong></summary>
-
-Create `.continue/mcpServers/basemind.yaml` (MCP works in **agent** mode):
-
-```yaml
-name: basemind
-version: 0.0.1
-schema: v1
-mcpServers:
-  - name: basemind
-    type: stdio
-    command: basemind
-    args:
-      - serve
-```
-
-</details>
-
-<details>
-<summary><strong>OpenCode (raw MCP, without the plugin)</strong></summary>
-
-Add to `opencode.json` — note the key is `mcp` and `command` is an array:
-
-```json
-{
-  "mcp": {
-    "basemind": {
-      "type": "local",
-      "command": ["basemind", "serve"],
-      "enabled": true
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Any other MCP client</strong></summary>
-
-basemind speaks MCP over stdio. Point your client's server config at the command `basemind` with
-args `["serve"]` (the generic block above). Anything that can launch a stdio MCP subprocess works.
-
-</details>
-
-### As a CLI
-
-The standalone binary plus the `basemind-cli` skill — for scripting, headless runs, and CI. Same
-`.basemind/` index and the same tools as MCP, driven from the shell. [Install the
-binary](#install-the-binary), then:
-
-```bash
-basemind scan                                 # index the working tree once
-basemind query outline path/file.rs           # inspect file structure
-basemind query symbol "parseQuery"            # find a symbol by name
-basemind query references "processFile"       # find all call sites
-basemind git blame-file src/main.rs           # per-line blame
-basemind cache gc                             # reclaim orphaned blobs
-basemind rescan src/main.rs                   # incremental re-index of one path
-basemind watch                                # live re-index on change (no MCP server)
-```
-
-See the [CLI command reference](#cli-command-reference) below for the full command surface.
-
-### MCP vs CLI
-
-- **MCP**: wired as in-session tool calls. Zero config beyond registration. Best for interactive
-  agent workflows.
-- **CLI**: scriptable, headless, CI-friendly. Best for batch queries, integration into non-MCP
-  harnesses, and when you want to control tool routing explicitly.
-
-The choice is not exclusive — the CLI opens the index read-only while `basemind serve` watches and
-incrementally updates it, so use MCP for interactive sessions and the CLI for scripting in the same
-repo at the same time.
-
-### Statusline
-
-To enable the live statusline in Claude Code (MCP only), run `/bm-statusline` once. This is a one-time
-opt-in because Claude Code plugins cannot set the main statusline — it is a platform limitation, not a basemind choice:
-
-- The plugin manifest has no `statusLine` field.
-- A plugin-shipped `settings.json` honors only `agent` and `subagentStatusLine`; any `statusLine` key is ignored.
-- Hooks communicate via stdout/stderr only — they cannot write to `~/.claude/settings.json`.
-
-`/bm-statusline` works because Claude (the agent) performs the settings edit on your behalf, writing
-an **absolute** path into `~/.claude/settings.json`. After that it persists across sessions.
-
-It renders two lines — a context line (model · output-style · dir · branch · context%) and the
-basemind line below it:
+It shows two lines:
 
 ```text
 Opus · basemind · ⎇ main · 12% ctx
 ◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved  │  ✉ 3 @reviewer
 ```
 
-The state dot is green (serve active / scan < 1 h), amber (idle or scan 1–24 h), or red (no serve
-and stale index). The second segment breaks activity down per capability — searches, git, docs,
-memory, web — showing only the buckets with calls today; then estimated tokens saved. When the
-agent-comms broker is running, a final `✉` segment shows your unread message count (bright when
-non-zero) and, in the full tier, your agent identity. Layout adapts to terminal width (`$COLUMNS`):
-the per-capability breakdown drops on narrow terminals. Override with
-`BASEMIND_STATUSLINE=full|compact|minimal` (default auto) or hide the context line with
-`BASEMIND_STATUSLINE_CONTEXT=0`.
+The dot is green when basemind is live and fresh, amber when idle, red when stale. The middle shows
+activity by type, then tokens saved, then unread messages. Adjust with
+`BASEMIND_STATUSLINE=full|compact|minimal`, or hide the top line with `BASEMIND_STATUSLINE_CONTEXT=0`.
+
+</details>
 
 ---
 
-## Why basemind, specifically
+## Demos
 
-### vs grep / ripgrep
+<!-- markdownlint-disable MD013 -->
 
-**What ripgrep does well:** blazing-fast line matching. **What it misses:**
+<p align="center"><img src="docs/media/demo.gif" alt="basemind CLI: scan, then symbol / reference / call-graph / blame queries" width="760"></p>
+<p align="center"><em>The same engine from the CLI — <code>scan</code>, then symbol / reference / call-graph / blame queries.</em></p>
 
-- Grep returns 50+ hits in docs, tests, comments, variable names — agent wastes context filtering noise.
-- No scope awareness: `parseQuery()` and `parseQuery` string both match; semantic signals lost.
-- Every query re-scans the disk; no pre-computed structures to leverage.
+<p align="center"><img src="docs/media/semantic-demo.gif" alt="Semantic search over the documents store" width="820"></p>
+<p align="center"><em>Searching documents by meaning, not keywords, across 90+ formats.</em></p>
 
-basemind: semantic-quality answers at grep speed via tree-sitter + indexed call sites.
+<!-- markdownlint-enable MD013 -->
 
-### vs vector-only RAG (LangChain / LlamaIndex DIY stacks)
+---
 
-**What vector RAG does well:** fuzzy document semantic search. **What it misses:**
+## How it works
 
-- Pure embeddings lose exact structure — which function calls which, which class implements which interface.
-- No line/column resolution — agent can't map vector hits back to code symbols.
-- No git history integration — "what changed recently?" and "who wrote this?" require separate systems.
+<details>
+<summary><strong>From one scan to instant answers</strong></summary>
 
-basemind: code structure + git history + vector memory + document search all in one, unified scope.
+`basemind scan` reads your project once, in parallel. It maps your code with
+[tree-sitter] (across [300+ languages][tslp]) and pulls text out of your documents with
+[kreuzberg], then saves the result to a local cache in `.basemind/`. After that, `basemind serve`
+keeps the map in memory and answers questions instantly — no re-reading the project for each one.
+When files change, it updates only what changed.
 
-### vs context7 / openai-codex / Aider's repo-map
+```mermaid
+flowchart LR
+  A(["Coding agent"])
+  R["Your project<br/>code · documents · git"]
+  S["basemind scan<br/>map code & read documents"]
+  D[(".basemind/<br/>local index")]
+  V["basemind serve<br/>answers questions"]
+  R --> S --> D --> V
+  A <-->|asks questions| V
+  classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
+  class S,V accent
+```
 
-**What these do well:** generate code-map summaries. **What they miss:**
+Search and memory are powered by a vector store ([LanceDB]).
 
-- Static snapshots — stale after the first edit.
-- No semantic indexing — every lookup re-parses or re-scans.
-- Human-focused output (markdown) instead of agent-facing structure (JSON tools).
+</details>
 
-basemind: live-updated index with sub-millisecond MCP tools, built for agents not humans.
+<details>
+<summary><strong>How agents coordinate</strong></summary>
 
-### vs GitHub native search
+A single shared service in the background lets agents talk to each other — even across different
+tools and different repos on the same machine. Agents join **rooms** automatically based on what
+they're working on, and each has a personal **inbox**. Messages come in two parts: a short headline
+(subject and sender) that's cheap to skim, and the full body, fetched only when an agent wants to
+read it. An agent never sees its own posts in its inbox.
 
-**What GitHub does well:** repository-wide fuzzy text search. **What it misses:**
+The plugin makes sure agents notice messages without being asked — through the built-in instructions,
+a notice at session start and each turn, and a quiet background check every few seconds.
 
-- Cloud-only — your code leaves the machine, latency is network-bound.
-- No local-editor integration — agent can't query in-progress edits before commit.
-- No cross-language polyglot support — each language's search tuned separately.
+```mermaid
+flowchart LR
+  A["Agent A<br/>Claude Code · repo X"]
+  B["Agent B<br/>Cursor · repo Y"]
+  BR["Shared comms service<br/>rooms · inboxes"]
+  A <-->|post · read| BR
+  B <-->|post · read| BR
+  classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
+  class BR accent
+```
 
-basemind: local-only, always-fresh index of your working tree, 300+ languages in one sweep.
+</details>
+
+<details>
+<summary><strong>Agent shells</strong> (opt-in)</summary>
+
+With the `shells` feature turned on, agents can open terminal sessions in the background, type into
+them, and read what's on screen — no extra tools to install. Sessions can be fully headless, or
+(on macOS and Linux) opened in a real terminal tab or window so you can watch along. When comms is
+also on, a spawned session and the agent that started it can message each other.
+
+</details>
+
+---
+
+## Token saving
+
+<details>
+<summary><strong>Good habits the plugin sets up for you</strong></summary>
+
+The plugin nudges agents toward the cheap path by default:
+
+- Get a file's outline before opening it — then read only the part you need.
+- Search for a definition instead of grepping for it.
+- Look up who calls a function instead of grepping for call sites.
+- Refresh the index after edits instead of restarting the server.
+- Don't re-read a file basemind already mapped.
+
+Optional guardrails enforce this at the moment a tool is used:
+
+- **Guard** — gently redirects `grep`-style searches to the matching basemind tool. On by default;
+  set `BASEMIND_GUARD=off` to disable, or `redirect` to block instead of nudge.
+- **Output compressor** — `BASEMIND_COMPRESS_OUTPUT=1` shrinks long command output. It never touches
+  anything that looks like a credential and leaves output alone if it can't help.
+- **Re-read shortcut** — `BASEMIND_DELTA_READS=1` shows just what changed when an agent re-reads a
+  file it already read this session.
+
+</details>
+
+<details>
+<summary><strong>Compression that understands code</strong></summary>
+
+basemind shrinks code by keeping the shape and dropping the bodies — function signatures and imports
+stay, the implementations go — because a signature is useless without its shape. For prose it does a
+light cleanup (extra whitespace, filler, repeated paragraphs). It reports honest before/after token
+counts, and the code version is exact — nothing is lost, just set aside. `expand` brings any one
+function's full body back when an agent actually needs it: compress to an outline, expand only what
+you need.
+
+</details>
 
 ---
 
 ## Performance
 
-Measured on Apple Silicon, release build, `--features full`, default `eager_l2 = true`. Cold
-filesystem cache adds ~50% to first scan; numbers below are warm steady-state.
+<details>
+<summary><strong>Scan speed &amp; query latency</strong></summary>
 
-### Scan throughput
+Measured on Apple Silicon with the full feature set. The first scan of a cold project is slower;
+these are warm, steady-state numbers.
 
-| Repo | Files | Language mix | Time |
+| Project | Files | Languages | Scan time |
 |---|---|---|---|
 | tokio | 859 | Rust | 0.2 s |
 | react | 7 061 | TS / JSX | 2.2 s |
@@ -799,41 +399,25 @@ filesystem cache adds ~50% to first scan; numbers below are warm steady-state.
 | requests | 2 195 | Python | 0.7 s |
 | gin | 1 217 | Go | 1.0 s |
 | ripgrep | 12 851 | Rust | 4.0 s |
-| ripgrep-shallow | 12 851 | Rust | 0.16 s |
 | TypeScript compiler | 81 324 | TS / JS / JSON | ~22 s |
 
-The TypeScript compiler is the worst case — 81k files scanned in 22 seconds. Most real repos sit
-between tokio and ripgrep. Re-scans skip unchanged content hashes, so warm rescans on edited
-working trees are typically dominated by the changed-set size, not repo size.
+The TypeScript compiler is the worst case — 81k files in about 22 seconds. Re-scans only look at
+what changed, so keeping a project up to date is far faster than the first scan.
 
-### Per-tool MCP latency
+Once running, most code questions answer in **under a millisecond**, symbol and call-graph searches
+in a few milliseconds, and document search in around 200 ms — because the map is held in memory
+rather than read from disk each time.
 
-Against the 81k-file TypeScript index:
-
-<!-- markdownlint-disable MD013 -->
-
-| Latency | Tools |
-|---|---|
-| < 1 ms | `outline`, `list_files`, `find_references`, `find_callers`, `find_implementations`, `hot_files`, `repo_info` |
-| 3–6 ms | `search_symbols`, `call_graph` |
-| 4–10 ms | `recent_changes`, `commits_touching`, `find_commits_by_path`, `symbol_history`, `diff_outline`, `diff_file` |
-| 20–25 ms | `status` |
-| 30–40 ms | `blame_file`, `blame_symbol` |
-| 40–200 ms | `workspace_grep` |
-| ~200 ms | `search_documents` |
-| 350–600 ms | `working_tree_status` |
-
-<!-- markdownlint-enable MD013 -->
-
-basemind preloads L1 outlines into RAM on `serve` start, so code-map queries hit no disk. The Fjall
-LSM inverted index handles ref/caller/impl lookups without scanning blobs. Git tools track `gix`
-walk cost; Fjall-backed tools dominate only on enormous histories.
+</details>
 
 ---
 
 ## Configuration
 
-Full config lives at `schema/basemind-config-v1.schema.json`. Minimal example:
+<details>
+<summary><strong>Config file &amp; overrides</strong></summary>
+
+A minimal config — the full schema is at `schema/basemind-config-v1.schema.json`:
 
 ```toml
 # .basemind/basemind.toml
@@ -844,129 +428,119 @@ eager_l2 = true
 enabled = true
 ```
 
-Per-query MCP overrides:
+Any tool call can override these settings for that one request, and settings map to environment
+variables in the obvious way: `--llm-api-key` becomes `BASEMIND_LLM_API_KEY`.
 
-```json
-{
-  "query": "what does kreuzberg do?",
-  "reranker_enabled": true,
-  "reranker_preset": "bge-reranker-base"
-}
-```
-
-Environment variables map mechanically: `--llm-api-key` ↔ `BASEMIND_LLM_API_KEY`. Every MCP tool
-accepts per-query overrides that win over file/env/CLI layers.
+</details>
 
 ---
 
-## CLI command reference
+## CLI reference
 
-CLI commands mirror MCP tools, grouped by capability. Run with `--json` for machine-readable output.
+<details>
+<summary><strong>Full command list</strong> — query · git · memory · suggestions · cache · web · comms</summary>
+
+CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 
 <!-- markdownlint-disable MD013 -->
 
-### Query commands (`basemind query`)
+**Query (`basemind query`)**
 
 | Command | Purpose |
 |---|---|
-| `outline <path> [--l2]` | Full per-file structure: symbols + line/col + signatures. `--l2` includes calls + docs. |
-| `symbol <needle> [--kind]` | Substring symbol lookup. Optional kind filter (`function`, `class`, etc.). |
-| `search <needle>` | Full-text regex search over indexed files. |
-| `references <name>` | Substring call-site lookup: all identifiers matching name. Case-sensitive. |
-| `callers <path> <name> [--kind]` | Callers of a specific definition (path + name + optional kind). |
-| `implementations <trait>` | Substring implementation lookup: types implementing/inheriting from names matching trait. |
-| `call-graph <name> [--direction --max-depth]` | BFS call graph (up or down). |
-| `grep <pattern> [--language --path-contains]` | Regex search with optional language / path filter. |
-| `list-files [--path-contains --language]` | Enumerate indexed paths. Optional filters. |
-| `status` | Repository overview: file count, language breakdown, cache directory. |
-| `repo-info` | Git info: current branch, HEAD, origin URL. |
-| `dependents <module>` | Modules that import a given module. |
+| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. |
+| `symbol <needle> [--kind]` | Find a symbol by name, optionally filtered by kind. |
+| `search <needle>` | Text search across indexed files. |
+| `references <name>` | Find everywhere a name is called. |
+| `callers <path> <name> [--kind]` | Find callers of one specific definition. |
+| `implementations <trait>` | Types that implement or inherit from a name. |
+| `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
+| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
+| `list-files [--path-contains --language]` | List indexed files. |
+| `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
+| `dependents <module>` | What imports a given module. |
 
-### Git commands (`basemind git`)
-
-| Command | Purpose |
-|---|---|
-| `working-tree-status` | `git status` summary with staged / unstaged classification. |
-| `recent-changes [--limit]` | Recent commits with paths + summaries. |
-| `commits-touching <path>` | Commits that modified a given path. |
-| `find-commits-by-path <pattern>` | Path-filtered commit log. |
-| `hot-files [--limit]` | Churn-ranked files (most frequently modified). |
-| `diff-file <path> <old> <new>` | File diff across revisions. |
-| `diff-outline <path> [--rev]` | Outline diff across revisions. |
-| `blame-file <path>` | Per-line blame (author, commit, message). |
-| `blame-symbol <path> <name>` | Per-symbol blame (when symbol last changed). |
-| `symbol-history <path> <name>` | Cross-commit structural hash of symbol (when body changed). |
-
-### Memory commands (`basemind memory`, requires `--features memory`)
+**Git (`basemind git`)**
 
 | Command | Purpose |
 |---|---|
-| `put <key> <value>` | Store a value (scoped to repo origin). |
-| `get <key>` | Retrieve exact key. |
-| `list [--prefix]` | List all keys or keys matching prefix. |
-| `search <query>` | Vector similarity search over stored values. |
-| `delete <key>` | Delete a key. |
-| `search-documents <query>` | Semantic search over documents + memory (scoped to repo). |
+| `working-tree-status` | What's staged and unstaged right now. |
+| `recent-changes [--limit]` | Recent commits with their files. |
+| `commits-touching <path>` / `find-commits-by-path <pattern>` | Commits for a path or pattern. |
+| `hot-files [--limit]` | The most frequently changed files. |
+| `diff-file <path> <old> <new>` / `diff-outline <path> [--rev]` | File or structure diff across commits. |
+| `blame-file <path>` / `blame-symbol <path> <name>` | Who last changed each line / a symbol. |
+| `symbol-history <path> <name>` | When a symbol's body changed over time. |
 
-### Governance commands (`basemind governance`)
-
-| Command | Purpose |
-|---|---|
-| `mine [--commits --min-count --min-confidence --max-files]` | Mine co-change skill/memory proposals from recent git history. |
-| `proposals [--kind --limit]` | List pending proposals (filter by `skill` / `memory`). |
-| `accept <id> [--key]` | Accept a proposal and promote it to a searchable memory. |
-| `reject <id> [--reason]` | Reject a proposal and suppress it from future mining. |
-
-### Cache commands (`basemind cache`)
+**Memory (`basemind memory`)**
 
 | Command | Purpose |
 |---|---|
-| `stats` | On-disk cache size + orphan accounting (blob store + index + git cache). |
-| `gc` | Reclaim orphaned blobs (safe to run while serve is running). |
-| `clear --component <comp>` | Clear component (`views`, `views:<name>`, `blobs`, `lance`, `git-cache`, `telemetry`, `all`). CLI only for destructive ops. |
+| `put <key> <value>` / `get <key>` / `delete <key>` | Store, retrieve, or remove a value. |
+| `list [--prefix]` | List keys, optionally by prefix. |
+| `search <query>` | Search stored values by meaning. |
+| `search-documents <query>` | Search documents and memory together. |
 
-### Web commands (`basemind web`, requires `--features crawl`)
-
-| Command | Purpose |
-|---|---|
-| `scrape <url>` | Ingest a single page (chunk → embed → LanceDB). |
-| `crawl <seed-url>` | Link-following crawl from a seed URL. |
-| `map <url>` | Sitemap + link discovery (no bodies). |
-
-### Comms commands (`basemind comms`)
+**Suggestions (`basemind governance`)**
 
 | Command | Purpose |
 |---|---|
-| `rooms` | List joined + joinable rooms (MCP `room_list`). |
-| `join <room>` / `leave <room>` | Join / leave a room. |
-| `room-create <room>` | Create a new room. |
-| `post <room> <subject> [--body … --reply-to … --tag …]` | Post a message. |
-| `history <room>` | Front-matter of recent messages (subject / from / id). |
-| `inbox [--mark-read]` | Front-matter of your inbox (MCP `inbox_read`). |
-| `read <id>` | Fetch one message body by id (MCP `message_get`). |
-| `register --name <handle>` / `agents` | Record your handle / list active agents. |
-| `status` / `start` / `stop` | Broker daemon: report status / ensure running / drain. |
+| `mine [--commits --min-count --min-confidence --max-files]` | Suggest notes from files that change together. |
+| `proposals [--kind --limit]` | List pending suggestions. |
+| `accept <id> [--key]` / `reject <id> [--reason]` | Keep a suggestion / dismiss it for good. |
 
-### Other commands
+**Cache (`basemind cache`)**
 
 | Command | Purpose |
 |---|---|
-| `scan` | Full index scan. |
-| `watch` | Live re-index on file change — standalone watcher, no MCP server. |
-| `serve [--no-watch]` | Start the MCP server. By default watches and incrementally refreshes the index in the background; `--no-watch` disables it for very large repos or CI. |
-| `init` | Initialize a `.basemind/` directory with a default config (optional — `scan` creates it). |
-| `lang <list\|install\|clean>` | Manage downloaded tree-sitter grammars (show / force-download / clear cache). |
-| `hook install` | Install a git pre-commit hook that runs `basemind scan`. |
-| `compress-output` | Compress verbose command output from stdin (output-compressor hook backend; fail-open, credential-preserving). |
-| `delta --old <path>` | Emit a compact line-diff from a prior file version (read-cache hook backend). |
-| `checkpoint` | Extract a credential-safe checkpoint (decisions / errors / changed files) from session text on stdin; changed files come from the git working tree, not the text. |
-| `detect-waste` | Flag wasteful tool usage (redundant reads, repeated queries, oversized reads) from a JSONL tool-call log on stdin. |
-| `telemetry` | Show per-tool telemetry histogram + estimated tokens saved. |
+| `stats` | How much space the cache uses. |
+| `gc` | Reclaim unused space (safe while the server runs). |
+| `clear --component <comp>` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). |
+
+**Web (`basemind web`)**
+
+| Command | Purpose |
+|---|---|
+| `scrape <url>` | Fetch and index a single page. |
+| `crawl <seed-url>` | Follow links from a starting URL. |
+| `map <url>` | Discover a site's pages without fetching bodies. |
+
+**Comms (`basemind comms`)**
+
+| Command | Purpose |
+|---|---|
+| `rooms` / `join <room>` / `leave <room>` / `room-create <room>` | List, join, leave, or create rooms. |
+| `post <room> <subject> [--body --reply-to --tag]` | Post a message. |
+| `history <room>` / `inbox [--mark-read]` | Recent messages in a room / your inbox. |
+| `read <id>` | Read one message in full. |
+| `register --name <handle>` / `agents` | Set your handle / list active agents. |
+| `status` / `start` / `stop` | The shared service: check, start, or stop it. |
+
+## Other
+
+| Command | Purpose |
+|---|---|
+| `scan` / `rescan <path>` | Full scan / update one path. |
+| `watch` | Keep the index fresh as files change (no server). |
+| `serve [--no-watch]` | Start the server (keeps the index fresh by default). |
+| `init` | Create a `.basemind/` folder with a default config (optional). |
+| `lang <list\|install\|clean>` | Manage downloaded language grammars. |
+| `hook install` | Add a git pre-commit hook that runs a scan. |
+| `compress-output` / `delta --old <path>` | Backends for the optional guardrails above. |
+| `checkpoint` / `detect-waste` | Summarize a session / flag wasteful tool use. |
+| `telemetry` | What's been queried and how many tokens were saved. |
 
 <!-- markdownlint-enable MD013 -->
+
+</details>
 
 ---
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+[tree-sitter]: https://tree-sitter.github.io/tree-sitter/
+[tslp]: https://github.com/Goldziher/tree-sitter-language-pack
+[kreuzberg]: https://github.com/Goldziher/kreuzberg
+[LanceDB]: https://github.com/lancedb/lancedb

@@ -15,10 +15,14 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
-use super::daemon::Broker;
+use super::daemon::{Broker, Session};
 use super::protocol::{CommsOut, CommsRequest};
+
+/// Notification fan-out buffer depth per served link. Shared by every socket-style front-end
+/// (UDS, named pipe) so they bound the per-link notification backlog identically.
+pub(crate) const LINK_CHANNEL_DEPTH: usize = 256;
 
 /// Maximum accepted frame size on the wire. A defensive cap so a malformed or hostile length
 /// prefix cannot drive an unbounded allocation. 16 MiB comfortably exceeds any realistic
@@ -58,4 +62,44 @@ pub trait CommsFrontend: Send {
         broker: Arc<Broker>,
         shutdown: watch::Receiver<bool>,
     ) -> impl Future<Output = std::io::Result<()>> + Send;
+}
+
+/// Drive one socket-style link to completion: pump requests through the broker, write each
+/// response back, and drain the broker's per-link notification sink onto the same link.
+///
+/// Shared by the Unix-socket and Windows named-pipe front-ends — both frame [`CommsRequest`] /
+/// [`CommsOut`] identically over an `AsyncRead + AsyncWrite` stream, so the only per-transport
+/// difference is the concrete [`CommsLink`]. The loop registers the link with the broker's idle
+/// reaper on entry and deregisters it on exit (an orphaned daemon with no live links and no
+/// recent activity self-terminates instead of lingering).
+pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L) {
+    broker.link_connected();
+    let (link_tx, mut link_rx) = mpsc::channel::<CommsOut>(LINK_CHANNEL_DEPTH);
+    let mut session = Session::default();
+    loop {
+        tokio::select! {
+            inbound = link.recv() => {
+                match inbound {
+                    Ok(Some(req)) => {
+                        let resp = broker.handle(req, &mut session, &link_tx).await;
+                        if link.send(CommsOut::Response(resp)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            note = link_rx.recv() => {
+                match note {
+                    Some(out) => {
+                        if link.send(out).await.is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+    broker.link_disconnected();
 }

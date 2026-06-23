@@ -11,7 +11,7 @@
 //! and never bodies; `read <message_id>` is the only verb that prints a body. `--json` emits
 //! the structured response for every verb.
 
-#![cfg(all(feature = "comms", unix))]
+#![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::io::Write;
 use std::path::Path;

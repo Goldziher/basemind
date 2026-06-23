@@ -18,7 +18,9 @@ use directories::ProjectDirs;
 
 /// Subdirectory under the user data dir holding the comms socket + store.
 const COMMS_SUBDIR: &str = "comms";
-/// The Unix socket file name within [`COMMS_SUBDIR`].
+/// The Unix socket file name within [`COMMS_SUBDIR`]. Unused on Windows, where the endpoint is
+/// a named pipe resolved by [`comms_socket_path`] rather than a file under `comms_dir`.
+#[cfg(not(windows))]
 const SOCKET_FILE: &str = "comms.sock";
 /// Octal mode for the socket + comms dir: owner-only (rwx for the dir, rw for the socket).
 #[cfg(unix)]
@@ -189,6 +191,50 @@ pub fn bind_listener(
     }
 }
 
+/// Bind the singleton named-pipe server on Windows, reclaiming a stale name only after a probe
+/// confirms no live daemon answers. Returns the first pipe instance (creating it with
+/// `first_pipe_instance(true)` IS the lock: a second `create` with that flag fails while the
+/// first instance lives).
+///
+/// `probe` is invoked on the existing pipe path to decide live-vs-stale, mirroring the Unix
+/// contract. Must be called inside a tokio runtime — `ServerOptions::create` registers the pipe
+/// handle with the I/O reactor (like the Unix `from_std`).
+#[cfg(windows)]
+pub fn bind_listener(
+    socket_path: &Path,
+    probe: impl Fn(&Path) -> bool,
+) -> Result<tokio::net::windows::named_pipe::NamedPipeServer, SingletonError> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let pipe_name = socket_path.as_os_str();
+    let io_err = |source: std::io::Error| SingletonError::Io {
+        path: socket_path.to_path_buf(),
+        source,
+    };
+
+    // First attempt: claiming the first instance wins the lock outright.
+    match ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(pipe_name)
+    {
+        Ok(server) => Ok(server),
+        // ERROR_ACCESS_DENIED: another daemon already holds the first instance.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            if probe(socket_path) {
+                return Err(SingletonError::AlreadyRunning(socket_path.to_path_buf()));
+            }
+            // The holder is dead but the pipe lingers in the brief window before its handles
+            // drop; retry the create once. (No explicit unlink: named pipes vanish with their
+            // owner, so there is no stale file to remove.)
+            ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(pipe_name)
+                .map_err(io_err)
+        }
+        Err(source) => Err(io_err(source)),
+    }
+}
+
 /// Ensure a daemon is running and reachable: probe-connect + ping; if that succeeds, return
 /// without doing anything. Otherwise spawn `basemind comms daemon` detached and poll the
 /// socket until it answers (or the timeout elapses).
@@ -256,7 +302,41 @@ pub fn probe_alive(socket_path: &Path) -> bool {
     stream.read_exact(&mut prefix).is_ok()
 }
 
-#[cfg(not(unix))]
+/// Probe whether a daemon is alive at `socket_path` (a named pipe) on Windows. A
+/// `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so we open it blocking and write
+/// the SAME framed `Ping` the Unix probe sends (u32-be length prefix + msgpack), then read a
+/// 4-byte response prefix. Any successful read ⇒ alive. A transient busy/not-found at open time
+/// ⇒ not alive (the caller treats that as "reclaimable").
+#[cfg(windows)]
+pub fn probe_alive(socket_path: &Path) -> bool {
+    use std::io::{Read, Write};
+
+    let Ok(mut stream) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(socket_path)
+    else {
+        return false;
+    };
+
+    // Frame a Ping request: u32-be length prefix + msgpack body (matches LengthDelimitedCodec).
+    let body = match rmp_serde::to_vec_named(&super::protocol::CommsRequest::Ping) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let len = match u32::try_from(body.len()) {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    if stream.write_all(&len.to_be_bytes()).is_err() || stream.write_all(&body).is_err() {
+        return false;
+    }
+    // Read the response frame's length prefix; any well-formed reply means "alive".
+    let mut prefix = [0u8; 4];
+    stream.read_exact(&mut prefix).is_ok()
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn probe_alive(_socket_path: &Path) -> bool {
     false
 }
@@ -287,6 +367,19 @@ pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
                 Ok(())
             });
         }
+    }
+    // Detach the daemon from the spawning console on Windows: a new process group + no console
+    // window so a parent exit (or Ctrl-C in the parent's console) does not take the daemon down.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CreateProcess` flag: the child has no controlling console.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        /// `CreateProcess` flag: the child starts a new process group (Ctrl-C/Break isolation).
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        /// `CreateProcess` flag: do not allocate a console window for the child.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     }
     command.spawn()?;
     Ok(())

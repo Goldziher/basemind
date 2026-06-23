@@ -9,7 +9,10 @@
 use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
+#[cfg(unix)]
+use tokio::net::UnixStream as PlatformStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient as PlatformStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
@@ -23,6 +26,11 @@ use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
 
 const READ_CHUNK: usize = 8 * 1024;
+
+/// How long the Windows named-pipe dial retries a busy pipe before giving up. Bounds the spin
+/// while the server mints its next instance during a client hand-off.
+#[cfg(windows)]
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Strategy for (re)spawning the daemon when a reconnect finds the socket dead. Defaults to the
 /// production [`singleton::spawn_detached_daemon`]; tests inject a closure that launches the real
@@ -73,7 +81,7 @@ pub enum CommsClientError {
 
 /// A connected, said-hello client to the comms broker.
 pub struct CommsClient {
-    stream: UnixStream,
+    stream: PlatformStream,
     codec: LengthDelimitedCodec,
     read_buf: BytesMut,
     agent: AgentId,
@@ -236,16 +244,51 @@ impl CommsClient {
         Self::connect_with_session(&paths, agent, remote, cwd, SessionContext::from_env()).await
     }
 
-    /// Dial the socket and build the framing codec. No handshake yet.
+    /// Dial the endpoint and build the framing codec. No handshake yet. The connect is
+    /// platform-specific (Unix socket vs Windows named pipe); the codec is identical.
     async fn dial(
         paths: &CommsPaths,
-    ) -> Result<(UnixStream, LengthDelimitedCodec), CommsClientError> {
-        let stream = UnixStream::connect(&paths.socket_path)
-            .await
-            .map_err(|source| daemon_unreachable_error(&paths.socket_path, source))?;
+    ) -> Result<(PlatformStream, LengthDelimitedCodec), CommsClientError> {
+        let stream = Self::connect_stream(&paths.socket_path).await?;
         let mut codec = LengthDelimitedCodec::new();
         codec.set_max_frame_length(MAX_FRAME_BYTES);
         Ok((stream, codec))
+    }
+
+    /// Open the platform stream to the daemon endpoint.
+    #[cfg(unix)]
+    async fn connect_stream(socket_path: &Path) -> Result<PlatformStream, CommsClientError> {
+        PlatformStream::connect(socket_path)
+            .await
+            .map_err(|source| daemon_unreachable_error(socket_path, source))
+    }
+
+    /// Open the named-pipe client to the daemon endpoint. A busy pipe (`ERROR_PIPE_BUSY`, 231)
+    /// means the server is mid-`connect()` for another client; retry on a short cadence up to the
+    /// connect timeout. Any other error (notably a missing pipe ⇒ no daemon) is surfaced through
+    /// [`daemon_unreachable_error`].
+    #[cfg(windows)]
+    async fn connect_stream(socket_path: &Path) -> Result<PlatformStream, CommsClientError> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+
+        /// `ERROR_PIPE_BUSY`: all pipe instances are busy; the server has not yet minted the next.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        /// Poll cadence while a busy pipe spins up its next instance.
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
+        loop {
+            match ClientOptions::new().open(socket_path) {
+                Ok(client) => return Ok(client),
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(daemon_unreachable_error(socket_path, e));
+                    }
+                    tokio::time::sleep(RETRY_INTERVAL).await;
+                }
+                Err(source) => return Err(daemon_unreachable_error(socket_path, source)),
+            }
+        }
     }
 
     /// Send the `Hello` and validate the `Welcome`, using this client's retained scope context.

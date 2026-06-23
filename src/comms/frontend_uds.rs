@@ -25,16 +25,16 @@ mod imp {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{UnixListener, UnixStream};
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::watch;
     use tokio_util::bytes::{Bytes, BytesMut};
     use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
-    use crate::comms::daemon::{Broker, Session};
+    use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest};
-    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred};
+    use crate::comms::transport::{
+        CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link,
+    };
 
-    /// Notification fan-out buffer per link. Mirrors the in-process depth.
-    const CHANNEL_DEPTH: usize = 256;
     /// Read chunk size pulled from the socket per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
 
@@ -149,7 +149,7 @@ mod imp {
                             continue;
                         }
                         let broker = broker.clone();
-                        tokio::spawn(serve_uds_link(broker, UdsLink::new(stream, peer)));
+                        tokio::spawn(serve_link(broker, UdsLink::new(stream, peer)));
                     }
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
@@ -162,42 +162,6 @@ mod imp {
             let _ = std::fs::remove_file(&self.socket_path);
             Ok(())
         }
-    }
-
-    /// Drive one Unix-socket link: pump requests through the broker, write responses, and
-    /// drain the broker's notification sink for this link onto the same socket.
-    async fn serve_uds_link(broker: Arc<Broker>, mut link: UdsLink) {
-        // Track the link for the idle reaper: a daemon with no open links and no recent
-        // activity self-terminates instead of lingering orphaned (reparented to pid 1).
-        broker.link_connected();
-        let (link_tx, mut link_rx) = mpsc::channel::<CommsOut>(CHANNEL_DEPTH);
-        let mut session = Session::default();
-        loop {
-            tokio::select! {
-                inbound = link.recv() => {
-                    match inbound {
-                        Ok(Some(req)) => {
-                            let resp = broker.handle(req, &mut session, &link_tx).await;
-                            if link.send(CommsOut::Response(resp)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(None) | Err(_) => break,
-                    }
-                }
-                note = link_rx.recv() => {
-                    match note {
-                        Some(out) => {
-                            if link.send(out).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-            }
-        }
-        broker.link_disconnected();
     }
 
     /// Read the peer's credentials from a connected stream. Best-effort: returns an empty

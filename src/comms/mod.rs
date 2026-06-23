@@ -8,29 +8,31 @@
 
 pub mod ids;
 
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod cursor;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_inproc;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod frontend_named_pipe;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_uds;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod keys;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod model;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod scope;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod store;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
 
 /// Schema version for the comms store, bound to the release minor exactly like
