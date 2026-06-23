@@ -9,14 +9,14 @@
 //! 2. **Whole-component cleanup** ([`clear_component`]) and **introspection**
 //!    ([`cache_stats`]) for the CLI / MCP admin surface (wired up by separate workstreams).
 //!
-//! ## Why a single content hash addresses three blob suffixes
+//! ## Why a single content hash addresses both blob suffixes
 //!
 //! Each [`crate::store::FileEntry`] carries exactly one `hash_hex` — the content hash of the
-//! source file. The scanner writes up to three blobs for that file, all keyed by the *same*
-//! hash with different suffixes: `<hash>.l1.msgpack`, `<hash>.l2.msgpack`, and (documents
-//! build) `<hash>.doc.msgpack`. So the set of live blob stems is exactly the set of
-//! `hash_hex` values across all entries of all views — there is no separate `l1_hash` /
-//! `l2_hash` / `doc_hash` to union.
+//! source file. The scanner writes up to two blobs for that file, both keyed by the *same*
+//! hash with different suffixes: `<hash>.fm.msgpack` (the combined L1 + L2 filemap) and
+//! (documents build) `<hash>.doc.msgpack`. So the set of live blob stems is exactly the set
+//! of `hash_hex` values across all entries of all views — there is no separate `fm_hash` /
+//! `doc_hash` to union.
 
 use std::path::Path;
 
@@ -28,9 +28,15 @@ use crate::store::{
     BLOBS_DIR, INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index, wipe_blobs,
 };
 
-/// The three blob filename suffixes the scanner emits, all keyed by one content hash.
+/// The blob filename suffixes the scanner emits today, both keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem.
-const BLOB_SUFFIXES: [&str; 3] = [".l1.msgpack", ".l2.msgpack", ".doc.msgpack"];
+const BLOB_SUFFIXES: [&str; 2] = [".fm.msgpack", ".doc.msgpack"];
+
+/// Pre-0.9 split-tier blob suffixes (`<hash>.l1.msgpack` / `<hash>.l2.msgpack`), superseded by
+/// the combined `.fm.msgpack` frame. No current code writes or reads these, so any left on disk
+/// after a schema-bump refresh are dead format — the sweep deletes them on sight regardless of
+/// whether their stem is still referenced (the live `.fm` blob shares that stem).
+const LEGACY_BLOB_SUFFIXES: [&str; 2] = [".l1.msgpack", ".l2.msgpack"];
 
 /// Telemetry sink filename under `.basemind/`. Mirrors
 /// [`crate::mcp::telemetry::TELEMETRY_FILENAME`]; duplicated here to avoid a dependency on
@@ -221,9 +227,24 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        // Pre-0.9 split-tier blobs are dead format — reclaim unconditionally (their stem may
+        // still be referenced by the live combined `.fm` blob, so the stem check below would
+        // wrongly keep them).
+        let is_legacy = LEGACY_BLOB_SUFFIXES
+            .iter()
+            .any(|suffix| file_name.ends_with(suffix));
         let Some(stem) = blob_stem(file_name) else {
-            // Not a recognized blob (e.g. a `.tmp` writer leftover) — count but never delete.
             report.scanned += 1;
+            if is_legacy {
+                let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                std::fs::remove_file(&path).map_err(|source| GcError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                report.removed += 1;
+                report.bytes_freed += size;
+            }
+            // Otherwise not a recognized blob (e.g. a `.tmp` writer leftover) — never delete.
             continue;
         };
         report.scanned += 1;
@@ -498,16 +519,14 @@ mod tests {
         let referenced_stem = "a".repeat(64);
         let orphan_stem = "b".repeat(64);
 
-        // Referenced blob: write l1 + l2 for the live stem.
-        fs::write(blobs.join(format!("{referenced_stem}.l1.msgpack")), b"l1")
-            .expect("write ref l1");
-        fs::write(blobs.join(format!("{referenced_stem}.l2.msgpack")), b"l2-")
-            .expect("write ref l2");
-        // Orphan blob: a single l1 with a known byte length.
+        // Referenced blob: one combined filemap for the live stem.
+        fs::write(blobs.join(format!("{referenced_stem}.fm.msgpack")), b"fm")
+            .expect("write ref fm");
+        // Orphan blob: a single filemap with a known byte length.
         let orphan_bytes = b"orphan-blob-bytes";
         let orphan_len = orphan_bytes.len() as u64;
         fs::write(
-            blobs.join(format!("{orphan_stem}.l1.msgpack")),
+            blobs.join(format!("{orphan_stem}.fm.msgpack")),
             orphan_bytes,
         )
         .expect("write orphan");
@@ -557,7 +576,7 @@ mod tests {
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
         let report = gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
 
-        assert_eq!(report.scanned, 3, "two ref blobs + one orphan inspected");
+        assert_eq!(report.scanned, 2, "one ref blob + one orphan inspected");
         assert_eq!(report.removed, 1, "only the orphan removed");
         assert_eq!(
             report.bytes_freed, fx.orphan_len,
@@ -567,21 +586,64 @@ mod tests {
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
         assert!(
             blobs
-                .join(format!("{}.l1.msgpack", fx.referenced_stem))
+                .join(format!("{}.fm.msgpack", fx.referenced_stem))
                 .exists(),
-            "referenced l1 survives"
-        );
-        assert!(
-            blobs
-                .join(format!("{}.l2.msgpack", fx.referenced_stem))
-                .exists(),
-            "referenced l2 survives"
+            "referenced filemap survives"
         );
         assert!(
             !blobs
-                .join(format!("{}.l1.msgpack", fx.orphan_stem))
+                .join(format!("{}.fm.msgpack", fx.orphan_stem))
                 .exists(),
-            "orphan l1 gone"
+            "orphan filemap gone"
+        );
+    }
+
+    #[test]
+    fn should_reclaim_legacy_split_tier_blobs_even_when_stem_is_referenced() {
+        // A pre-0.9 `.l1`/`.l2` pair left on disk after the schema-bump refresh shares its stem
+        // with the live combined `.fm` blob — the stem IS referenced, yet the dead-format pair
+        // must still be reaped.
+        let fx = build_fixture();
+        let blobs = fx.basemind_dir.join(BLOBS_DIR);
+        fs::write(
+            blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)),
+            b"legacy-l1",
+        )
+        .expect("write legacy l1");
+        fs::write(
+            blobs.join(format!("{}.l2.msgpack", fx.referenced_stem)),
+            b"legacy-l2",
+        )
+        .expect("write legacy l2");
+
+        let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+        assert!(
+            referenced.contains(&fx.referenced_stem),
+            "stem is referenced by the live index"
+        );
+        let report = gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
+
+        assert_eq!(
+            report.removed, 3,
+            "two legacy split blobs + the orphan filemap"
+        );
+        assert!(
+            !blobs
+                .join(format!("{}.l1.msgpack", fx.referenced_stem))
+                .exists(),
+            "legacy l1 reclaimed despite a referenced stem"
+        );
+        assert!(
+            !blobs
+                .join(format!("{}.l2.msgpack", fx.referenced_stem))
+                .exists(),
+            "legacy l2 reclaimed despite a referenced stem"
+        );
+        assert!(
+            blobs
+                .join(format!("{}.fm.msgpack", fx.referenced_stem))
+                .exists(),
+            "the live combined filemap survives"
         );
     }
 
@@ -590,7 +652,7 @@ mod tests {
         let fx = build_fixture();
 
         let before = cache_stats(&fx.basemind_dir).expect("stats before");
-        assert_eq!(before.blob_count, 3, "three blob files on disk");
+        assert_eq!(before.blob_count, 2, "two blob files on disk");
         assert_eq!(before.orphan_blob_count, 1, "one orphan before GC");
         assert_eq!(
             before.per_view_file_count,
@@ -601,7 +663,7 @@ mod tests {
         run_gc(&fx.basemind_dir).expect("gc");
 
         let after = cache_stats(&fx.basemind_dir).expect("stats after");
-        assert_eq!(after.blob_count, 2, "orphan reaped");
+        assert_eq!(after.blob_count, 1, "orphan reaped");
         assert_eq!(after.orphan_blob_count, 0, "no orphans remain");
     }
 

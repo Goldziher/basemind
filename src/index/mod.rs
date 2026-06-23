@@ -1,7 +1,8 @@
 //! Fjall-backed inverted index over the msgpack content-addressed blob store.
 //!
-//! The blob store (`.basemind/blobs/<hash>.l1.msgpack`) stays canonical — it holds the per-
-//! file extracted maps in their full shape. This module adds a *secondary* index on top:
+//! The blob store (`.basemind/blobs/<hash>.fm.msgpack`) stays canonical — it holds the per-
+//! file extracted maps (L1 outline + L2 calls) in their full shape. This module adds a
+//! *secondary* index on top:
 //! six Fjall keyspaces that let MCP tools answer "who calls `foo`?" or "what imports
 //! `requests`?" via prefix range scans instead of linear sweeps over the in-RAM map.
 //!

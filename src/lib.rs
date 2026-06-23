@@ -25,6 +25,7 @@ pub mod scanner;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
 pub mod store;
+pub mod store_blob;
 pub mod store_gc;
 pub mod textcompress;
 #[cfg(feature = "crawl")]

@@ -40,7 +40,7 @@ for entry in "${REPOS[@]}"; do
   echo "==> $name — cached scan"
   /usr/bin/time -p "$BIN" scan 2>&1 | tail -5
 
-  blob_count="$(find .basemind/blobs -type f -name '*.l1.msgpack' | wc -l | tr -d ' ')"
+  blob_count="$(find .basemind/blobs -type f -name '*.fm.msgpack' | wc -l | tr -d ' ')"
   idx_bytes="$(wc -c <.basemind/index.msgpack | tr -d ' ')"
   echo "    blobs=$blob_count  index_bytes=$idx_bytes"
 

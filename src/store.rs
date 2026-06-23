@@ -13,6 +13,12 @@ use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
 use crate::path::RelPath;
+#[cfg(feature = "documents")]
+use crate::store_blob::write_blob;
+use crate::store_blob::{
+    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists,
+    write_bytes_atomic,
+};
 
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
@@ -95,6 +101,10 @@ pub enum StoreError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("schema version mismatch: stored {found}, current {expected}")]
     SchemaMismatch { found: u16, expected: u16 },
+    #[error("corrupt filemap blob at {path}: malformed frame header")]
+    CorruptBlob { path: PathBuf },
+    #[error("filemap L1 tier exceeds the 4 GiB frame limit")]
+    BlobTooLarge,
     #[error("{}", lock_contention_message(.path, .holder))]
     Locked {
         /// The `.lock` path whose acquisition failed.
@@ -349,28 +359,19 @@ impl Store {
         Ok(self.lance.as_ref().expect("lance store just populated"))
     }
 
-    pub fn blob_path_l1(&self, hash: &Hash) -> PathBuf {
+    pub fn blob_path_fm(&self, hash: &Hash) -> PathBuf {
         let buf = hashing::hex_buf(hash);
-        self.blob_path_l1_hex(hashing::hex_str(&buf))
+        self.blob_path_fm_hex(hashing::hex_str(&buf))
     }
 
-    pub fn blob_path_l2(&self, hash: &Hash) -> PathBuf {
-        let buf = hashing::hex_buf(hash);
-        self.blob_path_l2_hex(hashing::hex_str(&buf))
-    }
-
-    /// Build the L1 blob path from an already-hex-encoded hash. Skips the encode round-trip
-    /// when the caller starts from a `FileEntry::hash_hex`.
-    pub fn blob_path_l1_hex(&self, hash_hex: &str) -> PathBuf {
+    /// Build the combined-filemap blob path from an already-hex-encoded hash. One blob per
+    /// source file holds both the L1 outline and (when extracted) the L2 calls, framed as
+    /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
+    /// the caller starts from a `FileEntry::hash_hex`.
+    pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
         self.basemind_dir
             .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.l1.msgpack"))
-    }
-
-    pub fn blob_path_l2_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.l2.msgpack"))
+            .join(format!("{hash_hex}.fm.msgpack"))
     }
 
     #[cfg(feature = "documents")]
@@ -386,64 +387,54 @@ impl Store {
             .join(format!("{hash_hex}.doc.msgpack"))
     }
 
-    pub fn read_l1(&self, hash: &Hash) -> Result<Option<FileMapL1>, StoreError> {
-        let buf = hashing::hex_buf(hash);
-        self.read_l1_by_hex(hashing::hex_str(&buf))
-    }
-
-    pub fn read_l2(&self, hash: &Hash) -> Result<Option<FileMapL2>, StoreError> {
-        let buf = hashing::hex_buf(hash);
-        self.read_l2_by_hex(hashing::hex_str(&buf))
-    }
-
-    /// Read an L1 blob given its already-hex-encoded hash. Avoids the
-    /// `hex → [u8;32] → hex` decode-encode cycle that the `read_l1(&Hash)` path
-    /// goes through when callers (CLI query, MCP) already hold the hex string.
+    /// Read the L1 outline from the combined-filemap blob. Deserializes only the L1 slice of
+    /// the frame — the trailing L2 bytes are read off disk but never decoded, so the common
+    /// outline-only read path (`MapCache` build, `search_symbols`) pays no L2 decode cost.
     pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
-        let path = self.blob_path_l1_hex(hash_hex);
-        if !path.exists() {
+        let path = self.blob_path_fm_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
-        }
-        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let map: FileMapL1 = rmp_serde::from_slice(&bytes)?;
+        };
+        let map = parse_filemap_l1(&path, &bytes)?;
         check_schema(map.schema_ver)?;
         Ok(Some(map))
     }
 
+    /// Read the L2 calls from the combined-filemap blob. Returns `Ok(None)` both when the blob
+    /// is absent and when it carries no L2 tier (the file was scanned with `eager_l2 = false`
+    /// or L2 extraction failed) — callers escalate via `query::file_outline_l2`.
     pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
-        let path = self.blob_path_l2_hex(hash_hex);
-        if !path.exists() {
+        let path = self.blob_path_fm_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
             return Ok(None);
+        };
+        match parse_filemap_l2(&path, &bytes)? {
+            Some(map) => {
+                check_schema(map.schema_ver)?;
+                Ok(Some(map))
+            }
+            None => Ok(None),
         }
-        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let map: FileMapL2 = rmp_serde::from_slice(&bytes)?;
-        check_schema(map.schema_ver)?;
-        Ok(Some(map))
     }
 
-    pub fn write_l1(&self, hash: &Hash, map: &FileMapL1) -> Result<(), StoreError> {
-        write_blob(self.blob_path_l1(hash), map)
-    }
-
-    pub fn write_l2(&self, hash: &Hash, map: &FileMapL2) -> Result<(), StoreError> {
-        write_blob(self.blob_path_l2(hash), map)
-    }
-
-    /// Write an L1 blob given its already-hex-encoded hash. Mirrors [`Self::write_l1`] but
-    /// skips the `Hash → hex` encode the scanner already performed for the unchanged-file check.
-    pub fn write_l1_hex(&self, hash_hex: &str, map: &FileMapL1) -> Result<(), StoreError> {
-        write_blob(self.blob_path_l1_hex(hash_hex), map)
-    }
-
-    /// Write an L2 blob given its already-hex-encoded hash. See [`Self::write_l1_hex`].
-    pub fn write_l2_hex(&self, hash_hex: &str, map: &FileMapL2) -> Result<(), StoreError> {
-        write_blob(self.blob_path_l2_hex(hash_hex), map)
+    /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed
+    /// blob (`[l1_len][l1][l2|empty]`), so the default eager-L2 scan does one `open` + `write`
+    /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
+    pub fn write_filemap_hex(
+        &self,
+        hash_hex: &str,
+        l1: &FileMapL1,
+        l2: Option<&FileMapL2>,
+    ) -> Result<(), StoreError> {
+        let path = self.blob_path_fm_hex(hash_hex);
+        // Content-addressed skip: an existing frame at this path holds the extraction of
+        // identical source bytes. Only short-circuit when its schema already matches — a
+        // schema bump must overwrite the stale frame in place (see `write_blob`).
+        if path.exists() && peek_filemap_schema(&path) == Some(SCHEMA_VER) {
+            return Ok(());
+        }
+        let bytes = frame_filemap(l1, l2)?;
+        write_bytes_atomic(path, &bytes)
     }
 
     #[cfg(feature = "documents")]
@@ -700,83 +691,6 @@ fn read_lock_meta(basemind_dir: &Path) -> Option<LockMeta> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// Minimal peek struct: decode only a blob's leading `schema_ver` field. Every blob map
-/// (`FileMapL1` / `FileMapL2` / `FileMapDoc`) carries `schema_ver: u16` first; rmp-serde
-/// decodes named maps by field name and ignores the remaining (unknown-to-us) fields, so
-/// this reads the version without paying to decode the whole blob.
-#[derive(Deserialize)]
-struct BlobSchemaPeek {
-    schema_ver: u16,
-}
-
-/// Cheaply read a blob's persisted `schema_ver`. Returns `None` if the blob is unreadable
-/// or its leading field can't be decoded (treated as "not current", forcing a rewrite).
-fn peek_blob_schema(path: &Path) -> Option<u16> {
-    let bytes = std::fs::read(path).ok()?;
-    rmp_serde::from_slice::<BlobSchemaPeek>(&bytes)
-        .ok()
-        .map(|peek| peek.schema_ver)
-}
-
-thread_local! {
-    /// Per-thread `"<pid>.<thread-id>.tmp"` suffix for blob tmp files. The process id and
-    /// thread id never change for the lifetime of a worker thread, so we build the string
-    /// once and reuse it across every `write_blob` call on that thread.
-    static TMP_SUFFIX: String = format!(
-        "{}.{:?}.tmp",
-        std::process::id(),
-        std::thread::current().id()
-    );
-}
-
-fn write_blob<T: Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
-    // Content-addressed: the blob is keyed by *source-content* hash, so an existing blob at
-    // this path holds the extraction of identical source bytes. If it was written under the
-    // current `SCHEMA_VER`, another worker (or a prior compatible scan) already produced
-    // identical bytes — skip the serialize + write + rename, and avoid duplicate-hash races
-    // between parallel workers.
-    //
-    // But a schema bump leaves stale-schema blobs at the *same* path (the source content,
-    // hence the hash, is unchanged across the bump). The durable-refresh flow re-extracts
-    // every file and relies on this write to OVERWRITE the stale blob in place — so we must
-    // NOT skip when the on-disk schema is stale. Peek the leading `schema_ver` and only
-    // short-circuit when it already matches `SCHEMA_VER`.
-    if path.exists() && peek_blob_schema(&path) == Some(SCHEMA_VER) {
-        return Ok(());
-    }
-    let bytes = rmp_serde::to_vec_named(value)?;
-    // Unique tmp suffix per writer thread + process so two workers racing on the same
-    // content-hash never share a tmp path. The rename below is atomic on POSIX and
-    // will safely clobber any blob that landed in the meantime. The process-id +
-    // thread-id portion is invariant for a given worker thread, so compute it once and
-    // cache it per thread; only the final per-call extension is formatted on the hot path.
-    let tmp = TMP_SUFFIX.with(|suffix| path.with_extension(format!("msgpack.{suffix}")));
-    {
-        let mut f = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp)
-            .map_err(|source| StoreError::Io {
-                path: tmp.clone(),
-                source,
-            })?;
-        f.write_all(&bytes).map_err(|source| StoreError::Io {
-            path: tmp.clone(),
-            source,
-        })?;
-    }
-    if let Err(source) = std::fs::rename(&tmp, &path) {
-        // Clean up the orphan tmp so a partially-completed run doesn't leave litter.
-        let _ = std::fs::remove_file(&tmp);
-        return Err(StoreError::Io {
-            path: path.clone(),
-            source,
-        });
-    }
-    Ok(())
-}
-
 fn check_schema(found: u16) -> Result<(), StoreError> {
     if found == SCHEMA_VER {
         Ok(())
@@ -791,6 +705,68 @@ fn check_schema(found: u16) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_l1() -> FileMapL1 {
+        FileMapL1 {
+            schema_ver: SCHEMA_VER,
+            language: "rust".to_string(),
+            size_bytes: 42,
+            had_errors: false,
+            error_count: 0,
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            implementations: Vec::new(),
+        }
+    }
+
+    fn sample_l2() -> FileMapL2 {
+        FileMapL2 {
+            schema_ver: SCHEMA_VER,
+            language: "rust".to_string(),
+            calls: Vec::new(),
+            docs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn filemap_frame_round_trips_both_tiers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "a".repeat(64);
+
+        store
+            .write_filemap_hex(&hash_hex, &sample_l1(), Some(&sample_l2()))
+            .expect("write combined frame");
+
+        let l1 = store.read_l1_by_hex(&hash_hex).expect("read l1");
+        assert_eq!(l1.map(|m| m.size_bytes), Some(42), "L1 slice round-trips");
+        let l2 = store.read_l2_by_hex(&hash_hex).expect("read l2");
+        assert_eq!(
+            l2.map(|m| m.language),
+            Some("rust".to_string()),
+            "L2 present"
+        );
+    }
+
+    #[test]
+    fn filemap_frame_l1_only_reads_back_no_l2() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "b".repeat(64);
+
+        store
+            .write_filemap_hex(&hash_hex, &sample_l1(), None)
+            .expect("write L1-only frame");
+
+        assert!(
+            store.read_l1_by_hex(&hash_hex).expect("read l1").is_some(),
+            "L1 present in an L1-only frame"
+        );
+        assert!(
+            store.read_l2_by_hex(&hash_hex).expect("read l2").is_none(),
+            "L2 absent in an L1-only frame (escalation will extract on demand)"
+        );
+    }
 
     #[test]
     fn locked_display_names_the_serve_holder() {

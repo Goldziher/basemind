@@ -17,9 +17,9 @@ trap 'rm -rf "$FIXTURE"' EXIT
 
 mkdir -p "$FIXTURE/.basemind/blobs"
 mkdir -p "$FIXTURE/.basemind/views/working"
-# Synthesize 7 fake l1 blobs → file_count == 7.
+# Synthesize 7 fake filemap blobs → file_count == 7.
 for i in 0 1 2 3 4 5 6; do
-  : >"$FIXTURE/.basemind/blobs/${i}aaaaaaaa.l1.msgpack"
+  : >"$FIXTURE/.basemind/blobs/${i}aaaaaaaa.fm.msgpack"
 done
 # A views index file so scan-age stamps as "Xs ago".
 : >"$FIXTURE/.basemind/views/working/index.msgpack"
