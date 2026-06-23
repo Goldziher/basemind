@@ -291,7 +291,7 @@ pub(super) struct DependentsResponse {
 #[derive(Debug, Serialize)]
 pub(super) struct StatusResponse {
     pub file_count: usize,
-    /// Count of content-addressed blob files in `.basemind/blobs/` (one `.l1.msgpack` per
+    /// Count of content-addressed blob files in `.basemind/blobs/` (one `.fm.msgpack` per
     /// indexed content hash). Reported alongside `file_count` so a lost/empty view index over
     /// live blobs is visible rather than silently reading `file_count: 0` (bug #10).
     pub blob_count: usize,

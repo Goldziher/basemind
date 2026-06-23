@@ -165,14 +165,14 @@ build_basemind_line() {
     return
   fi
   local blobs_dir="${bm_dir}/blobs"
-  if [[ ! -d "$blobs_dir" ]] || [[ -z "$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' -print -quit 2>/dev/null)" ]]; then
+  if [[ ! -d "$blobs_dir" ]] || [[ -z "$(find "$blobs_dir" -maxdepth 1 -type f -name '*.fm.msgpack' -print -quit 2>/dev/null)" ]]; then
     printf '%s %s│%s %sscanning…%s' "$(mark)" "$sep" "$reset" "$label" "$reset"
     return
   fi
 
   # File count.
   local file_count
-  file_count="$(find "$blobs_dir" -maxdepth 1 -type f -name '*.l1.msgpack' 2>/dev/null | wc -l || echo 0)"
+  file_count="$(find "$blobs_dir" -maxdepth 1 -type f -name '*.fm.msgpack' 2>/dev/null | wc -l || echo 0)"
   file_count="${file_count##*[[:space:]]}"
   [[ -z "$file_count" ]] && file_count=0
 

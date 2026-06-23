@@ -535,7 +535,7 @@ impl BasemindServer {
             let file_count = store.index.files.len();
             // Cheap single-dir blob tally — distinguishes a legitimately unscanned view (no
             // blobs) from a lost/empty index over live blobs (bug #10).
-            let blob_count = count_l1_blobs(&store.basemind_dir);
+            let blob_count = count_fm_blobs(&store.basemind_dir);
             let note = blob_divergence_note(file_count, blob_count);
             json_result(&StatusResponse {
                 file_count,
@@ -777,13 +777,14 @@ pub(super) fn search_max_total(limit: usize) -> usize {
     limit.saturating_mul(64).max(2_000)
 }
 
-/// Count content-addressed blobs in `<basemind_dir>/blobs/` by tallying `.l1.msgpack`
-/// files (one per indexed content hash; `.l2`/`.doc` siblings share the same stem so they
-/// are not double-counted). A single directory read — cheaper than [`crate::store_gc::cache_stats`],
-/// which also unions every view index — so it is safe to call from the `status` path.
+/// Count content-addressed blobs in `<basemind_dir>/blobs/` by tallying `.fm.msgpack` files
+/// (one combined L1 + L2 filemap per indexed content hash; the `.doc` sibling shares the same
+/// stem so it is not double-counted). A single directory read — cheaper than
+/// [`crate::store_gc::cache_stats`], which also unions every view index — so it is safe to call
+/// from the `status` path.
 ///
 /// Returns `0` when the blobs directory is absent or unreadable; the count is advisory.
-pub(super) fn count_l1_blobs(basemind_dir: &std::path::Path) -> usize {
+pub(super) fn count_fm_blobs(basemind_dir: &std::path::Path) -> usize {
     let blobs_dir = basemind_dir.join(crate::store::BLOBS_DIR);
     let Ok(entries) = std::fs::read_dir(&blobs_dir) else {
         return 0;
@@ -793,7 +794,7 @@ pub(super) fn count_l1_blobs(basemind_dir: &std::path::Path) -> usize {
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .is_some_and(|n| n.ends_with(".l1.msgpack"))
+                .is_some_and(|n| n.ends_with(".fm.msgpack"))
         })
         .count()
 }

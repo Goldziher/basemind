@@ -11,6 +11,7 @@ use crate::config::Config;
 use crate::extract::{self, ExtractError, FileMapL1, FileMapL2};
 use crate::git::{GitError, Repo};
 use crate::hashing;
+use crate::index::{IndexDb, writer::IndexWriter};
 use crate::lang;
 use crate::path::RelPath;
 #[cfg(feature = "documents")]
@@ -18,6 +19,109 @@ use crate::scanner_docs::{
     PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document,
 };
 use crate::store::{FileEntry, Store, StoreError};
+
+/// Number of files whose index entries are accumulated into one Fjall write batch before
+/// committing. Each `IndexWriter::commit` takes Fjall's single write lock, so committing
+/// per file made every rayon worker serialize on that lock (a flamegraph attributed ~14%
+/// of scan wall-time to `__psynch_mutexwait` here). Batching `N` files per commit cuts the
+/// commit count — and thus the lock-contention — by ~`N`× while keeping each worker's
+/// staged work bounded in memory. The per-file read-before-write atomicity is preserved:
+/// every file still stages its own deletes+inserts; only the *flush boundary* moved.
+const INDEX_COMMIT_BATCH: usize = 256;
+
+/// Per-rayon-worker accumulator: buffers each file's index upsert into a shared Fjall write
+/// batch and commits once `INDEX_COMMIT_BATCH` files have been staged (and once more at the
+/// end of the worker's slice). Also carries the worker's `FileResult`s so the parallel fold
+/// produces both the scan outcomes and the committed index in one pass.
+///
+/// Borrows `&IndexDb` (cheap `Arc`-backed handle) for the worker's lifetime. When the store
+/// has no index (`index_db == None`, read-only mode) staging is a no-op.
+struct WorkerIndexBatch<'a> {
+    index: Option<&'a IndexDb>,
+    writer: Option<IndexWriter>,
+    staged: usize,
+    results: Vec<FileResult>,
+}
+
+impl<'a> WorkerIndexBatch<'a> {
+    fn new(store: &'a Store) -> Self {
+        Self {
+            index: store.index_db.as_ref(),
+            writer: None,
+            staged: 0,
+            results: Vec::new(),
+        }
+    }
+
+    /// Stage one file's symbols / calls / imports into the current batch, committing first
+    /// if the batch is already full. Returns `false` only when the upsert itself failed
+    /// (caller logs); a `None` index is a successful no-op.
+    fn stage(&mut self, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) -> bool {
+        let Some(index) = self.index else {
+            return true;
+        };
+        let writer = self.writer.get_or_insert_with(|| index.writer());
+        if writer.upsert_file(rel, l1, l2).is_err() {
+            // upsert_file only errors on a Fjall read / decode fault over the existing
+            // entries (effectively unreachable on a basemind-written index). The partially
+            // staged file rides along in the batch and self-corrects on the next scan via
+            // the read-before-write delete — matching the existing "consistent but slightly
+            // stale" crash guarantee.
+            return false;
+        }
+        self.staged += 1;
+        if self.staged >= INDEX_COMMIT_BATCH {
+            self.commit();
+        }
+        true
+    }
+
+    /// Flush the staged batch under Fjall's write lock and reset the counter.
+    fn commit(&mut self) {
+        if let Some(writer) = self.writer.take()
+            && writer.commit().is_err()
+        {
+            tracing::warn!("index batch commit failed; reference search may be incomplete");
+        }
+        self.staged = 0;
+    }
+
+    /// Commit the trailing partial batch and hand back the worker's results.
+    fn finish(mut self) -> Vec<FileResult> {
+        self.commit();
+        self.results
+    }
+}
+
+/// Drive the per-file pipeline across `candidates` on the rayon pool, batching index commits
+/// per worker. Order of the returned `FileResult`s is unspecified (the parallel fold
+/// concatenates per-worker slices) — every consumer keys by `path`, never by position.
+fn run_candidates(
+    candidates: &[String],
+    root: &Path,
+    filters: &Filters,
+    store: &Store,
+    source: &ScanSource<'_>,
+    config: &Config,
+    scope: &str,
+) -> Vec<FileResult> {
+    candidates
+        .par_iter()
+        .fold(
+            || WorkerIndexBatch::new(store),
+            |mut batch, rel| {
+                let result =
+                    process_file(root, rel, filters, store, source, config, scope, &mut batch);
+                batch.results.push(result);
+                batch
+            },
+        )
+        .map(WorkerIndexBatch::finish)
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
+        })
+}
 
 /// What state of the repository the scanner indexes from.
 ///
@@ -263,10 +367,8 @@ pub fn scan(
 
     let scope = derive_scope(root, &source);
 
-    let outcomes: Vec<FileResult> = candidates
-        .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store, &source, config, &scope))
-        .collect();
+    let outcomes: Vec<FileResult> =
+        run_candidates(&candidates, root, &filters, store, &source, config, &scope);
 
     // Borrow path strings directly from `outcomes` — avoids one String clone per indexed
     // file. The `seen` set is built and consumed before `outcomes` is moved into
@@ -355,10 +457,8 @@ pub fn scan_paths(
     rels.dedup();
 
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> = rels
-        .par_iter()
-        .map(|rel| process_file(root, rel, &filters, store, &source, config, &scope))
-        .collect();
+    let outcomes: Vec<FileResult> =
+        run_candidates(&rels, root, &filters, store, &source, config, &scope);
 
     let mut report = ScanReport::default();
     let doc_batches = apply_outcomes(store, &mut report, outcomes);
@@ -515,6 +615,7 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
 /// Process a single relative path. Returns a `FileResult`; if the file is being
 /// updated, the new `FileEntry` is attached via `FileResult::upsert` so the caller
 /// can apply it to the store from the single-threaded apply loop.
+#[allow(clippy::too_many_arguments)]
 fn process_file(
     root: &Path,
     rel: &str,
@@ -523,6 +624,7 @@ fn process_file(
     source: &ScanSource<'_>,
     config: &Config,
     scope: &str,
+    index_batch: &mut WorkerIndexBatch<'_>,
 ) -> FileResult {
     // No-op marker to keep the `scope`/`config` params in use when the feature is off.
     #[cfg(not(feature = "documents"))]
@@ -587,7 +689,7 @@ fn process_file(
 
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
-        && store.blob_path_l1_hex(hash_hex_str).exists()
+        && store.blob_path_fm_hex(hash_hex_str).exists()
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -613,36 +715,26 @@ fn process_file(
             }
         };
 
-    if let Err(e) = store.write_l1_hex(hash_hex_str, &l1) {
+    // Persist both extraction tiers as one content-addressed frame — one `open` + `write` +
+    // atomic `rename` instead of a separate write per tier. L1 is essential, so a write
+    // failure is fatal for this file (the index stage below is skipped).
+    let l2: Option<FileMapL2> = l2_opt;
+    if let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
         return FileResult::bare(
             rel.to_string(),
             FileStatus::ExtractFailed { msg: e.to_string() },
         );
     }
 
-    // Persist L2 blob when we extracted it eagerly.
-    let l2: Option<FileMapL2> = if let Some(map) = l2_opt {
-        let _ = store.write_l2_hex(hash_hex_str, &map);
-        Some(map)
-    } else {
-        None
-    };
-
-    // Push the file's symbols / calls / imports into the Fjall inverted index. We open a
-    // fresh `IndexWriter` per worker; Fjall serializes the underlying writes internally.
-    if let Some(idx) = store.index_db.as_ref() {
-        let rel_path = RelPath::from(rel);
-        let mut w = idx.writer();
-        let upsert_ok = w
-            .upsert_file(&rel_path, &l1, l2.as_ref())
-            .and_then(|()| w.commit())
-            .is_ok();
-        if !upsert_ok {
-            tracing::warn!(
-                rel,
-                "index upsert failed; reference search may be incomplete"
-            );
-        }
+    // Stage the file's symbols / calls / imports into the worker's Fjall write batch. The
+    // batch commits every `INDEX_COMMIT_BATCH` files (and once at the worker's end) rather
+    // than per file, so workers no longer serialize on Fjall's write lock per file.
+    let rel_path = RelPath::from(rel);
+    if !index_batch.stage(&rel_path, &l1, l2.as_ref()) {
+        tracing::warn!(
+            rel,
+            "index upsert failed; reference search may be incomplete"
+        );
     }
 
     let entry = FileEntry {

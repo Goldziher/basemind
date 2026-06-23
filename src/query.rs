@@ -14,8 +14,6 @@ pub enum QueryError {
     NotIndexed(String),
     #[error("blob missing for indexed file (likely .basemind/blobs/ was cleaned): {0}")]
     BlobMissing(String),
-    #[error("invalid hash in index for {0}")]
-    BadHash(String),
 }
 
 #[derive(Debug, Clone)]
@@ -54,9 +52,11 @@ pub fn file_outline_l2(
     if let Some(l2) = store.read_l2_by_hex(&entry.hash_hex)? {
         return Ok(l2);
     }
-    // Live escalation: read source, extract, persist. write_l2 wants the bytes-form hash.
-    let hash = crate::hashing::from_hex(&entry.hash_hex)
-        .ok_or_else(|| QueryError::BadHash(rel_display.clone()))?;
+    // Live escalation: read source, extract, persist. The L1 outline already lives in the
+    // combined frame; read it back so the rewrite carries both tiers (the frame is one blob).
+    let l1 = store
+        .read_l1_by_hex(&entry.hash_hex)?
+        .ok_or_else(|| QueryError::BlobMissing(rel_display.clone()))?;
     let rel_path = RelPath::from(rel_bytes);
     let abs = root.join(rel_path.to_path_buf());
     let bytes = std::fs::read(&abs).map_err(|source| {
@@ -73,7 +73,7 @@ pub fn file_outline_l2(
             source: std::io::Error::other(format!("{e}")),
         })
     })?;
-    store.write_l2(&hash, &l2)?;
+    store.write_filemap_hex(&entry.hash_hex, &l1, Some(&l2))?;
     Ok(l2)
 }
 
