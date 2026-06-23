@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.9.0] — 2026-06-23
+
+Minor release: `RELEASE_MINOR` bumps 8 → 9, so the on-disk index version changes and every
+`.basemind/` cache rebuilds from source on the next `scan`. This rebuild is **structural** — the
+per-file extraction blob format changed from two files (`<hash>.l1.msgpack` + `<hash>.l2.msgpack`)
+to one combined frame (`<hash>.fm.msgpack`); any old split blobs left on disk are reclaimed by
+`cache gc`. A scanner hot-path pass cuts cold-scan wall time ~22%. Bumps kreuzberg to `5.0.0-rc.30`.
+
+### Changed
+
+- **Scanner: ~22% faster cold scans** — two flamegraph-ranked wins. (1) Per-file Fjall index commits
+  are now batched per rayon worker (256 files per commit), removing the ~14% of scan time worker
+  threads spent serializing on Fjall's single write lock. (2) The L1 outline and L2 calls are fused
+  into one content-addressed blob (`<hash>.fm.msgpack`), so the default eager-L2 scan does one
+  `open` + atomic `rename` per file instead of two. Measured min-of-7 cold scans on a 6.7k-file repo:
+  2.68 s → 2.07 s; the per-file read-before-write index atomicity is preserved.
+- Bump **kreuzberg to `5.0.0-rc.30`** — picks up the upstream Tesseract `tessdata`-path fix, so the
+  released binary resolves trained data at runtime instead of baking in the build runner's path.
+  Resolves #12.
+- Dependency refresh to latest compatible (gix 0.85, criterion 0.8, …). arrow stays at 58 to match
+  lancedb 0.30; the experimental `a2a` feature's gRPC deps are held pending a tonic-0.14 migration.
+
+### Fixed
+
+- **Comms daemons no longer leak across sessions.** A daemon orphaned by a dead session (reparented
+  to pid 1) used to keep its socket + flock and never exit, so they accumulated indefinitely. The
+  broker now tracks connected links + last activity and self-terminates after 30 min with no clients,
+  via the normal drain path. A live client (even a quiet subscriber) keeps it alive. Unix-only.
+- Removed the document-tier troubleshooting workarounds from the README now that both upstream
+  kreuzberg bugs are fixed (TLS-MITM in rc.29, `tessdata` in rc.30). Resolves #14.
+
+### Removed
+
+- The pre-0.9 split-tier blob format (`.l1.msgpack` / `.l2.msgpack`), superseded by the combined
+  `.fm.msgpack` frame. `cache gc` reclaims any left behind by the schema-bump refresh.
+
 ## [0.8.0] — 2026-06-22
 
 Minor release: `RELEASE_MINOR` bumps 7 → 8, so the on-disk index version changes and every
