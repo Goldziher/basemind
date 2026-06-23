@@ -2993,6 +2993,15 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let root = dir.path();
     run_scan(root);
 
+    // Force the spawned `serve` child to run shells in Headless mode so the test NEVER opens a
+    // real terminal window/tab. The child reads `.basemind/basemind.toml` from the repo root
+    // (`run_scan` already created `.basemind/`); `visual = "headless"` makes `present()` a no-op.
+    std::fs::write(
+        root.join(".basemind").join("basemind.toml"),
+        b"\"$schema\" = \"v1\"\n\n[shells]\nvisual = \"headless\"\n",
+    )
+    .expect("write headless shells config");
+
     let socket = dir.path().join("shells.sock");
     let bin = env!("CARGO_BIN_EXE_basemind");
     let socket_for_env = socket.clone();
@@ -3021,12 +3030,15 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         .and_then(Value::as_str)
         .expect("session_id in shell_spawn response")
         .to_string();
+    let attach_command = spawned
+        .get("attach_command")
+        .and_then(Value::as_str)
+        .expect("attach_command in shell_spawn response");
     assert!(
-        spawned
-            .get("attach_command")
-            .and_then(Value::as_str)
-            .is_some_and(|c| c.starts_with("rmux attach -t ")),
-        "attach_command should be a rmux attach line: {spawned:?}"
+        attach_command.contains("--__internal-attach ")
+            && attach_command.contains("--socket ")
+            && attach_command.contains("--size "),
+        "attach_command should be a basemind internal-attach re-exec line: {spawned:?}"
     );
 
     // Poll capture until the sentinel shows up (bounded — not flaky).

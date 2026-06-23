@@ -10,9 +10,24 @@
 //!
 //! The whole module is gated on `feature = "shells"`.
 
+pub mod attach;
 pub mod daemon;
 pub mod launcher;
 pub mod session;
+
+/// Run any internal re-exec mode (visual attach, then embedded daemon) before clap parses.
+///
+/// Returns `Some(result)` if this process was an internal re-exec (it then exits),
+/// else `None` and the caller proceeds with normal CLI parsing. The attach intercept
+/// runs first because both re-execs are mutually exclusive (each carries a distinct
+/// hidden first-argument flag) and the attach flag is the cheaper check.
+#[must_use]
+pub fn intercept_internal_reexec() -> Option<anyhow::Result<()>> {
+    if let Some(result) = attach::intercept_from_env() {
+        return Some(result);
+    }
+    daemon::intercept_from_env()
+}
 
 use std::path::PathBuf;
 use std::process::id as process_id;
@@ -145,6 +160,16 @@ impl ShellRuntime {
             rmux: OnceCell::new(),
             sessions: Mutex::new(AHashMap::new()),
         }
+    }
+
+    /// Borrow the Unix socket path this runtime's embedded daemon binds.
+    ///
+    /// Exposed so the MCP spawn path can build the visual attach command (which
+    /// re-execs basemind with `--socket <this path>`) against the same socket the
+    /// daemon is bound to.
+    #[must_use]
+    pub fn socket_path(&self) -> &std::path::Path {
+        &self.socket_path
     }
 
     /// Resolve the rmux handle, connecting to (or starting) the embedded daemon

@@ -139,9 +139,36 @@ pub(super) async fn run_shell_spawn(
         }
     };
 
+    // Build the visual attach target: it re-execs basemind (no external `rmux` binary) with the
+    // hidden `--__internal-attach` flag against the same socket the embedded daemon is bound to.
+    let target = crate::shells::launcher::AttachTarget {
+        session_name: name.as_str().to_string(),
+        socket_path: state.shell_runtime.socket_path().to_path_buf(),
+        cols: state.config.shells.default_cols,
+        rows: state.config.shells.default_rows,
+        exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("basemind")),
+    };
+    let attach_command = target.attach_command();
+
+    // Present the session in a terminal surface per config, BEST-EFFORT. The headless session is
+    // already alive; a presentation failure (no terminal, osascript error) must not fail the spawn.
+    // Skip the call entirely for Headless mode so tests (and headless operators) never spawn a
+    // terminal and we avoid the no-op round trip.
+    let visual = state.config.shells.visual;
+    if visual != crate::config::VisualMode::Headless {
+        let terminal = state.config.shells.terminal;
+        if let Err(error) = crate::shells::launcher::present(visual, terminal, &target) {
+            tracing::warn!(
+                error = %error,
+                session_id = %session_id,
+                "shell_spawn: visual presentation failed; the headless session is still alive"
+            );
+        }
+    }
+
     let response = ShellSpawnResponse {
         session_id: session_id.to_string(),
-        attach_command: format!("rmux attach -t {}", name.as_str()),
+        attach_command,
         room_id,
         child_agent,
     };

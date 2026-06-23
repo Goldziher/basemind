@@ -19,26 +19,40 @@ use anyhow::{Context, Result};
 
 use crate::config::{TerminalChoice, VisualMode};
 
-/// How to attach to a live rmux session: its name plus the daemon socket it lives on.
+/// How to attach to a live rmux session: its name, the daemon socket it lives on,
+/// the initial terminal geometry, and the basemind executable to re-exec.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachTarget {
     /// rmux session name (the basemind-minted `bmsh-*` id).
     pub session_name: String,
     /// Path to the rmux daemon's control socket.
     pub socket_path: PathBuf,
+    /// Initial terminal width handed to the attach driver.
+    pub cols: u16,
+    /// Initial terminal height handed to the attach driver.
+    pub rows: u16,
+    /// The basemind executable to re-exec as the visual attach driver
+    /// (`current_exe()`); there is no external `rmux` binary.
+    pub exe: PathBuf,
 }
 
 impl AttachTarget {
     /// Build the shell command string that, when run inside a terminal, attaches to this session.
     ///
-    /// Shape: `rmux -S <socket> attach-session -t <name>`. The session name and socket path are
-    /// single-quoted so paths with spaces survive the host shell.
+    /// Shape: `<exe> --__internal-attach <session_name> --socket <socket_path> --size <cols>x<rows>`.
+    /// basemind ships no external `rmux` binary, so the attach re-execs basemind itself with the
+    /// hidden `--__internal-attach` flag. `exe`, `session_name`, and `socket_path` are single-quoted
+    /// so paths with spaces survive the host shell; `cols`/`rows` are `u16` and need no quoting.
     #[must_use]
     pub fn attach_command(&self) -> String {
         format!(
-            "rmux -S {} attach-session -t {}",
-            shell_single_quote(&self.socket_path.to_string_lossy()),
+            "{} {} {} --socket {} --size {}x{}",
+            shell_single_quote(&self.exe.to_string_lossy()),
+            crate::shells::attach::INTERNAL_ATTACH_FLAG,
             shell_single_quote(&self.session_name),
+            shell_single_quote(&self.socket_path.to_string_lossy()),
+            self.cols,
+            self.rows,
         )
     }
 }
@@ -201,27 +215,13 @@ fn build_for_surface(
     target: &AttachTarget,
     surface: Surface,
 ) -> Option<PresentCommand> {
-    let _ = terminal; // Windows Terminal is the only driven surface today.
-    let attach = target.attach_command();
-    // TODO: this `cmd /c` + `wt.exe` `;`-splitting path needs cmd-native quoting
-    // (the attach string is POSIX single-quoted, which `cmd` does not honour, and
-    // `wt` treats `;` as a tab separator) before Windows is a supported visual
-    // target. basemind ships macOS only today, so this path is untested in anger.
-    // `wt.exe` runs the command via cmd /c so the attach string survives as one argument.
-    let mut args = Vec::new();
-    if surface == Surface::Tab {
-        // `-w 0` targets the current window so the session opens as a tab in place.
-        args.push("-w".to_string());
-        args.push("0".to_string());
-    }
-    args.push("new-tab".to_string());
-    args.push("cmd".to_string());
-    args.push("/c".to_string());
-    args.push(attach);
-    Some(PresentCommand {
-        program: "wt.exe".to_string(),
-        args,
-    })
+    let _ = (terminal, target, surface);
+    // Windows visual presentation is unimplemented: cmd-native quoting of the POSIX
+    // single-quoted attach string is not done, and `wt` treats `;` as a tab separator.
+    // Returning `None` makes `present()` fall through to `Presentation::AttachCommand`
+    // instead of shipping a broken `cmd /c` + `wt.exe` command. comms + attach are
+    // unix-only today.
+    None
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -435,13 +435,21 @@ mod tests {
         AttachTarget {
             session_name: "bmsh-1-2".to_string(),
             socket_path: PathBuf::from("/tmp/rmux.sock"),
+            cols: 200,
+            rows: 50,
+            // Pinned to a fixed path so the asserted attach string is deterministic.
+            exe: PathBuf::from("/usr/local/bin/basemind"),
         }
     }
+
+    /// The attach command the per-OS launchers embed; pinned by `target()`.
+    const EXPECTED_ATTACH: &str = "'/usr/local/bin/basemind' --__internal-attach 'bmsh-1-2' --socket '/tmp/rmux.sock' \
+         --size 200x50";
 
     #[test]
     fn attach_command_has_expected_shape() {
         let cmd = target().attach_command();
-        assert_eq!(cmd, "rmux -S '/tmp/rmux.sock' attach-session -t 'bmsh-1-2'");
+        assert_eq!(cmd, EXPECTED_ATTACH);
     }
 
     #[test]
@@ -480,9 +488,14 @@ mod tests {
         assert!(script.contains("iTerm2"), "script: {script}");
         assert!(script.contains("create tab"), "script: {script}");
         assert!(
-            script.contains("rmux -S '/tmp/rmux.sock' attach-session -t 'bmsh-1-2'"),
+            script.contains("--__internal-attach 'bmsh-1-2'"),
             "script: {script}"
         );
+        assert!(
+            script.contains("--socket '/tmp/rmux.sock'"),
+            "script: {script}"
+        );
+        assert!(script.contains("--size 200x50"), "script: {script}");
     }
 
     #[cfg(target_os = "macos")]
@@ -534,36 +547,30 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_current_targets_current_window() {
-        let cmd = build_present_command(
-            VisualMode::Current,
-            TerminalChoice::WindowsTerminal,
-            &target(),
-        )
-        .expect("command");
-        assert_eq!(cmd.program, "wt.exe");
-        assert_eq!(cmd.args[0], "-w");
-        assert_eq!(cmd.args[1], "0");
-        assert_eq!(cmd.args[2], "new-tab");
-        assert_eq!(cmd.args[3], "cmd");
-        assert_eq!(cmd.args[4], "/c");
-        assert_eq!(
-            cmd.args[5],
-            "rmux -S '/tmp/rmux.sock' attach-session -t 'bmsh-1-2'"
+    fn windows_current_builds_no_command() {
+        // Windows visual presentation is unimplemented (cmd-native quoting). The builder
+        // returns `None` so `present()` falls through to `Presentation::AttachCommand`.
+        assert!(
+            build_present_command(
+                VisualMode::Current,
+                TerminalChoice::WindowsTerminal,
+                &target(),
+            )
+            .is_none()
         );
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_window_omits_current_window_flag() {
-        let cmd = build_present_command(
-            VisualMode::Window,
-            TerminalChoice::WindowsTerminal,
-            &target(),
-        )
-        .expect("command");
-        assert_eq!(cmd.program, "wt.exe");
-        assert_eq!(cmd.args[0], "new-tab");
+    fn windows_window_builds_no_command() {
+        assert!(
+            build_present_command(
+                VisualMode::Window,
+                TerminalChoice::WindowsTerminal,
+                &target(),
+            )
+            .is_none()
+        );
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -580,10 +587,7 @@ mod tests {
         assert_eq!(cmd.args[1], "--");
         assert_eq!(cmd.args[2], "bash");
         assert_eq!(cmd.args[3], "-lc");
-        assert_eq!(
-            cmd.args[4],
-            "rmux -S '/tmp/rmux.sock' attach-session -t 'bmsh-1-2'"
-        );
+        assert_eq!(cmd.args[4], EXPECTED_ATTACH);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

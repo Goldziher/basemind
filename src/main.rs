@@ -277,7 +277,7 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 
 fn main() -> Result<()> {
     #[cfg(all(feature = "shells", unix))]
-    if let Some(result) = basemind::shells::daemon::intercept_from_env() {
+    if let Some(result) = basemind::shells::intercept_internal_reexec() {
         return result;
     }
     // Parse before initializing tracing so the verbosity flag can feed the default
