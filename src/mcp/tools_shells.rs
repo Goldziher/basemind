@@ -15,7 +15,10 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_shells::{ShellCaptureParams, ShellKillParams, ShellSendParams, ShellSpawnParams};
+use super::types_shells::{
+    ShellBroadcastParams, ShellCaptureParams, ShellKillParams, ShellListParams, ShellSendParams,
+    ShellSpawnParams,
+};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_shells")]
 impl BasemindServer {
@@ -129,6 +132,62 @@ impl BasemindServer {
         record_call(
             &self.state,
             "shell_kill",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    #[tool(
+        description = "Broadcast the same `text` to many headless shell sessions at once, addressed \
+        by a list of `session_ids` (each from `shell_spawn`). Every id must be a known, live session \
+        of this server; an unknown id fails the whole broadcast before any pane is written. When \
+        `enter` is true (default) a trailing newline is appended so each line executes. Returns \
+        `delivered`, the number of session panes that accepted the input. Needs --features shells.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true
+        )
+    )]
+    pub(crate) async fn shell_broadcast(
+        &self,
+        Parameters(p): Parameters<ShellBroadcastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_shells::run_shell_broadcast(&self.state, p).await;
+        record_call(
+            &self.state,
+            "shell_broadcast",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    #[tool(
+        description = "List the headless shell sessions this server spawned, each flagged with its \
+        liveness (`alive=true` while the daemon still reports it; `false` once it has exited but the \
+        mapping lingers). Takes no arguments. Use this to discover `session_id`s for `shell_send` / \
+        `shell_capture` / `shell_broadcast` / `shell_kill`. Needs --features shells.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub(crate) async fn shell_list(
+        &self,
+        Parameters(p): Parameters<ShellListParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_shells::run_shell_list(&self.state, p).await;
+        record_call(
+            &self.state,
+            "shell_list",
             &__params_json,
             __started,
             &__result,

@@ -13,8 +13,9 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::json_result;
 use super::types_shells::{
-    ShellCaptureParams, ShellCaptureResponse, ShellKillParams, ShellKillResponse, ShellSendParams,
-    ShellSpawnParams, ShellSpawnResponse,
+    ShellBroadcastParams, ShellBroadcastResponse, ShellCaptureParams, ShellCaptureResponse,
+    ShellKillParams, ShellKillResponse, ShellListParams, ShellListResponse, ShellSendParams,
+    ShellSessionView, ShellSpawnParams, ShellSpawnResponse,
 };
 use crate::shells::SessionId;
 use crate::shells::session::ShellCommand;
@@ -147,4 +148,50 @@ pub(super) async fn run_shell_kill(
         session_id: id.to_string(),
         killed,
     })
+}
+
+/// `shell_broadcast`: send the same input to many sessions' primary panes.
+pub(super) async fn run_shell_broadcast(
+    state: &ServerState,
+    params: ShellBroadcastParams,
+) -> Result<CallToolResult, McpError> {
+    if params.session_ids.is_empty() {
+        return Err(McpError::invalid_params(
+            "session_ids must not be empty",
+            None,
+        ));
+    }
+    // Validate every id up front so an unknown id fails before any delivery.
+    let mut ids = Vec::with_capacity(params.session_ids.len());
+    for raw in &params.session_ids {
+        let (id, _name) = require_session(state, raw).await?;
+        ids.push(id);
+    }
+    let delivered = state
+        .shell_runtime
+        .broadcast(&ids, &params.text, params.enter)
+        .await
+        .map_err(|e| mcp_internal("broadcast to shell sessions", e))?;
+    json_result(&ShellBroadcastResponse { delivered })
+}
+
+/// `shell_list`: enumerate the sessions this server spawned, flagged by liveness.
+pub(super) async fn run_shell_list(
+    state: &ServerState,
+    _params: ShellListParams,
+) -> Result<CallToolResult, McpError> {
+    let sessions = state
+        .shell_runtime
+        .list()
+        .await
+        .map_err(|e| mcp_internal("list shell sessions", e))?;
+    let sessions = sessions
+        .into_iter()
+        .map(|info| ShellSessionView {
+            session_id: info.session_id.to_string(),
+            name: info.name.as_str().to_string(),
+            alive: info.alive,
+        })
+        .collect();
+    json_result(&ShellListResponse { sessions })
 }

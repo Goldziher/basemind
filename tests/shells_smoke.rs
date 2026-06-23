@@ -124,3 +124,83 @@ async fn spawn_capture_kill_roundtrip() {
     let _ = session::kill_session(&keepalive).await;
     runtime.forget(&keepalive_id).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn broadcast_reaches_every_session_and_list_reports_alive() {
+    const MARKER: &str = "S2-BROADCAST";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let runtime = runtime_in(&dir);
+
+    // Two long-lived shells reading stdin: bare `bash` stays alive waiting on
+    // stdin, so a broadcast line is read, executed, and the marker rendered.
+    let (id_a, name_a) = runtime
+        .spawn(
+            ShellCommand::Argv(vec!["bash".to_string()]),
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("spawn session A");
+    let (id_b, name_b) = runtime
+        .spawn(
+            ShellCommand::Argv(vec!["bash".to_string()]),
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("spawn session B");
+    assert_ne!(name_a, name_b, "sessions get distinct names");
+
+    let rmux = runtime.rmux().await.expect("rmux handle");
+
+    // Both sessions should appear alive in the runtime listing.
+    let listed = runtime.list().await.expect("list sessions");
+    assert_eq!(
+        listed.len(),
+        2,
+        "both spawned sessions are listed: {listed:?}"
+    );
+    for id in [&id_a, &id_b] {
+        let entry = listed
+            .iter()
+            .find(|info| &info.session_id == id)
+            .unwrap_or_else(|| panic!("session {id} missing from list: {listed:?}"));
+        assert!(entry.alive, "freshly spawned session {id} should be alive");
+    }
+
+    // Broadcast a command that echoes a unique marker into both shells at once.
+    let delivered = runtime
+        .broadcast(
+            &[id_a.clone(), id_b.clone()],
+            &format!("echo {MARKER}"),
+            true,
+        )
+        .await
+        .expect("broadcast to both sessions");
+    assert_eq!(delivered, 2, "broadcast delivered to both panes");
+
+    // Poll each pane until the marker is rendered (bounded, to absorb latency).
+    for name in [&name_a, &name_b] {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let live = rmux.session(name.clone()).await.expect("open live session");
+            let captured = session::capture(&live, None).await.expect("capture");
+            if captured.contains(MARKER) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {MARKER} in {name:?}; last capture was {captured:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    // Tear both sessions down.
+    for (id, name) in [(&id_a, &name_a), (&id_b, &name_b)] {
+        let live = rmux.session(name.clone()).await.expect("open for kill");
+        let _ = session::kill_session(&live).await;
+        runtime.forget(id).await;
+    }
+}
