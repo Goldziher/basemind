@@ -3041,6 +3041,20 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         "attach_command should be a basemind internal-attach re-exec line: {spawned:?}"
     );
 
+    // Security regression: a cwd that escapes the repository root must be refused
+    // (run_shell_spawn normalizes via normalize_query_path) — it is rejected before any
+    // session is spawned, so there is nothing to clean up.
+    let escaped = service
+        .call_tool(call_params(
+            "shell_spawn",
+            json!({ "command": "true", "cwd": "../../../etc" }),
+        ))
+        .await;
+    assert!(
+        escaped.is_err(),
+        "shell_spawn must reject a cwd escaping the repository root: {escaped:?}"
+    );
+
     // Poll capture until the sentinel shows up (bounded — not flaky).
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {

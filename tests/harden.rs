@@ -537,6 +537,10 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     .await
         && let Some(session_id) = spawned.get("session_id").and_then(Value::as_str)
     {
+        assert!(
+            session_id.starts_with("bmsh-"),
+            "shell_spawn session_id should be a minted bmsh- id, got {session_id:?}"
+        );
         let session = json!({ "session_id": session_id });
         call(svc, &mut records, "shell_capture", session.clone()).await;
         call(svc, &mut records, "shell_kill", session).await;
