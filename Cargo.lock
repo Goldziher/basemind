@@ -5807,9 +5807,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg"
-version = "5.0.0-rc.29"
+version = "5.0.0-rc.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3de4a2bd449a807b93bd5cd83e99f7048ca0dcad0aa171cbd7a20169abb9d47a"
+checksum = "a5fc97a9058d41eeed6589717b843cbe1b452a40967ac805330e0d2e999c6a43"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -5926,9 +5926,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-libheif"
-version = "5.0.0-rc.29"
+version = "5.0.0-rc.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e66de98e0b086040140c899e107648f5c248fc9a857b1cd14370f08f65bc0eb"
+checksum = "4f08a60d0135deceb0a3852e6627644a2f4a7069d7455fffc87e02e6ba59880e"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -5950,9 +5950,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.29"
+version = "5.0.0-rc.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aa0a3def168a5e332a3d62e6798030b2a9e8c5e86d71837d73e28b438ccda33"
+checksum = "9b6f4516c42aad6d30227faabbb06e0896b8fb17bfcec2cdef5f9f73471df5d3"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -5966,9 +5966,9 @@ dependencies = [
 
 [[package]]
 name = "kreuzberg-tesseract"
-version = "5.0.0-rc.29"
+version = "5.0.0-rc.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac8866f50233fd57e3efe8519e0a09f4d2a861668be22e13dbaf7b8bb594fb4c"
+checksum = "f2c9a29237793847b570680837898082c2b0dc958db0bb68f390fac4570246e3"
 dependencies = [
  "cc",
  "cmake",
@@ -6709,7 +6709,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d2593dda939875015d3e1a9deccdb57381d4ef1fc9a96120731b25990579689"
 dependencies = [
  "cfg-if",
- "cmake",
  "libc",
  "system-deps",
  "vcpkg",
