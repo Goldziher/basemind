@@ -84,6 +84,13 @@ harmless** — the blob and index formats are unchanged.
   live-but-busy broker is not reclaimed), and a Unix socket-ownership watchdog makes any daemon
   whose socket was unlinked or replaced self-terminate within seconds instead of lingering as an
   orphan.
+- **Comms daemon takes over a previous build on load** — when a serve or CLI brings up the broker
+  and finds the socket held by an older or protocol-incompatible daemon, it now asks that daemon to
+  stop and spawns a current one in its place, converging the singleton on the newest binary; if the
+  predecessor will not yield, it errors out clearly (naming the version + pid) instead of silently
+  talking to an incompatible daemon — which is how the pre-0.10 skew surfaced as an opaque
+  "connection closed". A same-version (or newer) daemon is reused, so concurrent sessions still
+  share one broker.
 - **Comms messages now expire** — the broker prunes messages past a 7-day TTL on startup and hourly
   thereafter, so the user-global comms store cannot grow without bound. Recency-aware reads already
   hid old messages; this reclaims their storage. Room records and per-room sequence counters are
