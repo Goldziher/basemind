@@ -377,7 +377,7 @@ const OWNER_ONLY_DIR: u32 = 0o700;
 fn default_socket_path() -> PathBuf {
     #[cfg(windows)]
     {
-        return PathBuf::from(format!(r"\\.\pipe\basemind-shells-{}", user_namespace()));
+        PathBuf::from(format!(r"\\.\pipe\basemind-shells-{}", user_namespace()))
     }
     #[cfg(not(windows))]
     {

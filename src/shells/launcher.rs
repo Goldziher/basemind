@@ -335,15 +335,15 @@ fn resolve_linux_emulator(terminal: TerminalChoice) -> LinuxEmulator {
 /// Detect the running Linux emulator from the environment, defaulting to xterm.
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn detect_linux_emulator() -> LinuxEmulator {
-    if let Ok(term) = std::env::var("TERMINAL") {
-        if let Some(found) = match_emulator_name(&term) {
-            return found;
-        }
+    if let Ok(term) = std::env::var("TERMINAL")
+        && let Some(found) = match_emulator_name(&term)
+    {
+        return found;
     }
-    if let Ok(term) = std::env::var("TERM_PROGRAM") {
-        if let Some(found) = match_emulator_name(&term) {
-            return found;
-        }
+    if let Ok(term) = std::env::var("TERM_PROGRAM")
+        && let Some(found) = match_emulator_name(&term)
+    {
+        return found;
     }
     LinuxEmulator::Xterm
 }

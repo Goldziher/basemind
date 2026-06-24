@@ -179,7 +179,7 @@ pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
                 "embedded rmux daemon named-pipe name is empty or contains a separator: {display}"
             );
         }
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(windows))]
     {
