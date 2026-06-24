@@ -121,54 +121,6 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
-    /// Run the A2A protocol server: gRPC + JSON-RPC 2.0 + agent card + SSE on one
-    /// listener (needs `--features a2a`).
-    #[cfg(feature = "a2a")]
-    A2a {
-        #[command(subcommand)]
-        action: A2aCmd,
-    },
-}
-
-/// Subcommands for `basemind a2a`.
-#[cfg(feature = "a2a")]
-#[derive(Subcommand, Debug)]
-enum A2aCmd {
-    /// Bind the combined gRPC + JSON-RPC + SSE listener and serve until Ctrl-C.
-    Serve(A2aServeArgs),
-}
-
-#[cfg(feature = "a2a")]
-#[derive(clap::Args, Debug)]
-struct A2aServeArgs {
-    /// Address to bind, `host:port`. Defaults to loopback. Binding a public
-    /// interface (`0.0.0.0:…`) is refused unless `--token`/`--token-file` is set.
-    #[arg(long, default_value = "127.0.0.1:8723")]
-    addr: std::net::SocketAddr,
-    /// Agent name advertised in the agent card (defaults to "basemind").
-    #[arg(long)]
-    name: Option<String>,
-    /// Agent description advertised in the agent card.
-    #[arg(long)]
-    description: Option<String>,
-    /// Bearer token required on every request except the public agent card.
-    /// On a CLI this is visible in the process list (`ps`, `/proc/<pid>/cmdline`);
-    /// prefer `--token-file`, or the `BASEMIND_A2A_TOKEN` env var, in shared
-    /// environments. Takes precedence over `--token-file`.
-    #[arg(long, env = "BASEMIND_A2A_TOKEN")]
-    token: Option<String>,
-    /// Path to a bearer-token file (auto-created with `0600` permissions when
-    /// missing). Enables bearer auth.
-    #[arg(long)]
-    token_file: Option<std::path::PathBuf>,
-    /// PEM certificate (chain) for TLS termination. Must be paired with
-    /// `--tls-key`; supplying exactly one is a usage error. When both are set the
-    /// server serves HTTPS and negotiates HTTP/2 (gRPC) vs HTTP/1.1 via ALPN.
-    #[arg(long, requires = "tls_key")]
-    tls_cert: Option<std::path::PathBuf>,
-    /// PEM private key matching `--tls-cert`. Must be paired with `--tls-cert`.
-    #[arg(long, requires = "tls_cert")]
-    tls_key: Option<std::path::PathBuf>,
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -298,14 +250,6 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    // Install the rustls crypto provider once, at startup, before anything can
-    // perform a TLS handshake. aws-lc-rs AND ring are both in the dependency
-    // tree (via reqwest/hyper-rustls), so the process-default provider is
-    // ambiguous and a later `ServerConfig::builder()` would panic; pinning it
-    // here removes any ordering dependency. Idempotent — a prior install wins.
-    #[cfg(feature = "a2a")]
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     let no_color = cli.no_color;
     let start = cli
         .root
@@ -367,28 +311,6 @@ fn main() -> Result<()> {
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => cmd_comms(&root, action, json),
-        #[cfg(feature = "a2a")]
-        Cmd::A2a { action } => cmd_a2a(action),
-    }
-}
-
-/// Dispatch a `basemind a2a` subcommand. `serve` blocks on a dedicated tokio
-/// runtime inside [`basemind::a2a::run_server`] until Ctrl-C.
-#[cfg(feature = "a2a")]
-fn cmd_a2a(action: A2aCmd) -> Result<()> {
-    match action {
-        A2aCmd::Serve(args) => {
-            let options = basemind::a2a::A2aServeOptions {
-                addr: args.addr,
-                name: args.name,
-                description: args.description,
-                token: args.token,
-                token_file: args.token_file,
-                tls_cert: args.tls_cert,
-                tls_key: args.tls_key,
-            };
-            basemind::a2a::run_server(options).context("run A2A server")
-        }
     }
 }
 

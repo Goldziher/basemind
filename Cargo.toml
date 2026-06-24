@@ -118,31 +118,6 @@ crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
 # needs them); this feature gates the daemon + tools.
 comms = ["dep:directories", "dep:tokio-util"]
 
-# Agent-to-agent (A2A protocol) server: gRPC + JSON-RPC/SSE on one axum listener,
-# agent card, bearer auth, optional TLS, and push-notification webhook delivery.
-# EXPERIMENTAL and opt-in only: deliberately excluded from `default` AND from the
-# `full` meta-feature, and not part of the shipped release surface. Build with
-# `--features a2a` to use it. tonic 0.12 / prost 0.13 are pinned to the buf remote
-# plugins (neoeinstein-tonic v0.4.1 / neoeinstein-prost v0.4.0) that generated the
-# committed codegen under src/a2a/generated/.
-a2a = [
-    "dep:tonic",
-    "dep:prost",
-    "dep:prost-types",
-    "dep:uuid",
-    "dep:chrono",
-    "dep:base64",
-    "dep:tokio-util",
-    "dep:tokio-stream",
-    "dep:axum",
-    "dep:axum-server",
-    "dep:reqwest",
-    "dep:rustls",
-    "dep:tower",
-    "dep:tower-http",
-    "dep:subtle",
-]
-
 # Headless agent shells: embed the rmux daemon (self-contained — basemind re-execs
 # itself as the daemon, no external `rmux` binary) and expose MCP tools to spawn a
 # headless shell session, send stdin, capture output, and kill it. Pulls the
@@ -168,20 +143,8 @@ arc-swap = "1.9.1"
 # don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
-# A2A JSON-RPC 2.0 / agent-card / SSE HTTP binding (a2a feature only). axum 0.7
-# matches the http 1 / hyper 1 / tower-service 0.3 generation tonic 0.12 resolves,
-# so the gRPC service mounts into the same app with no version skew.
-axum = { version = "0.7", optional = true } # a2a-only; held pending a2a 0.14/0.8 migration
-# TLS termination for the A2A server (`--tls-cert`/`--tls-key`). Wraps the same
-# axum app behind a rustls acceptor so gRPC-over-TLS negotiates HTTP/2 via ALPN.
-# 0.7 matches the hyper 1 / tower 0.5 generation axum 0.7 resolves. a2a feature only.
-axum-server = { version = "0.7", features = ["tls-rustls"], optional = true } # a2a-only; see axum pin
-# Base64 codec for A2A `Part::Bytes` JSON round-tripping (a2a feature only).
-base64 = { version = "0.22", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
-# Timestamps for A2A domain types (a2a feature only).
-chrono = { version = "0.4", features = ["serde"], optional = true }
 clap = { version = "4", features = ["derive", "env"] }
 # User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
@@ -203,20 +166,8 @@ lru = "0.18.0"
 memchr = "2"
 notify = "8"
 notify-debouncer-full = "0.7"
-# A2A gRPC runtime. prost 0.13 / tonic 0.12 match the buf remote plugins
-# (neoeinstein-prost v0.4.0 / neoeinstein-tonic v0.4.1) used to generate
-# src/a2a/generated/. Bump these in lock-step with the plugin pins in buf.gen.yaml.
-prost = { version = "0.13", optional = true } # a2a-only; held pending tonic-0.14 (tonic-prost) migration
-prost-types = { version = "0.13", optional = true } # a2a-only; see prost pin
 rayon = "1"
 regex = "1.12.4"
-# Outbound HTTP client for the A2A push-notification (webhook) delivery worker.
-# rustls only (`default-features = false` drops reqwest's default native-tls /
-# openssl backend): the A2A TLS stack is rustls/aws-lc-rs and pulling openssl
-# in through reqwest is unacceptable. `http2` matches the h2 generation already
-# resolved; `charset` keeps response decoding working without default-tls.
-# a2a feature only. Pinned to 0.13 to share the copy kreuzcrawl already resolves.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "charset"], optional = true }
 rmcp = { version = "1.8", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
 # Embedded headless agent shells (shells feature only). The rmux trio is pulled
@@ -226,12 +177,6 @@ rmp-serde = "1"
 rmux-client = { version = "0.6", default-features = false, optional = true }
 rmux-sdk = { version = "0.6", default-features = false, optional = true }
 rmux-server = { version = "0.6", default-features = false, optional = true }
-# A2A TLS crypto provider. rustls is already pulled transitively, but both the
-# aws-lc-rs and ring providers are enabled in the dep tree (ring via ureq), so the
-# process-default provider is ambiguous and `ServerConfig::builder()` would panic.
-# We depend on it directly only to install the aws-lc-rs provider explicitly before
-# building the TLS config. a2a feature only; no extra provider features requested.
-rustls = { version = "0.23", default-features = false, optional = true }
 # Drives the schema-first config: every config struct in src/config/v1.rs derives
 # JsonSchema so the committed JSON schema can be regenerated from the Rust types.
 # Pinned to 1.2 to match the transitive version rmcp already pulls in.
@@ -240,30 +185,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
 streaming-iterator = "0.1"
-# Audited constant-time byte comparison for the A2A bearer-token check.
-subtle = { version = "2", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "io-util", "io-std", "time", "net", "fs", "process"] }
-# `ReceiverStream` adapter for the A2A gRPC streaming RPCs (a2a feature only).
-tokio-stream = { version = "0.1", optional = true }
 # Length-delimited framing for the comms daemon IPC (Unix socket / named pipe).
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
-# A2A gRPC service + transport. tonic 0.12 matches neoeinstein-tonic v0.4.1.
-tonic = { version = "0.12", optional = true } # a2a-only; 0.14 split out tonic-prost (ProstCodec) — migration pending
-# Shared tower middleware stack for the A2A HTTP server (ServiceBuilder +
-# concurrency-limit / load-shed / timeout). a2a feature only.
-tower = { version = "0.5", features = ["util", "limit", "load-shed", "timeout"], optional = true }
-# HTTP middleware layers (trace, cors, request-id, body-limit) for the A2A
-# axum server. a2a feature only.
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "limit"], optional = true } # a2a-only; see axum pin
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.9.0-rc.45"
 url = { version = "2", features = ["serde"], optional = true }
-# UUID-backed identity newtypes for A2A domain types (a2a feature only).
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
 
 [dev-dependencies]
 # Criterion microbenchmark harness for the v0.9.0 performance cycle. `html_reports`
@@ -271,18 +202,12 @@ uuid = { version = "1", features = ["v4", "serde"], optional = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-# Self-signed cert/key generation for the A2A TLS tests (no committed secrets).
-rcgen = "0.14"
 # Client-side rmcp used by the `harden` integration test to drive `basemind serve`
 # over a stdio child-process transport. Composes with the [dependencies] entry
 # above — features are union-merged by cargo.
 rmcp = { version = "1.8", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-# TLS client used by the A2A `serve_tls` handshake test to connect to the
-# self-signed server with a permissive (test-only) verifier. Already in the dep
-# tree transitively, so this adds no new crate to the graph.
-tokio-rustls = "0.26"
 # wiremock spins up an in-process HTTP server for the `crawl` smoke test so we
 # never hit the live network. Pulled in only at test time.
 wiremock = "0.6"

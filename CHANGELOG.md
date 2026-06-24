@@ -56,8 +56,7 @@ harmless** — the blob and index formats are unchanged.
 ### Changed
 
 - **Dependency refresh** — kreuzberg `5.0.0-rc.30` → `rc.35` (document-tier extraction stack) and
-  `rmcp` `1.7` → `1.8`. `arrow` stays at 58 (lock-step with lancedb 0.30), and the a2a-only gRPC
-  stack (tonic / prost / axum) stays pinned to its committed codegen. rmcp 1.8 deprecates MCP
+  `rmcp` `1.7` → `1.8`. `arrow` stays at 58 (lock-step with lancedb 0.30). rmcp 1.8 deprecates MCP
   logging (SEP-2577); basemind keeps the capability for now since the status line and `rescan`
   progress depend on it.
 - **Linux release binaries target glibc 2.28** (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux
@@ -65,6 +64,16 @@ harmless** — the blob and index formats are unchanged.
   linker), pinning the required glibc symbol floor without changing runtime behaviour (still
   dynamically linked). A CI `objdump` guard fails the build if a dependency pulls a newer symbol.
   macOS / Windows artifacts are unchanged.
+
+### Removed
+
+- **Experimental A2A server (`--features a2a`)** — the gRPC + JSON-RPC/SSE Agent-to-Agent server,
+  its protobuf codegen + `proto/`, the `basemind a2a serve` command, the buf CI job, and the
+  a2a-only dependency stack (tonic, prost, axum, axum-server, tower, tower-http, rustls, reqwest,
+  subtle, rcgen, …) are removed. It was opt-in and never part of the shipped release surface; the
+  maintenance cost (pinned codegen, held-back deps, a dedicated buf CI job) outweighed its
+  experimental value. The comms agent-card shapes stay A2A-schema-aligned, so an HTTP front-end can
+  still be added behind the `CommsFrontend` trait later without it.
 
 ### Fixed
 
