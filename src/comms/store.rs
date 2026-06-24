@@ -43,6 +43,12 @@ const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const STORE_DIR: &str = "store.fjall";
 const LOCK_FILE: &str = ".lock";
 
+/// Default retention for room messages. The daemon's periodic prune sweep deletes any message
+/// (front-matter + body) whose `ts_micros` is older than this, so coordination history cannot
+/// grow without bound. Comms is ephemeral scratch — a week is ample for active back-and-forth,
+/// and the recency-aware reads already hide anything past 24h by default.
+pub const MESSAGE_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 /// Bounded retry while acquiring the advisory flock — mirrors `crate::store::acquire_lock`.
 const LOCK_ATTEMPTS: u32 = 25;
 const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
@@ -387,6 +393,33 @@ impl CommsStore {
         Ok(out)
     }
 
+    /// Delete every message whose `ts_micros` is older than `now - ttl`, removing both the
+    /// front-matter (`messages_by_room`) and the body (`message_body`) in one atomic batch.
+    /// Returns the number of messages pruned. Single-writer, so the scan-then-batch needs no CAS.
+    ///
+    /// Room records and per-room `seq` counters are intentionally left intact: a pruned-empty room
+    /// keeps allocating strictly increasing seqs, and read cursors stay monotonic. This bounds
+    /// store growth without disturbing the append-only sequencing the cursors rely on.
+    pub fn prune_expired(&self, ttl: std::time::Duration) -> Result<usize, CommsStoreError> {
+        let ttl_micros = i64::try_from(ttl.as_micros()).unwrap_or(i64::MAX);
+        let cutoff = now_micros().saturating_sub(ttl_micros);
+        let mut batch = self.db.batch();
+        let mut pruned = 0usize;
+        for guard in self.messages_by_room.iter() {
+            let (k, v) = guard.into_inner()?;
+            let meta: MessageMeta = rmp_serde::from_slice(&v)?;
+            if meta.ts_micros < cutoff {
+                batch.remove(&self.messages_by_room, k.to_vec());
+                batch.remove(&self.message_body, meta.id.as_bytes().to_vec());
+                pruned += 1;
+            }
+        }
+        if pruned > 0 {
+            batch.commit()?;
+        }
+        Ok(pruned)
+    }
+
     /// Fetch a message body by id from `message_body`. The ONLY path that touches a body.
     pub fn get_body(&self, message_id: &str) -> Result<Option<Vec<u8>>, CommsStoreError> {
         match self.message_body.get(message_id.as_bytes())? {
@@ -677,6 +710,67 @@ mod tests {
             let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
             assert_eq!(ids, ["m-1", "m-2", "m-3"]);
         }
+    }
+
+    #[test]
+    fn prune_expired_deletes_old_messages_and_bodies_but_keeps_recent() {
+        let (_d, store) = temp_store();
+        let room = room_id("room-1");
+        // Post one stale message (ts far in the past) and one fresh one.
+        let stale_body = b"stale".to_vec();
+        let mut stale = build_meta(
+            "old".to_string(),
+            room.clone(),
+            agent_id("a"),
+            "old".to_string(),
+            vec![],
+            None,
+            vec![],
+            &stale_body,
+        );
+        // Backdate well beyond any sane TTL (10 days in micros).
+        stale.ts_micros = now_micros() - 10 * 24 * 60 * 60 * 1_000_000;
+        store
+            .post(&room, stale, MessageBody(stale_body))
+            .expect("post stale");
+        let fresh_body = b"fresh".to_vec();
+        let fresh = build_meta(
+            "new".to_string(),
+            room.clone(),
+            agent_id("a"),
+            "new".to_string(),
+            vec![],
+            None,
+            vec![],
+            &fresh_body,
+        );
+        store
+            .post(&room, fresh, MessageBody(fresh_body))
+            .expect("post fresh");
+
+        // Prune with a 1-day TTL: the 10-day-old message goes, the fresh one stays.
+        let pruned = store
+            .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
+            .expect("prune");
+        assert_eq!(pruned, 1, "exactly the stale message is pruned");
+
+        let page = store.history(&room, 0, 10).expect("history");
+        let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
+        assert_eq!(ids, ["new"], "only the fresh message survives");
+        // The stale body is gone; the fresh body remains.
+        assert_eq!(store.get_body("old").expect("get_body"), None);
+        assert_eq!(
+            store.get_body("new").expect("get_body").as_deref(),
+            Some(b"fresh".as_slice())
+        );
+
+        // Idempotent: a second prune with everything fresh removes nothing.
+        assert_eq!(
+            store
+                .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
+                .expect("prune again"),
+            0
+        );
     }
 
     #[test]

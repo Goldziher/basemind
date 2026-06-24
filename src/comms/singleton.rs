@@ -271,11 +271,33 @@ pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
     ensure_daemon_with(paths, probe_alive, spawn_detached_daemon).await
 }
 
+/// How many times [`probe_alive`] pings before declaring a daemon dead, and the backoff between
+/// attempts. A live-but-busy daemon can miss a single ping (its accept loop is mid-request); a
+/// false "dead" verdict in [`bind_listener`] would unlink its socket and orphan it. Retrying a
+/// few times makes reclaim conservative, which is the dominant guard against daemon pile-up.
+const PROBE_ATTEMPTS: u32 = 4;
+const PROBE_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+
 /// Probe whether a daemon is alive at `socket_path` by connecting and pinging it. Synchronous
 /// (uses a blocking connect with a short timeout) so it can be used as the `probe` in
-/// [`bind_listener`] too.
-#[cfg(unix)]
+/// [`bind_listener`] too. Retries a few times before giving up so a momentarily-busy daemon is
+/// not falsely reclaimed.
+#[cfg(any(unix, windows))]
 pub fn probe_alive(socket_path: &Path) -> bool {
+    for attempt in 0..PROBE_ATTEMPTS {
+        if probe_once(socket_path) {
+            return true;
+        }
+        if attempt + 1 < PROBE_ATTEMPTS {
+            std::thread::sleep(PROBE_RETRY_BACKOFF);
+        }
+    }
+    false
+}
+
+/// One connect+ping attempt against the Unix socket. See [`probe_alive`] for the retrying wrapper.
+#[cfg(unix)]
+fn probe_once(socket_path: &Path) -> bool {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -302,13 +324,13 @@ pub fn probe_alive(socket_path: &Path) -> bool {
     stream.read_exact(&mut prefix).is_ok()
 }
 
-/// Probe whether a daemon is alive at `socket_path` (a named pipe) on Windows. A
-/// `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so we open it blocking and write
-/// the SAME framed `Ping` the Unix probe sends (u32-be length prefix + msgpack), then read a
-/// 4-byte response prefix. Any successful read ⇒ alive. A transient busy/not-found at open time
-/// ⇒ not alive (the caller treats that as "reclaimable").
+/// One connect+ping attempt against the Windows named pipe. See [`probe_alive`] for the retrying
+/// wrapper. A `\\.\pipe\...` path opens as an ordinary [`std::fs::File`], so we open it blocking
+/// and write the SAME framed `Ping` the Unix probe sends (u32-be length prefix + msgpack), then
+/// read a 4-byte response prefix. Any successful read ⇒ alive. A transient busy/not-found at open
+/// time ⇒ not alive (the caller treats that as "reclaimable").
 #[cfg(windows)]
-pub fn probe_alive(socket_path: &Path) -> bool {
+fn probe_once(socket_path: &Path) -> bool {
     use std::io::{Read, Write};
 
     let Ok(mut stream) = std::fs::OpenOptions::new()

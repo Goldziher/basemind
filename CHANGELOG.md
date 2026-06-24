@@ -63,6 +63,17 @@ harmless** — the blob and index formats are unchanged.
 
 ### Fixed
 
+- **Comms daemons no longer pile up** — a busy broker that missed a single liveness ping could be
+  wrongly judged dead and have its socket unlinked-and-rebound by a new daemon, orphaning the
+  original on a dangling socket that nothing reaped promptly; across many sessions dozens
+  accumulated. Two guards: the liveness probe now retries before declaring a daemon dead (so a
+  live-but-busy broker is not reclaimed), and a Unix socket-ownership watchdog makes any daemon
+  whose socket was unlinked or replaced self-terminate within seconds instead of lingering as an
+  orphan.
+- **Comms messages now expire** — the broker prunes messages past a 7-day TTL on startup and hourly
+  thereafter, so the user-global comms store cannot grow without bound. Recency-aware reads already
+  hid old messages; this reclaims their storage. Room records and per-room sequence counters are
+  left intact so read cursors stay monotonic.
 - **Concurrent serve sessions no longer collide** (#26, #27) — the editor plugin spawns one
   `basemind serve` per session, but the store write lock is single-holder. A contending serve now
   starts in a **read-only** mode (instead of exiting and handing the MCP client an opaque `-32000`),

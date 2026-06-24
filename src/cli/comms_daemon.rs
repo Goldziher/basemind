@@ -16,6 +16,25 @@ use crate::comms::daemon::Broker;
 use crate::comms::singleton;
 use crate::comms::store::CommsStore;
 
+/// How often the message-TTL sweep runs. Hourly is ample: messages already drop out of the
+/// default 24h recency reads long before [`MESSAGE_TTL`](crate::comms::store::MESSAGE_TTL).
+const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// How often the Unix socket-ownership watchdog verifies we still own our bound socket. Short, so
+/// an orphaned daemon (its socket reclaimed by another) self-terminates within seconds.
+#[cfg(unix)]
+const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The `(device, inode)` identity of the socket file, or `None` when it is absent / unstattable.
+/// The ownership watchdog compares this against the value captured at bind time to detect an
+/// unlink-and-rebind reclaim by another daemon.
+#[cfg(unix)]
+fn socket_inode(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
 /// Run the broker loop. Binds the singleton endpoint (the bind IS the lock), opens the store,
 /// serves the platform front-end, and blocks until SIGTERM / Ctrl-C / a `Stop` RPC.
 pub fn run() -> Result<()> {
@@ -42,7 +61,16 @@ pub fn run() -> Result<()> {
         };
 
         let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
-        let broker = Arc::new(Broker::new(store));
+        // Startup prune: trim any messages already past their TTL before serving, so a daemon that
+        // inherits an existing store does not carry stale history forward.
+        match store.prune_expired(crate::comms::store::MESSAGE_TTL) {
+            Ok(n) if n > 0 => {
+                tracing::info!(pruned = n, "comms: pruned expired messages on startup")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "comms: startup message prune failed"),
+        }
+        let broker = Arc::new(Broker::new(store.clone()));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -77,6 +105,52 @@ pub fn run() -> Result<()> {
                 }
             }
         });
+
+        // Message-TTL sweep: periodically delete messages past `MESSAGE_TTL` so the comms store
+        // cannot grow without bound over a long-lived daemon. Read-side recency filtering hides
+        // old messages; this is what actually reclaims their storage.
+        let store_for_prune = store.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(PRUNE_EVERY);
+            tick.tick().await; // consume the immediate first tick (startup prune already ran)
+            loop {
+                tick.tick().await;
+                match store_for_prune.prune_expired(crate::comms::store::MESSAGE_TTL) {
+                    Ok(n) if n > 0 => tracing::info!(pruned = n, "comms: pruned expired messages"),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "comms: periodic message prune failed"),
+                }
+            }
+        });
+
+        // Socket-ownership watchdog (Unix): if our bound socket file is unlinked or replaced by a
+        // *different* daemon (a reclaim that wrongly judged us dead — see `bind_listener`), we are
+        // serving a dangling endpoint no client can reach. Self-terminate promptly rather than
+        // linger as an orphan. This is the decisive guard against daemon pile-up: an orphaned
+        // daemon dies within `OWNERSHIP_CHECK_EVERY` instead of waiting out the 30-min idle reaper
+        // (which never fires if a stale link keeps the link count above zero).
+        #[cfg(unix)]
+        if let Some(bound_inode) = socket_inode(&paths.socket_path) {
+            let broker_for_owner = broker.clone();
+            let shutdown_for_owner = shutdown_tx.clone();
+            let socket = paths.socket_path.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(OWNERSHIP_CHECK_EVERY);
+                tick.tick().await; // consume the immediate first tick
+                loop {
+                    tick.tick().await;
+                    if socket_inode(&socket) != Some(bound_inode) {
+                        tracing::warn!(
+                            socket = %socket.display(),
+                            "comms: socket unlinked or replaced by another daemon; self-terminating"
+                        );
+                        broker_for_owner.begin_drain().await;
+                        let _ = shutdown_for_owner.send(true);
+                        break;
+                    }
+                }
+            });
+        }
 
         // The bound endpoint is platform-specific: a `UnixListener` on Unix, a first
         // `NamedPipeServer` instance on Windows. Each gets a tiny object-safe shim so the daemon
@@ -165,4 +239,35 @@ async fn wait_for_shutdown_signal() {
 #[cfg(windows)]
 async fn wait_for_shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::socket_inode;
+
+    #[test]
+    fn socket_inode_identifies_a_file_and_reports_replacement_or_absence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = dir.path().join("a.sock");
+        let b = dir.path().join("b.sock");
+        std::fs::write(&a, b"").expect("write a");
+        std::fs::write(&b, b"").expect("write b");
+
+        let ident_a = socket_inode(&a).expect("a exists");
+        // Stable while the file is unchanged — the watchdog must not false-positive on its own socket.
+        assert_eq!(
+            socket_inode(&a),
+            Some(ident_a),
+            "identity is stable across stats"
+        );
+        // A different file has a different (dev, inode) — models a reclaim that rebound the path.
+        assert_ne!(
+            socket_inode(&b),
+            Some(ident_a),
+            "a distinct file must not match our bound identity"
+        );
+        // Absent after unlink — models a reclaim that removed our socket.
+        std::fs::remove_file(&a).expect("unlink a");
+        assert_eq!(socket_inode(&a), None, "an unlinked socket reports absence");
+    }
 }
