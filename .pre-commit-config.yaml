@@ -20,12 +20,7 @@ repos:
     hooks:
       # File safety
       - id: trailing-whitespace
-        # Generated buf code is byte-compared against `buf generate` by the CI
-        # drift gate; whitespace fixups would desync it. See `mixed-line-ending`
-        # and `end-of-file-fixer` below for the same exclusion.
-        exclude: ^src/a2a/generated/
       - id: end-of-file-fixer
-        exclude: ^src/a2a/generated/
       - id: check-merge-conflict
       - id: check-added-large-files
         # Demo recordings are intentionally large (the committed CLI/MCP gifs run
@@ -33,12 +28,10 @@ repos:
         # curated demo gif directories.
         exclude: ^docs/(media|demos)/.*\.gif$
       - id: detect-private-key
-        # src/a2a/mod.rs TLS tests write a bare PEM begin-marker line (no key
-        # material) to assert the loader rejects malformed key files.
         # src/textcompress/{safety,mod}.rs hold the credential-detection regexes
         # and their tests — they intentionally contain PEM header patterns (no key
         # material) so the output compressor never leaks a real key.
-        exclude: ^(src/a2a/mod\.rs|src/textcompress/(safety|mod)\.rs)$
+        exclude: ^src/textcompress/(safety|mod)\.rs$
       - id: check-case-conflict
       - id: check-executables-have-shebangs
         # run-hook.cmd is an intentional cmd/bash polyglot: executable on Unix
@@ -46,7 +39,6 @@ repos:
         exclude: \.cmd$
       - id: check-shebang-scripts-are-executable
       - id: mixed-line-ending
-        exclude: ^src/a2a/generated/
       - id: typos
         args:
           - --force-exclude
@@ -93,7 +85,6 @@ repos:
       - id: rust-max-lines
         args:
           - --max=1000
-        exclude: ^src/a2a/generated/
 
       # JSON formatting. Exclude the generated config schema — it is the
       # byte-exact `schemars::to_string_pretty` snapshot asserted by

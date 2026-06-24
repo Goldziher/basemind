@@ -2,8 +2,6 @@
 // Flip this off once the public API is frozen.
 #![allow(missing_docs)]
 
-#[cfg(feature = "a2a")]
-pub mod a2a;
 pub mod cli;
 pub mod comms;
 pub mod config;

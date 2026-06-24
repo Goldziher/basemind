@@ -84,18 +84,3 @@ tasks:
     desc: GoReleaser snapshot build — produces dist/ archives without uploading
     cmds:
       - goreleaser release --snapshot --clean --skip=publish
-
-  proto:lint:
-    desc: Lint protobuf definitions
-    cmds:
-      - buf lint
-
-  proto:generate:
-    desc: Generate protobuf code (Rust)
-    cmds:
-      - buf generate
-
-  proto:breaking:
-    desc: Check for breaking changes in protobuf definitions vs main
-    cmds:
-      - buf breaking --against '.git#branch=main'
