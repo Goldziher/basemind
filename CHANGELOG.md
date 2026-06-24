@@ -55,6 +55,11 @@ harmless** — the blob and index formats are unchanged.
 
 ### Changed
 
+- **Dependency refresh** — kreuzberg `5.0.0-rc.30` → `rc.35` (document-tier extraction stack) and
+  `rmcp` `1.7` → `1.8`. `arrow` stays at 58 (lock-step with lancedb 0.30), and the a2a-only gRPC
+  stack (tonic / prost / axum) stays pinned to its committed codegen. rmcp 1.8 deprecates MCP
+  logging (SEP-2577); basemind keeps the capability for now since the status line and `rescan`
+  progress depend on it.
 - **Linux release binaries target glibc 2.28** (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux
   2023) — the two `*-unknown-linux-gnu` artifacts are built with `cargo-zigbuild` (zig as the
   linker), pinning the required glibc symbol floor without changing runtime behaviour (still

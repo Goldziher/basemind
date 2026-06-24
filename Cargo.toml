@@ -193,7 +193,7 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
-kreuzberg = { version = "=5.0.0-rc.30", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+kreuzberg = { version = "=5.0.0-rc.35", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 # kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
 # same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
 # we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
@@ -217,7 +217,7 @@ regex = "1.12.4"
 # resolved; `charset` keeps response decoding working without default-tls.
 # a2a feature only. Pinned to 0.13 to share the copy kreuzcrawl already resolves.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "json", "charset"], optional = true }
-rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
+rmcp = { version = "1.8", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
 # Embedded headless agent shells (shells feature only). The rmux trio is pulled
 # with default features off so the `web` frontend (and its crypto stack) never
@@ -276,7 +276,7 @@ rcgen = "0.14"
 # Client-side rmcp used by the `harden` integration test to drive `basemind serve`
 # over a stdio child-process transport. Composes with the [dependencies] entry
 # above — features are union-merged by cargo.
-rmcp = { version = "1.7", features = ["client", "transport-child-process"] }
+rmcp = { version = "1.8", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # TLS client used by the A2A `serve_tls` handshake test to connect to the

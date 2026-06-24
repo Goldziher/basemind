@@ -887,6 +887,10 @@ impl ServerHandler for BasemindServer {
         Ok(self.complete_argument(&request))
     }
 
+    // MCP logging is deprecated upstream by SEP-2577 (rmcp 1.8), but basemind intentionally
+    // advertises the capability — the statusline and `rescan` progress emit structured log
+    // notifications through it. Keep it until a migration off MCP logging lands.
+    #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()

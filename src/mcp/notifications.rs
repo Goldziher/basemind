@@ -38,6 +38,10 @@ pub(super) fn should_log(threshold: &AtomicU8, level: LoggingLevel) -> bool {
 }
 
 /// Emit a logging notification if `level` clears the client's threshold. Best-effort.
+//
+// MCP logging is deprecated upstream by SEP-2577 (rmcp 1.8); basemind keeps emitting it because
+// the statusline + rescan progress depend on these notifications. Allow until we migrate off it.
+#[allow(deprecated)]
 pub(super) async fn emit_log(
     peer: &Peer<RoleServer>,
     threshold: &AtomicU8,
