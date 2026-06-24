@@ -246,7 +246,7 @@ flowchart TB
     PEER["rmcp Peer (push, best-effort)"]
   end
   subgraph daemon["basemind comms daemon (singleton, user-global)"]
-    FE["Front-ends: UDS · in-proc · (future A2A-HTTP)"]
+    FE["Front-ends: UDS · in-proc"]
     REG["Room registry\n(scope: remote | path-prefix | global)"]
     BR["Broker: scope-match auto-join, fan-out, refcount"]
     CS["CommsStore (2nd Fjall):\nrooms · messages_by_room(front-matter)\n· message_body · subs · cursors · agents"]
@@ -314,10 +314,3 @@ injects the comms levers + condensed recent history; a `UserPromptSubmit` hook
 (`inbox-notify`) injects messages newer than a per-session high-water mark each
 turn. MCP push via the rmcp `Peer` is best-effort/secondary (Claude Code only
 surfaces `list_changed`).
-
-### A2A
-
-Message and agent-card shapes are schema-aligned with the A2A (Agent2Agent)
-protocol so a future A2A-HTTP front-end can be added behind the same
-`CommsFrontend` trait; the HTTP/SSE server and cross-machine rooms are
-deferred.
