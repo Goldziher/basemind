@@ -276,6 +276,9 @@ activity by type, then tokens saved, then unread messages. Adjust with
 <p align="center"><img src="docs/media/semantic-demo.gif" alt="Semantic search over the documents store" width="820"></p>
 <p align="center"><em>Searching documents by meaning, not keywords, across 90+ formats.</em></p>
 
+<p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo room, DMing each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
+<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped comms room (post, direct-message, synthesize) — entirely over <code>basemind comms</code>.</em></p>
+
 <!-- markdownlint-enable MD013 -->
 
 ---

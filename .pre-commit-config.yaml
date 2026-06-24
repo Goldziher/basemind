@@ -28,6 +28,10 @@ repos:
         exclude: ^src/a2a/generated/
       - id: check-merge-conflict
       - id: check-added-large-files
+        # Demo recordings are intentionally large (the committed CLI/MCP gifs run
+        # 0.7–2.6 MB). Keep the 500 KB guard for stray binaries/data, but exclude the
+        # curated demo gif directories.
+        exclude: ^docs/(media|demos)/.*\.gif$
       - id: detect-private-key
         # src/a2a/mod.rs TLS tests write a bare PEM begin-marker line (no key
         # material) to assert the loader rejects malformed key files.
