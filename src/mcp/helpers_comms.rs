@@ -6,7 +6,7 @@
 //! matching client method, and `json_result` the front-matter response. History and inbox
 //! tools surface front-matter ONLY — bodies are fetched exclusively through `message_get`.
 
-#![cfg(all(feature = "comms", unix))]
+#![cfg(all(feature = "comms", any(unix, windows)))]
 
 use std::sync::Arc;
 
