@@ -5,7 +5,7 @@
 //! `comms` feature is off it returns a graceful "not enabled" MCP error (mirroring the memory
 //! tier). The whole router is registered only under `#[cfg(feature = "comms")]`.
 
-#![cfg(all(feature = "comms", unix))]
+#![cfg(all(feature = "comms", any(unix, windows)))]
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;

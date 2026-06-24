@@ -101,16 +101,16 @@ pub(super) async fn run_shell_spawn(
     // entry cannot smuggle a NUL / newline / extra `KEY=VALUE` into the spawned process env.
     // `mut` is only needed when comms is on (the coupling rewrites the identity vars). The
     // attribute keeps the headless `shells`-only build free of an `unused_mut` warning.
-    #[cfg_attr(not(all(feature = "comms", unix)), allow(unused_mut))]
+    #[cfg_attr(not(all(feature = "comms", any(unix, windows))), allow(unused_mut))]
     let mut environment = build_environment(params.env.unwrap_or_default())?;
 
     // Couple the session to a comms room and inject the child's identity env BEFORE the spawn, so
     // the child process starts already pointed at its room. `(None, None)` when comms is off. The
     // pre-minted `session_id` keys the room so the child joins the same one the client addresses.
-    #[cfg(all(feature = "comms", unix))]
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     let (room_id, child_agent) =
         couple_session_room(state, session_id.as_str(), &mut environment).await?;
-    #[cfg(not(all(feature = "comms", unix)))]
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let (room_id, child_agent): (Option<String>, Option<String>) = (None, None);
 
     let spawned = state
@@ -131,7 +131,7 @@ pub(super) async fn run_shell_spawn(
             // The room was created + joined before the spawn. The spawn failed, so no child will
             // ever join it — roll the parent's subscription back so the broker room does not leak
             // (best-effort; the original spawn error is what we propagate).
-            #[cfg(all(feature = "comms", unix))]
+            #[cfg(all(feature = "comms", any(unix, windows)))]
             if let Some(room) = room_id.as_deref() {
                 rollback_session_room(state, room).await;
             }
@@ -246,7 +246,7 @@ fn build_environment(env: Vec<ShellEnv>) -> Result<Vec<String>, McpError> {
 /// cross-check the asserted id against the spawning parent. This is acceptable for a local
 /// single-user dev tool (every process already runs as the same uid); broker-side mismatch
 /// detection (warn when a child presents an id inconsistent with its `parent_agent`) is future work.
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 async fn couple_session_room(
     state: &ServerState,
     session_id: &str,
@@ -266,7 +266,7 @@ async fn couple_session_room(
 
 /// The fallible inner body of [`couple_session_room`]. On `Ok`, the room exists, the parent has
 /// joined it, and the child's identity env has been appended to `environment`.
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 async fn try_couple_session_room(
     state: &ServerState,
     session_id: &str,
@@ -355,7 +355,7 @@ async fn try_couple_session_room(
 /// (naming the orphan room id) and swallowed so the original spawn error is what propagates. There
 /// is no broker `delete_room`, so the room record itself lingers until the broker is restarted —
 /// only the parent's membership is reclaimed here.
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 async fn rollback_session_room(state: &ServerState, room_id: &str) {
     use super::helpers_comms::resolve_comms_client;
     use crate::comms::ids::RoomId;
@@ -442,7 +442,7 @@ pub(super) async fn run_shell_kill(
 
     // Best-effort: drop the broker lineage row so the `sessions` keyspace does not accumulate dead
     // rows. A comms failure must not fail the kill — the session is already gone.
-    #[cfg(all(feature = "comms", unix))]
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     delete_session_lineage(state, id.as_str()).await;
 
     json_result(&ShellKillResponse {
@@ -453,7 +453,7 @@ pub(super) async fn run_shell_kill(
 
 /// Best-effort removal of a killed session's broker lineage row. Failures are logged at WARN and
 /// swallowed — the session is already dead, so a leftover lineage row is cosmetic, not a kill error.
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 async fn delete_session_lineage(state: &ServerState, session_id: &str) {
     use super::helpers_comms::resolve_comms_client;
 
@@ -547,7 +547,7 @@ pub(super) async fn run_shell_list(
     // Enrich with the broker's lineage when comms is built. Best-effort: a comms failure leaves
     // `by_id` as the runtime-only view rather than failing the whole tool. The `mut` rebind lives
     // under the same gate as the enrichment, so it is absent (and harmless) in the headless build.
-    #[cfg(all(feature = "comms", unix))]
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     let by_id = {
         let mut by_id = by_id;
         enrich_with_lineage(state, &mut by_id).await;
@@ -567,7 +567,7 @@ pub(super) async fn run_shell_list(
 ///
 /// Best-effort: acquiring the client or the `list_sessions` call failing is logged at WARN and
 /// swallowed, so `shell_list` still returns the runtime-only view when comms is down.
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 async fn enrich_with_lineage(
     state: &ServerState,
     by_id: &mut ahash::AHashMap<String, ShellSessionView>,
