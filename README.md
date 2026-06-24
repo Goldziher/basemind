@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
 
-# basemind
+<img src="docs/media/basemind-banner.svg" alt="basemind — cybernetic core" width="820">
 
 **The context and communication layer for coding agents.**
 
