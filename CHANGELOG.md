@@ -22,12 +22,12 @@ harmless** — the blob and index formats are unchanged.
   (enumerate with liveness), and `shell_kill` (terminate). basemind embeds the daemon (re-execs
   itself with `--__internal-daemon` — no external `rmux` binary). Sessions are long-lived across
   tool calls and driven headless via MCP.
-- **Visual attach** (Unix) — when `[shells].visual` is not `headless`, `shell_spawn` opens the
-  session in a terminal tab/window attached to it via a hidden `basemind --__internal-attach`
-  re-exec (basemind ships no external `rmux` binary). Presentation is best-effort — a spawn never
-  fails just because no terminal could be driven — and the response's `attach_command` is returned
-  for manual re-attach.
-- **Comms-coupled session rooms** (Unix + `comms` feature) — spawned children auto-join a
+- **Visual attach** (Unix + Windows) — when `[shells].visual` is not `headless`, `shell_spawn` opens
+  the session in a terminal tab/window attached to it via a hidden `basemind --__internal-attach`
+  re-exec (macOS / Linux emulators or Windows Terminal `wt.exe`; basemind ships no external `rmux`
+  binary). Presentation is best-effort — a spawn never fails just because no terminal could be driven
+  — and the response's `attach_command` is returned for manual re-attach.
+- **Comms-coupled session rooms** (Unix + Windows, `comms` feature) — spawned children auto-join a
   session-scoped comms room via inherited `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` /
   `BASEMIND_AGENT_ID`, enabling bidirectional parent↔child messaging and forming parent→child
   inheritance chains across agents.
@@ -36,6 +36,22 @@ harmless** — the blob and index formats are unchanged.
   (`auto` / `iterm2` / `terminal_app` / `windows_terminal` / `gnome_terminal` / `konsole` /
   `wezterm` / `alacritty` / `kitty` / `xterm`), and session pty dimensions (`default_cols` /
   `default_rows`) and lifecycle (`keep_on_exit`). Requires `--features shells`.
+- **Multi-agent comms orchestration** — one `serve` now drives many named sub-identities over a
+  single connection via a per-call `as_agent` parameter, backed by a per-identity broker-client
+  registry parented to the orchestrator. New `dm_send` delivers a direct message into another
+  agent's inbox over a private pairwise room; `agent_register` / `agent_list` advertise and discover
+  the live roster. The whole surface is mirrored on the CLI (`basemind comms … --as-agent`, `dm`,
+  `room-for-path`), and a `multi-agent-room` skill + a code-review-panel demo show the pattern.
+- **Per-repo comms rooms + recency** — agents auto-join a default room keyed by the repo, created on
+  demand via `get_or_create_chat_room_for_path`; `Global` is repurposed for machine-wide ops
+  coordination. Reads are recency-aware: `room_history` / `inbox_read` default to the last 24h
+  (`since_hours` widens, `0` reads the full append-only log), each message carries `age_secs`, and
+  `room_list` flags a room `stale` after 7 days of silence.
+- **Windows support for agent comms + shells** — the comms broker (named-pipe transport, singleton,
+  signal handling) and the embedded rmux shell runtime now build and run on Windows, and the comms
+  MCP tools are exposed there. `--features full` therefore ships agent comms and agent shells on
+  every published platform — macOS, Linux, and Windows — not Unix only. A dedicated Windows CI job
+  builds and tests the `comms` + `shells` surface.
 
 ### Changed
 
@@ -47,12 +63,27 @@ harmless** — the blob and index formats are unchanged.
 
 ### Fixed
 
+- **Concurrent serve sessions no longer collide** (#26, #27) — the editor plugin spawns one
+  `basemind serve` per session, but the store write lock is single-holder. A contending serve now
+  starts in a **read-only** mode (instead of exiting and handing the MCP client an opaque `-32000`),
+  so its tools register and the session is usable: `outline`, `search_symbols`, `list_files`,
+  `dependents`, `workspace_grep`, and the git tools answer from the in-RAM map and git. Fjall takes
+  an exclusive lock on its index, so the call/reference tools (`find_references`, `find_callers`,
+  `find_implementations`, `call_graph`) cannot read it from a second process — they now return a
+  clear "held by another basemind serve" error rather than a misleading empty result. The
+  lock-holding serve stays the sole writer; a read-only serve's `rescan` returns the same clear
+  error. Lock contention fails fast with the clean lock message rather than the multi-GB busy-spin
+  reported on 0.9.0 (#26).
 - **Agent-shells hardening** — `shell_spawn` now honours the `[shells].enabled` master switch,
   confines `cwd` to the repository root (rejecting `..` / absolute escapes), threads the configured
   `default_cols` / `default_rows` into the spawned pty, validates `BASEMIND_SHELLS_SOCKET` on the
   client path, rejects carriage returns in env keys/values, and widens the loader-injection warning
-  list (`LD_AUDIT`, `DYLD_FALLBACK_LIBRARY_PATH`). The shells modules are now Unix-gated so a
-  non-Unix `--features full` build excludes them cleanly (as `comms` already is).
+  list (`LD_AUDIT`, `DYLD_FALLBACK_LIBRARY_PATH`). The shells and comms modules build cleanly on
+  both Unix and Windows (see Added); a build without those features still excludes them entirely.
+- **Status line recognizes pre-0.9 indexes** — the basemind status line keyed its "scanned yet?"
+  check on the fused `.fm` blob introduced in 0.9, so an index written by an earlier binary (split
+  `.l1`/`.l2` blobs) showed "scanning…" indefinitely though it was healthy. It now accepts both
+  layouts and never double-counts the secondary blob layer.
 
 ### Security
 
