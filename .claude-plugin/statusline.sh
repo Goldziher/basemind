@@ -165,14 +165,20 @@ build_basemind_line() {
     return
   fi
   local blobs_dir="${bm_dir}/blobs"
-  if [[ ! -d "$blobs_dir" ]] || [[ -z "$(find "$blobs_dir" -maxdepth 1 -type f -name '*.fm.msgpack' -print -quit 2>/dev/null)" ]]; then
+  # A source file's canonical blob is `<hash>.fm.msgpack` (current, fused L1/L2) or
+  # `<hash>.l1.msgpack` (pre-0.9 split layout, still written by an older serve). Match
+  # either so an index built by ANY basemind version reads as ready — keying only on
+  # `.fm` left indexes from older binaries stuck on "scanning…" forever. `.l2`/`.l3`
+  # are secondary layers, never counted, so the file count stays one-per-source-file.
+  file_blobs() { find "$blobs_dir" -maxdepth 1 -type f \( -name '*.fm.msgpack' -o -name '*.l1.msgpack' \) "$@" 2>/dev/null; }
+  if [[ ! -d "$blobs_dir" ]] || [[ -z "$(file_blobs -print -quit)" ]]; then
     printf '%s %s│%s %sscanning…%s' "$(mark)" "$sep" "$reset" "$label" "$reset"
     return
   fi
 
   # File count.
   local file_count
-  file_count="$(find "$blobs_dir" -maxdepth 1 -type f -name '*.fm.msgpack' 2>/dev/null | wc -l || echo 0)"
+  file_count="$(file_blobs | wc -l || echo 0)"
   file_count="${file_count##*[[:space:]]}"
   [[ -z "$file_count" ]] && file_count=0
 

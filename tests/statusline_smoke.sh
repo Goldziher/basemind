@@ -61,6 +61,28 @@ assert_contains 'basemind' 'name present'
 assert_contains '●' 'liveness dot present'
 assert_contains '7' 'file count 7 from blob fixture'
 
+# Legacy split-layout index (pre-0.9 `.l1`/`.l2` blobs, still written by an older serve)
+# must read as ready — NOT stuck on "scanning…" — and count one per source file (the
+# `.l2` secondary layer is never counted). Regression guard for the `.fm`-only check that
+# left every older index showing "scanning…" forever.
+legacy_dir="$(mktemp -d)"
+mkdir -p "$legacy_dir/.basemind/blobs" "$legacy_dir/.basemind/views/working"
+for i in 0 1 2 3; do
+  : >"$legacy_dir/.basemind/blobs/${i}bbbbbbbb.l1.msgpack"
+  : >"$legacy_dir/.basemind/blobs/${i}bbbbbbbb.l2.msgpack"
+done
+: >"$legacy_dir/.basemind/views/working/index.msgpack"
+legacy_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$legacy_dir")"
+legacy_output="$(printf '%s' "$legacy_payload" | "$STATUSLINE")"
+legacy_clean="$(printf '%s' "$legacy_output" | sed -E $'s/\033\\[[0-9;:]*m//g')"
+rm -rf "$legacy_dir"
+if [[ "$legacy_clean" != *'scanning'* ]] && [[ "$legacy_clean" == *'4 files'* ]]; then
+  printf '  ok  legacy .l1/.l2 index renders ready with 4 files (no double-count)\n'
+else
+  printf '  FAIL legacy index should render "4 files" and not scanning; got: %q\n' "$legacy_clean" >&2
+  fail=1
+fi
+
 # Empty-index (`.basemind/` exists but no blobs/) → "scanning…" hint.
 unscanned_dir="$(mktemp -d)"
 mkdir -p "$unscanned_dir/.basemind"
