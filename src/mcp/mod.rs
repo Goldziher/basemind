@@ -14,7 +14,7 @@ pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
 mod helpers_compress;
 #[cfg(feature = "documents")]
@@ -42,7 +42,7 @@ mod telemetry;
 mod tokens;
 mod tools;
 mod tools_admin;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
 mod tools_compress;
 mod tools_git;
@@ -55,7 +55,7 @@ mod tools_web;
 mod toon;
 mod types;
 mod types_admin;
-#[cfg(all(feature = "comms", unix))]
+#[cfg(all(feature = "comms", any(unix, windows)))]
 mod types_comms;
 mod types_compress;
 mod types_documents;
@@ -214,7 +214,7 @@ pub(crate) struct ServerState {
     /// server and sharing `orchestration_session`, so one `serve` process can act as many named
     /// agents. Entries are created on first use; a connect failure surfaces as an MCP error on
     /// the triggering call, never at server boot.
-    #[cfg(all(feature = "comms", unix))]
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) comms_clients: tokio::sync::Mutex<
         ahash::AHashMap<
             crate::comms::ids::AgentId,
@@ -223,7 +223,7 @@ pub(crate) struct ServerState {
     >,
     /// Session id shared by every sub-identity this server drives, so the broker records their
     /// lineage under one orchestration session. Derived once at boot from the process id.
-    #[cfg(all(feature = "comms", unix))]
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) orchestration_session: String,
     /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
     /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
@@ -453,9 +453,9 @@ impl BasemindServer {
             embedder: tokio::sync::OnceCell::new(),
             #[cfg(feature = "crawl")]
             crawl_engine,
-            #[cfg(all(feature = "comms", unix))]
+            #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
-            #[cfg(all(feature = "comms", unix))]
+            #[cfg(all(feature = "comms", any(unix, windows)))]
             orchestration_session: format!("orch-{}", std::process::id()),
             #[cfg(all(feature = "shells", any(unix, windows)))]
             shell_runtime: crate::shells::ShellRuntime::new(),
@@ -527,7 +527,7 @@ impl BasemindServer {
         {
             router += Self::tool_router_web();
         }
-        #[cfg(all(feature = "comms", unix))]
+        #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             router += Self::tool_router_comms();
         }
