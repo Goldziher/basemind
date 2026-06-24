@@ -183,13 +183,31 @@ impl ShellRuntime {
     pub async fn rmux(&self) -> Result<&Rmux> {
         self.rmux
             .get_or_try_init(|| async {
-                RmuxBuilder::new()
-                    .unix_socket(self.socket_path.clone())
+                self.rmux_builder()
                     .connect_or_start()
                     .await
                     .context("connect to (or start) embedded rmux daemon")
             })
             .await
+    }
+
+    /// Build the rmux SDK builder pointed at this runtime's basemind-owned
+    /// endpoint.
+    ///
+    /// On Unix the endpoint is a filesystem socket path; on Windows it is a
+    /// named-pipe path (`\\.\pipe\basemind-shells-<user>`). The rmux SDK refuses a
+    /// `UnixSocket` endpoint on Windows builds (and vice versa), so the endpoint
+    /// kind MUST match the target OS — hence the `cfg` split rather than always
+    /// calling `unix_socket`.
+    fn rmux_builder(&self) -> RmuxBuilder {
+        #[cfg(windows)]
+        {
+            RmuxBuilder::new().windows_pipe(self.socket_path.to_string_lossy().into_owned())
+        }
+        #[cfg(not(windows))]
+        {
+            RmuxBuilder::new().unix_socket(self.socket_path.clone())
+        }
     }
 
     /// Mint the next deterministic [`SessionId`] for this runtime's process.
@@ -331,33 +349,52 @@ impl Default for ShellRuntime {
 }
 
 /// Subdirectory under the per-user data dir that holds the shells daemon socket.
+/// Unix only — on Windows the endpoint is a named pipe with no parent dir.
+#[cfg(not(windows))]
 const SHELLS_SUBDIR: &str = "shells";
-/// The Unix socket file name within [`SHELLS_SUBDIR`].
+/// The Unix socket file name within [`SHELLS_SUBDIR`]. Unix only.
+#[cfg(not(windows))]
 const SHELLS_SOCKET_FILE: &str = "rmux.sock";
 /// Owner-only directory mode for the private shells data dir (mirrors comms).
 #[cfg(unix)]
 const OWNER_ONLY_DIR: u32 = 0o700;
 
 /// Default basemind-owned socket path under the per-user PRIVATE data dir:
-/// `<data_dir>/shells/rmux.sock`.
+/// `<data_dir>/shells/rmux.sock` (Unix) or a per-user named pipe
+/// `\\.\pipe\basemind-shells-<user>` (Windows).
 ///
-/// Mirrors the comms daemon's socket placement (`directories::ProjectDirs`, an
-/// owner-only `0o700` parent dir) so the control socket never lands in
-/// world-writable `/tmp`, where another local user could pre-create it. Falls
-/// back to a per-user-namespaced path under the system temp dir only when
-/// `ProjectDirs` cannot resolve a data dir (no `HOME` etc.).
+/// On Unix this mirrors the comms daemon's socket placement
+/// (`directories::ProjectDirs`, an owner-only `0o700` parent dir) so the control
+/// socket never lands in world-writable `/tmp`, where another local user could
+/// pre-create it. It falls back to a per-user-namespaced path under the system
+/// temp dir only when `ProjectDirs` cannot resolve a data dir (no `HOME` etc.).
+///
+/// On Windows there is no filesystem socket: rmux binds a named pipe, whose name
+/// is the path verbatim. The pipe is scoped to the user via the sanitized
+/// username (mirrors `comms_socket_path`'s Windows branch), and Windows named
+/// pipes carry their own ACLs rather than a parent-dir mode, so no directory is
+/// created or tightened.
 fn default_socket_path() -> PathBuf {
-    if let Some(path) = project_dirs_socket_path() {
-        return path;
+    #[cfg(windows)]
+    {
+        return PathBuf::from(format!(r"\\.\pipe\basemind-shells-{}", user_namespace()));
     }
-    let mut dir = std::env::temp_dir();
-    dir.push(format!("basemind-shells-{}.sock", user_namespace()));
-    dir
+    #[cfg(not(windows))]
+    {
+        if let Some(path) = project_dirs_socket_path() {
+            return path;
+        }
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("basemind-shells-{}.sock", user_namespace()));
+        dir
+    }
 }
 
 /// Resolve the private `<data_dir>/shells/rmux.sock` path, creating the parent
 /// dir with owner-only mode first. `None` when `ProjectDirs` cannot resolve a
-/// data dir (so the caller falls back to the temp dir).
+/// data dir (so the caller falls back to the temp dir). Unix only — Windows uses
+/// a named pipe with no parent dir.
+#[cfg(not(windows))]
 fn project_dirs_socket_path() -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "basemind")?;
     let shells_dir = dirs.data_dir().join(SHELLS_SUBDIR);

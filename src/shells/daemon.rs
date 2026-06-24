@@ -17,7 +17,9 @@
 //! daemon with `ConfigFileSelection::Disabled` and no web port.
 
 use std::ffi::OsString;
-use std::path::{Component, Path, PathBuf};
+#[cfg(not(windows))]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -154,33 +156,63 @@ where
 /// containing a `..` component is refused so the daemon can only bind where it
 /// was legitimately told to.
 pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
-    if !path.is_absolute() {
-        bail!(
-            "embedded rmux daemon socket path must be absolute, got {}",
-            path.display()
-        );
-    }
-    if path
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
+    #[cfg(windows)]
     {
-        bail!(
-            "embedded rmux daemon socket path must not contain `..`, got {}",
-            path.display()
-        );
+        // On Windows the endpoint is a named pipe, not a filesystem socket. Its name is
+        // the path verbatim and must live under the `\\.\pipe\` namespace; rmux binds /
+        // connects to exactly this string. A non-pipe path (e.g. a drive-letter file
+        // path) would either fail to bind or, worse, point at an unrelated object, so
+        // we require the canonical prefix instead of the Unix `is_absolute()` /`..`
+        // checks (which do not model pipe names).
+        const PIPE_PREFIX: &str = r"\\.\pipe\";
+        let display = path.to_string_lossy();
+        if !display.starts_with(PIPE_PREFIX) {
+            bail!(
+                "embedded rmux daemon named-pipe path must start with `{PIPE_PREFIX}`, got {display}"
+            );
+        }
+        // The pipe NAME (the part after the prefix) must be non-empty and must not smuggle
+        // a path separator that would escape the pipe namespace.
+        let name = &display[PIPE_PREFIX.len()..];
+        if name.is_empty() || name.contains('\\') || name.contains('/') {
+            bail!(
+                "embedded rmux daemon named-pipe name is empty or contains a separator: {display}"
+            );
+        }
+        return Ok(());
     }
-    Ok(())
+    #[cfg(not(windows))]
+    {
+        if !path.is_absolute() {
+            bail!(
+                "embedded rmux daemon socket path must be absolute, got {}",
+                path.display()
+            );
+        }
+        if path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            bail!(
+                "embedded rmux daemon socket path must not contain `..`, got {}",
+                path.display()
+            );
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(not(windows))]
     #[test]
     fn validate_socket_path_accepts_absolute_traversal_free_path() {
         assert!(validate_socket_path(Path::new("/tmp/basemind/shells/rmux.sock")).is_ok());
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn validate_socket_path_rejects_relative_path() {
         let err = validate_socket_path(Path::new("relative/evil.sock"))
@@ -188,11 +220,34 @@ mod tests {
         assert!(err.to_string().contains("must be absolute"), "{err}");
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn validate_socket_path_rejects_parent_dir_traversal() {
         let err = validate_socket_path(Path::new("/var/run/../../evil.sock"))
             .expect_err("`..` component must be rejected");
         assert!(err.to_string().contains("must not contain `..`"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_socket_path_accepts_named_pipe_path() {
+        assert!(validate_socket_path(Path::new(r"\\.\pipe\basemind-shells-alice")).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_socket_path_rejects_non_pipe_path() {
+        let err = validate_socket_path(Path::new(r"C:\Windows\Temp\evil.sock"))
+            .expect_err("a non-pipe path must be rejected on Windows");
+        assert!(err.to_string().contains(r"\\.\pipe\"), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_socket_path_rejects_pipe_name_with_separator() {
+        let err = validate_socket_path(Path::new(r"\\.\pipe\evil\..\escape"))
+            .expect_err("a pipe name with a separator must be rejected");
+        assert!(err.to_string().contains("separator"), "{err}");
     }
 
     #[test]

@@ -157,7 +157,7 @@ fn parse_size(raw: &str) -> Option<(u16, u16)> {
 /// which we map to `Ok(())`. The pre-parsed `cols`/`rows` are advisory — they
 /// seed the initial geometry but the driver immediately re-syncs to the real TTY
 /// size, so they are not forwarded into the resize handshake here.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn drive_attach(parsed: &AttachArgs) -> Result<()> {
     let _ = (parsed.cols, parsed.rows);
     let name = rmux_sdk::SessionName::new(parsed.session_name.clone())
@@ -189,12 +189,13 @@ fn drive_attach(parsed: &AttachArgs) -> Result<()> {
     }
 }
 
-/// Non-unix stub: the visual attach is unix-only (the rmux attach path is gated on
-/// unix). On other platforms the re-exec should never be produced, but if it is,
-/// fail loudly rather than silently succeeding.
-#[cfg(not(unix))]
+/// Unsupported-platform stub: the visual attach drives rmux's cross-platform
+/// attach client, which exists on unix and Windows. On any other target the
+/// re-exec should never be produced, but if it is, fail loudly rather than
+/// silently succeeding.
+#[cfg(not(any(unix, windows)))]
 fn drive_attach(_parsed: &AttachArgs) -> Result<()> {
-    bail!("the embedded visual attach is only supported on unix")
+    bail!("the embedded visual attach is only supported on unix and Windows")
 }
 
 #[cfg(test)]

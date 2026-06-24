@@ -276,7 +276,7 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 }
 
 fn main() -> Result<()> {
-    #[cfg(all(feature = "shells", unix))]
+    #[cfg(all(feature = "shells", any(unix, windows)))]
     if let Some(result) = basemind::shells::intercept_internal_reexec() {
         return result;
     }

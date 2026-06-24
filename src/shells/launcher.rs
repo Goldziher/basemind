@@ -41,19 +41,42 @@ impl AttachTarget {
     ///
     /// Shape: `<exe> --__internal-attach <session_name> --socket <socket_path> --size <cols>x<rows>`.
     /// basemind ships no external `rmux` binary, so the attach re-execs basemind itself with the
-    /// hidden `--__internal-attach` flag. `exe`, `session_name`, and `socket_path` are single-quoted
-    /// so paths with spaces survive the host shell; `cols`/`rows` are `u16` and need no quoting.
+    /// hidden `--__internal-attach` flag. Each path / name argument is quoted so values with spaces
+    /// survive the host shell; `cols`/`rows` are `u16` and need no quoting.
+    ///
+    /// Quoting is OS-aware: POSIX single-quotes on unix, double-quotes on Windows (where `cmd.exe`
+    /// and `wt.exe` do not honour single quotes). The Windows launcher itself passes the components
+    /// as SEPARATE process arguments (see [`Self::attach_argv`]) and never parses this string, so
+    /// this form is only handed back to a human via [`Presentation::AttachCommand`].
     #[must_use]
     pub fn attach_command(&self) -> String {
         format!(
             "{} {} {} --socket {} --size {}x{}",
-            shell_single_quote(&self.exe.to_string_lossy()),
+            shell_quote(&self.exe.to_string_lossy()),
             crate::shells::attach::INTERNAL_ATTACH_FLAG,
-            shell_single_quote(&self.session_name),
-            shell_single_quote(&self.socket_path.to_string_lossy()),
+            shell_quote(&self.session_name),
+            shell_quote(&self.socket_path.to_string_lossy()),
             self.cols,
             self.rows,
         )
+    }
+
+    /// The attach re-exec as a raw argument vector: the basemind exe followed by the hidden
+    /// `--__internal-attach` flag and its operands, each as a SEPARATE element.
+    ///
+    /// This is the quoting-free form a launcher passes to a terminal that forwards an argv (e.g.
+    /// `wt.exe ... -- <argv>`), so paths with spaces survive without any shell-quoting round-trip.
+    #[must_use]
+    pub fn attach_argv(&self) -> Vec<String> {
+        vec![
+            self.exe.to_string_lossy().into_owned(),
+            crate::shells::attach::INTERNAL_ATTACH_FLAG.to_string(),
+            self.session_name.clone(),
+            "--socket".to_string(),
+            self.socket_path.to_string_lossy().into_owned(),
+            "--size".to_string(),
+            format!("{}x{}", self.cols, self.rows),
+        ]
     }
 }
 
@@ -77,10 +100,24 @@ pub enum Presentation {
     AttachCommand(String),
 }
 
-/// Single-quote a string for a POSIX shell, escaping embedded single quotes.
-fn shell_single_quote(value: &str) -> String {
-    let escaped = value.replace('\'', "'\\''");
-    format!("'{escaped}'")
+/// Quote a string for the host shell, OS-aware.
+///
+/// POSIX shells (unix) use single quotes with the classic `'\''` escape; `cmd.exe` / `wt.exe`
+/// (Windows) do not honour single quotes, so the Windows form double-quotes and escapes embedded
+/// double quotes by doubling them. This string is only ever shown to a human on Windows — the
+/// launcher passes a raw argv (see [`AttachTarget::attach_argv`]) — so the quoting need only be
+/// "pasteable", not a hardened argv encoder.
+fn shell_quote(value: &str) -> String {
+    #[cfg(windows)]
+    {
+        let escaped = value.replace('"', "\"\"");
+        format!("\"{escaped}\"")
+    }
+    #[cfg(not(windows))]
+    {
+        let escaped = value.replace('\'', "'\\''");
+        format!("'{escaped}'")
+    }
 }
 
 /// Build the OS command that would present `target` per `mode` + `terminal`, WITHOUT executing.
@@ -215,13 +252,42 @@ fn build_for_surface(
     target: &AttachTarget,
     surface: Surface,
 ) -> Option<PresentCommand> {
-    let _ = (terminal, target, surface);
-    // Windows visual presentation is unimplemented: cmd-native quoting of the POSIX
-    // single-quoted attach string is not done, and `wt` treats `;` as a tab separator.
-    // Returning `None` makes `present()` fall through to `Presentation::AttachCommand`
-    // instead of shipping a broken `cmd /c` + `wt.exe` command. comms + attach are
-    // unix-only today.
-    None
+    // The only Windows terminal the launcher drives is Windows Terminal (`wt.exe`). Honour an
+    // explicit `WindowsTerminal` choice and treat `Auto` the same (it is the platform default on
+    // Windows 11). Any non-Windows emulator choice is meaningless here, so fall through to the
+    // attach-command hand-back rather than spawning the wrong terminal.
+    match terminal {
+        TerminalChoice::WindowsTerminal | TerminalChoice::Auto => {}
+        _ => return None,
+    }
+    Some(windows_terminal_command(target, surface))
+}
+
+/// Build the `wt.exe` argv that opens the attach in a Windows Terminal tab or window.
+///
+/// `wt.exe` parses everything after `--` as the literal command argv (no shell, no `;`-as-tab
+/// hazard), so we forward [`AttachTarget::attach_argv`] verbatim — each element a separate process
+/// argument. The tab surface targets the current window (`-w 0 new-tab`); the window surface forces
+/// a fresh window (`-w new new-tab`).
+#[cfg(target_os = "windows")]
+fn windows_terminal_command(target: &AttachTarget, surface: Surface) -> PresentCommand {
+    let window = match surface {
+        // `-w 0` reuses the current Windows Terminal window; a new tab is added there.
+        Surface::Tab => "0",
+        // `-w new` always spins up a fresh window.
+        Surface::Window => "new",
+    };
+    let mut args = vec![
+        "-w".to_string(),
+        window.to_string(),
+        "new-tab".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(target.attach_argv());
+    PresentCommand {
+        program: "wt.exe".to_string(),
+        args,
+    }
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -442,10 +508,14 @@ mod tests {
         }
     }
 
-    /// The attach command the per-OS launchers embed; pinned by `target()`.
+    /// The attach command the per-OS launchers embed; pinned by `target()`. POSIX
+    /// single-quoted form — used by the unix + Linux-emulator assertions. Windows quotes
+    /// differently (see `windows_attach_command_uses_double_quotes`).
+    #[cfg(not(windows))]
     const EXPECTED_ATTACH: &str = "'/usr/local/bin/basemind' --__internal-attach 'bmsh-1-2' --socket '/tmp/rmux.sock' \
          --size 200x50";
 
+    #[cfg(not(windows))]
     #[test]
     fn attach_command_has_expected_shape() {
         let cmd = target().attach_command();
@@ -547,30 +617,65 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_current_builds_no_command() {
-        // Windows visual presentation is unimplemented (cmd-native quoting). The builder
-        // returns `None` so `present()` falls through to `Presentation::AttachCommand`.
+    fn windows_current_builds_wt_new_tab_in_current_window() {
+        let cmd = build_present_command(
+            VisualMode::Current,
+            TerminalChoice::WindowsTerminal,
+            &target(),
+        )
+        .expect("wt.exe command");
+        assert_eq!(cmd.program, "wt.exe");
+        // `-w 0 new-tab --` then the attach argv, each a separate process argument.
+        assert_eq!(cmd.args[0], "-w");
+        assert_eq!(cmd.args[1], "0");
+        assert_eq!(cmd.args[2], "new-tab");
+        assert_eq!(cmd.args[3], "--");
+        assert_eq!(cmd.args[4], "/usr/local/bin/basemind");
+        assert_eq!(cmd.args[5], "--__internal-attach");
+        assert_eq!(cmd.args[6], "bmsh-1-2");
+        assert_eq!(cmd.args[7], "--socket");
+        assert_eq!(cmd.args[8], "/tmp/rmux.sock");
+        assert_eq!(cmd.args[9], "--size");
+        assert_eq!(cmd.args[10], "200x50");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_window_forces_a_fresh_wt_window() {
+        let cmd = build_present_command(
+            VisualMode::Window,
+            TerminalChoice::WindowsTerminal,
+            &target(),
+        )
+        .expect("wt.exe command");
+        assert_eq!(cmd.program, "wt.exe");
+        assert_eq!(cmd.args[0], "-w");
+        assert_eq!(cmd.args[1], "new");
+        assert_eq!(cmd.args[2], "new-tab");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_auto_uses_wt() {
+        // `Auto` is Windows Terminal on Windows; a non-Windows emulator choice hands the
+        // attach command back instead of spawning the wrong terminal.
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Auto, &target())
+            .expect("auto -> wt.exe");
+        assert_eq!(cmd.program, "wt.exe");
         assert!(
-            build_present_command(
-                VisualMode::Current,
-                TerminalChoice::WindowsTerminal,
-                &target(),
-            )
-            .is_none()
+            build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target()).is_none()
         );
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_window_builds_no_command() {
-        assert!(
-            build_present_command(
-                VisualMode::Window,
-                TerminalChoice::WindowsTerminal,
-                &target(),
-            )
-            .is_none()
-        );
+    fn windows_attach_command_uses_double_quotes() {
+        // On Windows the human-facing attach string must double-quote (cmd/wt ignore single
+        // quotes); the raw argv the launcher actually spawns is unquoted.
+        let cmd = target().attach_command();
+        assert!(cmd.contains("\"/usr/local/bin/basemind\""), "{cmd}");
+        assert!(cmd.contains("\"bmsh-1-2\""), "{cmd}");
+        assert!(!cmd.contains('\''), "no single quotes on Windows: {cmd}");
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
