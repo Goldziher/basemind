@@ -867,7 +867,13 @@ mod tests {
     fn intern_known_overrides_returns_static() {
         let owned = "rust".to_string();
         let id = intern(&owned).expect("rust must intern");
-        assert!(std::ptr::eq(id, "rust"));
+        assert_eq!(id, "rust");
+        // The id is the canonical static instance: a second intern of an equal name returns
+        // the SAME pointer. Comparing to the "rust" literal instead would rely on the linker
+        // merging identical string literals across the test and the override table, which MSVC
+        // does not guarantee (the Windows CI runner caught this).
+        let again = intern("rust").expect("rust must intern");
+        assert!(std::ptr::eq(id, again));
     }
 
     #[test]

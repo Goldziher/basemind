@@ -206,21 +206,28 @@ mod tests {
         items.iter().map(OsString::from).collect()
     }
 
+    /// A `--socket` value that passes `validate_socket_path` on the current platform:
+    /// an absolute filesystem path on unix, a `\\.\pipe\` named-pipe path on Windows.
+    fn valid_socket() -> &'static str {
+        if cfg!(windows) {
+            r"\\.\pipe\basemind-shells-test"
+        } else {
+            "/tmp/basemind/shells/rmux.sock"
+        }
+    }
+
     #[test]
     fn parses_valid_attach_args_with_size() {
         let parsed = parse_attach_args(args(&[
             "bmsh-1-2",
             "--socket",
-            "/tmp/basemind/shells/rmux.sock",
+            valid_socket(),
             "--size",
             "120x40",
         ]))
         .expect("valid args parse");
         assert_eq!(parsed.session_name, "bmsh-1-2");
-        assert_eq!(
-            parsed.socket_path,
-            std::path::PathBuf::from("/tmp/basemind/shells/rmux.sock")
-        );
+        assert_eq!(parsed.socket_path, std::path::PathBuf::from(valid_socket()));
         assert_eq!(parsed.cols, 120);
         assert_eq!(parsed.rows, 40);
     }
@@ -230,7 +237,7 @@ mod tests {
         let parsed = parse_attach_args(args(&[
             "bmsh-1-2",
             "--socket",
-            "/tmp/rmux.sock",
+            valid_socket(),
             "--size",
             "not-a-size",
         ]))
@@ -241,7 +248,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_default_size_when_size_flag_is_absent() {
-        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", "/tmp/rmux.sock"]))
+        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", valid_socket()]))
             .expect("missing size is fine");
         assert_eq!(parsed.cols, FALLBACK_COLS);
         assert_eq!(parsed.rows, FALLBACK_ROWS);
@@ -261,6 +268,10 @@ mod tests {
         assert!(err.to_string().contains("session name"), "{err}");
     }
 
+    // Unix socket-path rules ("must be absolute" / no `..`). On Windows the endpoint is a
+    // named pipe with different rules + messages (the `\\.\pipe\` checks are covered by
+    // `daemon::tests::validate_socket_path_*`), so these assertions are unix-only.
+    #[cfg(unix)]
     #[test]
     fn rejects_relative_socket_path() {
         let err = parse_attach_args(args(&["bmsh-1-2", "--socket", "relative/evil.sock"]))
@@ -268,6 +279,7 @@ mod tests {
         assert!(err.to_string().contains("must be absolute"), "{err}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn rejects_socket_path_with_parent_traversal() {
         let err = parse_attach_args(args(&["bmsh-1-2", "--socket", "/var/run/../../evil.sock"]))
@@ -280,7 +292,7 @@ mod tests {
         // `--socket` consumes its own value; an empty positional name is rejected by
         // `SessionName::new` (EmptySessionName). Here we drive it via the missing-name
         // path: only flags present, no positional, so the name is absent.
-        let err = parse_attach_args(args(&["", "--socket", "/tmp/rmux.sock"]))
+        let err = parse_attach_args(args(&["", "--socket", valid_socket()]))
             .expect_err("empty session name must be rejected by SessionName::new");
         assert!(err.to_string().contains("session name"), "{err}");
     }

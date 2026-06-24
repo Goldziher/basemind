@@ -375,9 +375,17 @@ mod tests {
 
     #[test]
     fn normalize_absolute_inside_repo_becomes_relative() {
-        let root = std::path::Path::new("/abs/repo");
+        // Build a platform-absolute root + input so the `is_absolute()` re-rooting branch is
+        // exercised on Windows too — a Unix-style "/abs/repo" is not absolute there, which
+        // sent the input down the relative path and yielded None on the Windows CI runner.
+        let root = std::path::Path::new(if cfg!(windows) {
+            r"C:\abs\repo"
+        } else {
+            "/abs/repo"
+        });
+        let input = root.join("src").join("foo.rs");
         assert_eq!(
-            normalize_query_path("/abs/repo/src/foo.rs", root),
+            normalize_query_path(input.to_str().unwrap(), root),
             Some("src/foo.rs".to_string())
         );
     }
