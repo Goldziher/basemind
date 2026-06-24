@@ -2786,7 +2786,9 @@ async fn search_documents_accepts_post_filter_params() {
 ///
 /// Isolation: a per-test temp dir for the store + a per-test socket path, so the test daemon
 /// never touches the user's real `comms.sock` and parallel test runs do not collide.
-#[cfg(feature = "comms")]
+// `UdsFrontend` (and the `UnixListener` this test binds) is `#[cfg(unix)]` inside `frontend_uds`,
+// so this round-trip is unix-only — gate the test to match or the Windows build fails to compile.
+#[cfg(all(feature = "comms", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comms_round_trip_front_matter_then_body_then_inbox() {
     use std::sync::Arc;
