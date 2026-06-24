@@ -15,6 +15,9 @@ ignore = [
   # rustls-pemfile — unmaintained, transitive via the rustls/reqwest stack; functional,
   # folded into rustls upstream, no migration needed here.
   "RUSTSEC-2025-0134",
+  # bincode 1.x — unmaintained, transitive via rmux-proto (the shells rmux stack); functional,
+  # bump belongs upstream in rmux, no migration path here.
+  "RUSTSEC-2025-0141",
 ]
 
 [licenses]
