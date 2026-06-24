@@ -50,7 +50,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Suggestions** | Spots files that change together and suggests notes worth saving — you approve before anything is kept. | `proposals_mine` · `proposal_accept` |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web_scrape` · `web_crawl` · `web_map` |
 | **Agent comms** | A shared chat for agents on the same repo: per-repo rooms they auto-join, direct messages, and a recency-filtered inbox. One orchestrator can drive many named subagents (`as_agent`). | `room_post` · `dm_send` · `inbox_read` · `agent_list` |
-| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background (opt-in). | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
+| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
 | **Token saving** | Hand an agent a file's outline instead of its full text, then pull back only the one function it needs. | `compress` · `expand` |
 | **Admin** | Refresh the index, see what's been queried, and check or clean up the on-disk cache. | `rescan` · `telemetry_summary` · `cache_stats` |
 
@@ -241,8 +241,8 @@ The MCP and CLI paths need `basemind` available on your system. (The plugin does
 <!-- markdownlint-enable MD013 -->
 
 The Homebrew / npm / pip / GitHub downloads include the full feature set — documents, OCR, search,
-web crawl, and shared memory — so the first run downloads the models it needs. The plain
-`cargo install` builds the code-map and git tools only.
+web crawl, shared memory, agent comms, and agent shells — so the first run downloads the models it
+needs. The plain `cargo install` builds the code-map and git tools only.
 
 <details>
 <summary><strong>Statusline</strong> (Claude Code)</summary>
@@ -334,12 +334,12 @@ flowchart LR
 </details>
 
 <details>
-<summary><strong>Agent shells</strong> (opt-in)</summary>
+<summary><strong>Agent shells</strong></summary>
 
-With the `shells` feature turned on, agents can open terminal sessions in the background, type into
-them, and read what's on screen — no extra tools to install. Sessions can be fully headless, or
-(on macOS and Linux) opened in a real terminal tab or window so you can watch along. When comms is
-also on, a spawned session and the agent that started it can message each other.
+Included in every prebuilt download (and in `cargo install --features shells` / `full`): agents can
+open terminal sessions in the background, type into them, and read what's on screen — no extra tools
+to install. Sessions can be fully headless, or opened in a real terminal tab or window so you can
+watch along. A spawned session and the agent that started it can message each other over comms.
 
 </details>
 
