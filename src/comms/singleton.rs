@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use directories::ProjectDirs;
 
+use super::protocol::{CommsRequest, CommsResponse, PROTO_VER, StatusReport};
+
 /// Subdirectory under the user data dir holding the comms socket + store.
 const COMMS_SUBDIR: &str = "comms";
 /// The Unix socket file name within [`COMMS_SUBDIR`]. Unused on Windows, where the endpoint is
@@ -32,6 +34,9 @@ const OWNER_ONLY_FILE: u32 = 0o600;
 const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Poll interval while waiting for a spawned daemon.
 const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// How long to wait for a previous / incompatible daemon to release the socket after we ask it to
+/// stop, before giving up and surfacing a clear error.
+const TAKEOVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Resolved per-user comms paths.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,6 +68,19 @@ pub enum SingletonError {
     /// A spawned daemon did not become reachable in time.
     #[error("spawned comms daemon did not become ready within the timeout")]
     SpawnTimeout,
+    /// A previous / incompatible daemon held the socket and would not stop, so we could not take
+    /// over. Surfaced instead of silently talking to an incompatible daemon (which is how the
+    /// pre-0.10 version-skew bug manifested as an opaque "connection closed").
+    #[error(
+        "a previous basemind comms daemon (v{version}, pid {pid}) is still running and did not \
+         stop; run `basemind comms stop` or terminate pid {pid}, then retry"
+    )]
+    StalePredecessor {
+        /// The stale daemon's build version.
+        version: String,
+        /// The stale daemon's process id.
+        pid: u32,
+    },
 }
 
 /// Environment override for the comms data directory. When set, it is used verbatim as the
@@ -265,10 +283,111 @@ pub async fn ensure_daemon_with(
     Err(SingletonError::SpawnTimeout)
 }
 
-/// Production [`ensure_daemon_with`]: probes via a real connect+ping and spawns
-/// `basemind comms daemon` detached.
+/// Ensure a healthy, current daemon is running, taking over from a previous one on the way.
+///
+/// On load this reaps the kind of stale process that used to pile up: if the socket is held by a
+/// daemon from an OLDER build (or one speaking a different protocol version), we ask it to stop and
+/// spawn a fresh daemon in its place — converging the singleton on the newest binary. A daemon at
+/// our version (or newer) is reused as-is, so concurrent same-version sessions still share one
+/// broker. If the predecessor will not yield the socket, we error out clearly
+/// ([`SingletonError::StalePredecessor`]) rather than silently talking to an incompatible daemon.
 pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
+    if let Some(report) = daemon_status(&paths.socket_path) {
+        let ours = env!("CARGO_PKG_VERSION");
+        let compatible = report.proto_ver == PROTO_VER && !version_is_older(&report.version, ours);
+        if compatible {
+            return Ok(()); // healthy current (or newer) daemon — reuse it
+        }
+        tracing::warn!(
+            daemon_version = %report.version,
+            daemon_pid = report.pid,
+            ours,
+            "comms: a previous/incompatible daemon holds the socket; taking over"
+        );
+        request_stop(&paths.socket_path);
+        let deadline = std::time::Instant::now() + TAKEOVER_DRAIN_TIMEOUT;
+        while std::time::Instant::now() < deadline {
+            if !probe_alive(&paths.socket_path) {
+                break;
+            }
+            tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
+        }
+        if probe_alive(&paths.socket_path) {
+            return Err(SingletonError::StalePredecessor {
+                version: report.version,
+                pid: report.pid,
+            });
+        }
+    }
     ensure_daemon_with(paths, probe_alive, spawn_detached_daemon).await
+}
+
+/// True when `daemon`'s `MAJOR.MINOR.PATCH` is strictly older than `ours`. Pre-release suffixes
+/// (`-rc.N`) are ignored — close enough for the "is this a previous build?" takeover decision.
+fn version_is_older(daemon: &str, ours: &str) -> bool {
+    fn triple(v: &str) -> (u64, u64, u64) {
+        let core = v.split('-').next().unwrap_or(v);
+        let mut it = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
+        (
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
+            it.next().unwrap_or(0),
+        )
+    }
+    triple(daemon) < triple(ours)
+}
+
+/// One-shot `Status` request against a live daemon — returns its [`StatusReport`] (pid / version /
+/// proto) or `None` if nothing answers. Synchronous, mirroring [`probe_alive`]'s framing.
+fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
+    match roundtrip(socket_path, &CommsRequest::Status)? {
+        CommsResponse::Status(report) => Some(report),
+        _ => None,
+    }
+}
+
+/// Best-effort `Stop` request asking a daemon to drain and exit. Errors are ignored — the caller
+/// polls the socket to confirm the daemon actually went away.
+fn request_stop(socket_path: &Path) {
+    let _ = roundtrip(socket_path, &CommsRequest::Stop);
+}
+
+/// Connect to the daemon endpoint, send one length-delimited msgpack request, and decode the one
+/// framed [`CommsResponse`]. `None` on any transport/codec failure. Bounds the response to 64 KiB.
+fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
+    use std::io::{Read, Write};
+    let mut stream = open_endpoint(socket_path)?;
+    let body = rmp_serde::to_vec_named(req).ok()?;
+    let len = u32::try_from(body.len()).ok()?;
+    stream.write_all(&len.to_be_bytes()).ok()?;
+    stream.write_all(&body).ok()?;
+    let mut prefix = [0u8; 4];
+    stream.read_exact(&mut prefix).ok()?;
+    let rlen = u32::from_be_bytes(prefix) as usize;
+    if rlen > 64 * 1024 {
+        return None;
+    }
+    let mut buf = vec![0u8; rlen];
+    stream.read_exact(&mut buf).ok()?;
+    rmp_serde::from_slice::<CommsResponse>(&buf).ok()
+}
+
+/// Open the platform endpoint (Unix socket / Windows named pipe) with short read/write timeouts.
+#[cfg(unix)]
+fn open_endpoint(socket_path: &Path) -> Option<impl std::io::Read + std::io::Write> {
+    let stream = std::os::unix::net::UnixStream::connect(socket_path).ok()?;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(800)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(800)));
+    Some(stream)
+}
+
+#[cfg(windows)]
+fn open_endpoint(socket_path: &Path) -> Option<impl std::io::Read + std::io::Write> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(socket_path)
+        .ok()
 }
 
 /// How many times [`probe_alive`] pings before declaring a daemon dead, and the backoff between
@@ -429,6 +548,21 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_is_older_orders_releases_and_ignores_prerelease() {
+        // A strictly older build is a takeover candidate (this is the 0.6.3-vs-0.10.0 squatter).
+        assert!(version_is_older("0.6.3", "0.10.0"));
+        assert!(version_is_older("0.9.0", "0.10.0"));
+        assert!(version_is_older("0.10.0", "0.10.1"));
+        // Same version or newer is reused, never replaced (no flapping between same-version peers).
+        assert!(!version_is_older("0.10.0", "0.10.0"));
+        assert!(!version_is_older("0.11.0", "0.10.0"));
+        assert!(!version_is_older("1.0.0", "0.10.0"));
+        // Pre-release suffixes are ignored for the ordering decision.
+        assert!(!version_is_older("0.10.0-rc.1", "0.10.0"));
+        assert!(version_is_older("0.9.0-rc.2", "0.10.0"));
+    }
 
     #[cfg(unix)]
     #[test]
