@@ -26,12 +26,19 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        # Default-features only on per-PR CI for fast feedback. Full-features
-        # tests validate the --features full build works on native runners.
-        # The nightly `hardening` job runs the full feature surface against
-        # real OSS repos and is the authoritative signal for those builds.
-        features: ['', 'full']
+        include:
+          # Unix: default-features + full-features builds.
+          - os: ubuntu-latest
+            features: ''
+          - os: ubuntu-latest
+            features: 'full'
+          - os: macos-latest
+            features: ''
+          - os: macos-latest
+            features: 'full'
+          # Windows: comms+shells only (no heavy doc deps that require system libs).
+          - os: windows-latest
+            features: 'comms shells'
     steps:
       - uses: actions/checkout@v4
 
@@ -40,7 +47,7 @@ jobs:
           components: rustfmt, clippy
 
       # System dependencies for the full feature surface (image libs, tesseract, protoc, onnx runtime).
-      # Skipped for default-features builds via the `if:` condition.
+      # Skipped for default-features builds and Windows (which uses comms+shells instead).
       - name: Install system dependencies
         if: matrix.features == 'full'
         uses: ./.github/actions/install-system-deps
