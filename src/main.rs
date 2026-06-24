@@ -781,7 +781,30 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     // scanner in-process. The MCP server is the canonical Fjall owner; the
     // standalone `basemind scan` / `basemind watch` CLIs intentionally fail
     // with a lock error when a server is already running against the repo.
-    let store = Store::open_with_holder(root, view, LockHolder::Serve).context("open store")?;
+    //
+    // Editor plugins spawn one `serve` per session (issue #27); only the first
+    // wins the exclusive write lock. Rather than exit and hand the client an
+    // opaque MCP `-32000`, a contending serve falls back to a read-only open of
+    // the *same* shared index so its tools still register and the session is
+    // usable: the in-RAM-map + git tools (`outline` / `search_symbols` /
+    // `list_files` / `dependents` / `workspace_grep` / git history) answer
+    // normally. Fjall holds an exclusive lock on its index, so the call/reference
+    // tools cannot read it from a second process — they return a clear error
+    // (see `read_only_index_unavailable`) instead of a misleading empty result.
+    // The lock-holding serve remains the sole writer (auto-scan / watcher /
+    // `rescan`).
+    let (store, read_only) = match Store::open_with_holder(root, view, LockHolder::Serve) {
+        Ok(store) => (store, false),
+        Err(error) if error.is_lock_contention() => {
+            tracing::warn!(
+                %error,
+                "store write-lock held by another serve; starting read-only (reads from the shared index)"
+            );
+            let store = Store::open_read_only(root, view).context("open store read-only")?;
+            (store, true)
+        }
+        Err(error) => return Err(anyhow::Error::new(error).context("open store")),
+    };
     let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
     let root_buf = root.to_path_buf();
     let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);
@@ -806,6 +829,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     let options = basemind::mcp::ServerOptions {
         background: true,
         watch: !args.no_watch,
+        read_only,
     };
     // Lifecycle logging (stderr → the MCP client's server logs) so a serve that "fails for some
     // reason" leaves a diagnosable trace: who started, against what, and exactly why it exited.
@@ -813,6 +837,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         pid = std::process::id(),
         version = env!("CARGO_PKG_VERSION"),
         view,
+        read_only,
         root = %root.display(),
         "basemind serve: MCP server starting"
     );

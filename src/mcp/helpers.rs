@@ -700,6 +700,26 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
         .ok_or_else(|| McpError::internal_error("repository has no HEAD", None))
 }
 
+/// Error for the Fjall-backed code-map tools (`find_references` / `find_callers` /
+/// `find_implementations` / `call_graph`) when this serve is a read-only fallback (issue #27).
+///
+/// Fjall takes an exclusive lock on `index.fjall/`, so a second serve cannot open it while the
+/// lock-holding serve runs — the call/reference index is simply unavailable here. Returning a
+/// clear, actionable error is honest; silently answering "0 references" would read as "this symbol
+/// is unused" and mislead the caller. The symbol / outline / grep / git tools (served from the
+/// in-RAM map and git, not Fjall) keep working in a read-only session.
+pub(super) fn read_only_index_unavailable(tool: &str) -> McpError {
+    McpError::invalid_request(
+        format!(
+            "`{tool}` needs the call/reference index, which is held by another basemind serve for \
+             this repo. This session opened read-only to avoid a lock conflict (issue #27); \
+             symbol, outline, grep, and git tools still work here. Run `{tool}` from the serve \
+             that owns the lock, or close it and retry."
+        ),
+        None,
+    )
+}
+
 /// Run the scanner in-process and refresh the in-RAM caches, returning the raw
 /// [`crate::scanner::ScanReport`]. Shared by the `rescan` MCP tool and the startup
 /// auto-scan in [`super::BasemindServer::new`] so both go through the exact same scan +
@@ -714,6 +734,18 @@ pub(super) async fn scan_and_refresh(
     state: Arc<ServerState>,
     scoped_paths: Option<Vec<std::path::PathBuf>>,
 ) -> Result<crate::scanner::ScanReport, McpError> {
+    // This serve fell back to read-only because another serve owns the write lock for this repo
+    // (issue #27). It cannot scan without the lock — return a clean, actionable error instead of
+    // attempting a write. The lock-holding serve's watcher keeps the shared index fresh; this
+    // serve's reads pick that up via the passive view watcher.
+    if state.read_only {
+        return Err(McpError::invalid_request(
+            "this basemind serve is read-only: another serve process holds the write lock for \
+             this repo, so it owns index refresh. Reads are served from the shared index; run \
+             rescans from the lock-holding serve (or close it and retry).",
+            None,
+        ));
+    }
     let root = state.root.clone();
     let config = Arc::clone(&state.config);
 

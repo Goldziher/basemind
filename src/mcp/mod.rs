@@ -234,6 +234,11 @@ pub(crate) struct ServerState {
     /// (see [`notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
     /// the server honors the client's verbosity preference.
     pub(crate) log_level: std::sync::atomic::AtomicU8,
+    /// True when this serve fell back to a read-only store because another serve owns the
+    /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
+    /// behind the `rescan` tool) checks this and returns a clean error rather than writing
+    /// without the lock.
+    pub(crate) read_only: bool,
 }
 
 pub(crate) struct MapCache {
@@ -309,14 +314,23 @@ pub struct ServerOptions {
     /// repos (e.g. the ~81k-file TypeScript tree) or CI, where the continuous
     /// incremental re-scan is not worth the cost.
     pub watch: bool,
+    /// When true, the store was opened read-only (it does NOT hold the write
+    /// lock) because another `serve` owns it for this repo (issue #27). The
+    /// server still answers every read tool from the shared index, but it must
+    /// not write: the empty-index auto-scan and the active filesystem watcher
+    /// are suppressed, and the `rescan` tool returns a clean error instead of
+    /// scanning. The passive view watcher still runs, so the in-RAM map tracks
+    /// the lock-holding writer's `index.msgpack` updates.
+    pub read_only: bool,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        // Default mirrors `serve`: everything on.
+        // Default mirrors `serve`: everything on, sole writer.
         Self {
             background: true,
             watch: true,
+            read_only: false,
         }
     }
 }
@@ -361,6 +375,7 @@ impl BasemindServer {
             ServerOptions {
                 background: false,
                 watch: false,
+                read_only: false,
             },
         )
     }
@@ -411,7 +426,11 @@ impl BasemindServer {
             .unwrap_or(false);
         // NOTE: a genuinely empty repo (zero source files) satisfies this every startup and
         // re-runs a trivially fast no-op scan; that is acceptable and not worth a freshness flag.
-        let needs_initial_scan = view_is_working && (cache.by_path.is_empty() || fjall_index_empty);
+        // A read-only serve never auto-scans — it holds no write lock; the lock-holding writer
+        // owns index refresh, and this serve sees it via the passive view watcher.
+        let needs_initial_scan = !options.read_only
+            && view_is_working
+            && (cache.by_path.is_empty() || fjall_index_empty);
         tracing::info!(
             files = cache.by_path.len(),
             corpus_bytes,
@@ -460,6 +479,7 @@ impl BasemindServer {
             #[cfg(all(feature = "shells", any(unix, windows)))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
+            read_only: options.read_only,
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
         // no auto-scan, no background GC. They preload the map cache (above) and
@@ -481,7 +501,10 @@ impl BasemindServer {
                     Err(_) => false,
                 }
             };
-            if options.watch && view_is_working {
+            // A read-only serve must not run the active FS watcher — it funnels changes into
+            // `scan_and_refresh`, which writes. It still gets the passive view watcher, so its
+            // in-RAM map tracks the lock-holding writer's `index.msgpack` updates.
+            if options.watch && !options.read_only && view_is_working {
                 spawn_serve_watcher(Arc::clone(&state));
             } else {
                 spawn_view_watcher(Arc::clone(&state));

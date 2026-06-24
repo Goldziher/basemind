@@ -575,6 +575,9 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
+            if idx.is_none() && self.state.read_only {
+                return Err(read_only_index_unavailable("find_references"));
+            }
             run_find_references(idx.as_ref(), params)
         }
         .await;
@@ -607,6 +610,9 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
+            if idx.is_none() && self.state.read_only {
+                return Err(read_only_index_unavailable("find_callers"));
+            }
             let cache = self.state.cache.load_full();
             run_find_callers(idx.as_ref(), params, &cache)
         }
@@ -671,6 +677,9 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
+            if idx.is_none() && self.state.read_only {
+                return Err(read_only_index_unavailable("find_implementations"));
+            }
             let cache = self.state.cache.load_full();
             run_find_implementations(idx.as_ref(), params, &cache)
         }
@@ -705,6 +714,9 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
+            if idx.is_none() && self.state.read_only {
+                return Err(read_only_index_unavailable("call_graph"));
+            }
             let cache = self.state.cache.load_full();
             run_call_graph(idx.as_ref(), params, &cache)
         }
