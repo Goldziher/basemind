@@ -35,6 +35,14 @@ die() {
   exit 1
 }
 
+# A failed asset or checksums fetch almost always means the pinned release is
+# INCOMPLETE — some platform binaries or the checksums file never finished
+# publishing (a partial release). Surface that as an actionable instruction
+# instead of a bare error the MCP client renders as an opaque "failed to connect".
+die_incomplete_release() {
+  die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
+}
+
 # Resolve the plugin root: prefer the value Claude Code injects, else derive it
 # from this script's location (scripts/ lives one level under the plugin root).
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
@@ -167,16 +175,17 @@ try_exec "$MANAGED_BIN" "$@"
 
 TMP="$(mktemp -d)"
 log "downloading $ASSET ..."
-fetch "$ASSET_URL" "$TMP/$ASSET" || die "download failed: $ASSET_URL"
+fetch "$ASSET_URL" "$TMP/$ASSET" || die_incomplete_release "could not download $ASSET ($ASSET_URL)"
 
 # Fail CLOSED: the checksums file MUST be fetchable and MUST contain an entry for
 # this asset. A missing file or absent entry aborts rather than installing an
-# unverified binary.
+# unverified binary — and almost always means the release published without its
+# checksums (the v0.10.0 partial-publish failure mode), so point at the fix.
 fetch "$SUMS_URL" "$TMP/checksums.txt" ||
-  die "could not fetch checksums ($SUMS_URL) — refusing to install unverified binary"
+  die_incomplete_release "could not fetch checksums ($SUMS_URL); refusing to install an unverified binary"
 EXPECTED="$(awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) print $1}' "$TMP/checksums.txt")"
 [ -n "$EXPECTED" ] ||
-  die "no checksum entry for $ASSET in $SUMS_URL — refusing to install unverified binary"
+  die_incomplete_release "no checksum entry for $ASSET in $SUMS_URL; refusing to install an unverified binary"
 ACTUAL="$(sha256 "$TMP/$ASSET")"
 [ -n "$ACTUAL" ] || die "failed to compute sha256 for $ASSET"
 [ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
