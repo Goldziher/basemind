@@ -117,10 +117,19 @@ pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
 pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        let _ = comms_dir;
-        // Per-user named pipe. The username keeps it user-scoped on shared hosts.
+        use std::hash::{Hash, Hasher};
+        // Per-user named pipe, isolated by comms_dir. The username keeps it user-scoped on shared
+        // hosts; the comms_dir hash mirrors the per-dir Unix socket so distinct BASEMIND_COMMS_DIR
+        // values (test tempdirs, sandboxes) resolve to distinct pipes instead of colliding on one
+        // per-user singleton. Production leaves BASEMIND_COMMS_DIR unset, so comms_dir is the single
+        // constant ProjectDirs path and the daemon stays one stable per-user broker. DefaultHasher
+        // has a fixed (non-random) seed, so the daemon and client processes derive the same name
+        // from the same comms_dir. Without this, parallel comms dirs cross-contaminate (see #110).
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
-        PathBuf::from(format!(r"\\.\pipe\basemind-comms-{user}"))
+        let mut hasher = std::hash::DefaultHasher::new();
+        comms_dir.hash(&mut hasher);
+        let dir_hash = hasher.finish();
+        PathBuf::from(format!(r"\\.\pipe\basemind-comms-{user}-{dir_hash:016x}"))
     }
     #[cfg(not(windows))]
     {

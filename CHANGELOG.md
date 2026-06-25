@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows comms named pipe now isolates by `comms_dir`** — `comms_socket_path` derived the
+  Windows pipe name from the username only (`\\.\pipe\basemind-comms-<user>`), ignoring
+  `BASEMIND_COMMS_DIR`, so every comms dir on a host collapsed onto one per-user singleton pipe.
+  Parallel comms suites (each isolated to its own tempdir) collided — daemons cross-contaminated,
+  one test's teardown killed another's daemon, and concurrent `comms start` races hung to the CI
+  timeout. The pipe name now mixes in a hash of `comms_dir`, mirroring the per-dir Unix socket;
+  production (which leaves `BASEMIND_COMMS_DIR` unset) keeps a single stable per-user broker. A
+  `timeout-minutes: 30` backstop on the CI test job prevents any future hang from blocking the
+  queue-not-cancel main concurrency.
+
 ## [0.10.2] — 2026-06-25
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no
