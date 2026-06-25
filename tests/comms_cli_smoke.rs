@@ -8,13 +8,14 @@
 //! It also pins the **condensation** contract end to end: `comms history --json` for a different
 //! agent returns the message front-matter (subject) but NEVER the body bytes.
 //!
-//! Unix-only: the `comms start` detached-daemon spawn + readiness handshake deadlocks on Windows
-//! (every test in this file hung to the CI timeout even after the per-`comms_dir` named-pipe
-//! isolation fix, so the deadlock is in the detach/readiness path, not the pipe name). The
-//! in-process + direct-daemon-spawn suites in `comms_smoke.rs` run on Windows and cover the broker.
-//! Tracked in #110.
+//! Runs on Unix and Windows. `comms start` previously hung forever on Windows: the detached daemon
+//! inherited the launcher's stdout/stderr (Windows `CreateProcess` with `bInheritHandles = TRUE`
+//! leaks every inheritable handle, including the pipe `Command::output()` captures), so the capturing
+//! parent never saw EOF and blocked until the daemon died. `spawn_detached_daemon` now clears the
+//! inherit bit on its std handles before the detached spawn, so the daemon leaks none of them. The
+//! in-process + direct-daemon-spawn suites in `comms_smoke.rs` cover the broker itself.
 
-#![cfg(all(feature = "comms", unix))]
+#![cfg(feature = "comms")]
 
 use std::path::Path;
 use std::process::Command;
