@@ -23,10 +23,12 @@ jobs:
   test:
     name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
-    # Backstop against a hung test (e.g. a Windows IPC deadlock) running to the 6h
-    # default. On main, concurrency is queue-not-cancel, so a 6h hang blocks every
-    # subsequent run; fail fast in minutes instead.
-    timeout-minutes: 30
+    # Per-leg backstop against a hung test (e.g. a Windows IPC deadlock) running to the 6h
+    # default — on main, concurrency is queue-not-cancel, so a 6h hang blocks every subsequent
+    # run. Windows stays tight (its build is light; the budget guards the comms hang); the heavy
+    # `full` builds (ONNX / kreuzberg / lance) get a generous ceiling so a cold cache compile is
+    # never mistaken for a hang.
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
@@ -34,15 +36,20 @@ jobs:
           # Unix: default-features + full-features builds.
           - os: ubuntu-latest
             features: ''
+            timeout_minutes: 30
           - os: ubuntu-latest
             features: 'full'
+            timeout_minutes: 60
           - os: macos-latest
             features: ''
+            timeout_minutes: 30
           - os: macos-latest
             features: 'full'
+            timeout_minutes: 90
           # Windows: comms+shells only (no heavy doc deps that require system libs).
           - os: windows-latest
             features: 'comms shells'
+            timeout_minutes: 30
     steps:
       - uses: actions/checkout@v4
 
