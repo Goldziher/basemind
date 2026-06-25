@@ -16,11 +16,19 @@
 #   BASEMIND_HARDEN_ROOT     base dir for clones (default /tmp/basemind-harden)
 #   BASEMIND_HARDEN_KEEP=1   keep .basemind/ from prior runs (default: wipe between repos)
 #   BASEMIND_HARDEN_NO_BUILD=1   skip the up-front `cargo build --release`
+#   BASEMIND_HARDEN_FEATURES cargo feature set to build/run with (default "full"). Set to "" to
+#                            build default features only — useful on machines where the optional
+#                            documents/memory/intelligence stack can't compile (the harness records
+#                            those tools as skipped rather than failing). Scan + git-ops are
+#                            measured on whatever feature set is given.
 
 set -euo pipefail
 
 ROOT="${BASEMIND_HARDEN_ROOT:-/tmp/basemind-harden}"
 RESULTS="${ROOT}/results.ndjson"
+FEATURES="${BASEMIND_HARDEN_FEATURES-full}"
+feature_args=()
+if [ -n "${FEATURES}" ]; then feature_args=(--features "${FEATURES}"); fi
 mkdir -p "${ROOT}"
 : >"${RESULTS}"
 
@@ -48,8 +56,8 @@ should_run() {
 }
 
 if [ -z "${BASEMIND_HARDEN_NO_BUILD:-}" ]; then
-  echo "==> building basemind (release, --features full)"
-  cargo build --release --quiet --features full --bin basemind
+  echo "==> building basemind (release, features: ${FEATURES:-default})"
+  cargo build --release --quiet ${feature_args[@]+"${feature_args[@]}"} --bin basemind
 fi
 
 # Track overall outcome
@@ -84,7 +92,7 @@ for entry in "${REPOS[@]}"; do
   if BASEMIND_HARDEN_REPO="${dest}" \
     BASEMIND_HARDEN_REPO_NAME="${name}" \
     BASEMIND_HARDEN_RESULTS="${RESULTS}" \
-    cargo test --release --features full --test harden -- \
+    cargo test --release ${feature_args[@]+"${feature_args[@]}"} --test harden -- \
     --ignored --nocapture --test-threads=1 --exact harden_repo; then
     passed+=("${name}")
   else

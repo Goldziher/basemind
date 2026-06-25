@@ -56,8 +56,48 @@ struct ToolCallRecord {
     tool: &'static str,
     ok: bool,
     elapsed_ms: u128,
+    /// Microsecond resolution — the indexed git tools are sub-millisecond, so `elapsed_ms` rounds
+    /// many of them to 0. This is the end-to-end MCP round-trip (transport + query), not the pure
+    /// query cost; the in-process [`GitOpsMetrics`] captures the latter.
+    elapsed_us: u128,
     /// Brief one-liner; for errors, includes the error code/message.
     detail: String,
+}
+
+/// One warm indexed-vs-live-walk latency comparison for a single git read query, measured
+/// **in-process** (no MCP transport) at warm steady state — the pure query cost. Times are the
+/// median over many iterations, in microseconds.
+#[derive(Debug, serde::Serialize)]
+struct GitOpsQuery {
+    /// The logical query: `commits_touching` / `recent_changes` / `window_commits`.
+    name: &'static str,
+    /// `hot` (most-changed path), `rare` (single-touch path), or `global` (whole-history scan).
+    scope: &'static str,
+    /// Median latency of the posting-list-backed indexed path, µs.
+    indexed_us: f64,
+    /// Median latency of the live `gix` walk it replaces, µs.
+    live_us: f64,
+    /// `live_us / indexed_us` — how many times faster the index is.
+    speedup: f64,
+}
+
+/// In-process git-history measurement for one repo: how long the index took to build, what it costs
+/// on disk, and warm indexed-vs-live latency for each git read query. Built deterministically
+/// (synchronous `builder::sync`) before the MCP sweep so the timings are not racing a background
+/// rebuild. `None` when the repo has no commits (unborn HEAD) or the index could not open.
+#[derive(Debug, serde::Serialize)]
+struct GitOpsMetrics {
+    /// Wall-clock of the full `builder::sync` rebuild, ms.
+    build_ms: u128,
+    /// `RebuildOutcome` debug string (`FullRebuild { reason, commits }` on a fresh `.basemind/`).
+    outcome: String,
+    /// Commits indexed.
+    commits: u32,
+    /// On-disk size of `.basemind/git-history.fjall/`, bytes.
+    index_bytes: u64,
+    /// On-disk size of `.git/`, bytes — for the index-to-repo ratio.
+    git_dir_bytes: u64,
+    queries: Vec<GitOpsQuery>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -72,6 +112,9 @@ struct RepoRecord {
     scan_extract_failed: usize,
     server_boot_ms: u128,
     tools: Vec<ToolCallRecord>,
+    /// In-process git-history metrics (build time, index size, indexed-vs-live latency). `None` for
+    /// repos with no history. Additive — older readers ignore it.
+    git_history: Option<GitOpsMetrics>,
     canaries: BTreeMap<String, Value>,
 }
 
@@ -141,6 +184,7 @@ async fn call(
                 tool,
                 ok: false,
                 elapsed_ms: elapsed.as_millis(),
+                elapsed_us: elapsed.as_micros(),
                 detail: format!("timeout after {:?}", TOOL_TIMEOUT),
             });
             None
@@ -150,6 +194,7 @@ async fn call(
                 tool,
                 ok: false,
                 elapsed_ms: elapsed.as_millis(),
+                elapsed_us: elapsed.as_micros(),
                 detail: format!("rmcp error: {e}"),
             });
             None
@@ -163,6 +208,7 @@ async fn call(
                 tool,
                 ok: !is_error,
                 elapsed_ms: elapsed.as_millis(),
+                elapsed_us: elapsed.as_micros(),
                 detail: if is_error {
                     "is_error=true".to_string()
                 } else {
@@ -571,9 +617,21 @@ fn assert_passing(
         failures.push("scan touched zero files".to_string());
     }
 
-    // Generic per-tool: any !ok or timeout fails the harness.
+    // Generic per-tool: any !ok or timeout fails the harness — except tolerated responses that are
+    // not malfunctions:
+    //   * "requires the X feature" / "tool not found" — the tool isn't compiled into this binary. The
+    //     published release includes every feature, but a reduced build (e.g. on a machine where the
+    //     documents/memory/intelligence stack can't compile) leaves those tools unregistered. The
+    //     harness still measures scan + git-ops on whatever binary it's given.
+    //   * "disambiguate" — `expand` was fed a symbol name the generic sweep sampled that happens to
+    //     match several symbols; returning a disambiguation error is the tool behaving correctly, not
+    //     failing. (The expand contract is covered by its own smoke test, not this sweep.)
     for r in &repo_record.tools {
-        if !r.ok {
+        let tolerated = !r.ok
+            && (r.detail.contains("requires the")
+                || r.detail.contains("tool not found")
+                || r.detail.contains("disambiguate"));
+        if !r.ok && !tolerated {
             failures.push(format!("{} failed: {}", r.tool, r.detail));
         }
         if r.elapsed_ms > TOOL_TIMEOUT.as_millis() {
@@ -582,6 +640,28 @@ fn assert_passing(
                 r.tool,
                 r.elapsed_ms,
                 TOOL_TIMEOUT.as_millis()
+            ));
+        }
+    }
+
+    // Global git-ops canaries (every git repo): the index must build, and on a repo with real
+    // history the indexed hot-path query must not be slower than the live walk it replaces. The
+    // depth gate keeps tiny repos (where the live walk is itself sub-microsecond) from flaking on
+    // fixed Fjall overhead — there the numbers are still recorded, just not asserted.
+    if let Some(m) = &repo_record.git_history {
+        if m.commits == 0 {
+            failures.push("git-history index built zero commits".to_string());
+        }
+        if let Some(ct) = m
+            .queries
+            .iter()
+            .find(|q| q.name == "commits_touching" && q.scope == "hot")
+            && m.commits >= 1000
+            && ct.indexed_us > ct.live_us
+        {
+            failures.push(format!(
+                "indexed commits_touching ({:.2}µs) slower than live walk ({:.2}µs) on {} commits",
+                ct.indexed_us, ct.live_us, m.commits
             ));
         }
     }
@@ -893,6 +973,213 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
     }
 }
 
+// ─── In-process git-ops measurement (warm, microsecond, indexed vs live) ─────
+
+/// Warm-up iterations discarded before timing (let the block cache + branch predictor settle).
+const GITOPS_WARMUP: usize = 8;
+/// Timed iterations for the indexed (µs-scale) path.
+const GITOPS_ITERS_INDEXED: usize = 300;
+/// Timed iterations for the live walk — fewer, since each is far slower and we only need a median.
+const GITOPS_ITERS_LIVE: usize = 25;
+
+/// Build the git-history index for `repo_root` synchronously (so its state is deterministic, not
+/// racing `serve`'s background sync), then measure warm indexed-vs-live latency for the git read
+/// queries plus the build time and on-disk index size. Returns `None` for a repo with no history.
+///
+/// This is the in-process, pure-query measurement (no MCP transport) — the µs-scale numbers the
+/// README's git-ops section reports. It reuses the exact public APIs `benches/git_history.rs` does.
+fn measure_git_ops(repo_root: &Path) -> Option<GitOpsMetrics> {
+    use basemind::git::Repo;
+    use basemind::git_history::{GitHistoryIndex, builder};
+
+    let repo = Repo::discover(repo_root).ok()?;
+    let bdir = repo_root.join(".basemind");
+    std::fs::create_dir_all(&bdir).ok()?;
+    let index = GitHistoryIndex::open(&bdir).ok()?;
+
+    // Deterministic full build, timed. On a fresh `.basemind/` this is a from-scratch rebuild.
+    let t0 = Instant::now();
+    let outcome = builder::sync(&index, &repo, &bdir).ok()?;
+    let build_ms = t0.elapsed().as_millis();
+    let commits = index.commit_count();
+    if commits == 0 {
+        return None; // unborn / empty repo — nothing to measure
+    }
+
+    let index_bytes = dir_size(&bdir.join("git-history.fjall"));
+    let git_dir_bytes = dir_size(&repo_root.join(".git"));
+    let (hot, rare) = sample_paths(&index)?;
+
+    let queries = vec![
+        bench_query(
+            "commits_touching",
+            "hot",
+            || index.commits_touching(&hot, 0, 50).len(),
+            || repo.log_for_path(&hot, 50).map(|v| v.len()).unwrap_or(0),
+        ),
+        bench_query(
+            "commits_touching",
+            "rare",
+            || index.commits_touching(&rare, 0, 50).len(),
+            || repo.log_for_path(&rare, 50).map(|v| v.len()).unwrap_or(0),
+        ),
+        bench_query(
+            "recent_changes",
+            "global",
+            || index.recent_commits(0, 50, false).len(),
+            || repo.log_paths(50, false).map(|v| v.len()).unwrap_or(0),
+        ),
+        bench_query(
+            "window_commits",
+            "global",
+            || index.window_commits(300).len(),
+            || repo.log_paths(300, true).map(|v| v.len()).unwrap_or(0),
+        ),
+    ];
+
+    // Drop the index handle (releasing the Fjall lock) before `serve` opens it for the MCP sweep.
+    drop(index);
+    Some(GitOpsMetrics {
+        build_ms,
+        outcome: format!("{outcome:?}"),
+        commits,
+        index_bytes,
+        git_dir_bytes,
+        queries,
+    })
+}
+
+/// Sample a `(hot, rare)` path pair from the index's recent history: the most-changed path in the
+/// newest window is "hot", a single-touch path is "rare". Mirrors `benches/git_history.rs`.
+fn sample_paths(
+    index: &basemind::git_history::GitHistoryIndex,
+) -> Option<(basemind::path::RelPath, basemind::path::RelPath)> {
+    use basemind::path::RelPath;
+    let window = index.window_commits(2000);
+    let mut counts: ahash::AHashMap<RelPath, usize> = ahash::AHashMap::new();
+    for commit in &window {
+        for (rel, _) in &commit.files {
+            *counts.entry(rel.clone()).or_default() += 1;
+        }
+    }
+    let hot = counts
+        .iter()
+        .max_by_key(|(_, n)| **n)
+        .map(|(p, _)| p.clone())?;
+    let rare = counts
+        .iter()
+        .find(|(_, n)| **n == 1)
+        .map(|(p, _)| p.clone())
+        .unwrap_or_else(|| hot.clone());
+    Some((hot, rare))
+}
+
+/// Warm A/B: time the indexed and live closures back-to-back (shared thermal/cache conditions) and
+/// return their median latencies in µs plus the speedup.
+fn bench_query(
+    name: &'static str,
+    scope: &'static str,
+    mut indexed: impl FnMut() -> usize,
+    mut live: impl FnMut() -> usize,
+) -> GitOpsQuery {
+    let indexed_ns = median_ns(GITOPS_ITERS_INDEXED, &mut indexed);
+    let live_ns = median_ns(GITOPS_ITERS_LIVE, &mut live);
+    let indexed_us = indexed_ns as f64 / 1000.0;
+    let live_us = live_ns as f64 / 1000.0;
+    let speedup = if indexed_us > 0.0 {
+        live_us / indexed_us
+    } else {
+        0.0
+    };
+    GitOpsQuery {
+        name,
+        scope,
+        indexed_us,
+        live_us,
+        speedup,
+    }
+}
+
+/// Median per-call latency in nanoseconds over `iters` timed iterations (after a warm-up). Nanosecond
+/// resolution so sub-microsecond indexed calls don't round to zero.
+fn median_ns(iters: usize, f: &mut impl FnMut() -> usize) -> u128 {
+    for _ in 0..GITOPS_WARMUP {
+        std::hint::black_box(f());
+    }
+    let mut samples: Vec<u128> = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let start = Instant::now();
+        std::hint::black_box(f());
+        samples.push(start.elapsed().as_nanos());
+    }
+    samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+/// Recursively sum **actual on-disk usage** under `dir` (0 if absent). Uses allocated 512-byte
+/// blocks, not logical length — Fjall preallocates its journal as a sparse file whose `len()` is
+/// far larger than the bytes really on disk, so `len()` would wildly over-report the index size
+/// (e.g. report 64 MB for a 680 KB index). This matches what `du` shows.
+fn dir_size(dir: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    let mut acc = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        match entry.metadata() {
+            Ok(md) if md.is_dir() => acc += dir_size(&entry.path()),
+            Ok(md) => acc += md.blocks() * 512,
+            Err(_) => {}
+        }
+    }
+    acc
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// Append a paste-ready markdown git-ops table for one repo to `<results_dir>/gitops.md`, so the
+/// README author (and `harness-interpreter`) can read the numbers without parsing NDJSON.
+fn append_gitops_md(repo_name: &str, m: &GitOpsMetrics) {
+    let Ok(results) = std::env::var("BASEMIND_HARDEN_RESULTS") else {
+        return;
+    };
+    let md = Path::new(&results).with_file_name("gitops.md");
+    let mut out = String::new();
+    out.push_str(&format!(
+        "### {repo_name} — {} commits, index {} ({:.1}% of .git), full build {} ms\n\n",
+        m.commits,
+        human_bytes(m.index_bytes),
+        if m.git_dir_bytes > 0 {
+            100.0 * m.index_bytes as f64 / m.git_dir_bytes as f64
+        } else {
+            0.0
+        },
+        m.build_ms,
+    ));
+    out.push_str("| query | scope | indexed µs | live-walk µs | speedup |\n");
+    out.push_str("|---|---|---|---|---|\n");
+    for q in &m.queries {
+        out.push_str(&format!(
+            "| {} | {} | {:.2} | {:.2} | {:.0}× |\n",
+            q.name, q.scope, q.indexed_us, q.live_us, q.speedup
+        ));
+    }
+    out.push('\n');
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&md) {
+        let _ = write!(f, "{out}");
+    }
+}
+
 // ─── NDJSON output ──────────────────────────────────────────────────────────
 
 fn append_results(record: &RepoRecord) {
@@ -951,6 +1238,36 @@ async fn harden_repo() {
         scan.stats.extract_failed
     );
 
+    // 1.5 Build the git-history index synchronously and measure warm indexed-vs-live latency BEFORE
+    //     starting `serve`. Deterministic (no background-sync race), and it leaves the index fresh so
+    //     the MCP git tools below hit the indexed path. Runs on a blocking thread (gix + Fjall).
+    let git_history = {
+        let repo = repo.clone();
+        tokio::task::spawn_blocking(move || measure_git_ops(&repo))
+            .await
+            .expect("git-ops measure join")
+    };
+    if let Some(m) = &git_history {
+        eprintln!(
+            "[harden] git-history: {} commits, build {}ms, index {} ({:.1}% of .git)",
+            m.commits,
+            m.build_ms,
+            human_bytes(m.index_bytes),
+            if m.git_dir_bytes > 0 {
+                100.0 * m.index_bytes as f64 / m.git_dir_bytes as f64
+            } else {
+                0.0
+            },
+        );
+        for q in &m.queries {
+            eprintln!(
+                "[harden]   {} ({}): indexed {:.2}µs vs live {:.2}µs — {:.0}× faster",
+                q.name, q.scope, q.indexed_us, q.live_us, q.speedup
+            );
+        }
+        append_gitops_md(&repo_name, m);
+    }
+
     // 2. Spawn `basemind serve` and connect via rmcp's child-process transport.
     let boot_start = Instant::now();
     let svc = connect(&repo).await;
@@ -971,8 +1288,33 @@ async fn harden_repo() {
         scan_extract_failed: scan.stats.extract_failed,
         server_boot_ms,
         tools,
+        git_history,
         canaries: BTreeMap::new(),
     };
+
+    // 3.5 Git-ops canaries (every git repo): the index built, and the indexed hot-path query is no
+    //     slower than the live walk it replaces. Recorded for all repos; asserted in `assert_passing`
+    //     only where the history is deep enough for the comparison to be stable.
+    if let Some(m) = &record.git_history {
+        record
+            .canaries
+            .insert("gh_index_commits".to_string(), json!(m.commits));
+        if let Some(ct) = m
+            .queries
+            .iter()
+            .find(|q| q.name == "commits_touching" && q.scope == "hot")
+        {
+            record
+                .canaries
+                .insert("gh_ct_hot_indexed_us".to_string(), json!(ct.indexed_us));
+            record
+                .canaries
+                .insert("gh_ct_hot_live_us".to_string(), json!(ct.live_us));
+            record
+                .canaries
+                .insert("gh_ct_hot_speedup".to_string(), json!(ct.speedup));
+        }
+    }
 
     // 4. Per-repo canary captures (read-only; results go into record.canaries).
     capture_canaries(&svc, &repo_name, &mut record).await;
