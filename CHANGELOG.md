@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.10.2] — 2026-06-25
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no
+`.basemind/` rebuild. Fixes the Linux release archive, which 0.10.1 shipped broken on a clean host.
+
+### Fixed
+
+- **Linux release binaries: bundled libraries could not find their siblings** — the archive
+  bundles native `.so`s (libheif, libaom, …) into `lib/`, but only the main binary carried the
+  `$ORIGIN/lib` rpath. A bundled lib with a sibling dependency (`libheif.so.1` → `libaom.so.3`,
+  both in `lib/`) had no rpath of its own, so on a clean host the loader failed with
+  `libaom.so.3: cannot open shared object file` — even on `basemind --version`. The in-container
+  packaging smoke missed it because the build container has those codecs system-installed.
+  `package-release.sh` now sets `$ORIGIN` on every bundled lib so sibling-to-sibling deps resolve,
+  verified by running the real release artifact on a clean glibc-2.28 host.
+
 ## [0.10.1] — 2026-06-25
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no

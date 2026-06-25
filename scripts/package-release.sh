@@ -93,6 +93,18 @@ linux)
 
   # shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
   patchelf --set-rpath '$ORIGIN/lib' "$BIN_IN_STAGING"
+  # Each bundled lib also needs an rpath to find its SIBLINGS in the same dir. A
+  # bundled lib with a sibling DT_NEEDED — e.g. libheif.so.1 -> libaom.so.3, both
+  # in lib/ — would otherwise fail at load on a clean host ("libaom.so.3: cannot
+  # open shared object file") because only the main binary carries $ORIGIN/lib.
+  # The build container has these codecs system-installed, so the in-container
+  # smoke resolves them from /usr/lib64 and misses this — set $ORIGIN on every
+  # bundled lib so sibling-to-sibling deps resolve relative to the archive.
+  for so in "$STAGING_DIR/lib/"*.so*; do
+    [ -f "$so" ] || continue
+    # shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
+    patchelf --set-rpath '$ORIGIN' "$so" 2>/dev/null || true
+  done
   tar czf "basemind-${TRIPLE}.tar.gz" -C "$STAGING_DIR" .
   echo "✓ Created basemind-${TRIPLE}.tar.gz"
   ;;
