@@ -23,6 +23,10 @@ jobs:
   test:
     name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
+    # Backstop against a hung test (e.g. a Windows IPC deadlock) running to the 6h
+    # default. On main, concurrency is queue-not-cancel, so a 6h hang blocks every
+    # subsequent run; fail fast in minutes instead.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
