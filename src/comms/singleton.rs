@@ -530,9 +530,60 @@ pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
         /// `CreateProcess` flag: do not allocate a console window for the child.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        // Stop the long-lived daemon from inheriting our standard handles. `CreateProcess` is
+        // called with `bInheritHandles = TRUE` whenever stdio is redirected (it is, to NUL above),
+        // and that inherits EVERY inheritable handle in this process — including the stdout/stderr
+        // pipe a parent gave us when it captured our output (e.g. `Command::output()`, or `serve`'s
+        // MCP stdio). The detached daemon would then hold the write end open forever, so the
+        // capturing parent never sees EOF and blocks until the daemon dies — the Windows-only
+        // `comms start` hang. Unix avoids this because `Stdio::null()` dup2's /dev/null over the
+        // child fds and Rust sets CLOEXEC on its own pipes. Clearing the inherit bit on our std
+        // handles first makes the detached spawn leak none of them.
+        clear_std_handle_inheritance();
     }
     command.spawn()?;
     Ok(())
+}
+
+/// Clear `HANDLE_FLAG_INHERIT` on this process's standard input/output/error handles so a
+/// subsequently spawned child does not inherit them. See the call site in [`spawn_detached_daemon`]
+/// for why the detached daemon must not inherit a captured stdout/stderr pipe. Clearing the inherit
+/// bit does not affect this process's own use of the handles — only whether children receive a
+/// duplicate — so it is safe for the short-lived `comms start` CLI and for `serve` (whose later
+/// child spawns pass their stdio explicitly rather than relying on inheritance).
+#[cfg(windows)]
+fn clear_std_handle_inheritance() {
+    /// `GetStdHandle` selectors (Win32 `STD_*_HANDLE`, defined as negative `DWORD`s).
+    const STD_INPUT_HANDLE: u32 = -10i32 as u32;
+    const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+    const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+    /// `SetHandleInformation` mask bit controlling handle inheritance.
+    const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+    /// `GetStdHandle` failure sentinel.
+    const INVALID_HANDLE_VALUE: isize = -1;
+
+    for selector in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: both calls take only primitive arguments and read no caller memory.
+        // `GetStdHandle` returns the process's current standard handle (or null /
+        // `INVALID_HANDLE_VALUE`, which we skip); `SetHandleInformation` only clears the inherit
+        // bit on that handle. Neither touches our heap or thread state, so the calls are safe.
+        unsafe {
+            let handle = GetStdHandle(selector);
+            if handle != 0 && handle != INVALID_HANDLE_VALUE {
+                let _ = SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    /// Win32 `GetStdHandle` — returns the handle for a standard device (`STD_*_HANDLE`).
+    fn GetStdHandle(nstdhandle: u32) -> isize;
+    /// Win32 `SetHandleInformation` — sets the masked flag bits on a handle. Returns nonzero on
+    /// success.
+    fn SetHandleInformation(hobject: isize, dwmask: u32, dwflags: u32) -> i32;
 }
 
 #[cfg(unix)]
