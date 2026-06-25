@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3] — 2026-06-25
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no
+`.basemind/` rebuild. Three Windows-only correctness fixes surfaced once the comms suite and the
+full tool sweep run on the `windows-latest` CI leg, plus install/release hardening so a partial
+publish can no longer leave the plugin launcher unable to install.
+
 ### Fixed
 
 - **Windows full scan now produces `/`-separated index keys** — the full-scan walker was optimized
@@ -27,6 +34,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   production (which leaves `BASEMIND_COMMS_DIR` unset) keeps a single stable per-user broker. A
   `timeout-minutes: 30` backstop on the CI test job prevents any future hang from blocking the
   queue-not-cancel main concurrency.
+- **Windows `comms start` no longer hangs** — the detached broker daemon inherited the launcher's
+  stdout/stderr: on Windows `CreateProcess` runs with `bInheritHandles = TRUE` whenever stdio is
+  redirected, leaking every inheritable handle into the child — including the pipe a parent captured
+  via `Command::output()` (or `serve`'s MCP stdio). The long-lived daemon then held the write end
+  open, so the capturing parent never saw EOF and blocked until the daemon died. Unix is immune
+  (`Stdio::null` dup2's `/dev/null` over the child fds and Rust sets `CLOEXEC` on its own pipes).
+  `spawn_detached_daemon` now clears `HANDLE_FLAG_INHERIT` on its std handles before the detached
+  spawn, so the daemon inherits none of them; the real-daemon comms E2E suite runs on Windows again.
+- **Plugin launcher names an incomplete release instead of failing opaquely** — when a pinned
+  release is missing a platform binary or its checksums file (a partial publish, as 0.10.0 was),
+  `mcp-launch.sh` died with a bare "download failed" / "could not fetch checksums" that the MCP
+  client surfaced only as "failed to connect". It now reports the release as incomplete and tells
+  the user to update the plugin (Claude Code: `/plugin update`) to a complete release.
+- **Releases publish atomically** — `create_release` made the GitHub release live before its
+  binaries finished uploading, so a failed platform build (as 0.10.0's Linux legs) left it
+  half-populated with no checksums, and the launcher's checksum-verified download then fails closed
+  for every user pinned to it. The release is now created as a **draft**; a `finalize_release` job
+  promotes it only once all four platform archives **and** the checksums file are present (and the
+  npm / PyPI / Homebrew publishes gate on that finalize, since they download from the release). A
+  failed platform build now leaves a hidden draft, never a live, broken release.
 
 ## [0.10.2] — 2026-06-25
 
