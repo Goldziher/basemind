@@ -231,3 +231,7 @@ harness = false
 [[bench]]
 name = "query"
 harness = false
+
+[[bench]]
+name = "git_history"
+harness = false
