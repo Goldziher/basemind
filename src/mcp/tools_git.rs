@@ -102,11 +102,19 @@ impl BasemindServer {
             // Walk one extra commit past the page so we can tell whether more remain.
             let walk_depth =
                 (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-            let commits = self
-                .state
-                .git_cache
-                .log(repo, &head, None, walk_depth, params.include_files)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            let commits: Vec<crate::git::CommitInfo> =
+                match git_history_if_fresh(&self.state, &head) {
+                    Some(index) => {
+                        index.recent_commits(0, walk_depth as usize, params.include_files)
+                    }
+                    None => self
+                        .state
+                        .git_cache
+                        .log(repo, &head, None, walk_depth, params.include_files)
+                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                        .as_ref()
+                        .clone(),
+                };
             let page: Vec<CommitView> = commits
                 .iter()
                 .skip(skip)
@@ -178,11 +186,19 @@ impl BasemindServer {
 
             let walk_depth =
                 (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-            let commits = self
-                .state
-                .git_cache
-                .log(repo, &head, Some(&params.path), walk_depth, false)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            // Indexed fast path when the git-history index is current; live walk otherwise. Both
+            // return the same newest-first `CommitInfo` prefix, so paging below is identical.
+            let commits: Vec<crate::git::CommitInfo> =
+                match git_history_if_fresh(&self.state, &head) {
+                    Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
+                    None => self
+                        .state
+                        .git_cache
+                        .log(repo, &head, Some(&params.path), walk_depth, false)
+                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                        .as_ref()
+                        .clone(),
+                };
             let page: Vec<CommitView> = commits
                 .iter()
                 .skip(skip)
@@ -408,11 +424,17 @@ impl BasemindServer {
                 None => 0,
             };
 
-            let commits = self
-                .state
-                .git_cache
-                .log(repo, &head, None, window, true)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            let commits: Vec<crate::git::CommitInfo> =
+                match git_history_if_fresh(&self.state, &head) {
+                    Some(index) => index.window_commits(window as usize),
+                    None => self
+                        .state
+                        .git_cache
+                        .log(repo, &head, None, window, true)
+                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                        .as_ref()
+                        .clone(),
+                };
 
             let mut hits: Vec<CommitView> = Vec::new();
             let mut seen: usize = 0;
@@ -472,11 +494,17 @@ impl BasemindServer {
             let window = params.window.unwrap_or(200).min(2000);
             let top_k = params.top_k.unwrap_or(20).min(200) as usize;
             let head = head_sha(repo)?;
-            let commits = self
-                .state
-                .git_cache
-                .log(repo, &head, None, window, true)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            let commits: Vec<crate::git::CommitInfo> =
+                match git_history_if_fresh(&self.state, &head) {
+                    Some(index) => index.window_commits(window as usize),
+                    None => self
+                        .state
+                        .git_cache
+                        .log(repo, &head, None, window, true)
+                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                        .as_ref()
+                        .clone(),
+                };
 
             let mut counts: ahash::AHashMap<crate::path::RelPath, (u32, u32, u32, u32)> =
                 ahash::AHashMap::new();
@@ -644,11 +672,19 @@ impl BasemindServer {
                 .saturating_add(1)
                 .saturating_mul(4))
             .min(LOG_WALK_MAX) as u32;
-            let commits = self
-                .state
-                .git_cache
-                .log(repo, &head, Some(&params.path), walk_depth, false)
-                .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
+            // Only the candidate-commit enumeration is accelerated; the per-blob fingerprint loop
+            // below is unchanged. Both sources yield the same newest-first path-filtered commits.
+            let commits: Vec<crate::git::CommitInfo> =
+                match git_history_if_fresh(&self.state, &head) {
+                    Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
+                    None => self
+                        .state
+                        .git_cache
+                        .log(repo, &head, Some(&params.path), walk_depth, false)
+                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                        .as_ref()
+                        .clone(),
+                };
 
             let chronological: Vec<crate::git::CommitInfo> =
                 commits.iter().cloned().rev().collect();
