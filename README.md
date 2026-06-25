@@ -389,27 +389,54 @@ you need.
 ## Performance
 
 <details>
-<summary><strong>Scan speed &amp; query latency</strong></summary>
+<summary><strong>Scan speed</strong></summary>
 
-Measured on Apple Silicon with the full feature set. The first scan of a cold project is slower;
-these are warm, steady-state numbers.
+Measured on an Apple M4 (10 cores — 4 performance + 6 efficiency, 16 GB, macOS 26) with the
+hardening harness (`scripts/harden.sh`), which clones each upstream repo fresh and scans its code
+map. Warm, steady-state numbers; the first scan of a cold project is slower.
 
 | Project | Files | Languages | Scan time |
 |---|---|---|---|
-| tokio | 859 | Rust | 0.2 s |
-| react | 7 061 | TS / JSX | 2.2 s |
-| django | 7 061 | Python | 2.5 s |
-| requests | 2 195 | Python | 0.7 s |
-| gin | 1 217 | Go | 1.0 s |
-| ripgrep | 12 851 | Rust | 4.0 s |
-| TypeScript compiler | 81 324 | TS / JS / JSON | ~22 s |
+| gin | 130 | Go | 0.1 s |
+| requests | 128 | Python | 0.1 s |
+| ripgrep | 221 | Rust | 0.6 s |
+| tokio | 861 | Rust | 0.4 s |
+| react | 7 242 | TS / JSX | 2.0 s |
+| django | 7 065 | Python | 2.4 s |
+| TypeScript compiler | 81 324 | TS / JS / JSON | 18 s |
 
-The TypeScript compiler is the worst case — 81k files in about 22 seconds. Re-scans only look at
+The TypeScript compiler is the worst case — 81k files in about 18 seconds. Re-scans only look at
 what changed, so keeping a project up to date is far faster than the first scan.
 
 Once running, most code questions answer in **under a millisecond**, symbol and call-graph searches
 in a few milliseconds, and document search in around 200 ms — because the map is held in memory
 rather than read from disk each time.
+
+</details>
+
+<details>
+<summary><strong>Git history queries</strong></summary>
+
+basemind precomputes a per-repo git-history index (path → commit posting lists, stored newest-first)
+so the history tools — `commits_touching`, `recent_changes`, `hot_files`, `find_commits_by_path`,
+and `symbol_history`'s commit walk — are posting-list lookups. Warm in-process query latency on the
+same M4:
+
+| Repo | Commits | `commits_touching` | `recent_changes` | index build | index size |
+|---|---|---|---|---|---|
+| django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
+| tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
+| requests | 6 480 | 38 µs | 15 µs | 1.0 s | 1.9 MB (14 %) |
+| TypeScript | 2 000 | 37 µs | 13 µs | 3.2 s | 30 MB (12 %) |
+
+History queries answer in **tens of microseconds**, flat across history depth, because the
+newest-first posting lists decode only the commits a query returns. The index builds in well under a
+second to a few seconds and costs **6–22 % of `.git`** on disk.
+
+It is a pure accelerator: the tools use it only when it is fresh (`last_indexed_head == HEAD`) and
+otherwise walk history directly, so it can never serve stale results — and it rebuilds automatically
+when history is rewritten (filter-repo / rebase / force-push). Reproduce with
+`cargo bench --bench git_history` or the git-ops block in `scripts/harden.sh`.
 
 </details>
 

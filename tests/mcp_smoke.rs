@@ -2252,6 +2252,41 @@ async fn commits_touching_paginates_with_stable_cursor() {
     let _ = service.cancel().await;
 }
 
+/// `hot_files` aggregates the churn window. The paging fixture touches `paged.rs` in all 5
+/// commits, so it must rank first with `commits_touching == 5`. Exercises the tool end-to-end
+/// through the real `serve` subprocess (whichever of the git-history index / live-walk path is
+/// active — both must agree).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hot_files_ranks_the_churned_file_first() {
+    let (_dir, service) = spawn_paging_server().await;
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "hot_files",
+                json!({ "window": 50, "top_k": 5 }),
+            ))
+            .await
+            .expect("hot_files"),
+    );
+    let files = body
+        .get("files")
+        .and_then(Value::as_array)
+        .expect("hot_files returns a files array");
+    assert!(!files.is_empty(), "hot_files returns entries: {body}");
+    let top = &files[0];
+    assert_eq!(
+        top.get("path").and_then(Value::as_str),
+        Some("paged.rs"),
+        "paged.rs is the most-churned file: {body}"
+    );
+    assert_eq!(
+        top.get("commits_touching").and_then(Value::as_u64),
+        Some(5),
+        "paged.rs was touched in all 5 commits: {body}"
+    );
+    let _ = service.cancel().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn find_commits_by_path_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;

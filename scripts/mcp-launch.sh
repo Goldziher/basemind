@@ -98,10 +98,15 @@ arch="$(uname -m)"
 case "$(uname -s)" in
 Darwin)
   # Only Apple Silicon (arm64) macOS binaries are shipped; Intel macOS is unsupported.
-  case "$arch" in
-  arm64 | aarch64) TRIPLE="aarch64-apple-darwin" ;;
-  *) die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries" ;;
-  esac
+  # `uname -m` reflects the *process* arch, so under Rosetta it reports x86_64 even
+  # on Apple Silicon hardware. Gate on a hardware-level signal that the translation
+  # layer cannot spoof: `sysctl -n hw.optional.arm64` is `1` on Apple Silicon.
+  if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ] ||
+    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+    TRIPLE="aarch64-apple-darwin"
+  else
+    die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
+  fi
   ;;
 Linux)
   case "$arch" in

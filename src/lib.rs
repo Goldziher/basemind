@@ -10,6 +10,7 @@ pub mod embeddings;
 pub mod extract;
 pub mod git;
 pub mod git_cache;
+pub mod git_history;
 pub mod hashing;
 pub mod index;
 #[cfg(feature = "intelligence")]
