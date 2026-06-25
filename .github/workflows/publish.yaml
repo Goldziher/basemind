@@ -257,7 +257,14 @@ jobs:
             case "$tag" in
               *-rc.* | *-beta* | *-alpha*) prerelease="--prerelease" ;;
             esac
-            gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag $prerelease
+            # Create as a DRAFT. The build matrix uploads binaries to it, but it
+            # stays invisible (assets not publicly downloadable) until the
+            # finalize_release job promotes it — and that job only runs once
+            # checksums (which requires all 4 platform binaries) succeeds. A failed
+            # platform build therefore leaves a hidden draft, not a live release
+            # with missing binaries and no checksums (the v0.10.0 failure mode that
+            # broke the plugin launcher's checksum-verified download).
+            gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag --draft $prerelease
           fi
 
   # macOS + Windows binaries. Linux binaries are built separately in
@@ -566,6 +573,53 @@ jobs:
           gh release upload "$tag" basemind_${{ needs.meta.outputs.version }}_checksums.txt --clobber
           echo "✓ Uploaded checksums to release"
 
+  finalize_release:
+    name: Publish GitHub release
+    needs: [meta, checksums]
+    # Run after the build/checksums jobs settle, regardless of their result, so a
+    # draft left complete by a cancelled/partial earlier run can still be promoted.
+    # The step re-verifies completeness itself, so it never publishes an incomplete
+    # release — it only flips the draft to live once ALL 4 platform archives AND the
+    # checksums file are present. This is the gate that makes a partial publish a
+    # hidden draft instead of a live, half-populated release.
+    if: always() && needs.meta.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promote draft to a published release once complete
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.meta.outputs.tag }}"
+          version="${{ needs.meta.outputs.version }}"
+
+          # The full asset set a launcher / npm install.js / pip downloader needs:
+          # every platform archive plus the checksums file they verify against.
+          required=(
+            "basemind-x86_64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-apple-darwin.tar.gz"
+            "basemind-x86_64-pc-windows-msvc.zip"
+            "basemind_${version}_checksums.txt"
+          )
+
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' \
+            > /tmp/assets.txt || true
+          missing=0
+          for asset in "${required[@]}"; do
+            if ! grep -qx "$asset" /tmp/assets.txt; then
+              echo "::error::release $tag is missing $asset"
+              missing=$((missing + 1))
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::release $tag is incomplete ($missing required assets missing); leaving it as a draft"
+            exit 1
+          fi
+
+          gh release edit "$tag" --draft=false --repo "$GITHUB_REPOSITORY"
+          echo "✓ Promoted $tag to a published release"
+
   publish_crates:
     name: Publish crates.io
     needs: meta
@@ -604,8 +658,10 @@ jobs:
 
   publish_npm:
     name: Publish npm
-    needs: [meta, checksums]
-    if: needs.meta.outputs.npm_exists != 'true' && needs.checksums.result == 'success'
+    # Gated on finalize_release: the npm install.js downloads the platform binary
+    # from the GitHub release, so it must not publish until that release is live.
+    needs: [meta, finalize_release]
+    if: needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -640,8 +696,8 @@ jobs:
 
   publish_opencode:
     name: Publish npm (basemind-opencode)
-    needs: [meta, checksums]
-    if: needs.meta.outputs.opencode_exists != 'true' && needs.checksums.result == 'success'
+    needs: [meta, finalize_release]
+    if: needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -676,8 +732,10 @@ jobs:
 
   publish_pypi:
     name: Publish PyPI
-    needs: [meta, checksums]
-    if: needs.meta.outputs.pypi_exists != 'true' && needs.checksums.result == 'success'
+    # Gated on finalize_release: the pip downloader fetches the platform binary
+    # from the GitHub release, so it must not publish until that release is live.
+    needs: [meta, finalize_release]
+    if: needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -708,9 +766,10 @@ jobs:
   publish_homebrew:
     name: Update Homebrew formula
     # Stable releases only — rc/beta/alpha pre-releases do not update the tap.
-    # Requires checksums job to succeed (which ensures all 4 binaries exist).
-    needs: [meta, checksums]
-    if: needs.checksums.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
+    # Requires the release to be finalized (all 4 binaries + checksums present and
+    # the release published), since the formula points at the release assets.
+    needs: [meta, finalize_release]
+    if: needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
