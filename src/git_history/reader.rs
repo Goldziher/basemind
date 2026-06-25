@@ -21,9 +21,9 @@ impl GitHistoryIndex {
         let Some(buf) = self.posting_bytes(path_id) else {
             return Vec::new();
         };
-        // Tail-decode only what we need: the newest `skip + take` ordinals, ascending.
-        let mut ords = encoding::decode_ords_tail(&buf, skip.saturating_add(take));
-        ords.reverse(); // newest-first
+        // The posting list is stored newest-first, so decode only the leading `skip + take`
+        // ordinals — O(skip + take), not O(history depth). Already newest-first; no reverse needed.
+        let ords = encoding::decode_ords_head(&buf, skip.saturating_add(take));
         let mut cache = PathCache::new();
         ords.into_iter()
             .skip(skip)

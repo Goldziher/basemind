@@ -1,15 +1,16 @@
 //! Compact integer encodings for the git-history posting lists.
 //!
 //! A path's posting list is the set of commit *ordinals* that touched it. Ordinals are dense
-//! `u32`s assigned in chronological order (oldest = 0), so a path's list is strictly ascending.
-//! We store it as **delta + LEB128 unsigned varint**: each entry is `uvarint(ord - prev_ord)`
-//! with `prev_ord` starting at 0. Ascending dense ordinals make the deltas tiny (usually a
-//! 1–2 byte varint), which is what keeps a 2.5M-edge monorepo's posting store in the single-digit
-//! MB range rather than `4 * edges` bytes raw.
+//! `u32`s assigned in chronological order (oldest = 0). We store the list **newest-first** as
+//! **delta + LEB128 unsigned varint**: the largest (newest) ordinal first as an absolute varint,
+//! then each older ordinal as the positive gap down from the previous. Dense ordinals make those
+//! gaps tiny (usually a 1–2 byte varint), which keeps a 2.5M-edge monorepo's posting store in the
+//! single-digit MB range rather than `4 * edges` bytes raw.
 //!
-//! Newest-first reads ([`decode_ords_tail`]) must still scan the whole buffer because a delta
-//! needs the running sum of every earlier delta, but they retain only the last `n` ordinals — so
-//! a `commits_touching(path, limit=N)` over a hot file allocates `N`, not the whole history.
+//! Newest-first is the key to fast reads: [`decode_ords_head`] returns the newest `n` ordinals by
+//! reading only the *first* `n` varints, so `commits_touching(path, limit=N)` is O(N) — independent
+//! of how deep the path's history runs, instead of scanning the whole list. [`decode_ords`] flips a
+//! full list back to ascending for the incremental-append merge.
 
 /// Append `value` to `out` as an LEB128 unsigned varint (7 bits/byte, high bit = continuation).
 pub fn write_uvarint(out: &mut Vec<u8>, mut value: u64) {
@@ -43,59 +44,66 @@ pub fn read_uvarint(buf: &[u8], cursor: &mut usize) -> Option<u64> {
     }
 }
 
-/// Encode an **ascending** slice of commit ordinals as delta-varints. The caller guarantees
-/// ascending order (a commit touches a path at most once, and ordinals are assigned monotonically),
-/// so deltas are positive; a non-ascending input still round-trips but wastes space.
+/// Encode an **ascending** slice of commit ordinals as a **newest-first** delta-varint list: the
+/// largest ordinal is written first (as an absolute varint), then each older ordinal as the positive
+/// gap down from the previous one. Storing newest-first is what makes [`decode_ords_head`] O(n)
+/// instead of O(list): the newest `n` a query wants are the *first* `n` entries, so a hot file with
+/// 100k commits still reads only `n` varints. The caller passes ascending order (ordinals are
+/// assigned monotonically and a commit touches a path at most once); a non-ascending input still
+/// round-trips through [`decode_ords`] but wastes space.
 pub fn encode_ords(ords: &[u32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ords.len() * 2);
-    let mut prev: u32 = 0;
-    for &ord in ords {
-        let delta = ord.wrapping_sub(prev);
-        write_uvarint(&mut out, u64::from(delta));
+    // Walk newest-first (input is ascending, so iterate in reverse). The first (largest) ordinal is
+    // written as its absolute value; each subsequent entry is the positive gap down from the previous.
+    let mut iter = ords.iter().rev();
+    let Some(&first) = iter.next() else {
+        return out;
+    };
+    write_uvarint(&mut out, u64::from(first));
+    let mut prev = first;
+    for &ord in iter {
+        write_uvarint(&mut out, u64::from(prev.wrapping_sub(ord)));
         prev = ord;
     }
     out
 }
 
-/// Decode a full delta-varint posting list back to absolute ordinals, ascending. A malformed tail
-/// stops decoding and returns what was read cleanly (best-effort, mirroring the index module's
-/// `None`-skip philosophy — a corrupt byte never panics a query).
+/// Decode a full newest-first posting list back to **ascending** absolute ordinals — the form the
+/// incremental-append merge in `builder::append_since` expects. A malformed tail stops decoding and
+/// returns what was read cleanly (best-effort, mirroring the index module's `None`-skip philosophy —
+/// a corrupt byte never panics a query).
 pub fn decode_ords(buf: &[u8]) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut cursor = 0;
-    let mut acc: u32 = 0;
-    while cursor < buf.len() {
-        let Some(delta) = read_uvarint(buf, &mut cursor) else {
-            break;
-        };
-        acc = acc.wrapping_add(delta as u32);
-        out.push(acc);
-    }
+    let mut out = decode_ords_head(buf, usize::MAX); // newest-first …
+    out.reverse(); // … flipped to ascending
     out
 }
 
-/// Decode only the last `n` ordinals (the newest, since ordinals ascend with commit time) without
-/// materializing the whole list. Still scans the buffer forward — deltas require the running sum —
-/// but retains a ring of at most `n`, so a hot path with 100k commits costs O(list) time but O(n)
-/// space. Returns ascending order; the caller reverses for newest-first.
-pub fn decode_ords_tail(buf: &[u8], n: usize) -> Vec<u32> {
+/// Decode only the newest `n` ordinals, in **newest-first** order, reading at most `n` varints from
+/// the head of the buffer. Because the list is stored newest-first this is O(n) regardless of how
+/// deep the path's history is — the property that keeps `commits_touching` sub-millisecond on the
+/// hottest files. `n == usize::MAX` decodes the whole list (used by [`decode_ords`]).
+pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
     if n == 0 {
         return Vec::new();
     }
-    let mut ring: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(n);
+    let mut out = Vec::new();
     let mut cursor = 0;
     let mut acc: u32 = 0;
-    while cursor < buf.len() {
+    let mut first = true;
+    while cursor < buf.len() && out.len() < n {
         let Some(delta) = read_uvarint(buf, &mut cursor) else {
             break;
         };
-        acc = acc.wrapping_add(delta as u32);
-        if ring.len() == n {
-            ring.pop_front();
-        }
-        ring.push_back(acc);
+        // First entry is the absolute (largest) ordinal; the rest step downward by the gap.
+        acc = if first {
+            delta as u32
+        } else {
+            acc.wrapping_sub(delta as u32)
+        };
+        first = false;
+        out.push(acc);
     }
-    ring.into_iter().collect()
+    out
 }
 
 /// Append a length-prefixed (`uvarint(len) ‖ bytes`) byte string.
@@ -259,24 +267,27 @@ mod tests {
     }
 
     #[test]
-    fn tail_returns_last_n_in_ascending_order() {
+    fn head_returns_newest_n_first() {
+        // Ascending input; `decode_ords_head` returns the newest `n` in newest-first order.
         let ords: Vec<u32> = (0..1000).map(|i| i * 3).collect();
         let buf = encode_ords(&ords);
-        let tail = decode_ords_tail(&buf, 5);
-        assert_eq!(tail, vec![2985, 2988, 2991, 2994, 2997]);
+        let head = decode_ords_head(&buf, 5);
+        assert_eq!(head, vec![2997, 2994, 2991, 2988, 2985]);
     }
 
     #[test]
-    fn tail_larger_than_list_returns_whole_list() {
+    fn head_larger_than_list_returns_whole_list_newest_first() {
         let ords = vec![10u32, 20, 30];
         let buf = encode_ords(&ords);
-        assert_eq!(decode_ords_tail(&buf, 100), ords);
+        assert_eq!(decode_ords_head(&buf, 100), vec![30, 20, 10]);
+        // The full decode flips it back to ascending for the append-merge path.
+        assert_eq!(decode_ords(&buf), ords);
     }
 
     #[test]
-    fn tail_of_zero_is_empty() {
+    fn head_of_zero_is_empty() {
         let buf = encode_ords(&[1, 2, 3]);
-        assert_eq!(decode_ords_tail(&buf, 0), Vec::<u32>::new());
+        assert_eq!(decode_ords_head(&buf, 0), Vec::<u32>::new());
     }
 
     #[test]

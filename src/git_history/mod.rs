@@ -42,10 +42,14 @@ use thiserror::Error;
 
 use crate::path::RelPath;
 
-/// On-disk schema for the git-history store. Offset `+3` from [`crate::version::RELEASE_MINOR`]
-/// (index owns `+2`, git_cache `+1`), so it moves with each minor release but is independent of the
-/// code-map index schema. Mismatch on open wipes `git-history.fjall/` and the next scan rebuilds.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 3;
+/// On-disk schema for the git-history store. Offset from [`crate::version::RELEASE_MINOR`] (the
+/// code index owns `+2`, git_cache `+1`), so it moves with each minor release but is independent of
+/// the code-map index schema. Mismatch on open wipes `git-history.fjall/` and the next scan rebuilds.
+///
+/// The offset is `+4`: it was bumped from `+3` when the posting-list byte format changed from
+/// ascending (full-scan tail) to **newest-first** delta-varints (O(n) head decode). The format is
+/// part of this still-unreleased feature, so the bump only forces in-flight dev indexes to rebuild.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 4;
 
 const GIT_HISTORY_DIR: &str = "git-history.fjall";
 
