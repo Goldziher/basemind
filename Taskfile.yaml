@@ -77,6 +77,10 @@ tasks:
     desc: 'Sync version across every shipped surface (Cargo, npm wrappers, PyPI, plugin manifests). Usage: task release:sync-version VERSION=0.1.0'
     cmds:
       - ./scripts/release-bump.sh "{{.VERSION}}"
+      # The crawl config's default user_agent embeds the crate version, so the
+      # JSON Schema snapshot (asserted byte-equal by tests/config_schema under
+      # --features full) must be regenerated on every bump or `full` CI fails.
+      - cargo test --test config_schema --features full -- --ignored regenerate_schema
     requires:
       vars: [VERSION]
 
