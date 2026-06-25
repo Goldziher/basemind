@@ -18,6 +18,28 @@ from urllib.request import Request, urlopen
 import certifi
 
 
+def _is_apple_silicon(machine: str) -> bool:
+    """Detect Apple Silicon hardware, even from an x86_64 process under Rosetta.
+
+    ``platform.machine()`` reflects the *process* arch, so an x86_64 Python under
+    Rosetta reports ``x86_64`` on Apple Silicon hardware. Probe a hardware-level
+    signal the translation layer cannot spoof: ``sysctl -n hw.optional.arm64`` is
+    ``1`` on Apple Silicon.
+    """
+    if machine in {"aarch64", "arm64"}:
+        return True
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.optional.arm64"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return False
+    return result.stdout.strip() == "1"
+
+
 def _platform_triple() -> str:
     system = platform.system().lower()
     machine = platform.machine().lower()
@@ -33,13 +55,12 @@ def _platform_triple() -> str:
         if machine in {"aarch64", "arm64"}:
             return "aarch64-unknown-linux-gnu"
     elif system == "darwin":
-        if machine in {"amd64", "x86_64"}:
-            raise RuntimeError(
-                "Intel macOS (x86_64) is not supported; basemind ships only "
-                "Apple Silicon (arm64) macOS binaries"
-            )
-        if machine in {"aarch64", "arm64"}:
+        if _is_apple_silicon(machine):
             return "aarch64-apple-darwin"
+        raise RuntimeError(
+            "Intel macOS (x86_64) is not supported; basemind ships only "
+            "Apple Silicon (arm64) macOS binaries"
+        )
 
     raise RuntimeError(f"Unsupported platform: {system} {machine}")
 

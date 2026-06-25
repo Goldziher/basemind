@@ -156,6 +156,14 @@ struct ScanArgs {
     /// Writes under .basemind/views/rev-<sha7>/ — separate from the working-tree view.
     #[arg(long, value_name = "REV")]
     rev: Option<String>,
+    /// Skip building the git-history index after the scan (overrides config). The history tools
+    /// then fall back to the live walk. Equivalent to `BASEMIND_GH_INDEX=0`.
+    #[arg(long)]
+    no_git_history: bool,
+    /// Wipe and fully rebuild the git-history index instead of incrementally syncing it. Use after
+    /// a history rewrite if revalidation didn't already trigger a rebuild.
+    #[arg(long)]
+    rebuild_git_history: bool,
     /// Document-tier overrides. Every flag in this group corresponds to a
     /// `[documents.…]` TOML key and a `BASEMIND_DOCUMENTS_…` env var.
     #[command(flatten)]
@@ -172,6 +180,12 @@ struct RescanArgs {
     /// stale or empty index from scratch.
     #[arg(long)]
     full: bool,
+    /// Skip building the git-history index after the rescan (overrides config).
+    #[arg(long)]
+    no_git_history: bool,
+    /// Wipe and fully rebuild the git-history index instead of incrementally syncing it.
+    #[arg(long)]
+    rebuild_git_history: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -523,6 +537,51 @@ fn open_store_for_write(
     })
 }
 
+/// Build / refresh the repo-global git-history index after a working-tree scan (a separate phase
+/// from the core file scan). Best-effort: a non-git dir, a disabled toggle, or any failure leaves
+/// the index untouched and the history tools fall back to the live walk — never fails the scan.
+fn sync_git_history_after_scan(
+    root: &std::path::Path,
+    cli_enabled: bool,
+    force_rebuild: bool,
+    out: &mut impl std::io::Write,
+) {
+    if !cli_enabled || !basemind::git_history::index_enabled() {
+        return;
+    }
+    let Ok(repo) = basemind::git::Repo::discover(root) else {
+        return; // not a git repo — nothing to index
+    };
+    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    let index = match basemind::git_history::GitHistoryIndex::open(&basemind_dir) {
+        Ok(index) => index,
+        Err(error) => {
+            tracing::warn!(?error, "git-history index unavailable; skipping");
+            return;
+        }
+    };
+    if force_rebuild && let Err(error) = index.clear(&basemind_dir) {
+        tracing::warn!(?error, "git-history index clear failed");
+    }
+    match basemind::git_history::builder::sync(&index, &repo, &basemind_dir) {
+        Ok(outcome) => {
+            let summary = match outcome {
+                basemind::git_history::builder::RebuildOutcome::Fresh => {
+                    "git-history index: up to date".to_string()
+                }
+                basemind::git_history::builder::RebuildOutcome::Incremental { added } => {
+                    format!("git-history index: +{added} commits")
+                }
+                basemind::git_history::builder::RebuildOutcome::FullRebuild { reason, commits } => {
+                    format!("git-history index: rebuilt {commits} commits ({reason})")
+                }
+            };
+            let _ = writeln!(out, "{summary}");
+        }
+        Err(error) => tracing::warn!(?error, "git-history index sync failed"),
+    }
+}
+
 fn cmd_scan(
     root: &std::path::Path,
     args: &ScanArgs,
@@ -594,6 +653,12 @@ fn cmd_scan(
     )
     .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
+    sync_git_history_after_scan(
+        root,
+        !args.no_git_history,
+        args.rebuild_git_history,
+        &mut out,
+    );
     // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
     // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
     Ok(())
@@ -631,6 +696,12 @@ fn cmd_rescan(
         basemind::scanner::scan_paths(root, &mut store, &config, &abs).context("rescan (paths)")?
     };
     render::render_report(&mut out, &report, verbosity);
+    sync_git_history_after_scan(
+        root,
+        !args.no_git_history,
+        args.rebuild_git_history,
+        &mut out,
+    );
     // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0
     // (matches `cmd_scan`; a genuine failure-to-update aborts earlier via `?`). Bug #24.
     Ok(())

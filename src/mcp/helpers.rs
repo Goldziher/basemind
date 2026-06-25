@@ -154,6 +154,18 @@ pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::R
     })
 }
 
+/// The git-history index, but only when it is present AND indexes exactly the current `head`.
+/// History tools use it as a pure accelerator: a stale or absent index returns `None`, and the
+/// caller falls back to the live walk, so a result is never served from a HEAD the index hasn't
+/// caught up to (or from a rewritten history).
+pub(super) fn git_history_if_fresh<'a>(
+    state: &'a ServerState,
+    head: &str,
+) -> Option<&'a crate::git_history::GitHistoryIndex> {
+    let index = state.git_history.as_deref()?;
+    (index.last_indexed_head_hex().as_deref() == Some(head)).then_some(index)
+}
+
 /// Derive a stable 32-bit snapshot id from a HEAD sha. Used as the in-memory cursor's
 /// `snapshot_id` for git-iterator tools — mismatch on resume means HEAD moved between
 /// pages, so the caller must restart pagination.
