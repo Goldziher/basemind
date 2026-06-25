@@ -7,14 +7,8 @@
 //!
 //! It also pins the **condensation** contract end to end: `comms history --json` for a different
 //! agent returns the message front-matter (subject) but NEVER the body bytes.
-//!
-//! Unix-only: the real detached-daemon round-trip deadlocks intermittently on the Windows
-//! named-pipe transport — under parallel execution any one of these tests can hang to the CI
-//! timeout (observed it land on `dm_verb` in one run and `comms_daemon_round_trip` in the next).
-//! The in-process `Broker` suites in `comms_smoke.rs` cover the comms logic on Windows; the
-//! Windows daemon-transport reliability fix is tracked in #110.
 
-#![cfg(all(feature = "comms", unix))]
+#![cfg(feature = "comms")]
 
 use std::path::Path;
 use std::process::Command;
