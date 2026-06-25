@@ -490,7 +490,11 @@ jobs:
             echo "::error::Archive not found: $archive"
             exit 1
           fi
-          gh release upload "$tag" "$archive" --clobber
+          # The container runs as root but the workspace is owned by the runner
+          # uid; gh shells out to git, which refuses with "dubious ownership".
+          # Mark it safe and pass --repo so gh never needs the local git remote.
+          git config --global --add safe.directory "${GITHUB_WORKSPACE:-/__w/basemind/basemind}"
+          gh release upload "$tag" "$archive" --clobber --repo "$GITHUB_REPOSITORY"
 
   checksums:
     name: Generate and upload checksums
