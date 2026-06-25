@@ -594,16 +594,20 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
             Ok(p) => p,
             Err(_) => continue,
         };
-        // On Unix / Apple-Silicon paths are always valid UTF-8 and contain no backslashes.
-        // Use `to_str()` (borrow, zero alloc) for the filter check; allocate the owned
-        // `String` only for the entries that pass — skipping the allocation for the majority
-        // of walked entries that are excluded by gitignore or the `filters.allows` check.
-        // Non-UTF-8 paths are silently skipped (same behavior as the previous
-        // `to_string_lossy().replace('\\', "/")` path, which would have passed them through
-        // after lossy replacement and let them fail UTF-8 validation downstream).
+        // On Unix / Apple-Silicon paths are always valid UTF-8 and contain no separator
+        // backslashes, so `to_str()` (borrow, zero alloc) feeds the filter check directly and the
+        // owned `String` is allocated only for the entries that pass — skipping the allocation for
+        // the majority excluded by gitignore or the `filters.allows` check. Non-UTF-8 paths are
+        // silently skipped. On Windows the walker yields `\`-separated paths, but index keys are
+        // `/`-separated (the incremental `scan_paths` path normalizes identically), so normalize
+        // there; the extra allocation is Windows-only and never touches the Unix hot path.
         let Some(rel_str) = rel.to_str() else {
             continue;
         };
+        #[cfg(windows)]
+        let rel_owned = rel_str.replace('\\', "/");
+        #[cfg(windows)]
+        let rel_str = rel_owned.as_str();
         if !filters.allows(rel_str) {
             continue;
         }

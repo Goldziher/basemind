@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Windows full scan now produces `/`-separated index keys** — the full-scan walker was optimized
+  to feed `Path::to_str()` straight into the index without the `\`→`/` normalization the incremental
+  `scan_paths` path still did, so on Windows every nested file was keyed with backslashes
+  (`vendored\inner.rs`) and forward-slash lookups missed — breaking all subdirectory queries
+  (outline / search / references for any file not at the repo root). Normalize at the walker source;
+  the extra allocation is Windows-only and never touches the Unix hot path.
 - **Windows comms named pipe now isolates by `comms_dir`** — `comms_socket_path` derived the
   Windows pipe name from the username only (`\\.\pipe\basemind-comms-<user>`), ignoring
   `BASEMIND_COMMS_DIR`, so every comms dir on a host collapsed onto one per-user singleton pipe.
