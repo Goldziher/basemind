@@ -8,7 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
-## [0.10.0] — Unreleased
+## [0.10.1] — 2026-06-25
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no
+`.basemind/` rebuild. This release completes the 0.10.0 distribution — it ships the Linux
+binaries and the npm / PyPI / Homebrew packages that 0.10.0 could not produce.
+
+### Fixed
+
+- **Linux release binaries (x86_64 + aarch64)** — the 0.10.0 Linux build linked ort's prebuilt
+  ONNX Runtime with `cargo-zigbuild`, which fails because zig links LLVM `libc++` while the
+  prebuilt is built against GNU `libstdc++`. The Linux binaries now build inside the official
+  `manylinux_2_28` containers with native gcc. The prebuilt ort also references glibc 2.38 symbols
+  (`__isoc23_strtol/ll/ull`, `__libc_single_threaded`); a small compatibility shim
+  (`scripts/glibc228_compat.c`) backfills them so the binaries keep a **GLIBC_2.28** floor
+  (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux 2023). Because 0.10.0's binary legs failed,
+  its checksums and the npm / PyPI / Homebrew publishes were skipped; 0.10.1 carries the same
+  source and completes every distribution channel.
+
+## [0.10.0] — 2026-06-24
 
 Minor release: `RELEASE_MINOR` bumps 9 → 10, so the on-disk index version changes and every
 `.basemind/` cache rebuilds from source on the next `scan`. This rebuild is **one-time and
