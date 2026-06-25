@@ -260,6 +260,9 @@ jobs:
             gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag $prerelease
           fi
 
+  # macOS + Windows binaries. Linux binaries are built separately in
+  # build-linux-binaries (a manylinux_2_28 container is required to link ort's
+  # prebuilt ONNX Runtime at a glibc 2.28 floor — see that job).
   build-binaries:
     name: Build binaries / ${{ matrix.triple }}
     needs: [meta, create_release]
@@ -268,10 +271,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - triple: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - triple: aarch64-unknown-linux-gnu
-            os: ubuntu-24.04-arm
           - triple: aarch64-apple-darwin
             os: macos-latest
           - triple: x86_64-pc-windows-msvc
@@ -297,49 +296,11 @@ jobs:
         with:
           key: ${{ matrix.triple }}
 
-      # Lower the glibc symbol floor of the Linux binaries to 2.28 (RHEL 8 / Debian 11 /
-      # Ubuntu 20.04+ / Amazon Linux 2023) via zig as the linker. Runtime behaviour is
-      # unchanged — still dynamically linked against glibc, only the required symbol
-      # versions are pinned older. macOS / Windows builds are untouched.
-      - name: Set up Zig (Linux glibc floor)
-        if: runner.os == 'Linux'
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.13.0
-
-      - name: Install cargo-zigbuild (Linux)
-        if: runner.os == 'Linux'
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild
-
       - name: Build release binary
         shell: bash
         run: |
-          if [[ "${{ matrix.triple }}" == *-unknown-linux-gnu ]]; then
-            cargo zigbuild --release --features full --bin basemind \
-              --target "${{ matrix.triple }}.2.28"
-          else
-            cargo build --release --features full --bin basemind \
-              --target "${{ matrix.triple }}"
-          fi
-
-      # Guard: fail the build if any dependency dragged in a glibc symbol newer than the
-      # 2.28 floor (e.g. a prebuilt native lib). Catches a silent regression of the
-      # compatibility target before the artifact is published.
-      - name: Verify glibc floor (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          bin="target/${{ matrix.triple }}/release/basemind"
-          max="$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
-          echo "highest glibc symbol required: ${max:-none}"
-          if [ -n "$max" ] && \
-             [ "$(printf '%s\nGLIBC_2.28\n' "$max" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
-            echo "::error::basemind requires $max (> GLIBC_2.28); a dependency pulled a newer glibc symbol"
-            exit 1
-          fi
+          cargo build --release --features full --bin basemind \
+            --target "${{ matrix.triple }}"
 
       - name: Package release
         shell: bash
@@ -366,9 +327,174 @@ jobs:
 
           gh release upload "$tag" "$archive" --clobber
 
+  # Linux binaries (x86_64 + aarch64). Built inside the official manylinux_2_28
+  # containers with native gcc so ort's prebuilt ONNX Runtime links at a glibc
+  # 2.28 floor (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux 2023). zig as
+  # the linker cannot do this (libc++ vs the prebuilt's libstdc++ ABI), and the
+  # prebuilt itself references glibc 2.38 symbols — backfilled by the small
+  # scripts/glibc228_compat.c shim linked via a target-scoped RUSTFLAGS.
+  build-linux-binaries:
+    name: Build Linux binaries / ${{ matrix.triple }}
+    needs: [meta, create_release]
+    if: needs.meta.outputs.release_assets_exist != 'true'
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            image: quay.io/pypa/manylinux_2_28_x86_64:latest
+            protoc_arch: linux-x86_64
+          - triple: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            image: quay.io/pypa/manylinux_2_28_aarch64:latest
+            protoc_arch: linux-aarch_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+
+      - name: Install Rust (in container)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Pin CARGO_HOME/RUSTUP_HOME to absolute paths and export them to
+          # GITHUB_ENV. Container steps do not share $HOME reliably, so rustup
+          # installs its default toolchain under one HOME and a later step cannot
+          # find it ("no default is configured"). Fixed paths remove the ambiguity.
+          export CARGO_HOME=/opt/cargo
+          export RUSTUP_HOME=/opt/rustup
+          curl -fsSL https://sh.rustup.rs | \
+            sh -s -- -y --profile minimal --default-toolchain stable
+          export PATH="$CARGO_HOME/bin:$PATH"
+          rustup default stable
+          rustup target add "${{ matrix.triple }}"
+          echo "CARGO_HOME=/opt/cargo" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=/opt/rustup" >> "$GITHUB_ENV"
+          echo "/opt/cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install system dependencies (AlmaLinux 8)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y epel-release
+          dnf install -y dnf-plugins-core
+          # gh CLI for the release-asset upload from inside the container.
+          dnf config-manager --add-repo https://cli.github.com/packages/rpm/gh-cli.repo
+          # Core build + image/text libraries. Some codecs (libde265, x265, dav1d)
+          # and libmagic-devel are unavailable on AlmaLinux 8; libaom is via EPEL.
+          # tesseract-langpack-eng conflicts with tesseract, so install tesseract only.
+          dnf install -y \
+            gcc gcc-c++ make cmake pkgconfig \
+            openssl-devel \
+            tesseract \
+            libaom-devel \
+            patchelf gh \
+            git curl wget unzip
+          echo "gcc: $(gcc --version | head -1)"
+
+      - name: Install protoc from official release
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="28.2"
+          zip="protoc-${ver}-${{ matrix.protoc_arch }}.zip"
+          mkdir -p /usr/local/protoc
+          cd /tmp
+          curl -fsSL -o "$zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${ver}/${zip}"
+          unzip -q "$zip" -d /usr/local/protoc
+          ln -sf /usr/local/protoc/bin/protoc /usr/local/bin/protoc
+          echo "PROTOC=/usr/local/bin/protoc" >> "$GITHUB_ENV"
+          protoc --version
+
+      - name: Build libheif from source (1.23.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="1.23.0"
+          d="$(mktemp -d)"; trap 'rm -rf "$d"' EXIT
+          cd "$d"
+          curl -fsSL -o libheif.tar.gz \
+            "https://github.com/strukturag/libheif/releases/download/v${ver}/libheif-${ver}.tar.gz"
+          tar xzf libheif.tar.gz
+          cd "libheif-${ver}"
+          mkdir build && cd build
+          # Disable codecs unavailable on AlmaLinux 8 (libde265, x265, dav1d);
+          # libaom is present via EPEL.
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DWITH_EXAMPLES=OFF \
+            -DWITH_GDK_PIXBUF=OFF \
+            -DBUILD_TESTING=OFF \
+            -DWITH_LIBDE265=OFF \
+            -DWITH_X265=OFF \
+            -DWITH_DAV1D=OFF \
+            -DWITH_AOM=ON
+          make -j"$(nproc)"
+          make install
+          ldconfig
+          {
+            echo "PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            echo "LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+      - name: Build release binary (native gcc + glibc-2.28 compat shim)
+        shell: bash
+        env:
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          set -euo pipefail
+          # Compile the glibc-2.28 compat shim and link it into the binary so
+          # ort's prebuilt ONNX Runtime (which references glibc 2.38 symbols)
+          # links against the 2.28 floor. Scoped to this target's RUSTFLAGS.
+          shim_obj="$PWD/glibc228_compat.o"
+          gcc -O2 -fPIC -c scripts/glibc228_compat.c -o "$shim_obj"
+          rustflags_var="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
+          export "${rustflags_var}=-C link-arg=${shim_obj}"
+          cargo build --release --features full --bin basemind --target "$TRIPLE"
+
+      - name: Verify glibc floor (<= 2.28)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.triple }}/release/basemind"
+          max="$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -1 || true)"
+          echo "highest glibc symbol required: ${max:-none}"
+          if [ -n "$max" ] && \
+             [ "$(printf '%s\nGLIBC_2.28\n' "$max" | sort -V | tail -1)" != "GLIBC_2.28" ]; then
+            echo "::error::basemind requires $max (> GLIBC_2.28); a dependency pulled a newer glibc symbol"
+            exit 1
+          fi
+          echo "✓ glibc floor verified: ${max:-none} <= GLIBC_2.28"
+
+      - name: Package release
+        shell: bash
+        run: ./scripts/package-release.sh ${{ matrix.triple }}
+
+      - name: Upload to GitHub release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ needs.meta.outputs.tag }}"
+          archive="basemind-${{ matrix.triple }}.tar.gz"
+          if [ ! -f "$archive" ]; then
+            echo "::error::Archive not found: $archive"
+            exit 1
+          fi
+          gh release upload "$tag" "$archive" --clobber
+
   checksums:
     name: Generate and upload checksums
-    needs: [meta, build-binaries]
+    needs: [meta, build-binaries, build-linux-binaries]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
