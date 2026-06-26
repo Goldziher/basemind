@@ -332,7 +332,7 @@ pub enum QueryKind {
     ///
     /// Populated from the `;; section: implementations` block in hand-written `.scm` overrides,
     /// or from `@reference.implementation` captures in TSLP `tags.scm` files adapted by
-    /// [`adapt_tslp_tags`]. One `(trait_name, implementor)` pair per inheritance edge.
+    /// `adapt_tslp_tags`. One `(trait_name, implementor)` pair per inheritance edge.
     Implementations,
 }
 
@@ -770,7 +770,7 @@ pub fn try_get_classified_combined_l1_query(
 /// - **Override ring** ([`OVERRIDE_LANGUAGES`], 6 today): hand-written
 ///   `src/queries/<lang>.scm` with full symbol/import/call/doc sections.
 /// - **TSLP `tags.scm` ring** (~100 grammars in the published bundle — e.g. kotlin,
-///   csharp, swift, cpp, scala, solidity): adapted on the fly via [`adapt_tslp_tags`].
+///   csharp, swift, cpp, scala, solidity): adapted on the fly via `adapt_tslp_tags`.
 ///   Best-effort symbol/call/implementation extraction; no import/doc sections.
 /// - **Detect-only ring** (the remaining grammars — JSON, YAML, TOML, …): the file
 ///   is detected, parsed, and listed by `list_files`, but extraction yields empty
@@ -778,7 +778,7 @@ pub fn try_get_classified_combined_l1_query(
 ///
 /// Lookup chain:
 /// 1. Local override — `src/queries/<lang>.scm` `;; section: <kind>`.
-/// 2. TSLP `tags.scm` via [`adapt_tslp_tags`] — only for the `Symbols` / `Calls` /
+/// 2. TSLP `tags.scm` via `adapt_tslp_tags` — only for the `Symbols` / `Calls` /
 ///    `Implementations` kinds, and only when upstream ships a vendored `tags.scm`.
 /// 3. None — the file is still detected and indexed, but symbol/import/call
 ///    extraction yields empty vectors. Callers that need a hard signal for an

@@ -189,7 +189,7 @@ pub struct DetectWasteArgs {}
 
 /// Read a JSON-Lines tool-call log from stdin, leniently parse it (malformed or
 /// `tool`-less lines are skipped), run the pure
-/// [`detect_waste`](super::waste::detect_waste) analysis, emit the
+/// `detect_waste` analysis, emit the
 /// [`WasteReport`](super::waste::WasteReport) as pretty JSON to stdout, and a
 /// one-line stat to stderr. stdin is read lossily so non-UTF-8 content never
 /// aborts the pipe.

@@ -44,7 +44,7 @@ pub fn documents_schema(dim: u16) -> SchemaRef {
 /// - `scope`       UTF-8     repo identity
 /// - `key`         UTF-8     primary lookup key (unique within `(scope, visibility, agent_id)`)
 /// - `value`       UTF-8     the stored value text
-/// - `tags`        List<UTF-8>  optional tags
+/// - `tags`        `List<UTF-8>`  optional tags
 /// - `visibility`  UTF-8     memory tier: `"group"` (shared) or `"individual"` (per-agent)
 /// - `agent_id`    UTF-8     owner of an individual-tier row (empty for the group tier)
 /// - `embedding`   FixedSizeList<Float32, DIM>

@@ -36,7 +36,7 @@ const BAIL_MARKER: &str = "# file too large for delta; full content follows";
 /// Result of a [`delta`] call.
 ///
 /// `output` is the text to surface: the compact diff when `changed && !bailed`,
-/// the [`UNCHANGED_MARKER`] when `!changed`, or the [`BAIL_MARKER`] followed by
+/// the `UNCHANGED_MARKER` when `!changed`, or the `BAIL_MARKER` followed by
 /// the NEW content verbatim when `bailed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaOutcome {
@@ -50,10 +50,10 @@ pub struct DeltaOutcome {
     pub added: usize,
     /// Number of deleted (OLD-only) lines emitted as `-` ops.
     pub removed: usize,
-    /// Whether the two sides differ at all. `false` ⇒ [`UNCHANGED_MARKER`].
+    /// Whether the two sides differ at all. `false` ⇒ `UNCHANGED_MARKER`.
     pub changed: bool,
     /// Whether the bail guard fired (oversize input). `output` then carries the
-    /// NEW content verbatim behind [`BAIL_MARKER`]; `added` / `removed` are 0.
+    /// NEW content verbatim behind `BAIL_MARKER`; `added` / `removed` are 0.
     pub bailed: bool,
 }
 

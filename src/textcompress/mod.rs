@@ -59,7 +59,7 @@ const MIN_INPUT_BYTES: usize = 100;
 const MAX_REINJECTED: usize = 32;
 
 /// Compress `text` for a command `family`. When `family` is `None`, the family
-/// is sniffed from the output shape (see [`detect`]).
+/// is sniffed from the output shape (see `detect`).
 ///
 /// Fail-open guarantees (the security-critical contract):
 /// - errored output (error / fatal / exception / traceback markers) is returned raw;

@@ -4,7 +4,7 @@
 //! `src/index/`), living user-globally under `<data_dir>/comms/`. It mirrors the operational
 //! shape of `crate::store::Store`: an exclusive advisory flock (`acquire_lock`) so only one
 //! daemon writes, and a `meta`-keyspace schema-version row checked against
-//! [`COMMS_SCHEMA_VER`](super::COMMS_SCHEMA_VER) — a mismatch wipes the store and the daemon
+//! `COMMS_SCHEMA_VER` — a mismatch wipes the store and the daemon
 //! rebuilds from scratch (comms history is durable-but-disposable scratch, not a source of
 //! truth).
 //!
@@ -19,9 +19,9 @@
 //!
 //! `meta`, `rooms`, `messages_by_room`, `message_body`, `subs_by_room`, `cursors`, `agents`,
 //! and `sessions`. The `sessions` keyspace maps a terminal `session_id` to a
-//! [`SessionLineage`](super::model::SessionLineage) record (parent/child agent + the
+//! `SessionLineage` record (parent/child agent + the
 //! session-scoped room they share), so a future tree view can reconstruct the spawn graph.
-//! Adding it required no [`COMMS_SCHEMA_VER`](super::COMMS_SCHEMA_VER) bump: a brand-new
+//! Adding it required no `COMMS_SCHEMA_VER` bump: a brand-new
 //! keyspace leaves every existing key/value shape untouched, so an older store still opens and
 //! simply has an empty `sessions` partition.
 

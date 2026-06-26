@@ -39,7 +39,7 @@ pub(super) const BLAME_LIMIT_MAX: u32 = 1000;
 ///
 /// Captures `Instant::now()` before the body runs, serializes the params for a deterministic
 /// hash, awaits the body, then records the resulting `CallToolResult` (or skips on `Err`) via
-/// [`record_call`]. Each tool's shim becomes a one-liner.
+/// `record_call`. Each tool's shim becomes a one-liner.
 ///
 /// Usage from `tools.rs` / `tools_memory.rs` / `tools_admin.rs`:
 /// ```ignore
