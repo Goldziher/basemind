@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Runtime floors raised** — npm package requires Node ≥ 22 (was ≥ 14); pip package requires
-  Python ≥ 3.10 (was ≥ 3.8). Older runtimes are end-of-life.
+- **Runtime floors raised** — the npm package (Node ≥ 22, was ≥ 14) and the opencode plugin
+  (Node ≥ 22, was ≥ 18); pip package requires Python ≥ 3.10 (was ≥ 3.8). Older runtimes are
+  end-of-life.
 
 ## [0.11.0] — 2026-06-26
 
