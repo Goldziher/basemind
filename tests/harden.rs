@@ -1121,7 +1121,6 @@ fn median_ns(iters: usize, f: &mut impl FnMut() -> usize) -> u128 {
 /// far larger than the bytes really on disk, so `len()` would wildly over-report the index size
 /// (e.g. report 64 MB for a 680 KB index). This matches what `du` shows.
 fn dir_size(dir: &Path) -> u64 {
-    use std::os::unix::fs::MetadataExt;
     let mut acc = 0u64;
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -1129,11 +1128,24 @@ fn dir_size(dir: &Path) -> u64 {
     for entry in entries.flatten() {
         match entry.metadata() {
             Ok(md) if md.is_dir() => acc += dir_size(&entry.path()),
-            Ok(md) => acc += md.blocks() * 512,
+            Ok(md) => acc += on_disk_size(&md),
             Err(_) => {}
         }
     }
     acc
+}
+
+/// Allocated on-disk size of a file. Unix exposes 512-byte block counts, which correctly
+/// account for Fjall's sparse journal; other platforms fall back to logical length.
+#[cfg(unix)]
+fn on_disk_size(md: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    md.blocks() * 512
+}
+
+#[cfg(not(unix))]
+fn on_disk_size(md: &std::fs::Metadata) -> u64 {
+    md.len()
 }
 
 fn human_bytes(bytes: u64) -> String {
