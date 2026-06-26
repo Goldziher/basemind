@@ -26,11 +26,9 @@ builtins = [
   "default-commands",
 ]
 
-[[mcp_servers]]
-name = "basemind"
-description = "Basemind code-map MCP — outlines, reference search, symbol history, blame, churn."
-command = "basemind"
-args = ["serve"]
+# basemind itself is delivered via the [[plugins]] marketplace entry below (the launcher
+# downloads the published binary), so it is intentionally NOT declared as a project-level
+# mcp_server — that would duplicate the plugin in Claude Code and pin a local binary path.
 
 [[mcp_servers]]
 name = "ai-rulez"
