@@ -10,6 +10,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-06-26
+
+Minor release: `RELEASE_MINOR` bumps to 11, so the blob and Fjall index formats are considered
+stale and every `.basemind/` is wiped and rebuilt from source on the next `basemind scan` (one-time,
+intentional). The headline is a precomputed git-history index that turns the history MCP tools from
+full-walk-per-query into sub-millisecond lookups, plus an install fix that unblocks Apple Silicon
+Macs running an x86_64 shell, Node, or Python under Rosetta.
+
+### Added
+
+- **Precomputed git-history Fjall index** — `commits_touching`, `find_commits_by_path`, and
+  `symbol_history` previously walked the commit graph on every call, paying an O(history) cost per
+  query. They are now backed by a per-repo Fjall index built once at scan time and refreshed
+  incrementally for new commits, so queries are O(result) sub-millisecond lookups. Posting lists are
+  stored newest-first, keeping `commits_touching` O(n) in the returned commits rather than in total
+  history depth.
+
+### Fixed
+
+- **Apple Silicon installs under Rosetta no longer abort** — `uname -m`, `os.arch()`, and
+  `platform.machine()` all report the _process_ architecture, so an x86_64 shell, Node, or Python
+  running under Rosetta reports `x86_64` on Apple Silicon hardware. All three installers (the shell
+  launcher, npm `install.js`, pip `downloader.py`) matched the Darwin/x86_64 branch and aborted with
+  "Intel macOS not supported", even though the native arm64 binary runs fine. They now probe a
+  hardware-level signal the translation layer cannot spoof (`sysctl -n hw.optional.arm64`) and
+  resolve `aarch64-apple-darwin` whenever that probe — or the reported arch — indicates arm64.
+  Fixes #28.
+- **Windows `harden` test compiles again** — the new on-disk index-size measurement used
+  `std::os::unix::fs::MetadataExt::blocks()` unconditionally, breaking the `windows-latest` test
+  leg's compile. The block-count path is now `cfg(unix)`-gated with a `len()` fallback on other
+  platforms.
+
+### Performance
+
+- **Path-scoped history walks** — `commit_touches_path` computed the full recursive tree diff of
+  every walked commit just to test membership of one path, so a single history query over a deep
+  monorepo could run for minutes (measured >5 min on a 242k-commit repo). It now looks up the entry
+  at the exact path in the commit tree and each parent via `gix` `lookup_entry` (O(path depth) object
+  reads, no sibling recursion), comparing `(blob oid, mode)`. Semantics are identical to
+  `git log --full-history -- <path>`; the same query drops to ~11 s worst case and ~2.5 s typical.
+
+### Changed
+
+- **Dependencies** — bumped the embedded `rmux` shells trio (`rmux-client` / `rmux-sdk` /
+  `rmux-server`) from 0.6 to 0.7 and refreshed the lockfile for compatible updates. `arrow` stays
+  pinned at 58 to match what `lancedb` resolves transitively.
+
 ## [0.10.3] — 2026-06-25
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 10), so no
