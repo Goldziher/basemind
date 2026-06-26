@@ -10,12 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-06-26
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 11), so no
+`.basemind/` rebuild. A `tar` security bump on the npm installer, a Homebrew-tap fix, and
+raised runtime floors.
+
 ### Security
 
 - **npm installer bumps `tar` 6 → 7.5.16** (GHSA-vmf3-w455-68vh) — the bundled extractor was on a
   `tar` line whose PAX size-override parsing differential allows file smuggling. The fix only exists
   in `tar` 7.5.16+, which is ESM-only and requires Node ≥ 18; `install.js` now pulls `tar` in via a
   dynamic `import()` at the extract site, and the npm package's engine floor moves to Node ≥ 22.
+
+### Fixed
+
+- **Homebrew tap no longer breaks on Intel hosts** — the generated formula's `on_intel` block called
+  `odie` at formula-load time, which aborted every `brew` command that read the tap on an Intel Mac
+  (poisoning bottle builds and installs for *all* formulae in the tap, not just basemind). The
+  Apple-Silicon-only constraint is now expressed via `depends_on arch: :arm64`, evaluated at install
+  time instead of load time.
 
 ### Changed
 
