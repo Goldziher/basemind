@@ -15,8 +15,8 @@ repos:
         stages:
           - commit-msg
 
-  - repo: https://github.com/kreuzberg-dev/pre-commit-hooks
-    rev: v2.3.0
+  - repo: https://github.com/xberg-io/pre-commit-hooks
+    rev: v3.0.0
     hooks:
       # File safety
       - id: trailing-whitespace
