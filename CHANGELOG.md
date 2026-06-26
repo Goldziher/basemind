@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **npm installer bumps `tar` 6 → 7.5.16** (GHSA-vmf3-w455-68vh) — the bundled extractor was on a
+  `tar` line whose PAX size-override parsing differential allows file smuggling. The fix only exists
+  in `tar` 7.5.16+, which is ESM-only and requires Node ≥ 18; `install.js` now pulls `tar` in via a
+  dynamic `import()` at the extract site, and the npm package's engine floor moves to Node ≥ 22.
+
+### Changed
+
+- **Runtime floors raised** — npm package requires Node ≥ 22 (was ≥ 14); pip package requires
+  Python ≥ 3.10 (was ≥ 3.8). Older runtimes are end-of-life.
+
 ## [0.11.0] — 2026-06-26
 
 Minor release: `RELEASE_MINOR` bumps to 11, so the blob and Fjall index formats are considered

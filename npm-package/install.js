@@ -5,8 +5,10 @@ const https = require("node:https");
 const http = require("node:http");
 const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
-const tar = require("tar");
 const AdmZip = require("adm-zip");
+
+// tar v7 is ESM-only, so it is pulled in via dynamic import() at the extract
+// site rather than a top-level require (this file is CommonJS).
 
 const { version } = require("./package.json");
 
@@ -276,7 +278,8 @@ async function installBinary() {
       const zip = new AdmZip(archivePath);
       zip.extractAllTo(binDir, true);
     } else {
-      await tar.extract({
+      const { extract } = await import("tar");
+      await extract({
         file: archivePath,
         cwd: binDir,
       });
