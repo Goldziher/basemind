@@ -9,7 +9,7 @@
 //!
 //! 1. **Findings are surfaced and persisted, so they must never carry a
 //!    credential.** A `target` can be a query that embeds a secret; any finding
-//!    whose `target` matches [`safety::contains_credential`] is dropped entirely
+//!    whose `target` matches `safety::contains_credential` is dropped entirely
 //!    before it can be emitted.
 //! 2. **Determinism.** Findings are grouped via [`ahash::AHashMap`] then sorted
 //!    by `(kind, target)`, so identical input always yields byte-identical
@@ -80,13 +80,13 @@ pub struct WasteFinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WasteReport {
     /// Deterministically ordered (`kind`, then `target`) findings, capped at
-    /// [`MAX_FINDINGS`].
+    /// `MAX_FINDINGS`.
     pub findings: Vec<WasteFinding>,
     /// Sum of `estimated_waste_bytes` over **all** findings found, computed
     /// before any truncation so the headline stays honest when the list is
     /// capped.
     pub total_estimated_waste_bytes: u64,
-    /// `true` when more than [`MAX_FINDINGS`] findings were found and the vec
+    /// `true` when more than `MAX_FINDINGS` findings were found and the vec
     /// was truncated.
     pub truncated: bool,
 }
@@ -116,16 +116,16 @@ impl RepeatAccumulator {
 /// 1. **Redundant reads** — `Read` calls grouped by `target`; when a path is
 ///    read `>= READ_REPEAT_THRESHOLD` times, one finding sums the bytes of every
 ///    read after the first.
-/// 2. **Repeated queries** — search/grep calls ([`QUERY_TOOLS`]) grouped by
+/// 2. **Repeated queries** — search/grep calls (`QUERY_TOOLS`) grouped by
 ///    `target`; when a query appears `>= QUERY_REPEAT_THRESHOLD` times, one
 ///    finding sums the bytes after the first.
 /// 3. **Oversized reads** — any single `Read` whose `bytes >= LARGE_READ_BYTES`
 ///    emits a finding (an oversized read may also belong to a redundant-read
 ///    group; the two findings are distinct).
 ///
-/// Each finding's `target` is run through [`safety::contains_credential`] and
+/// Each finding's `target` is run through `safety::contains_credential` and
 /// dropped if it matches. Findings are sorted by `(kind, target)`, then capped
-/// at [`MAX_FINDINGS`] (`total_estimated_waste_bytes` is summed before the cap).
+/// at `MAX_FINDINGS` (`total_estimated_waste_bytes` is summed before the cap).
 pub fn detect_waste(calls: &[ToolCall]) -> WasteReport {
     let mut reads: AHashMap<&str, RepeatAccumulator> = AHashMap::new();
     let mut queries: AHashMap<&str, RepeatAccumulator> = AHashMap::new();

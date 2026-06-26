@@ -12,7 +12,7 @@ use memchr::memmem::Finder;
 use regex::Regex;
 
 /// The command families this version compresses. Each maps to one handler in
-/// [`crate::textcompress::handlers`].
+/// `crate::textcompress::handlers`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
     /// `git status` long form → one-line branch + counts.

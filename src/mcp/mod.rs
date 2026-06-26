@@ -634,7 +634,7 @@ impl ServerHandler for BasemindServer {
     }
 
     /// `tools/call`. Default: dispatch through the static router exactly as the macro would.
-    /// In lean mode, route the three wrapper tools through [`lean::lean_call_tool`], which itself
+    /// In lean mode, route the three wrapper tools through `lean::lean_call_tool`, which itself
     /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
     async fn call_tool(
         &self,

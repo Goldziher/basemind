@@ -5,7 +5,7 @@
 //! eagerly) the L2 calls in a single content-addressed file. Fusing the two tiers halves the
 //! per-file blob writes (`open` + atomic `rename`) on the default eager-L2 scan; the
 //! length-prefix lets the common outline-only read decode just the L1 slice without touching
-//! L2. The doc tier ([`write_blob`]) stays a plain unframed msgpack blob.
+//! L2. The doc tier (`write_blob`) stays a plain unframed msgpack blob.
 
 use std::path::{Path, PathBuf};
 

@@ -10,7 +10,7 @@
 //!
 //! 1. **A checkpoint is re-injected context, so it must never carry a
 //!    credential.** Any candidate line for which
-//!    [`safety::contains_credential`] is true is dropped entirely (omitted, not
+//!    `safety::contains_credential` is true is dropped entirely (omitted, not
 //!    redacted-in-place) before it can land in any field.
 //! 2. **Changed files come from git, not regex.** The pure
 //!    [`extract_checkpoint`] takes the file list as an injected argument; the
@@ -45,13 +45,13 @@ const MAX_FILES: usize = 200;
 pub struct Checkpoint {
     /// Lines that record a decision (see the decision marker set).
     pub decisions: Vec<String>,
-    /// Lines that record an error (see [`safety::is_error_line`]).
+    /// Lines that record an error (see `safety::is_error_line`).
     pub errors: Vec<String>,
     /// Working-tree paths that changed, as supplied by the caller.
     pub files_changed: Vec<String>,
-    /// `true` when more than [`MAX_DECISIONS`] decision lines were found.
+    /// `true` when more than `MAX_DECISIONS` decision lines were found.
     pub decisions_truncated: bool,
-    /// `true` when more than [`MAX_ERRORS`] error lines were found.
+    /// `true` when more than `MAX_ERRORS` error lines were found.
     pub errors_truncated: bool,
 }
 
@@ -87,16 +87,16 @@ fn is_decision_line(line: &str) -> bool {
 /// `files_changed` list.
 ///
 /// Pipeline:
-/// 1. ANSI is stripped via [`safety::strip_ansi`] so a coloured marker still
+/// 1. ANSI is stripped via `safety::strip_ansi` so a coloured marker still
 ///    matches.
 /// 2. Each trimmed, non-blank line is classified: decision lines via the
-///    decision marker set, error lines via [`safety::is_error_line`].
+///    decision marker set, error lines via `safety::is_error_line`.
 /// 3. **Credential gate** — any line for which
-///    [`safety::contains_credential`] is true is dropped entirely before
+///    `safety::contains_credential` is true is dropped entirely before
 ///    classification can retain it.
 /// 4. Exact-duplicate lines are collapsed within each list (first-seen order),
 ///    and the injected `files_changed` list is likewise trimmed/deduplicated.
-/// 5. Each list is capped ([`MAX_DECISIONS`] / [`MAX_ERRORS`] / [`MAX_FILES`]);
+/// 5. Each list is capped (`MAX_DECISIONS` / `MAX_ERRORS` / `MAX_FILES`);
 ///    a list that exceeded its cap sets the matching `*_truncated` flag.
 pub fn extract_checkpoint(text: &str, files_changed: Vec<String>) -> Checkpoint {
     let cleaned = safety::strip_ansi(text);

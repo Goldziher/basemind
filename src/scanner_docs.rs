@@ -7,12 +7,12 @@
 //! The flow that the scanner drives is:
 //!
 //! 1. `process_file` sees `lang::detect` return `None` (non-source file).
-//! 2. [`should_extract_document`] decides whether the file qualifies for the
+//! 2. `should_extract_document` decides whether the file qualifies for the
 //!    document tier based on `[documents]` config + MIME allowlist.
-//! 3. [`extract_and_persist_doc`] runs kreuzberg, writes the msgpack blob, and
-//!    returns a [`PendingDocBatch`] carrying the rows that need to land in
+//! 3. `extract_and_persist_doc` runs kreuzberg, writes the msgpack blob, and
+//!    returns a `PendingDocBatch` carrying the rows that need to land in
 //!    LanceDB.
-//! 4. The single-threaded apply pass calls [`flush_document_batches`] to push
+//! 4. The single-threaded apply pass calls `flush_document_batches` to push
 //!    all pending rows into LanceDB in one pass.
 
 #![cfg(feature = "documents")]

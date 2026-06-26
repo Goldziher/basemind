@@ -12,7 +12,7 @@
 //! the structured response for every verb.
 //!
 //! Multi-identity: the identity-bearing verbs accept `--as-agent <AGENT_ID>` to connect to the
-//! broker AS a named sub-identity instead of the CLI's default ([`cli_agent_id`]). Because each
+//! broker AS a named sub-identity instead of the CLI's default (`cli_agent_id`). Because each
 //! invocation is a ONE-SHOT process with ONE connection, "act as X" is simply "connect as X". The
 //! `dm` verb delivers a direct message to one agent's inbox via a private pairwise room
 //! (`dm:<lo>:<hi>`), hosting BOTH the sender's and the recipient's broker connections sequentially

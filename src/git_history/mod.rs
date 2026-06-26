@@ -324,8 +324,8 @@ fn decode_commit_value(bytes: &[u8], want_files: bool) -> Option<CommitMeta> {
 }
 
 /// Batched writer for the git-history index. Commits the accumulated batch every
-/// [`COMMIT_BATCH`] staged operations so a 200k-commit rebuild doesn't hold the whole write set in
-/// memory. Callers must call [`GitHistoryWriter::commit`] at the end to flush the tail.
+/// `COMMIT_BATCH` staged operations so a 200k-commit rebuild doesn't hold the whole write set in
+/// memory. Callers must call `GitHistoryWriter::commit` at the end to flush the tail.
 pub struct GitHistoryWriter {
     index: GitHistoryIndex,
     batch: OwnedWriteBatch,

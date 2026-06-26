@@ -50,10 +50,10 @@ pub struct SpawnSpec {
     /// Environment overrides as `"KEY=VALUE"` strings.
     pub environment: Vec<String>,
     /// Terminal width in columns for the headless pane. Sourced from `[shells].default_cols` so an
-    /// operator can widen the geometry; [`DEFAULT_COLS`] is the fallback the config default mirrors.
+    /// operator can widen the geometry; `DEFAULT_COLS` is the fallback the config default mirrors.
     pub cols: u16,
     /// Terminal height in rows for the headless pane. Sourced from `[shells].default_rows`;
-    /// [`DEFAULT_ROWS`] is the fallback the config default mirrors.
+    /// `DEFAULT_ROWS` is the fallback the config default mirrors.
     pub rows: u16,
 }
 
