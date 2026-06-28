@@ -36,6 +36,15 @@ json() { # json <jq-filter> <default>
   [[ -n "$out" ]] && printf '%s' "$out" || printf '%s' "$2"
 }
 
+epoch_mtime() { # epoch_mtime <path> → file mtime in seconds since epoch, or 0
+  # GNU coreutils first, then BSD/macOS. Order matters: GNU `stat -f` means
+  # "filesystem status" (and SUCCEEDS with unrelated output), so probing
+  # `-f %m` first on Linux returns a multi-line "File: …" blob that then trips
+  # `set -u` in the arithmetic compares below. Try `-c %Y` (GNU) first so the
+  # `-f %m` (BSD) branch is only reached where `-c` genuinely fails.
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 cwd="$(json '.workspace.current_dir // .cwd' "${PWD}")"
 model="$(json '.model.display_name' '')"
 out_style="$(json '.output_style.name' '')"
@@ -186,7 +195,7 @@ build_basemind_line() {
   local scan_age="never" scan_delta=999999999 scan_mtime=0 m now
   for candidate in "${bm_dir}/views/working/index.msgpack" "${bm_dir}/views/working/index.fjall"; do
     if [[ -e "$candidate" ]]; then
-      m="$(stat -f %m "$candidate" 2>/dev/null || stat -c %Y "$candidate" 2>/dev/null || echo 0)"
+      m="$(epoch_mtime "$candidate")"
       [[ "$m" -gt "$scan_mtime" ]] && scan_mtime="$m"
     fi
   done
@@ -206,7 +215,7 @@ build_basemind_line() {
   local calls=0 saved=0 code=0 git=0 docs=0 mem=0 web=0 tel_mtime=0
   local tel_file="${bm_dir}/telemetry.jsonl"
   if [[ -f "$tel_file" ]]; then
-    tel_mtime="$(stat -f %m "$tel_file" 2>/dev/null || stat -c %Y "$tel_file" 2>/dev/null || echo 0)"
+    tel_mtime="$(epoch_mtime "$tel_file")"
     if [[ $have_jq -eq 1 ]]; then
       local midnight_us
       midnight_us="$(date -v0H -v0M -v0S +%s 2>/dev/null || date -d 'today 00:00' +%s 2>/dev/null || echo 0)"
