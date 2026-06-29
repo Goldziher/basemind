@@ -575,10 +575,11 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            if idx.is_none() && self.state.read_only {
-                return Err(read_only_index_unavailable("find_references"));
-            }
-            run_find_references(idx.as_ref(), params)
+            // No `read_only_index_unavailable` guard: when the Fjall index is held by
+            // another process, we answer from the in-RAM call index built from the
+            // shared blobs (`MapCache::calls`), so concurrent sessions stay functional.
+            let cache = self.state.cache.load_full();
+            run_find_references(idx.as_ref(), params, &cache)
         }
         .await;
         record_call(
@@ -610,9 +611,8 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            if idx.is_none() && self.state.read_only {
-                return Err(read_only_index_unavailable("find_callers"));
-            }
+            // In-RAM call index (from shared blobs) covers the lock-held case, so a
+            // read-only session can still resolve callers — no early-out error here.
             let cache = self.state.cache.load_full();
             run_find_callers(idx.as_ref(), params, &cache)
         }

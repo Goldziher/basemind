@@ -476,3 +476,45 @@ async fn concurrent_same_key_put_preserves_created_at() {
 
     let _ = service.cancel().await;
 }
+
+// ─── test 6 ──────────────────────────────────────────────────────────────────
+
+/// Multi-SESSION repro: two `serve` processes against the SAME repo. fjall is
+/// single-holder, so the second process can't open the index and falls back to
+/// read-only (`index_db = None`). It must STILL answer `find_references` — from
+/// the in-RAM call index built off the shared, concurrently-readable blobs.
+///
+/// Before the fix this returned a `read_only_index_unavailable` error (the
+/// reported "blocked / not responsive"); now it resolves the references.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_session_resolves_find_references_from_blobs() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root); // populate .basemind/ (blobs + fjall), lock released on drop
+
+    // Session 1 boots first and grabs the single-holder write lock during open.
+    let serve1 = spawn_server(root).await;
+    // Session 2 boots while #1 holds the lock → read-only fallback + in-RAM call index.
+    let serve2 = spawn_server(root).await;
+    let peer2 = serve2.peer().clone();
+
+    let result = peer2
+        .call_tool(call_params(
+            "find_references",
+            json!({ "name": "alpha", "format": "json" }),
+        ))
+        .await
+        .expect("find_references must succeed on the read-only 2nd session");
+    let body = decode_text(&result);
+    let total = body
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("find_references response missing 'total': {body}"));
+    assert!(
+        total >= 3,
+        "2nd (read-only) session must resolve alpha()'s 3 call sites from blobs, got: {body}"
+    );
+
+    let _ = serve1.cancel().await;
+    let _ = serve2.cancel().await;
+}
