@@ -204,9 +204,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
@@ -684,7 +684,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "basemind"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
@@ -696,6 +696,7 @@ dependencies = [
  "blake3",
  "bstr",
  "clap",
+ "crawlberg",
  "criterion",
  "directories",
  "fjall",
@@ -707,8 +708,6 @@ dependencies = [
  "ignore",
  "insta",
  "jsonschema",
- "kreuzberg",
- "kreuzcrawl",
  "lancedb",
  "lru 0.18.0",
  "memchr",
@@ -738,6 +737,7 @@ dependencies = [
  "tree-sitter-language-pack",
  "url",
  "wiremock",
+ "xberg",
 ]
 
 [[package]]
@@ -1512,12 +1512,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea0095f6103c2a8b44acd6fd15960c801dafebf02e21940360833e0673f48ba7"
 
 [[package]]
-name = "composable"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3edc943416fc51136a23f0881bf65ee06d108810b0ee8737c6f7de4e2bbb40b"
-
-[[package]]
 name = "compression-codecs"
 version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1711,6 +1705,46 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crawlberg"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b29d0b66d3886745ab12e56e17a9127dc91f30b7261a2080c9eed67074c34f6"
+dependencies = [
+ "ahash 0.8.12",
+ "aho-corasick",
+ "arc-swap",
+ "astral-tl",
+ "async-trait",
+ "blake3",
+ "chrono",
+ "dashmap",
+ "encoding_rs",
+ "flate2",
+ "futures",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "html-to-markdown-rs",
+ "ipnet",
+ "memchr",
+ "notify",
+ "opentelemetry",
+ "opentelemetry-semantic-conventions",
+ "quick-xml 0.40.1",
+ "regex",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -2982,9 +3016,6 @@ name = "esaxx-rs"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "ethnum"
@@ -4024,7 +4055,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b305d85504de270ad3525d726a6b69cc59ee7b2269b014387651107ab9f0755b"
 dependencies = [
  "bstr",
- "hashbrown 0.17.1",
+ "hashbrown 0.15.5",
 ]
 
 [[package]]
@@ -4791,9 +4822,9 @@ dependencies = [
 
 [[package]]
 name = "html-to-markdown-rs"
-version = "3.7.2"
+version = "3.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e80e5d74dbe02fc52264d6a1d21c12bbc0cb062bca64caa295e4703590f1aabe"
+checksum = "da9935e81a6fee38ebbc5a2ca4e9590f99f650ffb8a08734c4115a3e06c3c5d3"
 dependencies = [
  "ahash 0.8.12",
  "astral-tl",
@@ -4805,7 +4836,7 @@ dependencies = [
  "lru 0.18.0",
  "memchr",
  "once_cell",
- "phf 0.13.1",
+ "phf 0.14.0",
  "regex",
  "serde",
  "serde_json",
@@ -5696,213 +5727,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kreuzberg"
-version = "5.0.0-rc.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa958bf4266f659eef8333bf9be985b1f2207c32ba975fd2a59a70e8f7bbd060"
-dependencies = [
- "ahash 0.8.12",
- "async-trait",
- "auto_enums",
- "base64 0.22.1",
- "biblatex",
- "biblib",
- "bitvec",
- "blake3",
- "bytes",
- "calamine",
- "cfb 0.14.0",
- "chardetng",
- "chrono",
- "comrak",
- "dbase",
- "dirs",
- "either",
- "encoding_rs",
- "fast_image_resize",
- "flate2",
- "getrandom 0.2.17",
- "getrandom 0.3.4",
- "getrandom 0.4.3",
- "hayro-jbig2",
- "hayro-jpeg2000 0.3.5",
- "hex",
- "hf-hub 0.5.0",
- "html-to-markdown-rs",
- "icu_provider",
- "icu_segmenter",
- "image",
- "indexmap 2.14.0",
- "infer",
- "itertools 0.15.0",
- "jotdown",
- "kreuzberg-gliner-rs",
- "kreuzberg-libheif",
- "kreuzberg-orp",
- "kreuzberg-paddle-ocr",
- "kreuzberg-tesseract",
- "libc",
- "liter-llm",
- "log",
- "lopdf",
- "mail-parser",
- "memchr",
- "memmap2",
- "mime_guess",
- "minijinja",
- "ndarray 0.17.2",
- "nom-exif",
- "num_cpus",
- "once_cell",
- "org",
- "ort",
- "outlook-pst",
- "parking_lot",
- "pastey 0.2.3",
- "pdf_oxide",
- "pulldown-cmark 0.13.4",
- "quick-xml 0.40.1",
- "rake",
- "rayon",
- "regex",
- "resvg",
- "rmp-serde",
- "roxmltree 0.21.1",
- "rqrr",
- "serde",
- "serde_json",
- "serde_toon_format",
- "serde_yaml_ng",
- "sevenz-rust2",
- "sha2 0.11.0",
- "simdutf8",
- "similar 3.1.1",
- "snap",
- "strum 0.28.0",
- "tar",
- "tempfile",
- "thiserror 2.0.18",
- "tiff",
- "tokenizers",
- "tokio",
- "toml",
- "tracing",
- "unhwp",
- "unicode-normalization",
- "ureq 3.3.0",
- "urlencoding",
- "v_htmlescape",
- "whatlang",
- "zip 8.6.0",
-]
-
-[[package]]
-name = "kreuzberg-gliner-rs"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed2dc837d9013ba47b003ae0b581f3bc8bef67c7bb48d25abb2c63c862c29e9"
-dependencies = [
- "composable",
- "csv",
- "kreuzberg-orp",
- "ndarray 0.17.2",
- "ort",
- "ort-sys",
- "regex",
- "tokenizers",
-]
-
-[[package]]
-name = "kreuzberg-libheif"
-version = "5.0.0-rc.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c283f2348f9530225b4fedb2a2275126aa67f41b5deb552df63aedcaadb69b9e"
-dependencies = [
- "cfg-if",
- "enumn",
- "four-cc",
- "libc",
- "libheif-sys",
-]
-
-[[package]]
-name = "kreuzberg-orp"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c255f8d50f2b5a0585f182e530c892f7ebcf9fdfbe167029daed4801b37b275"
-dependencies = [
- "composable",
- "ndarray 0.17.2",
- "ort",
-]
-
-[[package]]
-name = "kreuzberg-paddle-ocr"
-version = "5.0.0-rc.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ca83182049e3a31018b1f326f36a9f60fb07cf431328e8bc8df0b8c1f223af"
-dependencies = [
- "geo-clipper",
- "geo-types",
- "image",
- "imageproc",
- "ndarray 0.17.2",
- "ort",
- "serde",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "kreuzberg-tesseract"
-version = "5.0.0-rc.35"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9bd4287b912f70031d50a567fc7b523fce424c0e7514d2e7305aa22de89982d"
-dependencies = [
- "cc",
- "cmake",
- "reqwest 0.13.4",
- "thiserror 2.0.18",
- "zip 8.6.0",
-]
-
-[[package]]
-name = "kreuzcrawl"
-version = "0.3.0-rc.55"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d82133a5044ee918cd9f2c3523bf2cae2f9efedb4503039bfbb4f583f509969"
-dependencies = [
- "ahash 0.8.12",
- "aho-corasick",
- "arc-swap",
- "astral-tl",
- "async-trait",
- "blake3",
- "chrono",
- "dashmap",
- "encoding_rs",
- "flate2",
- "futures",
- "getrandom 0.3.4",
- "getrandom 0.4.3",
- "html-to-markdown-rs",
- "memchr",
- "notify",
- "opentelemetry",
- "quick-xml 0.40.1",
- "regex",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "toml",
- "tower",
- "url",
-]
-
-[[package]]
 name = "kstring"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6690,9 +6514,9 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "liter-llm"
-version = "1.8.2"
+version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e74dc1be999733d39ca7391fc8f24dbf7c76af7f8e31d2eaa38e95c0434a9934"
+checksum = "435606ba043ab4c21f226940ff0fa13a3c3787a35e7be351572504954bdfe8c8"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -7517,28 +7341,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "onig"
-version = "6.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cc3cbf698f9438986c11a880c90a6d04b9de27575afd28bbf45b154b6c709e2"
-dependencies = [
- "bitflags 2.13.0",
- "libc",
- "once_cell",
- "onig_sys",
-]
-
-[[package]]
-name = "onig_sys"
-version = "69.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e68317604e77e53b85896388e1a803c1d21b74c899ec9e5e1112db90735edd7"
-dependencies = [
- "cc",
- "pkg-config",
-]
-
-[[package]]
 name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7600,6 +7402,12 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
 ]
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c913ac17a6c451661ee255f4625d143e51647ae78ebd969b75e41c4442f4fe47"
 
 [[package]]
 name = "option-ext"
@@ -7744,9 +7552,9 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.68"
+version = "0.3.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "785098be85b44eeae72b021431124f74d41da241106d01a1d63ef8c007cca3f1"
+checksum = "be6568c747aa463eaafd23459961a9f58ff6f71706f67369e270e2d18b7060f0"
 dependencies = [
  "aes 0.9.1",
  "base64 0.22.1",
@@ -7833,7 +7641,6 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
 dependencies = [
- "phf_macros 0.13.1",
  "phf_shared 0.13.1",
  "serde",
 ]
@@ -7844,7 +7651,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
- "phf_macros 0.14.0",
+ "phf_macros",
  "phf_shared 0.14.0",
  "serde",
 ]
@@ -7877,19 +7684,6 @@ checksum = "aeb62e0959d5a1bebc965f4d15d9e2b7cea002b6b0f5ba8cde6cc26738467100"
 dependencies = [
  "fastrand",
  "phf_shared 0.14.0",
-]
-
-[[package]]
-name = "phf_macros"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
-dependencies = [
- "phf_generator 0.13.1",
- "phf_shared 0.13.1",
- "proc-macro2",
- "quote",
- "syn 2.0.118",
 ]
 
 [[package]]
@@ -8203,7 +7997,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -8222,7 +8016,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -10572,12 +10366,10 @@ dependencies = [
  "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "hf-hub 0.4.3",
- "indicatif 0.18.4",
  "itertools 0.14.0",
  "log",
  "macro_rules_attribute",
  "monostate",
- "onig",
  "paste",
  "rand 0.9.4",
  "rayon",
@@ -11978,6 +11770,163 @@ checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
  "rustix",
+]
+
+[[package]]
+name = "xberg"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e618a3744bf03b08457f1ca2609967f20664e2c4ceab43cc05b601832959d19a"
+dependencies = [
+ "ahash 0.8.12",
+ "async-trait",
+ "auto_enums",
+ "base64 0.22.1",
+ "biblatex",
+ "biblib",
+ "bitvec",
+ "blake3",
+ "bytes",
+ "calamine",
+ "cfb 0.14.0",
+ "chardetng",
+ "chrono",
+ "comrak",
+ "dbase",
+ "dirs",
+ "either",
+ "encoding_rs",
+ "fast_image_resize",
+ "flate2",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "hayro-jbig2",
+ "hayro-jpeg2000 0.3.5",
+ "hex",
+ "hf-hub 0.5.0",
+ "html-to-markdown-rs",
+ "icu_provider",
+ "icu_segmenter",
+ "image",
+ "indexmap 2.14.0",
+ "infer",
+ "itertools 0.15.0",
+ "jotdown",
+ "libc",
+ "liter-llm",
+ "log",
+ "lopdf",
+ "mail-parser",
+ "memchr",
+ "memmap2",
+ "mime_guess",
+ "minijinja",
+ "ndarray 0.17.2",
+ "nom-exif",
+ "num_cpus",
+ "once_cell",
+ "org",
+ "ort",
+ "outlook-pst",
+ "parking_lot",
+ "pastey 0.2.3",
+ "pdf_oxide",
+ "pulldown-cmark 0.13.4",
+ "quick-xml 0.40.1",
+ "rake",
+ "rayon",
+ "regex",
+ "resvg",
+ "rmp-serde",
+ "roxmltree 0.21.1",
+ "rqrr",
+ "serde",
+ "serde_json",
+ "serde_toon_format",
+ "serde_yaml_ng",
+ "sevenz-rust2",
+ "sha2 0.11.0",
+ "simdutf8",
+ "similar 3.1.1",
+ "snap",
+ "strum 0.28.0",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tiff",
+ "tokenizers",
+ "tokio",
+ "toml",
+ "tracing",
+ "unhwp",
+ "unicode-normalization",
+ "ureq 3.3.0",
+ "url",
+ "urlencoding",
+ "v_htmlescape",
+ "whatlang",
+ "xberg-gliner",
+ "xberg-libheif",
+ "xberg-paddle-ocr",
+ "xberg-tesseract",
+ "zip 8.6.0",
+]
+
+[[package]]
+name = "xberg-gliner"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4cb0c1dbde63272a147a029bda2bcb7f650b341b5cc955a9beaa2c8e907922c"
+dependencies = [
+ "ndarray 0.17.2",
+ "ort",
+ "parking_lot",
+ "regex",
+ "thiserror 2.0.18",
+ "tokenizers",
+]
+
+[[package]]
+name = "xberg-libheif"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe0c2d3d2a0f6320509641c502e8243562cc12c12d6e9e9e751f44990aaf52bb"
+dependencies = [
+ "cfg-if",
+ "enumn",
+ "four-cc",
+ "libc",
+ "libheif-sys",
+]
+
+[[package]]
+name = "xberg-paddle-ocr"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb99a48e3c1011f2ce5f207f6c33154b4f3522bb3ecb4b7c45aefe7a61910b4a"
+dependencies = [
+ "geo-clipper",
+ "geo-types",
+ "image",
+ "imageproc",
+ "ndarray 0.17.2",
+ "ort",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "xberg-tesseract"
+version = "1.0.0-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b48dc54b1b7008dab45e6564a7f09bdc54c2df23777612fe6ffc8f98f7b8ea"
+dependencies = [
+ "cc",
+ "cmake",
+ "reqwest 0.13.4",
+ "thiserror 2.0.18",
+ "zip 8.6.0",
 ]
 
 [[package]]

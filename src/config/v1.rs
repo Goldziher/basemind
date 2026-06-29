@@ -284,11 +284,22 @@ pub struct CrawlConfig {
     #[serde(default = "CrawlConfig::default_user_agent")]
     #[schemars(length(min = 1))]
     pub user_agent: String,
+    /// Allow crawling URLs that resolve to private, loopback, or link-local
+    /// addresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default
+    /// `false`: the engine rejects them with an SSRF-policy violation. Flip this
+    /// on only to scrape an internal docs server you control. (The
+    /// `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide
+    /// override regardless of this setting.)
+    #[serde(default = "CrawlConfig::default_allow_private_network")]
+    pub allow_private_network: bool,
 }
 
 impl CrawlConfig {
     fn default_respect_robots_txt() -> bool {
         true
+    }
+    fn default_allow_private_network() -> bool {
+        false
     }
     fn default_max_pages() -> u32 {
         32
@@ -315,6 +326,7 @@ impl Default for CrawlConfig {
             max_depth: Self::default_max_depth(),
             max_body_size: Self::default_max_body_size(),
             user_agent: Self::default_user_agent(),
+            allow_private_network: Self::default_allow_private_network(),
         }
     }
 }

@@ -1,9 +1,9 @@
-//! Smoke contract for the `crawl` feature: kreuzcrawl integration + `Url`
+//! Smoke contract for the `crawl` feature: crawlberg integration + `Url`
 //! boundary validation, driven against an in-process `wiremock` server.
 //!
 //! No live network calls. The embedding + LanceDB write side of the pipeline
 //! is exercised by `tests/mcp_smoke.rs`'s memory / documents coverage; the
-//! purpose of THIS file is to pin the kreuzcrawl plumbing — engine config,
+//! purpose of THIS file is to pin the crawlberg plumbing — engine config,
 //! result shapes, robots.txt enforcement, scheme allowlist — without paying
 //! the ONNX model download cost.
 
@@ -14,6 +14,17 @@ use basemind::url::{Url, UrlError};
 use basemind::web::build_engine;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// Default crawl config for the smoke suite. `wiremock` binds to `127.0.0.1`, so
+/// the engine must allow loopback — crawlberg blocks private/loopback targets by
+/// default (SSRF protection). Production keeps that secure default; only these
+/// local-server tests opt in via `allow_private_network`.
+fn crawl_config() -> CrawlConfig {
+    CrawlConfig {
+        allow_private_network: true,
+        ..CrawlConfig::default()
+    }
+}
 
 const PAGE_INDEX: &str = "<html><head><title>basemind smoke</title></head>\
   <body><h1>Index</h1><p>The known phrase here is reticulating splines.</p>\
@@ -112,18 +123,16 @@ fn url_newtype_accepts_http_https() {
     assert!(Url::parse("https://example.com/page?q=1#frag").is_ok());
 }
 
-// ─── kreuzcrawl integration (against wiremock) ──────────────────────────────
+// ─── crawlberg integration (against wiremock) ──────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scrape_returns_200_and_body() {
     let server = spin_up_site().await;
-    let cfg = CrawlConfig::default();
+    let cfg = crawl_config();
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url)
-        .await
-        .expect("scrape root");
+    let result = crawlberg::scrape(&engine, &url).await.expect("scrape root");
 
     assert_eq!(result.status_code, 200, "scrape should hit the mock 200");
     assert!(result.is_allowed, "robots.txt must allow /");
@@ -141,11 +150,11 @@ async fn scrape_returns_200_and_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn robots_txt_blocks_forbidden_path() {
     let server = spin_up_site().await;
-    let cfg = CrawlConfig::default(); // respect_robots_txt = true
+    let cfg = crawl_config(); // respect_robots_txt = true
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/forbidden", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url)
+    let result = crawlberg::scrape(&engine, &url)
         .await
         .expect("scrape returns even when robots forbids");
 
@@ -158,15 +167,15 @@ async fn robots_txt_blocks_forbidden_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn map_urls_discovers_sitemap_entries() {
     let server = spin_up_site().await;
-    let cfg = CrawlConfig::default();
+    let cfg = crawl_config();
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/", server.uri());
-    let map = kreuzcrawl::map_urls(&engine, &url)
+    let map = crawlberg::map_urls(&engine, &url)
         .await
         .expect("map_urls succeeds");
 
-    // The sitemap lists 2 URLs; kreuzcrawl may also discover links from the
+    // The sitemap lists 2 URLs; crawlberg may also discover links from the
     // root page, so assert >= 1 (the bare minimum that signals discovery
     // actually ran) and that at least one entry is our `/about` URL.
     assert!(
@@ -182,12 +191,12 @@ async fn crawl_visits_seed_and_returns_pages() {
     let cfg = CrawlConfig {
         max_pages: 4,
         max_depth: 1,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/", server.uri());
-    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+    let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
     assert!(
         !result.pages.is_empty(),
@@ -208,12 +217,12 @@ async fn crawl_visits_seed_and_returns_pages() {
 
 // ─── SSRF redirect bypass (C1) ──────────────────────────────────────────────
 
-/// kreuzcrawl follows HTTP redirects itself, so a public seed can 302 to a
+/// crawlberg follows HTTP redirects itself, so a public seed can 302 to a
 /// private host (`http://169.254.169.254/` — the cloud metadata endpoint) that
 /// the seed-URL denylist never saw. The MCP web helpers re-validate the URL the
 /// crawler actually landed on (`final_url`) through `Url::parse` before indexing
 /// and refuse private targets. This test pins that contract end-to-end: wiremock
-/// 302s to a private URL, we drive the real `kreuzcrawl::scrape`, then assert the
+/// 302s to a private URL, we drive the real `crawlberg::scrape`, then assert the
 /// post-fetch denylist (`Url::parse`, which backs the helper's
 /// `reject_redirected_private_url`) rejects the landed-on URL.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -235,12 +244,12 @@ async fn redirect_to_private_host_is_rejected_post_fetch() {
         .mount(&server)
         .await;
 
-    let cfg = CrawlConfig::default();
+    let cfg = crawl_config();
     let engine = build_engine(&cfg).expect("build engine");
     let url = format!("{}/redirect", server.uri());
 
     // The seed itself parses (public wiremock host); the SSRF risk only appears
-    // after kreuzcrawl follows the redirect. Whatever URL the crawler reports as
+    // after crawlberg follows the redirect. Whatever URL the crawler reports as
     // final, the post-fetch denylist must reject any private landing host.
     let private_target = "http://169.254.169.254/latest/meta-data/";
     assert!(
@@ -250,7 +259,7 @@ async fn redirect_to_private_host_is_rejected_post_fetch() {
 
     // Best-effort: if the stack exposes the final URL and it is the private
     // target, confirm it round-trips through the same rejection.
-    if let Ok(result) = kreuzcrawl::scrape(&engine, &url).await
+    if let Ok(result) = crawlberg::scrape(&engine, &url).await
         && result.final_url.contains("169.254.169.254")
     {
         assert!(
@@ -276,9 +285,9 @@ async fn scrape_404_does_not_silently_succeed() {
         .mount(&server)
         .await;
 
-    let engine = build_engine(&CrawlConfig::default()).expect("engine");
+    let engine = build_engine(&crawl_config()).expect("engine");
     let url = format!("{}/missing", server.uri());
-    let outcome = kreuzcrawl::scrape(&engine, &url).await;
+    let outcome = crawlberg::scrape(&engine, &url).await;
 
     match outcome {
         Ok(result) => assert!(
@@ -299,9 +308,9 @@ async fn scrape_5xx_surfaces_status_or_error() {
         .mount(&server)
         .await;
 
-    let engine = build_engine(&CrawlConfig::default()).expect("engine");
+    let engine = build_engine(&crawl_config()).expect("engine");
     let url = format!("{}/boom", server.uri());
-    let outcome = kreuzcrawl::scrape(&engine, &url).await;
+    let outcome = crawlberg::scrape(&engine, &url).await;
 
     match outcome {
         Ok(result) => assert_eq!(
@@ -332,9 +341,9 @@ async fn scrape_follows_redirect_chain() {
         .mount(&server)
         .await;
 
-    let engine = build_engine(&CrawlConfig::default()).expect("engine");
+    let engine = build_engine(&crawl_config()).expect("engine");
     let url = format!("{}/redirect", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url).await.expect("scrape");
+    let result = crawlberg::scrape(&engine, &url).await.expect("scrape");
 
     assert_eq!(result.status_code, 200, "redirect must end on the 200 page");
     assert!(
@@ -360,11 +369,11 @@ async fn scrape_truncates_oversized_body() {
 
     let cfg = CrawlConfig {
         max_body_size: 4096, // 4 KiB cap
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("engine");
     let url = format!("{}/big", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url).await.expect("scrape");
+    let result = crawlberg::scrape(&engine, &url).await.expect("scrape");
 
     assert!(
         result.body_size <= 4096,
@@ -386,9 +395,9 @@ async fn scrape_handles_empty_body() {
         .mount(&server)
         .await;
 
-    let engine = build_engine(&CrawlConfig::default()).expect("engine");
+    let engine = build_engine(&crawl_config()).expect("engine");
     let url = format!("{}/empty", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url).await.expect("scrape");
+    let result = crawlberg::scrape(&engine, &url).await.expect("scrape");
 
     assert_eq!(result.status_code, 200);
     assert_eq!(result.body_size, 0, "empty body must report 0 bytes");
@@ -429,11 +438,11 @@ async fn crawl_dedupes_circular_links() {
     let cfg = CrawlConfig {
         max_pages: 10,
         max_depth: 4,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("engine");
     let url = format!("{origin}/");
-    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+    let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
     // Each unique URL should appear at most once in the visited set.
     let unique = result.unique_normalized_urls();
@@ -446,7 +455,7 @@ async fn crawl_dedupes_circular_links() {
 }
 
 /// `max_depth = 0` must restrict the crawl to the seed page alone, no link
-/// following. The exact link discovery beyond depth 0 is up to kreuzcrawl;
+/// following. The exact link discovery beyond depth 0 is up to crawlberg;
 /// what we pin is that the seed page is present and the result is small.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crawl_respects_max_depth_zero() {
@@ -480,11 +489,11 @@ async fn crawl_respects_max_depth_zero() {
     let cfg = CrawlConfig {
         max_pages: 20,
         max_depth: 0,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("engine");
     let url = format!("{origin}/");
-    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+    let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
     assert_eq!(
         result.pages.len(),
@@ -527,11 +536,11 @@ async fn crawl_respects_max_pages_cap() {
     let cfg = CrawlConfig {
         max_pages: 3,
         max_depth: 5,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("engine");
     let url = format!("{origin}/");
-    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+    let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
     assert!(
         result.pages.len() <= 3,
@@ -561,9 +570,9 @@ async fn missing_robots_txt_defaults_to_allowed() {
         .mount(&server)
         .await;
 
-    let engine = build_engine(&CrawlConfig::default()).expect("engine");
+    let engine = build_engine(&crawl_config()).expect("engine");
     let url = format!("{}/", server.uri());
-    let result = kreuzcrawl::scrape(&engine, &url).await.expect("scrape");
+    let result = crawlberg::scrape(&engine, &url).await.expect("scrape");
 
     assert!(
         result.is_allowed,
@@ -621,7 +630,7 @@ fn url_from_str_rejects_bad_scheme() {
 
 #[test]
 fn build_engine_accepts_default_config() {
-    let cfg = CrawlConfig::default();
+    let cfg = crawl_config();
     let engine = build_engine(&cfg);
     assert!(
         engine.is_ok(),
@@ -635,7 +644,7 @@ fn build_engine_handles_tight_bounds() {
         max_pages: 1,
         max_depth: 0,
         max_body_size: 1024,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     assert!(
         build_engine(&cfg).is_ok(),
@@ -681,7 +690,7 @@ async fn per_call_override_caps_pages_below_server_default() {
     let server_default = CrawlConfig {
         max_pages: 50,
         max_depth: 5,
-        ..CrawlConfig::default()
+        ..crawl_config()
     };
     // …but the per-call override clamps to 2 pages, exactly as
     // `per_call_engine` does for an MCP/CLI `web_crawl { max_pages: 2 }`.
@@ -690,7 +699,7 @@ async fn per_call_override_caps_pages_below_server_default() {
     let engine = build_engine(&per_call).expect("per-call engine");
 
     let url = format!("{origin}/");
-    let result = kreuzcrawl::crawl(&engine, &url).await.expect("crawl");
+    let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
     assert!(
         result.pages.len() <= 2,

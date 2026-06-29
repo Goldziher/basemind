@@ -702,11 +702,11 @@ fn scanner_preserves_non_utf8_filename_bytes() {
     assert_eq!(entry.language, "rust");
 }
 
-/// End-to-end check that kreuzberg's `whatlang`-backed language detector is
-/// wired through `DocConfig::to_kreuzberg`. The fixture is a short French
+/// End-to-end check that xberg's `whatlang`-backed language detector is
+/// wired through `DocConfig::to_xberg`. The fixture is a short French
 /// paragraph; with `auto_detect = true` and the default 0.8 confidence floor,
 /// `FileMapDoc.detected_languages` should carry the ISO 639-3 code `"fra"`.
-/// (Kreuzberg's `ExtractionResult.detected_languages` doc-comment mislabels
+/// (Xberg's `ExtractionResult.detected_languages` doc-comment mislabels
 /// the codes as ISO 639-1, but the wrapper normalises every variant to its
 /// three-letter ISO 639-3 form before populating the field.)
 #[cfg(feature = "documents")]

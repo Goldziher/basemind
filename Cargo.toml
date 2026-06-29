@@ -1,6 +1,6 @@
 [package]
 name = "basemind"
-version = "0.11.1"
+version = "0.12.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
@@ -33,18 +33,18 @@ path = "src/main.rs"
 # (or just one of them).
 default = []
 
-# Base infrastructure: kreuzberg (Elastic-2.0) + LanceDB + Arrow. Pulled in by
+# Base infrastructure: xberg (MIT) + LanceDB + Arrow. Pulled in by
 # both `documents` and `memory`; doesn't activate any extraction backends by
 # itself.
 intelligence = [
-    "dep:kreuzberg",
+    "dep:xberg",
     "dep:lancedb",
     "dep:arrow-array",
     "dep:arrow-schema",
     "dep:futures",
 ]
 
-# Document tier: ingest PDFs, Office docs, emails, HTML, etc. via kreuzberg,
+# Document tier: ingest PDFs, Office docs, emails, HTML, etc. via xberg,
 # plus the full RAG-supporting analysis stack (chunking, keywords, NER, layout,
 # OCR, summarization, redaction). `embeddings` already implies `chunking` and
 # bundles ORT binaries (ort-bundled) so no system onnxruntime install is
@@ -56,58 +56,53 @@ intelligence = [
 # API key to do anything useful.
 documents = [
     "intelligence",
-    "kreuzberg/formats",
+    "xberg/formats",
     # pdf, excel, office, hwp, hwpx, iwork, email, html, xml, archives, mdx
-    "kreuzberg/analysis",
+    "xberg/analysis",
     # language-detection, chunking, quality, keywords, diff
-    "kreuzberg/chunking-tokenizers",
+    "xberg/chunking-tokenizers",
     # token-aware chunk boundaries
-    "kreuzberg/embeddings",
+    "xberg/embeddings",
     # ORT-bundled embedding generation
-    "kreuzberg/reranker",
+    "xberg/reranker",
     # cross-encoder reranking (ORT-bundled, off by default in config)
-    "kreuzberg/reranker-presets",
+    "xberg/reranker-presets",
     # preset catalog (bge-reranker-base, jina-reranker-v1-turbo-en, …)
-    "kreuzberg/ocr",
+    "xberg/ocr",
     # Tesseract OCR
-    "kreuzberg/paddle-ocr",
+    "xberg/paddle-ocr",
     # PaddleOCR (multilingual)
-    "kreuzberg/layout-detection",
+    "xberg/layout-detection",
     # YOLO/RT-DETR page layout
-    "kreuzberg/auto-rotate",
+    "xberg/auto-rotate",
     # page orientation correction
-    "kreuzberg/ner-onnx",
+    "xberg/ner-onnx",
     # local NER (gline-rs)
-    "kreuzberg/keywords-yake",
+    "xberg/keywords-yake",
     # YAKE keyword algorithm + YakeParams tuning
-    "kreuzberg/keywords-rake",
+    "xberg/keywords-rake",
     # RAKE keyword algorithm + RakeParams tuning
-    "kreuzberg/summarization",
+    "xberg/summarization",
     # TextRank extractive (no LLM)
-    "kreuzberg/summarization-llm",
+    "xberg/summarization-llm",
     # liter-llm abstractive summarisation (gated on `[llm]` config)
-    "kreuzberg/redaction",
+    "xberg/redaction",
     # pattern-based PII (no LLM)
     # QR decode from images
-    "kreuzberg/qr-codes",
+    "xberg/qr-codes",
     "dep:serde_toon_format",
 ]
 
 # Shared agent memory: needs the embedding engine + LanceDB, plus the bits of
 # RAG infrastructure that make memory search useful (keywords for hybrid rank,
 # NER for entity-anchored retrieval). No document parsing backends.
-memory = [
-    "intelligence",
-    "kreuzberg/embeddings",
-    "kreuzberg/keywords",
-    "kreuzberg/ner-onnx",
-]
+memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
-# On-demand web crawling. Pulls kreuzcrawl as an HTTP-only crawler (no chromium,
+# On-demand web crawling. Pulls crawlberg as an HTTP-only crawler (no chromium,
 # no LLM extraction) and routes scrape/crawl results through the documents
 # pipeline (chunk → embed → LanceDB). Implies `documents` because the doc tier
 # IS the indexing sink for crawled pages.
-crawl = ["documents", "dep:kreuzcrawl", "dep:url"]
+crawl = ["documents", "dep:crawlberg", "dep:url"]
 
 # Agent-to-agent communication: the singleton broker daemon, named rooms + per-agent
 # inbox, and the comms MCP/CLI surface. Pulls only small pure-Rust crates (directories,
@@ -136,7 +131,7 @@ ahash = "0.8"
 anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
-arc-swap = "1.9.1"
+arc-swap = "1.9.2"
 # Pinned to arrow 58 to match the version lancedb 0.30 resolves transitively
 # (lancedb → lance → datafusion → arrow 58). Depending on a newer arrow here
 # produces a dual-version skew where our `src/lance` RecordBatch/Schema types
@@ -146,6 +141,10 @@ arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
+# crawlberg powers the on-demand web crawl tier. Pinned the same way xberg is.
+# Default features cover native-runtime (HTTP + tokio); we deliberately do NOT
+# opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
+crawlberg = { version = "=1.0.1", default-features = false, features = ["native-runtime"], optional = true }
 # User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
 fjall = "3.1.5"
@@ -156,11 +155,6 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
-kreuzberg = { version = "=5.0.0-rc.35", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
-# kreuzcrawl powers the on-demand web crawl tier. Pinned to the active rc the
-# same way kreuzberg is. Default features cover native-runtime (HTTP + tokio);
-# we deliberately do NOT opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
-kreuzcrawl = { version = "=0.3.0-rc.55", default-features = false, features = ["native-runtime"], optional = true }
 lancedb = { version = "0.30", optional = true }
 lru = "0.18.0"
 memchr = "2"
@@ -195,6 +189,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.9.0-rc.45"
 url = { version = "2", features = ["serde"], optional = true }
+xberg = { version = "=1.0.0-rc.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 
 [dev-dependencies]
 # Criterion microbenchmark harness for the v0.9.0 performance cycle. `html_reports`

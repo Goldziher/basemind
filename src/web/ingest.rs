@@ -4,7 +4,7 @@
 //! the LanceDB row shape stays identical to documents indexed from disk.
 //!
 //! The flow mirrors `scanner_docs::extract_and_persist_doc`:
-//!  1. chunk the page text via `kreuzberg::chunking::chunk_text`,
+//!  1. chunk the page text via `xberg::chunking::chunk_text`,
 //!  2. embed each chunk via the shared `SharedEmbedder`,
 //!  3. write the rows to LanceDB through `LanceStore::replace_document`.
 //!
@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use kreuzberg::chunking::{ChunkingConfig, chunk_text};
+use xberg::chunking::{ChunkingConfig, chunk_text};
 
 use crate::config::DocumentsConfig;
 use crate::embeddings::SharedEmbedder;

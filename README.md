@@ -290,7 +290,7 @@ activity by type, then tokens saved, then unread messages. Adjust with
 
 `basemind scan` reads your project once, in parallel. It maps your code with
 [tree-sitter] (across [300+ languages][tslp]) and pulls text out of your documents with
-[kreuzberg], then saves the result to a local cache in `.basemind/`. After that, `basemind serve`
+[xberg], then saves the result to a local cache in `.basemind/`. After that, `basemind serve`
 keeps the map in memory and answers questions instantly — no re-reading the project for each one.
 When files change, it updates only what changed.
 
@@ -572,5 +572,5 @@ MIT — see [LICENSE](LICENSE).
 
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
 [tslp]: https://github.com/Goldziher/tree-sitter-language-pack
-[kreuzberg]: https://github.com/Goldziher/kreuzberg
+[xberg]: https://github.com/xberg-io/xberg
 [LanceDB]: https://github.com/lancedb/lancedb

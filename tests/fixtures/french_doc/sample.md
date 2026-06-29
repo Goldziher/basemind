@@ -5,6 +5,6 @@ de langue par le pipeline de basemind. Le contenu doit être suffisamment
 long pour permettre à whatlang d'identifier correctement la langue avec
 une confiance supérieure au seuil par défaut.
 
-Le projet basemind utilise kreuzberg pour l'extraction de documents et
+Le projet basemind utilise xberg pour l'extraction de documents et
 prend désormais en charge la configuration de la détection de langue à
 travers toutes les surfaces (TOML, CLI, MCP, variables d'environnement).

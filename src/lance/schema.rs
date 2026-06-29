@@ -13,7 +13,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 /// - `scope`     UTF-8     repo identity (normalised git remote URL or workdir path)
 /// - `path`      UTF-8     repo-relative path of the source file
 /// - `chunk_idx` UInt32    0-based index of this chunk within the file
-/// - `mime_type` UTF-8     IANA MIME type kreuzberg detected
+/// - `mime_type` UTF-8     IANA MIME type xberg detected
 /// - `text`      UTF-8     the chunk text (snippet returned by search results)
 /// - `byte_start` UInt32   chunk start byte offset in the original document
 /// - `byte_end`  UInt32    chunk end byte offset

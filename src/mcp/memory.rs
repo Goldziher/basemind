@@ -595,30 +595,30 @@ pub(super) async fn run_search_documents(
 
     // Reranker post-step: cross-encoder rescores and reorders the candidate hits.
     // Default OFF — first call downloads ONNX weights (~100 MB) into
-    // `~/.cache/kreuzberg/rerankers/`. Enable via `[documents.reranker] enabled = true`
+    // `~/.cache/xberg/rerankers/`. Enable via `[documents.reranker] enabled = true`
     // in TOML or `reranker_enabled = true` as a per-query override.
     if reranker_enabled && !hits.is_empty() {
         // Fail-fast on unknown preset names before constructing `RerankerConfig` so we
         // don't trigger an opaque ONNX error or a wrong-model download.
-        if kreuzberg::get_reranker_preset(&reranker_preset).is_none() {
+        if xberg::get_reranker_preset(&reranker_preset).is_none() {
             return Err(McpError::invalid_params(
                 format!("unknown reranker preset: {reranker_preset:?}"),
                 None,
             ));
         }
-        let krz_config = kreuzberg::core::config::RerankerConfig {
-            model: kreuzberg::core::config::RerankerModelType::Preset {
+        let krz_config = xberg::core::config::RerankerConfig {
+            model: xberg::core::config::RerankerModelType::Preset {
                 name: reranker_preset,
             },
             top_k: Some(reranker_top_k),
             ..Default::default()
         };
         let documents: Vec<String> = hits.iter().map(|h| h.text.clone()).collect();
-        let reranked = kreuzberg::rerank_async(params.query.clone(), documents, &krz_config)
+        let reranked = xberg::rerank_async(params.query.clone(), documents, &krz_config)
             .await
             .map_err(|e| {
                 // Best-effort split between model-load and inference failures. The
-                // kreuzberg error variants don't expose a kind discriminator, so we
+                // xberg error variants don't expose a kind discriminator, so we
                 // substring-match the Display impl — better than the opaque `rerank: {e}`
                 // we had before, even if it occasionally misclassifies.
                 let msg = e.to_string();

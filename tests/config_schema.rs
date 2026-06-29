@@ -15,7 +15,7 @@ fn generate_schema_text() -> String {
     s
 }
 
-// Schemars top-level property order is sensitive to the dep graph (kreuzberg's
+// Schemars top-level property order is sensitive to the dep graph (xberg's
 // own schemars types shift the visit order). Pin the snapshot check to the
 // `full` feature set — that's the maximal config surface and the version we
 // publish on the website. Other matrix points still exercise the test crate;

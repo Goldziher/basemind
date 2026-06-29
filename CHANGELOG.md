@@ -10,7 +10,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.1] — 2026-06-26
+## [0.12.0] — 2026-06-29
+
+Minor release: the document/RAG and web-crawl engines move to their renamed,
+MIT-relicensed crates. `RELEASE_MINOR` bumps to 12, so the blob + index formats
+are considered incompatible — `.basemind/` is wiped and rebuilt from source on
+the next `basemind scan`.
+
+### Changed
+
+- **Document tier now builds on `xberg` `1.0.0-rc.1`** (was `kreuzberg` `5.0.0-rc.35`)
+  and the web-crawl tier on `crawlberg` `1.0.1` (was `kreuzcrawl` `0.3.0-rc.55`). These
+  are the renamed, **MIT-licensed** successors of the same engines, so the `documents`,
+  `memory`, and `crawl` feature surfaces are unchanged. The `Elastic-2.0` license
+  exceptions for the old crates are dropped from `deny.toml`.
+- **Document extraction migrated to xberg's async `extract` API.** xberg 1.0 removed the
+  synchronous `extract_file_sync` wrapper; the scanner's doc path now drives the async
+  `extract(ExtractInput, &ExtractionConfig)` on a shared multi-thread runtime and reads the
+  per-document result out of the new batch-shaped `ExtractionResult.results`.
+- **`arc-swap` `1.9.1` → `1.9.2`** via `cargo upgrade`. `arrow-array` / `arrow-schema`
+  stay pinned to `58` to match lancedb 0.30's transitive arrow.
+- **Web crawling now blocks private/loopback/link-local targets by default** (SSRF
+  protection inherited from crawlberg 1.0). `web_scrape` / `web_crawl` / `web_map` against
+  `127.0.0.1`, `10.0.0.0/8`, `169.254.0.0/16`, etc. are rejected with an SSRF-policy
+  violation. A new `crawl.allow_private_network` config flag (default `false`) re-enables
+  them for internal-docs hosts you control; the `CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is
+  also honoured as a process-wide override.
+
+### Fixed
+
+- **Status line no longer renders blank on Linux** — `build_basemind_line` read file mtimes
+  with BSD `stat -f %m` first. On GNU coreutils `-f` means "display filesystem status" and
+  _succeeds_, printing a multi-line blob instead of failing, so the `|| stat -c %Y` fallback
+  never ran; under `set -euo pipefail` the blob's bare `File` word aborted the command
+  substitution as an unbound variable, emptying the whole line. An `epoch_mtime` helper now
+  tries GNU `stat -c %Y` first and falls back to BSD `stat -f %m` only when `-c` genuinely
+  fails (macOS), used at both mtime call sites (#32).
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 11), so no
 `.basemind/` rebuild. A `tar` security bump on the npm installer, a Homebrew-tap fix, and
@@ -27,7 +62,7 @@ raised runtime floors.
 
 - **Homebrew tap no longer breaks on Intel hosts** — the generated formula's `on_intel` block called
   `odie` at formula-load time, which aborted every `brew` command that read the tap on an Intel Mac
-  (poisoning bottle builds and installs for *all* formulae in the tap, not just basemind). The
+  (poisoning bottle builds and installs for _all_ formulae in the tap, not just basemind). The
   Apple-Silicon-only constraint is now expressed via `depends_on arch: :arm64`, evaluated at install
   time instead of load time.
 

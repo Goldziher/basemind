@@ -136,7 +136,7 @@ impl Url {
         self.0.host_str()
     }
 
-    /// Borrow the inner `url::Url`. Use this when handing to `kreuzcrawl`,
+    /// Borrow the inner `url::Url`. Use this when handing to `crawlberg`,
     /// which expects a string slice anyway — this stays available for the
     /// rare callsite that needs the parsed components.
     pub fn inner(&self) -> &url::Url {

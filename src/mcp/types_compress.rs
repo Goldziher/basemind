@@ -3,7 +3,7 @@
 //! `compress` is a code-aware token-reduction tool: for indexed source files it
 //! returns the structural L1 outline (signatures + imports, no bodies); for prose
 //! text it applies a lexical pass (whitespace collapsing, filler removal, paragraph
-//! deduplication) that always runs, and optionally a kreuzberg prose-compression
+//! deduplication) that always runs, and optionally a xberg prose-compression
 //! pass when the `documents` feature is enabled.
 //!
 //! Split into its own file to keep `types.rs` under the 1000-line cap.
@@ -105,8 +105,8 @@ pub(super) struct CompressResponse {
     /// Values below 1.0 indicate a reduction; 1.0 means no change.
     pub ratio: f32,
     /// The strategy that was applied: `"structural"` for indexed code files,
-    /// `"lexical"` for prose-only compression (no kreuzberg), or
-    /// `"lexical+prose"` when kreuzberg prose reduction ran.
+    /// `"lexical"` for prose-only compression (no xberg), or
+    /// `"lexical+prose"` when xberg prose reduction ran.
     pub strategy: String,
     /// The compressed output text.
     pub output: String,

@@ -176,7 +176,7 @@ pub struct ScanStats {
     /// Parse-timeout subset of `extract_failed`. Distinguished so users can spot pathological
     /// files separately from "actual" grammar errors.
     pub parse_timeouts: usize,
-    /// Documents (non-source files) successfully extracted via kreuzberg and (when embeddings
+    /// Documents (non-source files) successfully extracted via xberg and (when embeddings
     /// were configured) pushed to LanceDB. Always present in `ScanStats` so callers that don't
     /// compile the `documents` feature still get a stable struct shape; stays `0` in that mode.
     pub docs_indexed: usize,
@@ -193,7 +193,7 @@ pub struct FileResult {
     /// stashes the entry here; the single-threaded apply loop drains it into the store.
     /// Not part of the public surface — always `None` once `apply_outcomes` returns.
     pub(crate) upsert: Option<FileEntry>,
-    /// Internal: buffered document batch when this file went through the kreuzberg branch.
+    /// Internal: buffered document batch when this file went through the xberg branch.
     /// Drained by the single-threaded `flush_document_batches` pass into LanceDB.
     #[cfg(feature = "documents")]
     pub(crate) doc_batch: Option<PendingDocBatch>,
@@ -239,7 +239,7 @@ pub enum FileStatus {
     },
     /// Subset of ExtractFailed: parse exceeded the configured timeout.
     ParseTimedOut,
-    /// File was non-source but went through the kreuzberg document tier instead of being
+    /// File was non-source but went through the xberg document tier instead of being
     /// dropped at `SkippedNoLang`. `chunk_count` reflects how many chunks were extracted;
     /// `embedding_dim` is the vector dimension (zero when embeddings were disabled).
     #[cfg(feature = "documents")]
@@ -760,7 +760,7 @@ fn process_file(
 }
 
 /// Document-tier branch: file had no tree-sitter language; check `[documents]` config and
-/// route through kreuzberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
+/// route through xberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
 /// when documents are disabled or the MIME type is filtered out.
 #[cfg(feature = "documents")]
 fn process_doc(
@@ -804,7 +804,7 @@ fn process_doc(
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
         Err(error) => {
             let msg = format!("document extract: {error:#}");
-            // "Unsupported format" means kreuzberg has no extractor for this MIME — i.e. the
+            // "Unsupported format" means xberg has no extractor for this MIME — i.e. the
             // file is not an extractable document (e.g. a source file in a language tree-sitter
             // didn't recognize, which `mime_guess` maps to `application/x-wais-source`). That's a
             // skip, not a failure: it shouldn't inflate the failed count or read as a real error.
@@ -821,8 +821,8 @@ fn process_doc(
     }
 }
 
-/// True when a document-extraction error means the file's format simply has no kreuzberg
-/// extractor (kreuzberg's `UnsupportedFormat` → "Unsupported format: <mime>"), as opposed to a
+/// True when a document-extraction error means the file's format simply has no xberg
+/// extractor (xberg's `UnsupportedFormat` → "Unsupported format: <mime>"), as opposed to a
 /// genuine extraction failure on a real document. Such files are skipped, not failed.
 #[cfg(feature = "documents")]
 fn is_unsupported_format_error(msg: &str) -> bool {
@@ -937,12 +937,12 @@ mod tests {
     #[cfg(feature = "documents")]
     #[test]
     fn unsupported_format_error_is_a_skip_not_a_failure() {
-        // kreuzberg's UnsupportedFormat for a non-document (e.g. an `.app.src` source file that
+        // xberg's UnsupportedFormat for a non-document (e.g. an `.app.src` source file that
         // `mime_guess` maps to `application/x-wais-source`) → skip, not a counted failure.
         assert!(is_unsupported_format_error(
             "document extract: Unsupported format: application/x-wais-source"
         ));
-        // Case-insensitive on the kreuzberg phrasing.
+        // Case-insensitive on the xberg phrasing.
         assert!(is_unsupported_format_error(
             "Unsupported Format: text/x-foo"
         ));

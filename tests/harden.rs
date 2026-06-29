@@ -247,7 +247,7 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
         Err(_) => basemind::config::default_for_root(repo_root),
     };
     // The harness exercises the MCP surface; document-tier indexing adds
-    // kreuzberg + embedding cost that has nothing to do with the canaries.
+    // xberg + embedding cost that has nothing to do with the canaries.
     // Disable it so per-repo scan ceilings stay meaningful.
     config.documents.enabled = false;
     let mut store =

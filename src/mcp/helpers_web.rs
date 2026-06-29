@@ -4,7 +4,7 @@
 //!  1. resolves the shared crawl engine + embedder + LanceDB store from
 //!     `ServerState` (returning an MCP error when the feature was compiled in
 //!     but the engine failed to initialize),
-//!  2. runs the kreuzcrawl operation on the request URL,
+//!  2. runs the crawlberg operation on the request URL,
 //!  3. routes resulting page bodies through [`crate::web::ingest::index_page`]
 //!     to land them in the existing `documents` LanceDB table.
 //!
@@ -35,11 +35,11 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
     McpError::internal_error(format!("{prefix}: {err}"), None)
 }
 
-/// POST-FETCH defence-in-depth SSRF check on a URL that kreuzcrawl actually
+/// POST-FETCH defence-in-depth SSRF check on a URL that crawlberg actually
 /// hit.
 ///
 /// `Url::parse` enforces the private-host denylist on every *requested* URL, but
-/// kreuzcrawl follows HTTP redirects itself, so a public seed can 30x-redirect
+/// crawlberg follows HTTP redirects itself, so a public seed can 30x-redirect
 /// to a private target (`https://evil.com` → 302 → `http://169.254.169.254/`)
 /// that the seed validation never saw. Here we re-validate the URL the crawler
 /// landed on through the same denylist and refuse to index when it resolves to a
@@ -48,7 +48,7 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
 /// This does NOT prevent the redirect GET itself — the request to the private
 /// host has already happened by the time we see `final_url` / `normalized_url`.
 /// Fully blocking the redirect fetch would require a redirect-policy hook inside
-/// kreuzcrawl's HTTP client, which is un-vendored here. This guard is the layer
+/// crawlberg's HTTP client, which is un-vendored here. This guard is the layer
 /// we control: it stops private-host content from ever landing in the index.
 fn reject_redirected_private_url(context: &str, fetched_url: &str) -> Result<(), McpError> {
     match crate::url::Url::parse(fetched_url) {
@@ -101,10 +101,10 @@ fn reject_zero_override(field: &str, value: Option<u32>) -> Result<(), McpError>
     Ok(())
 }
 
-/// Build a per-call kreuzcrawl engine that overrides `max_pages` / `max_depth`
+/// Build a per-call crawlberg engine that overrides `max_pages` / `max_depth`
 /// for this request only, leaving the server's shared `[crawl]` defaults intact.
 ///
-/// kreuzcrawl bakes the page/depth caps into the engine handle, so honouring a
+/// crawlberg bakes the page/depth caps into the engine handle, so honouring a
 /// per-call override means constructing a fresh engine from a cloned config.
 /// `None` overrides fall back to the server default.
 #[cfg(feature = "crawl")]
@@ -112,7 +112,7 @@ fn per_call_engine(
     state: &ServerState,
     max_pages: Option<u32>,
     max_depth: Option<u32>,
-) -> Result<kreuzcrawl::CrawlEngineHandle, McpError> {
+) -> Result<crawlberg::CrawlEngineHandle, McpError> {
     let mut cfg = state.config.crawl.clone();
     if let Some(mp) = max_pages {
         cfg.max_pages = mp;
@@ -141,7 +141,7 @@ async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> 
     Ok(Arc::clone(embedder))
 }
 
-fn engine(state: &ServerState) -> Result<&kreuzcrawl::CrawlEngineHandle, McpError> {
+fn engine(state: &ServerState) -> Result<&crawlberg::CrawlEngineHandle, McpError> {
     state.crawl_engine.as_ref().ok_or_else(|| {
         McpError::internal_error(
             "crawl engine not initialised; check basemind serve startup logs",
@@ -157,11 +157,11 @@ pub(super) async fn run_web_scrape(
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
 
-    let result = kreuzcrawl::scrape(engine, &url_str)
+    let result = crawlberg::scrape(engine, &url_str)
         .await
-        .map_err(|e| mcp_internal("kreuzcrawl scrape", e))?;
+        .map_err(|e| mcp_internal("crawlberg scrape", e))?;
 
-    // POST-FETCH SSRF guard: kreuzcrawl may have followed a redirect from the
+    // POST-FETCH SSRF guard: crawlberg may have followed a redirect from the
     // (validated) seed to a private host. Re-validate the URL we actually
     // landed on before indexing anything from it.
     reject_redirected_private_url("web_scrape", &result.final_url)?;
@@ -232,7 +232,7 @@ pub(super) async fn run_web_crawl(
 ) -> Result<CallToolResult, McpError> {
     // When both overrides are None reuse the shared engine — no config clone,
     // no new engine construction. When either override is set, build a one-shot
-    // engine from a cloned config (kreuzcrawl bakes caps into the engine handle).
+    // engine from a cloned config (crawlberg bakes caps into the engine handle).
     // Validate the shared engine is live either way so the error surface matches
     // the other web tools.
     engine(state)?;
@@ -254,9 +254,9 @@ pub(super) async fn run_web_crawl(
     };
     let url_str = params.url.as_str().to_string();
 
-    let crawl_outcome = kreuzcrawl::crawl(engine_ref, &url_str)
+    let crawl_outcome = crawlberg::crawl(engine_ref, &url_str)
         .await
-        .map_err(|e| mcp_internal("kreuzcrawl crawl", e))?;
+        .map_err(|e| mcp_internal("crawlberg crawl", e))?;
 
     // Top-level scope echoed in the response: explicit when supplied, else
     // derived from the seed URL's host. Per-page rows derive their own scope
@@ -297,7 +297,7 @@ pub(super) async fn run_web_crawl(
         // each page actually came from and skip indexing it when it resolves to
         // a private / loopback / link-local host. See
         // `reject_redirected_private_url` for why this can't block the GET
-        // itself (kreuzcrawl owns the redirect policy, un-vendored here).
+        // itself (crawlberg owns the redirect policy, un-vendored here).
         if let Err(error) = reject_redirected_private_url("web_crawl", &page.normalized_url) {
             tracing::warn!(
                 url = %page.normalized_url,
@@ -425,9 +425,9 @@ pub(super) async fn run_web_map(
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
 
-    let map = kreuzcrawl::map_urls(engine, &url_str)
+    let map = crawlberg::map_urls(engine, &url_str)
         .await
-        .map_err(|e| mcp_internal("kreuzcrawl map_urls", e))?;
+        .map_err(|e| mcp_internal("crawlberg map_urls", e))?;
 
     let urls: Vec<WebMapEntry> = map
         .urls
@@ -485,7 +485,7 @@ mod tests {
     fn rejects_private_redirect_target() {
         let _g = env_lock();
         unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
-        // Simulates the URL kreuzcrawl landed on AFTER following a redirect from a
+        // Simulates the URL crawlberg landed on AFTER following a redirect from a
         // public seed to the AWS metadata endpoint — the canonical SSRF target.
         let err =
             reject_redirected_private_url("web_scrape", "http://169.254.169.254/latest/meta-data/")
