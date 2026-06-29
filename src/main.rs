@@ -781,11 +781,11 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     // the *same* shared index so its tools still register and the session is
     // usable: the in-RAM-map + git tools (`outline` / `search_symbols` /
     // `list_files` / `dependents` / `workspace_grep` / git history) answer
-    // normally. Fjall holds an exclusive lock on its index, so the call/reference
-    // tools cannot read it from a second process — they return a clear error
-    // (see `read_only_index_unavailable`) instead of a misleading empty result.
-    // The lock-holding serve remains the sole writer (auto-scan / watcher /
-    // `rescan`).
+    // normally. Fjall holds an exclusive lock on its index, so a second process
+    // can't open it — but the call/reference/impl/graph tools fall back to in-RAM
+    // indexes built from the shared blobs (`MapCache::calls` / `::impls`), so they
+    // keep working too. The lock-holding serve remains the sole writer (auto-scan /
+    // watcher / `rescan`).
     let (store, read_only) = match Store::open_with_holder(root, view, LockHolder::Serve) {
         Ok(store) => (store, false),
         Err(error) if error.is_lock_contention() => {

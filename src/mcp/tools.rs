@@ -677,9 +677,8 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            if idx.is_none() && self.state.read_only {
-                return Err(read_only_index_unavailable("find_implementations"));
-            }
+            // Read-only sessions answer from the in-RAM impl index (built off the
+            // shared L1 blobs) when the Fjall lock is held elsewhere.
             let cache = self.state.cache.load_full();
             run_find_implementations(idx.as_ref(), params, &cache)
         }
@@ -714,9 +713,8 @@ impl BasemindServer {
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            if idx.is_none() && self.state.read_only {
-                return Err(read_only_index_unavailable("call_graph"));
-            }
+            // Read-only sessions walk the call graph via the in-RAM call index
+            // (shared blobs) when the Fjall lock is held elsewhere.
             let cache = self.state.cache.load_full();
             run_call_graph(idx.as_ref(), params, &cache)
         }

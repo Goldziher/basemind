@@ -257,10 +257,13 @@ pub(crate) struct MapCache {
     pub(crate) imports_index: Vec<(PathBuf, Vec<Import>)>,
     /// In-RAM callee index, populated ONLY when the Fjall index is unavailable —
     /// i.e. a read-only `serve` session that lost the single-holder lock to another
-    /// process. Lets `find_references` / `find_callers` answer from the shared L2
-    /// blobs so multiple sessions can use one repo at once. `None` on a writer
-    /// session, which uses the live Fjall index (no extra RAM/build cost).
+    /// process. Lets `find_references` / `find_callers` / `call_graph` answer from
+    /// the shared L2 blobs so multiple sessions can use one repo at once. `None` on
+    /// a writer session, which uses the live Fjall index (no extra RAM/build cost).
     pub(crate) calls: Option<helpers_calls::InRamCallIndex>,
+    /// In-RAM trait→impl index, same read-only-only gating as `calls`. Backs
+    /// `find_implementations` from the L1 blobs when Fjall is held elsewhere.
+    pub(crate) impls: Option<helpers_impls::InRamImplIndex>,
 }
 
 impl MapCache {
@@ -295,16 +298,21 @@ impl MapCache {
             .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
             .collect();
         // Only a session WITHOUT the Fjall index (read-only fallback, lock held by
-        // another process) needs the in-RAM callee index; a writer reads Fjall directly.
-        let calls = if store.index_db.is_none() {
-            Some(helpers_calls::InRamCallIndex::build(store))
+        // another process) needs the in-RAM callee/impl indexes; a writer reads Fjall
+        // directly. `calls` reads the L2 blobs; `impls` reuses the L1 already in `by_path`.
+        let (calls, impls) = if store.index_db.is_none() {
+            (
+                Some(helpers_calls::InRamCallIndex::build(store)),
+                Some(helpers_impls::InRamImplIndex::build(&by_path)),
+            )
         } else {
-            None
+            (None, None)
         };
         Self {
             by_path,
             imports_index,
             calls,
+            impls,
         }
     }
 }

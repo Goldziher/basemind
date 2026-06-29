@@ -61,7 +61,13 @@ fn build_repo() -> TempDir {
         b"pub fn caller() { alpha(); alpha(); other(); alpha(); }\n",
     )
     .unwrap();
-    git(root, &["add", "a.rs", "b.ts", "c.rs"]);
+    // d.rs has a trait impl so find_implementations + call_graph (callees) have data.
+    std::fs::write(
+        root.join("d.rs"),
+        b"trait Drawable { fn draw(&self); }\npub struct Circle;\nimpl Drawable for Circle { fn draw(&self) { alpha(); } }\n",
+    )
+    .unwrap();
+    git(root, &["add", "a.rs", "b.ts", "c.rs", "d.rs"]);
     git(root, &["commit", "-qm", "init"]);
     // Touch a.rs in a second commit so symbol_history has something to return.
     std::fs::write(
@@ -513,6 +519,66 @@ async fn second_session_resolves_find_references_from_blobs() {
     assert!(
         total >= 3,
         "2nd (read-only) session must resolve alpha()'s 3 call sites from blobs, got: {body}"
+    );
+
+    let _ = serve1.cancel().await;
+    let _ = serve2.cancel().await;
+}
+
+// ─── test 7 ──────────────────────────────────────────────────────────────────
+
+/// The other two Fjall-backed tools — `call_graph` and `find_implementations` —
+/// must also work on the read-only 2nd session, via the same in-RAM indexes built
+/// from the shared blobs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn second_session_resolves_call_graph_and_impls_from_blobs() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let serve1 = spawn_server(root).await; // writer holds the lock
+    let serve2 = spawn_server(root).await; // read-only fallback
+    let peer2 = serve2.peer().clone();
+
+    // call_graph: who calls alpha()? `caller` (c.rs) and `draw` (d.rs) both do.
+    let cg = peer2
+        .call_tool(call_params(
+            "call_graph",
+            json!({ "name": "alpha", "direction": "callers" }),
+        ))
+        .await
+        .expect("call_graph on 2nd session");
+    let cg_body = decode_text(&cg);
+    let names: Vec<&str> = cg_body
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|ns| {
+            ns.iter()
+                .filter_map(|n| n.get("name").and_then(Value::as_str))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        names.contains(&"caller"),
+        "call_graph must find caller() among alpha()'s callers, got: {cg_body}"
+    );
+
+    // find_implementations: Circle implements Drawable (d.rs).
+    let fi = peer2
+        .call_tool(call_params(
+            "find_implementations",
+            json!({ "trait_name": "Drawable" }),
+        ))
+        .await
+        .expect("find_implementations on 2nd session");
+    let fi_body = decode_text(&fi);
+    let fi_total = fi_body
+        .get("total")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("find_implementations missing total: {fi_body}"));
+    assert!(
+        fi_total >= 1,
+        "2nd session must resolve the Drawable impl from blobs, got: {fi_body}"
     );
 
     let _ = serve1.cancel().await;
