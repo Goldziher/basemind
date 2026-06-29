@@ -142,14 +142,6 @@ impl BootstrapSummary {
 /// OnceLock holding the bootstrap outcome. `Arc` so callers can inspect without re-running.
 static GRAMMAR_BOOTSTRAP: OnceLock<Result<Arc<BootstrapSummary>, Arc<LangError>>> = OnceLock::new();
 
-/// Parse the tslp version out of its `cache_dir()` (`.../v<version>/libs`).
-/// Returns `None` if the path is shaped unexpectedly — caller falls back gracefully.
-fn tslp_version_from_cache_dir(p: &Path) -> Option<String> {
-    let parent = p.parent()?;
-    let leaf = parent.file_name()?.to_str()?;
-    leaf.strip_prefix('v').map(str::to_string)
-}
-
 /// Ensure all `OVERRIDE_LANGUAGES` grammars are present in the tslp cache, downloading any
 /// missing ones. Idempotent across the process — runs at most once.
 ///
@@ -157,28 +149,21 @@ fn tslp_version_from_cache_dir(p: &Path) -> Option<String> {
 /// use of a file with that extension. Keeps cold-start small while still guaranteeing the
 /// common cases parse instantly.
 ///
-/// Uses `DownloadManager::ensure_languages` directly rather than the top-level
-/// `tree_sitter_language_pack::download()` because the latter has a bug in 1.9.0-rc.22 where
-/// in-memory REGISTRY membership short-circuits the actual download (returns Ok with no
-/// disk side-effect).
+/// Uses tslp's `prefetch` (1.12.0+): one pass that downloads + loads the missing grammars and
+/// probes real on-disk loadability. This replaces the old `DownloadManager::ensure_languages`
+/// workaround for the pre-1.12 `download()` bug, where in-memory registry membership
+/// short-circuited the actual download (returned Ok with no disk side-effect).
 pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
     GRAMMAR_BOOTSTRAP
         .get_or_init(|| {
             let cache_dir_str = tree_sitter_language_pack::cache_dir()
                 .map_err(|e| Arc::new(LangError::Pack(format!("resolve cache dir: {e}"))))?;
             let cache_dir = PathBuf::from(&cache_dir_str);
-            let version = tslp_version_from_cache_dir(&cache_dir).ok_or_else(|| {
-                Arc::new(LangError::Pack(format!(
-                    "could not parse tslp version out of {cache_dir_str:?}"
-                )))
-            })?;
 
-            let dm = tree_sitter_language_pack::DownloadManager::with_cache_dir(
-                &version,
-                cache_dir.clone(),
-            );
-
-            let installed: Vec<String> = dm.installed_languages();
+            // Snapshot what's already on disk so the summary can report downloaded-vs-cached
+            // (drives the statusline's first-run hint). `downloaded_languages()` reads the
+            // cache via a `DownloadManager` keyed by tslp's own version — same source of truth.
+            let installed = tree_sitter_language_pack::downloaded_languages();
             let mut already_cached: Vec<String> = Vec::new();
             let mut missing: Vec<&'static str> = Vec::new();
             for &name in OVERRIDE_LANGUAGES {
@@ -201,7 +186,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                          BASEMIND_GRAMMAR_OFFLINE is set",
                     ))));
                 }
-                dm.ensure_languages(&missing)
+                tree_sitter_language_pack::prefetch(&missing)
                     .map_err(|e| Arc::new(LangError::Download(format!("{e}"))))?;
             }
             Ok(Arc::new(BootstrapSummary {
