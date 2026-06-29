@@ -42,6 +42,7 @@ pub(super) fn resolve_call_line_col(
 pub(super) fn run_find_references(
     idx: Option<&crate::index::IndexDb>,
     params: super::types::FindReferencesParams,
+    cache: &super::MapCache,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -49,25 +50,12 @@ pub(super) fn run_find_references(
         .limit
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
         .min(SEARCH_LIMIT_MAX) as usize;
-    let Some(idx) = idx else {
-        return super::toon::format_result(
-            &FindReferencesResponse {
-                name: params.name,
-                total: 0,
-                total_is_partial: false,
-                budgeted: false,
-                hits: Vec::new(),
-                next_cursor: None,
-            },
-            format,
-        );
-    };
     let cursor_bytes = params
         .cursor
         .as_ref()
         .map(|c| c.decode_fjall())
         .transpose()?;
-    let scan = scan_calls_by_name(idx, &params.name, limit, cursor_bytes.as_deref())?;
+    let scan = scan_calls(idx, cache, &params.name, limit, cursor_bytes.as_deref())?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
@@ -97,16 +85,6 @@ pub(super) fn run_find_callers(
         .unwrap_or(SEARCH_LIMIT_DEFAULT)
         .min(SEARCH_LIMIT_MAX) as usize;
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
-    let Some(idx) = idx else {
-        return json_result(&FindCallersResponse {
-            definition: None,
-            total: 0,
-            total_is_partial: false,
-            budgeted: false,
-            hits: Vec::new(),
-            next_cursor: None,
-        });
-    };
     let definition: Option<DefinitionView> = cache
         .by_path
         .get(&params.path)
@@ -127,7 +105,7 @@ pub(super) fn run_find_callers(
         .as_ref()
         .map(|c| c.decode_fjall())
         .transpose()?;
-    let scan = scan_calls_by_name(idx, &params.name, limit, cursor_bytes.as_deref())?;
+    let scan = scan_calls(idx, cache, &params.name, limit, cursor_bytes.as_deref())?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
@@ -267,4 +245,191 @@ fn scan_calls_by_name(
         next_cursor,
         hit_keys,
     })
+}
+
+/// Route a call scan to the Fjall index when it's open, or to the in-RAM index
+/// built from the L2 blobs when it isn't.
+///
+/// `index_db == None` happens on a read-only `serve` session that lost the
+/// single-holder Fjall lock to another process (fjall is single-process; see
+/// `tests/multisession_smoke.rs`). Such a session still has the concurrently
+/// readable blobs, so `find_references` / `find_callers` answer from
+/// [`InRamCallIndex`] instead of failing — letting many sessions share one repo.
+fn scan_calls(
+    idx: Option<&crate::index::IndexDb>,
+    cache: &super::MapCache,
+    name: &str,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+) -> Result<CallScanPage, McpError> {
+    match idx {
+        Some(idx) => scan_calls_by_name(idx, name, limit, cursor_after),
+        None => Ok(match cache.calls.as_ref() {
+            Some(calls) => scan_calls_in_ram(calls, name, limit, cursor_after),
+            None => empty_call_page(),
+        }),
+    }
+}
+
+fn empty_call_page() -> CallScanPage {
+    CallScanPage {
+        total: 0,
+        total_is_partial: false,
+        hits: Vec::new(),
+        next_cursor: None,
+        hit_keys: Vec::new(),
+    }
+}
+
+/// In-RAM `scan_calls_by_name` twin over [`InRamCallIndex`]. Same case-sensitive
+/// `memmem` substring filter, same `limit` / `scan_cap` / cursor semantics — the
+/// entries carry the exact Fjall key the writer would persist, so cursors and
+/// scan order round-trip identically between the two paths.
+fn scan_calls_in_ram(
+    index: &InRamCallIndex,
+    name: &str,
+    limit: usize,
+    cursor_after: Option<&[u8]>,
+) -> CallScanPage {
+    let finder = memchr::memmem::Finder::new(name.as_bytes());
+    // Entries are sorted by key, so resume = first entry strictly past the cursor.
+    let start = match cursor_after {
+        Some(cursor) => index
+            .entries
+            .partition_point(|e| e.key.as_slice() <= cursor),
+        None => 0,
+    };
+    let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
+    let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
+    let mut total: u32 = 0;
+    let mut total_is_partial = false;
+    let scan_cap = limit.saturating_mul(8).max(2_000);
+    let mut has_more = false;
+    let mut matched: usize = 0;
+    for entry in &index.entries[start..] {
+        if finder.find(entry.callee.as_bytes()).is_none() {
+            continue;
+        }
+        total += 1;
+        matched += 1;
+        if hits.len() < limit {
+            hits.push(ReferenceHit {
+                path: entry.rel.clone(),
+                line: entry.line,
+                column: entry.column,
+                callee: entry.callee.clone(),
+            });
+            hit_keys.push(entry.key.clone());
+        } else {
+            has_more = true;
+        }
+        if matched >= scan_cap {
+            total_is_partial = true;
+            break;
+        }
+    }
+    let next_cursor = if has_more {
+        hit_keys.last().map(|k| Cursor::encode_fjall(k))
+    } else {
+        None
+    };
+    CallScanPage {
+        total,
+        total_is_partial,
+        hits,
+        next_cursor,
+        hit_keys,
+    }
+}
+
+/// In-RAM mirror of the Fjall `calls_by_callee` keyspace, built from the L2 call
+/// blobs for read-only `serve` sessions that can't open the single-holder Fjall
+/// index. Lets unlimited concurrent sessions answer `find_references` /
+/// `find_callers` from the shared, immutable, concurrently-readable blobs.
+pub(crate) struct InRamCallIndex {
+    /// Sorted ascending by `key` to match Fjall's `range` iteration order.
+    entries: Vec<InRamCall>,
+}
+
+struct InRamCall {
+    /// `keys::call_by_callee(callee, rel, start_byte)` — the exact key the writer
+    /// persists, reused so cursors round-trip identically across the two paths.
+    key: Vec<u8>,
+    callee: String,
+    rel: crate::path::RelPath,
+    /// 1-based line (`start_row + 1`), matching [`resolve_call_line_col`].
+    line: u32,
+    /// 0-based byte column.
+    column: u32,
+}
+
+impl InRamCallIndex {
+    /// Build the index by decoding the L2 calls from every file's combined blob.
+    /// Parallelized over files (pure read + decode, like `MapCache::build`).
+    pub(crate) fn build(store: &crate::store::Store) -> Self {
+        use rayon::prelude::*;
+        let mut entries: Vec<InRamCall> = store
+            .index
+            .files
+            .par_iter()
+            .flat_map_iter(|(rel, entry)| {
+                let calls = store
+                    .read_l2_by_hex(&entry.hash_hex)
+                    .ok()
+                    .flatten()
+                    .map(|l2| l2.calls)
+                    .unwrap_or_default();
+                calls.into_iter().filter_map(move |call| {
+                    let key =
+                        crate::index::keys::call_by_callee(&call.callee, rel, call.start_byte)?;
+                    Some(InRamCall {
+                        key,
+                        callee: call.callee,
+                        rel: rel.clone(),
+                        line: call.start_row + 1,
+                        column: call.start_col,
+                    })
+                })
+            })
+            .collect();
+        entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+        Self { entries }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InRamCallIndex, scan_calls_in_ram};
+    use crate::config::ConfigV1;
+    use crate::scanner::{ScanSource, scan};
+    use crate::store::{Store, VIEW_WORKING};
+
+    /// The in-RAM index (built from blobs, used by read-only sessions) must return
+    /// the same references the Fjall path would — this is what keeps `find_references`
+    /// working for the 2nd+ concurrent session that can't open the Fjall lock.
+    #[test]
+    fn in_ram_call_index_resolves_references() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
+        std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("b.rs");
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        scan(
+            root,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+        )
+        .expect("scan");
+
+        let index = InRamCallIndex::build(&store);
+        let page = scan_calls_in_ram(&index, "alpha", 100, None);
+        assert_eq!(page.total, 2, "two alpha() call sites in b.rs");
+        assert_eq!(page.hits.len(), 2);
+        assert!(page.hits.iter().all(|h| h.callee == "alpha"));
+        assert!(
+            page.hits.iter().all(|h| h.path.as_str() == Some("b.rs")),
+            "both references live in b.rs"
+        );
+    }
 }
