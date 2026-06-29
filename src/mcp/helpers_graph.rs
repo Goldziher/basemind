@@ -71,22 +71,8 @@ pub(super) fn run_call_graph(
         .unwrap_or(DEFAULT_MAX_NODES)
         .min(MAX_NODES_CEILING) as usize;
 
-    let Some(idx) = idx else {
-        // No index → empty graph, just echo the root with no sites.
-        return json_result(&CallGraphResponse {
-            root: params.name.clone(),
-            direction: direction_owned,
-            nodes: vec![CallGraphNode {
-                name: params.name,
-                depth: 0,
-                edges_to: Vec::new(),
-                sites: Vec::new(),
-            }],
-            truncated: false,
-            truncation_reason: None,
-        });
-    };
-
+    // A read-only session (no Fjall) routes through the in-RAM call index built
+    // from the shared blobs — see `collect_callers` / `collect_callees_for_name`.
     let outcome = if direction == "callers" {
         bfs_callers(
             idx,
@@ -178,7 +164,7 @@ fn containing_function(l1: &FileMapL1, start_byte: u32) -> Option<&Symbol> {
 
 /// BFS upward: who calls into `name`?
 fn bfs_callers(
-    idx: &crate::index::IndexDb,
+    idx: Option<&crate::index::IndexDb>,
     cache: &MapCache,
     root_name: &str,
     path_filter: Option<&RelPath>,
@@ -286,19 +272,11 @@ enum CallerScanError {
 /// For one frontier name, return `{ parent_name → [definition sites] }` of every
 /// containing function that calls `name`.
 fn collect_callers(
-    idx: &crate::index::IndexDb,
+    idx: Option<&crate::index::IndexDb>,
     cache: &MapCache,
     name: &str,
     scan_cap: usize,
 ) -> Result<AHashMap<String, Vec<CallGraphSite>>, CallerScanError> {
-    let prefix = crate::index::keys::calls_by_callee_prefix(name);
-    let upper = prefix_upper_bound(&prefix);
-    let lower = Bound::Included(prefix.clone());
-    let upper_bound: Bound<Vec<u8>> = match upper {
-        Some(b) => Bound::Excluded(b),
-        None => Bound::Unbounded,
-    };
-
     let mut parents: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
     // Dedupe by (path, start_row, start_col) of the *parent symbol* — a function
     // definition has a unique (file, start position) triple, so this key is sufficient
@@ -308,44 +286,73 @@ fn collect_callers(
     let mut seen_sites: AHashSet<(RelPath, u32, u32)> = AHashSet::new();
     let mut scanned: usize = 0;
 
-    for guard in idx
-        .calls_by_callee
-        .range::<Vec<u8>, _>((lower, upper_bound))
-    {
-        scanned += 1;
-        if scanned > scan_cap {
-            return Err(CallerScanError::ScanCap);
-        }
-        let (k, _) = guard.into_inner().map_err(|e| {
-            CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None))
-        })?;
-        let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k) else {
-            continue;
-        };
-        // Defensive: only accept exact-name matches even though prefix scan should
-        // guarantee the prefix portion is `name`. The Fjall key includes a length
-        // prefix on `callee`, so this is paranoia plus a guard against future
-        // schema additions.
-        if callee != name {
-            continue;
-        }
+    // Per-call-site closure shared by both backends: resolve the containing function
+    // and record its definition site once.
+    let mut record = |rel: RelPath, start_byte: u32| {
         let Some(l1) = cache.by_path.get(&rel) else {
-            continue;
+            return;
         };
         let Some(parent_sym) = containing_function(l1, start_byte) else {
-            continue;
+            return;
         };
-        let entry_key = parent_sym.name.clone();
         let site = CallGraphSite {
             path: rel.clone(),
             kind: kind_to_str(parent_sym.kind).to_string(),
             start_row: parent_sym.start_row,
             start_col: parent_sym.start_col,
         };
-        // Dedupe: (path, start_row, start_col) uniquely identifies the parent symbol
-        // definition — no format! allocation required.
         if seen_sites.insert((rel, site.start_row, site.start_col)) {
-            parents.entry(entry_key).or_default().push(site);
+            parents
+                .entry(parent_sym.name.clone())
+                .or_default()
+                .push(site);
+        }
+    };
+
+    match idx {
+        Some(idx) => {
+            let prefix = crate::index::keys::calls_by_callee_prefix(name);
+            let upper_bound: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
+                Some(b) => Bound::Excluded(b),
+                None => Bound::Unbounded,
+            };
+            let lower = Bound::Included(prefix);
+            for guard in idx
+                .calls_by_callee
+                .range::<Vec<u8>, _>((lower, upper_bound))
+            {
+                scanned += 1;
+                if scanned > scan_cap {
+                    return Err(CallerScanError::ScanCap);
+                }
+                let (k, _) = guard.into_inner().map_err(|e| {
+                    CallerScanError::Other(McpError::internal_error(
+                        format!("index iter: {e}"),
+                        None,
+                    ))
+                })?;
+                let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k)
+                else {
+                    continue;
+                };
+                // Defensive exact-name guard (the length-prefixed key already ensures it).
+                if callee != name {
+                    continue;
+                }
+                record(rel, start_byte);
+            }
+        }
+        None => {
+            let Some(calls) = cache.calls.as_ref() else {
+                return Ok(parents);
+            };
+            for (rel, start_byte) in calls.callers_of(name) {
+                scanned += 1;
+                if scanned > scan_cap {
+                    return Err(CallerScanError::ScanCap);
+                }
+                record(rel.clone(), start_byte);
+            }
         }
     }
     Ok(parents)
@@ -353,7 +360,7 @@ fn collect_callers(
 
 /// BFS downward: what does `name` itself call?
 fn bfs_callees(
-    idx: &crate::index::IndexDb,
+    idx: Option<&crate::index::IndexDb>,
     cache: &MapCache,
     root_name: &str,
     path_filter: Option<&RelPath>,
@@ -471,7 +478,7 @@ fn bfs_callees(
 /// Collect unique callee names invoked from inside every definition site of `name`
 /// (optionally restricted to one path).
 fn collect_callees_for_name(
-    idx: &crate::index::IndexDb,
+    idx: Option<&crate::index::IndexDb>,
     cache: &MapCache,
     name: &str,
     path_filter: Option<&RelPath>,
@@ -498,32 +505,54 @@ fn collect_callees_for_name(
         if matching.is_empty() {
             continue;
         }
-        // Prefix-scan calls_by_path for this file once, filter to calls whose byte
-        // range lies inside any matching symbol.
-        let prefix = crate::index::keys::calls_by_path_prefix(path);
-        let upper = prefix_upper_bound(&prefix);
-        let lower = Bound::Included(prefix.clone());
-        let upper_bound: Bound<Vec<u8>> = match upper {
-            Some(b) => Bound::Excluded(b),
-            None => Bound::Unbounded,
-        };
-        for guard in idx.calls_by_path.range::<Vec<u8>, _>((lower, upper_bound)) {
-            scanned += 1;
-            if scanned > scan_cap {
-                return Err(CallerScanError::ScanCap);
-            }
-            let (_, v) = guard.into_inner().map_err(|e| {
-                CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None))
-            })?;
-            let call: Call = match rmp_serde::from_slice(&v) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
+        // For each call in this file, keep its callee if it falls inside a matching
+        // symbol's byte range. Fjall prefix-scans `calls_by_path`; the read-only path
+        // reads the same call sites from the in-RAM index. `in_range` is shared.
+        let in_range = |callee: &str, start_byte: u32, callees: &mut AHashSet<String>| {
             if matching
                 .iter()
-                .any(|s| s.start_byte <= call.start_byte && call.start_byte < s.end_byte)
+                .any(|s| s.start_byte <= start_byte && start_byte < s.end_byte)
             {
-                callees.insert(call.callee.clone());
+                callees.insert(callee.to_string());
+            }
+        };
+        match idx {
+            Some(idx) => {
+                let prefix = crate::index::keys::calls_by_path_prefix(path);
+                let upper_bound: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
+                    Some(b) => Bound::Excluded(b),
+                    None => Bound::Unbounded,
+                };
+                let lower = Bound::Included(prefix);
+                for guard in idx.calls_by_path.range::<Vec<u8>, _>((lower, upper_bound)) {
+                    scanned += 1;
+                    if scanned > scan_cap {
+                        return Err(CallerScanError::ScanCap);
+                    }
+                    let (_, v) = guard.into_inner().map_err(|e| {
+                        CallerScanError::Other(McpError::internal_error(
+                            format!("index iter: {e}"),
+                            None,
+                        ))
+                    })?;
+                    let call: Call = match rmp_serde::from_slice(&v) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    in_range(&call.callee, call.start_byte, &mut callees);
+                }
+            }
+            None => {
+                let Some(calls) = cache.calls.as_ref() else {
+                    continue;
+                };
+                for call in calls.calls_in_file(path) {
+                    scanned += 1;
+                    if scanned > scan_cap {
+                        return Err(CallerScanError::ScanCap);
+                    }
+                    in_range(&call.callee, call.start_byte, &mut callees);
+                }
             }
         }
     }

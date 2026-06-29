@@ -342,13 +342,18 @@ fn scan_calls_in_ram(
     }
 }
 
-/// In-RAM mirror of the Fjall `calls_by_callee` keyspace, built from the L2 call
-/// blobs for read-only `serve` sessions that can't open the single-holder Fjall
-/// index. Lets unlimited concurrent sessions answer `find_references` /
-/// `find_callers` from the shared, immutable, concurrently-readable blobs.
+/// In-RAM mirror of the Fjall `calls_by_callee` + `calls_by_path` keyspaces, built
+/// from the L2 call blobs for read-only `serve` sessions that can't open the
+/// single-holder Fjall index. Lets unlimited concurrent sessions answer
+/// `find_references` / `find_callers` / `call_graph` from the shared, immutable,
+/// concurrently-readable blobs.
 pub(crate) struct InRamCallIndex {
-    /// Sorted ascending by `key` to match Fjall's `range` iteration order.
+    /// Sorted ascending by `key` to match Fjall's `range` iteration order
+    /// (drives `find_references` / `find_callers`).
     entries: Vec<InRamCall>,
+    /// path → its call sites (the `calls_by_path` keyspace), for the call-graph
+    /// "callees" direction.
+    by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>>,
 }
 
 struct InRamCall {
@@ -357,43 +362,80 @@ struct InRamCall {
     key: Vec<u8>,
     callee: String,
     rel: crate::path::RelPath,
+    /// 0-based byte offset of the call site (for containing-function resolution).
+    start_byte: u32,
     /// 1-based line (`start_row + 1`), matching [`resolve_call_line_col`].
     line: u32,
     /// 0-based byte column.
     column: u32,
 }
 
+/// A call site within a file: the callee identifier and its start byte offset.
+pub(crate) struct CallRef {
+    pub callee: String,
+    pub start_byte: u32,
+}
+
 impl InRamCallIndex {
     /// Build the index by decoding the L2 calls from every file's combined blob.
-    /// Parallelized over files (pure read + decode, like `MapCache::build`).
+    /// File reads/decodes run in parallel (pure read, like `MapCache::build`); the
+    /// two views are assembled serially afterward.
     pub(crate) fn build(store: &crate::store::Store) -> Self {
         use rayon::prelude::*;
-        let mut entries: Vec<InRamCall> = store
+        let per_file: Vec<(crate::path::RelPath, Vec<crate::extract::Call>)> = store
             .index
             .files
             .par_iter()
-            .flat_map_iter(|(rel, entry)| {
-                let calls = store
-                    .read_l2_by_hex(&entry.hash_hex)
-                    .ok()
-                    .flatten()
-                    .map(|l2| l2.calls)
-                    .unwrap_or_default();
-                calls.into_iter().filter_map(move |call| {
-                    let key =
-                        crate::index::keys::call_by_callee(&call.callee, rel, call.start_byte)?;
-                    Some(InRamCall {
-                        key,
-                        callee: call.callee,
-                        rel: rel.clone(),
-                        line: call.start_row + 1,
-                        column: call.start_col,
-                    })
-                })
+            .filter_map(|(rel, entry)| {
+                let calls = store.read_l2_by_hex(&entry.hash_hex).ok().flatten()?.calls;
+                Some((rel.clone(), calls))
             })
             .collect();
+        let mut entries: Vec<InRamCall> = Vec::new();
+        let mut by_path: ahash::AHashMap<crate::path::RelPath, Vec<CallRef>> =
+            ahash::AHashMap::with_capacity(per_file.len());
+        for (rel, calls) in per_file {
+            let mut refs: Vec<CallRef> = Vec::with_capacity(calls.len());
+            for call in calls {
+                if let Some(key) =
+                    crate::index::keys::call_by_callee(&call.callee, &rel, call.start_byte)
+                {
+                    entries.push(InRamCall {
+                        key,
+                        callee: call.callee.clone(),
+                        rel: rel.clone(),
+                        start_byte: call.start_byte,
+                        line: call.start_row + 1,
+                        column: call.start_col,
+                    });
+                }
+                refs.push(CallRef {
+                    callee: call.callee,
+                    start_byte: call.start_byte,
+                });
+            }
+            by_path.insert(rel, refs);
+        }
         entries.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        Self { entries }
+        Self { entries, by_path }
+    }
+
+    /// Call sites whose callee is exactly `name`, as `(path, start_byte)`. Mirrors a
+    /// `calls_by_callee` exact-name scan for the call-graph "callers" direction.
+    pub(crate) fn callers_of<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = (&'a crate::path::RelPath, u32)> + 'a {
+        self.entries
+            .iter()
+            .filter(move |c| c.callee == name)
+            .map(|c| (&c.rel, c.start_byte))
+    }
+
+    /// All call sites in `rel`, for the call-graph "callees" direction (the
+    /// `calls_by_path` keyspace).
+    pub(crate) fn calls_in_file(&self, rel: &crate::path::RelPath) -> &[CallRef] {
+        self.by_path.get(rel).map_or(&[], Vec::as_slice)
     }
 }
 
