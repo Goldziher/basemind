@@ -210,11 +210,11 @@ pub(crate) struct ServerState {
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(feature = "intelligence")]
     pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
-    /// Shared kreuzcrawl engine. Initialised at server boot from the `[crawl]`
+    /// Shared crawlberg engine. Initialised at server boot from the `[crawl]`
     /// config section; `None` if engine construction failed (the web_* tools
     /// will return an MCP error rather than crash).
     #[cfg(feature = "crawl")]
-    pub(crate) crawl_engine: Option<kreuzcrawl::CrawlEngineHandle>,
+    pub(crate) crawl_engine: Option<crawlberg::CrawlEngineHandle>,
     /// Per-identity registry of lazily-connected comms-broker clients, keyed by `AgentId`. The
     /// server's own identity (`agent_id`) connects with its env-derived session; a sub-identity
     /// (driven via a tool's `as_agent` param) gets its own broker connection parented to the

@@ -1,4 +1,4 @@
-//! Build the shared `kreuzcrawl` engine handle from a `CrawlConfig`.
+//! Build the shared `crawlberg` engine handle from a `CrawlConfig`.
 //!
 //! The engine holds the reqwest client, robots.txt cache, and (when configured)
 //! dispatch policy. It is cheap to clone (`Arc`-backed) and is created once
@@ -7,13 +7,13 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use kreuzcrawl::{CrawlConfig as KcCrawlConfig, CrawlEngineHandle, create_engine};
+use crawlberg::{CrawlConfig as KcCrawlConfig, CrawlEngineHandle, SsrfPolicy, create_engine};
 
 use crate::config::CrawlConfig;
 
-/// Translate basemind's `CrawlConfig` into kreuzcrawl's runtime config and
+/// Translate basemind's `CrawlConfig` into crawlberg's runtime config and
 /// instantiate the engine. Returns an error when the user-supplied user-agent
-/// is empty or kreuzcrawl rejects the validated config — both indicate a
+/// is empty or crawlberg rejects the validated config — both indicate a
 /// configuration bug rather than a transient network issue.
 pub fn build_engine(cfg: &CrawlConfig) -> Result<CrawlEngineHandle> {
     let max_pages = usize::try_from(cfg.max_pages).context("max_pages exceeds usize")?;
@@ -39,8 +39,16 @@ pub fn build_engine(cfg: &CrawlConfig) -> Result<CrawlEngineHandle> {
         // the MCP loop.
         max_concurrent: Some(4),
         request_timeout: Duration::from_secs(30),
+        // crawlberg blocks private/loopback/link-local targets by default (SSRF
+        // protection). basemind keeps that posture and gates the relaxation
+        // behind an explicit opt-in so internal-docs crawling is a deliberate
+        // choice, not an accident. `deny_private = !allow_private_network`.
+        ssrf: SsrfPolicy {
+            deny_private: !cfg.allow_private_network,
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    create_engine(Some(kc_cfg)).context("create kreuzcrawl engine")
+    create_engine(Some(kc_cfg)).context("create crawlberg engine")
 }

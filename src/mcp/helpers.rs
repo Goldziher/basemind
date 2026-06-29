@@ -763,7 +763,7 @@ pub(super) async fn scan_and_refresh(
 
     // Run the scanner on a blocking thread — fully isolated from the MCP server
     // runtime's TLS so LanceStore's owned tokio runtime can `block_on` without
-    // tripping tokio's "runtime within a runtime" check. Kreuzberg + rayon handle
+    // tripping tokio's "runtime within a runtime" check. Xberg + rayon handle
     // their own parallelism here; tokio is intentionally out of this hot path.
     let state_for_scan = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {

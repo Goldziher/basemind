@@ -1,5 +1,5 @@
 //! Document extraction tier — non-source files (PDFs, Office docs, emails,
-//! images, …) ingested via `kreuzberg::extract_file_sync` and serialised to
+//! images, …) ingested via `xberg::extract` and serialised to
 //! `.basemind/blobs/<hash>.doc.msgpack`.
 //!
 //! Layered on top of the existing `l1` / `l2` blob shape:
@@ -11,12 +11,13 @@
 //! pass through the embedding engine.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
-use kreuzberg::LanguageDetectionConfig;
-use kreuzberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
-use kreuzberg::core::config::{ConcurrencyConfig, ExtractionConfig};
-use kreuzberg::core::extractor::extract_file_sync;
 use serde::{Deserialize, Serialize};
+use xberg::LanguageDetectionConfig;
+use xberg::core::config::processing::{ChunkingConfig, EmbeddingConfig};
+use xberg::core::config::{ConcurrencyConfig, ExtractionConfig};
+use xberg::{ExtractInput, extract};
 
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
@@ -25,12 +26,12 @@ use crate::config::{
 };
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
-/// `schema_ver` for migration, plus the structured kreuzberg output we care
+/// `schema_ver` for migration, plus the structured xberg output we care
 /// about for downstream vector search.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileMapDoc {
     pub schema_ver: u16,
-    /// IANA MIME type as reported by kreuzberg's detector.
+    /// IANA MIME type as reported by xberg's detector.
     pub mime_type: String,
     /// Plain-text representation of the document (concatenation of all chunks
     /// before chunking is applied; not exactly the source bytes).
@@ -39,13 +40,13 @@ pub struct FileMapDoc {
     /// Flattened to `String -> String` so the on-disk shape stays stable.
     pub metadata: Vec<(String, String)>,
     /// ISO 639-3 language codes detected in the content, when language
-    /// detection succeeded. (Kreuzberg's wrapper around `whatlang` normalises
+    /// detection succeeded. (Xberg's wrapper around `whatlang` normalises
     /// every detected variant to its three-letter ISO 639-3 code — see
-    /// `kreuzberg::language_detection::lang_to_iso639_3`.)
+    /// `xberg::language_detection::lang_to_iso639_3`.)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detected_languages: Vec<String>,
     /// Chunks, each with its embedding vector inline. Empty when chunking is
-    /// disabled in the kreuzberg config; embedding fields empty when the
+    /// disabled in the xberg config; embedding fields empty when the
     /// embedding engine is not configured.
     pub chunks: Vec<DocChunk>,
     /// Name of the embedding model that produced the vectors. Empty when no
@@ -68,7 +69,7 @@ pub struct FileMapDoc {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entities: Vec<DocEntity>,
     /// Document-level summary produced by the summarisation post-processor.
-    /// `None` when summarisation was disabled at scan time or when kreuzberg
+    /// `None` when summarisation was disabled at scan time or when xberg
     /// declined to produce one (e.g. empty content, abstractive strategy with
     /// no LLM model configured).
     ///
@@ -78,8 +79,8 @@ pub struct FileMapDoc {
     pub summary: Option<DocSummary>,
 }
 
-/// Mirror of `kreuzberg::keywords::Keyword`, narrowed to the fields we persist.
-/// We do not re-export kreuzberg's `Keyword` directly because we control the
+/// Mirror of `xberg::keywords::Keyword`, narrowed to the fields we persist.
+/// We do not re-export xberg's `Keyword` directly because we control the
 /// on-disk blob shape and want a forward-compatible string for `algorithm`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocKeyword {
@@ -87,13 +88,13 @@ pub struct DocKeyword {
     pub text: String,
     /// Backend-reported score. YAKE scores lower-is-better; RAKE higher-is-better.
     pub score: f32,
-    /// `"yake"` or `"rake"` — the kreuzberg `KeywordAlgorithm` variant stringified
-    /// so consumers don't need to depend on the kreuzberg enum.
+    /// `"yake"` or `"rake"` — the xberg `KeywordAlgorithm` variant stringified
+    /// so consumers don't need to depend on the xberg enum.
     pub algorithm: String,
 }
 
-/// Mirror of `kreuzberg::types::entity::Entity` with `EntityCategory` flattened
-/// to a string. Flattening keeps the blob shape forward-compatible: kreuzberg
+/// Mirror of `xberg::types::entity::Entity` with `EntityCategory` flattened
+/// to a string. Flattening keeps the blob shape forward-compatible: xberg
 /// can add `EntityCategory` variants without invalidating our cached blobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocEntity {
@@ -113,8 +114,8 @@ pub struct DocEntity {
     pub confidence: Option<f32>,
 }
 
-/// Mirror of `kreuzberg::DocumentSummary` with `SummaryStrategy` flattened to
-/// a string. Flattening keeps the blob shape forward-compatible: kreuzberg can
+/// Mirror of `xberg::DocumentSummary` with `SummaryStrategy` flattened to
+/// a string. Flattening keeps the blob shape forward-compatible: xberg can
 /// add `SummaryStrategy` variants without invalidating our cached blobs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DocSummary {
@@ -146,7 +147,7 @@ pub struct DocChunk {
 
 /// Caller-supplied knobs for document extraction.
 ///
-/// Kept independent from kreuzberg's full `ExtractionConfig` so the scanner
+/// Kept independent from xberg's full `ExtractionConfig` so the scanner
 /// callsite stays readable; we translate to `ExtractionConfig` at the boundary.
 #[derive(Debug, Clone)]
 pub struct DocConfig {
@@ -181,7 +182,7 @@ impl Default for DocConfig {
 }
 
 impl DocConfig {
-    fn to_kreuzberg(&self) -> ExtractionConfig {
+    fn to_xberg(&self) -> ExtractionConfig {
         let embedding = if self.embed {
             Some(EmbeddingConfig::default())
         } else {
@@ -194,12 +195,12 @@ impl DocConfig {
             preset: self.embedding_preset.clone(),
             ..Default::default()
         };
-        // Kreuzberg rc.10's `ChunkingConfig` has no language input — sentence /
+        // Xberg rc.10's `ChunkingConfig` has no language input — sentence /
         // word boundaries fall out of `ChunkerType` + `ChunkSizing` rather than
         // a tokenizer keyed on language. Only `LanguageDetectionConfig` is
         // wired here; an iter 5+ change can revisit chunker selection if
         // upstream gains a language hint.
-        // kreuzberg gates detection on Option::is_some at features.rs:311; `None`
+        // xberg gates detection on Option::is_some at features.rs:311; `None`
         // is the "off" signal, not Some { enabled: false }.
         let language_detection = if self.language.auto_detect {
             Some(LanguageDetectionConfig {
@@ -210,17 +211,17 @@ impl DocConfig {
         } else {
             None
         };
-        let keywords = self.kreuzberg_keywords();
-        let ner = self.kreuzberg_ner();
-        let summarization = self.kreuzberg_summarization();
-        // Tell kreuzberg to use whatever rayon pool is already live — basemind's
+        let keywords = self.xberg_keywords();
+        let ner = self.xberg_ner();
+        let summarization = self.xberg_summarization();
+        // Tell xberg to use whatever rayon pool is already live — basemind's
         // scanner owns the global pool (initialized lazily by par_iter). Without
-        // this, kreuzberg calls `rayon::ThreadPoolBuilder::build_global` with
+        // this, xberg calls `rayon::ThreadPoolBuilder::build_global` with
         // `num_cpus.min(8)` on its first use, which caps the pool to 8 threads
         // on machines with more cores (e.g. M-chip Macs have 10–14 logical CPUs).
         // Passing `rayon::current_num_threads()` here either uses the already-
-        // initialized pool size (no-op inside `call_once`) or, if kreuzberg is
-        // first, sets the pool to the rayon default rather than kreuzberg's min(8)
+        // initialized pool size (no-op inside `call_once`) or, if xberg is
+        // first, sets the pool to the rayon default rather than xberg's min(8)
         // cap.
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(rayon::current_num_threads()),
@@ -236,22 +237,22 @@ impl DocConfig {
         }
     }
 
-    /// Translate the basemind-side `SummarizationConfig` into kreuzberg's
+    /// Translate the basemind-side `SummarizationConfig` into xberg's
     /// `SummarizationConfig`. Returns `None` when summarisation is gated off —
-    /// kreuzberg treats `ExtractionConfig.summarization == None` as "do not run".
+    /// xberg treats `ExtractionConfig.summarization == None` as "do not run".
     ///
     /// When `strategy = Abstractive` and `[llm].model` is empty, we fall back to
     /// `Extractive` (TextRank, no LLM) with a one-time warning. This keeps the
     /// scan completing instead of failing midway with an opaque liter-llm error
     /// the agent can't act on.
-    fn kreuzberg_summarization(&self) -> Option<kreuzberg::SummarizationConfig> {
+    fn xberg_summarization(&self) -> Option<xberg::SummarizationConfig> {
         if !self.summarization.enabled {
             return None;
         }
-        let mut sc = kreuzberg::SummarizationConfig {
+        let mut sc = xberg::SummarizationConfig {
             strategy: match self.summarization.strategy {
-                SummarizationStrategy::Extractive => kreuzberg::SummaryStrategy::Extractive,
-                SummarizationStrategy::Abstractive => kreuzberg::SummaryStrategy::Abstractive,
+                SummarizationStrategy::Extractive => xberg::SummaryStrategy::Extractive,
+                SummarizationStrategy::Abstractive => xberg::SummaryStrategy::Abstractive,
             },
             max_tokens: self.summarization.max_tokens,
             llm: None,
@@ -260,24 +261,24 @@ impl DocConfig {
             self.summarization.strategy,
             SummarizationStrategy::Abstractive
         ) {
-            sc.llm = self.llm.to_kreuzberg();
+            sc.llm = self.llm.to_xberg();
             if sc.llm.is_none() {
                 tracing::warn!(
                     "summarization.strategy = abstractive but llm.model unset; falling back to extractive"
                 );
-                sc.strategy = kreuzberg::SummaryStrategy::Extractive;
+                sc.strategy = xberg::SummaryStrategy::Extractive;
             }
         }
         Some(sc)
     }
 
-    /// Translate the basemind-side `KeywordsConfig` into kreuzberg's
+    /// Translate the basemind-side `KeywordsConfig` into xberg's
     /// `KeywordConfig`. Returns `None` when keyword extraction is gated off —
-    /// kreuzberg treats `ExtractionConfig.keywords == None` as "do not run".
+    /// xberg treats `ExtractionConfig.keywords == None` as "do not run".
     ///
     /// `yake_params` / `rake_params` are typed pass-through: bad JSON is logged
-    /// and dropped (kreuzberg defaults take over) instead of failing the scan.
-    fn kreuzberg_keywords(&self) -> Option<kreuzberg::KeywordConfig> {
+    /// and dropped (xberg defaults take over) instead of failing the scan.
+    fn xberg_keywords(&self) -> Option<xberg::KeywordConfig> {
         if !self.keywords.enabled {
             return None;
         }
@@ -288,10 +289,10 @@ impl DocConfig {
         } else {
             (1, 3)
         };
-        let mut kc = kreuzberg::KeywordConfig {
+        let mut kc = xberg::KeywordConfig {
             algorithm: match self.keywords.algorithm {
-                KeywordAlgorithm::Yake => kreuzberg::KeywordAlgorithm::Yake,
-                KeywordAlgorithm::Rake => kreuzberg::KeywordAlgorithm::Rake,
+                KeywordAlgorithm::Yake => xberg::KeywordAlgorithm::Yake,
+                KeywordAlgorithm::Rake => xberg::KeywordAlgorithm::Rake,
             },
             max_keywords: self.keywords.max_keywords,
             min_score: self.keywords.min_score,
@@ -301,25 +302,25 @@ impl DocConfig {
             rake_params: None,
         };
         if let Some(v) = self.keywords.yake_params.as_ref() {
-            match serde_json::from_value::<kreuzberg::keywords::YakeParams>(v.clone()) {
+            match serde_json::from_value::<xberg::keywords::YakeParams>(v.clone()) {
                 Ok(p) => kc.yake_params = Some(p),
                 Err(e) => {
-                    tracing::warn!(error = %e, "invalid yake_params; using kreuzberg defaults")
+                    tracing::warn!(error = %e, "invalid yake_params; using xberg defaults")
                 }
             }
         }
         if let Some(v) = self.keywords.rake_params.as_ref() {
-            match serde_json::from_value::<kreuzberg::keywords::RakeParams>(v.clone()) {
+            match serde_json::from_value::<xberg::keywords::RakeParams>(v.clone()) {
                 Ok(p) => kc.rake_params = Some(p),
                 Err(e) => {
-                    tracing::warn!(error = %e, "invalid rake_params; using kreuzberg defaults")
+                    tracing::warn!(error = %e, "invalid rake_params; using xberg defaults")
                 }
             }
         }
-        // Surface algorithm/params mismatches loudly — kreuzberg silently ignores
+        // Surface algorithm/params mismatches loudly — xberg silently ignores
         // YakeParams when the algorithm is Rake (and vice versa). The user almost
         // certainly meant for the params to apply; logging once at config-build
-        // time lets them spot the typo without parsing the kreuzberg source.
+        // time lets them spot the typo without parsing the xberg source.
         if self.keywords.yake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Yake
         {
             tracing::warn!(
@@ -337,42 +338,42 @@ impl DocConfig {
         Some(kc)
     }
 
-    /// Translate the basemind-side `NerConfig` into kreuzberg's
+    /// Translate the basemind-side `NerConfig` into xberg's
     /// `core::config::NerConfig`. `None` when NER is gated off.
     ///
     /// String category names round-trip via `EntityCategory::from(String)` —
     /// unknown names land in the `Custom(_)` variant rather than failing.
     ///
     /// When `backend == Llm`, the shared `LlmConfig` is resolved via
-    /// `to_kreuzberg()` and threaded into the kreuzberg-side `NerConfig.llm`.
+    /// `to_xberg()` and threaded into the xberg-side `NerConfig.llm`.
     /// If the user selected the LLM backend but left `llm.model` empty, we
-    /// emit a warning — kreuzberg silently falls back to ONNX in that case
+    /// emit a warning — xberg silently falls back to ONNX in that case
     /// and the user almost certainly wants to know.
-    fn kreuzberg_ner(&self) -> Option<kreuzberg::core::config::ner::NerConfig> {
+    fn xberg_ner(&self) -> Option<xberg::core::config::ner::NerConfig> {
         if !self.ner.enabled {
             return None;
         }
         let llm = if matches!(self.ner.backend, NerBackend::Llm) {
-            let cfg = self.llm.to_kreuzberg();
+            let cfg = self.llm.to_xberg();
             if cfg.is_none() {
                 tracing::warn!(
-                    "ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside kreuzberg"
+                    "ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside xberg"
                 );
             }
             cfg
         } else {
             None
         };
-        Some(kreuzberg::core::config::ner::NerConfig {
+        Some(xberg::core::config::ner::NerConfig {
             backend: match self.ner.backend {
-                NerBackend::Onnx => kreuzberg::core::config::ner::NerBackendKind::Onnx,
-                NerBackend::Llm => kreuzberg::core::config::ner::NerBackendKind::Llm,
+                NerBackend::Onnx => xberg::core::config::ner::NerBackendKind::Onnx,
+                NerBackend::Llm => xberg::core::config::ner::NerBackendKind::Llm,
             },
             categories: self
                 .ner
                 .categories
                 .iter()
-                .map(|s| kreuzberg::types::entity::EntityCategory::from(s.clone()))
+                .map(|s| xberg::types::entity::EntityCategory::from(s.clone()))
                 .collect(),
             model: self.ner.model.clone(),
             llm,
@@ -381,18 +382,51 @@ impl DocConfig {
     }
 }
 
-/// Run kreuzberg against `path` and translate the result into a `FileMapDoc`.
+/// Shared multi-thread Tokio runtime for driving xberg's async extraction API
+/// from the synchronous rayon scan path.
+///
+/// xberg 1.0 dropped its `extract_file_sync` wrapper — `extract` is async-only,
+/// so basemind owns the sync bridge. Built once and never dropped; rayon workers
+/// `block_on` it concurrently (each future is driven to completion on the shared
+/// worker pool).
+fn extraction_runtime() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build xberg extraction runtime")
+    })
+}
+
+/// Run xberg against `path` and translate the result into a `FileMapDoc`.
 ///
 /// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
-/// `None`, kreuzberg sniffs the file content.
+/// `None`, xberg sniffs the file content.
 pub fn extract_doc(
     path: &Path,
     mime_type: Option<&str>,
     config: &DocConfig,
 ) -> Result<FileMapDoc, ExtractError> {
-    let krz_config = config.to_kreuzberg();
-    let result = extract_file_sync(path, mime_type, &krz_config)
+    let krz_config = config.to_xberg();
+    let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
+    input.mime_type = mime_type.map(str::to_string);
+    // xberg 1.0 returns a batch-shaped `ExtractionResult.results`; a single-file
+    // extract yields exactly one `ExtractedDocument`. Pull it out (surfacing any
+    // non-fatal per-input error if the vec is empty) and carry on with the
+    // per-document fields below.
+    let mut extraction = extraction_runtime()
+        .block_on(extract(input, &krz_config))
         .map_err(|e| ExtractError::Document(e.to_string()))?;
+    let result = extraction.results.pop().ok_or_else(|| {
+        let message = extraction
+            .errors
+            .into_iter()
+            .next()
+            .map(|e| e.message)
+            .unwrap_or_else(|| "xberg returned no extracted document".to_string());
+        ExtractError::Document(message)
+    })?;
 
     let mut chunks: Vec<DocChunk> = Vec::new();
     let mut embedding_dim: u16 = 0;
@@ -448,7 +482,7 @@ pub fn extract_doc(
 
     // `SummaryStrategy` implements `Display` upstream — formatting it directly
     // produces the same lowercase tags we'd hand-translate ("extractive" /
-    // "abstractive"), and stays correct if kreuzberg adds variants.
+    // "abstractive"), and stays correct if xberg adds variants.
     let summary = result.summary.map(|s| DocSummary {
         text: s.text,
         strategy: s.strategy.to_string(),
@@ -470,21 +504,21 @@ pub fn extract_doc(
     })
 }
 
-/// Stable lowercase tag for kreuzberg's `KeywordAlgorithm`. We avoid `Display`
+/// Stable lowercase tag for xberg's `KeywordAlgorithm`. We avoid `Display`
 /// because the enum doesn't derive it; matching every variant keeps the
-/// translation explicit and the compiler honest if kreuzberg adds variants.
-fn keyword_algorithm_str(alg: &kreuzberg::KeywordAlgorithm) -> &'static str {
+/// translation explicit and the compiler honest if xberg adds variants.
+fn keyword_algorithm_str(alg: &xberg::KeywordAlgorithm) -> &'static str {
     match alg {
-        kreuzberg::KeywordAlgorithm::Yake => "yake",
-        kreuzberg::KeywordAlgorithm::Rake => "rake",
+        xberg::KeywordAlgorithm::Yake => "yake",
+        xberg::KeywordAlgorithm::Rake => "rake",
     }
 }
 
-/// Flatten kreuzberg's `EntityCategory` (a closed enum with a `Custom(String)`
+/// Flatten xberg's `EntityCategory` (a closed enum with a `Custom(String)`
 /// tail variant) to a lowercase string. Standard variants use the lowercase
 /// canonical name; `Custom(s)` passes the user-supplied label through verbatim.
-fn entity_category_str(category: &kreuzberg::types::entity::EntityCategory) -> String {
-    use kreuzberg::types::entity::EntityCategory::*;
+fn entity_category_str(category: &xberg::types::entity::EntityCategory) -> String {
+    use xberg::types::entity::EntityCategory::*;
     match category {
         Person => "person".to_string(),
         Organization => "organization".to_string(),
@@ -500,7 +534,7 @@ fn entity_category_str(category: &kreuzberg::types::entity::EntityCategory) -> S
     }
 }
 
-fn metadata_pairs(metadata: &kreuzberg::types::Metadata) -> Vec<(String, String)> {
+fn metadata_pairs(metadata: &xberg::types::Metadata) -> Vec<(String, String)> {
     // Round-trip the metadata via JSON to flatten its (large, heterogeneous)
     // shape into stable string pairs without enumerating every field.
     match serde_json::to_value(metadata) {

@@ -72,18 +72,6 @@ allow = ["MPL-2.0"]
 name = "uluru"
 allow = ["MPL-2.0"]
 
-# kreuzberg is Elastic-2.0 — basemind ships it as the document-tier engine
-# (RAG / OCR / NER stack). Source license is intentionally chosen by basemind.
-[[licenses.exceptions]]
-name = "kreuzberg"
-allow = ["Elastic-2.0"]
-
-# kreuzcrawl is Elastic-2.0 — sibling project to kreuzberg, used as the web
-# crawl tier (gated by the `crawl` feature).
-[[licenses.exceptions]]
-name = "kreuzcrawl"
-allow = ["Elastic-2.0"]
-
 # libbz2-rs-sys (transitive via the document tier's archive support) ships
 # under the bespoke bzip2-1.0.6 license — equivalent to BSD-style permissive.
 [[licenses.exceptions]]

@@ -354,18 +354,18 @@ impl Repo {
     /// backed merge-base: `a` is an ancestor of `b` iff `merge_base(a, b) == a`.
     pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> bool {
         let local = self.local();
-        let (Some(anc), Some(desc)) = (
+        let (Some(and), Some(desc)) = (
             Self::resolve_oid(&local, ancestor),
             Self::resolve_oid(&local, descendant),
         ) else {
             return false;
         };
-        if anc == desc {
+        if and == desc {
             return true;
         }
         local
-            .merge_base(anc, desc)
-            .map(|base| base.detach() == anc)
+            .merge_base(and, desc)
+            .map(|base| base.detach() == and)
             .unwrap_or(false)
     }
 

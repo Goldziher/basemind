@@ -1,5 +1,5 @@
 //! Document-tier sub-configs. Split from `v1.rs` to keep both files under the
-//! 1000-line cap once iters 3–7 fill in every kreuzberg capability.
+//! 1000-line cap once iters 3–7 fill in every xberg capability.
 
 use std::fmt;
 
@@ -14,7 +14,7 @@ pub struct DocumentsConfig {
     /// Master switch. Only meaningful when the `documents` cargo feature is compiled in.
     #[serde(default = "DocumentsConfig::default_enabled")]
     pub enabled: bool,
-    /// MIME-type allowlist. Empty = accept anything kreuzberg can handle.
+    /// MIME-type allowlist. Empty = accept anything xberg can handle.
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub mime_allowlist: Vec<String>,
@@ -26,7 +26,7 @@ pub struct DocumentsConfig {
     #[serde(default = "DocumentsConfig::default_overlap")]
     #[schemars(range(min = 0))]
     pub overlap: usize,
-    /// Kreuzberg embedding preset name. Defaults to "balanced".
+    /// Xberg embedding preset name. Defaults to "balanced".
     #[serde(default = "DocumentsConfig::default_embedding_preset")]
     pub embedding_preset: String,
     /// Generate embeddings (`true`) or skip vector storage entirely (`false`).
@@ -97,34 +97,34 @@ impl Default for DocumentsConfig {
 /// avoid colliding with the per-tree-sitter-language `LanguageConfig` (which is
 /// the scanner's per-grammar override map).
 ///
-/// Kreuzberg drives language detection through the `whatlang` crate and reports
-/// ISO 639-3 codes (three letters, e.g. `"fra"`, `"deu"`) — kreuzberg's own
+/// Xberg drives language detection through the `whatlang` crate and reports
+/// ISO 639-3 codes (three letters, e.g. `"fra"`, `"deu"`) — xberg's own
 /// `ExtractionResult.detected_languages` doc-comment mislabels them as ISO
-/// 639-1 in rc.10, but the wrapper at `kreuzberg::language_detection` normalises
+/// 639-1 in rc.10, but the wrapper at `xberg::language_detection` normalises
 /// every `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,
 /// `min_confidence`, and `detect_multiple` knobs map straight through to
-/// kreuzberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for
-/// future use — kreuzberg rc.10 does not honor a preferred-language hint, so
+/// xberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for
+/// future use — xberg rc.10 does not honor a preferred-language hint, so
 /// the field is plumbed but inert today; we keep it on the schema so callers
 /// can start populating it without a config break when support lands.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DocLanguageConfig {
-    /// Run kreuzberg's language detector. On by default; flip off when every doc
+    /// Run xberg's language detector. On by default; flip off when every doc
     /// in the corpus is the same known language.
     #[serde(default = "DocLanguageConfig::default_auto_detect")]
     pub auto_detect: bool,
     /// Minimum detector confidence (0.0–1.0). Detections below this threshold
-    /// are dropped. Matches kreuzberg's default of 0.8.
+    /// are dropped. Matches xberg's default of 0.8.
     #[serde(default = "DocLanguageConfig::default_min_confidence")]
     #[schemars(range(min = 0.0, max = 1.0))]
     pub min_confidence: f64,
-    /// When true, kreuzberg reports every language detected in the document
-    /// instead of just the top match. Off by default to match kreuzberg.
+    /// When true, xberg reports every language detected in the document
+    /// instead of just the top match. Off by default to match xberg.
     #[serde(default)]
     pub detect_multiple: bool,
     /// Reserved — accepts ISO 639-3 codes (e.g. `"fra"`, `"deu"`) for future use.
-    /// Kreuzberg rc.10 does not honor a preferred-language hint, but the field
+    /// Xberg rc.10 does not honor a preferred-language hint, but the field
     /// is kept on the schema so users can populate it without a config break.
     #[serde(default)]
     pub preferred_languages: Vec<String>,
@@ -157,7 +157,7 @@ pub struct RerankerConfig {
     /// latency means users should opt in explicitly.
     #[serde(default)]
     pub enabled: bool,
-    /// Kreuzberg reranker preset name (`bge-reranker-base` is the small default;
+    /// Xberg reranker preset name (`bge-reranker-base` is the small default;
     /// `bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).
     #[serde(default = "RerankerConfig::default_preset")]
     pub preset: String,
@@ -191,7 +191,7 @@ impl Default for RerankerConfig {
 pub struct KeywordsConfig {
     /// Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.
     /// Maps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;
-    /// kreuzberg's own `KeywordConfig` has no `enabled` field — gating is via
+    /// xberg's own `KeywordConfig` has no `enabled` field — gating is via
     /// the wrapping `Option`.
     #[serde(default)]
     pub enabled: bool,
@@ -199,32 +199,32 @@ pub struct KeywordsConfig {
     /// keyword extraction).
     #[serde(default)]
     pub algorithm: KeywordAlgorithm,
-    /// Maximum keywords to extract per document. Matches kreuzberg's
+    /// Maximum keywords to extract per document. Matches xberg's
     /// `KeywordConfig.max_keywords` default of 10.
     #[serde(default = "KeywordsConfig::default_max_keywords")]
     pub max_keywords: usize,
-    /// Minimum score threshold. Matches kreuzberg's `KeywordConfig.min_score`
+    /// Minimum score threshold. Matches xberg's `KeywordConfig.min_score`
     /// default of 0.0 (i.e. surface every candidate). Score ranges differ
     /// between YAKE (lower = better) and RAKE (higher = better) — see
-    /// `kreuzberg::keywords::config::KeywordConfig.min_score`.
+    /// `xberg::keywords::config::KeywordConfig.min_score`.
     #[serde(default)]
     #[schemars(range(min = 0.0))]
     pub min_score: f32,
-    /// N-gram range as `[min, max]`. Matches kreuzberg's
+    /// N-gram range as `[min, max]`. Matches xberg's
     /// `KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of
     /// length 2 so the JSON Schema stays human-readable; values map back to a
     /// `(usize, usize)` tuple at the boundary.
     #[serde(default = "KeywordsConfig::default_ngram_range")]
     #[schemars(length(min = 2, max = 2))]
     pub ngram_range: Vec<usize>,
-    /// Optional YAKE tuning (passed through to kreuzberg unchanged). Shape
-    /// matches `kreuzberg::keywords::YakeParams`; bad JSON is logged and
-    /// kreuzberg's defaults are used instead of failing the scan.
+    /// Optional YAKE tuning (passed through to xberg unchanged). Shape
+    /// matches `xberg::keywords::YakeParams`; bad JSON is logged and
+    /// xberg's defaults are used instead of failing the scan.
     #[serde(default)]
     pub yake_params: Option<serde_json::Value>,
-    /// Optional RAKE tuning (passed through to kreuzberg unchanged). Shape
-    /// matches `kreuzberg::keywords::RakeParams`; bad JSON is logged and
-    /// kreuzberg's defaults are used instead of failing the scan.
+    /// Optional RAKE tuning (passed through to xberg unchanged). Shape
+    /// matches `xberg::keywords::RakeParams`; bad JSON is logged and
+    /// xberg's defaults are used instead of failing the scan.
     #[serde(default)]
     pub rake_params: Option<serde_json::Value>,
 }
@@ -272,10 +272,10 @@ pub struct NerConfig {
     /// shared `[llm]` config.
     #[serde(default)]
     pub backend: NerBackend,
-    /// Override the ONNX model name (kreuzberg has a default catalogue when unset).
+    /// Override the ONNX model name (xberg has a default catalogue when unset).
     #[serde(default)]
     pub model: Option<String>,
-    /// Categories to surface — matches kreuzberg's `NerConfig.categories`.
+    /// Categories to surface — matches xberg's `NerConfig.categories`.
     /// Accepted values are the lowercase forms `"person"`, `"organization"`,
     /// `"location"`, `"date"`, `"time"`, `"money"`, `"percent"`, `"email"`,
     /// `"phone"`, `"url"`; anything else becomes a `Custom(_)` category at the
@@ -283,7 +283,7 @@ pub struct NerConfig {
     #[serde(default)]
     pub categories: Vec<String>,
     /// Arbitrary user-supplied entity labels for gline-rs zero-shot inference
-    /// (and the LLM backend's structured-output schema). Matches kreuzberg's
+    /// (and the LLM backend's structured-output schema). Matches xberg's
     /// `NerConfig.custom_labels`. Useful for domain-specific types like
     /// `"Treatment"`, `"Vessel"` without forking GLiNER's taxonomy. Custom
     /// labels surface as `EntityCategory::Custom(_)` in the entity stream.
@@ -313,8 +313,8 @@ pub struct SummarizationConfig {
     /// scan still completes.
     #[serde(default)]
     pub strategy: SummarizationStrategy,
-    /// Soft cap on summary length in tokens. `None` lets kreuzberg pick a default
-    /// suited to the chosen strategy (the kreuzberg-side type uses the same
+    /// Soft cap on summary length in tokens. `None` lets xberg pick a default
+    /// suited to the chosen strategy (the xberg-side type uses the same
     /// `Option<u32>` shape; pass-through with no policy of our own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
@@ -383,11 +383,11 @@ pub enum OutputFormat {
 /// Shared LLM credentials + model selection. Consumed by every LLM-backed
 /// capability (ner-llm, summarization-llm, reranker-llm, VLM OCR).
 ///
-/// Mirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:
+/// Mirrors xberg's `LlmConfig` field-for-field with one safety upgrade:
 /// `api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of
 /// `Option<String>`, so credentials are never stored as bare literals in TOML.
 /// At the boundary the env-ref is resolved into a [`SecretString`] and then
-/// exposed via [`SecretString::expose`] when constructing kreuzberg's struct.
+/// exposed via [`SecretString::expose`] when constructing xberg's struct.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
@@ -408,10 +408,10 @@ pub struct LlmConfig {
     /// Sampling temperature. Provider-default when unset.
     #[serde(default)]
     pub temperature: Option<f64>,
-    /// Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).
+    /// Request timeout in seconds. Maps to xberg's `timeout_secs` (default 60).
     #[serde(default)]
     pub timeout_secs: Option<u64>,
-    /// Maximum retry attempts on transient errors. Maps to kreuzberg's
+    /// Maximum retry attempts on transient errors. Maps to xberg's
     /// `max_retries` (default 3).
     #[serde(default)]
     pub max_retries: Option<u32>,
@@ -422,18 +422,18 @@ pub struct LlmConfig {
 
 #[cfg(feature = "intelligence")]
 impl LlmConfig {
-    /// Translate the basemind-side `LlmConfig` into kreuzberg's `LlmConfig`.
+    /// Translate the basemind-side `LlmConfig` into xberg's `LlmConfig`.
     ///
     /// Returns `None` when `model` is empty — every LLM-backed feature treats
     /// `None` as "no LLM configured" and falls back to the non-LLM path. The
     /// `ApiKey` enum is resolved here: `Unset` and missing env vars become
     /// `None` (letting the provider SDK fall back to its own env-var lookup),
     /// `Literal` and resolved env-refs are exposed via [`SecretString::expose`].
-    pub fn to_kreuzberg(&self) -> Option<kreuzberg::LlmConfig> {
+    pub fn to_xberg(&self) -> Option<xberg::LlmConfig> {
         if self.model.is_empty() {
             return None;
         }
-        Some(kreuzberg::LlmConfig {
+        Some(xberg::LlmConfig {
             model: self.model.clone(),
             api_key: self.api_key.resolve().map(|s| s.expose().to_string()),
             base_url: self.base_url.clone(),

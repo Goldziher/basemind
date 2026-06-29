@@ -52,7 +52,7 @@ src/
 │   ├── l1.rs               — outlines (symbols, signatures, imports, docs)
 │   ├── l2.rs               — call sites (callee, byte offset, line/col)
 │   ├── l3.rs               — structural hash of symbol bodies
-│   └── doc.rs              — kreuzberg integration; FileMapDoc (+ keywords,
+│   └── doc.rs              — xberg integration; FileMapDoc (+ keywords,
 │                             entities, summary on the documents path)
 ├── config/                 — schema-driven config (TOML/CLI/MCP/env)
 │   ├── v1.rs               — top-level ConfigV1, LlmConfig (schemars-derived)

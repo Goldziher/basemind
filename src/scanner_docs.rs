@@ -9,7 +9,7 @@
 //! 1. `process_file` sees `lang::detect` return `None` (non-source file).
 //! 2. `should_extract_document` decides whether the file qualifies for the
 //!    document tier based on `[documents]` config + MIME allowlist.
-//! 3. `extract_and_persist_doc` runs kreuzberg, writes the msgpack blob, and
+//! 3. `extract_and_persist_doc` runs xberg, writes the msgpack blob, and
 //!    returns a `PendingDocBatch` carrying the rows that need to land in
 //!    LanceDB.
 //! 4. The single-threaded apply pass calls `flush_document_batches` to push
@@ -20,8 +20,8 @@
 use std::path::Path;
 
 use anyhow::Context as _;
-use kreuzberg::core::mime;
-use kreuzberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
+use xberg::core::mime;
+use xberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
 
 use crate::config::{DocumentsConfig, LlmConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
@@ -37,7 +37,7 @@ pub(crate) struct PendingDocBatch {
     /// Repository-relative path, forward-slash separated. Becomes the `path`
     /// column in LanceDB.
     pub rel_path: String,
-    /// Number of chunks indexed (zero is valid — kreuzberg may yield no chunks
+    /// Number of chunks indexed (zero is valid — xberg may yield no chunks
     /// when the file body is empty or below the chunk threshold).
     pub chunk_count: usize,
     /// Length of each chunk's embedding vector. Zero when embeddings are off.
@@ -46,7 +46,7 @@ pub(crate) struct PendingDocBatch {
     pub rows: Vec<DocumentRow>,
 }
 
-/// Look the configured embedding preset up in kreuzberg's preset table and
+/// Look the configured embedding preset up in xberg's preset table and
 /// return its vector dimension as a `u16` (LanceDB's `FixedSizeList<Float32, N>`
 /// uses `i32` but we treat the value as a `u16` everywhere because every
 /// shipped preset is < 65 535 dims).
@@ -58,12 +58,12 @@ pub(crate) fn preset_dim(name: &str) -> anyhow::Result<u16> {
     let preset: &EmbeddingPreset = EMBEDDING_PRESETS
         .iter()
         .find(|p| p.name == name)
-        .with_context(|| format!("unknown kreuzberg embedding preset: {name}"))?;
+        .with_context(|| format!("unknown xberg embedding preset: {name}"))?;
     u16::try_from(preset.dimensions)
         .with_context(|| format!("preset {name} dimensions {} exceeds u16", preset.dimensions))
 }
 
-/// Translate the project-level `[documents]` config into the kreuzberg-facing
+/// Translate the project-level `[documents]` config into the xberg-facing
 /// [`DocConfig`] the extractor expects. Pulled out so the wiring in
 /// `process_file` stays a single call.
 pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConfig {
@@ -76,7 +76,7 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConf
         keywords: cfg.keywords.clone(),
         ner: cfg.ner.clone(),
         // Summarisation + LLM ride on the same `DocConfig` because the boundary
-        // code in `DocConfig::to_kreuzberg` resolves abstractive ⇒ LLM lookup
+        // code in `DocConfig::to_xberg` resolves abstractive ⇒ LLM lookup
         // in one place. The top-level `[llm]` block is intentionally shared
         // across capabilities (ner-llm, summarization-llm, …).
         summarization: cfg.summarization.clone(),
@@ -84,7 +84,7 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConf
     }
 }
 
-/// Quick filter run before any kreuzberg work happens. Returns the detected
+/// Quick filter run before any xberg work happens. Returns the detected
 /// MIME type when the file should be document-extracted, or `None` when it
 /// should be skipped (configured-off, MIME unknown, MIME outside the allowlist).
 ///
@@ -119,7 +119,7 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
     false
 }
 
-/// Run kreuzberg against `abs`, write the document blob to the content-addressed
+/// Run xberg against `abs`, write the document blob to the content-addressed
 /// store, and assemble a [`PendingDocBatch`] for the apply pass. Returns
 /// `Ok(None)` when extraction succeeded but produced no embeddings (we still
 /// persist the blob; the LanceDB side is just a no-op for that file).
@@ -340,7 +340,7 @@ mod tests {
             ..Default::default()
         };
         // Use a path that doesn't need to exist — the disabled flag short-circuits
-        // before kreuzberg ever touches the filesystem.
+        // before xberg ever touches the filesystem.
         let out = should_extract_document(Path::new("dummy.pdf"), &cfg);
         assert!(out.is_none());
     }

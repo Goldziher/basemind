@@ -1,6 +1,6 @@
 //! Token counting for compression reports (and, later, budgeting).
 //!
-//! Real HF-tokenizer counts (o200k / gpt-4o, via kreuzberg) when the `documents`
+//! Real HF-tokenizer counts (o200k / gpt-4o, via xberg) when the `documents`
 //! feature is enabled; a `bytes/4` heuristic otherwise. The real path downloads
 //! the tokenizer from HF on first use and caches it, and falls back to a word
 //! estimate offline — acceptable for the explicit `compress` op, NOT for any
@@ -9,7 +9,7 @@
 /// Count the tokens in `text`.
 #[cfg(feature = "documents")]
 pub(crate) fn count_tokens(text: &str) -> u64 {
-    kreuzberg::chunking::count_tokens(text, None) as u64
+    xberg::chunking::count_tokens(text, None) as u64
 }
 
 /// `bytes / 4` fallback when no tokenizer is compiled in.

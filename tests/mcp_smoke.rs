@@ -2569,7 +2569,7 @@ async fn blame_symbol_paginates_by_start_line() {
 ///
 /// This test is gated with `#[ignore]` because the first run downloads the
 /// `bge-reranker-base` ONNX weights (~278 MB) from HuggingFace into
-/// `~/.cache/kreuzberg/rerankers/`. Pre-warm once before unattended runs:
+/// `~/.cache/xberg/rerankers/`. Pre-warm once before unattended runs:
 ///
 /// ```bash
 /// cargo test --test mcp_smoke reranks_search_results -- --ignored --features full

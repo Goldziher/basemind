@@ -1,8 +1,8 @@
 //! Shared embedding engine for the memory + documents MCP tools.
 
 use anyhow::{Context, Result, anyhow};
-use kreuzberg::embeddings::EMBEDDING_PRESETS;
-use kreuzberg::{EmbeddingConfig, EmbeddingModelType};
+use xberg::embeddings::EMBEDDING_PRESETS;
+use xberg::{EmbeddingConfig, EmbeddingModelType};
 
 /// Loaded, ready-to-query embedding engine. `Clone` is cheap (config is stack-only).
 #[derive(Clone)]
@@ -13,7 +13,7 @@ pub struct SharedEmbedder {
 }
 
 impl SharedEmbedder {
-    /// Build a `SharedEmbedder` from a named kreuzberg preset.
+    /// Build a `SharedEmbedder` from a named xberg preset.
     pub fn load(preset: &str) -> Result<Self> {
         let meta = EMBEDDING_PRESETS
             .iter()
@@ -63,7 +63,7 @@ impl SharedEmbedder {
         if text.is_empty() {
             return Err(anyhow!("embed: input text must not be empty"));
         }
-        let mut results = kreuzberg::embeddings::embed_texts(&[text], &self.config)
+        let mut results = xberg::embeddings::embed_texts(&[text], &self.config)
             .with_context(|| format!("embed_texts(preset={})", self.model_name))?;
         results
             .pop()

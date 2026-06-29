@@ -133,7 +133,8 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.11.1 (+https://github.com/Goldziher/basemind)"
+        "user_agent": "basemind/0.12.0 (+https://github.com/Goldziher/basemind)",
+        "allow_private_network": false
       }
     },
     "shells": {
@@ -286,7 +287,7 @@
           "default": true
         },
         "mime_allowlist": {
-          "description": "MIME-type allowlist. Empty = accept anything kreuzberg can handle.",
+          "description": "MIME-type allowlist. Empty = accept anything xberg can handle.",
           "type": "array",
           "items": {
             "type": "string",
@@ -309,7 +310,7 @@
           "default": 200
         },
         "embedding_preset": {
-          "description": "Kreuzberg embedding preset name. Defaults to \"balanced\".",
+          "description": "Xberg embedding preset name. Defaults to \"balanced\".",
           "type": "string",
           "default": "balanced"
         },
@@ -393,16 +394,16 @@
       "additionalProperties": false
     },
     "DocLanguageConfig": {
-      "description": "Language detection knobs for the document tier. Named `DocLanguageConfig` to\navoid colliding with the per-tree-sitter-language `LanguageConfig` (which is\nthe scanner's per-grammar override map).\n\nKreuzberg drives language detection through the `whatlang` crate and reports\nISO 639-3 codes (three letters, e.g. `\"fra\"`, `\"deu\"`) — kreuzberg's own\n`ExtractionResult.detected_languages` doc-comment mislabels them as ISO\n639-1 in rc.10, but the wrapper at `kreuzberg::language_detection` normalises\nevery `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,\n`min_confidence`, and `detect_multiple` knobs map straight through to\nkreuzberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for\nfuture use — kreuzberg rc.10 does not honor a preferred-language hint, so\nthe field is plumbed but inert today; we keep it on the schema so callers\ncan start populating it without a config break when support lands.",
+      "description": "Language detection knobs for the document tier. Named `DocLanguageConfig` to\navoid colliding with the per-tree-sitter-language `LanguageConfig` (which is\nthe scanner's per-grammar override map).\n\nXberg drives language detection through the `whatlang` crate and reports\nISO 639-3 codes (three letters, e.g. `\"fra\"`, `\"deu\"`) — xberg's own\n`ExtractionResult.detected_languages` doc-comment mislabels them as ISO\n639-1 in rc.10, but the wrapper at `xberg::language_detection` normalises\nevery `whatlang` enum variant to its ISO 639-3 form. The `auto_detect`,\n`min_confidence`, and `detect_multiple` knobs map straight through to\nxberg's `LanguageDetectionConfig`. `preferred_languages` is reserved for\nfuture use — xberg rc.10 does not honor a preferred-language hint, so\nthe field is plumbed but inert today; we keep it on the schema so callers\ncan start populating it without a config break when support lands.",
       "type": "object",
       "properties": {
         "auto_detect": {
-          "description": "Run kreuzberg's language detector. On by default; flip off when every doc\nin the corpus is the same known language.",
+          "description": "Run xberg's language detector. On by default; flip off when every doc\nin the corpus is the same known language.",
           "type": "boolean",
           "default": true
         },
         "min_confidence": {
-          "description": "Minimum detector confidence (0.0–1.0). Detections below this threshold\nare dropped. Matches kreuzberg's default of 0.8.",
+          "description": "Minimum detector confidence (0.0–1.0). Detections below this threshold\nare dropped. Matches xberg's default of 0.8.",
           "type": "number",
           "format": "double",
           "minimum": 0.0,
@@ -410,12 +411,12 @@
           "default": 0.8
         },
         "detect_multiple": {
-          "description": "When true, kreuzberg reports every language detected in the document\ninstead of just the top match. Off by default to match kreuzberg.",
+          "description": "When true, xberg reports every language detected in the document\ninstead of just the top match. Off by default to match xberg.",
           "type": "boolean",
           "default": false
         },
         "preferred_languages": {
-          "description": "Reserved — accepts ISO 639-3 codes (e.g. `\"fra\"`, `\"deu\"`) for future use.\nKreuzberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
+          "description": "Reserved — accepts ISO 639-3 codes (e.g. `\"fra\"`, `\"deu\"`) for future use.\nXberg rc.10 does not honor a preferred-language hint, but the field\nis kept on the schema so users can populate it without a config break.",
           "type": "array",
           "items": {
             "type": "string"
@@ -434,7 +435,7 @@
           "default": false
         },
         "preset": {
-          "description": "Kreuzberg reranker preset name (`bge-reranker-base` is the small default;\n`bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).",
+          "description": "Xberg reranker preset name (`bge-reranker-base` is the small default;\n`bge-reranker-large` and `bge-reranker-v2-m3` are heavier alternatives).",
           "type": "string",
           "default": "bge-reranker-base"
         },
@@ -452,7 +453,7 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.\nMaps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;\nkreuzberg's own `KeywordConfig` has no `enabled` field — gating is via\nthe wrapping `Option`.",
+          "description": "Master switch — off by default; YAKE / RAKE add ingest-time CPU cost.\nMaps to `Some(KeywordConfig)` / `None` on `ExtractionConfig.keywords`;\nxberg's own `KeywordConfig` has no `enabled` field — gating is via\nthe wrapping `Option`.",
           "type": "boolean",
           "default": false
         },
@@ -462,21 +463,21 @@
           "default": "yake"
         },
         "max_keywords": {
-          "description": "Maximum keywords to extract per document. Matches kreuzberg's\n`KeywordConfig.max_keywords` default of 10.",
+          "description": "Maximum keywords to extract per document. Matches xberg's\n`KeywordConfig.max_keywords` default of 10.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
           "default": 10
         },
         "min_score": {
-          "description": "Minimum score threshold. Matches kreuzberg's `KeywordConfig.min_score`\ndefault of 0.0 (i.e. surface every candidate). Score ranges differ\nbetween YAKE (lower = better) and RAKE (higher = better) — see\n`kreuzberg::keywords::config::KeywordConfig.min_score`.",
+          "description": "Minimum score threshold. Matches xberg's `KeywordConfig.min_score`\ndefault of 0.0 (i.e. surface every candidate). Score ranges differ\nbetween YAKE (lower = better) and RAKE (higher = better) — see\n`xberg::keywords::config::KeywordConfig.min_score`.",
           "type": "number",
           "format": "float",
           "minimum": 0.0,
           "default": 0.0
         },
         "ngram_range": {
-          "description": "N-gram range as `[min, max]`. Matches kreuzberg's\n`KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of\nlength 2 so the JSON Schema stays human-readable; values map back to a\n`(usize, usize)` tuple at the boundary.",
+          "description": "N-gram range as `[min, max]`. Matches xberg's\n`KeywordConfig.ngram_range` default of `(1, 3)`. Encoded as an array of\nlength 2 so the JSON Schema stays human-readable; values map back to a\n`(usize, usize)` tuple at the boundary.",
           "type": "array",
           "items": {
             "type": "integer",
@@ -491,11 +492,11 @@
           ]
         },
         "yake_params": {
-          "description": "Optional YAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::YakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
+          "description": "Optional YAKE tuning (passed through to xberg unchanged). Shape\nmatches `xberg::keywords::YakeParams`; bad JSON is logged and\nxberg's defaults are used instead of failing the scan.",
           "default": null
         },
         "rake_params": {
-          "description": "Optional RAKE tuning (passed through to kreuzberg unchanged). Shape\nmatches `kreuzberg::keywords::RakeParams`; bad JSON is logged and\nkreuzberg's defaults are used instead of failing the scan.",
+          "description": "Optional RAKE tuning (passed through to xberg unchanged). Shape\nmatches `xberg::keywords::RakeParams`; bad JSON is logged and\nxberg's defaults are used instead of failing the scan.",
           "default": null
         }
       },
@@ -522,7 +523,7 @@
           "default": "onnx"
         },
         "model": {
-          "description": "Override the ONNX model name (kreuzberg has a default catalogue when unset).",
+          "description": "Override the ONNX model name (xberg has a default catalogue when unset).",
           "type": [
             "string",
             "null"
@@ -530,7 +531,7 @@
           "default": null
         },
         "categories": {
-          "description": "Categories to surface — matches kreuzberg's `NerConfig.categories`.\nAccepted values are the lowercase forms `\"person\"`, `\"organization\"`,\n`\"location\"`, `\"date\"`, `\"time\"`, `\"money\"`, `\"percent\"`, `\"email\"`,\n`\"phone\"`, `\"url\"`; anything else becomes a `Custom(_)` category at the\nboundary. Empty means \"use the backend default\".",
+          "description": "Categories to surface — matches xberg's `NerConfig.categories`.\nAccepted values are the lowercase forms `\"person\"`, `\"organization\"`,\n`\"location\"`, `\"date\"`, `\"time\"`, `\"money\"`, `\"percent\"`, `\"email\"`,\n`\"phone\"`, `\"url\"`; anything else becomes a `Custom(_)` category at the\nboundary. Empty means \"use the backend default\".",
           "type": "array",
           "items": {
             "type": "string"
@@ -538,7 +539,7 @@
           "default": []
         },
         "custom_labels": {
-          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference\n(and the LLM backend's structured-output schema). Matches kreuzberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
+          "description": "Arbitrary user-supplied entity labels for gline-rs zero-shot inference\n(and the LLM backend's structured-output schema). Matches xberg's\n`NerConfig.custom_labels`. Useful for domain-specific types like\n`\"Treatment\"`, `\"Vessel\"` without forking GLiNER's taxonomy. Custom\nlabels surface as `EntityCategory::Custom(_)` in the entity stream.",
           "type": "array",
           "items": {
             "type": "string"
@@ -569,7 +570,7 @@
           "default": "extractive"
         },
         "max_tokens": {
-          "description": "Soft cap on summary length in tokens. `None` lets kreuzberg pick a default\nsuited to the chosen strategy (the kreuzberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
+          "description": "Soft cap on summary length in tokens. `None` lets xberg pick a default\nsuited to the chosen strategy (the xberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
           "type": [
             "integer",
             "null"
@@ -773,7 +774,12 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.11.1 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.12.0 (+https://github.com/Goldziher/basemind)"
+        },
+        "allow_private_network": {
+          "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. (The\n`CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide\noverride regardless of this setting.)",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false
@@ -902,7 +908,7 @@
       ]
     },
     "LlmConfig": {
-      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors kreuzberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing kreuzberg's struct.",
+      "description": "Shared LLM credentials + model selection. Consumed by every LLM-backed\ncapability (ner-llm, summarization-llm, reranker-llm, VLM OCR).\n\nMirrors xberg's `LlmConfig` field-for-field with one safety upgrade:\n`api_key` is the [`ApiKey`] tri-state (literal / env-ref / unset) instead of\n`Option<String>`, so credentials are never stored as bare literals in TOML.\nAt the boundary the env-ref is resolved into a [`SecretString`] and then\nexposed via [`SecretString::expose`] when constructing xberg's struct.",
       "type": "object",
       "properties": {
         "model": {
@@ -933,7 +939,7 @@
           "default": null
         },
         "timeout_secs": {
-          "description": "Request timeout in seconds. Maps to kreuzberg's `timeout_secs` (default 60).",
+          "description": "Request timeout in seconds. Maps to xberg's `timeout_secs` (default 60).",
           "type": [
             "integer",
             "null"
@@ -943,7 +949,7 @@
           "default": null
         },
         "max_retries": {
-          "description": "Maximum retry attempts on transient errors. Maps to kreuzberg's\n`max_retries` (default 3).",
+          "description": "Maximum retry attempts on transient errors. Maps to xberg's\n`max_retries` (default 3).",
           "type": [
             "integer",
             "null"

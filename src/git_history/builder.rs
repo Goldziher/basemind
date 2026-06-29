@@ -193,7 +193,7 @@ const RECORD_CHUNK: usize = 8192;
 /// Fold `chrono` (oldest-first) into the writer and posting accumulator in memory-bounded chunks.
 /// Each chunk's records are computed in parallel via [`compute_records`], folded serially (interning
 /// then Fjall puts), then dropped before the next chunk is computed. Ordinals are assigned by their
-/// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparseable record
+/// absolute position in `chrono` (`start_ord` plus the global offset) so a `None`/unparsable record
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
 /// Returns the number of commits actually written. `dedup` skips commits already present in
 /// `gh_ord_by_sha` (the incremental append's defensive guard).
