@@ -10,7 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.12.1] — 2026-06-29
+## [0.12.2] — 2026-06-29
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 12), so no
+`.basemind/` rebuild.
+
+### Changed
+
+- **`tree-sitter-language-pack` `1.9.0-rc.45` → `1.12.0`.** The grammar bootstrap
+  (`ensure_grammars`) now uses tslp's `prefetch`, which probes real on-disk loadability
+  instead of the in-memory `has_language` registry — replacing basemind's hand-rolled
+  `DownloadManager::ensure_languages` workaround for the pre-1.12 `download()` short-circuit.
+  tslp 1.12's lock-free static `get_language` fast path also removes a global-mutex hop on the
+  per-thread parser pool's hot path (tree-sitter is ~30% of scan time). Validated against the
+  full harden harness: all 8 OSS repos pass with 0 extraction failures and scan times at or
+  under baseline.
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 12), so no
 `.basemind/` rebuild.
