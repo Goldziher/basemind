@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-06-29
+
+Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 12), so no
+`.basemind/` rebuild.
+
+### Fixed
+
+- **Multiple concurrent sessions on one repo no longer break code-map navigation.** fjall takes
+  an exclusive directory lock, so only one `basemind serve` process can open a repo's index at a
+  time; additional editor/agent sessions fall back to read-only and previously got an error
+  (`read_only_index_unavailable`) from every fjall-backed tool — the reported "blocked / not
+  responsive". `find_references`, `find_callers`, `find_implementations`, and `call_graph` now
+  answer from in-RAM indexes built from the content-addressed blobs (which are concurrently
+  readable), so unlimited sessions work against one repo: one writer on fjall, N readers on the
+  shared blobs. `outline` / `search_symbols` / `dependents` / git tools already worked read-only.
+
 ## [0.12.0] — 2026-06-29
 
 Minor release: the document/RAG and web-crawl engines move to their renamed,

@@ -133,7 +133,7 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.12.0 (+https://github.com/Goldziher/basemind)",
+        "user_agent": "basemind/0.12.1 (+https://github.com/Goldziher/basemind)",
         "allow_private_network": false
       }
     },
@@ -774,7 +774,7 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.12.0 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.12.1 (+https://github.com/Goldziher/basemind)"
         },
         "allow_private_network": {
           "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. (The\n`CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide\noverride regardless of this setting.)",

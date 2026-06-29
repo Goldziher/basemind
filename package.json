@@ -1,6 +1,6 @@
 {
   "name": "basemind",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "Workspace root for basemind. Per-harness publishable packages live in npm-package/ (binary wrapper), pip-package/ (Python wrapper), and opencode-plugin/ (OpenCode plugin). Also carries the pi extension manifest (.pi/extensions, skills/).",
   "keywords": [
