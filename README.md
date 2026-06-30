@@ -294,6 +294,12 @@ activity by type, then tokens saved, then unread messages. Adjust with
 keeps the map in memory and answers questions instantly — no re-reading the project for each one.
 When files change, it updates only what changed.
 
+Markdown and Obsidian vaults are first-class: headings become navigable symbols (so `outline` and
+`search_symbols` work over a notes vault); `[[wikilinks]]`, `![[embeds]]`, and standard
+`[text](Note.md)` links all become references — so `find_references "Note"` returns that note's
+backlinks regardless of link style; and `#tags` (inline or in YAML frontmatter) become references
+too, so `find_references "#project"` lists every note carrying that tag.
+
 ```mermaid
 flowchart LR
   A(["Coding agent"])
