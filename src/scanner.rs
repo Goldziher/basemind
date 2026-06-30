@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use globset::{Glob, GlobSetBuilder};
-use ignore::WalkBuilder;
 use rayon::prelude::*;
 use thiserror::Error;
 use tracing::debug;
@@ -18,6 +16,7 @@ use crate::path::RelPath;
 use crate::scanner_docs::{
     PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document,
 };
+use crate::scanner_filter::{Filters, IndexFilter, ignore_walk_builder};
 use crate::store::{FileEntry, Store, StoreError};
 
 /// Number of files whose index entries are accumulated into one Fjall write batch before
@@ -255,71 +254,11 @@ pub struct ScanReport {
     pub stats: ScanStats,
 }
 
-struct Filters {
-    include: globset::GlobSet,
-    exclude: globset::GlobSet,
-    max_file_bytes: u64,
-    /// Submodule root prefixes (forward-slash, no trailing `/`). When `config.scan
-    /// .skip_submodules` is true, any candidate path under one of these prefixes is filtered
-    /// out before extraction. Empty when there are no submodules or the knob is disabled.
-    submodule_roots: Vec<String>,
-    /// Pre-built `"{root}/"` prefix strings for each submodule root — avoids a `format!`
-    /// allocation per candidate file in the `allows` hot path.
-    submodule_prefixes: Vec<String>,
-    /// Mirror of `config.scan.eager_l2`. When true the scanner runs L2 extraction inline
-    /// with L1 and pushes calls to the Fjall index. Off → calls index stays stale until
-    /// the on-demand lazy path runs.
-    eager_l2: bool,
-}
-
-impl Filters {
-    fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
-        let include = compile_globs(&config.scan.include)?;
-        let exclude = compile_globs(&config.scan.exclude)?;
-        let submodule_roots: Vec<String> = if config.scan.skip_submodules {
-            submodule_roots
-                .into_iter()
-                .map(|s| s.trim_end_matches('/').to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // Pre-build `"{root}/"` once so `allows` never calls `format!` per candidate file.
-        let submodule_prefixes: Vec<String> =
-            submodule_roots.iter().map(|r| format!("{r}/")).collect();
-        Ok(Self {
-            include,
-            exclude,
-            max_file_bytes: config.scan.max_file_bytes,
-            submodule_roots,
-            submodule_prefixes,
-            eager_l2: config.scan.eager_l2,
-        })
-    }
-
-    fn allows(&self, rel: &str) -> bool {
-        if self.exclude.is_match(rel) {
-            return false;
-        }
-        for (root, prefix) in self
-            .submodule_roots
-            .iter()
-            .zip(self.submodule_prefixes.iter())
-        {
-            if rel == root || rel.starts_with(prefix.as_str()) {
-                return false;
-            }
-        }
-        self.include.is_match(rel)
-    }
-}
-
 /// Pull submodule roots for the active scan source. WorkingTree opens a fresh `Repo` on the
 /// root (cheap; fails silently when the directory isn't a repo). Staged/Rev reuses the
 /// repo handle already carried by `ScanSource`. Failures degrade to an empty Vec so a
 /// missing or malformed `.gitmodules` never blocks the scan.
-fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -> Vec<String> {
+pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -> Vec<String> {
     let paths = match source {
         ScanSource::Staged(repo) | ScanSource::Rev { repo, .. } => repo.submodule_paths(),
         ScanSource::WorkingTree => match Repo::discover(root) {
@@ -333,15 +272,6 @@ fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -> Vec<Strin
         .into_iter()
         .map(|p| p.to_str_lossy().into_owned())
         .collect()
-}
-
-fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ScanError> {
-    let mut b = GlobSetBuilder::new();
-    for p in patterns {
-        let g = Glob::new(p).map_err(|e| ScanError::BadGlob(format!("{p:?}: {e}")))?;
-        b.add(g);
-    }
-    b.build().map_err(|e| ScanError::BadGlob(format!("{e}")))
 }
 
 /// One-shot scan: enumerate every candidate file *via the requested source*, process them
@@ -429,8 +359,7 @@ pub fn scan_paths(
     paths: &[PathBuf],
 ) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
-    let submodule_roots = submodule_roots_for_source(root, &source);
-    let filters = Filters::build(config, submodule_roots)?;
+    let filter = IndexFilter::new(root, config)?;
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
@@ -448,7 +377,10 @@ pub fn scan_paths(
             }
             continue;
         }
-        if !filters.allows(&rel) {
+        // Full indexability: include/exclude globs AND the nested-`.gitignore` hierarchy, matching
+        // what a full scan would keep. Prevents the watcher from indexing a gitignored file the
+        // full scan skips (and later purges).
+        if !filter.is_indexable(abs) {
             continue;
         }
         rels.push(rel);
@@ -456,9 +388,24 @@ pub fn scan_paths(
     rels.sort();
     rels.dedup();
 
+    // Nothing the scanner would index changed and nothing was removed — every event was excluded or
+    // gitignored. Skip `run_candidates`, the doc-batch flush, and the unconditional `store.flush()`
+    // (a full index re-serialize + fsync). This is the hot no-op path the serve watcher hits on
+    // gitignored / nested-`.basemind` churn (issue #33); doing real work here pegged multi-core CPU.
+    if rels.is_empty() && removed.is_empty() {
+        return Ok(ScanReport::default());
+    }
+
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> =
-        run_candidates(&rels, root, &filters, store, &source, config, &scope);
+    let outcomes: Vec<FileResult> = run_candidates(
+        &rels,
+        root,
+        filter.filters(),
+        store,
+        &source,
+        config,
+        &scope,
+    );
 
     let mut report = ScanReport::default();
     let doc_batches = apply_outcomes(store, &mut report, outcomes);
@@ -578,13 +525,7 @@ fn candidates_for_source(
 
 fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = WalkBuilder::new(root)
-        .standard_filters(config.scan.respect_gitignore)
-        .follow_links(false)
-        .git_ignore(config.scan.respect_gitignore)
-        .git_exclude(config.scan.respect_gitignore)
-        .hidden(false)
-        .build();
+    let walker = ignore_walk_builder(root, config.scan.respect_gitignore).build();
     for dent in walker.flatten() {
         if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;

@@ -67,35 +67,31 @@ pub fn watch_paths(
     })?;
     debouncer.watch(root, RecursiveMode::Recursive)?;
 
-    let basemind_subpath = root.join(crate::config::BASEMIND_DIR);
+    // Drop, at the watcher, every event the scanner would never index — so churn under
+    // `node_modules`, `target`, `.git`, gitignored paths, and (crucially) *nested* child-repo
+    // `.basemind/` flushes never wake `scan_and_refresh`/`scan_paths`. This subsumes the old two
+    // `.basemind` `starts_with` guards: the default `**/.basemind/**` exclude drops the root AND
+    // every nested `.basemind/`, and the empty/ancestor rel that macOS FSEvents coalesces onto the
+    // watched root fails the glob gate too. On macOS FSEvents is kernel-recursive, so we cannot
+    // un-watch excluded subtrees — but filtering here means a coalesced churn batch costs a few
+    // microsecond path checks instead of a full-corpus MapCache rebuild (issue #33).
+    let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Ok(events)) => {
+                // Fresh directory listings per batch so a newly-added or edited `.gitignore` takes
+                // effect immediately.
+                filter.clear_cache();
                 let mut touched: Vec<PathBuf> = Vec::new();
                 for ev in events {
                     if !is_relevant(&ev.event.kind) {
                         continue;
                     }
                     for p in &ev.event.paths {
-                        // Skip anything under `.basemind/` — re-scanning our own
-                        // index writes would feed an infinite refresh loop.
-                        if p.starts_with(&basemind_subpath) {
-                            continue;
+                        if keep_event_path(&filter, root, p) {
+                            touched.push(p.clone());
                         }
-                        // macOS FSEvents coalesces bursts (e.g. our own
-                        // `.basemind/` index writes) into a single
-                        // `MustScanSubDirs` event reported on an ancestor of the
-                        // change — typically the watched root itself. Such a path
-                        // is an ancestor of `.basemind/`, so it would slip past the
-                        // check above and re-trigger the very loop that guard
-                        // prevents. A genuine source edit always reports the
-                        // concrete file path (`root/foo.rs`), never a bare
-                        // ancestor, so dropping ancestor paths is safe.
-                        if basemind_subpath.starts_with(p) {
-                            continue;
-                        }
-                        touched.push(p.clone());
                     }
                 }
                 touched.sort();
@@ -177,6 +173,36 @@ fn is_relevant(kind: &EventKind) -> bool {
         kind,
         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
     )
+}
+
+/// Should this event path wake a rescan? Keep only what a full scan would index. For an existing
+/// path that means include/exclude globs AND the nested-`.gitignore` hierarchy; for a deleted path
+/// (gone from disk, so gitignore can't be evaluated) keep anything the glob layer allows so a
+/// previously-indexed file is still forwarded for pruning. Out-of-root and empty/ancestor rels
+/// (the FSEvents coalescing case) are dropped.
+fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: &Path) -> bool {
+    let Ok(rel) = p.strip_prefix(root) else {
+        return false;
+    };
+    // Drop any `.basemind/` directory entry or its contents at ANY nesting level: a nested child
+    // repo's `.basemind/` flush (the issue #33 loop) AND the `.basemind` dir entry itself, which
+    // the exclude glob (`**/.basemind/**`, matching only the *contents*) does not cover — FSEvents
+    // reports the directory when its contents change, which would otherwise wake a rescan.
+    if rel
+        .components()
+        .any(|c| c.as_os_str() == crate::config::BASEMIND_DIR)
+    {
+        return false;
+    }
+    let rel = rel.to_string_lossy().replace('\\', "/");
+    if rel.is_empty() {
+        return false;
+    }
+    if p.exists() {
+        filter.is_indexable(p)
+    } else {
+        filter.allows_glob(&rel)
+    }
 }
 
 #[cfg(test)]
@@ -261,6 +287,53 @@ mod tests {
         // No callback should fire for a `.basemind/`-only change.
         let result = path_rx.recv_timeout(Duration::from_millis(800));
         assert!(result.is_err(), "expected no emission, got {result:?}");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.join();
+    }
+
+    /// Writes under a *nested* child-repo `.basemind/` and under a gitignored path must not wake a
+    /// rescan — this is the core of issue #33 (an umbrella repo's watcher must ignore a nested
+    /// serve's index flushes, and gitignored churn generally).
+    #[test]
+    fn should_ignore_nested_basemind_and_gitignored_paths() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        // `.git` so the `ignore` crate honors `.gitignore` (it only applies git rules inside a repo).
+        std::fs::create_dir_all(root.join(".git")).expect("mkdir .git");
+        std::fs::create_dir_all(root.join("child").join(crate::config::BASEMIND_DIR))
+            .expect("mkdir child/.basemind");
+        std::fs::write(root.join(".gitignore"), b"build/\n").expect("write .gitignore");
+        std::fs::create_dir_all(root.join("build")).expect("mkdir build");
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 50;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            watch_paths(&root_for_thread, &config, shutdown_rx, |paths, _kind| {
+                let _ = path_tx.send(paths);
+            })
+        });
+
+        std::thread::sleep(Duration::from_millis(500));
+        // A nested child serve's index flush + a gitignored build artifact — neither is indexable.
+        std::fs::write(
+            root.join("child")
+                .join(crate::config::BASEMIND_DIR)
+                .join("index.msgpack"),
+            b"\x00",
+        )
+        .expect("write nested basemind file");
+        std::fs::write(root.join("build").join("out.o"), b"\x00").expect("write gitignored file");
+
+        let result = path_rx.recv_timeout(Duration::from_millis(800));
+        assert!(
+            result.is_err(),
+            "expected no emission for nested-.basemind / gitignored churn, got {result:?}"
+        );
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();

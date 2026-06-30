@@ -23,6 +23,7 @@ pub mod render;
 pub mod scanner;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
+pub(crate) mod scanner_filter;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 pub mod shells;
 pub mod store;

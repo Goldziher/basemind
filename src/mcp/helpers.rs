@@ -745,6 +745,9 @@ pub(super) async fn scan_and_refresh(
     // runtime's TLS so LanceStore's owned tokio runtime can `block_on` without
     // tripping tokio's "runtime within a runtime" check. Xberg + rayon handle
     // their own parallelism here; tokio is intentionally out of this hot path.
+    // A scoped batch (watcher) gets an incremental cache delta; a full scan (manual `rescan` tool /
+    // boot) gets a full rebuild because it also purges stale keys.
+    let was_scoped = scoped_paths.is_some();
     let state_for_scan = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
         let mut store = state_for_scan.store.blocking_write();
@@ -763,14 +766,44 @@ pub(super) async fn scan_and_refresh(
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
 
-    // Rebuild MapCache immediately so the next query sees fresh data; don't race the watcher.
+    // Watcher batch that changed nothing the scanner indexes — the existing cache already reflects
+    // the store. Skip the whole-corpus MapCache rebuild AND the `cache_generation` bump (bumping
+    // needlessly resets every paginating client's cursor). This is the hot no-op path the watcher
+    // hits on gitignored / nested-`.basemind` churn (issue #33). An explicit `rescan` tool call
+    // (`!was_scoped`) is left to fall through so it always refreshes and rolls the snapshot id,
+    // preserving the documented "rescan invalidates cursors" contract.
+    if was_scoped && report.stats.updated == 0 && report.stats.removed == 0 {
+        return Ok(report);
+    }
+
+    // The precise delta to apply to the cache, read off the per-file verdicts.
+    let updated: Vec<crate::path::RelPath> = report
+        .results
+        .iter()
+        .filter(|r| matches!(r.status, crate::scanner::FileStatus::Updated { .. }))
+        .map(|r| crate::path::RelPath::from(r.path.as_str()))
+        .collect();
+    let removed: Vec<crate::path::RelPath> = report
+        .results
+        .iter()
+        .filter(|r| matches!(r.status, crate::scanner::FileStatus::Removed))
+        .map(|r| crate::path::RelPath::from(r.path.as_str()))
+        .collect();
+
+    // Refresh MapCache immediately so the next query sees fresh data; don't race the watcher.
     let new_cache = {
         let store = state.store.read().await;
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         state
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
-        std::sync::Arc::new(super::MapCache::build(&store))
+        let cache = if was_scoped {
+            // Incremental: re-read only the changed blobs instead of the whole corpus.
+            state.cache.load().with_delta(&store, &updated, &removed)
+        } else {
+            super::MapCache::build(&store)
+        };
+        std::sync::Arc::new(cache)
     };
     state.cache.store(new_cache);
     state

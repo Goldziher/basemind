@@ -315,6 +315,56 @@ impl MapCache {
             impls,
         }
     }
+
+    /// Incrementally derive a fresh cache from `self` for a **scoped** (watcher) rescan: clone the
+    /// existing maps and patch only the changed entries — re-read L1 from disk for `updated` paths,
+    /// drop `removed` paths. This avoids `build`'s whole-corpus blob I/O (read + msgpack-decode of
+    /// every L1, the dominant cost) on every debounced batch, which is what pegged multi-core CPU on
+    /// gitignored / nested-`.basemind` churn (issue #33). `imports_index` is rebuilt from the
+    /// patched in-RAM `by_path` — a pure clone pass, no I/O.
+    ///
+    /// Only valid on a writer session, where `calls`/`impls` are `None` (a read-only fallback
+    /// session serves those from the blobs and never reaches the rescan path — `scan_and_refresh`
+    /// early-returns on `state.read_only`). If they are somehow present, fall back to a full rebuild
+    /// rather than let the in-RAM call/impl indexes drift out of sync.
+    fn with_delta(
+        &self,
+        store: &Store,
+        updated: &[crate::path::RelPath],
+        removed: &[crate::path::RelPath],
+    ) -> Self {
+        use rayon::prelude::*;
+        if self.calls.is_some() || self.impls.is_some() {
+            return Self::build(store);
+        }
+        let mut by_path = self.by_path.clone();
+        for p in removed {
+            by_path.remove(p);
+        }
+        for p in updated {
+            match store.index.files.get(p) {
+                Some(entry) => {
+                    if let Ok(Some(l1)) = store.read_l1_by_hex(&entry.hash_hex) {
+                        by_path.insert(p.clone(), l1);
+                    }
+                }
+                // An "updated" path that is no longer in the index — treat as removed.
+                None => {
+                    by_path.remove(p);
+                }
+            }
+        }
+        let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
+            .par_iter()
+            .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
+            .collect();
+        Self {
+            by_path,
+            imports_index,
+            calls: None,
+            impls: None,
+        }
+    }
 }
 
 /// Construction-time switches for [`BasemindServer`].
@@ -810,5 +860,94 @@ impl ServerHandler for BasemindServer {
              All paths are repository-relative with forward-slash separators. \
              If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )
+    }
+}
+
+#[cfg(test)]
+mod map_cache_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn sym_names(cache: &MapCache, rel: &str) -> Vec<String> {
+        let key = crate::path::RelPath::from(rel);
+        cache
+            .by_path
+            .get(&key)
+            .map(|l1| l1.symbols.iter().map(|s| s.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// `with_delta` must re-read only the changed blobs, preserve untouched entries, drop removed
+    /// ones, and keep `imports_index` consistent — the incremental refresh the serve watcher uses
+    /// instead of a whole-corpus rebuild (issue #33).
+    #[test]
+    fn with_delta_patches_updated_and_removed_paths_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+        fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
+        let cfg = crate::config::ConfigV1::with_defaults();
+
+        let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
+        crate::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            crate::scanner::ScanSource::WorkingTree,
+        )
+        .unwrap();
+
+        let cache = MapCache::build(&store);
+        assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
+        assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
+        // Writer session (Fjall index present): in-RAM call/impl indexes stay None.
+        assert!(cache.calls.is_none() && cache.impls.is_none());
+
+        // Edit a.rs, re-scan just that path, then patch the cache incrementally.
+        fs::write(
+            root.join("a.rs"),
+            b"pub fn alpha2() {}\npub fn alpha3() {}\n",
+        )
+        .unwrap();
+        let report =
+            crate::scanner::scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+        assert_eq!(report.stats.updated, 1);
+
+        let updated = vec![crate::path::RelPath::from("a.rs")];
+        let next = cache.with_delta(&store, &updated, &[]);
+        assert_eq!(
+            sym_names(&next, "a.rs"),
+            vec!["alpha2".to_string(), "alpha3".to_string()],
+            "updated path reflects fresh L1"
+        );
+        assert_eq!(
+            sym_names(&next, "b.rs"),
+            vec!["beta".to_string()],
+            "untouched path preserved without re-reading its blob"
+        );
+
+        // Remove b.rs from the cache.
+        let removed = vec![crate::path::RelPath::from("b.rs")];
+        let after = next.with_delta(&store, &[], &removed);
+        assert!(
+            !after
+                .by_path
+                .contains_key(&crate::path::RelPath::from("b.rs")),
+            "removed path dropped from by_path"
+        );
+        assert!(
+            after
+                .by_path
+                .contains_key(&crate::path::RelPath::from("a.rs")),
+            "other path kept"
+        );
+        assert!(
+            !after
+                .imports_index
+                .iter()
+                .any(|(p, _)| p == Path::new("b.rs")),
+            "imports_index must not retain a removed path"
+        );
     }
 }
