@@ -174,6 +174,10 @@ pub enum SymbolKind {
     /// surface decorator *strings* on `Symbol.decorators`; this kind covers grammars whose
     /// `tags.scm` emits the decorator as a standalone definition.
     Decorator,
+    /// Markdown / Obsidian heading (ATX `#`/`##`… or setext underline). The captured name is the
+    /// heading text; the heading hierarchy is implicit in document (line) order. Lets `outline` and
+    /// `search_symbols` navigate a notes vault by section, mirroring how source symbols work.
+    Heading,
 }
 
 impl SymbolKind {
@@ -199,6 +203,7 @@ impl SymbolKind {
             "enum_variant" | "variant" => Self::EnumVariant,
             "constructor" => Self::Constructor,
             "decorator" => Self::Decorator,
+            "heading" => Self::Heading,
             _ => Self::Unknown,
         }
     }
@@ -215,7 +220,7 @@ impl SymbolKind {
             // Same score — first-seen wins among them, which keeps document order intact
             // when the same symbol is captured twice as e.g. both function and method.
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module
-            | Macro | Impl | Namespace | Getter | Setter | EnumVariant | Constructor => 2,
+            | Macro | Impl | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
         }
     }
 }

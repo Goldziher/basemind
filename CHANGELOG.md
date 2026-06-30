@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-30
+
+Minor release: `RELEASE_MINOR` bumps 13 → 14 (a new `SymbolKind::Heading` variant), so every
+`.basemind/` index + blob store is wiped and rebuilt on the next `basemind scan` — which is also how
+existing repos pick up Markdown headings.
+
+### Added — Markdown / Obsidian support
+
+Markdown files (already parsed, but previously yielding no symbols) are now a first-class surface:
+point basemind at an Obsidian vault or any Markdown notes directory and the code-map tools work over
+it the same way they do over source. All of this is on by default — `.md` is scanned like any other
+file, headings ship via a `src/queries/markdown.scm` override, and the reference graph is harvested
+by a fence-aware byte-scan in `extract/l2.rs` (the tree-sitter block grammar models none of these
+inline constructs).
+
+- **Headings → outline.** ATX (`#`…`######`) and setext headings become `Heading` symbols, so
+  `outline` and `search_symbols` (optionally `kind: "heading"`) navigate a note's structure.
+- **Wikilinks → backlinks.** `[[Note]]`, `[[Note#Heading|alias]]`, and `![[Embed]]` become
+  references, so `find_references "Note"` returns the notes linking to it. Targets resolve by note
+  name (`#anchor` and `|alias` stripped), matching Obsidian.
+- **Standard Markdown links → backlinks.** `[text](Note.md)` / `![alt](img/Diagram.png)` also become
+  references, normalized to the same note name (directory, `.md`, `#anchor` stripped, `%20`
+  decoded), so wikilink and Markdown-link vaults share one backlink graph. External URLs
+  (`http(s)://`, `mailto:`) and bare `#anchor` links are ignored.
+- **Tags → graph.** Inline `#tag` / nested `#area/sub` and YAML frontmatter `tags:` (both `[a, b]`
+  and `- a` list forms) become references keyed on the leading `#`, so `find_references "#project"`
+  lists every note carrying that tag. Tags inside fenced code blocks are skipped.
+
+Not yet mapped (deliberate follow-ups): block references (`^id`, `[[Note#^id]]`), frontmatter
+aliases / arbitrary properties, and task/callout items.
+
 ## [0.13.0] — 2026-06-30
 
 Minor release: `RELEASE_MINOR` bumps 12 → 13, so every `.basemind/` index + blob store is

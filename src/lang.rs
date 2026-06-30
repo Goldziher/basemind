@@ -59,8 +59,15 @@ pub type LangId = &'static str;
 ///
 /// Order is the bootstrap download order — keep `rust` first so the most common cold-start case
 /// stays fast.
-pub const OVERRIDE_LANGUAGES: &[LangId] =
-    &["rust", "python", "typescript", "tsx", "javascript", "go"];
+pub const OVERRIDE_LANGUAGES: &[LangId] = &[
+    "rust",
+    "python",
+    "typescript",
+    "tsx",
+    "javascript",
+    "go",
+    "markdown",
+];
 
 /// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
 pub const SUPPORTED_LANGUAGES: &[LangId] = OVERRIDE_LANGUAGES;
@@ -76,6 +83,7 @@ fn override_query_source(lang: LangId) -> Option<&'static str> {
         "tsx" => include_str!("queries/tsx.scm"),
         "javascript" => include_str!("queries/javascript.scm"),
         "go" => include_str!("queries/go.scm"),
+        "markdown" => include_str!("queries/markdown.scm"),
         _ => return None,
     })
 }

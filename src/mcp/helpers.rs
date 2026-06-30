@@ -80,6 +80,7 @@ pub(super) fn kind_to_str(k: SymbolKind) -> &'static str {
         SymbolKind::EnumVariant => "enum_variant",
         SymbolKind::Constructor => "constructor",
         SymbolKind::Decorator => "decorator",
+        SymbolKind::Heading => "heading",
         SymbolKind::Unknown => "unknown",
     }
 }
@@ -106,6 +107,7 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
         "enum_variant" | "variant" => SymbolKind::EnumVariant,
         "constructor" => SymbolKind::Constructor,
         "decorator" => SymbolKind::Decorator,
+        "heading" => SymbolKind::Heading,
         other => {
             return Err(McpError::invalid_params(
                 format!("unknown symbol kind: {other}"),

@@ -254,6 +254,7 @@ fn parse_kind_opt(k: &str) -> Option<crate::extract::SymbolKind> {
         "enum_variant" => SymbolKind::EnumVariant,
         "constructor" => SymbolKind::Constructor,
         "decorator" => SymbolKind::Decorator,
+        "heading" => SymbolKind::Heading,
         _ => return None,
     })
 }

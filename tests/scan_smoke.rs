@@ -956,3 +956,64 @@ fn scan_paths_prunes_deleted_indexed_file() {
     assert_eq!(report.stats.updated, 0);
     assert!(store.lookup("a.rs").is_none());
 }
+
+#[test]
+fn markdown_headings_and_obsidian_references_are_indexed() {
+    // Obsidian/Markdown support: headings become navigable `Heading` symbols; wikilinks, standard
+    // note links, and `#tags` (inline + frontmatter) become calls so `find_references` yields a
+    // note's backlinks and a tag's members.
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(
+        root.join("note.md"),
+        b"---\ntags: [project, wip]\n---\n# Title\n\n## Section A\n\nLink to [[Other Note]] and [[Other Note#H|alias]].\n\nAlso a [standard link](Other%20Note.md) and an #inline tag.\n\nEmbed ![[Diagram.png]]\n",
+    )
+    .unwrap();
+    fs::write(root.join("Other Note.md"), b"# Other Note\n").unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+    assert_eq!(report.stats.updated, 2);
+
+    // Headings → `Heading` symbols, searchable like source symbols.
+    let hits =
+        basemind::query::search_symbols(&store, "Section A", Some(SymbolKind::Heading)).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path.as_str(), Some("note.md"));
+    assert_eq!(hits[0].symbol.kind, SymbolKind::Heading);
+    // All four headings across the two notes are indexed.
+    assert_eq!(
+        basemind::query::search_symbols(&store, "Title", Some(SymbolKind::Heading))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Links + tags → calls (the backlink / tag graph). note.md links to "Other Note" three times
+    // (two wikilink forms + one standard `[..](Other%20Note.md)` link, all normalized to the same
+    // note name), embeds "Diagram.png", and carries three tags (two frontmatter, one inline).
+    let entry = store.lookup("note.md").expect("note indexed");
+    let l2 = store
+        .read_l2_by_hex(&entry.hash_hex)
+        .unwrap()
+        .expect("l2 present");
+    let callees: Vec<&str> = l2.calls.iter().map(|c| c.callee.as_str()).collect();
+    assert_eq!(
+        callees.iter().filter(|c| **c == "Other Note").count(),
+        3,
+        "both wikilink forms and the standard link resolve to the same note: {callees:?}"
+    );
+    assert!(
+        callees.contains(&"Diagram.png"),
+        "embed indexed: {callees:?}"
+    );
+    for tag in ["#project", "#wip", "#inline"] {
+        assert!(callees.contains(&tag), "tag {tag} indexed: {callees:?}");
+    }
+}
