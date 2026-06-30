@@ -881,3 +881,78 @@ fn ts_multiline_generic_signature_is_collapsed() {
         "signature should be collapsed and stop at brace: {sig}"
     );
 }
+
+#[test]
+fn scan_paths_noop_batch_does_no_work() {
+    // A debounced batch where every path is excluded (default excludes: node_modules / .basemind)
+    // or gitignored must record zero work — no indexing, empty report — so the serve watcher never
+    // rebuilds its cache on ignored / nested-`.basemind` churn (issue #33).
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    // `.git` + `.gitignore` so the `ignore` crate honors gitignore (git rules apply only in a repo).
+    fs::create_dir_all(root.join(".git")).unwrap();
+    fs::write(root.join(".gitignore"), b"build/\n").unwrap();
+    fs::create_dir_all(root.join("build")).unwrap();
+    fs::write(root.join("build/out.o"), b"\x00").unwrap();
+    fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+    fs::write(
+        root.join("node_modules/pkg/index.js"),
+        b"module.exports={}\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("child/.basemind")).unwrap();
+    fs::write(root.join("child/.basemind/index.msgpack"), b"\x00").unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    // Seed the index with one real file so the store is non-empty.
+    fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+
+    let touched = vec![
+        root.join("build/out.o"),
+        root.join("node_modules/pkg/index.js"),
+        root.join("child/.basemind/index.msgpack"),
+    ];
+    let report = scan_paths(root, &mut store, &cfg, &touched).unwrap();
+    assert_eq!(report.stats.updated, 0, "no indexable file changed");
+    assert_eq!(report.stats.removed, 0, "nothing removed");
+    assert_eq!(
+        report.results.len(),
+        0,
+        "short-circuit: no per-file work recorded"
+    );
+    assert!(store.lookup("build/out.o").is_none());
+    assert!(store.lookup("node_modules/pkg/index.js").is_none());
+    assert!(store.lookup("child/.basemind/index.msgpack").is_none());
+}
+
+#[test]
+fn scan_paths_prunes_deleted_indexed_file() {
+    // A deletion-only batch (no indexable additions) must still record the removal — the short
+    // circuit only triggers when BOTH rels and removed are empty.
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+    )
+    .unwrap();
+    assert!(store.lookup("a.rs").is_some());
+
+    fs::remove_file(root.join("a.rs")).unwrap();
+    let report = scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+    assert_eq!(report.stats.removed, 1, "deleted indexed file pruned");
+    assert_eq!(report.stats.updated, 0);
+    assert!(store.lookup("a.rs").is_none());
+}

@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-30
+
+Minor release: `RELEASE_MINOR` bumps 12 → 13, so every `.basemind/` index + blob store is
+wiped and rebuilt on the next `basemind scan` (intentional; no action needed).
+
+### Fixed
+
+- **`serve` watcher no longer pegs multi-core CPU on gitignored / nested-`.basemind` churn
+  (#33).** A writer `serve` watching an umbrella repo woke on every filesystem event except those
+  under its _own_ `.basemind/`, then ran a no-op incremental scan that still re-serialized the
+  index (`store.flush`) and rebuilt the **entire** `MapCache` over the whole corpus — on every
+  debounced batch. With nested child repos each flushing their own `.basemind/` in a mutual loop
+  (or any `node_modules` / build churn) this rebuilt the cache indefinitely. Three fixes:
+  - The watcher now drops every event a full scan would never index — including **nested**
+    child-repo `.basemind/` writes — before waking a rescan, honoring the **full nested
+    `.gitignore` hierarchy** (via the `ignore` crate) plus the configured exclude globs. The
+    incremental `scan_paths` is now gitignore-aware too, matching full-scan semantics.
+  - `scan_paths` short-circuits when a batch changes nothing indexable — no `store.flush`, no
+    work.
+  - `scan_and_refresh` updates the `MapCache` **incrementally** for the changed paths (re-reading
+    only those blobs) instead of rebuilding the whole corpus, and skips the rebuild and
+    cache-generation bump entirely when nothing changed (which no longer needlessly invalidates
+    paginating clients' cursors).
+  - Note: on macOS, FSEvents is kernel-recursive, so excluded subtrees cannot be un-watched;
+    their events are now filtered in-process in microseconds instead of triggering a rebuild.
+
+### Changed
+
+- Extracted the scanner's path-filtering (`Filters`, the new `IndexFilter`) into
+  `src/scanner_filter.rs` to keep `scanner.rs` under the 1000-line cap.
+
 ## [0.12.2] — 2026-06-29
 
 Patch release: blob and index formats are unchanged (`RELEASE_MINOR` stays 12), so no
