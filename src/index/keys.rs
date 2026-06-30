@@ -484,6 +484,7 @@ fn symbol_kind_byte(k: SymbolKind) -> u8 {
         SymbolKind::EnumVariant => 18,
         SymbolKind::Constructor => 19,
         SymbolKind::Decorator => 20,
+        SymbolKind::Heading => 21,
     }
 }
 
@@ -509,6 +510,7 @@ fn symbol_kind_from_byte(b: u8) -> SymbolKind {
         18 => SymbolKind::EnumVariant,
         19 => SymbolKind::Constructor,
         20 => SymbolKind::Decorator,
+        21 => SymbolKind::Heading,
         _ => SymbolKind::Unknown,
     }
 }
