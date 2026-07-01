@@ -3,6 +3,9 @@
 //! these tests answer the load-bearing question behind the "blocked / not
 //! responsive" reports: can more than one holder open the Fjall index at once?
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use basemind::config::ConfigV1;
 use basemind::index::IndexDb;
 use basemind::scanner::{ScanSource, scan};
@@ -77,4 +80,56 @@ fn second_session_loses_the_fjall_index_but_keeps_blob_reads() {
         1,
         "blob-backed search still works on the 2nd session"
     );
+}
+
+/// Regression guard for the writer→read-only DOWNGRADE race (peer B reproduced it 4/4 under load
+/// on 0.14.0). A single rightful writer, opened repeatedly while a storm of readers hammers
+/// `open_read_only`, must ALWAYS come up WITH the Fjall index — never silently downgraded to the
+/// read-only (blob) fallback, which would leave the repo with zero writers (no auto-scan / watcher
+/// / rescan → stale index).
+///
+/// Pre-fix this failed reliably: every `open_read_only` unconditionally attempted the single-holder
+/// fjall open, so a reader transiently holding the lock forced the writer's `IndexDb::open` to
+/// `fjall::Error::Locked`, which `cmd_serve` misread as contention and downgraded. The fix is two
+/// cooperating parts exercised here together: the writer retries a transient `Locked`
+/// (`open_index_with_retry`, F1), and readers skip the fjall open entirely while a writer holds
+/// `.basemind/.lock` (`writer_lock_is_held`, F3), draining the storm so the writer's retry wins.
+#[test]
+fn writer_never_downgrades_under_a_reader_storm() {
+    let dir = scanned_repo();
+    let root = Arc::new(dir.path().to_path_buf());
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Reader storm: several threads continuously open the store read-only, exactly as concurrent
+    // CLI `query`/`outline` calls or lock-losing read-only serves do.
+    let readers: Vec<_> = (0..8)
+        .map(|_| {
+            let root = Arc::clone(&root);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(store) = Store::open_read_only(&root, VIEW_WORKING) {
+                        drop(store);
+                    }
+                }
+            })
+        })
+        .collect();
+
+    // The sole rightful writer, opened repeatedly mid-storm, must never fail and never downgrade.
+    for i in 0..20 {
+        let store = Store::open(&root, VIEW_WORKING)
+            .unwrap_or_else(|error| panic!("writer open #{i} failed under reader storm: {error}"));
+        assert!(
+            store.index_db.is_some(),
+            "writer #{i} lost the Fjall index (downgraded to read-only) under the reader storm — \
+             the multi-session writer-downgrade race is back"
+        );
+        drop(store);
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    for reader in readers {
+        reader.join().expect("reader thread panicked");
+    }
 }

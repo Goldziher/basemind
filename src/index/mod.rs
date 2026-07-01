@@ -60,7 +60,9 @@ pub enum IndexError {
 #[derive(Clone)]
 pub struct IndexDb {
     pub(crate) db: Database,
-    #[allow(dead_code)] // used by `peek_schema_version` only; kept on the handle for future writes
+    /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; kept on the handle for
+    /// future meta writes.
+    #[allow(dead_code)]
     pub(crate) meta: Keyspace,
     pub(crate) symbols_by_path: Keyspace,
     /// Reserved fast-path partition: written on every upsert so that future name-based
@@ -102,23 +104,41 @@ impl IndexDb {
     /// caller is responsible for repopulating it via `IndexWriter`.
     pub fn open(view_dir: &Path) -> Result<Self, IndexError> {
         let dir = view_dir.join(INDEX_DIR);
-        let needs_wipe = match peek_schema_version(&dir) {
-            Some(ver) if ver == INDEX_SCHEMA_VER => false,
-            None => false, // brand new
-            Some(_) => true,
-        };
-        if needs_wipe && dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
-                path: dir.clone(),
-                source,
-            })?;
-        }
         std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
             path: dir.clone(),
             source,
         })?;
-        let db = Database::builder(&dir).open()?;
-        let meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        // Open the Fjall database ONCE and read the persisted schema version through the same
+        // handle we intend to keep. The previous code peeked the version via a throwaway
+        // `Database::open` before this real open — two exclusive fjall-lock acquisitions per
+        // `IndexDb::open`, which doubled the window in which a concurrent reader's transient open
+        // could collide with a rightful writer and force it to downgrade to read-only (the
+        // multi-session writer-downgrade race). One open closes that extra window. Only the rare
+        // schema-mismatch path below pays a second open.
+        let mut db = Database::builder(&dir).open()?;
+        let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        let on_disk_ver = meta
+            .get(META_SCHEMA_VER)?
+            .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
+            .map(u32::from_be_bytes);
+        if matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER) {
+            // Schema drifted: drop every handle first so Fjall releases the directory lock and its
+            // file handles, then wipe and reopen fresh. The caller repopulates from the msgpack
+            // blobs via `IndexWriter`. Mirrors the old wipe-on-mismatch flow, minus the extra open
+            // on the common (matching / brand-new) path.
+            drop(meta);
+            drop(db);
+            std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            std::fs::create_dir_all(&dir).map_err(|source| IndexError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            db = Database::builder(&dir).open()?;
+            meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        }
         let symbols_by_path = db.keyspace("symbols_by_path", KeyspaceCreateOptions::default)?;
         let symbols_by_name = db.keyspace("symbols_by_name", KeyspaceCreateOptions::default)?;
         let calls_by_path = db.keyspace("calls_by_path", KeyspaceCreateOptions::default)?;
@@ -173,23 +193,4 @@ impl IndexDb {
     pub fn symbols_index_is_empty(&self) -> bool {
         self.symbols_by_path.iter().next().is_none()
     }
-}
-
-/// Best-effort peek at the on-disk schema version without opening a full Database. Used by
-/// `IndexDb::open` to decide whether to wipe before opening. Returns `None` if the index
-/// dir doesn't exist or doesn't have a readable meta entry.
-fn peek_schema_version(dir: &Path) -> Option<u32> {
-    if !dir.exists() {
-        return None;
-    }
-    // Cheapest path: open in read-only mode, peek meta. Fjall doesn't expose a true RO
-    // mode but `Database::builder().open()` is idempotent and fast. We tolerate failure
-    // here — a failed peek just falls through to "treat as missing".
-    let db = Database::builder(dir).open().ok()?;
-    let meta = db.keyspace("meta", KeyspaceCreateOptions::default).ok()?;
-    let bytes = meta.get(META_SCHEMA_VER).ok().flatten()?;
-    if bytes.len() != 4 {
-        return None;
-    }
-    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
