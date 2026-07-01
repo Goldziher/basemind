@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use basemind::config::{self, Config, DocumentsCliOverrides};
 use basemind::render::{self, Verbosity};
-use basemind::store::{LockHolder, Store};
+use basemind::store::{LockHolder, Store, StoreError};
 use basemind::watcher::{BatchKind, WatchBatch};
 
 mod lang_cli;
@@ -789,10 +789,21 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     let (store, read_only) = match Store::open_with_holder(root, view, LockHolder::Serve) {
         Ok(store) => (store, false),
         Err(error) if error.is_lock_contention() => {
-            tracing::warn!(
-                %error,
-                "store write-lock held by another serve; starting read-only (reads from the shared index)"
-            );
+            // Name the real holder instead of always blaming "another serve" (F4). Two distinct
+            // causes surface as lock contention: the fs2 `.basemind/.lock` is a genuine second
+            // writer (named via the `.lock.meta` sidecar in the error message); a fjall `Locked`
+            // that survived `open_index_with_retry` is a transient reader that briefly held the
+            // single-holder index lock — not another serve.
+            match &error {
+                StoreError::Locked { .. } => tracing::warn!(
+                    %error,
+                    "store write-lock held by another basemind process; starting read-only (reads from the shared index)"
+                ),
+                _ => tracing::warn!(
+                    %error,
+                    "Fjall index lock still contended after retry (a transient reader, not another serve); starting read-only (reads from the shared index)"
+                ),
+            }
             let store = Store::open_read_only(root, view).context("open store read-only")?;
             (store, true)
         }
