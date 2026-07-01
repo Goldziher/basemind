@@ -226,6 +226,7 @@ fn fold_chunked(
                 sha: record.sha,
                 summary: record.summary,
                 author: record.author,
+                author_email: record.author_email,
                 author_time_unix: record.author_time_unix,
                 files,
             };

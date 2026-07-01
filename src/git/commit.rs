@@ -16,14 +16,23 @@ pub(super) fn build_commit_info(
     let commit = local.find_commit(id).ok()?;
     let sha = id.to_string();
     let short_sha = sha[..7.min(sha.len())].to_string();
-    let summary = commit
-        .message()
-        .ok()
+    let message = commit.message().ok();
+    let summary = message
+        .as_ref()
         .map(|m| m.summary().to_string())
+        .unwrap_or_default();
+    // Everything after the summary line; `None` (summary-only commit) → empty.
+    let body = message
+        .as_ref()
+        .and_then(|m| m.body())
+        .map(|b| b.to_string())
         .unwrap_or_default();
     let author_ref = commit.author().ok()?;
     let author = std::str::from_utf8(author_ref.name)
         .unwrap_or("?")
+        .to_string();
+    let author_email = std::str::from_utf8(author_ref.email)
+        .unwrap_or("")
         .to_string();
     let author_time_unix = author_ref.time().ok().map(|t| t.seconds).unwrap_or(0);
 
@@ -37,7 +46,9 @@ pub(super) fn build_commit_info(
         short_sha,
         summary,
         author,
+        author_email,
         author_time_unix,
+        body,
         files,
     })
 }

@@ -46,10 +46,12 @@ use crate::path::RelPath;
 /// code index owns `+2`, git_cache `+1`), so it moves with each minor release but is independent of
 /// the code-map index schema. Mismatch on open wipes `git-history.fjall/` and the next scan rebuilds.
 ///
-/// The offset is `+4`: it was bumped from `+3` when the posting-list byte format changed from
-/// ascending (full-scan tail) to **newest-first** delta-varints (O(n) head decode). The format is
-/// part of this still-unreleased feature, so the bump only forces in-flight dev indexes to rebuild.
-pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 4;
+/// The offset is `+5`: bumped from `+4` when the stored commit-meta head gained an `author_email`
+/// field (`sha ‖ time ‖ author ‖ email ‖ summary ‖ files`) for git-history full-text search. The
+/// prior `+4` bump switched the posting-list byte format from ascending (full-scan tail) to
+/// **newest-first** delta-varints (O(n) head decode). The format is part of this still-unreleased
+/// feature, so the bump only forces in-flight dev indexes to rebuild.
+pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 5;
 
 const GIT_HISTORY_DIR: &str = "git-history.fjall";
 
@@ -88,6 +90,8 @@ pub struct CommitMeta {
     pub sha: String,
     pub summary: String,
     pub author: String,
+    /// Author email — a head field alongside `author`, for git-history full-text search.
+    pub author_email: String,
     pub author_time_unix: i64,
     /// `(path_id, change_kind_byte)` for each path the commit changed.
     pub files: Vec<(u32, u8)>,
@@ -308,6 +312,7 @@ fn decode_commit_value(bytes: &[u8], want_files: bool) -> Option<CommitMeta> {
             sha: keys::sha_raw_to_hex(&decoded.sha20),
             summary: String::from_utf8_lossy(decoded.summary).into_owned(),
             author: String::from_utf8_lossy(decoded.author).into_owned(),
+            author_email: String::from_utf8_lossy(decoded.author_email).into_owned(),
             author_time_unix: decoded.author_time_unix,
             files: decoded.files,
         })
@@ -317,6 +322,7 @@ fn decode_commit_value(bytes: &[u8], want_files: bool) -> Option<CommitMeta> {
             sha: keys::sha_raw_to_hex(&head.sha20),
             summary: String::from_utf8_lossy(head.summary).into_owned(),
             author: String::from_utf8_lossy(head.author).into_owned(),
+            author_email: String::from_utf8_lossy(head.author_email).into_owned(),
             author_time_unix: head.author_time_unix,
             files: Vec::new(),
         })
@@ -344,6 +350,7 @@ impl GitHistoryWriter {
             &sha20,
             meta.author_time_unix,
             meta.author.as_bytes(),
+            meta.author_email.as_bytes(),
             meta.summary.as_bytes(),
             &meta.files,
         );

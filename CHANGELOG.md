@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **git-history: capture author email + full commit body** for the in-progress git-history
+  full-text search. `CommitInfo` now carries `author_email` and `body`; the stored commit-meta head
+  gains an `author_email` field (`sha ‖ time ‖ author ‖ email ‖ summary ‖ files`). `GIT_HISTORY_SCHEMA`
+  bumps `+4 → +5`, wiping and rebuilding `.basemind/git-history.fjall/` on the next scan — a no-op for
+  released users since the git-history index is still an unreleased feature (only in-flight dev
+  indexes rebuild).
+
 ## [0.14.0] — 2026-06-30
 
 Minor release: `RELEASE_MINOR` bumps 13 → 14 (a new `SymbolKind::Heading` variant), so every

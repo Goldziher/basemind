@@ -73,7 +73,11 @@ impl GitHistoryIndex {
             short_sha,
             summary: meta.summary,
             author: meta.author,
+            author_email: meta.author_email,
             author_time_unix: meta.author_time_unix,
+            // Body is not stored in `CommitMeta` (it lives in the `gh_commit_text_by_ord`
+            // partition); reconstructed commits carry an empty body until that read is wired.
+            body: String::new(),
             files,
         }
     }

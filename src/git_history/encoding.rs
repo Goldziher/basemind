@@ -126,23 +126,27 @@ fn read_bytes<'a>(buf: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
 /// per-commit partition roughly in half. Layout:
 ///
 /// ```text
-/// sha[20] ‖ time:zigzag-varint ‖ author:len-prefixed ‖ summary:len-prefixed
+/// sha[20] ‖ time:zigzag-varint ‖ author:len-prefixed ‖ email:len-prefixed ‖ summary:len-prefixed
 ///         ‖ uvarint(file_count) ‖ file_count × ( uvarint(Δpath_id) ‖ kind:u8 )
 /// ```
 ///
-/// `files` is sorted by `path_id` ascending so the deltas are small; order is irrelevant to the
-/// caller (a commit's changed-file set).
+/// `email` sits between `author` and `summary` so both identity fields decode together in the head;
+/// it and `summary` are read by the git-history full-text index. `files` is sorted by `path_id`
+/// ascending so the deltas are small; order is irrelevant to the caller (a commit's changed-file set).
 pub fn encode_commit_meta(
     sha20: &[u8; 20],
     author_time_unix: i64,
     author: &[u8],
+    email: &[u8],
     summary: &[u8],
     files: &[(u32, u8)],
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(20 + 16 + author.len() + summary.len() + files.len() * 2);
+    let mut out =
+        Vec::with_capacity(20 + 16 + author.len() + email.len() + summary.len() + files.len() * 2);
     out.extend_from_slice(sha20);
     write_uvarint(&mut out, zigzag(author_time_unix));
     write_bytes(&mut out, author);
+    write_bytes(&mut out, email);
     write_bytes(&mut out, summary);
 
     let mut sorted: Vec<(u32, u8)> = files.to_vec();
@@ -157,11 +161,12 @@ pub fn encode_commit_meta(
     out
 }
 
-/// Decoded form of [`encode_commit_meta`]: borrows `author`/`summary` out of the buffer.
+/// Decoded form of [`encode_commit_meta`]: borrows `author`/`author_email`/`summary` out of the buffer.
 pub struct DecodedCommitMeta<'a> {
     pub sha20: [u8; 20],
     pub author_time_unix: i64,
     pub author: &'a [u8],
+    pub author_email: &'a [u8],
     pub summary: &'a [u8],
     pub files: Vec<(u32, u8)>,
 }
@@ -174,6 +179,7 @@ pub fn decode_commit_meta(buf: &[u8]) -> Option<DecodedCommitMeta<'_>> {
     cursor += 20;
     let author_time_unix = unzigzag(read_uvarint(buf, &mut cursor)?);
     let author = read_bytes(buf, &mut cursor)?;
+    let author_email = read_bytes(buf, &mut cursor)?;
     let summary = read_bytes(buf, &mut cursor)?;
     let count = read_uvarint(buf, &mut cursor)? as usize;
     let mut files = Vec::with_capacity(count);
@@ -188,6 +194,7 @@ pub fn decode_commit_meta(buf: &[u8]) -> Option<DecodedCommitMeta<'_>> {
         sha20,
         author_time_unix,
         author,
+        author_email,
         summary,
         files,
     })
@@ -199,11 +206,12 @@ pub struct DecodedCommitHead<'a> {
     pub sha20: [u8; 20],
     pub author_time_unix: i64,
     pub author: &'a [u8],
+    pub author_email: &'a [u8],
     pub summary: &'a [u8],
 }
 
-/// Decode only the head of a [`encode_commit_meta`] payload (sha, time, author, summary), skipping
-/// the file-change section entirely. The read paths that pass `include_files=false`
+/// Decode only the head of a [`encode_commit_meta`] payload (sha, time, author, email, summary),
+/// skipping the file-change section entirely. The read paths that pass `include_files=false`
 /// (`commits_touching`, `recent_changes`) never inspect the changed-file set, so this avoids the
 /// `uvarint(count)` + per-edge delta loop + the `Vec<(u32, u8)>` allocation on every decoded commit.
 pub fn decode_commit_meta_head(buf: &[u8]) -> Option<DecodedCommitHead<'_>> {
@@ -212,11 +220,13 @@ pub fn decode_commit_meta_head(buf: &[u8]) -> Option<DecodedCommitHead<'_>> {
     cursor += 20;
     let author_time_unix = unzigzag(read_uvarint(buf, &mut cursor)?);
     let author = read_bytes(buf, &mut cursor)?;
+    let author_email = read_bytes(buf, &mut cursor)?;
     let summary = read_bytes(buf, &mut cursor)?;
     Some(DecodedCommitHead {
         sha20,
         author_time_unix,
         author,
+        author_email,
         summary,
     })
 }
@@ -301,11 +311,19 @@ mod tests {
     fn commit_meta_round_trips() {
         let sha = [7u8; 20];
         let files = vec![(5u32, 1u8), (2, 0), (100, 2)]; // unsorted on input
-        let buf = encode_commit_meta(&sha, 1_700_000_000, b"Ada <a@x>", b"fix: thing", &files);
+        let buf = encode_commit_meta(
+            &sha,
+            1_700_000_000,
+            b"Ada",
+            b"ada@x.io",
+            b"fix: thing",
+            &files,
+        );
         let decoded = decode_commit_meta(&buf).expect("decodes");
         assert_eq!(decoded.sha20, sha);
         assert_eq!(decoded.author_time_unix, 1_700_000_000);
-        assert_eq!(decoded.author, b"Ada <a@x>");
+        assert_eq!(decoded.author, b"Ada");
+        assert_eq!(decoded.author_email, b"ada@x.io");
         assert_eq!(decoded.summary, b"fix: thing");
         // Files come back sorted by path_id (set semantics).
         assert_eq!(decoded.files, vec![(2, 0), (5, 1), (100, 2)]);
@@ -315,15 +333,24 @@ mod tests {
     fn commit_meta_head_decodes_without_files() {
         let sha = [9u8; 20];
         let files = vec![(5u32, 1u8), (2, 0), (100, 2)];
-        let buf = encode_commit_meta(&sha, 1_700_000_000, b"Ada <a@x>", b"fix: thing", &files);
+        let buf = encode_commit_meta(
+            &sha,
+            1_700_000_000,
+            b"Ada",
+            b"ada@x.io",
+            b"fix: thing",
+            &files,
+        );
         let head = decode_commit_meta_head(&buf).expect("head decodes");
         assert_eq!(head.sha20, sha);
         assert_eq!(head.author_time_unix, 1_700_000_000);
-        assert_eq!(head.author, b"Ada <a@x>");
+        assert_eq!(head.author, b"Ada");
+        assert_eq!(head.author_email, b"ada@x.io");
         assert_eq!(head.summary, b"fix: thing");
         // Head decode agrees with the full decode on every non-file field, but allocates no Vec.
         let full = decode_commit_meta(&buf).expect("full decodes");
         assert_eq!(head.sha20, full.sha20);
+        assert_eq!(head.author_email, full.author_email);
         assert_eq!(head.summary, full.summary);
         assert!(
             decode_commit_meta_head(&buf[..5]).is_none(),
@@ -333,8 +360,9 @@ mod tests {
 
     #[test]
     fn commit_meta_empty_files_and_truncation() {
-        let buf = encode_commit_meta(&[0u8; 20], 0, b"", b"", &[]);
+        let buf = encode_commit_meta(&[0u8; 20], 0, b"", b"", b"", &[]);
         let decoded = decode_commit_meta(&buf).expect("decodes");
+        assert!(decoded.author_email.is_empty());
         assert!(decoded.files.is_empty());
         assert!(decode_commit_meta(&buf[..10]).is_none(), "truncated → None");
     }
