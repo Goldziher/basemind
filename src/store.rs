@@ -266,7 +266,11 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = Some(IndexDb::open(&view_dir)?);
+        // We hold `.basemind/.lock` (acquired above), so we are the sole rightful writer; retry a
+        // transient fjall `Locked` from a concurrent reader instead of letting it propagate — a
+        // bare `?` here would surface as lock contention and downgrade this writer to read-only,
+        // the multi-session writer-downgrade race.
+        let index_db = Some(open_index_with_retry(&view_dir)?);
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
@@ -317,10 +321,15 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        // The MCP server runs read-only; we still need to *read* from the Fjall index for
-        // find_references etc. Opening it here is harmless — Fjall handles concurrent
-        // readers fine via internal snapshots.
-        let index_db = if schema_ok && view_dir.exists() {
+        // Fjall is a SINGLE-holder store: only one process can open `index.fjall/` at a time. If a
+        // writer (a lock-holding `serve` / `scan`) is live, this read-only consumer cannot open the
+        // index anyway — and merely attempting it can transiently hold the fjall lock long enough to
+        // force the rightful writer into read-only (the multi-session writer-downgrade race). So we
+        // only open Fjall when NO writer holds `.basemind/.lock`; otherwise we serve from the
+        // concurrently-readable blobs (`index_db = None`, the in-RAM MapCache fallback covers
+        // find_references/callers/impls/call_graph). A single `.ok()` open with no retry — a reader
+        // never holds the lock, and any race with a starting writer just degrades to `None`.
+        let index_db = if schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             IndexDb::open(&view_dir).ok()
         } else {
             None
@@ -614,6 +623,62 @@ pub(crate) fn read_index(view_dir: &Path) -> Result<Option<Index>, StoreError> {
 /// Acquire the store's advisory `.lock` (exclusive flock, with bounded retry).
 /// Reused by `store_gc::run_gc` so the mark+sweep races neither a concurrent scan
 /// nor a `basemind watch`.
+/// Retries a rightful writer performs when opening the Fjall index hits a *transient* fjall
+/// `Locked`. The caller already holds the `.basemind/.lock` advisory lock, so it is the sole
+/// legitimate writer — any fjall contention here is a short-lived reader open (a CLI `query` /
+/// `outline`, or another serve's read-only fallback briefly probing the index) that releases
+/// within sub-ms to low-ms. Retrying lets the rightful writer win instead of misfiring the
+/// read-only downgrade — the multi-session writer-downgrade race. ~10 × 50 ms tracks the fs2
+/// `.lock` retry budget (`acquire_lock_as`).
+const INDEX_OPEN_RETRIES: u32 = 10;
+const INDEX_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Open the Fjall [`IndexDb`], retrying a transient fjall `Locked` (see [`INDEX_OPEN_RETRIES`]).
+/// ONLY correct for a caller that already holds `.basemind/.lock`; such a caller is the sole
+/// rightful writer, so any `Locked` is transient and clears. Every other [`IndexError`] — and a
+/// lock that never clears within the budget — propagates.
+pub(crate) fn open_index_with_retry(view_dir: &Path) -> Result<IndexDb, IndexError> {
+    let mut attempt = 0;
+    loop {
+        match IndexDb::open(view_dir) {
+            Ok(db) => return Ok(db),
+            Err(IndexError::Fjall(fjall::Error::Locked)) if attempt < INDEX_OPEN_RETRIES => {
+                attempt += 1;
+                std::thread::sleep(INDEX_OPEN_BACKOFF);
+            }
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+/// Best-effort probe: does a live writer currently hold the exclusive `.basemind/.lock`?
+///
+/// A read-only consumer calls this before deciding whether to even attempt opening the
+/// single-holder Fjall index. If a writer holds the lock, the reader's open cannot succeed anyway
+/// (Fjall is one-holder) — and, worse, the reader's *transient* acquisition attempt can knock the
+/// rightful writer into read-only (the multi-session writer-downgrade race). So when a writer is
+/// live the reader skips Fjall entirely and serves from the concurrently-readable blobs
+/// (`index_db = None`). Returns `false` when no lock file exists or the probe can't run — the
+/// caller then falls through to attempting the open (correct for the no-writer CLI case).
+fn writer_lock_is_held(basemind_dir: &Path) -> bool {
+    let path = basemind_dir.join(LOCK_FILE);
+    let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
+        // No lock file (never scanned) or unopenable — assume no live writer.
+        return false;
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            // No exclusive holder. Release our shared probe immediately so we never block a
+            // writer that starts right after this check.
+            let _ = FileExt::unlock(&file);
+            false
+        }
+        // Contention (a writer holds it exclusive) or any probe error → treat as "writer live"
+        // and serve from blobs. Skipping Fjall is always a safe degradation.
+        Err(_) => true,
+    }
+}
+
 pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     acquire_lock_as(basemind_dir, LockHolder::Maintenance)
 }
