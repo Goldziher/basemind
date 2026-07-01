@@ -86,7 +86,12 @@ pub struct CommitInfo {
     pub short_sha: String,
     pub summary: String,
     pub author: String,
+    /// Author email (`user@host`), empty when the commit has none or it isn't valid UTF-8.
+    pub author_email: String,
     pub author_time_unix: i64,
+    /// Full commit message body (everything after the summary line), empty for summary-only
+    /// commits. Carried for git-history full-text search; not persisted in `CommitMeta`.
+    pub body: String,
     /// Files that changed in this commit relative to its first parent.
     /// Empty for the root commit, and empty when `include_files=false` was used.
     pub files: Vec<(crate::path::RelPath, ChangeKind)>,
