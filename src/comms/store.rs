@@ -107,24 +107,35 @@ impl CommsStore {
         let lock = acquire_lock(comms_dir)?;
 
         let dir = comms_dir.join(STORE_DIR);
-        let needs_wipe = match peek_schema_version(&dir) {
-            Some(ver) if ver == COMMS_SCHEMA_VER => false,
-            None => false, // brand new
-            Some(_) => true,
-        };
-        if needs_wipe && dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|source| CommsStoreError::Io {
-                path: dir.clone(),
-                source,
-            })?;
-        }
         std::fs::create_dir_all(&dir).map_err(|source| CommsStoreError::Io {
             path: dir.clone(),
             source,
         })?;
-
-        let db = Database::builder(&dir).open()?;
-        let meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        // Open ONCE and read the schema version through the handle we keep, rather than a throwaway
+        // peek-open before the real open — the same single-open shape adopted for the code-map index
+        // (`crate::index::IndexDb::open`), which halves the Fjall-lock acquisition window. Only the
+        // rare schema-mismatch path reopens.
+        let mut db = Database::builder(&dir).open()?;
+        let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        let on_disk_ver = meta
+            .get(META_SCHEMA_VER)?
+            .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
+            .map(u32::from_be_bytes);
+        if matches!(on_disk_ver, Some(ver) if ver != COMMS_SCHEMA_VER) {
+            // Schema drifted: drop the handle so Fjall releases its directory lock, wipe, reopen.
+            drop(meta);
+            drop(db);
+            std::fs::remove_dir_all(&dir).map_err(|source| CommsStoreError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            std::fs::create_dir_all(&dir).map_err(|source| CommsStoreError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            db = Database::builder(&dir).open()?;
+            meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
+        }
         let rooms = db.keyspace("rooms", KeyspaceCreateOptions::default)?;
         let messages_by_room = db.keyspace("messages_by_room", KeyspaceCreateOptions::default)?;
         let message_body = db.keyspace("message_body", KeyspaceCreateOptions::default)?;
@@ -562,21 +573,6 @@ fn acquire_lock(comms_dir: &Path) -> Result<File, CommsStoreError> {
         }
     }
     unreachable!("loop returns on the final attempt")
-}
-
-/// Best-effort peek at the on-disk schema version. `None` when the store dir is absent or the
-/// meta row is unreadable. Mirrors `crate::index::peek_schema_version`.
-fn peek_schema_version(dir: &Path) -> Option<u32> {
-    if !dir.exists() {
-        return None;
-    }
-    let db = Database::builder(dir).open().ok()?;
-    let meta = db.keyspace("meta", KeyspaceCreateOptions::default).ok()?;
-    let bytes = meta.get(META_SCHEMA_VER).ok().flatten()?;
-    if bytes.len() != 4 {
-        return None;
-    }
-    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 #[cfg(test)]
