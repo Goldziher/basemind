@@ -51,7 +51,18 @@ fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
 
     let after = cache_stats(&basemind_dir).expect("stats after");
 
-    assert_eq!(before.git_cache_bytes, 0, "no bytes before any cached call");
+    // The bug-#23 invariant is that a disk-backed call is *reflected* on disk: the cache is
+    // non-zero afterwards and strictly grows across the call. We deliberately do NOT assert
+    // `before == 0` — `cache_stats` sizes by allocated blocks, so opening the disk-backed cache can
+    // pre-create the `git-cache/` directory that already costs one block on block-counting
+    // filesystems (ext4/xfs on Linux CI) while reading 0 on APFS. Asserting growth is the portable,
+    // meaningful check.
+    assert!(
+        after.git_cache_bytes > before.git_cache_bytes,
+        "git_cache_bytes must grow across a disk-backed call: before={} after={}",
+        before.git_cache_bytes,
+        after.git_cache_bytes
+    );
     assert!(
         after.git_cache_bytes > 0,
         "git_cache_bytes must reflect the on-disk cache after a disk-backed call, got {}",
