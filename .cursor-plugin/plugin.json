@@ -2,7 +2,7 @@
   "name": "basemind",
   "displayName": "basemind",
   "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "author": {
     "name": "Na'aman Hirschfeld",
     "email": "nhirschfeld@gmail.com"
