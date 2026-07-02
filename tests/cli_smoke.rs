@@ -529,6 +529,7 @@ fn cache_stats_reports_blob_accounting() {
             "git_history_bytes",
             "total_bytes",
             "other_bytes",
+            "blob_accounting_ok",
         ],
     );
     assert!(
