@@ -23,11 +23,14 @@ Orchestrate subagents when:
 
 ## Setup
 
-1. **Pick a room id and scope.** For a private team, use `scope: "session"` to auto-join
-   agents sharing the same session id (recommended). For machine-wide rooms, use `scope: "global"`.
+1. **Pick a room id and scope.** For a private team, scope the room to a unique session token:
+   `scope: {session: "<token>"}` — pick any shared string (the room id works). The scope selector
+   is externally tagged, so the session variant carries its token (`{session: "…"}`), not a bare
+   `"session"`; only `global` is a bare string. Agents join by posting to the room, so unrelated
+   agents never see it. For machine-wide rooms, use `scope: "global"`.
 
    ```text
-   room_create {room: "review-pr-42", scope: "session", title: "Code review panel"}
+   room_create {room: "review-pr-42", scope: {session: "review-pr-42"}, title: "Code review panel"}
    ```
 
 2. **Assign each subagent a short name.** Pass `as_agent` to every tool call the subagent makes.
@@ -70,7 +73,7 @@ As the orchestrator:
 **Orchestrator setup:**
 
 ```text
-room_create {room: "review-auth-pr", scope: "session"}
+room_create {room: "review-auth-pr", scope: {session: "review-auth-pr"}}
 
 # Spawn agent "security"
 # Prompt: "You are agent 'security' on room 'review-auth-pr'. Register yourself,

@@ -23,8 +23,11 @@ cd "$REPO_ROOT"
 SKILLS=(
   "basemind"
   "basemind-cli"
+  "basemind-code-search"
   "basemind-comms"
+  "basemind-documents"
   "basemind-doctor"
+  "basemind-git-history"
   "basemind-scan"
   "basemind-stats"
 )

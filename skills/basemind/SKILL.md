@@ -27,6 +27,16 @@ without you reading whole files.
 - **Shared memory** — per-repo, scope-keyed key-value + semantic memory across sessions.
 - **Web crawl** — scrape / follow-link crawl into the same searchable document store.
 
+## Dedicated per-capability skills
+
+This umbrella skill covers the whole surface. For focused workflows, reach for the dedicated skills:
+
+- **`basemind-code-search`** — outlines, symbol search, references, callers, call graphs.
+- **`basemind-git-history`** — history, blame, structural diffs, churn.
+- **`basemind-documents`** — document RAG (`search_documents`), web ingestion, memory.
+- **`basemind-comms`** — coordinating with other agents in the same repo over the broker.
+- **`basemind-cli`** — the same surface driven headlessly from the CLI.
+
 ## When to reach for it (instead of `grep` / `read_file`)
 
 Use basemind for:
@@ -170,7 +180,9 @@ A 1000-line file becomes a 30-line table of contents.
   share memory; unrelated repos do not see each other's entries.
 - Web ingestion tools (`web_scrape`, `web_crawl`, `web_map`) require `--features crawl`.
   When that feature is off they are NOT registered on the server at all — agents will simply
-  not see them in the tool list. Crawled pages land in the `documents` LanceDB table under
-  scope `web:<host>`; `search_documents { query: ..., scope: "web:<host>" }` retrieves them.
+  not see them in the tool list. Crawled pages land in the `documents` LanceDB table tagged
+  with scope `web:<host>`; `search_documents` finds them alongside every other ingested
+  document. It searches across ALL documents and has **no `scope` parameter** — you cannot
+  filter results to a single host at query time.
   robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
   `.basemind/basemind.toml` (config-file-only) disables it.

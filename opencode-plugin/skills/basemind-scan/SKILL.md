@@ -48,4 +48,5 @@ Finding the binary (in order of preference):
   instead, or stop the server first.
 - After a successful scan, both the MCP tools and `basemind query …` have a fresh index.
 - The CLI shares the exact same `.basemind/` index as the MCP server — see the `basemind-cli`
-  skill for the full query surface.
+  skill for the full query surface, or `basemind-code-search` / `basemind-git-history` /
+  `basemind-documents` for the per-capability workflows.
