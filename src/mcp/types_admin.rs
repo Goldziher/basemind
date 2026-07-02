@@ -36,8 +36,13 @@ pub(super) struct CacheStatsResponse {
     pub other_bytes: u64,
     /// Total blob files on disk (every suffix counts as one file).
     pub blob_count: usize,
-    /// Blob files whose hex stem is referenced by no view — reclaimable by `cache_gc`.
+    /// Blob files whose hex stem is referenced by no view — reclaimable by `cache_gc`. Meaningful
+    /// only when `blob_accounting_ok` is `true`.
     pub orphan_blob_count: usize,
+    /// Whether orphan accounting ran. `false` = a view index was unreadable (stale schema /
+    /// corruption), so `orphan_blob_count` is `0` because it was skipped, not because there are
+    /// none; the size fields remain accurate. Re-scan to restore accounting.
+    pub blob_accounting_ok: bool,
     /// Per-view indexed file count, `(view_name, file_count)`.
     pub per_view_file_count: Vec<(String, usize)>,
     /// Current resident set size (physical RAM) of the process serving this call, in bytes;
@@ -61,6 +66,7 @@ impl From<crate::store_gc::CacheStats> for CacheStatsResponse {
             other_bytes: s.other_bytes,
             blob_count: s.blob_count,
             orphan_blob_count: s.orphan_blob_count,
+            blob_accounting_ok: s.blob_accounting_ok,
             per_view_file_count: s.per_view_file_count,
             rss_bytes: s.rss_bytes,
             peak_rss_bytes: s.peak_rss_bytes,

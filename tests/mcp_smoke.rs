@@ -1682,6 +1682,12 @@ async fn mcp_server_exercises_representative_tools() {
             .is_some(),
         "git_history_bytes field must be present: {body}"
     );
+    // A freshly-scanned fixture has a readable index, so orphan accounting ran.
+    assert_eq!(
+        body.get("blob_accounting_ok").and_then(Value::as_bool),
+        Some(true),
+        "blob_accounting_ok must be true on a clean scan: {body}"
+    );
     // RSS is best-effort per platform; when present it must be a positive number (the MCP server
     // process is alive while answering).
     if let Some(rss) = body.get("rss_bytes").and_then(Value::as_u64) {
