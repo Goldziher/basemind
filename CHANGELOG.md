@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-07-02
+
+Patch release: docs / skills / plugin-manifest only. No schema or `RELEASE_MINOR` change, so
+existing `.basemind/` caches are untouched on upgrade.
+
+### Added
+
+- **Dedicated per-capability skills.** Split the "use basemind" guidance into three new
+  narrowly-triggerable skills alongside the existing umbrella `basemind` and `basemind-comms`:
+  `basemind-code-search` (symbol search / outline / references / callers / call graph /
+  implementations / `workspace_grep`), `basemind-git-history` (history / blame / diffs / churn /
+  `search_git_history`), and `basemind-documents` (semantic + full-text document search, NER /
+  keyword filters, and web ingestion). Mirrored into the Codex / Cursor / OpenCode plugin trees by
+  `scripts/sync-plugin-skills.sh`.
+- **`llms.txt`.** Root-level [llmstxt.org](https://llmstxt.org) index pointing agents at the
+  capability skills, docs, and config schema.
+
 ## [0.15.0] — 2026-07-02
 
 Minor release: `RELEASE_MINOR` bumps 14 → 15, so every `.basemind/` index + blob store (including
