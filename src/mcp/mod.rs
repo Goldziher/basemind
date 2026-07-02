@@ -689,6 +689,17 @@ impl BasemindServer {
             prompt_router: Self::prompt_router(),
         }
     }
+
+    /// Names of every tool this server advertises via `tools/list` (the full router, ignoring the
+    /// `BASEMIND_MCP_LEAN` wrapper mode). Exposed for the `tests/cli_parity.rs` guard, which asserts
+    /// each advertised tool has a CLI counterpart. The set follows the compiled feature flags.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
 }
 
 #[tool_handler(router = self.tool_router.clone())]
