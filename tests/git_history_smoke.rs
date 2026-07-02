@@ -485,3 +485,98 @@ fn empty_index_before_sync_falls_back() {
     assert!(index.is_empty());
     assert_eq!(index.last_indexed_head_hex(), None);
 }
+
+/// Commit authored by `name`/`email` at an explicit ISO date, so the newest-first walk order is
+/// unambiguous even across many commits (the shared `commit_authored` pins a single timestamp,
+/// which leaves same-second ordering to the traversal — fine for a handful of commits, not for the
+/// deep history this test builds).
+fn commit_authored_at(
+    root: &Path,
+    path: &str,
+    content: &str,
+    name: &str,
+    email: &str,
+    subject: &str,
+    date: &str,
+) {
+    fs::write(root.join(path), content).unwrap();
+    run(root, &["add", path]);
+    let status = Command::new("git")
+        .args(["commit", "-q", "-m", subject])
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", name)
+        .env("GIT_AUTHOR_EMAIL", email)
+        .env("GIT_COMMITTER_NAME", name)
+        .env("GIT_COMMITTER_EMAIL", email)
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git commit failed");
+}
+
+/// Regression for the reported precision bug: an author whose latest commit is buried deeper than
+/// the `recent_changes` window (limit ≤ 100). `search_git_history(field=author)` must still find it
+/// — matching `git log -i --author` at full branch depth — while the newest-100 window does not
+/// contain it, which is exactly why routing an author question to `recent_changes` returned "no
+/// commit by that author". Branch/HEAD-scoped throughout (no `--all`).
+#[test]
+fn author_search_finds_commit_beyond_recent_window_matches_git() {
+    let dir = init_repo();
+    let root = dir.path();
+
+    // Oldest commit (rank 121): the author we later look for.
+    commit_authored_at(
+        root,
+        "a.rs",
+        "fn a() {}\n",
+        "Dor Green",
+        "dor@example.com",
+        "early: seed the module",
+        "2025-01-01T00:00:00",
+    );
+    // Bury it under 120 strictly-later commits by a different author.
+    for i in 0..120 {
+        let date = format!("2025-01-01T{:02}:{:02}:00", 1 + (i / 60), i % 60);
+        commit_authored_at(
+            root,
+            "b.rs",
+            &format!("v{i}\n"),
+            "Other Dev",
+            "other@example.com",
+            &format!("chore: change {i}"),
+            &date,
+        );
+    }
+
+    let (index, _) = sync(root);
+    assert_eq!(index.commit_count(), 121);
+
+    // Oracle: git's own HEAD-scoped, case-insensitive author search, newest first.
+    let git_newest = capture(
+        root,
+        &["log", "-i", "--author=Dor Green", "--format=%H", "-1"],
+    )
+    .trim()
+    .to_string();
+    assert!(!git_newest.is_empty(), "git finds Dor Green's commit");
+
+    // search_git_history(author) returns exactly Dor's commit — full-depth, matching git.
+    assert_eq!(
+        search_shas(&index, "Dor Green", FtsScope::Author),
+        vec![git_newest.clone()],
+        "author search matches `git log -i --author` at full depth"
+    );
+
+    // And it lives beyond the newest-100 window that `recent_changes` scans — the bug's root cause.
+    let recent: Vec<String> = index
+        .recent_commits(0, 100, false)
+        .into_iter()
+        .map(|c| c.sha)
+        .collect();
+    assert_eq!(recent.len(), 100, "the recent window is capped at 100");
+    assert!(
+        !recent.contains(&git_newest),
+        "Dor's commit is outside the newest-100 window, so a recent-window scan misses it"
+    );
+}
