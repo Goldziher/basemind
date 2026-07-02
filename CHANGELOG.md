@@ -21,8 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with a warning; a root inside the repo is ignored. Symlinks are followed (Bazel `external/` is
   symlink-heavy). Extra roots are (re-)indexed on a full `basemind scan` only — the live watcher
   does not track them — and git blame short-circuits with a clear error for external (untracked)
-  files. No index/blob format change; existing caches are untouched (a re-scan populates external
-  files).
+  files. The feature itself changes no index/blob format; a re-scan populates external files (and
+  this release's `RELEASE_MINOR` bump wipes + rebuilds `.basemind/` anyway).
 
 [#34]: https://github.com/Goldziher/basemind/issues/34
 
