@@ -137,3 +137,27 @@ fn annotate_path(err: ConfigError, path: &Path) -> ConfigError {
         other => other,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_extra_roots_through_schema_validation() {
+        // Exercises the full load path (JSON-schema validator + deserialize), so it catches
+        // any drift between the `ScanConfig` struct and the committed schema snapshot.
+        let raw =
+            "\"$schema\" = \"v1\"\n[scan]\nextra_roots = [\"/opt/ext\", \"/var/cache/bazel\"]\n";
+        let cfg = parse_str(raw).expect("extra_roots is a valid, schema-accepted scan field");
+        assert_eq!(
+            cfg.scan.extra_roots,
+            vec![PathBuf::from("/opt/ext"), PathBuf::from("/var/cache/bazel"),]
+        );
+    }
+
+    #[test]
+    fn extra_roots_defaults_to_empty() {
+        let cfg = parse_str("\"$schema\" = \"v1\"\n").unwrap();
+        assert!(cfg.scan.extra_roots.is_empty());
+    }
+}

@@ -66,6 +66,20 @@ pub struct ScanConfig {
     /// existing on-demand `query::file_outline_l2` lazy path runs).
     #[serde(default = "ScanConfig::default_eager_l2")]
     pub eager_l2: bool,
+    /// Extra directories to index in addition to the repository root. Each entry is an
+    /// absolute path to a directory *outside* the repo — e.g. a Bazel external repo cache
+    /// (`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in
+    /// symbol search, references, outlines, and document search.
+    ///
+    /// Files under an extra root are keyed by their **absolute** path (repo files stay
+    /// repo-relative), so returned paths for external files are absolute. Missing or
+    /// unreadable roots are skipped with a warning; a root inside the repo is ignored (the
+    /// primary walk already covers it). Extra roots are (re-)indexed on a full `basemind
+    /// scan` only — the live watcher does not track them. Symlinks are followed for extra
+    /// roots (Bazel `external/` is symlink-heavy). Because these trees can be large, scope
+    /// them narrowly and lean on `exclude` + `max_file_bytes`.
+    #[serde(default = "ScanConfig::default_extra_roots")]
+    pub extra_roots: Vec<std::path::PathBuf>,
 }
 
 impl ScanConfig {
@@ -101,6 +115,9 @@ impl ScanConfig {
     fn default_eager_l2() -> bool {
         true
     }
+    fn default_extra_roots() -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
 }
 
 impl Default for ScanConfig {
@@ -112,6 +129,7 @@ impl Default for ScanConfig {
             max_file_bytes: Self::default_max_file_bytes(),
             skip_submodules: Self::default_skip_submodules(),
             eager_l2: Self::default_eager_l2(),
+            extra_roots: Self::default_extra_roots(),
         }
     }
 }

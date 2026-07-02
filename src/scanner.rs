@@ -525,7 +525,7 @@ fn candidates_for_source(
 
 fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = ignore_walk_builder(root, config.scan.respect_gitignore).build();
+    let walker = ignore_walk_builder(root, config.scan.respect_gitignore, false).build();
     for dent in walker.flatten() {
         if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -554,6 +554,7 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
         }
         out.push(rel_str.to_string());
     }
+    crate::scanner_filter::walk_extra_roots(root, config, filters, &mut out);
     out
 }
 
@@ -713,6 +714,11 @@ fn process_doc(
     scope: &str,
 ) -> FileResult {
     let abs = root.join(rel);
+    // External-root docs (absolute key) get their own LanceDB scope keyed by the owning extra
+    // root, so out-of-repo documents don't pollute the repository's doc scope. Retrieval is
+    // unaffected — `search_documents` has no scope filter — so this only partitions storage.
+    let effective_scope = crate::scanner_docs::doc_scope_for(rel, scope, config);
+    let scope = effective_scope.as_ref();
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };

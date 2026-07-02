@@ -378,8 +378,10 @@ pub(super) fn symbol_line_range(
                 .and_then(|s| repo.read_blob_staged(s).ok().flatten())
         })
         // `..`-safety: `path` is a `RelPath` produced by the scanner's strip_prefix(root) or
-        // git tree enumeration — neither source ever emits `..` components, so joining with
-        // `workdir()` cannot escape the repository root.
+        // git tree enumeration — neither source ever emits `..` components. A repo-relative key
+        // joins under `workdir()`; an external `scan.extra_roots` key is absolute, so
+        // `workdir().join(abs)` yields the absolute path unchanged — which correctly reads the
+        // real external file (that path is what it was indexed under). Either way, no `..` escape.
         .or_else(|| std::fs::read(repo.workdir().join(path.to_path_buf())).ok())
         .unwrap_or_default();
     line_range_in_blob(sym, &bytes)
