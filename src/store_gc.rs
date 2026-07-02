@@ -158,8 +158,13 @@ pub struct CacheStats {
     pub other_bytes: u64,
     /// Total blob files on disk (every suffix counts as one file).
     pub blob_count: usize,
-    /// Blob files whose hex stem is referenced by no view — reclaimable by [`run_gc`].
+    /// Blob files whose hex stem is referenced by no view — reclaimable by [`run_gc`]. Meaningful
+    /// only when [`Self::blob_accounting_ok`] is `true`; `0` otherwise (not computed).
     pub orphan_blob_count: usize,
+    /// Whether orphan accounting ran. `false` means a view index couldn't be read (stale schema
+    /// or corruption), so [`Self::orphan_blob_count`] is `0` because it was skipped, NOT because
+    /// there are no orphans — the size fields are still accurate. Re-scan to restore accounting.
+    pub blob_accounting_ok: bool,
     /// Per-view indexed file count, keyed by view name. Empty entries are still listed.
     pub per_view_file_count: Vec<(String, usize)>,
     /// Current resident set size (physical RAM) of the process answering this call, in bytes.
@@ -348,7 +353,23 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 /// count reuses [`collect_referenced_hashes`] but never deletes.
 pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
     let blobs_dir = basemind_dir.join(BLOBS_DIR);
-    let referenced = collect_referenced_hashes(basemind_dir)?;
+    // cache_stats is read-only and never deletes, so — unlike `cache_gc` — it must NOT hard-fail
+    // when a view index can't be read (e.g. a schema-mismatched `.basemind/` from an older binary
+    // that hasn't been re-scanned). The disk/RAM footprint is exactly what an operator asking
+    // "how much does this consume" needs, and it requires no index. So degrade: report sizes
+    // regardless, and mark orphan accounting unavailable when the live set can't be determined.
+    let referenced = match collect_referenced_hashes(basemind_dir) {
+        Ok(set) => Some(set),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "cache_stats: could not read a view index (stale schema or corrupt); \
+                 reporting sizes only, orphan accounting skipped"
+            );
+            None
+        }
+    };
+    let blob_accounting_ok = referenced.is_some();
 
     let mut blob_count = 0usize;
     let mut orphan_blob_count = 0usize;
@@ -370,7 +391,11 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
                 continue;
             };
             blob_count += 1;
-            if !referenced.contains(stem) {
+            // Only classify orphans when the live reference set is known; otherwise leave the
+            // count at 0 and let `blob_accounting_ok = false` disclose it wasn't computed.
+            if let Some(referenced) = &referenced
+                && !referenced.contains(stem)
+            {
                 orphan_blob_count += 1;
             }
         }
@@ -407,6 +432,7 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
         other_bytes,
         blob_count,
         orphan_blob_count,
+        blob_accounting_ok,
         per_view_file_count: per_view_file_count(basemind_dir)?,
         rss_bytes: rss.current_bytes,
         peak_rss_bytes: rss.peak_bytes,
@@ -672,6 +698,45 @@ mod tests {
             stats.total_bytes,
             component_sum + stats.other_bytes,
             "components + other must reconcile to total"
+        );
+    }
+
+    #[test]
+    fn cache_stats_degrades_when_index_unreadable() {
+        // A corrupt/unreadable view index (e.g. an older-schema `.basemind/` not yet re-scanned)
+        // must not sink the whole call: sizes are still reported, orphan accounting is skipped,
+        // and `blob_accounting_ok` discloses that. (GC, which deletes, still hard-fails — asserted
+        // separately by the collect/gc tests.)
+        let fx = build_fixture();
+        let working = fx.basemind_dir.join(VIEWS_DIR).join("working");
+        // Overwrite the valid index with bytes rmp-serde can't decode.
+        fs::write(working.join(INDEX_FILE), b"\xff\xff not-msgpack \x00").expect("corrupt index");
+
+        // collect_referenced_hashes (the GC safety path) still errors …
+        assert!(
+            collect_referenced_hashes(&fx.basemind_dir).is_err(),
+            "an unreadable index must fail the delete-path safety check"
+        );
+
+        // … but read-only stats degrade gracefully.
+        let stats = cache_stats(&fx.basemind_dir).expect("cache_stats must not hard-fail");
+        assert!(
+            !stats.blob_accounting_ok,
+            "orphan accounting must be flagged unavailable"
+        );
+        assert_eq!(
+            stats.orphan_blob_count, 0,
+            "orphan count is 0 (skipped), not a real zero"
+        );
+        assert!(
+            stats.blob_count >= 2,
+            "blob files are still counted by size walk"
+        );
+        assert!(stats.total_bytes > 0, "sizes are still reported");
+        assert_eq!(
+            stats.total_bytes,
+            dir_size(&fx.basemind_dir).expect("dir_size"),
+            "total still reconciles to the tree"
         );
     }
 
