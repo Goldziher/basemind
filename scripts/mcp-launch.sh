@@ -31,8 +31,8 @@ set -euo pipefail
 
 log() { printf 'basemind-launch: %s\n' "$*" >&2; }
 die() {
-  log "error: $*"
-  exit 1
+	log "error: $*"
+	exit 1
 }
 
 # A failed asset or checksums fetch almost always means the pinned release is
@@ -40,14 +40,14 @@ die() {
 # publishing (a partial release). Surface that as an actionable instruction
 # instead of a bare error the MCP client renders as an opaque "failed to connect".
 die_incomplete_release() {
-  die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
+	die "$1 — the basemind v${VERSION} release looks incomplete (a missing platform asset or checksums file). Update the basemind plugin to a complete release (Claude Code: run \`/plugin update\`); if it persists, report it at https://github.com/Goldziher/basemind/issues"
 }
 
 # Resolve the plugin root: prefer the value Claude Code injects, else derive it
 # from this script's location (scripts/ lives one level under the plugin root).
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$PLUGIN_ROOT" ]; then
-  PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+	PLUGIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
 BINARY_NAME="basemind"
@@ -75,11 +75,11 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # its version matches the manifest. The candidate is shifted off before exec so it
 # is not re-passed as an argument to itself.
 try_exec() {
-  local cand="$1"
-  shift
-  if [ -n "$cand" ] && [ -x "$cand" ] && [ "$(binary_version "$cand")" = "$VERSION" ]; then
-    exec "$cand" "$@"
-  fi
+	local cand="$1"
+	shift
+	if [ -n "$cand" ] && [ -x "$cand" ] && [ "$(binary_version "$cand")" = "$VERSION" ]; then
+		exec "$cand" "$@"
+	fi
 }
 
 # ---- 1. Existing version-matched binary -------------------------------------
@@ -89,7 +89,7 @@ try_exec "${BASEMIND_BIN:-}" "$@"
 try_exec "$MANAGED_BIN" "$@"
 try_exec "$PLUGIN_ROOT/bin/$BINARY_NAME" "$@"
 if have "$BINARY_NAME"; then
-  try_exec "$(command -v "$BINARY_NAME")" "$@"
+	try_exec "$(command -v "$BINARY_NAME")" "$@"
 fi
 
 # ---- 2. Download the checksum-verified prebuilt release binary --------------
@@ -97,23 +97,23 @@ fi
 arch="$(uname -m)"
 case "$(uname -s)" in
 Darwin)
-  # Only Apple Silicon (arm64) macOS binaries are shipped; Intel macOS is unsupported.
-  # `uname -m` reflects the *process* arch, so under Rosetta it reports x86_64 even
-  # on Apple Silicon hardware. Gate on a hardware-level signal that the translation
-  # layer cannot spoof: `sysctl -n hw.optional.arm64` is `1` on Apple Silicon.
-  if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ] ||
-    [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
-    TRIPLE="aarch64-apple-darwin"
-  else
-    die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
-  fi
-  ;;
+	# Only Apple Silicon (arm64) macOS binaries are shipped; Intel macOS is unsupported.
+	# `uname -m` reflects the *process* arch, so under Rosetta it reports x86_64 even
+	# on Apple Silicon hardware. Gate on a hardware-level signal that the translation
+	# layer cannot spoof: `sysctl -n hw.optional.arm64` is `1` on Apple Silicon.
+	if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ] ||
+		[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
+		TRIPLE="aarch64-apple-darwin"
+	else
+		die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
+	fi
+	;;
 Linux)
-  case "$arch" in
-  aarch64 | arm64) TRIPLE="aarch64-unknown-linux-gnu" ;;
-  *) TRIPLE="x86_64-unknown-linux-gnu" ;;
-  esac
-  ;;
+	case "$arch" in
+	aarch64 | arm64) TRIPLE="aarch64-unknown-linux-gnu" ;;
+	*) TRIPLE="x86_64-unknown-linux-gnu" ;;
+	esac
+	;;
 MINGW* | MSYS* | CYGWIN* | Windows_NT) TRIPLE="x86_64-pc-windows-msvc" ;;
 *) die "unsupported platform: $(uname -s) $arch" ;;
 esac
@@ -128,20 +128,20 @@ ASSET_URL="${BASE_URL}/${ASSET}"
 SUMS_URL="${BASE_URL}/basemind_${VERSION}_checksums.txt"
 
 if have curl; then
-  fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
+	fetch() { curl -fsSL --retry 3 -o "$2" "$1"; }
 elif have wget; then
-  fetch() { wget -q -O "$2" "$1"; }
+	fetch() { wget -q -O "$2" "$1"; }
 else
-  die "no download tool available: need curl or wget"
+	die "no download tool available: need curl or wget"
 fi
 
 if have sha256sum; then
-  sha256() { sha256sum "$1" | awk '{print $1}'; }
+	sha256() { sha256sum "$1" | awk '{print $1}'; }
 elif have shasum; then
-  sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
+	sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 else
-  # Fail CLOSED: without a sha256 tool we cannot verify the download.
-  die "no sha256 tool available (need sha256sum or shasum) — refusing to install unverified binary"
+	# Fail CLOSED: without a sha256 tool we cannot verify the download.
+	die "no sha256 tool available (need sha256sum or shasum) — refusing to install unverified binary"
 fi
 
 # Concurrency: many launchers may race the first install (agent sessions, the
@@ -154,24 +154,24 @@ LOCK="$PARENT/.lock-$VERSION"
 STAGING=""
 release_lock() { [ -n "${LOCK_HELD:-}" ] && rmdir "$LOCK" 2>/dev/null || true; }
 cleanup() {
-  release_lock
-  [ -n "${TMP:-}" ] && rm -rf "$TMP" 2>/dev/null || true
-  [ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
+	release_lock
+	[ -n "${TMP:-}" ] && rm -rf "$TMP" 2>/dev/null || true
+	[ -n "$STAGING" ] && rm -rf "$STAGING" 2>/dev/null || true
 }
 trap cleanup EXIT
 
 LOCK_HELD=""
 waited=0
 while ! mkdir "$LOCK" 2>/dev/null; do
-  # Another launcher is installing. The moment the managed binary lands, use it.
-  try_exec "$MANAGED_BIN" "$@"
-  sleep 0.2
-  waited=$((waited + 1))
-  # ~120s with no progress ⇒ assume a crashed holder and break the stale lock.
-  if [ "$waited" -ge 600 ]; then
-    rmdir "$LOCK" 2>/dev/null || true
-    waited=0
-  fi
+	# Another launcher is installing. The moment the managed binary lands, use it.
+	try_exec "$MANAGED_BIN" "$@"
+	sleep 0.2
+	waited=$((waited + 1))
+	# ~120s with no progress ⇒ assume a crashed holder and break the stale lock.
+	if [ "$waited" -ge 600 ]; then
+		rmdir "$LOCK" 2>/dev/null || true
+		waited=0
+	fi
 done
 LOCK_HELD=1
 
@@ -187,10 +187,10 @@ fetch "$ASSET_URL" "$TMP/$ASSET" || die_incomplete_release "could not download $
 # unverified binary — and almost always means the release published without its
 # checksums (the v0.10.0 partial-publish failure mode), so point at the fix.
 fetch "$SUMS_URL" "$TMP/checksums.txt" ||
-  die_incomplete_release "could not fetch checksums ($SUMS_URL); refusing to install an unverified binary"
+	die_incomplete_release "could not fetch checksums ($SUMS_URL); refusing to install an unverified binary"
 EXPECTED="$(awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) print $1}' "$TMP/checksums.txt")"
 [ -n "$EXPECTED" ] ||
-  die_incomplete_release "no checksum entry for $ASSET in $SUMS_URL; refusing to install an unverified binary"
+	die_incomplete_release "no checksum entry for $ASSET in $SUMS_URL; refusing to install an unverified binary"
 ACTUAL="$(sha256 "$TMP/$ASSET")"
 [ -n "$ACTUAL" ] || die "failed to compute sha256 for $ASSET"
 [ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
@@ -207,20 +207,20 @@ mkdir -p "$STAGING"
 case "$EXT" in
 tar.gz) tar -xzf "$TMP/$ASSET" -C "$STAGING" ;;
 zip)
-  # Windows git-bash ships no `unzip`. Try it first, then bsdtar (Windows 10+
-  # system tar.exe extracts zip), then PowerShell's Expand-Archive.
-  if have unzip; then
-    unzip -qo "$TMP/$ASSET" -d "$STAGING"
-  elif tar -xf "$TMP/$ASSET" -C "$STAGING" 2>/dev/null; then
-    :
-  elif have powershell; then
-    powershell -NoProfile -Command \
-      "Expand-Archive -Path '$TMP/$ASSET' -DestinationPath '$STAGING' -Force" ||
-      die "Expand-Archive failed to extract $ASSET"
-  else
-    die "no zip extractor available (need unzip, bsdtar, or powershell)"
-  fi
-  ;;
+	# Windows git-bash ships no `unzip`. Try it first, then bsdtar (Windows 10+
+	# system tar.exe extracts zip), then PowerShell's Expand-Archive.
+	if have unzip; then
+		unzip -qo "$TMP/$ASSET" -d "$STAGING"
+	elif tar -xf "$TMP/$ASSET" -C "$STAGING" 2>/dev/null; then
+		:
+	elif have powershell; then
+		powershell -NoProfile -Command \
+			"Expand-Archive -Path '$TMP/$ASSET' -DestinationPath '$STAGING' -Force" ||
+			die "Expand-Archive failed to extract $ASSET"
+	else
+		die "no zip extractor available (need unzip, bsdtar, or powershell)"
+	fi
+	;;
 esac
 [ -f "$STAGING/$BINARY_NAME" ] || die "binary $BINARY_NAME not found in $ASSET"
 chmod +x "$STAGING/$BINARY_NAME"

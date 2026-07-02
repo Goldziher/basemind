@@ -173,11 +173,7 @@ enum Reinjection {
 /// appending exceeds [`MAX_REINJECTED`], return [`Reinjection::Overflowed`] so
 /// the caller fails open — truncating preserved lines could silently drop a
 /// secret while still reporting a successful compression.
-fn reinject_preserved(
-    cleaned: &str,
-    compressed: &str,
-    preserved: &ahash::AHashSet<usize>,
-) -> Reinjection {
+fn reinject_preserved(cleaned: &str, compressed: &str, preserved: &ahash::AHashSet<usize>) -> Reinjection {
     let original_lines: Vec<&str> = cleaned.lines().collect();
     let mut existing: ahash::AHashSet<&str> = compressed.lines().collect();
 
@@ -255,9 +251,7 @@ mod tests {
     fn npm_install_shrinks() {
         let mut input = String::new();
         for n in 0..60 {
-            input.push_str(&format!(
-                "npm http fetch GET 200 https://registry/pkg{n} 12ms\n"
-            ));
+            input.push_str(&format!("npm http fetch GET 200 https://registry/pkg{n} 12ms\n"));
         }
         input.push_str("added 60 packages, and audited 61 packages in 3s\n");
         input.push_str("found 0 vulnerabilities\n");
@@ -289,9 +283,7 @@ mod tests {
                 "tests/test_mod.py::test_{n} PASSED                  [ {n}%]\n"
             ));
         }
-        input.push_str(
-            "===================== 39 passed, 1 skipped in 2.10s =====================\n",
-        );
+        input.push_str("===================== 39 passed, 1 skipped in 2.10s =====================\n");
         let r = compress_output(&input, Some("pytest"));
         assert!(r.compressed, "pytest should compress: {:?}", r.output);
         assert!(r.output.contains("passed"));
@@ -313,10 +305,7 @@ mod tests {
         let mut input = String::new();
         for f in 0..30 {
             for l in 0..10 {
-                input.push_str(&format!(
-                    "src/file{f}.rs:{}:    let value = compute();\n",
-                    l + 1
-                ));
+                input.push_str(&format!("src/file{f}.rs:{}:    let value = compute();\n", l + 1));
             }
         }
         let r = compress_output(&input, Some("grep"));
@@ -347,10 +336,7 @@ mod tests {
         input.push_str("error: something went catastrophically wrong\n");
         let r = compress_output(&input, Some("git_status"));
         assert!(!r.compressed, "errored output must not compress");
-        assert!(
-            r.output
-                .contains("error: something went catastrophically wrong")
-        );
+        assert!(r.output.contains("error: something went catastrophically wrong"));
         assert_eq!(r.output, safety_strip(&input), "raw passthrough expected");
     }
 
@@ -361,9 +347,7 @@ mod tests {
         // a unique-line log that the logs handler cannot collapse.
         let mut input = String::new();
         for n in 0..40 {
-            input.push_str(&format!(
-                "unique log line number {n} with distinct content here\n"
-            ));
+            input.push_str(&format!("unique log line number {n} with distinct content here\n"));
         }
         let r = compress_output(&input, Some("logs"));
         assert!(!r.compressed, "no-savings output must pass through raw");
@@ -399,11 +383,7 @@ mod tests {
         }
         input.push_str(&format!("auth header token {pat}\n"));
         let r = compress_output(&input, Some("logs"));
-        assert!(
-            r.output.contains(&pat),
-            "GitHub PAT must survive: {}",
-            r.output
-        );
+        assert!(r.output.contains(&pat), "GitHub PAT must survive: {}", r.output);
     }
 
     #[test]
@@ -427,8 +407,7 @@ mod tests {
         // visible label. Stripping ANSI keeps only the label "ok", destroying
         // the secret before any scan runs on `cleaned`. The raw pre-scan must
         // catch this and fail open, returning the RAW input verbatim.
-        let secret_link =
-            "\x1b]8;;postgres://admin:SECRETPASSWORD@db.internal/prod\x07ok\x1b]8;;\x07";
+        let secret_link = "\x1b]8;;postgres://admin:SECRETPASSWORD@db.internal/prod\x07ok\x1b]8;;\x07";
         let mut input = String::new();
         for _ in 0..30 {
             input.push_str("waiting for connection...\n");
@@ -437,14 +416,10 @@ mod tests {
         input.push('\n');
 
         let r = compress_output(&input, Some("logs"));
-        assert!(
-            !r.compressed,
-            "OSC8-URI secret must fail open, not compress"
-        );
+        assert!(!r.compressed, "OSC8-URI secret must fail open, not compress");
         assert_eq!(r.output, input, "must return the RAW pre-strip input");
         assert!(
-            r.output
-                .contains("postgres://admin:SECRETPASSWORD@db.internal/prod"),
+            r.output.contains("postgres://admin:SECRETPASSWORD@db.internal/prod"),
             "credential in the hyperlink URI must survive: {}",
             r.output
         );
@@ -460,14 +435,8 @@ mod tests {
             input.push_str(&format!("npm ERR! line {n} install failed for dep{n}\n"));
         }
         let r = compress_output(&input, Some("npm_install"));
-        assert!(
-            !r.compressed,
-            "npm ERR! output must fail open, not compress"
-        );
-        assert_eq!(
-            r.output, input,
-            "raw passthrough expected for npm ERR! block"
-        );
+        assert!(!r.compressed, "npm ERR! output must fail open, not compress");
+        assert_eq!(r.output, input, "raw passthrough expected for npm ERR! block");
         // Every failure line survives.
         for n in 0..10 {
             assert!(

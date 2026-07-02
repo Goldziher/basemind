@@ -37,13 +37,7 @@ const MAX_FINDINGS: usize = 200;
 
 /// The set of tool names treated as search/grep queries for the
 /// `repeated_query` detector. `target` is the query string for these.
-const QUERY_TOOLS: &[&str] = &[
-    "Grep",
-    "workspace_grep",
-    "search_symbols",
-    "find_references",
-    "grep",
-];
+const QUERY_TOOLS: &[&str] = &["Grep", "workspace_grep", "search_symbols", "find_references", "grep"];
 
 /// A single tool invocation parsed from one JSON-Lines record.
 ///
@@ -288,16 +282,10 @@ mod tests {
     fn oversized_read_coexists_with_redundant_read() {
         // Two oversized reads of the same path: one redundant_read finding plus
         // two oversized_read findings (distinct detectors).
-        let calls = vec![
-            read("huge.rs", LARGE_READ_BYTES),
-            read("huge.rs", LARGE_READ_BYTES),
-        ];
+        let calls = vec![read("huge.rs", LARGE_READ_BYTES), read("huge.rs", LARGE_READ_BYTES)];
         let report = detect_waste(&calls);
         let kinds: Vec<&str> = report.findings.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(
-            kinds,
-            vec!["oversized_read", "oversized_read", "redundant_read"]
-        );
+        assert_eq!(kinds, vec!["oversized_read", "oversized_read", "redundant_read"]);
     }
 
     #[test]
@@ -316,10 +304,7 @@ mod tests {
     #[test]
     fn drops_finding_whose_target_carries_aws_key() {
         let secret = "search AKIAIOSFODNN7EXAMPLE here";
-        let calls = vec![
-            query("search_symbols", secret, 10),
-            query("search_symbols", secret, 10),
-        ];
+        let calls = vec![query("search_symbols", secret, 10), query("search_symbols", secret, 10)];
         let report = detect_waste(&calls);
         assert!(
             report.findings.is_empty(),
@@ -378,11 +363,7 @@ mod tests {
         let expected_total = (total as u64) * LARGE_READ_BYTES;
         assert_eq!(report.total_estimated_waste_bytes, expected_total);
         // And it is strictly larger than the sum of the surviving (capped) vec.
-        let surviving: u64 = report
-            .findings
-            .iter()
-            .map(|f| f.estimated_waste_bytes)
-            .sum();
+        let surviving: u64 = report.findings.iter().map(|f| f.estimated_waste_bytes).sum();
         assert!(report.total_estimated_waste_bytes > surviving);
     }
 

@@ -27,11 +27,7 @@ const CLI_GIT_CACHE_MEM: usize = 256;
 /// git cache open) but opens the store read-only and disables all background
 /// facilities. `documents` flows the `#[command(flatten)]` document overrides
 /// into the resolved config the same way `serve` does.
-pub fn build_server(
-    root: &Path,
-    view: &str,
-    documents: DocumentsCliOverrides,
-) -> Result<BasemindServer> {
+pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -> Result<BasemindServer> {
     let store = Store::open_read_only(root, view).context("open store (read-only)")?;
     let basemind_dir = root.join(config::BASEMIND_DIR);
     let cfg = Arc::new(load_config(root, documents)?);
@@ -39,9 +35,7 @@ pub fn build_server(
     // Disk cache off for the CLI: a one-shot process never benefits from the
     // persisted git cache and disabling it avoids writing under a path a live
     // server might own.
-    let git_cache = Arc::new(
-        GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?,
-    );
+    let git_cache = Arc::new(GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?);
     Ok(BasemindServer::new_oneshot(
         store,
         root.to_path_buf(),

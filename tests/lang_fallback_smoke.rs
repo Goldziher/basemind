@@ -23,13 +23,7 @@ fn scan_fixture(name: &str) -> (TempDir, Store) {
     fs::write(root.join(name), bytes).expect("write fixture");
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    let report = scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
     assert_eq!(report.stats.updated, 1, "fixture should be processed");
     assert_eq!(report.stats.skipped_no_lang, 0, "fixture lang must resolve");
     (dir, store)
@@ -38,12 +32,8 @@ fn scan_fixture(name: &str) -> (TempDir, Store) {
 /// Materialize the L2 outline (calls) for `rel` via the live escalation path. Returns the
 /// number of call sites whose callee identifier matches `needle` (substring).
 fn count_calls(store: &Store, root: &std::path::Path, rel: &str, needle: &str) -> usize {
-    let l2 =
-        basemind::query::file_outline_l2(store, rel.as_bytes(), root).expect("file_outline_l2");
-    l2.calls
-        .iter()
-        .filter(|c| c.callee.contains(needle))
-        .count()
+    let l2 = basemind::query::file_outline_l2(store, rel.as_bytes(), root).expect("file_outline_l2");
+    l2.calls.iter().filter(|c| c.callee.contains(needle)).count()
 }
 
 #[test]

@@ -20,8 +20,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult, Tool,
-    ToolAnnotations, object,
+    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult, Tool, ToolAnnotations, object,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -182,9 +181,9 @@ pub(super) async fn lean_call_tool(
         TOOL_GET_SCHEMA => {
             let tool_name = required_str(request.arguments.as_ref(), "tool_name")?;
             reject_wrapper_target(&tool_name)?;
-            let tool = router.get(&tool_name).ok_or_else(|| {
-                McpError::invalid_params(format!("unknown tool `{tool_name}`"), None)
-            })?;
+            let tool = router
+                .get(&tool_name)
+                .ok_or_else(|| McpError::invalid_params(format!("unknown tool `{tool_name}`"), None))?;
             structured_ok(json!({
                 "name": tool.name,
                 "description": tool.description,
@@ -195,10 +194,7 @@ pub(super) async fn lean_call_tool(
             let tool_name = required_str(request.arguments.as_ref(), "tool_name")?;
             reject_wrapper_target(&tool_name)?;
             if !router.has_route(&tool_name) {
-                return Err(McpError::invalid_params(
-                    format!("unknown tool `{tool_name}`"),
-                    None,
-                ));
+                return Err(McpError::invalid_params(format!("unknown tool `{tool_name}`"), None));
             }
             // `tool_input` is optional: a no-arg tool may be invoked with it omitted.
             let arguments = match request.arguments.as_ref().and_then(|o| o.get("tool_input")) {

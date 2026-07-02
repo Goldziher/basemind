@@ -36,16 +36,16 @@ PROMPT="$(printf '\033[1;32m❯\033[0m ')"                               # green
 # Resolve the basemind binary to an ABSOLUTE path (we cd into a temp clone
 # below): explicit override, then release build, then PATH.
 resolve_bin() {
-  if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
-    (cd "$(dirname "$BASEMIND_BIN")" && printf '%s/%s' "$PWD" "$(basename "$BASEMIND_BIN")")
-  elif [ -x "$REPO_ROOT/target/release/basemind" ]; then
-    printf '%s' "$REPO_ROOT/target/release/basemind"
-  elif command -v basemind >/dev/null 2>&1; then
-    command -v basemind
-  else
-    printf 'demo: no basemind binary found — run: cargo build --release (or set BASEMIND_BIN)\n' >&2
-    exit 1
-  fi
+	if [ -n "${BASEMIND_BIN:-}" ] && [ -x "${BASEMIND_BIN}" ]; then
+		(cd "$(dirname "$BASEMIND_BIN")" && printf '%s/%s' "$PWD" "$(basename "$BASEMIND_BIN")")
+	elif [ -x "$REPO_ROOT/target/release/basemind" ]; then
+		printf '%s' "$REPO_ROOT/target/release/basemind"
+	elif command -v basemind >/dev/null 2>&1; then
+		command -v basemind
+	else
+		printf 'demo: no basemind binary found — run: cargo build --release (or set BASEMIND_BIN)\n' >&2
+		exit 1
+	fi
 }
 BIN="$(resolve_bin)"
 
@@ -60,19 +60,19 @@ cd "$WORKDIR/basemind"
 # pe = print + execute. "Types" the command after a prompt, runs it, then pauses
 # so the viewer can read the output before the next command.
 pe() {
-  printf '%s' "$PROMPT"
-  local i ch
-  for ((i = 0; i < ${#1}; i++)); do
-    ch="${1:$i:1}"
-    printf '%s' "$ch"
-    sleep "$TYPE_DELAY"
-  done
-  printf '\n'
-  # Run via the resolved binary; the displayed line uses the friendly `basemind`.
-  local cmd="${1/#basemind/$BIN}"
-  eval "$cmd" || true
-  printf '\n'
-  sleep "$PROMPT_PAUSE"
+	printf '%s' "$PROMPT"
+	local i ch
+	for ((i = 0; i < ${#1}; i++)); do
+		ch="${1:$i:1}"
+		printf '%s' "$ch"
+		sleep "$TYPE_DELAY"
+	done
+	printf '\n'
+	# Run via the resolved binary; the displayed line uses the friendly `basemind`.
+	local cmd="${1/#basemind/$BIN}"
+	eval "$cmd" || true
+	printf '\n'
+	sleep "$PROMPT_PAUSE"
 }
 
 # --- the narrated sequence ----------------------------------------------------

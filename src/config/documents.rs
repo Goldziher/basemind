@@ -627,14 +627,8 @@ mod tests {
     fn api_key_literal_never_serializes_cleartext() {
         let key = ApiKey::Literal("sk-supersecret".to_string());
         let json = serde_json::to_string(&key).expect("serialize");
-        assert!(
-            !json.contains("sk-supersecret"),
-            "raw secret leaked: {json}"
-        );
-        assert!(
-            json.contains("<redacted>"),
-            "redaction marker missing: {json}"
-        );
+        assert!(!json.contains("sk-supersecret"), "raw secret leaked: {json}");
+        assert!(json.contains("<redacted>"), "redaction marker missing: {json}");
     }
 
     #[test]

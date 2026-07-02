@@ -148,14 +148,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_chars_including_nul_and_separators() {
-        for bad in [
-            "has space",
-            "slash/",
-            "nul\0byte",
-            "emoji😀",
-            "new\nline",
-            "a\tb",
-        ] {
+        for bad in ["has space", "slash/", "nul\0byte", "emoji😀", "new\nline", "a\tb"] {
             assert_eq!(
                 AgentId::parse(bad),
                 Err(IdError::InvalidChar),

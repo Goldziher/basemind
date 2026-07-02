@@ -30,9 +30,7 @@ pub fn extract_l1_l2(
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(
-                crate::lang::DEFAULT_PARSE_TIMEOUT,
-            ));
+            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
     let l1 = extract_l1_from_tree(lang, &tree, source)?;
@@ -219,8 +217,8 @@ impl SymbolKind {
             // Everything below is "concrete": one specific shape of declaration.
             // Same score — first-seen wins among them, which keeps document order intact
             // when the same symbol is captured twice as e.g. both function and method.
-            Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module
-            | Macro | Impl | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
+            Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module | Macro | Impl
+            | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
         }
     }
 }

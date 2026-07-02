@@ -16,9 +16,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, DmSendParams, GetOrCreateRoomForPathParams,
-    InboxAckParams, InboxReadParams, MessageGetParams, RoomCreateParams, RoomHistoryParams,
-    RoomJoinParams, RoomLeaveParams, RoomListParams, RoomPostParams,
+    AgentListParams, AgentRegisterParams, DmSendParams, GetOrCreateRoomForPathParams, InboxAckParams, InboxReadParams,
+    MessageGetParams, RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams, RoomListParams,
+    RoomPostParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -41,13 +41,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_agent_register(&self.state, p).await;
-        record_call(
-            &self.state,
-            "agent_register",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "agent_register", &__params_json, __started, &__result);
         __result
     }
 
@@ -64,13 +58,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_agent_list(&self.state, p).await;
-        record_call(
-            &self.state,
-            "agent_list",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "agent_list", &__params_json, __started, &__result);
         __result
     }
 
@@ -94,13 +82,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_create(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_create",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_create", &__params_json, __started, &__result);
         __result
     }
 
@@ -118,13 +100,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_list(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_list",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_list", &__params_json, __started, &__result);
         __result
     }
 
@@ -145,13 +121,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_join(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_join",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_join", &__params_json, __started, &__result);
         __result
     }
 
@@ -171,13 +141,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_leave(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_leave",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_leave", &__params_json, __started, &__result);
         __result
     }
 
@@ -199,13 +163,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_post(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_post",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_post", &__params_json, __started, &__result);
         __result
     }
 
@@ -221,10 +179,7 @@ impl BasemindServer {
             open_world_hint = false
         )
     )]
-    pub(crate) async fn dm_send(
-        &self,
-        Parameters(p): Parameters<DmSendParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn dm_send(&self, Parameters(p): Parameters<DmSendParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_dm_send(&self.state, p).await;
@@ -251,8 +206,7 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result =
-            super::helpers_comms::run_get_or_create_chat_room_for_path(&self.state, p).await;
+        let __result = super::helpers_comms::run_get_or_create_chat_room_for_path(&self.state, p).await;
         record_call(
             &self.state,
             "get_or_create_chat_room_for_path",
@@ -278,13 +232,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_room_history(&self.state, p).await;
-        record_call(
-            &self.state,
-            "room_history",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "room_history", &__params_json, __started, &__result);
         __result
     }
 
@@ -301,13 +249,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_message_get(&self.state, p).await;
-        record_call(
-            &self.state,
-            "message_get",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "message_get", &__params_json, __started, &__result);
         __result
     }
 
@@ -331,13 +273,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_inbox_read(&self.state, p).await;
-        record_call(
-            &self.state,
-            "inbox_read",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "inbox_read", &__params_json, __started, &__result);
         __result
     }
 
@@ -362,13 +298,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_inbox_ack(&self.state, p).await;
-        record_call(
-            &self.state,
-            "inbox_ack",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "inbox_ack", &__params_json, __started, &__result);
         __result
     }
 }

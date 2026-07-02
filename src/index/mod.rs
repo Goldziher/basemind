@@ -145,10 +145,8 @@ impl IndexDb {
         let calls_by_callee = db.keyspace("calls_by_callee", KeyspaceCreateOptions::default)?;
         let imports_by_module = db.keyspace("imports_by_module", KeyspaceCreateOptions::default)?;
         let imports_by_path = db.keyspace("imports_by_path", KeyspaceCreateOptions::default)?;
-        let implementations_by_trait =
-            db.keyspace("implementations_by_trait", KeyspaceCreateOptions::default)?;
-        let implementations_by_path =
-            db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
+        let implementations_by_trait = db.keyspace("implementations_by_trait", KeyspaceCreateOptions::default)?;
+        let implementations_by_path = db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
         let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
         let memory_archive = db.keyspace("memory_archive", KeyspaceCreateOptions::default)?;

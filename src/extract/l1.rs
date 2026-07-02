@@ -3,8 +3,7 @@ use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
 
 use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind};
 use crate::lang::{
-    CaptureClass, LangId, ParseOutcome, parse_with_default_timeout,
-    try_get_classified_combined_l1_query, with_parser,
+    CaptureClass, LangId, ParseOutcome, parse_with_default_timeout, try_get_classified_combined_l1_query, with_parser,
 };
 
 pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError> {
@@ -16,9 +15,7 @@ pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(
-                crate::lang::DEFAULT_PARSE_TIMEOUT,
-            ));
+            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
     extract_l1_from_tree(lang, &tree, source)
@@ -78,11 +75,7 @@ type CombinedL1 = (Vec<Symbol>, Vec<Import>, Vec<Implementation>);
 /// match by pre-classified capture index. Allocates one `QueryCursor` instead of three, cutting
 /// the per-file tree-walk cost to one pass. Dispatch is an integer array lookup
 /// (`classes[first_cap.index]`) instead of three `starts_with` comparisons per match.
-fn run_combined(
-    lang: LangId,
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Result<CombinedL1, ExtractError> {
+fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<CombinedL1, ExtractError> {
     let Some(cq) = try_get_classified_combined_l1_query(lang)? else {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
     };
@@ -140,8 +133,7 @@ fn run_combined(
 /// same start byte are vanishingly rare), so the linear scan is effectively O(1).
 fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     let mut keep: Vec<Symbol> = Vec::with_capacity(syms.len());
-    let mut index: ahash::AHashMap<u32, Vec<(String, usize)>> =
-        ahash::AHashMap::with_capacity(syms.len());
+    let mut index: ahash::AHashMap<u32, Vec<(String, usize)>> = ahash::AHashMap::with_capacity(syms.len());
     for sym in syms {
         let slot = index.entry(sym.start_byte).or_default();
         // Probe the inner Vec with a borrowed name — no clone on the lookup path.
@@ -286,11 +278,7 @@ fn signature_slice(text: &str) -> Option<String> {
         }
         collapsed.push_str(word);
     }
-    if collapsed.is_empty() {
-        None
-    } else {
-        Some(collapsed)
-    }
+    if collapsed.is_empty() { None } else { Some(collapsed) }
 }
 
 /// True when `split_whitespace` would reproduce `slice` byte-for-byte: the slice is pure ASCII,
@@ -461,10 +449,7 @@ impl Drawable for Beta {
 "#;
         let map = extract_l1("rust", src).expect("extract");
         let impls = &map.implementations;
-        assert!(
-            !impls.is_empty(),
-            "expected at least one Implementation; got none"
-        );
+        assert!(!impls.is_empty(), "expected at least one Implementation; got none");
         let found = impls
             .iter()
             .find(|i| i.trait_name == "Drawable" && i.impl_type == "Beta");
@@ -510,10 +495,7 @@ pub fn broken( {
 pub fn good_two() {}
 "#;
         let map = extract_l1("rust", src).expect("extract should not fail on partial parse");
-        assert!(
-            map.had_errors,
-            "had_errors should be true for syntax errors"
-        );
+        assert!(map.had_errors, "had_errors should be true for syntax errors");
         assert!(
             map.error_count > 0,
             "error_count should be > 0; got {}",

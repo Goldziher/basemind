@@ -319,10 +319,7 @@ impl<'de> Deserialize<'de> for RelPath {
             fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
                 Ok(RelPath::from(v))
             }
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                mut m: A,
-            ) -> Result<Self::Value, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut m: A) -> Result<Self::Value, A::Error> {
                 let mut bytes: Option<Vec<u8>> = None;
                 while let Some(key) = m.next_key::<String>()? {
                     if key == "bytes" {
@@ -420,11 +417,7 @@ mod tests {
         // Build a platform-absolute root + input so the `is_absolute()` re-rooting branch is
         // exercised on Windows too — a Unix-style "/abs/repo" is not absolute there, which
         // sent the input down the relative path and yielded None on the Windows CI runner.
-        let root = std::path::Path::new(if cfg!(windows) {
-            r"C:\abs\repo"
-        } else {
-            "/abs/repo"
-        });
+        let root = std::path::Path::new(if cfg!(windows) { r"C:\abs\repo" } else { "/abs/repo" });
         let input = root.join("src").join("foo.rs");
         assert_eq!(
             normalize_query_path(input.to_str().unwrap(), root),
@@ -444,10 +437,7 @@ mod tests {
     #[test]
     fn normalize_already_relative_is_unchanged() {
         let root = std::path::Path::new("/abs/repo");
-        assert_eq!(
-            normalize_query_path("src/foo.rs", root),
-            Some("src/foo.rs".to_string())
-        );
+        assert_eq!(normalize_query_path("src/foo.rs", root), Some("src/foo.rs".to_string()));
     }
 
     #[test]

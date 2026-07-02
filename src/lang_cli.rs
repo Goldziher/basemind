@@ -10,12 +10,8 @@ pub(crate) fn cmd_lang_list(no_color: bool) -> Result<()> {
     use std::io::Write;
     let mut out = render::stdout(no_color);
     let installed = basemind::lang::downloaded_languages();
-    let supported: std::collections::HashSet<&str> = basemind::lang::SUPPORTED_LANGUAGES
-        .iter()
-        .copied()
-        .collect();
-    let installed_set: std::collections::HashSet<&str> =
-        installed.iter().map(String::as_str).collect();
+    let supported: std::collections::HashSet<&str> = basemind::lang::SUPPORTED_LANGUAGES.iter().copied().collect();
+    let installed_set: std::collections::HashSet<&str> = installed.iter().map(String::as_str).collect();
 
     let ok = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
     let warn = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Yellow)));
@@ -53,13 +49,7 @@ pub(crate) fn cmd_lang_list(no_color: bool) -> Result<()> {
             r = Reset.render(),
         );
         for n in extras {
-            let _ = writeln!(
-                out,
-                "  {d}· {n}{r}",
-                d = dim.render(),
-                r = Reset.render(),
-                n = n,
-            );
+            let _ = writeln!(out, "  {d}· {n}{r}", d = dim.render(), r = Reset.render(), n = n,);
         }
     }
 
@@ -81,10 +71,7 @@ pub(crate) fn cmd_lang_install(verbosity: Verbosity, no_color: bool) -> Result<(
     if verbosity != Verbosity::Quiet {
         let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("{e}"))?;
         if !summary.did_download() {
-            println!(
-                "all {} supported grammars already cached",
-                summary.already_cached.len()
-            );
+            println!("all {} supported grammars already cached", summary.already_cached.len());
         }
     }
     Ok(())

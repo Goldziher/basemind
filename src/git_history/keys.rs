@@ -130,10 +130,7 @@ mod tests {
         let foo = path_id_by_path_key(&RelPath::from("Foo".as_bytes())).unwrap();
         let foobar = path_id_by_path_key(&RelPath::from("Foobar".as_bytes())).unwrap();
         assert_ne!(foo, foobar);
-        assert!(
-            !foobar.starts_with(&foo),
-            "length-prefix prevents prefix spill"
-        );
+        assert!(!foobar.starts_with(&foo), "length-prefix prevents prefix spill");
     }
 
     #[test]
@@ -150,9 +147,6 @@ mod tests {
     #[test]
     fn oversized_path_is_rejected() {
         let huge = RelPath::from(vec![b'a'; 70_000].as_slice());
-        assert!(
-            path_id_by_path_key(&huge).is_none(),
-            "past u16 ceiling → None"
-        );
+        assert!(path_id_by_path_key(&huge).is_none(), "past u16 ceiling → None");
     }
 }

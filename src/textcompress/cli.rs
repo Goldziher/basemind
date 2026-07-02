@@ -30,9 +30,7 @@ pub struct CompressOutputArgs {
 /// unchanged when nothing matches.
 pub fn run(args: &CompressOutputArgs) -> Result<()> {
     let mut raw = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut raw)
-        .context("read stdin")?;
+    std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
     let text = String::from_utf8_lossy(&raw);
 
     let outcome = compress_output(text.as_ref(), args.family.as_deref());
@@ -43,9 +41,7 @@ pub fn run(args: &CompressOutputArgs) -> Result<()> {
         .context("write compressed output")?;
     stdout.flush().context("flush stdout")?;
 
-    let saved = outcome
-        .original_bytes
-        .saturating_sub(outcome.compressed_bytes);
+    let saved = outcome.original_bytes.saturating_sub(outcome.compressed_bytes);
     let pct = if outcome.original_bytes > 0 {
         (saved as f64 / outcome.original_bytes as f64) * 100.0
     } else {
@@ -53,11 +49,7 @@ pub fn run(args: &CompressOutputArgs) -> Result<()> {
     };
     eprintln!(
         "compress-output: family={} compressed={} {} -> {} bytes ({:.0}% saved)",
-        outcome.family_detected,
-        outcome.compressed,
-        outcome.original_bytes,
-        outcome.compressed_bytes,
-        pct,
+        outcome.family_detected, outcome.compressed, outcome.original_bytes, outcome.compressed_bytes, pct,
     );
     Ok(())
 }
@@ -80,8 +72,7 @@ pub struct DeltaArgs {
 /// stdout, and a one-line stat to stderr. Both sides are read lossily so
 /// non-UTF-8 content never aborts the pipe.
 pub fn run_delta(args: &DeltaArgs) -> Result<()> {
-    let old_raw = std::fs::read(&args.old)
-        .with_context(|| format!("read old content from {}", args.old.display()))?;
+    let old_raw = std::fs::read(&args.old).with_context(|| format!("read old content from {}", args.old.display()))?;
     let old = String::from_utf8_lossy(&old_raw);
 
     let mut new_raw = Vec::new();
@@ -101,12 +92,7 @@ pub fn run_delta(args: &DeltaArgs) -> Result<()> {
 
     eprintln!(
         "delta: changed={} bailed={} old_lines={} new_lines={} +{}/-{}",
-        outcome.changed,
-        outcome.bailed,
-        outcome.old_lines,
-        outcome.new_lines,
-        outcome.added,
-        outcome.removed,
+        outcome.changed, outcome.bailed, outcome.old_lines, outcome.new_lines, outcome.added, outcome.removed,
     );
     Ok(())
 }
@@ -130,9 +116,7 @@ pub struct CheckpointArgs {}
 /// non-UTF-8 content never aborts the pipe.
 pub fn run_checkpoint(root: &std::path::Path, _args: &CheckpointArgs) -> Result<()> {
     let mut raw = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut raw)
-        .context("read stdin")?;
+    std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
     let text = String::from_utf8_lossy(&raw);
 
     let files_changed = changed_files(root);
@@ -141,9 +125,7 @@ pub fn run_checkpoint(root: &std::path::Path, _args: &CheckpointArgs) -> Result<
 
     let json = serde_json::to_string_pretty(&checkpoint).context("serialize checkpoint")?;
     let mut stdout = std::io::stdout().lock();
-    stdout
-        .write_all(json.as_bytes())
-        .context("write checkpoint json")?;
+    stdout.write_all(json.as_bytes()).context("write checkpoint json")?;
     stdout.write_all(b"\n").context("write trailing newline")?;
     stdout.flush().context("flush stdout")?;
 
@@ -195,9 +177,7 @@ pub struct DetectWasteArgs {}
 /// aborts the pipe.
 pub fn run_detect_waste(_args: &DetectWasteArgs) -> Result<()> {
     let mut raw = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut raw)
-        .context("read stdin")?;
+    std::io::stdin().read_to_end(&mut raw).context("read stdin")?;
     let text = String::from_utf8_lossy(&raw);
 
     let calls = parse_calls(text.as_ref());
@@ -205,9 +185,7 @@ pub fn run_detect_waste(_args: &DetectWasteArgs) -> Result<()> {
 
     let json = serde_json::to_string_pretty(&report).context("serialize waste report")?;
     let mut stdout = std::io::stdout().lock();
-    stdout
-        .write_all(json.as_bytes())
-        .context("write waste report json")?;
+    stdout.write_all(json.as_bytes()).context("write waste report json")?;
     stdout.write_all(b"\n").context("write trailing newline")?;
     stdout.flush().context("flush stdout")?;
 

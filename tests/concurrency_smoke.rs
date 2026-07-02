@@ -45,16 +45,8 @@ fn build_repo() -> TempDir {
     let root = dir.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(
-        root.join("a.rs"),
-        b"pub fn alpha() {}\npub struct Beta { x: i32 }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("b.ts"),
-        b"export function plain() { return 1; }\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
+    std::fs::write(root.join("b.ts"), b"export function plain() { return 1; }\n").unwrap();
     // c.rs calls alpha() three times so the reference index has something to work with.
     std::fs::write(
         root.join("c.rs"),
@@ -82,15 +74,8 @@ fn build_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    let mut store =
-        basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
 }
 
 fn decode_text(result: &CallToolResult) -> Value {
@@ -123,11 +108,7 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     ().serve(transport).await.expect("rmcp handshake")
@@ -212,14 +193,9 @@ async fn concurrent_search_and_rescan() {
     let task_a = tokio::spawn(async move {
         for iteration in 0_u32..10 {
             let result = peer_a
-                .call_tool(call_params(
-                    "search_symbols",
-                    json!({ "needle": "alp", "limit": 50 }),
-                ))
+                .call_tool(call_params("search_symbols", json!({ "needle": "alp", "limit": 50 })))
                 .await
-                .unwrap_or_else(|error| {
-                    panic!("search_symbols iteration {iteration} failed: {error}")
-                });
+                .unwrap_or_else(|error| panic!("search_symbols iteration {iteration} failed: {error}"));
             let body = decode_text(&result);
             assert!(
                 body.get("results").and_then(Value::as_array).is_some(),
@@ -314,10 +290,7 @@ async fn parallel_memory_put_and_search() {
     // After all puts complete, memory_list should return exactly 4 entries with
     // the test prefix.
     let list_result = peer
-        .call_tool(call_params(
-            "memory_list",
-            json!({ "prefix": "concurrency_test_k_" }),
-        ))
+        .call_tool(call_params("memory_list", json!({ "prefix": "concurrency_test_k_" })))
         .await
         .expect("memory_list");
     let body = decode_text(&list_result);
@@ -379,10 +352,7 @@ async fn parallel_blame_same_file() {
     .await
     .expect("parallel blame_file timed out after 60 s");
 
-    assert_eq!(
-        completed, 4,
-        "all 4 concurrent blame_file calls should have completed"
-    );
+    assert_eq!(completed, 4, "all 4 concurrent blame_file calls should have completed");
 
     let _ = service.cancel().await;
 }
@@ -565,10 +535,7 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
 
     // find_implementations: Circle implements Drawable (d.rs).
     let fi = peer2
-        .call_tool(call_params(
-            "find_implementations",
-            json!({ "trait_name": "Drawable" }),
-        ))
+        .call_tool(call_params("find_implementations", json!({ "trait_name": "Drawable" })))
         .await
         .expect("find_implementations on 2nd session");
     let fi_body = decode_text(&fi);

@@ -238,8 +238,7 @@ impl ShellRuntime {
         rows: u16,
     ) -> Result<(SessionId, SessionName)> {
         let rmux = self.rmux().await?;
-        let name = SessionName::new(session_id.as_str())
-            .map_err(|e| anyhow::anyhow!("mint rmux session name: {e}"))?;
+        let name = SessionName::new(session_id.as_str()).map_err(|e| anyhow::anyhow!("mint rmux session name: {e}"))?;
         let spec = SpawnSpec {
             name: name.clone(),
             command,
@@ -249,10 +248,7 @@ impl ShellRuntime {
             rows,
         };
         let _session = session::spawn_session(rmux, spec).await?;
-        self.sessions
-            .lock()
-            .await
-            .insert(session_id.clone(), name.clone());
+        self.sessions.lock().await.insert(session_id.clone(), name.clone());
         Ok((session_id, name))
     }
 
@@ -304,9 +300,7 @@ impl ShellRuntime {
     pub async fn list(&self) -> Result<Vec<ShellSessionInfo>> {
         let mapped: Vec<(SessionId, SessionName)> = {
             let map = self.sessions.lock().await;
-            map.iter()
-                .map(|(id, name)| (id.clone(), name.clone()))
-                .collect()
+            map.iter().map(|(id, name)| (id.clone(), name.clone())).collect()
         };
         let rmux = self.rmux().await?;
         let live = session::list_sessions(rmux).await?;
@@ -407,8 +401,7 @@ fn project_dirs_socket_path() -> Option<PathBuf> {
         // Best-effort: tighten the dir to owner-only so a co-tenant cannot read
         // or pre-create the socket. A permissions failure does not abort — the
         // socket is still under the per-user data dir, not shared /tmp.
-        let _ =
-            std::fs::set_permissions(&shells_dir, std::fs::Permissions::from_mode(OWNER_ONLY_DIR));
+        let _ = std::fs::set_permissions(&shells_dir, std::fs::Permissions::from_mode(OWNER_ONLY_DIR));
     }
     Some(shells_dir.join(SHELLS_SOCKET_FILE))
 }

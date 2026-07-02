@@ -56,11 +56,7 @@ export default function basemindPiExtension(pi: ExtensionAPI) {
 
     const insertAt = firstNonCompactionSummaryIndex(event.messages);
     return {
-      messages: [
-        ...event.messages.slice(0, insertAt),
-        bootstrapMessage,
-        ...event.messages.slice(insertAt),
-      ],
+      messages: [...event.messages.slice(0, insertAt), bootstrapMessage, ...event.messages.slice(insertAt)],
     };
   });
 }

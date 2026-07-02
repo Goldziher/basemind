@@ -9,13 +9,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchDocumentsParams {
-    #[serde(
-        alias = "needle",
-        alias = "pattern",
-        alias = "q",
-        alias = "text",
-        alias = "search"
-    )]
+    #[serde(alias = "needle", alias = "pattern", alias = "q", alias = "text", alias = "search")]
     pub query: String,
     #[serde(default)]
     pub limit: Option<u32>,

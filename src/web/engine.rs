@@ -18,13 +18,10 @@ use crate::config::CrawlConfig;
 pub fn build_engine(cfg: &CrawlConfig) -> Result<CrawlEngineHandle> {
     let max_pages = usize::try_from(cfg.max_pages).context("max_pages exceeds usize")?;
     let max_depth = usize::try_from(cfg.max_depth).context("max_depth exceeds usize")?;
-    let max_body_size =
-        usize::try_from(cfg.max_body_size).context("max_body_size exceeds usize")?;
+    let max_body_size = usize::try_from(cfg.max_body_size).context("max_body_size exceeds usize")?;
 
     if !cfg.respect_robots_txt {
-        tracing::warn!(
-            "crawl.respect_robots_txt is disabled — basemind will fetch URLs that robots.txt forbids"
-        );
+        tracing::warn!("crawl.respect_robots_txt is disabled — basemind will fetch URLs that robots.txt forbids");
     }
 
     let kc_cfg = KcCrawlConfig {

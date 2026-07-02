@@ -4,27 +4,21 @@ description = "Code-map MCP server + scanner — pure-Rust, content-addressed, F
 gitignore = true
 
 presets = [
-  "claude",
-  "cursor",
-  "gemini",
-  "windsurf",
-  "copilot",
-  "continue-dev",
-  "amp",
-  "cline",
-  "codex",
-  "opencode",
-  "junie",
-  "antigravity",
+    "claude",
+    "cursor",
+    "gemini",
+    "windsurf",
+    "copilot",
+    "continue-dev",
+    "amp",
+    "cline",
+    "codex",
+    "opencode",
+    "junie",
+    "antigravity",
 ]
 
-builtins = [
-  "rust",
-  "cicd",
-  "documentation",
-  "observability",
-  "default-commands",
-]
+builtins = ["rust", "cicd", "documentation", "observability", "default-commands"]
 
 # basemind itself is delivered via the [[plugins]] marketplace entry below (the launcher
 # downloads the published binary), so it is intentionally NOT declared as a project-level

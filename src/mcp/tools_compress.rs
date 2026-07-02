@@ -9,9 +9,7 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_compress::{
-    CheckpointParams, CompressParams, DeltaParams, DetectWasteParams, ExpandParams,
-};
+use super::types_compress::{CheckpointParams, CompressParams, DeltaParams, DetectWasteParams, ExpandParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_compress")]
 impl BasemindServer {
@@ -30,14 +28,10 @@ impl BasemindServer {
             Requires the file to be indexed; call `rescan` first if the path is not found.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    pub(crate) async fn expand(
-        &self,
-        Parameters(p): Parameters<ExpandParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn expand(&self, Parameters(p): Parameters<ExpandParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_compress::run_expand(&self.state, p).await;
+        let __result: Result<CallToolResult, McpError> = super::helpers_compress::run_expand(&self.state, p).await;
         record_call(&self.state, "expand", &__params_json, __started, &__result);
         __result
     }
@@ -62,21 +56,11 @@ impl BasemindServer {
             `path` is not found.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    pub(crate) async fn compress(
-        &self,
-        Parameters(p): Parameters<CompressParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn compress(&self, Parameters(p): Parameters<CompressParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_compress::run_compress(&self.state, p).await;
-        record_call(
-            &self.state,
-            "compress",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_compress::run_compress(&self.state, p).await;
+        record_call(&self.state, "compress", &__params_json, __started, &__result);
         __result
     }
 
@@ -93,14 +77,10 @@ impl BasemindServer {
             seen; the caller supplies both sides.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    pub(crate) async fn delta(
-        &self,
-        Parameters(p): Parameters<DeltaParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn delta(&self, Parameters(p): Parameters<DeltaParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_compress::run_delta(&self.state, p).await;
+        let __result: Result<CallToolResult, McpError> = super::helpers_compress::run_delta(&self.state, p).await;
         record_call(&self.state, "delta", &__params_json, __started, &__result);
         __result
     }
@@ -127,15 +107,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_compress::run_checkpoint(&self.state, p).await;
-        record_call(
-            &self.state,
-            "checkpoint",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_compress::run_checkpoint(&self.state, p).await;
+        record_call(&self.state, "checkpoint", &__params_json, __started, &__result);
         __result
     }
 
@@ -164,13 +137,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
         let __result: Result<CallToolResult, McpError> =
             super::helpers_compress::run_detect_waste(&self.state, p).await;
-        record_call(
-            &self.state,
-            "detect_waste",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "detect_waste", &__params_json, __started, &__result);
         __result
     }
 }

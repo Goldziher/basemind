@@ -109,19 +109,12 @@ pub enum GitCmd {
     },
 }
 
-pub async fn run(
-    server: &BasemindServer,
-    cmd: GitCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut impl Write) -> Result<()> {
     match cmd {
         GitCmd::WorkingTreeStatus => {
             let r = run_tool(
                 "working_tree_status",
-                server
-                    .working_tree_status(Parameters(WorkingTreeStatusParams {}))
-                    .await,
+                server.working_tree_status(Parameters(WorkingTreeStatusParams {})).await,
             )?;
             emit("working_tree_status", &r, json, out)
         }
@@ -134,21 +127,14 @@ pub async fn run(
             let r = run_tool("recent_changes", server.recent_changes(Parameters(p)).await)?;
             emit("recent_changes", &r, json, out)
         }
-        GitCmd::Search {
-            pattern,
-            field,
-            limit,
-        } => {
+        GitCmd::Search { pattern, field, limit } => {
             let p = SearchGitHistoryParams {
                 pattern,
                 field,
                 limit,
                 cursor: None,
             };
-            let r = run_tool(
-                "search_git_history",
-                server.search_git_history(Parameters(p)).await,
-            )?;
+            let r = run_tool("search_git_history", server.search_git_history(Parameters(p)).await)?;
             emit("search_git_history", &r, json, out)
         }
         GitCmd::CommitsTouching { path, limit } => {
@@ -157,27 +143,17 @@ pub async fn run(
                 limit,
                 cursor: None,
             };
-            let r = run_tool(
-                "commits_touching",
-                server.commits_touching(Parameters(p)).await,
-            )?;
+            let r = run_tool("commits_touching", server.commits_touching(Parameters(p)).await)?;
             emit("commits_touching", &r, json, out)
         }
-        GitCmd::FindCommitsByPath {
-            pattern,
-            window,
-            limit,
-        } => {
+        GitCmd::FindCommitsByPath { pattern, window, limit } => {
             let p = FindCommitsByPathParams {
                 pattern,
                 window,
                 limit,
                 cursor: None,
             };
-            let r = run_tool(
-                "find_commits_by_path",
-                server.find_commits_by_path(Parameters(p)).await,
-            )?;
+            let r = run_tool("find_commits_by_path", server.find_commits_by_path(Parameters(p)).await)?;
             emit("find_commits_by_path", &r, json, out)
         }
         GitCmd::HotFiles { window, top_k } => {
@@ -185,11 +161,7 @@ pub async fn run(
             let r = run_tool("hot_files", server.hot_files(Parameters(p)).await)?;
             emit("hot_files", &r, json, out)
         }
-        GitCmd::DiffFile {
-            path,
-            rev_old,
-            rev_new,
-        } => {
+        GitCmd::DiffFile { path, rev_old, rev_new } => {
             let p = DiffFileParams {
                 rev_old,
                 rev_new,

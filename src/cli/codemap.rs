@@ -131,12 +131,7 @@ pub enum QueryCmd {
     },
 }
 
-pub async fn run(
-    server: &BasemindServer,
-    cmd: QueryCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut impl Write) -> Result<()> {
     match cmd {
         QueryCmd::Outline { path, l2 } => {
             let p = OutlineParams {
@@ -148,16 +143,7 @@ pub async fn run(
             let r = run_tool("outline", server.outline(Parameters(Lenient(p))).await)?;
             emit("outline", &r, json, out)
         }
-        QueryCmd::Symbol {
-            needle,
-            kind,
-            limit,
-        }
-        | QueryCmd::Search {
-            needle,
-            kind,
-            limit,
-        } => {
+        QueryCmd::Symbol { needle, kind, limit } | QueryCmd::Search { needle, kind, limit } => {
             let p = SearchSymbolsParams {
                 needle,
                 kind,
@@ -166,10 +152,7 @@ pub async fn run(
                 format: None,
                 cursor: None,
             };
-            let r = run_tool(
-                "search_symbols",
-                server.search_symbols(Parameters(Lenient(p))).await,
-            )?;
+            let r = run_tool("search_symbols", server.search_symbols(Parameters(Lenient(p))).await)?;
             emit("search_symbols", &r, json, out)
         }
         QueryCmd::References { name, limit } => {
@@ -180,10 +163,7 @@ pub async fn run(
                 format: None,
                 cursor: None,
             };
-            let r = run_tool(
-                "find_references",
-                server.find_references(Parameters(Lenient(p))).await,
-            )?;
+            let r = run_tool("find_references", server.find_references(Parameters(Lenient(p))).await)?;
             emit("find_references", &r, json, out)
         }
         QueryCmd::Callers {
@@ -200,10 +180,7 @@ pub async fn run(
                 max_tokens: None,
                 cursor: None,
             };
-            let r = run_tool(
-                "find_callers",
-                server.find_callers(Parameters(Lenient(p))).await,
-            )?;
+            let r = run_tool("find_callers", server.find_callers(Parameters(Lenient(p))).await)?;
             emit("find_callers", &r, json, out)
         }
         QueryCmd::Implementations {
@@ -258,10 +235,7 @@ pub async fn run(
                 include_context: !no_context,
                 cursor: None,
             };
-            let r = run_tool(
-                "workspace_grep",
-                server.workspace_grep(Parameters(Lenient(p))).await,
-            )?;
+            let r = run_tool("workspace_grep", server.workspace_grep(Parameters(Lenient(p))).await)?;
             emit("workspace_grep", &r, json, out)
         }
         QueryCmd::ListFiles {
@@ -285,18 +259,12 @@ pub async fn run(
             emit("status", &r, json, out)
         }
         QueryCmd::RepoInfo => {
-            let r = run_tool(
-                "repo_info",
-                server.repo_info(Parameters(RepoInfoParams {})).await,
-            )?;
+            let r = run_tool("repo_info", server.repo_info(Parameters(RepoInfoParams {})).await)?;
             emit("repo_info", &r, json, out)
         }
         QueryCmd::Dependents { module } => {
             let p = DependentsParams { module };
-            let r = run_tool(
-                "dependents",
-                server.dependents(Parameters(Lenient(p))).await,
-            )?;
+            let r = run_tool("dependents", server.dependents(Parameters(Lenient(p))).await)?;
             emit("dependents", &r, json, out)
         }
         QueryCmd::Expand { path, name, kind } => {

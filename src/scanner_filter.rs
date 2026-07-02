@@ -46,8 +46,7 @@ impl Filters {
             Vec::new()
         };
         // Pre-build `"{root}/"` once so `allows` never calls `format!` per candidate file.
-        let submodule_prefixes: Vec<String> =
-            submodule_roots.iter().map(|r| format!("{r}/")).collect();
+        let submodule_prefixes: Vec<String> = submodule_roots.iter().map(|r| format!("{r}/")).collect();
         Ok(Self {
             include,
             exclude,
@@ -62,11 +61,7 @@ impl Filters {
         if self.exclude.is_match(rel) {
             return false;
         }
-        for (root, prefix) in self
-            .submodule_roots
-            .iter()
-            .zip(self.submodule_prefixes.iter())
-        {
+        for (root, prefix) in self.submodule_roots.iter().zip(self.submodule_prefixes.iter()) {
             if rel == root || rel.starts_with(prefix.as_str()) {
                 return false;
             }
@@ -87,11 +82,7 @@ fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ScanError> {
 /// Single source of truth for the `ignore` crate's walk configuration. Both the full-scan
 /// `walk_candidates` and the incremental `IndexFilter` build their walkers here so the gitignore /
 /// git-exclude / hidden semantics stay identical between a full scan and a watcher batch.
-pub(crate) fn ignore_walk_builder(
-    dir: &Path,
-    respect_gitignore: bool,
-    follow_links: bool,
-) -> WalkBuilder {
+pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool, follow_links: bool) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.standard_filters(respect_gitignore)
         .follow_links(follow_links)
@@ -107,12 +98,7 @@ pub(crate) fn ignore_walk_builder(
 /// repo's relative keys. Symlinks are followed (Bazel `external/` is symlink-heavy). Missing or
 /// unreadable roots are skipped with a warning; a root inside the repo is skipped because the
 /// primary walk already covers it.
-pub(crate) fn walk_extra_roots(
-    root: &Path,
-    config: &Config,
-    filters: &Filters,
-    out: &mut Vec<String>,
-) {
+pub(crate) fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, out: &mut Vec<String>) {
     if config.scan.extra_roots.is_empty() {
         return;
     }

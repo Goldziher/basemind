@@ -34,8 +34,7 @@ use super::ServerState;
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::tokens;
 use super::types_compress::{
-    CheckpointParams, CompressParams, CompressResponse, DeltaParams, DetectWasteParams,
-    ExpandParams, ExpandResponse,
+    CheckpointParams, CompressParams, CompressResponse, DeltaParams, DetectWasteParams, ExpandParams, ExpandResponse,
 };
 use crate::query;
 
@@ -55,8 +54,7 @@ const TOKENS_NOTE_REAL: &str =
     "tokens counted with the o200k (gpt-4o) tokenizer; offline runs fall back to a word estimate";
 
 /// Disclosure note for the `bytes/4` heuristic path.
-const TOKENS_NOTE_HEURISTIC: &str =
-    "estimate (bytes/4); build with --features documents for real token counts";
+const TOKENS_NOTE_HEURISTIC: &str = "estimate (bytes/4); build with --features documents for real token counts";
 
 /// Pick the disclosure note matching the compiled token-counting path.
 fn tokens_note() -> String {
@@ -148,16 +146,13 @@ pub(super) async fn run_expand(
         .as_deref()
         .map(parse_kind)
         .transpose()
-        .map_err(|e| {
-            McpError::invalid_params(format!("expand: invalid kind {:?}: {e}", params.kind), None)
-        })?;
+        .map_err(|e| McpError::invalid_params(format!("expand: invalid kind {:?}: {e}", params.kind), None))?;
 
     // Load the L1 outline for the file.
     let l1 = {
         let store = state.store.read().await;
-        query::file_outline(&store, &params.path).map_err(|e| {
-            McpError::invalid_params(format!("expand: file_outline({}): {e}", params.path), None)
-        })?
+        query::file_outline(&store, &params.path)
+            .map_err(|e| McpError::invalid_params(format!("expand: file_outline({}): {e}", params.path), None))?
     };
 
     // Filter symbols by name (exact, case-sensitive) and optional kind.
@@ -209,9 +204,8 @@ pub(super) async fn run_expand(
 
     // Read the source file from disk.
     let abs = state.root.join(params.path.to_path_buf());
-    let file_bytes = std::fs::read(&abs).map_err(|e| {
-        McpError::invalid_params(format!("expand: read {}: {e}", params.path), None)
-    })?;
+    let file_bytes = std::fs::read(&abs)
+        .map_err(|e| McpError::invalid_params(format!("expand: read {}: {e}", params.path), None))?;
 
     // Slice the symbol's byte range.
     let start = symbol.start_byte as usize;
@@ -264,10 +258,7 @@ pub(super) async fn run_compress(
             ));
         }
         (None, None) => {
-            return Err(McpError::invalid_params(
-                "supply exactly one of `text` or `path`",
-                None,
-            ));
+            return Err(McpError::invalid_params("supply exactly one of `text` or `path`", None));
         }
         _ => {}
     }
@@ -288,9 +279,8 @@ async fn run_structural(
     path: &crate::path::RelPath,
 ) -> Result<rmcp::model::CallToolResult, McpError> {
     let store = state.store.read().await;
-    let l1 = query::file_outline(&store, path).map_err(|e| {
-        McpError::invalid_params(format!("compress: file_outline({path}): {e}"), None)
-    })?;
+    let l1 = query::file_outline(&store, path)
+        .map_err(|e| McpError::invalid_params(format!("compress: file_outline({path}): {e}"), None))?;
 
     // Read the original source bytes to compute the original size.
     let original_bytes = l1.size_bytes as usize;
@@ -356,10 +346,7 @@ async fn run_structural(
 
 // ─── Prose path ──────────────────────────────────────────────────────────────
 
-fn run_prose(
-    text: &str,
-    _params: &CompressParams,
-) -> Result<rmcp::model::CallToolResult, McpError> {
+fn run_prose(text: &str, _params: &CompressParams) -> Result<rmcp::model::CallToolResult, McpError> {
     let original_bytes = text.len();
     let original_tokens = tokens::count_tokens(text);
     let output = lexical_pass(text);
@@ -432,8 +419,7 @@ pub(super) async fn run_checkpoint(
     params: CheckpointParams,
 ) -> Result<rmcp::model::CallToolResult, McpError> {
     let files_changed = changed_files(state);
-    let checkpoint =
-        crate::textcompress::checkpoint::extract_checkpoint(&params.text, files_changed);
+    let checkpoint = crate::textcompress::checkpoint::extract_checkpoint(&params.text, files_changed);
     json_result(&checkpoint)
 }
 
@@ -462,10 +448,7 @@ mod tests {
         let input = "hello   world\n\n\n\nextra blank lines";
         let out = lexical_pass(input);
         assert!(!out.contains("   "), "triple space should be collapsed");
-        assert!(
-            !out.contains("\n\n\n"),
-            "triple newline should be collapsed"
-        );
+        assert!(!out.contains("\n\n\n"), "triple newline should be collapsed");
     }
 
     #[test]
@@ -488,10 +471,7 @@ mod tests {
         let out = lexical_pass(repeated);
         // The second "Hello world." paragraph should be dropped.
         let count = out.matches("Hello world.").count();
-        assert_eq!(
-            count, 1,
-            "duplicate paragraph must appear only once: {out:?}"
-        );
+        assert_eq!(count, 1, "duplicate paragraph must appear only once: {out:?}");
         assert!(
             out.contains("Different paragraph"),
             "unique paragraph must survive: {out:?}"

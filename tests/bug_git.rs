@@ -86,10 +86,7 @@ fn list_paths_rev_skips_submodule_gitlinks() {
         "gitlink 'sub' leaked into blob list: {paths:?}"
     );
     // The real blob must still be present.
-    assert!(
-        paths.iter().any(|p| p == "real.txt"),
-        "real.txt missing: {paths:?}"
-    );
+    assert!(paths.iter().any(|p| p == "real.txt"), "real.txt missing: {paths:?}");
 }
 
 /// #24: nested sub-trees enumerate only their leaf blobs, never the tree entries.

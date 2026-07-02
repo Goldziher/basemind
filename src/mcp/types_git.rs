@@ -14,13 +14,7 @@ use crate::path::RelPath;
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchGitHistoryParams {
-    #[serde(
-        alias = "query",
-        alias = "needle",
-        alias = "q",
-        alias = "search",
-        alias = "text"
-    )]
+    #[serde(alias = "query", alias = "needle", alias = "q", alias = "search", alias = "text")]
     /// Full-text query over commit history. Tokenized (lowercased, split on non-alphanumeric) and
     /// matched as an AND — a commit is returned only when EVERY query token is present in the
     /// scoped field. `"null deref"` requires both `null` and `deref`; `"jane@example.com"` matches
@@ -102,13 +96,7 @@ pub struct BlameFileParams {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindCommitsByPathParams {
-    #[serde(
-        alias = "query",
-        alias = "needle",
-        alias = "regex",
-        alias = "q",
-        alias = "search"
-    )]
+    #[serde(alias = "query", alias = "needle", alias = "regex", alias = "q", alias = "search")]
     /// Regular expression matched against each commit's changed **file paths** (not commit
     /// messages): a commit is returned when any path it touched matches. Invalid regex is a
     /// param error.
@@ -406,24 +394,21 @@ mod tests {
 
     #[test]
     fn find_commits_by_path_accepts_query_alias_for_pattern() {
-        let params: FindCommitsByPathParams =
-            serde_json::from_value(serde_json::json!({ "query": "fix:" })).unwrap();
+        let params: FindCommitsByPathParams = serde_json::from_value(serde_json::json!({ "query": "fix:" })).unwrap();
         assert_eq!(params.pattern, "fix:");
     }
 
     #[test]
     fn symbol_history_accepts_symbol_alias_for_name() {
         let params: SymbolHistoryParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" }))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" })).unwrap();
         assert_eq!(params.name, "scan");
     }
 
     #[test]
     fn blame_symbol_accepts_needle_alias_for_name() {
         let params: BlameSymbolParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "needle": "scan" }))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "needle": "scan" })).unwrap();
         assert_eq!(params.name, "scan");
     }
 }

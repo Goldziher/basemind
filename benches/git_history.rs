@@ -56,21 +56,13 @@ fn build_synthetic() -> Harness {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q", "-b", "main"], "2020-01-01T00:00:00");
-    git(
-        root,
-        &["config", "commit.gpgsign", "false"],
-        "2020-01-01T00:00:00",
-    );
+    git(root, &["config", "commit.gpgsign", "false"], "2020-01-01T00:00:00");
 
     let stride = COMMITS / RARE_FILES.max(1);
     for i in 0..COMMITS {
         // Monotonically increasing dates so the rev-walk's newest-first order is deterministic.
         let date = format!("2020-01-01T00:{:02}:{:02}", (i / 60) % 60, i % 60);
-        std::fs::write(
-            root.join("hot.rs"),
-            format!("fn hot() {{ /* rev {i} */ }}\n"),
-        )
-        .unwrap();
+        std::fs::write(root.join("hot.rs"), format!("fn hot() {{ /* rev {i} */ }}\n")).unwrap();
         git(root, &["add", "hot.rs"], &date);
         if i % stride == 0 {
             let name = format!("rare_{i}.rs");
@@ -113,10 +105,7 @@ fn open_real(repo_root: &str) -> Option<Harness> {
             *counts.entry(rel.clone()).or_default() += 1;
         }
     }
-    let hot_path = counts
-        .iter()
-        .max_by_key(|(_, n)| **n)
-        .map(|(p, _)| p.clone())?;
+    let hot_path = counts.iter().max_by_key(|(_, n)| **n).map(|(p, _)| p.clone())?;
     let rare_path = counts
         .iter()
         .find(|(_, n)| **n == 1)
@@ -169,9 +158,7 @@ fn bench_git_history(c: &mut Criterion) {
 
     // `hot_files` / `find_commits_by_path` input: a whole window decoded with files resolved.
     let mut group = c.benchmark_group("window_commits");
-    group.bench_function("indexed_300", |b| {
-        b.iter(|| black_box(h.index.window_commits(300)))
-    });
+    group.bench_function("indexed_300", |b| b.iter(|| black_box(h.index.window_commits(300))));
     group.finish();
 }
 

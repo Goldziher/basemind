@@ -31,9 +31,7 @@ mod imp {
 
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest};
-    use crate::comms::transport::{
-        CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link,
-    };
+    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
 
     /// Read chunk size pulled from the socket per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
@@ -69,9 +67,8 @@ mod imp {
             loop {
                 // Try to decode a complete frame from whatever is already buffered.
                 if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
-                    let req = rmp_serde::from_slice(&frame).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    let req = rmp_serde::from_slice(&frame)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
                 }
                 // Need more bytes from the socket.
@@ -114,10 +111,7 @@ mod imp {
         /// `singleton::bind_listener`), so this constructor takes the listener rather than a
         /// path to avoid a TOCTOU window.
         pub fn from_listener(listener: UnixListener, socket_path: PathBuf) -> Self {
-            Self {
-                listener,
-                socket_path,
-            }
+            Self { listener, socket_path }
         }
     }
 
@@ -199,13 +193,7 @@ unsafe extern "C" {
     fn getuid() -> u32;
 
     /// POSIX `getsockopt(2)`. Used to read peer credentials.
-    fn getsockopt(
-        sockfd: i32,
-        level: i32,
-        optname: i32,
-        optval: *mut core::ffi::c_void,
-        optlen: *mut u32,
-    ) -> i32;
+    fn getsockopt(sockfd: i32, level: i32, optname: i32, optval: *mut core::ffi::c_void, optlen: *mut u32) -> i32;
 }
 
 /// Read peer credentials from a raw socket fd.
@@ -233,15 +221,7 @@ pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
         // this call. `optval`/`optlen` point at a correctly-sized, properly-aligned `Ucred`
         // and `u32` on the stack; `getsockopt` writes at most `len` bytes into `cred`. The
         // return code is checked before the out-params are read.
-        let rc = unsafe {
-            getsockopt(
-                fd,
-                SOL_SOCKET,
-                SO_PEERCRED,
-                (&mut cred as *mut Ucred).cast(),
-                &mut len,
-            )
-        };
+        let rc = unsafe { getsockopt(fd, SOL_SOCKET, SO_PEERCRED, (&mut cred as *mut Ucred).cast(), &mut len) };
         if rc == 0 {
             return crate::comms::transport::PeerCred {
                 uid: Some(cred.uid),

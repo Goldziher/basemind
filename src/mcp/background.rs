@@ -72,23 +72,22 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
             // channel closes at process teardown.
             let _keep_sender_alive = _shutdown_tx;
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
-            let result =
-                crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
-                    let refresh_state = Arc::clone(&state);
-                    // Bridge the blocking watcher thread into the async refresh.
-                    match handle.block_on(helpers::scan_and_refresh(refresh_state, Some(paths))) {
-                        Ok(report) => tracing::debug!(
-                            scanned = report.stats.scanned,
-                            updated = report.stats.updated,
-                            removed = report.stats.removed,
-                            "serve watcher: incremental rescan complete"
-                        ),
-                        Err(error) => tracing::warn!(
-                            %error,
-                            "serve watcher: incremental rescan failed (watcher continues)"
-                        ),
-                    }
-                });
+            let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
+                let refresh_state = Arc::clone(&state);
+                // Bridge the blocking watcher thread into the async refresh.
+                match handle.block_on(helpers::scan_and_refresh(refresh_state, Some(paths))) {
+                    Ok(report) => tracing::debug!(
+                        scanned = report.stats.scanned,
+                        updated = report.stats.updated,
+                        removed = report.stats.removed,
+                        "serve watcher: incremental rescan complete"
+                    ),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "serve watcher: incremental rescan failed (watcher continues)"
+                    ),
+                }
+            });
             if let Err(error) = result {
                 tracing::warn!(%error, "serve watcher exited with error");
             }
@@ -133,19 +132,13 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
-                let touches_index = events
-                    .iter()
-                    .any(|de| de.event.paths.iter().any(|p| p == &target));
+                let touches_index = events.iter().any(|de| de.event.paths.iter().any(|p| p == &target));
                 if !touches_index {
                     continue;
                 }
                 let new_store = match crate::store::Store::open_read_only(
                     state.root.as_path(),
-                    &state
-                        .store
-                        .try_read()
-                        .map(|g| g.view.clone())
-                        .unwrap_or_default(),
+                    &state.store.try_read().map(|g| g.view.clone()).unwrap_or_default(),
                 ) {
                     Ok(s) => s,
                     Err(e) => {

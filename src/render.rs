@@ -44,11 +44,7 @@ pub fn stdout(force_off: bool) -> AutoStream<std::io::Stdout> {
 const COL_PATH: usize = 8; // "✓ ok  " column width before the path
 
 /// Print every line of a report, respecting verbosity.
-pub fn render_report(
-    w: &mut AutoStream<std::io::Stdout>,
-    report: &ScanReport,
-    verbosity: Verbosity,
-) {
+pub fn render_report(w: &mut AutoStream<std::io::Stdout>, report: &ScanReport, verbosity: Verbosity) {
     for r in &report.results {
         render_file(w, r, verbosity);
     }
@@ -56,11 +52,7 @@ pub fn render_report(
 }
 
 /// Print only the per-file lines (no summary). Used by the watcher per batch.
-pub fn render_lines(
-    w: &mut AutoStream<std::io::Stdout>,
-    report: &ScanReport,
-    verbosity: Verbosity,
-) {
+pub fn render_lines(w: &mut AutoStream<std::io::Stdout>, report: &ScanReport, verbosity: Verbosity) {
     for r in &report.results {
         render_file(w, r, verbosity);
     }
@@ -73,11 +65,7 @@ pub fn render_file(w: &mut AutoStream<std::io::Stdout>, res: &FileResult, verbos
     let _ = writeln!(w, "{line}");
 }
 
-pub fn render_summary(
-    w: &mut AutoStream<std::io::Stdout>,
-    stats: &ScanStats,
-    verbosity: Verbosity,
-) {
+pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, verbosity: Verbosity) {
     if verbosity == Verbosity::Quiet
         && stats.read_failed == 0
         && stats.extract_failed == 0
@@ -111,11 +99,7 @@ pub fn render_summary(
         updated = pair("updated", stats.updated, style_ok),
         warn = pair("warn", stats.updated_with_warnings, style_warn),
         unchanged = pair("unchanged", stats.skipped_unchanged, Style::new()),
-        failed = pair(
-            "failed",
-            stats.read_failed + stats.extract_failed,
-            style_fail
-        ),
+        failed = pair("failed", stats.read_failed + stats.extract_failed, style_fail),
         skipped = pair(
             "skipped",
             stats.skipped_too_large + stats.skipped_non_utf8 + stats.skipped_no_lang,
@@ -134,11 +118,7 @@ pub fn render_summary(
 ///
 /// Silent when all grammars were already cached (unless verbose). When a download did happen,
 /// always emit at least one line so the user knows what basemind was doing during the pause.
-pub fn render_grammar_bootstrap(
-    w: &mut AutoStream<std::io::Stdout>,
-    summary: &BootstrapSummary,
-    verbosity: Verbosity,
-) {
+pub fn render_grammar_bootstrap(w: &mut AutoStream<std::io::Stdout>, summary: &BootstrapSummary, verbosity: Verbosity) {
     if !summary.did_download() && verbosity != Verbosity::Verbose {
         return;
     }
@@ -156,11 +136,7 @@ pub fn render_grammar_bootstrap(
             d = dim.render(),
             dr = Reset.render(),
             n = summary.downloaded.len(),
-            plural = if summary.downloaded.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
+            plural = if summary.downloaded.len() == 1 { "" } else { "s" },
             names = names,
         );
     }
@@ -204,11 +180,7 @@ pub fn render_scan_header(w: &mut AutoStream<std::io::Stdout>, label: &str, verb
     );
 }
 
-pub fn render_batch_header(
-    w: &mut AutoStream<std::io::Stdout>,
-    paths: usize,
-    verbosity: Verbosity,
-) {
+pub fn render_batch_header(w: &mut AutoStream<std::io::Stdout>, paths: usize, verbosity: Verbosity) {
     if verbosity == Verbosity::Quiet {
         return;
     }
@@ -250,9 +222,7 @@ fn format_line(res: &FileResult, verbosity: Verbosity) -> Option<String> {
         let dim = Style::new().dimmed().render();
         format!(" {dim}{detail}{reset}")
     };
-    Some(format!(
-        "{style}{symbol} {label:<5}{reset} {path}{detail_block}",
-    ))
+    Some(format!("{style}{symbol} {label:<5}{reset} {path}{detail_block}",))
 }
 
 struct Row<'a> {
@@ -265,9 +235,7 @@ struct Row<'a> {
 fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
     let v = verbosity;
     match &res.status {
-        FileStatus::Updated {
-            had_errors: false, ..
-        } => {
+        FileStatus::Updated { had_errors: false, .. } => {
             if v == Verbosity::Verbose {
                 Some(Row {
                     symbol: '✓',

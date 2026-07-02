@@ -64,10 +64,7 @@ impl BasemindServer {
         description = "Trace a symbol through the code map — definition, references, callers, and \
                        who last changed it — without reading whole files."
     )]
-    pub async fn trace_symbol_prompt(
-        &self,
-        Parameters(args): Parameters<TraceSymbolArgs>,
-    ) -> Vec<PromptMessage> {
+    pub async fn trace_symbol_prompt(&self, Parameters(args): Parameters<TraceSymbolArgs>) -> Vec<PromptMessage> {
         let symbol = args.symbol;
         vec![PromptMessage::new_text(
             PromptMessageRole::User,
@@ -90,10 +87,7 @@ impl BasemindServer {
         description = "Explain a file structure-first: outline its symbols and imports, then read \
                        only the spans that matter."
     )]
-    pub async fn explain_file_prompt(
-        &self,
-        Parameters(args): Parameters<ExplainFileArgs>,
-    ) -> Vec<PromptMessage> {
+    pub async fn explain_file_prompt(&self, Parameters(args): Parameters<ExplainFileArgs>) -> Vec<PromptMessage> {
         let path = args.path;
         vec![PromptMessage::new_text(
             PromptMessageRole::User,

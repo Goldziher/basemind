@@ -45,9 +45,7 @@ impl Family {
             "git_status" | "git-status" | "gitstatus" => Family::GitStatus,
             "git_log" | "git-log" | "gitlog" => Family::GitLog,
             "git_diff" | "git-diff" | "gitdiff" | "diff" => Family::GitDiff,
-            "npm_install" | "npm-install" | "npm" | "pip" | "pip_install" | "install" => {
-                Family::NpmInstall
-            }
+            "npm_install" | "npm-install" | "npm" | "pip" | "pip_install" | "install" => Family::NpmInstall,
             "cargo_build" | "cargo-build" | "cargo" | "build" => Family::CargoBuild,
             "pytest" | "test" | "tests" | "jest" => Family::Pytest,
             "ls" | "find" | "listing" => Family::Ls,
@@ -230,18 +228,12 @@ mod tests {
 
     #[test]
     fn detect_git_status() {
-        assert_eq!(
-            detect("On branch main\nnothing to commit"),
-            Family::GitStatus
-        );
+        assert_eq!(detect("On branch main\nnothing to commit"), Family::GitStatus);
     }
 
     #[test]
     fn detect_git_diff() {
-        assert_eq!(
-            detect("diff --git a/x b/x\n+++ b/x\n+added"),
-            Family::GitDiff
-        );
+        assert_eq!(detect("diff --git a/x b/x\n+++ b/x\n+added"), Family::GitDiff);
     }
 
     #[test]
@@ -264,9 +256,6 @@ mod tests {
 
     #[test]
     fn detect_falls_back_to_logs() {
-        assert_eq!(
-            detect("some arbitrary prose that matches nothing"),
-            Family::Logs
-        );
+        assert_eq!(detect("some arbitrary prose that matches nothing"), Family::Logs);
     }
 }

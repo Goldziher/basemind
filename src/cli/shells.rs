@@ -84,12 +84,7 @@ fn parse_env(raw: &str) -> Result<ShellEnv> {
     })
 }
 
-pub async fn run(
-    server: &BasemindServer,
-    cmd: ShellsCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: ShellsCmd, json: bool, out: &mut impl Write) -> Result<()> {
     match cmd {
         ShellsCmd::Spawn {
             command,
@@ -144,10 +139,7 @@ pub async fn run(
                 text,
                 enter: !no_enter,
             };
-            let r = run_tool(
-                "shell_broadcast",
-                server.shell_broadcast(Parameters(p)).await,
-            )?;
+            let r = run_tool("shell_broadcast", server.shell_broadcast(Parameters(p)).await)?;
             emit("shell_broadcast", &r, json, out)
         }
         ShellsCmd::List => {

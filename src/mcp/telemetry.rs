@@ -64,14 +64,7 @@ impl Telemetry {
 
     /// Record one tool-call row. Errors are logged via `tracing::warn!` and swallowed — telemetry
     /// is best-effort and must not affect tool response semantics.
-    pub fn record(
-        &self,
-        tool: &str,
-        params: &Value,
-        resp_bytes: u64,
-        elapsed_ms: u64,
-        savings: &SavingsRow,
-    ) {
+    pub fn record(&self, tool: &str, params: &Value, resp_bytes: u64, elapsed_ms: u64, savings: &SavingsRow) {
         let row = TelemetryRow {
             ts_micros: now_micros(),
             tool: tool.to_string(),
@@ -87,8 +80,7 @@ impl Telemetry {
     }
 
     fn write_row(&self, row: &TelemetryRow) -> std::io::Result<()> {
-        let line = serde_json::to_vec(row)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let line = serde_json::to_vec(row).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut guard = self.writer.lock().expect("telemetry mutex poisoned");
         if guard.is_none() {
             // Ensure the parent dir exists — `.basemind/` is created by `Store::open`, but a
@@ -96,10 +88,7 @@ impl Telemetry {
             if let Some(parent) = self.path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
+            let file = OpenOptions::new().create(true).append(true).open(&self.path)?;
             *guard = Some(BufWriter::new(file));
         }
         let w = guard.as_mut().expect("writer just initialized");
@@ -167,8 +156,7 @@ pub(super) async fn summarize(
     let mut total_calls: usize = 0;
     let mut total_resp_bytes: u64 = 0;
     let mut total_saved: u64 = 0;
-    let mut recent: Vec<super::types::RecentCallView> =
-        Vec::with_capacity(TELEMETRY_SUMMARY_RECENT_COUNT);
+    let mut recent: Vec<super::types::RecentCallView> = Vec::with_capacity(TELEMETRY_SUMMARY_RECENT_COUNT);
 
     for row in rows.iter().rev() {
         if let Some(c) = cutoff_micros
@@ -187,9 +175,7 @@ pub(super) async fn summarize(
         let e = per_tool.entry(row.tool.clone()).or_insert((0, 0));
         e.0 += 1;
         e.1 = e.1.saturating_add(row.est_tokens_saved);
-        let b = per_baseline
-            .entry(row.saved_baseline.clone())
-            .or_insert((0, 0));
+        let b = per_baseline.entry(row.saved_baseline.clone()).or_insert((0, 0));
         b.0 += 1;
         b.1 = b.1.saturating_add(row.est_tokens_saved);
         if recent.len() < TELEMETRY_SUMMARY_RECENT_COUNT {
@@ -290,9 +276,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn row_count(path: &Path) -> usize {
-        std::fs::read_to_string(path)
-            .map(|s| s.lines().count())
-            .unwrap_or(0)
+        std::fs::read_to_string(path).map(|s| s.lines().count()).unwrap_or(0)
     }
 
     #[test]

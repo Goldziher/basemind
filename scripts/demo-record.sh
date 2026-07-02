@@ -17,18 +17,18 @@ CAST="$MEDIA_DIR/demo.cast"
 GIF="$MEDIA_DIR/demo.gif"
 
 need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    printf 'demo-record: missing %s — install it first (macOS: brew install asciinema agg)\n' "$1" >&2
-    exit 1
-  fi
+	if ! command -v "$1" >/dev/null 2>&1; then
+		printf 'demo-record: missing %s — install it first (macOS: brew install asciinema agg)\n' "$1" >&2
+		exit 1
+	fi
 }
 need asciinema
 need agg
 
 # A release binary makes the recording fast and representative. Build if absent.
 if [ ! -x "target/release/basemind" ] && [ -z "${BASEMIND_BIN:-}" ]; then
-  printf 'demo-record: building release binary ...\n' >&2
-  cargo build --release
+	printf 'demo-record: building release binary ...\n' >&2
+	cargo build --release
 fi
 
 mkdir -p "$MEDIA_DIR"
@@ -37,7 +37,7 @@ printf 'demo-record: recording cast → %s\n' "$CAST" >&2
 # 90x28 keeps the GIF legible and README-sized; --command runs the demo
 # non-interactively and exits, so the cast has no trailing idle.
 asciinema rec --overwrite --cols 90 --rows 28 \
-  --command "./scripts/demo.sh" "$CAST"
+	--command "./scripts/demo.sh" "$CAST"
 
 printf 'demo-record: rendering GIF → %s\n' "$GIF" >&2
 # --theme: light-on-dark; --font-size tuned for README width. agg picks a

@@ -13,8 +13,8 @@ set -euo pipefail
 # libs, so the formula just drops everything into libexec and symlinks the binary.
 
 if [ $# -ne 2 ]; then
-  echo "Usage: $0 <version> <checksums-file>" >&2
-  exit 1
+	echo "Usage: $0 <version> <checksums-file>" >&2
+	exit 1
 fi
 
 VERSION="$1"
@@ -22,7 +22,7 @@ SUMS="$2"
 BASE="https://github.com/Goldziher/basemind/releases/download/v${VERSION}"
 
 sha_for() {
-  awk -v f="basemind-$1.tar.gz" '{n=$NF; sub(/^[*]/, "", n); if (n == f) print $1}' "$SUMS"
+	awk -v f="basemind-$1.tar.gz" '{n=$NF; sub(/^[*]/, "", n); if (n == f) print $1}' "$SUMS"
 }
 
 # Intel macOS (x86_64-apple-darwin) is intentionally not shipped — Apple Silicon only.
@@ -31,11 +31,11 @@ LINUX_ARM=$(sha_for aarch64-unknown-linux-gnu)
 LINUX_X64=$(sha_for x86_64-unknown-linux-gnu)
 
 for pair in "aarch64-apple-darwin:$MAC_ARM" \
-  "aarch64-unknown-linux-gnu:$LINUX_ARM" "x86_64-unknown-linux-gnu:$LINUX_X64"; do
-  if [ -z "${pair#*:}" ]; then
-    echo "missing checksum for ${pair%%:*} in $SUMS" >&2
-    exit 1
-  fi
+	"aarch64-unknown-linux-gnu:$LINUX_ARM" "x86_64-unknown-linux-gnu:$LINUX_X64"; do
+	if [ -z "${pair#*:}" ]; then
+		echo "missing checksum for ${pair%%:*} in $SUMS" >&2
+		exit 1
+	fi
 done
 
 cat <<EOF

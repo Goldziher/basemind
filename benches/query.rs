@@ -47,8 +47,7 @@ fn setup() -> (TempDir, Store) {
     )
     .expect("write common.rs");
     for i in 0..FILE_COUNT {
-        std::fs::write(root.join(format!("widget_{i}.rs")), module_source(i))
-            .expect("write module");
+        std::fs::write(root.join(format!("widget_{i}.rs")), module_source(i)).expect("write module");
     }
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");

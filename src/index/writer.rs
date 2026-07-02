@@ -23,12 +23,7 @@ impl IndexWriter {
     /// Replace the index entries for `rel` with those derived from `l1` (and optionally
     /// `l2`). Reads the existing per-file entries first to compute their secondary-index
     /// keys for deletion, then stages the fresh inserts in the same batch. Atomic.
-    pub fn upsert_file(
-        &mut self,
-        rel: &RelPath,
-        l1: &FileMapL1,
-        l2: Option<&FileMapL2>,
-    ) -> Result<(), IndexError> {
+    pub fn upsert_file(&mut self, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), IndexError> {
         self.stage_deletes_for(rel)?;
         self.stage_inserts_for(rel, l1, l2)?;
         Ok(())
@@ -124,22 +119,15 @@ impl IndexWriter {
             }
         }
         for (path_key, trait_name, impl_type, start_byte) in found_impls {
-            self.batch
-                .remove(&self.db.implementations_by_path, path_key);
+            self.batch.remove(&self.db.implementations_by_path, path_key);
             if let Some(trait_key) = keys::impl_by_trait(&trait_name, &impl_type, rel, start_byte) {
-                self.batch
-                    .remove(&self.db.implementations_by_trait, trait_key);
+                self.batch.remove(&self.db.implementations_by_trait, trait_key);
             }
         }
         Ok(())
     }
 
-    fn stage_inserts_for(
-        &mut self,
-        rel: &RelPath,
-        l1: &FileMapL1,
-        l2: Option<&FileMapL2>,
-    ) -> Result<(), IndexError> {
+    fn stage_inserts_for(&mut self, rel: &RelPath, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), IndexError> {
         for sym in &l1.symbols {
             let path_key = keys::symbol_by_path(rel, sym.start_byte);
             let value = rmp_serde::to_vec_named(sym)?;
@@ -147,8 +135,7 @@ impl IndexWriter {
             self.batch.insert(&self.db.symbols_by_path, path_key, value);
             // Secondary (by-name) entry is skipped silently for oversized identifiers.
             if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
-                self.batch
-                    .insert(&self.db.symbols_by_name, name_key, Vec::<u8>::new());
+                self.batch.insert(&self.db.symbols_by_name, name_key, Vec::<u8>::new());
             } else {
                 tracing::debug!(
                     path = %rel,
@@ -167,8 +154,7 @@ impl IndexWriter {
                     (Some(module_key), Some(path_key)) => {
                         self.batch
                             .insert(&self.db.imports_by_module, module_key, Vec::<u8>::new());
-                        self.batch
-                            .insert(&self.db.imports_by_path, path_key, Vec::<u8>::new());
+                        self.batch.insert(&self.db.imports_by_path, path_key, Vec::<u8>::new());
                     }
                     _ => {
                         tracing::debug!(
@@ -206,11 +192,8 @@ impl IndexWriter {
                 keys::impl_by_path(rel, &imp.trait_name, &imp.impl_type, imp.start_byte),
             ) {
                 (Some(trait_key), Some(path_key)) => {
-                    self.batch.insert(
-                        &self.db.implementations_by_trait,
-                        trait_key,
-                        Vec::<u8>::new(),
-                    );
+                    self.batch
+                        .insert(&self.db.implementations_by_trait, trait_key, Vec::<u8>::new());
                     self.batch
                         .insert(&self.db.implementations_by_path, path_key, Vec::<u8>::new());
                 }
@@ -350,10 +333,7 @@ mod tests {
         for guard in db.calls_by_callee.prefix(prefix) {
             let (k, _) = guard.into_inner().unwrap();
             let (callee, _, _) = keys::parse_call_by_callee(&k).unwrap();
-            assert_eq!(
-                callee, "spawn",
-                "prefix scan must not bleed into spawn_blocking"
-            );
+            assert_eq!(callee, "spawn", "prefix scan must not bleed into spawn_blocking");
             spawn_hits += 1;
         }
         assert_eq!(spawn_hits, 2);
@@ -448,12 +428,8 @@ mod tests {
         // Re-upsert with the Debug impl dropped — upsert_file stages deletes for the
         // existing rows then inserts the fresh set in one batch.
         let mut w = db.writer();
-        w.upsert_file(
-            &rel,
-            &synthetic_l1_with_impls(&[("Display", "Foo", 0)]),
-            None,
-        )
-        .unwrap();
+        w.upsert_file(&rel, &synthetic_l1_with_impls(&[("Display", "Foo", 0)]), None)
+            .unwrap();
         w.commit().unwrap();
 
         assert_eq!(db.implementations_by_trait.iter().count(), 1);

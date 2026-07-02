@@ -13,9 +13,9 @@ use thiserror::Error;
 
 pub use comms::CommsConfig;
 pub use documents::{
-    ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig,
-    NerBackend, NerConfig, OcrBackend, OcrConfig, OutputConfig, OutputFormat, RerankerConfig,
-    SecretString, SummarizationConfig, SummarizationStrategy,
+    ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
+    OcrBackend, OcrConfig, OutputConfig, OutputFormat, RerankerConfig, SecretString, SummarizationConfig,
+    SummarizationStrategy,
 };
 pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
 pub use overrides::DocumentsCliOverrides;
@@ -146,8 +146,7 @@ mod tests {
     fn parse_extra_roots_through_schema_validation() {
         // Exercises the full load path (JSON-schema validator + deserialize), so it catches
         // any drift between the `ScanConfig` struct and the committed schema snapshot.
-        let raw =
-            "\"$schema\" = \"v1\"\n[scan]\nextra_roots = [\"/opt/ext\", \"/var/cache/bazel\"]\n";
+        let raw = "\"$schema\" = \"v1\"\n[scan]\nextra_roots = [\"/opt/ext\", \"/var/cache/bazel\"]\n";
         let cfg = parse_str(raw).expect("extra_roots is a valid, schema-accepted scan field");
         assert_eq!(
             cfg.scan.extra_roots,

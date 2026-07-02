@@ -93,15 +93,9 @@ fn reject_private_host(host: Option<url::Host<&str>>) -> Result<(), UrlError> {
         return Ok(());
     }
     match host {
-        Some(url::Host::Ipv4(v4)) if is_private_v4(v4) => {
-            Err(UrlError::PrivateHost(v4.to_string()))
-        }
-        Some(url::Host::Ipv6(v6)) if is_private_ip(IpAddr::V6(v6)) => {
-            Err(UrlError::PrivateHost(v6.to_string()))
-        }
-        Some(url::Host::Domain(name)) if is_loopback_name(name) => {
-            Err(UrlError::PrivateHost(name.to_string()))
-        }
+        Some(url::Host::Ipv4(v4)) if is_private_v4(v4) => Err(UrlError::PrivateHost(v4.to_string())),
+        Some(url::Host::Ipv6(v6)) if is_private_ip(IpAddr::V6(v6)) => Err(UrlError::PrivateHost(v6.to_string())),
+        Some(url::Host::Domain(name)) if is_loopback_name(name) => Err(UrlError::PrivateHost(name.to_string())),
         _ => Ok(()),
     }
 }
@@ -248,10 +242,7 @@ mod tests {
 
     #[test]
     fn rejects_relative_path() {
-        assert!(matches!(
-            Url::parse("/just/a/path"),
-            Err(UrlError::Invalid(_))
-        ));
+        assert!(matches!(Url::parse("/just/a/path"), Err(UrlError::Invalid(_))));
     }
 
     #[test]
@@ -293,10 +284,7 @@ mod tests {
     fn rejects_loopback_ipv4() {
         let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
-        assert!(matches!(
-            Url::parse("http://127.0.0.1/"),
-            Err(UrlError::PrivateHost(_))
-        ));
+        assert!(matches!(Url::parse("http://127.0.0.1/"), Err(UrlError::PrivateHost(_))));
     }
 
     #[test]
@@ -307,10 +295,7 @@ mod tests {
             Url::parse("http://localhost:8080/"),
             Err(UrlError::PrivateHost(_))
         ));
-        assert!(matches!(
-            Url::parse("http://LOCALHOST/"),
-            Err(UrlError::PrivateHost(_))
-        ));
+        assert!(matches!(Url::parse("http://LOCALHOST/"), Err(UrlError::PrivateHost(_))));
     }
 
     #[test]
@@ -331,10 +316,7 @@ mod tests {
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         for host in ["ip6-localhost", "ip6-loopback", "IP6-LOCALHOST"] {
             assert!(
-                matches!(
-                    Url::parse(&format!("http://{host}/")),
-                    Err(UrlError::PrivateHost(_))
-                ),
+                matches!(Url::parse(&format!("http://{host}/")), Err(UrlError::PrivateHost(_))),
                 "{host} must be rejected as a loopback alias"
             );
         }
@@ -346,10 +328,7 @@ mod tests {
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
         for host in ["10.0.0.1", "172.16.5.5", "192.168.1.1"] {
             assert!(
-                matches!(
-                    Url::parse(&format!("http://{host}/")),
-                    Err(UrlError::PrivateHost(_))
-                ),
+                matches!(Url::parse(&format!("http://{host}/")), Err(UrlError::PrivateHost(_))),
                 "{host} must be rejected"
             );
         }
@@ -369,22 +348,13 @@ mod tests {
     fn rejects_ipv6_loopback_and_unique_local() {
         let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
-        assert!(matches!(
-            Url::parse("http://[::1]/"),
-            Err(UrlError::PrivateHost(_))
-        ));
+        assert!(matches!(Url::parse("http://[::1]/"), Err(UrlError::PrivateHost(_))));
         assert!(
-            matches!(
-                Url::parse("http://[fc00::1]/"),
-                Err(UrlError::PrivateHost(_))
-            ),
+            matches!(Url::parse("http://[fc00::1]/"), Err(UrlError::PrivateHost(_))),
             "fc00::/7 unique-local must be rejected"
         );
         assert!(
-            matches!(
-                Url::parse("http://[fe80::1]/"),
-                Err(UrlError::PrivateHost(_))
-            ),
+            matches!(Url::parse("http://[fe80::1]/"), Err(UrlError::PrivateHost(_))),
             "fe80::/10 link-local must be rejected"
         );
     }

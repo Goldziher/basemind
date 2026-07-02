@@ -21,8 +21,8 @@ use xberg::{ExtractInput, extract};
 
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
-    DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
-    SummarizationConfig, SummarizationStrategy,
+    DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig, SummarizationConfig,
+    SummarizationStrategy,
 };
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
@@ -257,15 +257,10 @@ impl DocConfig {
             max_tokens: self.summarization.max_tokens,
             llm: None,
         };
-        if matches!(
-            self.summarization.strategy,
-            SummarizationStrategy::Abstractive
-        ) {
+        if matches!(self.summarization.strategy, SummarizationStrategy::Abstractive) {
             sc.llm = self.llm.to_xberg();
             if sc.llm.is_none() {
-                tracing::warn!(
-                    "summarization.strategy = abstractive but llm.model unset; falling back to extractive"
-                );
+                tracing::warn!("summarization.strategy = abstractive but llm.model unset; falling back to extractive");
                 sc.strategy = xberg::SummaryStrategy::Extractive;
             }
         }
@@ -321,15 +316,13 @@ impl DocConfig {
         // YakeParams when the algorithm is Rake (and vice versa). The user almost
         // certainly meant for the params to apply; logging once at config-build
         // time lets them spot the typo without parsing the xberg source.
-        if self.keywords.yake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Yake
-        {
+        if self.keywords.yake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Yake {
             tracing::warn!(
                 algorithm = ?self.keywords.algorithm,
                 "yake_params set but algorithm is not Yake; params ignored"
             );
         }
-        if self.keywords.rake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Rake
-        {
+        if self.keywords.rake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Rake {
             tracing::warn!(
                 algorithm = ?self.keywords.algorithm,
                 "rake_params set but algorithm is not Rake; params ignored"
@@ -356,9 +349,7 @@ impl DocConfig {
         let llm = if matches!(self.ner.backend, NerBackend::Llm) {
             let cfg = self.llm.to_xberg();
             if cfg.is_none() {
-                tracing::warn!(
-                    "ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside xberg"
-                );
+                tracing::warn!("ner.backend = llm but llm.model is unset; NER will fall back to ONNX inside xberg");
             }
             cfg
         } else {
@@ -403,11 +394,7 @@ fn extraction_runtime() -> &'static tokio::runtime::Runtime {
 ///
 /// `mime_type` may be supplied by the caller (e.g. from `lang::detect`); when
 /// `None`, xberg sniffs the file content.
-pub fn extract_doc(
-    path: &Path,
-    mime_type: Option<&str>,
-    config: &DocConfig,
-) -> Result<FileMapDoc, ExtractError> {
+pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> Result<FileMapDoc, ExtractError> {
     let krz_config = config.to_xberg();
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
@@ -446,10 +433,7 @@ pub fn extract_doc(
     }
 
     let embedding_model = if embedding_dim > 0 {
-        config
-            .embedding_preset
-            .clone()
-            .unwrap_or_else(|| "default".to_string())
+        config.embedding_preset.clone().unwrap_or_else(|| "default".to_string())
     } else {
         String::new()
     };

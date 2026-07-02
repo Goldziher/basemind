@@ -9,17 +9,8 @@
     "scan": {
       "$ref": "#/$defs/ScanConfig",
       "default": {
-        "include": [
-          "**/*"
-        ],
-        "exclude": [
-          "**/target/**",
-          "**/node_modules/**",
-          "**/dist/**",
-          "**/.venv/**",
-          "**/.basemind/**",
-          "**/.git/**"
-        ],
+        "include": ["**/*"],
+        "exclude": ["**/target/**", "**/node_modules/**", "**/dist/**", "**/.venv/**", "**/.basemind/**", "**/.git/**"],
         "respect_gitignore": true,
         "max_file_bytes": 2097152,
         "skip_submodules": true,
@@ -78,10 +69,7 @@
           "algorithm": "yake",
           "max_keywords": 10,
           "min_score": 0.0,
-          "ngram_range": [
-            1,
-            3
-          ],
+          "ngram_range": [1, 3],
           "yake_params": null,
           "rake_params": null
         },
@@ -98,9 +86,7 @@
         },
         "ocr": {
           "backend": "tesseract",
-          "languages": [
-            "eng"
-          ]
+          "languages": ["eng"]
         },
         "output": {
           "format": "json"
@@ -165,9 +151,7 @@
     }
   },
   "additionalProperties": false,
-  "required": [
-    "$schema"
-  ],
+  "required": ["$schema"],
   "$defs": {
     "ScanConfig": {
       "type": "object",
@@ -178,9 +162,7 @@
             "type": "string",
             "minLength": 1
           },
-          "default": [
-            "**/*"
-          ]
+          "default": ["**/*"]
         },
         "exclude": {
           "type": "array",
@@ -272,9 +254,7 @@
     },
     "McpTransport": {
       "type": "string",
-      "enum": [
-        "stdio"
-      ]
+      "enum": ["stdio"]
     },
     "LanguageConfig": {
       "type": "object",
@@ -355,10 +335,7 @@
             "algorithm": "yake",
             "max_keywords": 10,
             "min_score": 0.0,
-            "ngram_range": [
-              1,
-              3
-            ],
+            "ngram_range": [1, 3],
             "yake_params": null,
             "rake_params": null
           }
@@ -387,9 +364,7 @@
           "$ref": "#/$defs/OcrConfig",
           "default": {
             "backend": "tesseract",
-            "languages": [
-              "eng"
-            ]
+            "languages": ["eng"]
           }
         },
         "output": {
@@ -495,10 +470,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "default": [
-            1,
-            3
-          ]
+          "default": [1, 3]
         },
         "yake_params": {
           "description": "Optional YAKE tuning (passed through to xberg unchanged). Shape\nmatches `xberg::keywords::YakeParams`; bad JSON is logged and\nxberg's defaults are used instead of failing the scan.",
@@ -513,10 +485,7 @@
     },
     "KeywordAlgorithm": {
       "type": "string",
-      "enum": [
-        "yake",
-        "rake"
-      ]
+      "enum": ["yake", "rake"]
     },
     "NerConfig": {
       "type": "object",
@@ -533,10 +502,7 @@
         },
         "model": {
           "description": "Override the ONNX model name (xberg has a default catalogue when unset).",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "categories": {
@@ -560,10 +526,7 @@
     },
     "NerBackend": {
       "type": "string",
-      "enum": [
-        "onnx",
-        "llm"
-      ]
+      "enum": ["onnx", "llm"]
     },
     "SummarizationConfig": {
       "type": "object",
@@ -580,10 +543,7 @@
         },
         "max_tokens": {
           "description": "Soft cap on summary length in tokens. `None` lets xberg pick a default\nsuited to the chosen strategy (the xberg-side type uses the same\n`Option<u32>` shape; pass-through with no policy of our own).",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint32",
           "minimum": 0
         }
@@ -592,10 +552,7 @@
     },
     "SummarizationStrategy": {
       "type": "string",
-      "enum": [
-        "extractive",
-        "abstractive"
-      ]
+      "enum": ["extractive", "abstractive"]
     },
     "OcrConfig": {
       "type": "object",
@@ -611,20 +568,14 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "eng"
-          ]
+          "default": ["eng"]
         }
       },
       "additionalProperties": false
     },
     "OcrBackend": {
       "type": "string",
-      "enum": [
-        "tesseract",
-        "paddle",
-        "vlm"
-      ]
+      "enum": ["tesseract", "paddle", "vlm"]
     },
     "OutputConfig": {
       "type": "object",
@@ -639,10 +590,7 @@
     },
     "OutputFormat": {
       "type": "string",
-      "enum": [
-        "json",
-        "toon"
-      ]
+      "enum": ["json", "toon"]
     },
     "MemoryConfig": {
       "type": "object",
@@ -705,10 +653,7 @@
         },
         "agent_id": {
           "description": "Stable identity this process presents to the broker. When unset, the identity resolver\nfalls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-session id, then\n`\"anon\"`. Validated through [`crate::comms::ids::AgentId`] at resolution time.",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "idle_timeout_secs": {
@@ -741,10 +686,7 @@
         },
         "workspace_root": {
           "description": "Optional explicit workspace root the daemon associates this client with. When unset the\nclient uses its discovered repo / cwd for scope context.",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         }
       },
@@ -932,47 +874,32 @@
         },
         "base_url": {
           "description": "Override the provider base URL (for self-hosted vLLM, Azure OpenAI, …).",
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "default": null
         },
         "temperature": {
           "description": "Sampling temperature. Provider-default when unset.",
-          "type": [
-            "number",
-            "null"
-          ],
+          "type": ["number", "null"],
           "format": "double",
           "default": null
         },
         "timeout_secs": {
           "description": "Request timeout in seconds. Maps to xberg's `timeout_secs` (default 60).",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint64",
           "minimum": 0,
           "default": null
         },
         "max_retries": {
           "description": "Maximum retry attempts on transient errors. Maps to xberg's\n`max_retries` (default 3).",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint32",
           "minimum": 0,
           "default": null
         },
         "max_tokens": {
           "description": "Maximum tokens to generate. Provider-default when unset.",
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint64",
           "minimum": 0,
           "default": null
@@ -995,9 +922,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "env"
-          ]
+          "required": ["env"]
         },
         {
           "description": "Missing / `null` — every LLM-backed feature treats this as \"disabled\".",

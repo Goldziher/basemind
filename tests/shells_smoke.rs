@@ -123,10 +123,7 @@ async fn spawn_capture_kill_roundtrip() {
 
     // Tear down the keep-alive session; this is the last one, so the daemon may
     // self-terminate afterward — that is fine, the assertions are done.
-    let keepalive = rmux
-        .session(keepalive_name)
-        .await
-        .expect("open keepalive for kill");
+    let keepalive = rmux.session(keepalive_name).await.expect("open keepalive for kill");
     let _ = session::kill_session(&keepalive).await;
     runtime.forget(&keepalive_id).await;
 }
@@ -168,11 +165,7 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
 
     // Both sessions should appear alive in the runtime listing.
     let listed = runtime.list().await.expect("list sessions");
-    assert_eq!(
-        listed.len(),
-        2,
-        "both spawned sessions are listed: {listed:?}"
-    );
+    assert_eq!(listed.len(), 2, "both spawned sessions are listed: {listed:?}");
     for id in [&id_a, &id_b] {
         let entry = listed
             .iter()
@@ -183,11 +176,7 @@ async fn broadcast_reaches_every_session_and_list_reports_alive() {
 
     // Broadcast a command that echoes a unique marker into both shells at once.
     let delivered = runtime
-        .broadcast(
-            &[id_a.clone(), id_b.clone()],
-            &format!("echo {MARKER}"),
-            true,
-        )
+        .broadcast(&[id_a.clone(), id_b.clone()], &format!("echo {MARKER}"), true)
         .await
         .expect("broadcast to both sessions");
     assert_eq!(delivered, 2, "broadcast delivered to both panes");

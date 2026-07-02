@@ -2,13 +2,7 @@
   "name": "basemind-opencode",
   "version": "0.16.0",
   "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "keywords": [
-    "agent-context",
-    "code-map",
-    "mcp",
-    "rag",
-    "tree-sitter"
-  ],
+  "keywords": ["agent-context", "code-map", "mcp", "rag", "tree-sitter"],
   "homepage": "https://github.com/Goldziher/basemind#opencode",
   "bugs": {
     "url": "https://github.com/Goldziher/basemind/issues"
@@ -23,12 +17,7 @@
     "url": "git+https://github.com/Goldziher/basemind.git",
     "directory": "opencode-plugin"
   },
-  "files": [
-    "basemind.js",
-    "skills/",
-    "commands/",
-    "README.md"
-  ],
+  "files": ["basemind.js", "skills/", "commands/", "README.md"],
   "type": "module",
   "main": "basemind.js",
   "engines": {

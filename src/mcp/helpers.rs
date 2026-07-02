@@ -109,17 +109,14 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
         "decorator" => SymbolKind::Decorator,
         "heading" => SymbolKind::Heading,
         other => {
-            return Err(McpError::invalid_params(
-                format!("unknown symbol kind: {other}"),
-                None,
-            ));
+            return Err(McpError::invalid_params(format!("unknown symbol kind: {other}"), None));
         }
     })
 }
 
 pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
-    let content = Content::json(value)
-        .map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
+    let content =
+        Content::json(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
     Ok(CallToolResult::success(vec![content]))
 }
 
@@ -266,8 +263,8 @@ pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
 fn line_comment_marker(lang: LangId) -> &'static [u8] {
     match lang {
         "python" | "ruby" | "shell" | "bash" | "yaml" | "toml" | "make" => b"#",
-        "rust" | "typescript" | "tsx" | "javascript" | "go" | "cpp" | "c" | "java" | "csharp"
-        | "kotlin" | "swift" | "scala" | "zig" => b"//",
+        "rust" | "typescript" | "tsx" | "javascript" | "go" | "cpp" | "c" | "java" | "csharp" | "kotlin" | "swift"
+        | "scala" | "zig" => b"//",
         _ => b"",
     }
 }
@@ -373,10 +370,7 @@ pub(super) fn symbol_line_range(
     let bytes = path
         .as_str()
         .and_then(|s| repo.read_blob_at_rev("HEAD", s).ok().flatten())
-        .or_else(|| {
-            path.as_str()
-                .and_then(|s| repo.read_blob_staged(s).ok().flatten())
-        })
+        .or_else(|| path.as_str().and_then(|s| repo.read_blob_staged(s).ok().flatten()))
         // `..`-safety: `path` is a `RelPath` produced by the scanner's strip_prefix(root) or
         // git tree enumeration — neither source ever emits `..` components. A repo-relative key
         // joins under `workdir()`; an external `scan.extra_roots` key is absolute, so
@@ -477,9 +471,7 @@ pub(super) fn parse_hash_mode(s: &str) -> Result<HashMode, McpError> {
         "structural_loose" => HashMode::StructuralLoose,
         other => {
             return Err(McpError::invalid_params(
-                format!(
-                    "unknown hash_mode: {other} (expected normalized|structural|structural_loose)"
-                ),
+                format!("unknown hash_mode: {other} (expected normalized|structural|structural_loose)"),
                 None,
             ));
         }
@@ -537,8 +529,7 @@ pub(super) fn symbol_fingerprint(
         HashMode::Normalized => Some(normalize_for_history(lang, &entry.source[s..e])),
         HashMode::Structural | HashMode::StructuralLoose => {
             let include_literals = matches!(mode, HashMode::Structural);
-            structural_hash_of_symbol(lang, &entry.source, (s, e), include_literals)
-                .map(|h| h.to_vec())
+            structural_hash_of_symbol(lang, &entry.source, (s, e), include_literals).map(|h| h.to_vec())
         }
     }
 }
@@ -571,11 +562,7 @@ fn structural_hash_of_symbol(
     Some(*hasher.finalize().as_bytes())
 }
 
-fn find_node_for_range(
-    root: tree_sitter::Node,
-    start: usize,
-    end: usize,
-) -> Option<tree_sitter::Node> {
+fn find_node_for_range(root: tree_sitter::Node, start: usize, end: usize) -> Option<tree_sitter::Node> {
     // Iterative DFS: descend into the smallest enclosing subtree that covers (start, end)
     // exactly, falling back to the smallest enclosing node when no exact match exists.
     let mut best: Option<tree_sitter::Node> = None;
@@ -625,8 +612,7 @@ fn walk_structural(
 
     if named_count == 0 {
         // Leaf-shaped node: emit identifier or (optionally) literal text.
-        let emit_text =
-            is_identifier_kind(kind_name) || (include_literals && is_literal_kind(lang, kind_name));
+        let emit_text = is_identifier_kind(kind_name) || (include_literals && is_literal_kind(lang, kind_name));
         if emit_text && let Ok(text) = node.utf8_text(source) {
             hasher.update(&(text.len() as u32).to_le_bytes());
             hasher.update(text.as_bytes());
@@ -758,12 +744,7 @@ pub(super) async fn scan_and_refresh(
         if let Some(paths) = scoped_paths {
             crate::scanner::scan_paths(&root, &mut store, &config, &paths)
         } else {
-            crate::scanner::scan(
-                &root,
-                &mut store,
-                &config,
-                crate::scanner::ScanSource::WorkingTree,
-            )
+            crate::scanner::scan(&root, &mut store, &config, crate::scanner::ScanSource::WorkingTree)
         }
     })
     .await
@@ -885,10 +866,7 @@ mod tests {
     fn python_uses_hash_comments() {
         let a = b"def foo():\n    return 1";
         let b = b"def foo():\n    # comment\n    return 1";
-        assert_eq!(
-            normalize_for_history(PYTHON, a),
-            normalize_for_history(PYTHON, b),
-        );
+        assert_eq!(normalize_for_history(PYTHON, a), normalize_for_history(PYTHON, b),);
     }
 
     // ─── structural hash + outline cache (Stage 2) ───────────────────────────
@@ -907,8 +885,7 @@ mod tests {
         let oid: gix::ObjectId = "0000000000000000000000000000000000000001"
             .parse()
             .expect("synthetic oid");
-        let entry =
-            outline_entry_for_blob(&cache, oid, lang, source.to_vec()).expect("outline entry");
+        let entry = outline_entry_for_blob(&cache, oid, lang, source.to_vec()).expect("outline entry");
         symbol_fingerprint(&entry, "alpha", None, lang, mode).expect("fingerprint")
     }
 
@@ -987,9 +964,6 @@ mod tests {
         let src = b"pub fn alpha() {}\n".to_vec();
         let a = outline_entry_for_blob(&cache, oid, RUST, src.clone()).unwrap();
         let b = outline_entry_for_blob(&cache, oid, RUST, src).unwrap();
-        assert!(
-            Arc::ptr_eq(&a, &b),
-            "second lookup must return the same cached Arc"
-        );
+        assert!(Arc::ptr_eq(&a, &b), "second lookup must return the same cached Arc");
     }
 }

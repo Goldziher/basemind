@@ -168,9 +168,7 @@ fn did_you_mean(provided: &serde_json::Value, expected: &[String]) -> Option<Str
         }
         for field in expected {
             let distance = levenshtein(key, field);
-            if distance <= NEAR_MISS_MAX_DISTANCE
-                && best.is_none_or(|(best_dist, _)| distance < best_dist)
-            {
+            if distance <= NEAR_MISS_MAX_DISTANCE && best.is_none_or(|(best_dist, _)| distance < best_dist) {
                 best = Some((distance, field));
             }
         }

@@ -39,11 +39,7 @@ pub fn file_outline(store: &Store, rel: impl AsRef<[u8]>) -> Result<FileMapL1, Q
 /// If the L2 blob exists for the file's current content hash it is returned as-is.
 /// Otherwise, this function reads the source from disk, runs extract_l2, writes the
 /// blob, and returns it. "Becomes live on request."
-pub fn file_outline_l2(
-    store: &Store,
-    rel: impl AsRef<[u8]>,
-    root: &std::path::Path,
-) -> Result<FileMapL2, QueryError> {
+pub fn file_outline_l2(store: &Store, rel: impl AsRef<[u8]>, root: &std::path::Path) -> Result<FileMapL2, QueryError> {
     let rel_bytes = rel.as_ref();
     let rel_display = String::from_utf8_lossy(rel_bytes).into_owned();
     let entry = store
@@ -82,11 +78,7 @@ pub fn file_outline_l2(
 ///
 /// Returns an empty `Vec` immediately when `needle` is empty — an empty substring matches
 /// every symbol, which is never what callers want and is very expensive on large repos.
-pub fn search_symbols(
-    store: &Store,
-    needle: &str,
-    kind: Option<SymbolKind>,
-) -> Result<Vec<SymbolHit>, QueryError> {
+pub fn search_symbols(store: &Store, needle: &str, kind: Option<SymbolKind>) -> Result<Vec<SymbolHit>, QueryError> {
     if needle.is_empty() {
         return Ok(Vec::new());
     }
@@ -117,8 +109,7 @@ pub fn search_symbols(
 
 /// Heuristic L3: read every L1, collect imports, return paths whose imports mention `module`.
 pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryError> {
-    let mut by_path: Vec<(PathBuf, Vec<crate::extract::Import>)> =
-        Vec::with_capacity(store.index.files.len());
+    let mut by_path: Vec<(PathBuf, Vec<crate::extract::Import>)> = Vec::with_capacity(store.index.files.len());
     for (rel, entry) in &store.index.files {
         let l1 = match store.read_l1_by_hex(&entry.hash_hex)? {
             Some(m) => m,
@@ -127,8 +118,5 @@ pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryE
         by_path.push((rel.to_path_buf(), l1.imports));
     }
     let paths = crate::extract::l3::dependents_of(module, &by_path);
-    Ok(paths
-        .into_iter()
-        .map(|p| RelPath::from(p.as_path()))
-        .collect())
+    Ok(paths.into_iter().map(|p| RelPath::from(p.as_path())).collect())
 }

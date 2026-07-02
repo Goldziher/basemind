@@ -137,10 +137,7 @@ fn clear_removes_disk_files() {
     cache.log(&repo, &head, None, 10, true).unwrap();
 
     let removed = cache.clear().unwrap();
-    assert!(
-        removed >= 2,
-        "expected at least the two seeded entries; got {removed}"
-    );
+    assert!(removed >= 2, "expected at least the two seeded entries; got {removed}");
 
     // Recompute hits cold path now.
     cache.commit_files(&repo, &head).unwrap();
@@ -158,8 +155,5 @@ fn ram_only_mode_skips_disk_writes() {
     cache.commit_files(&repo, &head).unwrap();
 
     let on_disk = basemind_dir.join(GIT_CACHE_DIR);
-    assert!(
-        !on_disk.exists(),
-        "persist=false must not create the cache dir"
-    );
+    assert!(!on_disk.exists(), "persist=false must not create the cache dir");
 }

@@ -16,15 +16,9 @@ use super::types::{GrepHit, WorkspaceGrepParams, WorkspaceGrepResponse};
 /// applies the compiled regex. Non-UTF-8 files are silently skipped. Returns up to `limit` hits
 /// with optional 1-line context. Supports in-memory pagination via `cursor` / `next_cursor`
 /// using the same `encode_in_memory(offset, generation)` scheme as `list_files`.
-pub(super) fn run_workspace_grep(
-    state: &ServerState,
-    params: WorkspaceGrepParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParams) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
-    let limit = params
-        .limit
-        .unwrap_or(SEARCH_LIMIT_DEFAULT)
-        .min(SEARCH_LIMIT_MAX) as usize;
+    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let generation = state.cache_generation.load(Ordering::Relaxed);
 
@@ -84,9 +78,7 @@ pub(super) fn run_workspace_grep(
         }
 
         // Path filter (memchr).
-        let path_ok = path_finder
-            .as_ref()
-            .is_none_or(|f| f.find(path.as_bytes()).is_some());
+        let path_ok = path_finder.as_ref().is_none_or(|f| f.find(path.as_bytes()).is_some());
         if !path_ok {
             continue;
         }
@@ -136,9 +128,7 @@ pub(super) fn run_workspace_grep(
 
             // Binary search for the line that contains the match start.
             let match_start = mat.start();
-            let line_idx = line_starts
-                .partition_point(|&ls| ls <= match_start)
-                .saturating_sub(1);
+            let line_idx = line_starts.partition_point(|&ls| ls <= match_start).saturating_sub(1);
             let line_start_byte = line_starts[line_idx];
             let line_num = (line_idx as u32) + 1; // 1-based
             let column = (match_start - line_start_byte) as u32; // 0-based byte col
@@ -175,10 +165,7 @@ pub(super) fn run_workspace_grep(
     // `files_seen` is the position past the last file we processed; the next page
     // skips all files before that index.
     let next_cursor = if truncated {
-        Some(super::cursor::Cursor::encode_in_memory(
-            files_seen as u64,
-            generation,
-        ))
+        Some(super::cursor::Cursor::encode_in_memory(files_seen as u64, generation))
     } else {
         None
     };
@@ -223,10 +210,7 @@ pub(super) fn run_workspace_grep(
 /// out of range.
 fn extract_line(source: &str, line_starts: &[usize], line_idx: usize) -> String {
     let start = line_starts[line_idx];
-    let end = line_starts
-        .get(line_idx + 1)
-        .copied()
-        .unwrap_or(source.len());
+    let end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
     // `end` points past the '\n'; trim trailing CR+LF.
     let raw = &source[start..end];
     raw.trim_end_matches('\n').trim_end_matches('\r').to_owned()

@@ -38,15 +38,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_web::run_web_scrape(&self.state, p).await;
-        record_call(
-            &self.state,
-            "web_scrape",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_web::run_web_scrape(&self.state, p).await;
+        record_call(&self.state, "web_scrape", &__params_json, __started, &__result);
         __result
     }
 
@@ -68,15 +61,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_web::run_web_crawl(&self.state, p).await;
-        record_call(
-            &self.state,
-            "web_crawl",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_web::run_web_crawl(&self.state, p).await;
+        record_call(&self.state, "web_crawl", &__params_json, __started, &__result);
         __result
     }
 
@@ -86,14 +72,10 @@ impl BasemindServer {
         follow-up `web_crawl` or pick targeted `web_scrape` calls. Needs --features crawl.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
-    pub(crate) async fn web_map(
-        &self,
-        Parameters(p): Parameters<WebMapParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn web_map(&self, Parameters(p): Parameters<WebMapParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_web::run_web_map(&self.state, p).await;
+        let __result: Result<CallToolResult, McpError> = super::helpers_web::run_web_map(&self.state, p).await;
         record_call(&self.state, "web_map", &__params_json, __started, &__result);
         __result
     }

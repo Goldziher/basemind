@@ -36,31 +36,31 @@ esac
 hwm=-1
 
 poll_once() {
-  local json maxts new
-  json="$(timeout 8 "$LAUNCH" comms inbox --root "$PWD" --json --limit 30 2>/dev/null)" || return 0
-  [ -n "$json" ] || return 0
+	local json maxts new
+	json="$(timeout 8 "$LAUNCH" comms inbox --root "$PWD" --json --limit 30 2>/dev/null)" || return 0
+	[ -n "$json" ] || return 0
 
-  maxts="$(printf '%s' "$json" | jq -r '[.messages[].ts_micros] | max // 0' 2>/dev/null | tr -cd '0-9-')"
-  [ -n "$maxts" ] || maxts=0
+	maxts="$(printf '%s' "$json" | jq -r '[.messages[].ts_micros] | max // 0' 2>/dev/null | tr -cd '0-9-')"
+	[ -n "$maxts" ] || maxts=0
 
-  # First successful poll: baseline only, do not replay history.
-  if [ "$hwm" -lt 0 ]; then
-    hwm="$maxts"
-    return 0
-  fi
+	# First successful poll: baseline only, do not replay history.
+	if [ "$hwm" -lt 0 ]; then
+		hwm="$maxts"
+		return 0
+	fi
 
-  new="$(printf '%s' "$json" |
-    jq -r --argjson hwm "$hwm" \
-      '.messages[] | select(.ts_micros > $hwm) | "basemind comms — new message [\(.subject)] from \(.from) (id: \(.id)); call message_get to read the body"' \
-      2>/dev/null)"
+	new="$(printf '%s' "$json" |
+		jq -r --argjson hwm "$hwm" \
+			'.messages[] | select(.ts_micros > $hwm) | "basemind comms — new message [\(.subject)] from \(.from) (id: \(.id)); call message_get to read the body"' \
+			2>/dev/null)"
 
-  if [ -n "$new" ]; then
-    printf '%s\n' "$new"
-    hwm="$maxts"
-  fi
+	if [ -n "$new" ]; then
+		printf '%s\n' "$new"
+		hwm="$maxts"
+	fi
 }
 
 while :; do
-  poll_once
-  sleep "$INTERVAL"
+	poll_once
+	sleep "$INTERVAL"
 done

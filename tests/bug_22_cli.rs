@@ -45,10 +45,7 @@ fn cache_clear_single_view_leaves_others_intact() {
 
     // Working view + a named rev view.
     assert!(run(root, &["scan"]).status.success(), "working scan");
-    assert!(
-        run(root, &["scan", "--rev", "HEAD"]).status.success(),
-        "rev scan"
-    );
+    assert!(run(root, &["scan", "--rev", "HEAD"]).status.success(), "rev scan");
 
     let views_dir = root.join(".basemind").join("views");
     let rev_view = std::fs::read_dir(&views_dir)
@@ -59,15 +56,7 @@ fn cache_clear_single_view_leaves_others_intact() {
         .expect("a rev-* view exists after `scan --rev`");
 
     // Clear only the rev view.
-    let out = run(
-        root,
-        &[
-            "cache",
-            "clear",
-            "--component",
-            &format!("views:{rev_view}"),
-        ],
-    );
+    let out = run(root, &["cache", "clear", "--component", &format!("views:{rev_view}")]);
     assert!(
         out.status.success(),
         "single-view clear failed: {}",

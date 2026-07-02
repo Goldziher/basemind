@@ -7,8 +7,8 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, git_history_if_fresh, head_sha,
-    head_snapshot_id, json_result, require_git_repo,
+    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, git_history_if_fresh, head_sha, head_snapshot_id, json_result,
+    require_git_repo,
 };
 use super::types::{GitCommitHit, SearchGitHistoryParams, SearchGitHistoryResponse};
 use crate::git::CommitInfo;
@@ -66,10 +66,7 @@ pub(super) fn run_search_git_history(
     // One extra past the page tells us whether more remain.
     let want = limit.saturating_add(1);
     let (mut hits, partial) = match git_history_if_fresh(state, &head) {
-        Some(index) => (
-            index.search_commits(&params.pattern, scope, skip, want),
-            false,
-        ),
+        Some(index) => (index.search_commits(&params.pattern, scope, skip, want), false),
         None => {
             // No fresh index (read-only session or still building): bounded live fallback. Walk the
             // recent window and reuse the same tokenized-AND matcher for consistent semantics.
@@ -94,8 +91,7 @@ pub(super) fn run_search_git_history(
 
     let has_more = hits.len() > limit;
     hits.truncate(limit);
-    let next_cursor = has_more
-        .then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
+    let next_cursor = has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
 
     let commits: Vec<GitCommitHit> = hits.into_iter().map(commit_to_hit).collect();
     json_result(&SearchGitHistoryResponse {

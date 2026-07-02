@@ -26,8 +26,8 @@ pub(crate) fn format_response<T: serde::Serialize>(
     match fmt {
         crate::config::OutputFormat::Json => super::helpers::json_result(value),
         crate::config::OutputFormat::Toon => {
-            let body = serde_toon::to_string(value)
-                .map_err(|e| McpError::internal_error(format!("toon: {e}"), None))?;
+            let body =
+                serde_toon::to_string(value).map_err(|e| McpError::internal_error(format!("toon: {e}"), None))?;
             Ok(CallToolResult::success(vec![Content::text(body)]))
         }
     }

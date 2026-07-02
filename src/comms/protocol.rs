@@ -414,10 +414,7 @@ mod tests {
         let legacy_bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy MessageMeta");
         let back: SeqMeta = rmp_serde::from_slice(&legacy_bytes).expect("decode legacy as SeqMeta");
         assert_eq!(back.seq, 0, "missing seq defaults to 0 for legacy records");
-        assert_eq!(
-            back.meta, legacy,
-            "front-matter flattens into meta unchanged"
-        );
+        assert_eq!(back.meta, legacy, "front-matter flattens into meta unchanged");
     }
 
     /// End-to-end skew shape: a full pre-W7 `History` response (element = bare `MessageMeta`)

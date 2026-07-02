@@ -16,8 +16,7 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_shells::{
-    ShellBroadcastParams, ShellCaptureParams, ShellKillParams, ShellListParams, ShellSendParams,
-    ShellSpawnParams,
+    ShellBroadcastParams, ShellCaptureParams, ShellKillParams, ShellListParams, ShellSendParams, ShellSpawnParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_shells")]
@@ -43,15 +42,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_spawn(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_spawn",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_spawn(&self.state, p).await;
+        record_call(&self.state, "shell_spawn", &__params_json, __started, &__result);
         __result
     }
 
@@ -73,15 +65,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_send(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_send",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_send(&self.state, p).await;
+        record_call(&self.state, "shell_send", &__params_json, __started, &__result);
         __result
     }
 
@@ -98,15 +83,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_capture(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_capture",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_capture(&self.state, p).await;
+        record_call(&self.state, "shell_capture", &__params_json, __started, &__result);
         __result
     }
 
@@ -127,15 +105,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_kill(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_kill",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_kill(&self.state, p).await;
+        record_call(&self.state, "shell_kill", &__params_json, __started, &__result);
         __result
     }
 
@@ -160,13 +131,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> =
             super::helpers_shells::run_shell_broadcast(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_broadcast",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "shell_broadcast", &__params_json, __started, &__result);
         __result
     }
 
@@ -183,15 +148,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            super::helpers_shells::run_shell_list(&self.state, p).await;
-        record_call(
-            &self.state,
-            "shell_list",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = super::helpers_shells::run_shell_list(&self.state, p).await;
+        record_call(&self.state, "shell_list", &__params_json, __started, &__result);
         __result
     }
 }

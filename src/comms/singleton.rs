@@ -106,10 +106,7 @@ pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
     set_mode(&comms_dir, OWNER_ONLY_DIR)?;
 
     let socket_path = comms_socket_path(&comms_dir);
-    Ok(CommsPaths {
-        comms_dir,
-        socket_path,
-    })
+    Ok(CommsPaths { comms_dir, socket_path })
 }
 
 /// The socket path for a resolved comms dir. On Windows, a named-pipe path (see the TODO in
@@ -140,11 +137,9 @@ pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), SingletonError> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|source| {
-        SingletonError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|source| SingletonError::Io {
+        path: path.to_path_buf(),
+        source,
     })
 }
 
@@ -170,10 +165,7 @@ pub fn bind_listener(
                     path: socket_path.to_path_buf(),
                     source,
                 })?;
-            let _ = std::fs::set_permissions(
-                socket_path,
-                std::fs::Permissions::from_mode(OWNER_ONLY_FILE),
-            );
+            let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(OWNER_ONLY_FILE));
             tokio::net::UnixListener::from_std(std_listener).map_err(|source| SingletonError::Io {
                 path: socket_path.to_path_buf(),
                 source,
@@ -190,11 +182,9 @@ pub fn bind_listener(
                 source,
             })?;
             let std_listener =
-                std::os::unix::net::UnixListener::bind(socket_path).map_err(|source| {
-                    SingletonError::Io {
-                        path: socket_path.to_path_buf(),
-                        source,
-                    }
+                std::os::unix::net::UnixListener::bind(socket_path).map_err(|source| SingletonError::Io {
+                    path: socket_path.to_path_buf(),
+                    source,
                 })?;
             std_listener
                 .set_nonblocking(true)
@@ -202,10 +192,7 @@ pub fn bind_listener(
                     path: socket_path.to_path_buf(),
                     source,
                 })?;
-            let _ = std::fs::set_permissions(
-                socket_path,
-                std::fs::Permissions::from_mode(OWNER_ONLY_FILE),
-            );
+            let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(OWNER_ONLY_FILE));
             tokio::net::UnixListener::from_std(std_listener).map_err(|source| SingletonError::Io {
                 path: socket_path.to_path_buf(),
                 source,
@@ -240,10 +227,7 @@ pub fn bind_listener(
     };
 
     // First attempt: claiming the first instance wins the lock outright.
-    match ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(pipe_name)
-    {
+    match ServerOptions::new().first_pipe_instance(true).create(pipe_name) {
         Ok(server) => Ok(server),
         // ERROR_ACCESS_DENIED: another daemon already holds the first instance.
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -337,11 +321,7 @@ fn version_is_older(daemon: &str, ours: &str) -> bool {
     fn triple(v: &str) -> (u64, u64, u64) {
         let core = v.split('-').next().unwrap_or(v);
         let mut it = core.split('.').map(|p| p.parse::<u64>().unwrap_or(0));
-        (
-            it.next().unwrap_or(0),
-            it.next().unwrap_or(0),
-            it.next().unwrap_or(0),
-        )
+        (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
     }
     triple(daemon) < triple(ours)
 }
@@ -461,11 +441,7 @@ fn probe_once(socket_path: &Path) -> bool {
 fn probe_once(socket_path: &Path) -> bool {
     use std::io::{Read, Write};
 
-    let Ok(mut stream) = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(socket_path)
-    else {
+    let Ok(mut stream) = std::fs::OpenOptions::new().read(true).write(true).open(socket_path) else {
         return false;
     };
 
@@ -688,10 +664,7 @@ mod tests {
         )
         .await;
         assert!(res.is_ok());
-        assert!(
-            !spawned.get(),
-            "must not spawn when a daemon already answers"
-        );
+        assert!(!spawned.get(), "must not spawn when a daemon already answers");
     }
 
     #[tokio::test]

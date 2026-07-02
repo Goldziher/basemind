@@ -73,15 +73,7 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     let (ok, _o, e) = comms(
         &comms_dir,
         "agent-alice",
-        &[
-            "post",
-            "--root",
-            &root,
-            "--body",
-            BODY,
-            "devroom",
-            "Hello team",
-        ],
+        &["post", "--root", &root, "--body", BODY, "devroom", "Hello team"],
     );
     assert!(ok, "post failed: {e}");
 

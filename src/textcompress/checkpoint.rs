@@ -224,10 +224,7 @@ mod tests {
         // An error-marked line carrying an AWS key must also be dropped.
         let line = "error: leaked AKIAIOSFODNN7EXAMPLE in config";
         let cp = extract_checkpoint(line, Vec::new());
-        assert!(
-            cp.errors.is_empty(),
-            "credential error line must be dropped"
-        );
+        assert!(cp.errors.is_empty(), "credential error line must be dropped");
         assert!(
             !cp.errors.iter().any(|e| e.contains("AKIAIOSFODNN7EXAMPLE")),
             "AWS key leaked into errors"
@@ -298,9 +295,7 @@ mod tests {
 
     #[test]
     fn files_changed_capped_at_max() {
-        let files: Vec<String> = (0..(MAX_FILES + 25))
-            .map(|n| format!("src/file_{n:04}.rs"))
-            .collect();
+        let files: Vec<String> = (0..(MAX_FILES + 25)).map(|n| format!("src/file_{n:04}.rs")).collect();
         let cp = extract_checkpoint("", files);
         assert_eq!(cp.files_changed.len(), MAX_FILES);
         assert_eq!(cp.files_changed[0], "src/file_0000.rs");

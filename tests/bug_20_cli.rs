@@ -19,13 +19,7 @@ fn bin() -> &'static str {
 fn should_not_warn_json_ineffective_on_comms() {
     let dir = tempfile::tempdir().expect("tempdir");
     let output = Command::new(bin())
-        .args([
-            "--root",
-            dir.path().to_str().unwrap(),
-            "--json",
-            "comms",
-            "status",
-        ])
+        .args(["--root", dir.path().to_str().unwrap(), "--json", "comms", "status"])
         .env_remove("RUST_LOG")
         .output()
         .expect("run basemind comms status");

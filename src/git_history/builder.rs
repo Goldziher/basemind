@@ -28,11 +28,7 @@ pub enum RebuildOutcome {
 /// Bring the index up to date with `repo`'s current HEAD, running the revalidation decision tree.
 /// Best-effort callers ignore the error; the index simply stays stale and tools fall back to the
 /// live walk until the next successful sync.
-pub fn sync(
-    index: &GitHistoryIndex,
-    repo: &Repo,
-    basemind_dir: &Path,
-) -> Result<RebuildOutcome, GitHistoryError> {
+pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     let head = match repo.resolve_rev("HEAD") {
         Ok(h) => h,
         Err(_) => return Ok(RebuildOutcome::Fresh), // unborn HEAD: nothing to index
@@ -54,11 +50,7 @@ pub fn sync(
 
     // 3. Full rebuild — never indexed, or history was rewritten / diverged (filter-repo, rebase,
     //    force-push, reset-back). Wipe first so stale shas can't survive.
-    let reason = if index.is_empty() {
-        "initial"
-    } else {
-        "history-rewrite"
-    };
+    let reason = if index.is_empty() { "initial" } else { "history-rewrite" };
     index.clear(basemind_dir)?;
     rebuild(index, repo, reason)
 }
@@ -77,11 +69,7 @@ fn fingerprint_ok(index: &GitHistoryIndex, repo: &Repo, head: &str) -> bool {
 }
 
 /// Full rebuild over all commits reachable from HEAD.
-fn rebuild(
-    index: &GitHistoryIndex,
-    repo: &Repo,
-    reason: &'static str,
-) -> Result<RebuildOutcome, GitHistoryError> {
+fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result<RebuildOutcome, GitHistoryError> {
     let newest_first = repo.all_commit_shas()?;
     if newest_first.is_empty() {
         return Ok(RebuildOutcome::FullRebuild { reason, commits: 0 });
@@ -141,13 +129,7 @@ fn append_since(
     if new_newest_first.is_empty() {
         // HEAD moved but no new commits are reachable — just advance the head pointer.
         let writer = index.writer();
-        writer.finish_meta(
-            &head20,
-            &root20,
-            start_ord,
-            index.next_path_id(),
-            index.commit_count(),
-        )?;
+        writer.finish_meta(&head20, &root20, start_ord, index.next_path_id(), index.commit_count())?;
         return Ok(RebuildOutcome::Incremental { added: 0 });
     }
 
@@ -270,10 +252,7 @@ fn fold_chunked(
 /// Compute a chunk of commits' full records in parallel. Each rayon worker gets its own thread-local
 /// gix repository via `Repo::commit_record` → `Repo::local`, so the `!Sync` gix repo is never shared.
 fn compute_records(repo: &Repo, chrono: &[&String]) -> Vec<Option<crate::git::CommitInfo>> {
-    chrono
-        .par_iter()
-        .map(|sha| repo.commit_record(sha))
-        .collect()
+    chrono.par_iter().map(|sha| repo.commit_record(sha)).collect()
 }
 
 /// Intern a commit's file paths to `path_id`s, recording the new path rows and posting edges.
@@ -311,11 +290,7 @@ impl<'a> PathInterner<'a> {
         }
     }
 
-    fn intern(
-        &mut self,
-        rel: &RelPath,
-        writer: &mut super::GitHistoryWriter,
-    ) -> Result<u32, GitHistoryError> {
+    fn intern(&mut self, rel: &RelPath, writer: &mut super::GitHistoryWriter) -> Result<u32, GitHistoryError> {
         if let Some(&id) = self.cache.get(rel) {
             return Ok(id);
         }

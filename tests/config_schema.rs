@@ -1,6 +1,4 @@
-use basemind::config::{
-    self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, DocumentsCliOverrides, merge_layers,
-};
+use basemind::config::{self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, DocumentsCliOverrides, merge_layers};
 
 #[cfg(feature = "full")]
 const SCHEMA_PATH: &str = "schema/basemind-config-v1.schema.json";

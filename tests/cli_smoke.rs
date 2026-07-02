@@ -39,16 +39,8 @@ fn build_and_scan() -> TempDir {
     let root = dir.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
-    std::fs::write(
-        root.join("a.rs"),
-        b"pub fn alpha() {}\npub struct Beta { x: i32 }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("c.rs"),
-        b"pub fn caller() { alpha(); alpha(); }\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
+    std::fs::write(root.join("c.rs"), b"pub fn caller() { alpha(); alpha(); }\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init"]);
 
@@ -64,10 +56,7 @@ fn build_and_scan() -> TempDir {
 fn run(root: &Path, args: &[&str]) -> (String, bool) {
     let mut full = vec!["--root", root.to_str().unwrap()];
     full.extend_from_slice(args);
-    let output = Command::new(bin())
-        .args(&full)
-        .output()
-        .expect("run basemind");
+    let output = Command::new(bin()).args(&full).output().expect("run basemind");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         output.status.success(),
@@ -80,8 +69,8 @@ fn assert_json_fields(root: &Path, args: &[&str], fields: &[&str]) -> Value {
     json_args.extend_from_slice(args);
     let (stdout, ok) = run(root, &json_args);
     assert!(ok, "command {args:?} exited non-zero; stdout: {stdout}");
-    let value: Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("{args:?} not JSON: {e}\n{stdout}"));
+    let value: Value =
+        serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{args:?} not JSON: {e}\n{stdout}"));
     for field in fields {
         assert!(
             value.get(field).is_some(),
@@ -121,11 +110,7 @@ fn query_outline_reports_symbols() {
 fn query_search_finds_symbol() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(
-        root,
-        &["query", "search", "alpha"],
-        &["total", "truncated", "results"],
-    );
+    let v = assert_json_fields(root, &["query", "search", "alpha"], &["total", "truncated", "results"]);
     assert_eq!(v["total"], 1);
     assert_human_contains(root, &["query", "search", "alpha"], "alpha");
 }
@@ -134,11 +119,7 @@ fn query_search_finds_symbol() {
 fn query_references_finds_call_sites() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(
-        root,
-        &["query", "references", "alpha"],
-        &["name", "total", "hits"],
-    );
+    let v = assert_json_fields(root, &["query", "references", "alpha"], &["name", "total", "hits"]);
     assert_eq!(v["total"], 2, "alpha is called twice in c.rs");
     assert_human_contains(root, &["query", "references", "alpha"], "c.rs");
 }
@@ -150,12 +131,7 @@ fn query_status_reports_file_count() {
     let v = assert_json_fields(
         root,
         &["query", "status"],
-        &[
-            "file_count",
-            "total_size_bytes",
-            "languages",
-            "schema_version",
-        ],
+        &["file_count", "total_size_bytes", "languages", "schema_version"],
     );
     assert_eq!(v["file_count"], 2);
     assert_human_contains(root, &["query", "status"], "file_count");
@@ -165,11 +141,7 @@ fn query_status_reports_file_count() {
 fn query_list_files_enumerates() {
     let dir = build_and_scan();
     let root = dir.path();
-    let v = assert_json_fields(
-        root,
-        &["query", "list-files"],
-        &["total", "returned", "files"],
-    );
+    let v = assert_json_fields(root, &["query", "list-files"], &["total", "returned", "files"]);
     assert_eq!(v["total"], 2);
     assert_human_contains(root, &["query", "list-files"], "a.rs");
 }
@@ -193,18 +165,10 @@ fn git_search_finds_commit_by_author() {
     let root = dir.path();
     // The fixture's single commit is authored by "t" (see `git()` env). Full-text author search
     // over the indexed history must return it — the CLI mirror of the `search_git_history` tool.
-    let v = assert_json_fields(
-        root,
-        &["git", "search", "t", "--field", "author"],
-        &["commits"],
-    );
+    let v = assert_json_fields(root, &["git", "search", "t", "--field", "author"], &["commits"]);
     let commits = v["commits"].as_array().expect("commits array");
     assert_eq!(commits.len(), 1, "author search should find the one commit");
-    assert_human_contains(
-        root,
-        &["git", "search", "init", "--field", "message"],
-        "init",
-    );
+    assert_human_contains(root, &["git", "search", "init", "--field", "message"], "init");
 }
 
 #[test]
@@ -219,15 +183,9 @@ fn rescan_full_reindexes_new_file() {
 
     // The full re-index must pick up the new symbol and the new file.
     let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
-    assert_eq!(
-        search["total"], 1,
-        "rescan --full must index the new symbol"
-    );
+    assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
     let status = assert_json_fields(root, &["query", "status"], &["file_count"]);
-    assert_eq!(
-        status["file_count"], 3,
-        "rescan --full must index the new file"
-    );
+    assert_eq!(status["file_count"], 3, "rescan --full must index the new file");
 }
 
 #[test]
@@ -241,10 +199,7 @@ fn rescan_scoped_path_reindexes_only_that_path() {
     assert!(ok, "scoped rescan exited non-zero; stdout: {stdout}");
 
     let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
-    assert_eq!(
-        search["total"], 1,
-        "scoped rescan must index the named path"
-    );
+    assert_eq!(search["total"], 1, "scoped rescan must index the named path");
 }
 
 /// Build a fixture repo where `a.rs` and `c.rs` co-change across several commits,
@@ -279,11 +234,7 @@ fn build_cochange_fixture() -> TempDir {
 
     // Commit 3 — a.rs + c.rs co-change.
     std::fs::write(root.join("a.rs"), b"pub fn alpha() -> u32 { 2 }\n").unwrap();
-    std::fs::write(
-        root.join("c.rs"),
-        b"pub fn caller() -> u32 { alpha() + 1 }\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("c.rs"), b"pub fn caller() -> u32 { alpha() + 1 }\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "feat: bump alpha return"]);
 
@@ -304,10 +255,7 @@ fn build_cochange_fixture() -> TempDir {
 fn run_full(root: &Path, args: &[&str]) -> (String, String, bool) {
     let mut full = vec!["--root", root.to_str().unwrap()];
     full.extend_from_slice(args);
-    let output = Command::new(bin())
-        .args(&full)
-        .output()
-        .expect("run basemind");
+    let output = Command::new(bin()).args(&full).output().expect("run basemind");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
@@ -330,14 +278,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     // ── Step 1: mine with low thresholds so the (a.rs, c.rs) pair is captured ──
     let mine_v = assert_json_fields(
         root,
-        &[
-            "governance",
-            "mine",
-            "--min-support",
-            "1",
-            "--min-confidence",
-            "0.1",
-        ],
+        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined", "window_inspected", "skipped_bulk"],
     );
     assert!(
@@ -346,11 +287,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     );
 
     // ── Step 2: proposals list — must return the mined candidate ──────────────
-    let list_v = assert_json_fields(
-        root,
-        &["governance", "proposals"],
-        &["total", "truncated", "proposals"],
-    );
+    let list_v = assert_json_fields(root, &["governance", "proposals"], &["total", "truncated", "proposals"]);
     let proposals = list_v["proposals"]
         .as_array()
         .expect("proposals field must be an array");
@@ -373,15 +310,13 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     // drop a runtime in a context where blocking is not allowed") and exit 101 even
     // though the data write succeeded. `LanceStoreInner`'s `Drop` now calls
     // `Runtime::shutdown_background`, so the command exits cleanly. We assert on that.
-    let (accept_stdout, accept_stderr, accept_ok) =
-        run_full(root, &["--json", "governance", "accept", id]);
+    let (accept_stdout, accept_stderr, accept_ok) = run_full(root, &["--json", "governance", "accept", id]);
     assert!(
         accept_ok,
         "governance accept must exit 0 (no runtime-drop panic); stderr: {accept_stderr}"
     );
-    let accept_v: Value = serde_json::from_str(accept_stdout.trim()).unwrap_or_else(|e| {
-        panic!("governance accept did not emit JSON: {e}\nstdout: {accept_stdout}")
-    });
+    let accept_v: Value = serde_json::from_str(accept_stdout.trim())
+        .unwrap_or_else(|e| panic!("governance accept did not emit JSON: {e}\nstdout: {accept_stdout}"));
     assert_eq!(
         accept_v["accepted"],
         serde_json::Value::Bool(true),
@@ -396,11 +331,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     );
 
     // ── Step 4: memory get — the accepted skill must be retrievable ───────────
-    let get_v = assert_json_fields(
-        root,
-        &["memory", "get", memory_key],
-        &["key", "value", "tags"],
-    );
+    let get_v = assert_json_fields(root, &["memory", "get", memory_key], &["key", "value", "tags"]);
     assert_eq!(
         get_v["key"].as_str().unwrap(),
         memory_key,
@@ -425,14 +356,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     // same content-addressed cluster — `proposals` must be non-empty again.
     let remine_v = assert_json_fields(
         root,
-        &[
-            "governance",
-            "mine",
-            "--min-support",
-            "1",
-            "--min-confidence",
-            "0.1",
-        ],
+        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined"],
     );
     assert!(
@@ -452,13 +376,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
 
     let reject_v = assert_json_fields(
         root,
-        &[
-            "governance",
-            "reject",
-            reject_id,
-            "--reason",
-            "test rejection",
-        ],
+        &["governance", "reject", reject_id, "--reason", "test rejection"],
         &["rejected"],
     );
     assert_eq!(
@@ -470,22 +388,13 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     // The tombstone must now suppress that cluster on a fresh mine.
     let post_reject = assert_json_fields(
         root,
-        &[
-            "governance",
-            "mine",
-            "--min-support",
-            "1",
-            "--min-confidence",
-            "0.1",
-        ],
+        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined"],
     );
     let still_listed = assert_json_fields(root, &["governance", "proposals"], &["proposals"]);
     let remaining = still_listed["proposals"].as_array().expect("array");
     assert!(
-        !remaining
-            .iter()
-            .any(|p| p["id"].as_str() == Some(reject_id)),
+        !remaining.iter().any(|p| p["id"].as_str() == Some(reject_id)),
         "rejected proposal id must not reappear after re-mine (tombstone); post_reject={post_reject}, listed={still_listed}"
     );
 }
@@ -505,14 +414,7 @@ fn governance_mine_without_memory_feature_does_not_panic() {
 
     let (stdout, stderr, ok) = run_full(
         root,
-        &[
-            "governance",
-            "mine",
-            "--min-support",
-            "1",
-            "--min-confidence",
-            "0.1",
-        ],
+        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
     );
 
     // Under --features memory the command succeeds; under default features it must
@@ -522,8 +424,7 @@ fn governance_mine_without_memory_feature_does_not_panic() {
         // The error must mention "memory" (the feature name) or "not enabled".
         let combined = format!("{stdout}{stderr}");
         assert!(
-            combined.to_lowercase().contains("memory")
-                || combined.to_lowercase().contains("not enabled"),
+            combined.to_lowercase().contains("memory") || combined.to_lowercase().contains("not enabled"),
             "governance mine failure must mention 'memory' or 'not enabled'; got stdout={stdout:?} stderr={stderr:?}"
         );
         // Must NOT be a Rust panic.
@@ -552,10 +453,7 @@ fn cache_stats_reports_blob_accounting() {
             "blob_accounting_ok",
         ],
     );
-    assert!(
-        v["blob_count"].as_u64().unwrap() >= 2,
-        "at least one blob per file"
-    );
+    assert!(v["blob_count"].as_u64().unwrap() >= 2, "at least one blob per file");
     // The CLI shares `store_gc::cache_stats` with the MCP tool, so it reports the same
     // reconciling total (components + other == total) that the MCP smoke test asserts.
     let u = |k: &str| v[k].as_u64().unwrap_or_default();

@@ -39,9 +39,8 @@ use super::ServerState;
 use super::helpers::json_result;
 #[cfg(feature = "memory")]
 use super::types_governance::{
-    ProposalAcceptParams, ProposalAcceptResponse, ProposalEntry, ProposalRecord,
-    ProposalRejectParams, ProposalRejectResponse, ProposalsListParams, ProposalsListResponse,
-    ProposalsMineParams, ProposalsMineResponse,
+    ProposalAcceptParams, ProposalAcceptResponse, ProposalEntry, ProposalRecord, ProposalRejectParams,
+    ProposalRejectResponse, ProposalsListParams, ProposalsListResponse, ProposalsMineParams, ProposalsMineResponse,
 };
 #[cfg(feature = "memory")]
 use super::types_memory::{MemoryRecord, Provenance, VerifyState};
@@ -150,12 +149,7 @@ fn build_cluster(
 
 /// Build a human-readable description from a co-change cluster.
 #[cfg(feature = "memory")]
-fn build_description(
-    anchor: &RelPath,
-    cluster: &[RelPath],
-    support: u32,
-    anchor_freq: u32,
-) -> String {
+fn build_description(anchor: &RelPath, cluster: &[RelPath], support: u32, anchor_freq: u32) -> String {
     let partners: Vec<String> = cluster
         .iter()
         .filter(|f| *f != anchor)
@@ -193,15 +187,9 @@ pub(super) async fn run_proposals_mine(
 ) -> Result<CallToolResult, McpError> {
     use super::helpers::{head_sha, require_git_repo};
 
-    let window = params
-        .window
-        .unwrap_or(DEFAULT_MINE_WINDOW)
-        .min(MAX_MINE_WINDOW);
+    let window = params.window.unwrap_or(DEFAULT_MINE_WINDOW).min(MAX_MINE_WINDOW);
     let min_support = params.min_support.unwrap_or(DEFAULT_MIN_SUPPORT);
-    let min_confidence = params
-        .min_confidence
-        .unwrap_or(DEFAULT_MIN_CONFIDENCE)
-        .clamp(0.0, 1.0);
+    let min_confidence = params.min_confidence.unwrap_or(DEFAULT_MIN_CONFIDENCE).clamp(0.0, 1.0);
     let max_files_per_commit = params
         .max_files_per_commit
         .unwrap_or(DEFAULT_MAX_FILES_PER_COMMIT)
@@ -237,15 +225,10 @@ pub(super) async fn run_proposals_mine(
 
     for commit in commits.as_ref() {
         // Changed/Added/Modified files for this commit (no Deleted).
-        let is_changed =
-            |kind: &crate::git::ChangeKind| !matches!(kind, crate::git::ChangeKind::Deleted);
+        let is_changed = |kind: &crate::git::ChangeKind| !matches!(kind, crate::git::ChangeKind::Deleted);
 
         // Bulk/vendor guard: count changed files before interning so a skipped commit costs nothing.
-        let changed_count = commit
-            .files
-            .iter()
-            .filter(|(_, kind)| is_changed(kind))
-            .count();
+        let changed_count = commit.files.iter().filter(|(_, kind)| is_changed(kind)).count();
         if changed_count > max_files_per_commit as usize {
             skipped_bulk += 1;
             continue;
@@ -325,14 +308,7 @@ pub(super) async fn run_proposals_mine(
 
     for &anchor in &anchor_candidates {
         let anchor_path = &files[anchor];
-        let cluster = build_cluster(
-            anchor,
-            &files,
-            &cochange,
-            &freq,
-            min_support,
-            min_confidence,
-        );
+        let cluster = build_cluster(anchor, &files, &cochange, &freq, min_support, min_confidence);
         if cluster.len() < 2 {
             // Degenerate cluster (no qualifying partner survived) — skip.
             continue;
@@ -345,8 +321,7 @@ pub(super) async fn run_proposals_mine(
         }
 
         // Skip if a tombstone exists for this id (user previously rejected it).
-        let tombstone_key =
-            crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &id);
+        let tombstone_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &id);
         let has_tombstone = idx
             .proposals
             .get(&tombstone_key)
@@ -367,11 +342,7 @@ pub(super) async fn run_proposals_mine(
                 let Some(&p) = interner.get(partner) else {
                     return 0;
                 };
-                let pair = if anchor <= p {
-                    (anchor, p)
-                } else {
-                    (p, anchor)
-                };
+                let pair = if anchor <= p { (anchor, p) } else { (p, anchor) };
                 *cochange.get(&pair).unwrap_or(&0)
             })
             .max()
@@ -422,10 +393,7 @@ pub(super) async fn run_proposals_list(
 
     use super::cursor::prefix_upper_bound;
 
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_LIST_LIMIT)
-        .min(MAX_LIST_LIMIT) as usize;
+    let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT) as usize;
     let scan_cap = limit.saturating_mul(8).max(1_000);
 
     // Determine which kind byte(s) to scan. When `kind` is omitted we scan both
@@ -433,10 +401,7 @@ pub(super) async fn run_proposals_list(
     let kind_bytes: Vec<u8> = match params.kind.as_deref() {
         Some("skill") => vec![PROPOSAL_KIND_SKILL],
         Some("memory") => vec![crate::index::keys::PROPOSAL_KIND_MEMORY],
-        None | Some(_) => vec![
-            crate::index::keys::PROPOSAL_KIND_MEMORY,
-            PROPOSAL_KIND_SKILL,
-        ],
+        None | Some(_) => vec![crate::index::keys::PROPOSAL_KIND_MEMORY, PROPOSAL_KIND_SKILL],
     };
 
     let store_guard = state.store.read().await;
@@ -476,9 +441,7 @@ pub(super) async fn run_proposals_list(
             None => Bound::Unbounded,
         };
 
-        let iter = idx
-            .proposals
-            .range::<Vec<u8>, _>((lower_bound, upper_bound));
+        let iter = idx.proposals.range::<Vec<u8>, _>((lower_bound, upper_bound));
 
         for (scanned, guard) in iter.enumerate() {
             if scanned >= scan_cap {
@@ -555,9 +518,7 @@ pub(super) async fn run_proposal_accept(
             .proposals
             .get(&raw_key)
             .map_err(|e| McpError::internal_error(format!("proposals get: {e}"), None))?
-            .ok_or_else(|| {
-                McpError::invalid_params(format!("proposal not found: {}", params.id), None)
-            })?;
+            .ok_or_else(|| McpError::invalid_params(format!("proposal not found: {}", params.id), None))?;
         rmp_serde::from_slice::<ProposalRecord>(&raw)
             .map_err(|e| McpError::internal_error(format!("decode proposal: {e}"), None))?
     };
@@ -661,10 +622,8 @@ pub(super) async fn run_proposal_reject(
         tracing::info!(id = %params.id, reason = %reason, "proposal rejected");
     }
 
-    let proposal_key =
-        crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &params.id);
-    let tombstone_key =
-        crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &params.id);
+    let proposal_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &params.id);
+    let tombstone_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &params.id);
 
     let store_guard = state.store.read().await;
     let idx = store_guard

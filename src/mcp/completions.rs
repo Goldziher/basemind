@@ -22,11 +22,9 @@ impl BasemindServer {
     /// resources) yield an empty list.
     pub(super) fn complete_argument(&self, params: &CompleteRequestParams) -> CompleteResult {
         let values = match &params.r#ref {
-            Reference::Prompt(prompt) => self.complete_prompt_argument(
-                &prompt.name,
-                &params.argument.name,
-                &params.argument.value,
-            ),
+            Reference::Prompt(prompt) => {
+                self.complete_prompt_argument(&prompt.name, &params.argument.name, &params.argument.value)
+            }
             Reference::Resource(_) => Vec::new(),
         };
         // `CompletionInfo::new` only errors when `values.len() > 100`; every source caps at
@@ -57,11 +55,7 @@ impl BasemindServer {
                 }
             }
         }
-        names
-            .into_iter()
-            .take(MAX_COMPLETIONS)
-            .map(str::to_owned)
-            .collect()
+        names.into_iter().take(MAX_COMPLETIONS).map(str::to_owned).collect()
     }
 
     /// Indexed repo-relative file paths that start with `prefix`, capped at [`MAX_COMPLETIONS`].

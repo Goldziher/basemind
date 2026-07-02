@@ -35,9 +35,7 @@ use thiserror::Error;
 use super::COMMS_SCHEMA_VER;
 use super::ids::{AgentId, RoomId};
 use super::keys;
-use super::model::{
-    AgentRecord, MessageBody, MessageMeta, Room, SessionLineage, Subscription, now_micros,
-};
+use super::model::{AgentRecord, MessageBody, MessageMeta, Room, SessionLineage, Subscription, now_micros};
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 const STORE_DIR: &str = "store.fjall";
@@ -165,8 +163,7 @@ impl CommsStore {
     /// Insert or replace a room record.
     pub fn put_room(&self, room: &Room) -> Result<(), CommsStoreError> {
         let bytes = rmp_serde::to_vec_named(room)?;
-        self.rooms
-            .insert(keys::room_key(room.room_id.as_str()), bytes)?;
+        self.rooms.insert(keys::room_key(room.room_id.as_str()), bytes)?;
         Ok(())
     }
 
@@ -193,8 +190,7 @@ impl CommsStore {
     /// Insert or replace an agent record.
     pub fn put_agent(&self, agent: &AgentRecord) -> Result<(), CommsStoreError> {
         let bytes = rmp_serde::to_vec_named(agent)?;
-        self.agents
-            .insert(keys::agent_key(agent.agent_id.as_str()), bytes)?;
+        self.agents.insert(keys::agent_key(agent.agent_id.as_str()), bytes)?;
         Ok(())
     }
 
@@ -221,8 +217,7 @@ impl CommsStore {
     /// Insert or replace a session lineage record, keyed by its `session_id`.
     pub fn put_session(&self, lineage: &SessionLineage) -> Result<(), CommsStoreError> {
         let bytes = rmp_serde::to_vec_named(lineage)?;
-        self.sessions
-            .insert(keys::session_key(&lineage.session_id), bytes)?;
+        self.sessions.insert(keys::session_key(&lineage.session_id), bytes)?;
         Ok(())
     }
 
@@ -309,9 +304,7 @@ impl CommsStore {
     fn current_seq(&self, room: &RoomId) -> Result<u64, CommsStoreError> {
         let key = keys::room_seq_meta_key(room.as_str());
         Ok(match self.meta.get(&key)? {
-            Some(v) if v.len() == 8 => {
-                u64::from_be_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]])
-            }
+            Some(v) if v.len() == 8 => u64::from_be_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]),
             _ => 0,
         })
     }
@@ -328,11 +321,7 @@ impl CommsStore {
     ) -> Result<(u64, MessageMeta), CommsStoreError> {
         let seq = self.current_seq(room)?.saturating_add(1);
         let mut batch = self.db.batch();
-        batch.insert(
-            &self.meta,
-            keys::room_seq_meta_key(room.as_str()),
-            seq.to_be_bytes(),
-        );
+        batch.insert(&self.meta, keys::room_seq_meta_key(room.as_str()), seq.to_be_bytes());
         let meta_key = keys::message_by_room(room.as_str(), seq);
         let meta_bytes = rmp_serde::to_vec_named(&meta)?;
         batch.insert(&self.messages_by_room, meta_key, meta_bytes);
@@ -345,12 +334,7 @@ impl CommsStore {
     /// Read a room's history starting AFTER `after_seq` (exclusive), oldest-first, up to
     /// `limit`. Decodes ONLY [`MessageMeta`] — never the body. Returns the records plus the
     /// last `seq` seen (for the next cursor) and whether more remain.
-    pub fn history(
-        &self,
-        room: &RoomId,
-        after_seq: u64,
-        limit: usize,
-    ) -> Result<HistoryPage, CommsStoreError> {
+    pub fn history(&self, room: &RoomId, after_seq: u64, limit: usize) -> Result<HistoryPage, CommsStoreError> {
         let prefix = keys::messages_by_room_prefix(room.as_str());
         let mut messages = Vec::new();
         let mut last_seq = after_seq;
@@ -450,10 +434,7 @@ impl CommsStore {
     /// single-pass batch design keeps `inbox_ack` over many ids at one `messages_by_room` walk
     /// rather than one walk per id. A reverse index is the future optimization if this scan ever
     /// becomes hot (tracked alongside the comms schema version).
-    pub fn resolve_ids(
-        &self,
-        message_ids: &[String],
-    ) -> Result<Vec<(String, RoomId, u64)>, CommsStoreError> {
+    pub fn resolve_ids(&self, message_ids: &[String]) -> Result<Vec<(String, RoomId, u64)>, CommsStoreError> {
         if message_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -481,20 +462,13 @@ impl CommsStore {
     pub fn read_cursor(&self, agent: &AgentId, room: &RoomId) -> Result<u64, CommsStoreError> {
         let key = keys::cursor_key(agent.as_str(), room.as_str());
         match self.cursors.get(key)? {
-            Some(v) if v.len() == 8 => Ok(u64::from_be_bytes([
-                v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-            ])),
+            Some(v) if v.len() == 8 => Ok(u64::from_be_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]])),
             _ => Ok(0),
         }
     }
 
     /// Advance the agent's read cursor for a room to `seq` (monotonic; never moves backward).
-    pub fn set_read_cursor(
-        &self,
-        agent: &AgentId,
-        room: &RoomId,
-        seq: u64,
-    ) -> Result<(), CommsStoreError> {
+    pub fn set_read_cursor(&self, agent: &AgentId, room: &RoomId, seq: u64) -> Result<(), CommsStoreError> {
         let current = self.read_cursor(agent, room)?;
         if seq <= current {
             return Ok(());
@@ -627,10 +601,7 @@ mod tests {
         let page = store.history(&room, 0, 10).expect("history");
         assert_eq!(page.messages.len(), 1);
         let (got_seq, got) = &page.messages[0];
-        assert_eq!(
-            *got_seq, 1,
-            "history pairs each record with its per-room seq"
-        );
+        assert_eq!(*got_seq, 1, "history pairs each record with its per-room seq");
         // History returns the front-matter, including the body length + hash, but NOT the
         // body itself — `MessageMeta` has no body field.
         assert_eq!(got.id, "m-1");
@@ -726,9 +697,7 @@ mod tests {
         );
         // Backdate well beyond any sane TTL (10 days in micros).
         stale.ts_micros = now_micros() - 10 * 24 * 60 * 60 * 1_000_000;
-        store
-            .post(&room, stale, MessageBody(stale_body))
-            .expect("post stale");
+        store.post(&room, stale, MessageBody(stale_body)).expect("post stale");
         let fresh_body = b"fresh".to_vec();
         let fresh = build_meta(
             "new".to_string(),
@@ -740,9 +709,7 @@ mod tests {
             vec![],
             &fresh_body,
         );
-        store
-            .post(&room, fresh, MessageBody(fresh_body))
-            .expect("post fresh");
+        store.post(&room, fresh, MessageBody(fresh_body)).expect("post fresh");
 
         // Prune with a 1-day TTL: the 10-day-old message goes, the fresh one stays.
         let pruned = store
@@ -782,10 +749,7 @@ mod tests {
             })
             .expect("subscribe");
         assert_eq!(store.subscribers(&room).expect("subs"), vec![agent.clone()]);
-        assert_eq!(
-            store.rooms_for_agent(&agent).expect("rooms"),
-            vec![room.clone()]
-        );
+        assert_eq!(store.rooms_for_agent(&agent).expect("rooms"), vec![room.clone()]);
         store.unsubscribe(&room, &agent).expect("unsub");
         assert!(store.subscribers(&room).expect("subs").is_empty());
     }
@@ -855,10 +819,7 @@ mod tests {
         };
         assert_eq!(store.get_session("sess-abc").expect("get"), None);
         store.put_session(&lineage).expect("put");
-        assert_eq!(
-            store.get_session("sess-abc").expect("get"),
-            Some(lineage.clone())
-        );
+        assert_eq!(store.get_session("sess-abc").expect("get"), Some(lineage.clone()));
 
         // A second, parentless session lists alongside the first.
         let orphan = SessionLineage {
@@ -890,9 +851,6 @@ mod tests {
             last_seen: now_micros(),
         };
         store.put_agent(&rec).expect("put");
-        assert_eq!(
-            store.get_agent(&agent_id("agent-1")).expect("get"),
-            Some(rec)
-        );
+        assert_eq!(store.get_agent(&agent_id("agent-1")).expect("get"), Some(rec));
     }
 }

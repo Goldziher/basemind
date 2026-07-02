@@ -11,10 +11,8 @@ static VALIDATOR_V1: OnceLock<Validator> = OnceLock::new();
 
 fn validator_v1() -> &'static Validator {
     VALIDATOR_V1.get_or_init(|| {
-        let schema_json: Value =
-            serde_json::from_str(SCHEMA_V1).expect("bundled schema must be valid JSON");
-        jsonschema::draft202012::new(&schema_json)
-            .expect("bundled schema must be a valid Draft 2020-12 schema")
+        let schema_json: Value = serde_json::from_str(SCHEMA_V1).expect("bundled schema must be valid JSON");
+        jsonschema::draft202012::new(&schema_json).expect("bundled schema must be a valid Draft 2020-12 schema")
     })
 }
 

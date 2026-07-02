@@ -48,8 +48,7 @@ fn current_rss() -> Option<u64> {
     // `resident_size` only when the kernel returns `KERN_SUCCESS`.
     unsafe {
         let mut info = mem::zeroed::<mach_task_basic_info>();
-        let mut count = (mem::size_of::<mach_task_basic_info>() / mem::size_of::<u32>())
-            as mach_msg_type_number_t;
+        let mut count = (mem::size_of::<mach_task_basic_info>() / mem::size_of::<u32>()) as mach_msg_type_number_t;
         let kr = task_info(
             mach_task_self(),
             MACH_TASK_BASIC_INFO,
@@ -118,9 +117,7 @@ mod tests {
         let s = sample();
         // A live process always has some resident memory; both readers should succeed on the
         // Unix CI platforms (macOS + Linux).
-        let current = s
-            .current_bytes
-            .expect("current RSS should be readable on unix");
+        let current = s.current_bytes.expect("current RSS should be readable on unix");
         assert!(current > 0, "current RSS must be positive, got {current}");
         let peak = s.peak_bytes.expect("peak RSS should be readable on unix");
         assert!(

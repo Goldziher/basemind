@@ -64,9 +64,8 @@ impl BasemindServer {
             let mut response = if params.l2 {
                 // L2 path: take the store lock once for both the L1 read and the L2 read.
                 let store = self.state.store.read().await;
-                let l1 = query::file_outline(&store, &params.path).map_err(|e| {
-                    McpError::invalid_params(format!("file_outline({}): {e}", params.path), None)
-                })?;
+                let l1 = query::file_outline(&store, &params.path)
+                    .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
                 let (symbols, imports) = l1_views(&l1);
                 let mut r = OutlineResponse {
                     path: params.path.clone(),
@@ -81,9 +80,9 @@ impl BasemindServer {
                     docs: None,
                     l2_status: None,
                 };
-                let entry = store.lookup(&params.path).ok_or_else(|| {
-                    McpError::internal_error("file not indexed after outline succeeded", None)
-                })?;
+                let entry = store
+                    .lookup(&params.path)
+                    .ok_or_else(|| McpError::internal_error("file not indexed after outline succeeded", None))?;
                 match store.read_l2_by_hex(&entry.hash_hex) {
                     Ok(Some(l2)) => {
                         r.calls = Some(
@@ -106,9 +105,7 @@ impl BasemindServer {
                         );
                     }
                     Ok(None) => {
-                        r.l2_status = Some(
-                            "missing — run `basemind query outline <path> --l2` to materialize",
-                        );
+                        r.l2_status = Some("missing — run `basemind query outline <path> --l2` to materialize");
                     }
                     Err(e) => {
                         r.l2_status = Some("error");
@@ -140,12 +137,8 @@ impl BasemindServer {
                 } else {
                     // Cache miss fallback.
                     let store = self.state.store.read().await;
-                    let l1 = query::file_outline(&store, &params.path).map_err(|e| {
-                        McpError::invalid_params(
-                            format!("file_outline({}): {e}", params.path),
-                            None,
-                        )
-                    })?;
+                    let l1 = query::file_outline(&store, &params.path)
+                        .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
                     let (symbols, imports) = l1_views(&l1);
                     OutlineResponse {
                         path: params.path.clone(),
@@ -166,17 +159,11 @@ impl BasemindServer {
             // Token budget bounds the symbols list (the high-volume part of an outline);
             // imports / calls / docs are left intact. Applied before serializing.
             if params.max_tokens.is_some() {
-                let budgeted = super::budget::apply_budget(
-                    std::mem::take(&mut response.symbols),
-                    params.max_tokens,
-                );
+                let budgeted = super::budget::apply_budget(std::mem::take(&mut response.symbols), params.max_tokens);
                 response.symbols = budgeted.items;
                 response.budgeted = budgeted.budgeted;
             }
-            super::toon::format_result(
-                &response,
-                super::toon::ResponseFormat::parse(params.format.as_deref()),
-            )
+            super::toon::format_result(&response, super::toon::ResponseFormat::parse(params.format.as_deref()))
         }
         .await;
         record_call(&self.state, "outline", &__params_json, __started, &__result);
@@ -206,10 +193,7 @@ impl BasemindServer {
 
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
-            let limit = params
-                .limit
-                .unwrap_or(SEARCH_LIMIT_DEFAULT)
-                .min(SEARCH_LIMIT_MAX) as usize;
+            let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
             let generation = self.state.cache_generation.load(Ordering::Relaxed);
 
             // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
@@ -326,13 +310,7 @@ impl BasemindServer {
             )
         }
         .await;
-        record_call(
-            &self.state,
-            "search_symbols",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "search_symbols", &__params_json, __started, &__result);
         __result
     }
 
@@ -396,9 +374,7 @@ impl BasemindServer {
             let mut total: usize = 0;
             let mut seen: usize = 0;
             for (p, e) in &store.index.files {
-                let path_ok = path_finder
-                    .as_ref()
-                    .is_none_or(|f| f.find(p.as_bytes()).is_some());
+                let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some());
                 let lang_ok = lang_filter.is_none_or(|l| e.language == l);
                 if !(path_ok && lang_ok) {
                     continue;
@@ -447,13 +423,7 @@ impl BasemindServer {
             )
         }
         .await;
-        record_call(
-            &self.state,
-            "list_files",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "list_files", &__params_json, __started, &__result);
         __result
     }
 
@@ -470,26 +440,18 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
-            let paths: Vec<crate::path::RelPath> = crate::extract::l3::dependents_of(
-                &params.module,
-                &self.state.cache.load().imports_index,
-            )
-            .into_iter()
-            .map(|p| crate::path::RelPath::from(p.as_path()))
-            .collect();
+            let paths: Vec<crate::path::RelPath> =
+                crate::extract::l3::dependents_of(&params.module, &self.state.cache.load().imports_index)
+                    .into_iter()
+                    .map(|p| crate::path::RelPath::from(p.as_path()))
+                    .collect();
             json_result(&DependentsResponse {
                 module: params.module.clone(),
                 paths,
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "dependents",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "dependents", &__params_json, __started, &__result);
         __result
     }
 
@@ -501,10 +463,7 @@ impl BasemindServer {
                        (lost index — rescan).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    pub(crate) async fn status(
-        &self,
-        Parameters(_): Parameters<StatusParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn status(&self, Parameters(_): Parameters<StatusParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
@@ -552,10 +511,7 @@ impl BasemindServer {
                 *by_lang_ref.entry(entry.language.as_str()).or_insert(0) += 1;
                 total_size = total_size.saturating_add(entry.size_bytes);
             }
-            let by_lang: BTreeMap<String, usize> = by_lang_ref
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect();
+            let by_lang: BTreeMap<String, usize> = by_lang_ref.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
             let cache_dir = crate::lang::grammar_cache_dir()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "(unresolved)".to_string());
@@ -616,13 +572,7 @@ impl BasemindServer {
             run_find_references(idx.as_ref(), params, &cache)
         }
         .await;
-        record_call(
-            &self.state,
-            "find_references",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "find_references", &__params_json, __started, &__result);
         __result
     }
 
@@ -651,13 +601,7 @@ impl BasemindServer {
             run_find_callers(idx.as_ref(), params, &cache)
         }
         .await;
-        record_call(
-            &self.state,
-            "find_callers",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "find_callers", &__params_json, __started, &__result);
         __result
     }
 
@@ -678,15 +622,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> =
-            async { run_workspace_grep(&self.state, params) }.await;
-        record_call(
-            &self.state,
-            "workspace_grep",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> = async { run_workspace_grep(&self.state, params) }.await;
+        record_call(&self.state, "workspace_grep", &__params_json, __started, &__result);
         __result
     }
 
@@ -753,13 +690,7 @@ impl BasemindServer {
             run_call_graph(idx.as_ref(), params, &cache)
         }
         .await;
-        record_call(
-            &self.state,
-            "call_graph",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "call_graph", &__params_json, __started, &__result);
         __result
     }
 
@@ -788,13 +719,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "repo_info",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "repo_info", &__params_json, __started, &__result);
         __result
     }
 }
@@ -835,11 +760,7 @@ pub(super) fn count_fm_blobs(basemind_dir: &std::path::Path) -> usize {
     };
     entries
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.ends_with(".fm.msgpack"))
-        })
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
         .count()
 }
 
@@ -867,33 +788,21 @@ mod tests {
     fn list_limit_under_cap_is_not_clamped() {
         let (limit, clamped) = effective_list_limit(Some(100));
         assert_eq!(limit, 100);
-        assert!(
-            !clamped,
-            "a request under the cap must not be flagged clamped"
-        );
+        assert!(!clamped, "a request under the cap must not be flagged clamped");
     }
 
     #[test]
     fn list_limit_at_cap_is_not_clamped() {
         let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX));
         assert_eq!(limit, LIST_LIMIT_MAX as usize);
-        assert!(
-            !clamped,
-            "a request exactly at the cap is honored, not clamped"
-        );
+        assert!(!clamped, "a request exactly at the cap is honored, not clamped");
     }
 
     #[test]
     fn list_limit_over_cap_is_clamped_and_signalled() {
         let (limit, clamped) = effective_list_limit(Some(LIST_LIMIT_MAX + 1));
-        assert_eq!(
-            limit, LIST_LIMIT_MAX as usize,
-            "limit is clamped to the cap"
-        );
-        assert!(
-            clamped,
-            "exceeding the cap must set the clamp flag (bug #17)"
-        );
+        assert_eq!(limit, LIST_LIMIT_MAX as usize, "limit is clamped to the cap");
+        assert!(clamped, "exceeding the cap must set the clamp flag (bug #17)");
     }
 
     #[test]
@@ -919,14 +828,8 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(
-            total, cap,
-            "total saturates at the scan cap, not the true match count"
-        );
-        assert!(
-            partial,
-            "hitting the cap must mark total as partial (bug #16)"
-        );
+        assert_eq!(total, cap, "total saturates at the scan cap, not the true match count");
+        assert!(partial, "hitting the cap must mark total as partial (bug #16)");
     }
 
     #[test]
@@ -944,19 +847,12 @@ mod tests {
             }
         }
         assert_eq!(total, matches_available, "total is exact below the cap");
-        assert!(
-            !partial,
-            "a query under the cap reports an exact, complete total"
-        );
+        assert!(!partial, "a query under the cap reports an exact, complete total");
     }
 
     #[test]
     fn status_note_absent_when_index_and_blobs_agree() {
-        assert_eq!(
-            blob_divergence_note(42, 100),
-            None,
-            "populated index: no note"
-        );
+        assert_eq!(blob_divergence_note(42, 100), None, "populated index: no note");
     }
 
     #[test]

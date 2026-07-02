@@ -29,9 +29,7 @@ mod imp {
 
     use crate::comms::daemon::Broker;
     use crate::comms::protocol::{CommsOut, CommsRequest};
-    use crate::comms::transport::{
-        CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link,
-    };
+    use crate::comms::transport::{CommsFrontend, CommsLink, MAX_FRAME_BYTES, PeerCred, serve_link};
 
     /// Read chunk size pulled from the pipe per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
@@ -65,9 +63,8 @@ mod imp {
             loop {
                 // Try to decode a complete frame from whatever is already buffered.
                 if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
-                    let req = rmp_serde::from_slice(&frame).map_err(|e| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                    })?;
+                    let req = rmp_serde::from_slice(&frame)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
                 }
                 // Need more bytes from the pipe.

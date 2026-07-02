@@ -124,8 +124,8 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
 /// view opens read-only even when never scanned, so no fixture repo is needed.
 fn advertised_tools() -> Vec<String> {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let server = build_server(tmp.path(), VIEW_WORKING, DocumentsCliOverrides::default())
-        .expect("build one-shot server");
+    let server =
+        build_server(tmp.path(), VIEW_WORKING, DocumentsCliOverrides::default()).expect("build one-shot server");
     server.tool_names()
 }
 
@@ -137,10 +137,7 @@ fn every_mcp_tool_has_a_cli_command() {
 
     // 1. Every advertised MCP tool must be mapped to a CLI command. A new tool without an entry
     //    here fails — the author must add its CLI counterpart and record the mapping.
-    let unmapped: Vec<&String> = tools
-        .iter()
-        .filter(|t| !mapped.contains(t.as_str()))
-        .collect();
+    let unmapped: Vec<&String> = tools.iter().filter(|t| !mapped.contains(t.as_str())).collect();
     assert!(
         unmapped.is_empty(),
         "MCP tools with no CLI mapping (add the CLI command + a TOOL_TO_CLI row): {unmapped:?}"
@@ -149,11 +146,7 @@ fn every_mcp_tool_has_a_cli_command() {
     // 2. No stale mappings: every mapped tool must still be advertised (catches a renamed/removed
     //    tool whose stale row would otherwise mask a real gap).
     let live: std::collections::HashSet<&str> = tools.iter().map(String::as_str).collect();
-    let stale: Vec<&str> = map
-        .iter()
-        .map(|(t, _)| *t)
-        .filter(|t| !live.contains(t))
-        .collect();
+    let stale: Vec<&str> = map.iter().map(|(t, _)| *t).filter(|t| !live.contains(t)).collect();
     assert!(
         stale.is_empty(),
         "TOOL_TO_CLI rows for tools no longer advertised (remove or rename them): {stale:?}"

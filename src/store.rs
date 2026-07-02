@@ -15,8 +15,7 @@ use crate::path::RelPath;
 #[cfg(feature = "documents")]
 use crate::store_blob::write_blob;
 use crate::store_blob::{
-    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists,
-    write_bytes_atomic,
+    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists, write_bytes_atomic,
 };
 
 pub const INDEX_FILE: &str = "index.msgpack";
@@ -226,11 +225,7 @@ impl Store {
 
     /// Like [`Store::open`] but records which command (`serve` / `watch` / `scan` / `rescan`)
     /// is taking the lock, so a concurrent acquirer's contention error names the live holder.
-    pub fn open_with_holder(
-        root: &Path,
-        view: &str,
-        holder: LockHolder,
-    ) -> Result<Self, StoreError> {
+    pub fn open_with_holder(root: &Path, view: &str, holder: LockHolder) -> Result<Self, StoreError> {
         let basemind_dir = root.join(crate::config::BASEMIND_DIR);
         ensure_dir(&basemind_dir)?;
         ensure_gitignore(&basemind_dir)?;
@@ -303,9 +298,7 @@ impl Store {
         // Error instead so the caller knows to scan it. The default working view is exempt:
         // it legitimately reads empty before the first scan, and `serve` auto-scans it.
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
-            return Err(StoreError::ViewNotScanned {
-                view: view.to_string(),
-            });
+            return Err(StoreError::ViewNotScanned { view: view.to_string() });
         }
         // A read-only consumer cannot wipe + rebuild like `Store::open` does, so a schema
         // bump must degrade gracefully rather than propagate a hard error: an out-of-date
@@ -368,11 +361,7 @@ impl Store {
     /// passed here wipes the whole `.basemind/lance/` directory and rebuilds —
     /// the standard schema-bump migration story for the vector store.
     #[cfg(feature = "intelligence")]
-    pub fn lance_or_open(
-        &mut self,
-        dim: u16,
-        embedding_model: &str,
-    ) -> Result<&LanceStore, anyhow::Error> {
+    pub fn lance_or_open(&mut self, dim: u16, embedding_model: &str) -> Result<&LanceStore, anyhow::Error> {
         if self.lance.is_none() {
             let dir = self.basemind_dir.join(LANCE_DIR);
             let store = LanceStore::open(&dir, dim, embedding_model)?;
@@ -392,9 +381,7 @@ impl Store {
     /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
     /// the caller starts from a `FileEntry::hash_hex`.
     pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.fm.msgpack"))
+        self.basemind_dir.join(BLOBS_DIR).join(format!("{hash_hex}.fm.msgpack"))
     }
 
     #[cfg(feature = "documents")]
@@ -443,12 +430,7 @@ impl Store {
     /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed
     /// blob (`[l1_len][l1][l2|empty]`), so the default eager-L2 scan does one `open` + `write`
     /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
-    pub fn write_filemap_hex(
-        &self,
-        hash_hex: &str,
-        l1: &FileMapL1,
-        l2: Option<&FileMapL2>,
-    ) -> Result<(), StoreError> {
+    pub fn write_filemap_hex(&self, hash_hex: &str, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), StoreError> {
         let path = self.blob_path_fm_hex(hash_hex);
         // Content-addressed skip: an existing frame at this path holds the extraction of
         // identical source bytes. Only short-circuit when its schema already matches — a
@@ -461,19 +443,12 @@ impl Store {
     }
 
     #[cfg(feature = "documents")]
-    pub fn write_doc(
-        &self,
-        hash: &Hash,
-        map: &crate::extract::doc::FileMapDoc,
-    ) -> Result<(), StoreError> {
+    pub fn write_doc(&self, hash: &Hash, map: &crate::extract::doc::FileMapDoc) -> Result<(), StoreError> {
         write_blob(self.blob_path_doc(hash), map)
     }
 
     #[cfg(feature = "documents")]
-    pub fn read_doc_by_hex(
-        &self,
-        hash_hex: &str,
-    ) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
+    pub fn read_doc_by_hex(&self, hash_hex: &str) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
         let path = self.blob_path_doc_hex(hash_hex);
         if !path.exists() {
             return Ok(None);
@@ -611,9 +586,7 @@ fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError
         path: working_index,
         source,
     })?;
-    tracing::info!(
-        "migrated .basemind/index.msgpack → .basemind/views/{VIEW_WORKING}/index.msgpack"
-    );
+    tracing::info!("migrated .basemind/index.msgpack → .basemind/views/{VIEW_WORKING}/index.msgpack");
     Ok(())
 }
 
@@ -715,11 +688,7 @@ mod tests {
         let l1 = store.read_l1_by_hex(&hash_hex).expect("read l1");
         assert_eq!(l1.map(|m| m.size_bytes), Some(42), "L1 slice round-trips");
         let l2 = store.read_l2_by_hex(&hash_hex).expect("read l2");
-        assert_eq!(
-            l2.map(|m| m.language),
-            Some("rust".to_string()),
-            "L2 present"
-        );
+        assert_eq!(l2.map(|m| m.language), Some("rust".to_string()), "L2 present");
     }
 
     #[test]
@@ -779,10 +748,7 @@ mod tests {
             msg.contains("basemind scan"),
             "message should name the actual holder command, got: {msg}"
         );
-        assert!(
-            msg.contains("4321"),
-            "message should name the holder pid, got: {msg}"
-        );
+        assert!(msg.contains("4321"), "message should name the holder pid, got: {msg}");
     }
 
     #[test]
@@ -828,8 +794,8 @@ mod tests {
         // The default working view legitimately reads empty before the first scan — it must
         // NOT error (would break `serve` auto-scan-on-empty + first-run query).
         let tmp = tempfile::tempdir().expect("tempdir");
-        let store = Store::open_read_only(tmp.path(), VIEW_WORKING)
-            .expect("working view opens even when never scanned");
+        let store =
+            Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
         assert!(store.index.files.is_empty(), "empty working index");
     }
 
@@ -838,8 +804,7 @@ mod tests {
         // The writer path (scan/serve) must still be able to create a named view fresh —
         // that is how `basemind scan --rev <sha>` first materializes `rev-<sha>`.
         let tmp = tempfile::tempdir().expect("tempdir");
-        let store = Store::open(tmp.path(), "rev-cafe000")
-            .expect("writer creates a named view on first scan");
+        let store = Store::open(tmp.path(), "rev-cafe000").expect("writer creates a named view on first scan");
         assert!(store.view_dir.exists(), "named view dir created by writer");
     }
 
@@ -862,10 +827,7 @@ mod tests {
 
     #[test]
     fn schema_mismatch_is_not_lock_contention() {
-        let err = StoreError::SchemaMismatch {
-            found: 1,
-            expected: 2,
-        };
+        let err = StoreError::SchemaMismatch { found: 1, expected: 2 };
         assert!(!err.is_lock_contention());
     }
 }

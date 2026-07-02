@@ -88,12 +88,7 @@ pub fn parse_symbol_by_path(key: &[u8]) -> Option<(RelPath, u32)> {
 ///
 /// Returns `None` when `name` exceeds 65535 bytes. The caller skips the secondary-index
 /// entry but still writes the primary `symbols_by_path` entry so the outline stays complete.
-pub fn symbol_by_name(
-    name: &str,
-    kind: SymbolKind,
-    rel: &RelPath,
-    start_byte: u32,
-) -> Option<Vec<u8>> {
+pub fn symbol_by_name(name: &str, kind: SymbolKind, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(2 + name.len() + 1 + 2 + rel.as_bytes().len() + 4);
     write_len_prefixed(&mut out, name.as_bytes())?;
     out.push(symbol_kind_byte(kind));
@@ -235,15 +230,8 @@ pub fn parse_import_by_path(key: &[u8]) -> Option<(RelPath, String, u32)> {
 ///
 /// Returns `None` when `trait_name` or `impl_type` exceeds 65535 bytes. The caller skips
 /// the secondary-index entry but still writes the primary `implementations_by_path` entry.
-pub fn impl_by_trait(
-    trait_name: &str,
-    impl_type: &str,
-    rel: &RelPath,
-    start_byte: u32,
-) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(
-        2 + trait_name.len() + 2 + impl_type.len() + 2 + rel.as_bytes().len() + 4,
-    );
+pub fn impl_by_trait(trait_name: &str, impl_type: &str, rel: &RelPath, start_byte: u32) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(2 + trait_name.len() + 2 + impl_type.len() + 2 + rel.as_bytes().len() + 4);
     write_len_prefixed(&mut out, trait_name.as_bytes())?;
     write_len_prefixed(&mut out, impl_type.as_bytes())?;
     let _ = write_len_prefixed(&mut out, rel.as_bytes());
@@ -276,15 +264,8 @@ pub fn parse_impl_by_trait(key: &[u8]) -> Option<(String, String, RelPath, u32)>
 ///
 /// Returns `None` when `trait_name` or `impl_type` exceeds 65535 bytes. The rel component
 /// is path-only and never reaches the 64 KiB ceiling.
-pub fn impl_by_path(
-    rel: &RelPath,
-    trait_name: &str,
-    impl_type: &str,
-    start_byte: u32,
-) -> Option<Vec<u8>> {
-    let mut out = Vec::with_capacity(
-        2 + rel.as_bytes().len() + 2 + trait_name.len() + 2 + impl_type.len() + 4,
-    );
+pub fn impl_by_path(rel: &RelPath, trait_name: &str, impl_type: &str, start_byte: u32) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 2 + trait_name.len() + 2 + impl_type.len() + 4);
     let _ = write_len_prefixed(&mut out, rel.as_bytes());
     write_len_prefixed(&mut out, trait_name.as_bytes())?;
     write_len_prefixed(&mut out, impl_type.as_bytes())?;
@@ -568,10 +549,7 @@ mod tests {
         let key_foo = call_by_callee("Foo", &rel, 1).unwrap();
         let key_foobar = call_by_callee("Foobar", &rel, 1).unwrap();
         let prefix_foo = calls_by_callee_prefix("Foo");
-        assert!(
-            key_foo.starts_with(&prefix_foo),
-            "Foo's key must extend the Foo prefix"
-        );
+        assert!(key_foo.starts_with(&prefix_foo), "Foo's key must extend the Foo prefix");
         assert!(
             !key_foobar.starts_with(&prefix_foo),
             "Foobar's key must NOT match the Foo prefix"
@@ -597,10 +575,7 @@ mod tests {
         let key_a = import_by_path(&rel_a, "os", 0).unwrap();
         let key_b = import_by_path(&rel_b, "os", 0).unwrap();
         let prefix_a = imports_by_path_prefix(&rel_a);
-        assert!(
-            key_a.starts_with(&prefix_a),
-            "rel_a's key must extend rel_a's prefix"
-        );
+        assert!(key_a.starts_with(&prefix_a), "rel_a's key must extend rel_a's prefix");
         assert!(
             !key_b.starts_with(&prefix_a),
             "rel_b's key must NOT match rel_a's prefix"
@@ -655,10 +630,7 @@ mod tests {
         let key_a = impl_by_path(&rel_a, "Display", "Foo", 0).unwrap();
         let key_b = impl_by_path(&rel_b, "Display", "Foo", 0).unwrap();
         let prefix_a = impls_by_path_prefix(&rel_a);
-        assert!(
-            key_a.starts_with(&prefix_a),
-            "rel_a's key must extend rel_a's prefix"
-        );
+        assert!(key_a.starts_with(&prefix_a), "rel_a's key must extend rel_a's prefix");
         assert!(
             !key_b.starts_with(&prefix_a),
             "rel_b's key must NOT match rel_a's prefix"
@@ -770,12 +742,7 @@ mod tests {
             ("scope-a", MEMORY_VIS_INDIVIDUAL, "agent-7", "ns:sub.key"),
             ("", MEMORY_VIS_GROUP, "", ""),
             ("s", MEMORY_VIS_INDIVIDUAL, "owner-with-dashes", "k"),
-            (
-                "scope/with/slashes",
-                MEMORY_VIS_GROUP,
-                "",
-                "key.with.many.dots",
-            ),
+            ("scope/with/slashes", MEMORY_VIS_GROUP, "", "key.with.many.dots"),
         ];
         for (scope, vis, owner, key) in cases {
             let raw = memory_by_key(scope, vis, owner, key);

@@ -48,10 +48,7 @@ pub async fn run_telemetry(
     out: &mut impl Write,
 ) -> Result<()> {
     let p = TelemetrySummaryParams { window, tool };
-    let r = run_tool(
-        "telemetry_summary",
-        server.telemetry_summary(Parameters(p)).await,
-    )?;
+    let r = run_tool("telemetry_summary", server.telemetry_summary(Parameters(p)).await)?;
     emit("telemetry_summary", &r, json, out)
 }
 

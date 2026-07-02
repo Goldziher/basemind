@@ -141,12 +141,7 @@ pub fn watch(
     info!(root = %root.display(), "initial scan");
     {
         let mut guard = store.lock().expect("store poisoned");
-        let report = crate::scanner::scan(
-            root,
-            &mut guard,
-            &config,
-            crate::scanner::ScanSource::WorkingTree,
-        )?;
+        let report = crate::scanner::scan(root, &mut guard, &config, crate::scanner::ScanSource::WorkingTree)?;
         on_batch(WatchBatch {
             kind: BatchKind::InitialScan,
             report: &report,
@@ -158,10 +153,7 @@ pub fn watch(
         let mut guard = store.lock().expect("store poisoned");
         match crate::scanner::scan_paths(root, &mut guard, &config, &touched) {
             Ok(report) => {
-                on_batch(WatchBatch {
-                    kind,
-                    report: &report,
-                });
+                on_batch(WatchBatch { kind, report: &report });
             }
             Err(e) => warn!(error = %e, "scan_paths failed"),
         }
@@ -169,10 +161,7 @@ pub fn watch(
 }
 
 fn is_relevant(kind: &EventKind) -> bool {
-    matches!(
-        kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-    )
+    matches!(kind, EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_))
 }
 
 /// Should this event path wake a rescan? Keep only what a full scan would index. For an existing
@@ -188,10 +177,7 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
     // repo's `.basemind/` flush (the issue #33 loop) AND the `.basemind` dir entry itself, which
     // the exclude glob (`**/.basemind/**`, matching only the *contents*) does not cover — FSEvents
     // reports the directory when its contents change, which would otherwise wake a rescan.
-    if rel
-        .components()
-        .any(|c| c.as_os_str() == crate::config::BASEMIND_DIR)
-    {
+    if rel.components().any(|c| c.as_os_str() == crate::config::BASEMIND_DIR) {
         return false;
     }
     let rel = rel.to_string_lossy().replace('\\', "/");
@@ -278,11 +264,8 @@ mod tests {
         });
 
         std::thread::sleep(Duration::from_millis(200));
-        std::fs::write(
-            root.join(crate::config::BASEMIND_DIR).join("noise.txt"),
-            b"ignored\n",
-        )
-        .expect("write basemind file");
+        std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
+            .expect("write basemind file");
 
         // No callback should fire for a `.basemind/`-only change.
         let result = path_rx.recv_timeout(Duration::from_millis(800));
@@ -309,8 +292,7 @@ mod tests {
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
         // `.git` so the `ignore` crate honors `.gitignore` (it only applies git rules inside a repo).
         std::fs::create_dir_all(root.join(".git")).expect("mkdir .git");
-        std::fs::create_dir_all(root.join("child").join(crate::config::BASEMIND_DIR))
-            .expect("mkdir child/.basemind");
+        std::fs::create_dir_all(root.join("child").join(crate::config::BASEMIND_DIR)).expect("mkdir child/.basemind");
         std::fs::write(root.join(".gitignore"), b"build/\n").expect("write .gitignore");
         std::fs::create_dir_all(root.join("build")).expect("mkdir build");
         let mut config = crate::config::default_for_root(&root);

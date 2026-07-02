@@ -169,10 +169,7 @@ mod tests {
             "length prefix must isolate Foo from Foobar"
         );
         let foo_msg = message_by_room("Foo", 0);
-        assert!(
-            foo_msg.starts_with(&foo),
-            "Foo message starts with Foo prefix"
-        );
+        assert!(foo_msg.starts_with(&foo), "Foo message starts with Foo prefix");
     }
 
     #[test]
