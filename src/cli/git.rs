@@ -26,6 +26,20 @@ pub enum GitCmd {
         #[arg(long)]
         no_files: bool,
     },
+    /// Full-text search over commit history (author / message / all) at full branch depth.
+    /// This is the "what did <author> do" / "which commit mentions <X>" tool — it scans every
+    /// commit reachable from HEAD, not a recent window.
+    Search {
+        /// Query tokens (lowercased, split on non-alphanumeric) matched as an AND.
+        pattern: String,
+        /// Field to search: `author` (name + email), `message` (summary + body), or `all`
+        /// (default).
+        #[arg(long)]
+        field: Option<String>,
+        /// Max commits to return (default 20, max 100).
+        #[arg(long)]
+        limit: Option<u32>,
+    },
     /// Commits that modified a given path.
     CommitsTouching {
         path: String,
@@ -119,6 +133,23 @@ pub async fn run(
             };
             let r = run_tool("recent_changes", server.recent_changes(Parameters(p)).await)?;
             emit("recent_changes", &r, json, out)
+        }
+        GitCmd::Search {
+            pattern,
+            field,
+            limit,
+        } => {
+            let p = SearchGitHistoryParams {
+                pattern,
+                field,
+                limit,
+                cursor: None,
+            };
+            let r = run_tool(
+                "search_git_history",
+                server.search_git_history(Parameters(p)).await,
+            )?;
+            emit("search_git_history", &r, json, out)
         }
         GitCmd::CommitsTouching { path, limit } => {
             let p = CommitsTouchingParams {

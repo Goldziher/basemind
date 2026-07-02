@@ -22,6 +22,8 @@ pub mod git;
 pub mod governance;
 pub mod memory;
 pub mod render;
+#[cfg(all(feature = "shells", any(unix, windows)))]
+pub mod shells;
 pub mod web;
 
 use std::io::Write;
@@ -52,6 +54,11 @@ pub enum ToolCmd {
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(web::WebCmd),
+    /// Headless agent shells: spawn / send / capture / kill / broadcast / list
+    /// (needs `--features shells`).
+    #[cfg(all(feature = "shells", any(unix, windows)))]
+    #[command(subcommand)]
+    Shells(shells::ShellsCmd),
     /// Aggregate telemetry into a usage summary.
     Telemetry {
         /// Aggregation window: `today` (default), `1h`, `24h`, `all`.
@@ -99,6 +106,8 @@ pub fn run(
             ToolCmd::Memory(m) => memory::run(&server, m, json, &mut out).await?,
             ToolCmd::Governance(g) => governance::run(&server, g, json, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, json, &mut out).await?,
+            #[cfg(all(feature = "shells", any(unix, windows)))]
+            ToolCmd::Shells(s) => shells::run(&server, s, json, &mut out).await?,
             ToolCmd::Telemetry { window, tool } => {
                 admin::run_telemetry(&server, window, tool, json, &mut out).await?
             }
