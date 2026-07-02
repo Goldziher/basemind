@@ -18,6 +18,17 @@ ignore = [
   # bincode 1.x — unmaintained, transitive via rmux-proto (the shells rmux stack); functional,
   # bump belongs upstream in rmux, no migration path here.
   "RUSTSEC-2025-0141",
+  # ttf-parser — unmaintained, transitive via the font/PDF text-extraction stack (xberg);
+  # functional, no maintained drop-in, bump belongs upstream.
+  "RUSTSEC-2026-0192",
+  # quick-xml — quadratic parse of duplicate attribute names (DoS). Transitive via the
+  # document/Office XML extraction stack; basemind only parses documents a user explicitly
+  # indexes (local, operator-chosen inputs), so the DoS surface is not attacker-reachable. Fix
+  # belongs in the upstream extractor's quick-xml bump.
+  "RUSTSEC-2026-0194",
+  # quick-xml — unbounded namespace-declaration allocation in `NsReader` (memory-exhaustion DoS).
+  # Same transitive/document-only exposure as RUSTSEC-2026-0194 above.
+  "RUSTSEC-2026-0195",
 ]
 
 [licenses]
