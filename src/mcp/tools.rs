@@ -508,7 +508,40 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
-            let store = self.state.store.read().await;
+            // Non-blocking read: a writer (`scan`/`rescan`/`watch`) can hold the store lock for
+            // minutes during a rebuild. `read().await` would queue behind it and record the
+            // whole lock-wait as this call's wall-clock (the misleading multi-minute `status`
+            // latency). `try_read` fails fast instead — we report `rebuild_in_progress` with a
+            // fresh on-disk blob tally and skip the index-derived counts rather than block.
+            let store = match self.state.store.try_read() {
+                Ok(store) => store,
+                Err(_) => {
+                    let basemind_dir = self.state.root.join(crate::config::BASEMIND_DIR);
+                    return json_result(&StatusResponse {
+                        file_count: 0,
+                        blob_count: count_fm_blobs(&basemind_dir),
+                        note: Some(
+                            "a rebuild is in progress (another basemind process holds the store \
+                             lock); index counts are unavailable until it completes"
+                                .to_string(),
+                        ),
+                        rebuild_in_progress: true,
+                        total_size_bytes: 0,
+                        languages: BTreeMap::new(),
+                        cache_dir: crate::lang::grammar_cache_dir()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "(unresolved)".to_string()),
+                        schema_version: crate::extract::SCHEMA_VER,
+                        root: self.state.root.display().to_string(),
+                        submodules: self
+                            .state
+                            .repo
+                            .as_ref()
+                            .map(|r| r.submodule_paths())
+                            .unwrap_or_default(),
+                    });
+                }
+            };
             // Count into a borrowed-key map to avoid one String::clone() per file.
             // The store lock is held for the entire loop, so &str borrows into the
             // store are valid. Convert to BTreeMap<String,usize> once at the end —
@@ -541,6 +574,7 @@ impl BasemindServer {
                 file_count,
                 blob_count,
                 note,
+                rebuild_in_progress: false,
                 total_size_bytes: total_size,
                 languages: by_lang,
                 cache_dir,

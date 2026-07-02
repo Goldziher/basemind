@@ -10,6 +10,7 @@
 //!   still answers reads, instead of exiting and handing the MCP client an opaque `-32000`.
 
 use std::fs;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use basemind::config::ConfigV1;
@@ -80,4 +81,44 @@ fn read_only_serve_coexists_with_live_writer() {
         "read-only serve must resolve symbols from the shared index"
     );
     assert_eq!(hits[0].path.as_str(), Some("a.rs"));
+}
+
+#[test]
+fn cli_scan_exits_cleanly_when_a_writer_holds_the_lock() {
+    // Double-run UX (report): an editor plugin's `basemind serve` holds the write lock while the
+    // user (or another plugin command) runs `basemind scan` directly. The pre-flight probe must
+    // detect the live holder, print actionable guidance naming it, and exit 0 — never collide with
+    // a raw lock error or busy-wait.
+    let dir = scanned_repo();
+    let root = dir.path();
+    let _writer =
+        Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
+
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["scan"])
+        .current_dir(root)
+        .output()
+        .expect("run basemind scan");
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "scan against a held lock must exit cleanly (0), got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("basemind serve") && combined.contains("rescan"),
+        "notice must name the `basemind serve` holder and point at its `rescan` tool, got:\n{combined}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "pre-flight scan took {elapsed:?} — should short-circuit, not block on lock retries"
+    );
 }

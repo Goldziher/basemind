@@ -537,6 +537,28 @@ fn open_store_for_write(
     })
 }
 
+/// Pre-flight the store write lock before a CLI `scan` / `rescan`. When a live basemind process
+/// already holds it — overwhelmingly the "editor plugin runs `serve` while the user (or another
+/// plugin command) runs `scan`" double-run — return an actionable message so the caller prints it
+/// and exits cleanly, instead of blocking on the acquire retries and then failing with a raw lock
+/// error. `None` means the lock is free (proceed); the acquire still handles the probe→acquire race
+/// reactively via [`basemind::store::LOCK_CONTENTION_HELP`].
+fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
+    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    match basemind::store::probe_writer_lock(&basemind_dir) {
+        basemind::store::WriterProbe::Free => None,
+        basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
+            "`{}` (pid {}) is already running against this repo and keeping the index fresh — \
+             running this directly is unnecessary and would collide with it. Use that server's \
+             `rescan` tool to refresh the index, or stop it first.",
+            meta.command, meta.pid
+        )),
+        basemind::store::WriterProbe::Held { holder: None } => {
+            Some(basemind::store::LOCK_CONTENTION_HELP.to_string())
+        }
+    }
+}
+
 /// Build / refresh the repo-global git-history index after a working-tree scan (a separate phase
 /// from the core file scan). Best-effort: a non-git dir, a disabled toggle, or any failure leaves
 /// the index untouched and the history tools fall back to the live walk — never fails the scan.
@@ -639,6 +661,12 @@ fn cmd_scan(
         return Ok(());
     }
 
+    if let Some(notice) = writer_collision_notice(root) {
+        use std::io::Write as _;
+        render::render_scan_header(&mut out, "scan", verbosity);
+        let _ = writeln!(out, "{notice}");
+        return Ok(());
+    }
     let mut store = open_store_for_write(
         root,
         basemind::store::VIEW_WORKING,
@@ -672,13 +700,18 @@ fn cmd_rescan(
 ) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
+    let mut out = render::stdout(no_color);
+    if let Some(notice) = writer_collision_notice(root) {
+        use std::io::Write as _;
+        let _ = writeln!(out, "{notice}");
+        return Ok(());
+    }
     let mut store = open_store_for_write(
         root,
         basemind::store::VIEW_WORKING,
         "rescan",
         LockHolder::Rescan,
     )?;
-    let mut out = render::stdout(no_color);
 
     // `--full` or no paths → full working-tree re-index. Otherwise re-index only the
     // supplied paths incrementally. `scan_paths` resolves paths against `root`, so make

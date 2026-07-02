@@ -300,6 +300,13 @@ pub(super) struct StatusResponse {
     /// unscanned (no-blobs) view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// `true` when a writer (a running `scan`/`rescan`/`watch`) currently holds the store
+    /// lock, so this report was served *without* blocking on the in-progress rebuild. The
+    /// index counts (`file_count`, `languages`) reflect the pre-rebuild state or are omitted;
+    /// `blob_count` is still read fresh from disk. Absent (false) on the common uncontended
+    /// path — status then reflects the fully-committed index.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rebuild_in_progress: bool,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     pub cache_dir: String,

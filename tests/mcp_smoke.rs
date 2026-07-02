@@ -188,6 +188,12 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let file_count = body.get("file_count").and_then(Value::as_u64).unwrap_or(0);
     assert!(file_count >= 2, "scan should have indexed at least 2 files");
+    // On the uncontended path `status` reads the committed index (no rebuild in flight), so the
+    // WS4 `rebuild_in_progress` flag is omitted (skipped when false).
+    assert!(
+        body.get("rebuild_in_progress").is_none(),
+        "rebuild_in_progress must be absent when no writer holds the lock: {body:?}"
+    );
     let langs = body
         .get("languages")
         .and_then(Value::as_object)
