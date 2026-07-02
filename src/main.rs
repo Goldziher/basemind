@@ -78,6 +78,11 @@ enum Cmd {
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(basemind::cli::web::WebCmd),
+    /// Headless agent shells: spawn / send / capture / kill / broadcast / list
+    /// (needs `--features shells`).
+    #[cfg(all(feature = "shells", any(unix, windows)))]
+    #[command(subcommand)]
+    Shells(basemind::cli::shells::ShellsCmd),
     /// Aggregate telemetry into a usage summary.
     Telemetry {
         /// Aggregation window: `today` (default), `1h`, `24h`, `all`.
@@ -306,6 +311,8 @@ fn main() -> Result<()> {
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
         Cmd::Governance(g) => dispatch(basemind::cli::ToolCmd::Governance(g)),
         Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
+        #[cfg(all(feature = "shells", any(unix, windows)))]
+        Cmd::Shells(s) => dispatch(basemind::cli::ToolCmd::Shells(s)),
         Cmd::Telemetry { window, tool } => {
             dispatch(basemind::cli::ToolCmd::Telemetry { window, tool })
         }
@@ -437,6 +444,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
         Cmd::Query(_)
             | Cmd::Git(_)
             | Cmd::Memory(_)
+            | Cmd::Governance(_)
             | Cmd::Web(_)
             | Cmd::Telemetry { .. }
             | Cmd::Cache(_)
@@ -445,6 +453,9 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     // consume the flag too. Feature-gated to match the `Cmd::Comms` definition.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. });
+    // Shell verbs render through `emit`, honoring `--json`. Feature-gated to match `Cmd::Shells`.
+    #[cfg(all(feature = "shells", any(unix, windows)))]
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Shells(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));
 
     if json && !consumes_json {

@@ -104,8 +104,9 @@ pub mod params {
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams,
         DiffFileParams, DiffOutlineParams, FindCallersParams, FindCommitsByPathParams,
         FindReferencesParams, HotFilesParams, ListFilesParams, OutlineParams, RecentChangesParams,
-        RepoInfoParams, RescanParams, SearchDocumentsParams, SearchSymbolsParams, StatusParams,
-        SymbolHistoryParams, TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
+        RepoInfoParams, RescanParams, SearchDocumentsParams, SearchGitHistoryParams,
+        SearchSymbolsParams, StatusParams, SymbolHistoryParams, TelemetrySummaryParams,
+        WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
@@ -119,6 +120,11 @@ pub mod params {
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
         Visibility,
+    };
+    #[cfg(all(feature = "shells", any(unix, windows)))]
+    pub use super::types_shells::{
+        ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams,
+        ShellSendParams, ShellSpawnParams,
     };
 }
 

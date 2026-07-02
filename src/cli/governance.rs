@@ -57,6 +57,25 @@ pub enum GovernanceCmd {
         #[arg(long)]
         reason: Option<String>,
     },
+    /// Audit shared/individual memory records: recompute importance, archive stale entries,
+    /// refresh `verified` verdicts (needs `--features memory`).
+    Audit {
+        /// Audit exactly this one key instead of the whole scope.
+        #[arg(long)]
+        key: Option<String>,
+        /// Memory tier: `individual` (per-agent) instead of the default shared `group`.
+        #[arg(long)]
+        individual: bool,
+        /// Compute verdicts but persist no mutations.
+        #[arg(long)]
+        dry_run: bool,
+        /// Maximum records to audit (default 100, max 1000).
+        #[arg(long)]
+        limit: Option<u32>,
+        /// Also scan the archived/stale `memory_archive` keyspace.
+        #[arg(long)]
+        include_archived: bool,
+    },
 }
 
 pub async fn run(
@@ -105,6 +124,27 @@ pub async fn run(
                 server.proposal_reject(Parameters(p)).await,
             )?;
             emit("proposal_reject", &r, json, out)
+        }
+        GovernanceCmd::Audit {
+            key,
+            individual,
+            dry_run,
+            limit,
+            include_archived,
+        } => {
+            let p = MemoryAuditParams {
+                key,
+                visibility: if individual {
+                    Visibility::Individual
+                } else {
+                    Visibility::Group
+                },
+                dry_run,
+                limit,
+                include_archived,
+            };
+            let r = run_tool("memory_audit", server.memory_audit(Parameters(p)).await)?;
+            emit("memory_audit", &r, json, out)
         }
     }
 }

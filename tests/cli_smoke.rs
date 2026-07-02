@@ -188,6 +188,26 @@ fn git_working_tree_status_is_clean() {
 }
 
 #[test]
+fn git_search_finds_commit_by_author() {
+    let dir = build_and_scan();
+    let root = dir.path();
+    // The fixture's single commit is authored by "t" (see `git()` env). Full-text author search
+    // over the indexed history must return it — the CLI mirror of the `search_git_history` tool.
+    let v = assert_json_fields(
+        root,
+        &["git", "search", "t", "--field", "author"],
+        &["commits"],
+    );
+    let commits = v["commits"].as_array().expect("commits array");
+    assert_eq!(commits.len(), 1, "author search should find the one commit");
+    assert_human_contains(
+        root,
+        &["git", "search", "init", "--field", "message"],
+        "init",
+    );
+}
+
+#[test]
 fn rescan_full_reindexes_new_file() {
     let dir = build_and_scan();
     let root = dir.path();
