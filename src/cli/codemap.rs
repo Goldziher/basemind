@@ -119,6 +119,16 @@ pub enum QueryCmd {
     RepoInfo,
     /// Files whose imports mention the given module (heuristic).
     Dependents { module: String },
+    /// Expand a symbol to its raw source body (the inverse of an outline entry).
+    Expand {
+        /// Repository-relative path of the indexed file.
+        path: String,
+        /// Symbol name (matched exactly, case-sensitive).
+        name: String,
+        /// Kind filter to disambiguate (e.g. `function`, `struct`, `method`).
+        #[arg(long)]
+        kind: Option<String>,
+    },
 }
 
 pub async fn run(
@@ -288,6 +298,15 @@ pub async fn run(
                 server.dependents(Parameters(Lenient(p))).await,
             )?;
             emit("dependents", &r, json, out)
+        }
+        QueryCmd::Expand { path, name, kind } => {
+            let p = ExpandParams {
+                path: resolve_path(server, &path),
+                name,
+                kind,
+            };
+            let r = run_tool("expand", server.expand(Parameters(p)).await)?;
+            emit("expand", &r, json, out)
         }
     }
 }
