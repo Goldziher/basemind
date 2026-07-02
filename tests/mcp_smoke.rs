@@ -321,6 +321,50 @@ async fn mcp_server_exercises_representative_tools() {
         "non-shallow clone should not surface truncated=true"
     );
 
+    // search_git_history: the fixture's commit summaries are "init" and "tweak alpha". Searching
+    // the token "tweak" must find exactly the "tweak alpha" commit — via the fresh index or the
+    // live fallback, both of which search commit summaries. `field=message` scopes to summary+body.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_git_history",
+                json!({ "pattern": "tweak", "field": "message", "limit": 10 }),
+            ))
+            .await
+            .expect("search_git_history"),
+    );
+    let hits = body
+        .get("commits")
+        .and_then(Value::as_array)
+        .expect("commits");
+    assert_eq!(
+        hits.len(),
+        1,
+        "one commit summary contains 'tweak', got {hits:?}"
+    );
+    assert!(
+        hits[0]
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s.contains("tweak")),
+        "hit summary should contain the query token"
+    );
+    // Author-scoped search for a token that is NOT an author token returns nothing.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_git_history",
+                json!({ "pattern": "tweak", "field": "author" }),
+            ))
+            .await
+            .expect("search_git_history author scope"),
+    );
+    assert_eq!(
+        body.get("commits").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "'tweak' is a message token, not an author token"
+    );
+
     // symbol_history on alpha: Stage 5's normalization keeps whitespace-only commits silent.
     // The 'tweak alpha' commit changes a literal so we expect ≥ 1 "modified" entry.
     let body = decode_text(

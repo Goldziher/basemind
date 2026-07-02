@@ -388,6 +388,13 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         call(
             svc,
             &mut records,
+            "search_git_history",
+            json!({ "pattern": "fix", "field": "message", "limit": 20 }),
+        )
+        .await;
+        call(
+            svc,
+            &mut records,
             "hot_files",
             json!({ "window": 200, "top_k": 20 }),
         )
@@ -760,6 +767,19 @@ fn assert_passing(
             }
             // git-history canary: `django/db/models/query.py` has been edited across many releases.
             // ≥ 10 commits is a conservative, churn-stable lower bound (it has hundreds in reality).
+            // search_git_history canary: "fixed" is in a large share of Django commit messages;
+            // ≥ 20 is a very conservative lower bound (limit=100 caps the page, so the hard floor
+            // is really "the page filled well past 20").
+            let search_fixed = repo_record
+                .canaries
+                .get("search_fixed_commits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if search_fixed < 20 {
+                failures.push(format!(
+                    "django canary: search_git_history(\"fixed\", message) returned {search_fixed} commits (expected ≥ 20)"
+                ));
+            }
             let query_commits = repo_record
                 .canaries
                 .get("query_py_commits")
@@ -948,6 +968,27 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                 record
                     .canaries
                     .insert("query_py_commits".into(), json!(hits));
+            }
+            // git-history FTS canary: Django's commit convention is "Fixed #NNNNN -- …", so the
+            // message token "fixed" appears in a huge fraction of commits. Exercises
+            // search_git_history end-to-end (indexed term postings, or the live fallback over the
+            // recent window — both search summaries), a stable high lower bound either way.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "search_git_history",
+                    &json!({ "pattern": "fixed", "field": "message", "limit": 100 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("commits")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record
+                    .canaries
+                    .insert("search_fixed_commits".into(), json!(hits));
             }
             // Governance canary — only populated under `--features memory`; with the feature
             // off, `proposals_mine` returns an MCP error and the canary stays absent (so the
