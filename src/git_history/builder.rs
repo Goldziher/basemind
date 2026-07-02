@@ -97,6 +97,7 @@ fn rebuild(
     let total = chrono.len() as u32;
     let mut interner = PathInterner::new(index, 0);
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
+    let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer();
 
     let written = fold_chunked(
@@ -107,10 +108,14 @@ fn rebuild(
         false,
         &mut interner,
         &mut postings,
+        &mut term_postings,
         &mut writer,
     )?;
     for (path_id, ords) in postings {
         writer.put_posting(path_id, &encoding::encode_ords(&ords))?;
+    }
+    for (term_key, ords) in term_postings {
+        writer.put_term_posting(&term_key, &encoding::encode_ords(&ords))?;
     }
     writer.finish_meta(&head20, &root20, total, interner.next_path_id, written)?;
     Ok(RebuildOutcome::FullRebuild {
@@ -149,6 +154,7 @@ fn append_since(
     let chrono: Vec<&String> = new_newest_first.iter().rev().collect();
     let mut interner = PathInterner::new(index, index.next_path_id());
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
+    let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
     let mut writer = index.writer();
 
     let added = fold_chunked(
@@ -159,10 +165,11 @@ fn append_since(
         true,
         &mut interner,
         &mut postings,
+        &mut term_postings,
         &mut writer,
     )?;
     // New ordinals are all greater than any existing one, so appending keeps each posting list
-    // ascending — read the existing list, extend, re-encode.
+    // ascending — read the existing list, extend, re-encode. Same invariant for the term index.
     for (path_id, new_ords) in postings {
         let mut all = index
             .posting_bytes(path_id)
@@ -170,6 +177,14 @@ fn append_since(
             .unwrap_or_default();
         all.extend(new_ords);
         writer.put_posting(path_id, &encoding::encode_ords(&all))?;
+    }
+    for (term_key, new_ords) in term_postings {
+        let mut all = index
+            .term_posting_bytes(&term_key)
+            .map(|b| encoding::decode_ords(&b))
+            .unwrap_or_default();
+        all.extend(new_ords);
+        writer.put_term_posting(&term_key, &encoding::encode_ords(&all))?;
     }
     let next_ord = start_ord + chrono.len() as u32;
     writer.finish_meta(
@@ -206,6 +221,7 @@ fn fold_chunked(
     dedup: bool,
     interner: &mut PathInterner,
     postings: &mut AHashMap<u32, Vec<u32>>,
+    term_postings: &mut AHashMap<Vec<u8>, Vec<u32>>,
     writer: &mut super::GitHistoryWriter,
 ) -> Result<u32, GitHistoryError> {
     let mut written = 0u32;
@@ -222,6 +238,19 @@ fn fold_chunked(
                 continue; // already indexed (defensive dedup)
             }
             let files = intern_files(interner, postings, ord, &record.files, writer)?;
+            // Full-text search: tokenize identity + message into term postings, and stash the body
+            // in its own partition (only when non-empty) so the head-decode hot path stays lean.
+            super::fts::index_commit_terms(
+                term_postings,
+                ord,
+                &record.author,
+                &record.author_email,
+                &record.summary,
+                &record.body,
+            );
+            if !record.body.is_empty() {
+                writer.put_commit_text(ord, record.body.as_bytes())?;
+            }
             let meta = CommitMeta {
                 sha: record.sha,
                 summary: record.summary,

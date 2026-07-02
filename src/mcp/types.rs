@@ -659,14 +659,15 @@ pub use super::types_documents::SearchDocumentsParams;
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_git::{
     BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
-    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SymbolHistoryParams,
-    WorkingTreeStatusParams,
+    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams,
+    SymbolHistoryParams, WorkingTreeStatusParams,
 };
 pub(super) use super::types_git::{
     BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView,
     CommitsTouchingResponse, DiffFileResponse, DiffOutlineResponse, DiffSymbolView,
-    FindCommitsByPathResponse, HotFileEntry, HotFilesResponse, HunkView, RecentChangesResponse,
-    SymbolHistoryEntry, SymbolHistoryResponse, WorkingTreeStatusView,
+    FindCommitsByPathResponse, GitCommitHit, HotFileEntry, HotFilesResponse, HunkView,
+    RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry, SymbolHistoryResponse,
+    WorkingTreeStatusView,
 };
 pub use super::types_graph::CallGraphParams;
 pub use super::types_impls::FindImplementationsParams;

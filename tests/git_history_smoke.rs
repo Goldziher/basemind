@@ -12,6 +12,7 @@ use std::process::Command;
 use basemind::git::Repo;
 use basemind::git_history::GitHistoryIndex;
 use basemind::git_history::builder::{self, RebuildOutcome};
+use basemind::git_history::fts::FtsScope;
 
 fn run(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -330,6 +331,147 @@ fn bench_rebuild_peak_rss() {
         index.commit_count()
     );
     assert!(index.commit_count() > 0, "rebuilt index has commits");
+}
+
+/// Commit `path=content` authored by a specific name/email, with a subject line and an optional
+/// body (git joins the two `-m` args as `subject\n\nbody`).
+fn commit_authored(
+    root: &Path,
+    path: &str,
+    content: &str,
+    name: &str,
+    email: &str,
+    subject: &str,
+    body: &str,
+) {
+    fs::write(root.join(path), content).unwrap();
+    run(root, &["add", path]);
+    let mut args = vec!["commit", "-q", "-m", subject];
+    if !body.is_empty() {
+        args.push("-m");
+        args.push(body);
+    }
+    let status = Command::new("git")
+        .args(&args)
+        .current_dir(root)
+        .env("GIT_AUTHOR_NAME", name)
+        .env("GIT_AUTHOR_EMAIL", email)
+        .env("GIT_COMMITTER_NAME", name)
+        .env("GIT_COMMITTER_EMAIL", email)
+        .env("GIT_AUTHOR_DATE", "2025-01-01T00:00:00")
+        .env("GIT_COMMITTER_DATE", "2025-01-01T00:00:00")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git commit failed");
+}
+
+fn search_shas(index: &GitHistoryIndex, query: &str, scope: FtsScope) -> Vec<String> {
+    index
+        .search_commits(query, scope, 0, 100)
+        .into_iter()
+        .map(|c| c.sha)
+        .collect()
+}
+
+#[test]
+fn full_text_search_over_author_message_and_body() {
+    let dir = init_repo();
+    let root = dir.path();
+    commit_authored(
+        root,
+        "adder.rs",
+        "fn add() {}\n",
+        "Ada Lovelace",
+        "ada@calc.example",
+        "feat: add adder",
+        "Implements the addition routine.\nCloses #42.",
+    );
+    commit_authored(
+        root,
+        "parser.rs",
+        "fn p() {}\n",
+        "Bjorn Iron",
+        "bjorn@forge.example",
+        "fix: null deref",
+        "Guard against a nil pointer in the parser.",
+    );
+    commit_authored(
+        root,
+        "README.md",
+        "# hi\n",
+        "Ada Lovelace",
+        "ada@calc.example",
+        "docs: readme",
+        "", // summary-only: no body row written
+    );
+
+    let (index, _) = sync(root);
+
+    let all_by_ada = search_shas(&index, "ada", FtsScope::Author);
+    assert_eq!(
+        all_by_ada.len(),
+        2,
+        "two commits authored by Ada, got {all_by_ada:?}"
+    );
+
+    // Author email token matches the author field.
+    assert_eq!(
+        search_shas(&index, "calc", FtsScope::Author).len(),
+        2,
+        "email host token 'calc' matches both of Ada's commits"
+    );
+    // 'ada' is an author token, not a message token → message scope finds nothing.
+    assert!(search_shas(&index, "ada", FtsScope::Message).is_empty());
+
+    // Message/summary search.
+    assert_eq!(search_shas(&index, "adder", FtsScope::All).len(), 1);
+    // Body-only word (not in the summary) proves the body is indexed.
+    let addition = index.search_commits("addition", FtsScope::Message, 0, 10);
+    assert_eq!(
+        addition.len(),
+        1,
+        "body-only term 'addition' finds the feat commit"
+    );
+    assert!(
+        addition[0]
+            .body
+            .contains("Implements the addition routine."),
+        "search result carries the full body, got {:?}",
+        addition[0].body
+    );
+
+    // AND semantics: both terms in one commit's message → match.
+    assert_eq!(
+        search_shas(&index, "null deref", FtsScope::Message).len(),
+        1
+    );
+    // Terms that live in DIFFERENT commits → no single commit satisfies the AND.
+    assert!(
+        search_shas(&index, "adder parser", FtsScope::All).is_empty(),
+        "'adder' (c1) AND 'parser' (c2) share no commit"
+    );
+    // Empty / punctuation-only query → nothing.
+    assert!(search_shas(&index, "   ", FtsScope::All).is_empty());
+    drop(index);
+
+    // Incremental append keeps the term index current.
+    commit_authored(
+        root,
+        "vector.rs",
+        "fn v() {}\n",
+        "Carl Gauss",
+        "carl@sum.example",
+        "perf: vectorize adder",
+        "Faster addition via SIMD.",
+    );
+    let (index, outcome) = sync(root);
+    assert!(matches!(outcome, RebuildOutcome::Incremental { added: 1 }));
+    // 'adder' now appears in two commits (c1 feat + c4 perf), newest-first.
+    assert_eq!(search_shas(&index, "adder", FtsScope::All).len(), 2);
+    // New author is searchable after the incremental append.
+    assert_eq!(search_shas(&index, "gauss", FtsScope::Author).len(), 1);
+    // 'addition' now in c1 body + c4 body.
+    assert_eq!(search_shas(&index, "addition", FtsScope::Message).len(), 2);
 }
 
 #[test]

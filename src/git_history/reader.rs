@@ -58,7 +58,7 @@ impl GitHistoryIndex {
     /// Consumes `meta` by value so the decoded `sha` / `summary` / `author` strings move straight
     /// into the result instead of being cloned (they were just allocated by the decode). `files` is
     /// whatever the decode produced — empty when the value was decoded head-only.
-    fn meta_to_info(&self, meta: CommitMeta, cache: &mut PathCache) -> CommitInfo {
+    pub(crate) fn meta_to_info(&self, meta: CommitMeta, cache: &mut PathCache) -> CommitInfo {
         let short_sha = meta.sha[..7.min(meta.sha.len())].to_string();
         let files = meta
             .files
@@ -75,8 +75,9 @@ impl GitHistoryIndex {
             author: meta.author,
             author_email: meta.author_email,
             author_time_unix: meta.author_time_unix,
-            // Body is not stored in `CommitMeta` (it lives in the `gh_commit_text_by_ord`
-            // partition); reconstructed commits carry an empty body until that read is wired.
+            // Body lives in the `gh_commit_text_by_ord` partition, not `CommitMeta`. The
+            // path/recent/window readers don't need it (parity with the live walk, which also omits
+            // it here), so they leave it empty; `search_commits` fills it from that partition.
             body: String::new(),
             files,
         }

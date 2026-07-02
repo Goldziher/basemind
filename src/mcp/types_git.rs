@@ -13,6 +13,34 @@ use crate::path::RelPath;
 // ─── Parameter shapes ────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SearchGitHistoryParams {
+    #[serde(
+        alias = "query",
+        alias = "needle",
+        alias = "q",
+        alias = "search",
+        alias = "text"
+    )]
+    /// Full-text query over commit history. Tokenized (lowercased, split on non-alphanumeric) and
+    /// matched as an AND — a commit is returned only when EVERY query token is present in the
+    /// scoped field. `"null deref"` requires both `null` and `deref`; `"jane@example.com"` matches
+    /// commits whose author tokenizes to `jane`, `example`, and `com`.
+    pub pattern: String,
+    /// Which field to search: `author` (name + email), `message` (summary + body), or `all`
+    /// (default). `summary` / `body` are accepted as aliases for `message`.
+    #[serde(default)]
+    pub field: Option<String>,
+    /// Max commits to return. Default 20, max 100.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to the repo's
+    /// HEAD sha at mint time; on HEAD movement the response carries `cursor_invalidated: true` and
+    /// the caller must restart.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkingTreeStatusParams {}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -170,6 +198,36 @@ pub(in crate::mcp) struct CommitView {
 pub(in crate::mcp) struct CommitFileView {
     pub path: RelPath,
     pub change: &'static str,
+}
+
+/// A `search_git_history` hit — carries the author email and full commit body (the fields the FTS
+/// index adds over the other git tools' [`CommitView`]).
+#[derive(Debug, Serialize)]
+pub(in crate::mcp) struct GitCommitHit {
+    pub sha: String,
+    pub short_sha: String,
+    pub summary: String,
+    pub author: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub author_email: String,
+    pub author_time_unix: i64,
+    /// Full message body, present only for indexed hits with a non-empty body.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(in crate::mcp) struct SearchGitHistoryResponse {
+    pub commits: Vec<GitCommitHit>,
+    /// `true` when served from the bounded live-walk fallback (the git-history index wasn't fresh),
+    /// so results cover only the recent window and may omit body/email matches. Rescan to get the
+    /// full indexed search.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
 }
 
 #[derive(Debug, Serialize)]

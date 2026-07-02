@@ -43,6 +43,18 @@ pub fn path_id_by_path_key(rel: &RelPath) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// `gh_term_to_ords` key: `field:u8 ‖ term_bytes`. The full search-index posting for one
+/// `(field, term)` pair is a point lookup (never a prefix scan), so the term needs no length
+/// prefix — the leading field byte plus the exact term bytes fully identify the key. The field
+/// byte lets an author-scoped vs message-scoped query hit disjoint keys while a combined query
+/// unions both. Terms come pre-capped by the tokenizer, so there is no ceiling check here.
+pub fn term_key(field: u8, term: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + term.len());
+    out.push(field);
+    out.extend_from_slice(term);
+    out
+}
+
 /// Decode a 40-char hex sha into 20 raw bytes (the `gh_ord_by_sha` key form). `None` on malformed
 /// input — callers treat that as "not indexable", never panic.
 pub fn sha_hex_to_raw(hex40: &str) -> Option<[u8; 20]> {
@@ -122,6 +134,17 @@ mod tests {
             !foobar.starts_with(&foo),
             "length-prefix prevents prefix spill"
         );
+    }
+
+    #[test]
+    fn term_key_disjoint_by_field_and_term() {
+        // Same term under different fields → distinct keys (author vs message scope never collide).
+        assert_ne!(term_key(0, b"fix"), term_key(1, b"fix"));
+        // Distinct terms under the same field → distinct keys.
+        assert_ne!(term_key(1, b"fix"), term_key(1, b"fixture"));
+        // The field byte leads, so an author-field key never equals a message-field key.
+        assert_eq!(term_key(0, b"jane")[0], 0);
+        assert_eq!(term_key(1, b"jane")[0], 1);
     }
 
     #[test]

@@ -16,6 +16,35 @@ use super::types::*;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_git")]
 impl BasemindServer {
+    /// Full-text search over commit history (author / message / body).
+    #[tool(
+        description = "Full-text search over git history — author name + email, commit summary, \
+                       and full message body. Tokenized AND match (lowercased, split on \
+                       non-alphanumeric): every query token must be present. `field` scopes to \
+                       `author`, `message`, or `all` (default; `summary`/`body` alias `message`). \
+                       `limit` is page size (default 20, max 100); `cursor` pages results \
+                       (invalidated when HEAD moves). Uses the git-history index when fresh \
+                       (searches the full body); otherwise a bounded live fallback over the recent \
+                       window, flagged `partial` (author + summary only, no body).",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn search_git_history(
+        &self,
+        Parameters(params): Parameters<SearchGitHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result = super::helpers_git::run_search_git_history(&self.state, params);
+        record_call(
+            &self.state,
+            "search_git_history",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
     /// `git status --porcelain` shape for an agent.
     #[tool(
         description = "What's dirty in the working tree: staged adds/modifies/deletes, working-tree \
