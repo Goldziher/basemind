@@ -81,10 +81,13 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "On-disk size + blob accounting for the `.basemind/` cache: recursive byte \
-            sizes per component (blobs / views / lance / git-cache / telemetry), total blob-file \
-            count, orphaned-blob count (unreferenced, reclaimable via `cache_gc`), and per-view \
-            indexed file counts. Read-only; safe anytime.",
+        description = "Resource footprint of basemind: on-disk size + blob accounting + process \
+            RAM. Reports recursive byte sizes per component (blobs / views / lance / git-cache / \
+            telemetry / git-history), the ground-truth `total_bytes` for the whole `.basemind/` \
+            tree (matches `du`) with the unattributed remainder in `other_bytes`, total blob-file \
+            count, orphaned-blob count (unreferenced, reclaimable via `cache_gc`), per-view indexed \
+            file counts, and the serving process's current + peak RSS (`rss_bytes` / \
+            `peak_rss_bytes`). Read-only; safe anytime.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn cache_stats(

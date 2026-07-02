@@ -522,11 +522,32 @@ fn cache_stats_reports_blob_accounting() {
     let v = assert_json_fields(
         root,
         &["cache", "stats"],
-        &["blobs_bytes", "blob_count", "orphan_blob_count"],
+        &[
+            "blobs_bytes",
+            "blob_count",
+            "orphan_blob_count",
+            "git_history_bytes",
+            "total_bytes",
+            "other_bytes",
+        ],
     );
     assert!(
         v["blob_count"].as_u64().unwrap() >= 2,
         "at least one blob per file"
+    );
+    // The CLI shares `store_gc::cache_stats` with the MCP tool, so it reports the same
+    // reconciling total (components + other == total) that the MCP smoke test asserts.
+    let u = |k: &str| v[k].as_u64().unwrap_or_default();
+    let component_sum = u("blobs_bytes")
+        + u("views_bytes")
+        + u("lance_bytes")
+        + u("git_cache_bytes")
+        + u("telemetry_bytes")
+        + u("git_history_bytes");
+    assert_eq!(
+        u("total_bytes"),
+        component_sum + u("other_bytes"),
+        "total_bytes must reconcile to components + other"
     );
     assert_human_contains(root, &["cache", "stats"], "blob_count");
 }

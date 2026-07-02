@@ -156,6 +156,10 @@ hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
 lancedb = { version = "0.30", optional = true }
+# Process RSS / peak-RSS reporting (src/sysres.rs): non-deprecated `getrusage` (peak) on all Unix
+# and `/proc/self/statm` (current, Linux). macOS current RSS uses the `mach2` crate below. Windows
+# falls back to `None`.
+libc = "0.2"
 lru = "0.18.0"
 memchr = "2"
 notify = "8"
@@ -190,6 +194,11 @@ tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.12.0"
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "=1.0.0-rc.1", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+
+# macOS current-RSS reader (src/sysres.rs) via mach `task_info`. `mach2` is the maintained
+# replacement for libc's deprecated mach bindings; scoped to macOS so no other target pulls it.
+[target.'cfg(target_os = "macos")'.dependencies]
+mach2 = "0.6"
 
 [dev-dependencies]
 # Criterion microbenchmark harness for the v0.9.0 performance cycle. `html_reports`

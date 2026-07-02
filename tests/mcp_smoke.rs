@@ -1656,6 +1656,41 @@ async fn mcp_server_exercises_representative_tools() {
         "the working view should be listed: {body}"
     );
 
+    // 0.16 resource-footprint fields: the ground-truth total must reconcile exactly to the sum of
+    // the named components plus the unattributed remainder (so no directory can go uncounted), and
+    // the git-history index (`git-history.fjall/`) — omitted before 0.16 — is now part of it.
+    let u = |k: &str| body.get(k).and_then(Value::as_u64).unwrap_or_default();
+    let total = u("total_bytes");
+    let component_sum = u("blobs_bytes")
+        + u("views_bytes")
+        + u("lance_bytes")
+        + u("git_cache_bytes")
+        + u("telemetry_bytes")
+        + u("git_history_bytes");
+    assert_eq!(
+        total,
+        component_sum + u("other_bytes"),
+        "total_bytes must reconcile to components + other: {body}"
+    );
+    assert!(
+        total >= component_sum,
+        "total_bytes must be at least the component sum: {body}"
+    );
+    assert!(
+        body.get("git_history_bytes")
+            .and_then(Value::as_u64)
+            .is_some(),
+        "git_history_bytes field must be present: {body}"
+    );
+    // RSS is best-effort per platform; when present it must be a positive number (the MCP server
+    // process is alive while answering).
+    if let Some(rss) = body.get("rss_bytes").and_then(Value::as_u64) {
+        assert!(
+            rss > 0,
+            "rss_bytes, when reported, is the live server RSS: {body}"
+        );
+    }
+
     // cache_gc: nothing is orphaned right after a scan, so removed == 0 and bytes_freed == 0.
     let body = decode_text(
         &service

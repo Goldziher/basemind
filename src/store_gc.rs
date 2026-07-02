@@ -142,12 +142,33 @@ pub struct CacheStats {
     pub git_cache_bytes: u64,
     /// Byte size of `telemetry.jsonl`.
     pub telemetry_bytes: u64,
+    /// Recursive byte size of the precomputed git-history index (`git-history.fjall/`). Added in
+    /// 0.16: before that this directory (a sibling of `views/`, often hundreds of MB on a
+    /// deep-history repo) was omitted, so the reported total undercounted `du` — the bug this
+    /// field fixes.
+    pub git_history_bytes: u64,
+    /// Recursive byte size of the **entire** `.basemind/` tree. This is the ground-truth total
+    /// (it matches `du`); the per-component fields are a breakdown of it, and any bytes not
+    /// attributed to a named component land in [`Self::other_bytes`]. Computed from the whole
+    /// tree so a future uncounted directory can never silently shrink the reported footprint.
+    pub total_bytes: u64,
+    /// Bytes under `.basemind/` not attributed to any named component (`total_bytes` minus the
+    /// sum of the component fields): the legacy top-level `index.msgpack`, lock/id/config
+    /// sidecars, `.gitignore`, and anything a future version adds before it gets its own field.
+    pub other_bytes: u64,
     /// Total blob files on disk (every suffix counts as one file).
     pub blob_count: usize,
     /// Blob files whose hex stem is referenced by no view — reclaimable by [`run_gc`].
     pub orphan_blob_count: usize,
     /// Per-view indexed file count, keyed by view name. Empty entries are still listed.
     pub per_view_file_count: Vec<(String, usize)>,
+    /// Current resident set size (physical RAM) of the process answering this call, in bytes.
+    /// `None` when unreadable on this platform. Inside `basemind serve` this is the live MCP
+    /// server; from the one-shot CLI it is that transient process. See [`crate::sysres`].
+    pub rss_bytes: Option<u64>,
+    /// Peak resident set size of the reporting process over its lifetime, in bytes; `None` when
+    /// unreadable. See [`crate::sysres`].
+    pub peak_rss_bytes: Option<u64>,
 }
 
 /// Enumerate every view's `index.msgpack` and union the hex content hashes it references.
@@ -355,15 +376,40 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
         }
     }
 
+    let blobs_bytes = dir_size(&blobs_dir)?;
+    let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
+    let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
+    let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
+    let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
+    let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
+
+    // Ground-truth footprint: size the whole tree, then derive `other` as the remainder so the
+    // breakdown always reconciles to the total and no directory can go uncounted.
+    let total_bytes = dir_size(basemind_dir)?;
+    let accounted = blobs_bytes
+        + views_bytes
+        + lance_bytes
+        + git_cache_bytes
+        + telemetry_bytes
+        + git_history_bytes;
+    let other_bytes = total_bytes.saturating_sub(accounted);
+
+    let rss = crate::sysres::sample();
+
     Ok(CacheStats {
-        blobs_bytes: dir_size(&blobs_dir)?,
-        views_bytes: dir_size(&basemind_dir.join(VIEWS_DIR))?,
-        lance_bytes: dir_size(&basemind_dir.join("lance"))?,
-        git_cache_bytes: dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
-        telemetry_bytes: file_size(&basemind_dir.join(TELEMETRY_FILENAME))?,
+        blobs_bytes,
+        views_bytes,
+        lance_bytes,
+        git_cache_bytes,
+        telemetry_bytes,
+        git_history_bytes,
+        total_bytes,
+        other_bytes,
         blob_count,
         orphan_blob_count,
         per_view_file_count: per_view_file_count(basemind_dir)?,
+        rss_bytes: rss.current_bytes,
+        peak_rss_bytes: rss.peak_bytes,
     })
 }
 
@@ -450,26 +496,48 @@ fn read_dir(dir: &Path) -> Result<std::fs::ReadDir, GcError> {
     })
 }
 
-/// Byte size of a single file, or `0` if it is absent.
+/// On-disk (allocated) size of a filesystem entry, matching what `du` reports.
+///
+/// Uses the allocated block count (`blocks × 512`) on Unix rather than the apparent length
+/// (`metadata().len()`). This matters because Fjall keeps **sparse** journal files: their apparent
+/// length can be tens of MB while only a few hundred KB of blocks are actually allocated. Summing
+/// apparent lengths over-reported the footprint many-fold (e.g. a 9.6 MB `.basemind/` read as
+/// ~132 MB); block size is the ground truth that reconciles to `du`. On non-Unix we fall back to
+/// the apparent length (no portable block API).
+#[cfg(unix)]
+fn on_disk_size(meta: &std::fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    meta.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn on_disk_size(meta: &std::fs::Metadata) -> u64 {
+    meta.len()
+}
+
+/// On-disk size of a single file, or `0` if it is absent.
 fn file_size(path: &Path) -> Result<u64, GcError> {
     if !path.exists() {
         return Ok(0);
     }
-    Ok(std::fs::metadata(path)
-        .map_err(|source| GcError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .len())
+    let meta = std::fs::symlink_metadata(path).map_err(|source| GcError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(on_disk_size(&meta))
 }
 
-/// Recursive byte size of a directory tree. Returns `0` for a missing directory; follows no
-/// symlinks (counts the link entry's own size only, like `du` without `-L`).
+/// Recursive on-disk size of a directory tree, matching `du`: counts the allocated blocks of every
+/// entry — the directory's own inode blocks included — via [`on_disk_size`]. Returns `0` for a
+/// missing directory; follows no symlinks (counts the link entry itself, like `du` without `-L`).
 fn dir_size(dir: &Path) -> Result<u64, GcError> {
     if !dir.exists() {
         return Ok(0);
     }
-    let mut total = 0u64;
+    // The directory's own allocation (`du` counts it too).
+    let mut total = std::fs::symlink_metadata(dir)
+        .map(|m| on_disk_size(&m))
+        .unwrap_or(0);
     for entry in read_dir(dir)? {
         let entry = entry.map_err(|source| GcError::Io {
             path: dir.to_path_buf(),
@@ -481,9 +549,10 @@ fn dir_size(dir: &Path) -> Result<u64, GcError> {
             source,
         })?;
         if meta.is_dir() {
+            // Recursion counts the subdirectory's own blocks + its contents.
             total += dir_size(&path)?;
         } else {
-            total += meta.len();
+            total += on_disk_size(&meta);
         }
     }
     Ok(total)
@@ -553,6 +622,57 @@ mod tests {
             orphan_stem,
             orphan_len,
         }
+    }
+
+    #[test]
+    fn cache_stats_counts_git_history_and_reconciles_total() {
+        // Regression for the 0.15 disk-undercount bug: `git-history.fjall/` (a sibling of
+        // `views/`) was never summed, so the reported total fell short of `du`. Assert it is now
+        // counted and that the breakdown reconciles exactly to the whole-tree total.
+        let fx = build_fixture();
+
+        // A git-history index directory with a known payload …
+        let gh_dir = fx.basemind_dir.join(crate::git_history::GIT_HISTORY_DIR);
+        fs::create_dir_all(&gh_dir).expect("mk git-history");
+        let gh_payload = b"git-history-index-bytes-XXXXXXXX";
+        fs::write(gh_dir.join("commits.fjall"), gh_payload).expect("write gh blob");
+
+        // … and a stray top-level file that belongs to no named component (→ `other_bytes`).
+        let stray = b"lockmeta";
+        fs::write(fx.basemind_dir.join(".lock.meta"), stray).expect("write stray");
+
+        let stats = cache_stats(&fx.basemind_dir).expect("cache_stats");
+
+        // Block-rounded (allocated) sizing, so assert coverage rather than exact byte counts: the
+        // git-history directory is now counted (was silently omitted before 0.16).
+        assert!(
+            stats.git_history_bytes >= gh_payload.len() as u64,
+            "git-history.fjall/ must be counted (got {})",
+            stats.git_history_bytes
+        );
+        assert!(
+            stats.other_bytes >= stray.len() as u64,
+            "the unattributed stray file lands in other_bytes (got {})",
+            stats.other_bytes
+        );
+
+        // The whole-tree total is ground truth, and the breakdown reconciles to it exactly.
+        assert_eq!(
+            stats.total_bytes,
+            dir_size(&fx.basemind_dir).expect("dir_size"),
+            "total_bytes is the whole .basemind/ tree"
+        );
+        let component_sum = stats.blobs_bytes
+            + stats.views_bytes
+            + stats.lance_bytes
+            + stats.git_cache_bytes
+            + stats.telemetry_bytes
+            + stats.git_history_bytes;
+        assert_eq!(
+            stats.total_bytes,
+            component_sum + stats.other_bytes,
+            "components + other must reconcile to total"
+        );
     }
 
     #[test]
