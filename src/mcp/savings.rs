@@ -263,9 +263,14 @@ mod tests {
 
     #[test]
     fn grep_savings_scale_with_response_not_corpus() {
-        // Larger hit payload → larger savings, holding corpus fixed.
-        let small = estimate_from_text("search_symbols", 1_000_000, &"a".repeat(400));
-        let large = estimate_from_text("search_symbols", 1_000_000, &"a".repeat(4_000));
+        // Larger hit payload → larger savings, holding corpus fixed. Use space-separated words
+        // (not one long run of a single char): under the `documents` feature `count_tokens` uses a
+        // real tokenizer that falls back to a *word* estimate when the model isn't available (e.g.
+        // offline CI), and a single 4_000-char run of `a` is still one "word" — indistinguishable
+        // from the 400-char one, which would break this scaling check. `"word "` (5 bytes) keeps the
+        // 400/4_000 byte totals exact for the heuristic assertion below while scaling word counts.
+        let small = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(80));
+        let large = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(800));
         assert!(
             large.est_tokens_saved > small.est_tokens_saved,
             "bigger response must yield bigger savings: {} !> {}",
