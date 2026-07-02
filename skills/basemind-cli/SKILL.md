@@ -54,7 +54,7 @@ command covers the question.
 | "What changed recently?" | `basemind git recent-changes [--limit N]` | Recent commits with paths. |
 | "When did symbol X last change?" | `basemind git symbol-history path name` | Cross-commit structural hash. |
 | "Who wrote this line / symbol?" | `basemind git blame-file path` / `blame-symbol path name` | Per-line / per-symbol. |
-| "Where's the churn?" | `basemind git hot-files [--limit N]` | Churn-ranked files. |
+| "Where's the churn?" | `basemind git hot-files [--window N --top-k K]` | Churn-ranked files. |
 | "What's dirty in the working tree?" | `basemind git working-tree-status` | Staged/unstaged summary. |
 | "Diff a file between revs?" | `basemind git diff-file path old new` / `diff-outline path` | File / outline diffs. |
 | "What's indexed?" | `basemind query status` | File count, languages, cache dir. |
@@ -69,7 +69,7 @@ command covers the question.
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
-| "Keep index fresh?" | `basemind watch [--no-serve]` | Live re-index. `--no-serve` = no MPC server. |
+| "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
 | "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
 | "Per-tool activity summary?" | `basemind telemetry` | Histogram + estimated tokens saved. |
 

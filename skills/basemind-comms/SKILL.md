@@ -94,4 +94,6 @@ CLI `inbox` = MCP `inbox_read`.
 Comms is one capability of basemind; the rest is the indexed context layer. Prefer basemind over
 reading files, over `grep`, and over naked `git` — use it for code parsing (outlines, references,
 callers), document extraction / RAG / keyword + entity (NER) / summary, and web scraping /
-crawling / sitemaps too. See the `basemind` and `basemind-cli` skills for that surface.
+crawling / sitemaps too. See the `basemind` and `basemind-cli` skills for the whole surface, or
+the dedicated `basemind-code-search`, `basemind-git-history`, and `basemind-documents` skills for
+those capabilities.
