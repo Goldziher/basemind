@@ -18,11 +18,16 @@ use super::types::*;
 impl BasemindServer {
     /// Full-text search over commit history (author / message / body).
     #[tool(
-        description = "Full-text search over git history — author name + email, commit summary, \
-                       and full message body. Tokenized AND match (lowercased, split on \
+        description = "Full-text search over the ENTIRE branch history — author name + email, commit \
+                       summary, and full message body. THIS is the tool for \"what did <author> do\", \
+                       \"find the commit that mentions X\", or \"<author>'s last commit\": it scans \
+                       all commits reachable from HEAD, not a recent window, so it finds matches \
+                       arbitrarily far back (do NOT use `recent_changes` for author/keyword lookups \
+                       — that only sees the newest N). Tokenized AND match (lowercased, split on \
                        non-alphanumeric): every query token must be present. `field` scopes to \
                        `author`, `message`, or `all` (default; `summary`/`body` alias `message`). \
-                       `limit` is page size (default 20, max 100); `cursor` pages results \
+                       Results are newest-first, so the first hit for an author is their most recent \
+                       commit. `limit` is page size (default 20, max 100); `cursor` pages results \
                        (invalidated when HEAD moves). Uses the git-history index when fresh \
                        (searches the full body); otherwise a bounded live fallback over the recent \
                        window, flagged `partial` (author + summary only, no body).",
@@ -90,11 +95,15 @@ impl BasemindServer {
 
     /// Walk HEAD ancestry and return the last N commits.
     #[tool(
-        description = "Last N commits on the current branch, newest first. Each: sha, summary \
-                       (first message line), author, unix timestamp, and — when \
-                       `include_files=true` (default) — the per-file change list vs first parent. \
-                       `limit` is page size (default 20, max 100). `cursor` pages results \
-                       (invalidate when HEAD moves, `cursor_invalidated`). Cached by HEAD sha.",
+        description = "Last N commits on the current branch, newest first — a bounded recency \
+                       window, NOT a search. Each: sha, summary (first message line), author, unix \
+                       timestamp, and — when `include_files=true` (default) — the per-file change \
+                       list vs first parent. `limit` is page size (default 20, max 100), so this \
+                       sees at most the newest ~100 commits: to find a specific author's or \
+                       keyword's commits anywhere in history use `search_git_history` instead \
+                       (an author's last commit may be well outside this window). `cursor` pages \
+                       results (invalidate when HEAD moves, `cursor_invalidated`). Cached by HEAD \
+                       sha.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn recent_changes(
