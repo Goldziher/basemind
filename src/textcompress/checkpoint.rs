@@ -41,7 +41,7 @@ const MAX_FILES: usize = 200;
 /// working-tree change list injected by the caller. The `*_truncated` flags are
 /// set when a list exceeded its cap, so a consumer never mistakes a capped list
 /// for a complete one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct Checkpoint {
     /// Lines that record a decision (see the decision marker set).
     pub decisions: Vec<String>,

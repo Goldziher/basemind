@@ -51,7 +51,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web_scrape` · `web_crawl` · `web_map` |
 | **Agent comms** | A shared chat for agents on the same repo: per-repo rooms they auto-join, direct messages, and a recency-filtered inbox. One orchestrator can drive many named subagents (`as_agent`). | `room_post` · `dm_send` · `inbox_read` · `agent_list` |
 | **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
-| **Token saving** | Hand an agent a file's outline instead of its full text, then pull back only the one function it needs. | `compress` · `expand` |
+| **Token saving** | Hand an agent a file's outline instead of its full text, pull back only the one function it needs, diff a re-read instead of resending it whole, checkpoint a session, and flag wasteful tool use. | `compress` · `expand` · `delta` · `checkpoint` · `detect_waste` |
 | **Admin** | Refresh the index, see what's been queried, and check or clean up the on-disk cache. | `rescan` · `telemetry_summary` · `cache_stats` |
 
 <!-- markdownlint-enable MD013 -->

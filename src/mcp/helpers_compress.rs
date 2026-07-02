@@ -33,7 +33,10 @@ use rmcp::ErrorData as McpError;
 use super::ServerState;
 use super::helpers::{json_result, kind_to_str, parse_kind};
 use super::tokens;
-use super::types_compress::{CompressParams, CompressResponse, ExpandParams, ExpandResponse};
+use super::types_compress::{
+    CheckpointParams, CompressParams, CompressResponse, DeltaParams, DetectWasteParams,
+    ExpandParams, ExpandResponse,
+};
 use crate::query;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -383,6 +386,69 @@ fn run_prose(
     };
 
     json_result(&response)
+}
+
+// ─── delta ───────────────────────────────────────────────────────────────────
+
+/// Compute a compact line-diff from `params.old` to `params.new` via the stateless
+/// `textcompress::delta` primitive and return the [`crate::textcompress::delta::DeltaOutcome`]
+/// verbatim.
+pub(super) async fn run_delta(
+    _state: &ServerState,
+    params: DeltaParams,
+) -> Result<rmcp::model::CallToolResult, McpError> {
+    let outcome = crate::textcompress::delta::delta(&params.old, &params.new);
+    json_result(&outcome)
+}
+
+// ─── checkpoint ──────────────────────────────────────────────────────────────
+
+/// List the working-tree change set (staged + modified + untracked) for this server's repo,
+/// mirroring `textcompress::cli::changed_files`. Fail-open: no repo, or any git error, yields
+/// an empty list — a checkpoint must never fail just because the working tree is unreadable.
+fn changed_files(state: &ServerState) -> Vec<String> {
+    let Some(repo) = state.repo.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(status) = repo.status_porcelain() else {
+        return Vec::new();
+    };
+    status
+        .staged_added
+        .iter()
+        .chain(&status.staged_modified)
+        .chain(&status.staged_deleted)
+        .chain(&status.modified)
+        .chain(&status.untracked)
+        .map(|p| p.to_string())
+        .collect()
+}
+
+/// Extract a credential-safe [`crate::textcompress::checkpoint::Checkpoint`] from session
+/// `params.text`. `files_changed` is fetched from this repo's git working tree (never scraped
+/// from `text`); see [`changed_files`] for the fail-open contract.
+pub(super) async fn run_checkpoint(
+    state: &ServerState,
+    params: CheckpointParams,
+) -> Result<rmcp::model::CallToolResult, McpError> {
+    let files_changed = changed_files(state);
+    let checkpoint =
+        crate::textcompress::checkpoint::extract_checkpoint(&params.text, files_changed);
+    json_result(&checkpoint)
+}
+
+// ─── detect_waste ────────────────────────────────────────────────────────────
+
+/// Parse `params.log` as JSON-Lines tool calls (leniently — malformed or `tool`-less lines are
+/// skipped) and run the pure `textcompress::waste::detect_waste` analysis, returning the
+/// [`crate::textcompress::waste::WasteReport`] verbatim.
+pub(super) async fn run_detect_waste(
+    _state: &ServerState,
+    params: DetectWasteParams,
+) -> Result<rmcp::model::CallToolResult, McpError> {
+    let calls = crate::textcompress::waste::parse_calls(&params.log);
+    let report = crate::textcompress::waste::detect_waste(&calls);
+    json_result(&report)
 }
 
 // ─── Unit tests ──────────────────────────────────────────────────────────────
