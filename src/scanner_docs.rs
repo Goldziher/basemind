@@ -261,6 +261,30 @@ pub(crate) fn flush_document_batches(
     inserted
 }
 
+/// Choose the LanceDB scope for a document. Repo files keep the scan-wide `default_scope`;
+/// external-root files (absolute key, see [`crate::path::RelPath::is_external`]) are scoped
+/// `path:<extra_root>` so they group under the out-of-repo tree they came from rather than the
+/// repository's own doc scope. Retrieval is unaffected — `search_documents` has no scope filter —
+/// so this only partitions storage.
+pub(crate) fn doc_scope_for<'a>(
+    rel: &str,
+    default_scope: &'a str,
+    config: &crate::config::Config,
+) -> std::borrow::Cow<'a, str> {
+    if !rel.starts_with('/') {
+        return std::borrow::Cow::Borrowed(default_scope);
+    }
+    for raw_root in &config.scan.extra_roots {
+        if let Ok(canonical) = raw_root.canonicalize()
+            && let Some(prefix) = canonical.to_str()
+            && rel.starts_with(prefix)
+        {
+            return std::borrow::Cow::Owned(format!("path:{prefix}"));
+        }
+    }
+    std::borrow::Cow::Owned(format!("path:{rel}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

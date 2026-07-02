@@ -814,6 +814,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
+            super::helpers_git::reject_external_path(&params.path)?;
             let suspect_sha = match params.rev.as_deref() {
                 Some(r) => repo.resolve_rev(r).map_err(|e| {
                     McpError::invalid_params(format!("resolve_rev({r}): {e}"), None)
@@ -896,6 +897,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
+            super::helpers_git::reject_external_path(&params.path)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let cache = self.state.cache.load_full();
             let l1 = cache.by_path.get(&params.path).ok_or_else(|| {

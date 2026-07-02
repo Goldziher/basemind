@@ -13,6 +13,23 @@ use super::helpers::{
 use super::types::{GitCommitHit, SearchGitHistoryParams, SearchGitHistoryResponse};
 use crate::git::CommitInfo;
 use crate::git_history::fts::{self, FtsScope};
+use crate::path::RelPath;
+
+/// Reject a path that lives outside the repository (a `scan.extra_roots` file, keyed by its
+/// absolute path). Such files are indexed for the code map but are not tracked by git, so blame
+/// has nothing to resolve against — return a clear error instead of an opaque gix failure.
+pub(super) fn reject_external_path(path: &RelPath) -> Result<(), McpError> {
+    if path.is_external() {
+        return Err(McpError::invalid_params(
+            format!(
+                "path is outside the git repository (indexed via scan.extra_roots); \
+                 blame is unavailable for external files: {path}"
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
 
 /// Full-text search over git history. Uses the git-history inverted index when it is fresh
 /// (`last_indexed_head == HEAD`), searching author name + email + summary + full body; otherwise

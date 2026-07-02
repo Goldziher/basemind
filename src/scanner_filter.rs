@@ -87,14 +87,81 @@ fn compile_globs(patterns: &[String]) -> Result<globset::GlobSet, ScanError> {
 /// Single source of truth for the `ignore` crate's walk configuration. Both the full-scan
 /// `walk_candidates` and the incremental `IndexFilter` build their walkers here so the gitignore /
 /// git-exclude / hidden semantics stay identical between a full scan and a watcher batch.
-pub(crate) fn ignore_walk_builder(dir: &Path, respect_gitignore: bool) -> WalkBuilder {
+pub(crate) fn ignore_walk_builder(
+    dir: &Path,
+    respect_gitignore: bool,
+    follow_links: bool,
+) -> WalkBuilder {
     let mut b = WalkBuilder::new(dir);
     b.standard_filters(respect_gitignore)
-        .follow_links(false)
+        .follow_links(follow_links)
         .git_ignore(respect_gitignore)
         .git_exclude(respect_gitignore)
         .hidden(false);
     b
+}
+
+/// Walk each configured `scan.extra_roots` directory and append its files to `out`, keyed by
+/// **absolute** path (see `RelPath::is_external`). Extra roots live outside the repo, so there is
+/// no `strip_prefix(root)` — the absolute path *is* the index key, which never collides with the
+/// repo's relative keys. Symlinks are followed (Bazel `external/` is symlink-heavy). Missing or
+/// unreadable roots are skipped with a warning; a root inside the repo is skipped because the
+/// primary walk already covers it.
+pub(crate) fn walk_extra_roots(
+    root: &Path,
+    config: &Config,
+    filters: &Filters,
+    out: &mut Vec<String>,
+) {
+    if config.scan.extra_roots.is_empty() {
+        return;
+    }
+    let repo_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let start = out.len();
+    for raw_root in &config.scan.extra_roots {
+        let extra = match raw_root.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(root = %raw_root.display(), error = %e, "extra_root skipped: cannot access");
+                continue;
+            }
+        };
+        if !extra.is_dir() {
+            tracing::warn!(root = %extra.display(), "extra_root skipped: not a directory");
+            continue;
+        }
+        if extra.starts_with(&repo_root) {
+            tracing::warn!(root = %extra.display(), "extra_root skipped: inside the repository root (already indexed)");
+            continue;
+        }
+        for dent in ignore_walk_builder(&extra, config.scan.respect_gitignore, true)
+            .build()
+            .flatten()
+        {
+            if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            let Some(abs_str) = dent.path().to_str() else {
+                continue;
+            };
+            #[cfg(windows)]
+            let abs_owned = abs_str.replace('\\', "/");
+            #[cfg(windows)]
+            let abs_str = abs_owned.as_str();
+            if !filters.allows(abs_str) {
+                continue;
+            }
+            out.push(abs_str.to_string());
+        }
+    }
+    // Extra roots can overlap (nested config entries); dedup only the appended tail so the
+    // repo walk's hot path is untouched when `extra_roots` is empty.
+    if out.len() > start {
+        out[start..].sort_unstable();
+        let mut seen_tail = out.split_off(start);
+        seen_tail.dedup();
+        out.extend(seen_tail);
+    }
 }
 
 /// Indexability oracle for the **incremental** path (watcher + `scan_paths`), matching what a full
@@ -204,7 +271,7 @@ impl IndexFilter {
 /// the caller can compose the hierarchy; `max_depth(1)` lists children without descending.
 fn shallow_allowed_children(dir: &Path, respect_gitignore: bool) -> AHashSet<PathBuf> {
     let mut set = AHashSet::new();
-    let walker = ignore_walk_builder(dir, respect_gitignore)
+    let walker = ignore_walk_builder(dir, respect_gitignore, false)
         .parents(false)
         .max_depth(Some(1))
         .build();

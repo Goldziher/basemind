@@ -46,6 +46,12 @@ Finding the binary (in order of preference):
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
   CLI `scan` will fail with a lock error. Use the `rescan` MCP tool (it re-indexes in-process)
   instead, or stop the server first.
+- **Indexing directories outside the repo** — set `scan.extra_roots` in `.basemind/basemind.toml`
+  to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
+  Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and
+  are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
+  don't apply to external files; the code map (symbols / references / outlines) and document search
+  do.
 - After a successful scan, both the MCP tools and `basemind query …` have a fresh index.
 - The CLI shares the exact same `.basemind/` index as the MCP server — see the `basemind-cli`
   skill for the full query surface, or `basemind-code-search` / `basemind-git-history` /
