@@ -474,9 +474,10 @@ variables in the obvious way: `--llm-api-key` becomes `BASEMIND_LLM_API_KEY`.
 ## CLI reference
 
 <details>
-<summary><strong>Full command list</strong> — query · git · memory · suggestions · cache · web · comms</summary>
+<summary><strong>Full command list</strong> — query · git · memory · suggestions · cache · web · comms · shells</summary>
 
-CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
+CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for
+machine-readable output.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -495,6 +496,7 @@ CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 | `list-files [--path-contains --language]` | List indexed files. |
 | `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
 | `dependents <module>` | What imports a given module. |
+| `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
 
 **Git (`basemind git`)**
 
@@ -502,6 +504,7 @@ CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 |---|---|
 | `working-tree-status` | What's staged and unstaged right now. |
 | `recent-changes [--limit]` | Recent commits with their files. |
+| `search <pattern> [--field author\|message\|all] [--limit]` | Full-text search over commit history at full branch depth. |
 | `commits-touching <path>` / `find-commits-by-path <pattern>` | Commits for a path or pattern. |
 | `hot-files [--limit]` | The most frequently changed files. |
 | `diff-file <path> <old> <new>` / `diff-outline <path> [--rev]` | File or structure diff across commits. |
@@ -524,12 +527,13 @@ CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 | `mine [--commits --min-count --min-confidence --max-files]` | Suggest notes from files that change together. |
 | `proposals [--kind --limit]` | List pending suggestions. |
 | `accept <id> [--key]` / `reject <id> [--reason]` | Keep a suggestion / dismiss it for good. |
+| `audit [--key --individual --dry-run --include-archived]` | Recompute memory importance, archive stale entries, refresh verdicts. |
 
 **Cache (`basemind cache`)**
 
 | Command | Purpose |
 |---|---|
-| `stats` | How much space the cache uses. |
+| `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
 | `gc` | Reclaim unused space (safe while the server runs). |
 | `clear --component <comp>` | Clear part of the cache (`views`, `blobs`, `git-cache`, `all`, …). |
 
@@ -551,6 +555,16 @@ CLI commands mirror the MCP tools. Add `--json` for machine-readable output.
 | `read <id>` | Read one message in full. |
 | `register --name <handle>` / `agents` | Set your handle / list active agents. |
 | `status` / `start` / `stop` | The shared service: check, start, or stop it. |
+
+**Shells (`basemind shells`, `--features shells`)**
+
+| Command | Purpose |
+|---|---|
+| `spawn <command> [--cwd --env --title]` | Start a detached headless shell session; prints a `session_id`. |
+| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. |
+| `capture <session-id> [--lines]` | Read a session's visible screen. |
+| `kill <session-id>` / `list` | End a session / list live sessions. |
+| `broadcast <text> --session <id>…` | Send the same input to several sessions at once. |
 
 **Other commands (`scan`, `serve`, `watch`, …)**
 
