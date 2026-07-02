@@ -25,12 +25,10 @@ use tokio::sync::mpsc;
 use super::cursor::Cursor;
 use super::ids::{AgentId, RoomId};
 use super::model::{
-    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, SessionLineage,
-    Subscription, now_micros,
+    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, SessionLineage, Subscription,
+    now_micros,
 };
-use super::protocol::{
-    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport,
-};
+use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::scope::{self, ScopeChain};
 use super::store::{self, CommsStore, CommsStoreError};
 
@@ -162,10 +160,7 @@ impl Broker {
         if self.link_count.load(Ordering::Relaxed) != 0 {
             return false;
         }
-        if matches!(
-            self.state().await,
-            LifecycleState::Draining | LifecycleState::Stopped
-        ) {
+        if matches!(self.state().await, LifecycleState::Draining | LifecycleState::Stopped) {
             return false;
         }
         let now_ms = self.started.elapsed().as_millis() as u64;
@@ -208,25 +203,13 @@ impl Broker {
                 session_id,
                 parent_agent,
             } => {
-                self.on_hello(
-                    agent,
-                    proto_ver,
-                    remote,
-                    cwd,
-                    session_id,
-                    parent_agent,
-                    session,
-                )
-                .await
+                self.on_hello(agent, proto_ver, remote, cwd, session_id, parent_agent, session)
+                    .await
             }
             CommsRequest::Register { card } => self.on_register(session, card),
             CommsRequest::ListAgents { room } => self.on_list_agents(room),
-            CommsRequest::CreateRoom { room, scope, title } => {
-                self.on_create_room(room, scope, title)
-            }
-            CommsRequest::ListRooms { remote, cwd } => {
-                self.on_list_rooms(remote, cwd, session).await
-            }
+            CommsRequest::CreateRoom { room, scope, title } => self.on_create_room(room, scope, title),
+            CommsRequest::ListRooms { remote, cwd } => self.on_list_rooms(remote, cwd, session).await,
             CommsRequest::Join { room } => self.on_join(session, room),
             CommsRequest::Leave { room } => self.on_leave(session, room),
             CommsRequest::Post {
@@ -236,10 +219,7 @@ impl Broker {
                 reply_to,
                 scope,
                 body,
-            } => {
-                self.on_post(session, room, subject, tags, reply_to, scope, body)
-                    .await
-            }
+            } => self.on_post(session, room, subject, tags, reply_to, scope, body).await,
             CommsRequest::History {
                 room,
                 cursor,
@@ -393,11 +373,7 @@ impl Broker {
         Ok(CommsResponse::Ok)
     }
 
-    fn on_register(
-        &self,
-        session: &Session,
-        card: AgentCard,
-    ) -> Result<CommsResponse, CommsStoreError> {
+    fn on_register(&self, session: &Session, card: AgentCard) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
@@ -517,16 +493,7 @@ impl Broker {
             return Ok(need_hello());
         };
         let id = mint_message_id(&room, &agent);
-        let meta = store::build_meta(
-            id,
-            room.clone(),
-            agent,
-            subject,
-            tags,
-            reply_to,
-            scope,
-            &body,
-        );
+        let meta = store::build_meta(id, room.clone(), agent, subject, tags, reply_to, scope, &body);
         let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
         // Stamp the room's freshness clock. Read-modify-write via the store is fine here — posting
         // is not a hot path, and the daemon is the sole writer so no CAS is needed. The room may not
@@ -537,9 +504,7 @@ impl Broker {
             self.store.put_room(&record)?;
         }
         self.fan_out(&room, &stored).await;
-        Ok(CommsResponse::Posted {
-            message_id: stored.id,
-        })
+        Ok(CommsResponse::Posted { message_id: stored.id })
     }
 
     fn on_history(
@@ -552,9 +517,7 @@ impl Broker {
         let after = decode_after(cursor.as_ref(), room.as_str());
         let limit = clamp_limit(limit);
         let page = self.store.history(&room, after, limit)?;
-        let next = page
-            .more
-            .then(|| Cursor::encode(room.as_str(), page.last_seq));
+        let next = page.more.then(|| Cursor::encode(room.as_str(), page.last_seq));
         // Recency is an ADDITIONAL filter applied AFTER the cursor/seq window: drop messages older
         // than the cutoff but keep `next_cursor` driven by the (unfiltered) seq scan so pagination
         // resumes from the same point regardless of how many rows the recency filter elided.
@@ -785,11 +748,7 @@ impl Broker {
     /// if one matched — threaded into [`Self::record_session_lineage`] so the lineage row points at
     /// the exact room the child joined (not a re-scan that could pick a different room sharing the
     /// scope) and the room keyspace is scanned once per `Hello` rather than twice.
-    fn auto_join(
-        &self,
-        agent: &AgentId,
-        chain: &ScopeChain,
-    ) -> Result<Option<RoomId>, CommsStoreError> {
+    fn auto_join(&self, agent: &AgentId, chain: &ScopeChain) -> Result<Option<RoomId>, CommsStoreError> {
         // Ensure a default room exists for this scope.
         let default = default_room_for(chain);
         if self.store.get_room(&default.room_id)?.is_none() {
@@ -806,11 +765,7 @@ impl Broker {
                 if matches!(&room.scope, RoomScope::Session(_)) {
                     session_room = Some(room.room_id.clone());
                 }
-                let already = self
-                    .store
-                    .subscribers(&room.room_id)?
-                    .iter()
-                    .any(|a| a == agent);
+                let already = self.store.subscribers(&room.room_id)?.iter().any(|a| a == agent);
                 if !already {
                     tracing::info!(
                         agent = %agent,
@@ -874,9 +829,7 @@ impl Broker {
             reg.sinks.values().map(|s| s.tx.clone()).collect()
         };
         for tx in sinks {
-            let _ = tx
-                .send(CommsOut::Notification(CommsNotification::Shutdown))
-                .await;
+            let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
         }
     }
 
@@ -908,8 +861,7 @@ fn need_hello() -> CommsResponse {
 }
 
 fn clamp_limit(limit: Option<u32>) -> usize {
-    usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT))
-        .unwrap_or(DEFAULT_LIMIT as usize)
+    usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)).unwrap_or(DEFAULT_LIMIT as usize)
 }
 
 fn decode_after(cursor: Option<&Cursor>, room: &str) -> u64 {

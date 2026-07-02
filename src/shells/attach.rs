@@ -120,8 +120,7 @@ where
         }
     }
 
-    let session_name =
-        session_name.context("the visual attach requires a session name argument")?;
+    let session_name = session_name.context("the visual attach requires a session name argument")?;
     let socket_path = socket_path.context("the visual attach requires a --socket path")?;
 
     crate::shells::daemon::validate_socket_path(&socket_path)?;
@@ -162,16 +161,9 @@ fn drive_attach(parsed: &AttachArgs) -> Result<()> {
     let _ = (parsed.cols, parsed.rows);
     let name = rmux_sdk::SessionName::new(parsed.session_name.clone())
         .map_err(|e| anyhow::anyhow!("invalid rmux session name: {e}"))?;
-    let connection = rmux_client::connect(&parsed.socket_path).with_context(|| {
-        format!(
-            "connect to embedded rmux daemon at {:?}",
-            parsed.socket_path
-        )
-    })?;
-    match connection
-        .begin_attach(name)
-        .context("begin attach to rmux session")?
-    {
+    let connection = rmux_client::connect(&parsed.socket_path)
+        .with_context(|| format!("connect to embedded rmux daemon at {:?}", parsed.socket_path))?;
+    match connection.begin_attach(name).context("begin attach to rmux session")? {
         rmux_client::AttachTransition::Upgraded(upgrade) => {
             let (stream, initial) = upgrade.into_parts();
             // Blocks (owning the terminal: raw termios + SIGWINCH) until detach / EOF,
@@ -218,14 +210,8 @@ mod tests {
 
     #[test]
     fn parses_valid_attach_args_with_size() {
-        let parsed = parse_attach_args(args(&[
-            "bmsh-1-2",
-            "--socket",
-            valid_socket(),
-            "--size",
-            "120x40",
-        ]))
-        .expect("valid args parse");
+        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", valid_socket(), "--size", "120x40"]))
+            .expect("valid args parse");
         assert_eq!(parsed.session_name, "bmsh-1-2");
         assert_eq!(parsed.socket_path, std::path::PathBuf::from(valid_socket()));
         assert_eq!(parsed.cols, 120);
@@ -234,30 +220,23 @@ mod tests {
 
     #[test]
     fn falls_back_to_default_size_when_size_is_malformed() {
-        let parsed = parse_attach_args(args(&[
-            "bmsh-1-2",
-            "--socket",
-            valid_socket(),
-            "--size",
-            "not-a-size",
-        ]))
-        .expect("malformed size must not fail the parse");
+        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", valid_socket(), "--size", "not-a-size"]))
+            .expect("malformed size must not fail the parse");
         assert_eq!(parsed.cols, FALLBACK_COLS);
         assert_eq!(parsed.rows, FALLBACK_ROWS);
     }
 
     #[test]
     fn falls_back_to_default_size_when_size_flag_is_absent() {
-        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", valid_socket()]))
-            .expect("missing size is fine");
+        let parsed = parse_attach_args(args(&["bmsh-1-2", "--socket", valid_socket()])).expect("missing size is fine");
         assert_eq!(parsed.cols, FALLBACK_COLS);
         assert_eq!(parsed.rows, FALLBACK_ROWS);
     }
 
     #[test]
     fn rejects_missing_socket() {
-        let err = parse_attach_args(args(&["bmsh-1-2", "--size", "80x24"]))
-            .expect_err("missing --socket must be rejected");
+        let err =
+            parse_attach_args(args(&["bmsh-1-2", "--size", "80x24"])).expect_err("missing --socket must be rejected");
         assert!(err.to_string().contains("--socket"), "{err}");
     }
 

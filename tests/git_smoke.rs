@@ -199,20 +199,13 @@ fn scan_skips_submodule_paths_by_default() {
     // gix should see the submodule via .gitmodules.
     let repo = Repo::discover(root).expect("discover parent");
     let subs = repo.submodule_paths();
-    assert_eq!(
-        subs,
-        vec![basemind::path::RelPath::from("vendored")],
-        "got {subs:?}"
-    );
+    assert_eq!(subs, vec![basemind::path::RelPath::from("vendored")], "got {subs:?}");
 
     // Default scan should NOT index the submodule's inner.rs.
     {
         let mut store = Store::open(root, VIEW_WORKING).unwrap();
         scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("scan default");
-        assert!(
-            store.lookup("top.rs").is_some(),
-            "parent file should be indexed"
-        );
+        assert!(store.lookup("top.rs").is_some(), "parent file should be indexed");
         assert!(
             store.lookup("vendored/inner.rs").is_none(),
             "submodule file should be skipped by default"
@@ -242,11 +235,7 @@ fn blame_file_uses_committed_blob_not_dirty_working_tree() {
     run(root, &["commit", "-q", "-m", "initial"]);
 
     // Dirty the working tree by prepending lines that would shift every line number.
-    fs::write(
-        root.join("a.rs"),
-        b"// dirty\n// dirty\nfn one() {}\nfn two() {}\n",
-    )
-    .unwrap();
+    fs::write(root.join("a.rs"), b"// dirty\n// dirty\nfn one() {}\nfn two() {}\n").unwrap();
 
     let repo = Repo::discover(root).expect("discover");
     let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
@@ -264,10 +253,7 @@ fn blame_file_uses_committed_blob_not_dirty_working_tree() {
         first.start_line, 1,
         "committed line 1 must blame to line 1, not a working-tree-shifted line"
     );
-    assert_eq!(
-        first.commit_sha, head,
-        "single-commit history blames to HEAD"
-    );
+    assert_eq!(first.commit_sha, head, "single-commit history blames to HEAD");
 }
 
 /// I5: history is by exact path and stops at renames, while blame follows them. This test
@@ -298,9 +284,7 @@ fn log_for_path_stops_at_rename_while_blame_follows() {
     // Blame, by contrast, follows the rename: the kept line still attributes to the add.
     let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
     let rel = basemind::path::RelPath::from("new.rs".as_bytes());
-    let blame = repo
-        .blame_file(&head, &rel, Some((1, 1)))
-        .expect("blame new.rs");
+    let blame = repo.blame_file(&head, &rel, Some((1, 1))).expect("blame new.rs");
     assert!(
         !blame.hunks.is_empty(),
         "blame follows the rename and resolves the kept line"

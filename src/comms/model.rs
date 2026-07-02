@@ -26,9 +26,7 @@ use super::ids::{AgentId, RoomId};
 /// impossible) clock-before-epoch case. A local mirror of `crate::lance::now_micros` so the
 /// comms feature does not pull in the lance/intelligence feature just for a timestamp.
 pub fn now_micros() -> i64 {
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     i64::try_from(dur.as_micros()).unwrap_or(i64::MAX)
 }
 

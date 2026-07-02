@@ -46,11 +46,7 @@ pub fn scope_chain(cwd: &Path, repo: Option<&Repo>) -> ScopeChain {
         // `scope_key` returns `path:<workdir>` when there is no origin remote. That is a
         // local-only fallback, not a shareable remote identity, so we do not treat it as a
         // `Remote` scope — path-prefix rooms cover the local-only case.
-        if key.starts_with("path:") {
-            None
-        } else {
-            Some(key)
-        }
+        if key.starts_with("path:") { None } else { Some(key) }
     });
 
     let boundary = home_boundary();
@@ -119,10 +115,7 @@ mod tests {
         ScopeChain {
             remote: remote.map(|s| s.to_string()),
             cwd: PathBuf::from(cwd),
-            ancestors: PathBuf::from(cwd)
-                .ancestors()
-                .map(|p| p.to_path_buf())
-                .collect(),
+            ancestors: PathBuf::from(cwd).ancestors().map(|p| p.to_path_buf()).collect(),
             session_id: None,
             parent_agent: None,
         }
@@ -156,19 +149,13 @@ mod tests {
 
     #[test]
     fn global_matches_everything() {
-        assert!(room_matches(
-            &RoomScope::Global,
-            &chain(None, "/anywhere/at/all")
-        ));
+        assert!(room_matches(&RoomScope::Global, &chain(None, "/anywhere/at/all")));
     }
 
     #[test]
     fn remote_matches_only_exact_remote() {
         let c = chain(Some("github.com/foo/bar"), "/work/bar");
-        assert!(room_matches(
-            &RoomScope::Remote("github.com/foo/bar".to_string()),
-            &c
-        ));
+        assert!(room_matches(&RoomScope::Remote("github.com/foo/bar".to_string()), &c));
         assert!(!room_matches(
             &RoomScope::Remote("github.com/foo/other".to_string()),
             &c
@@ -178,10 +165,7 @@ mod tests {
     #[test]
     fn remote_does_not_match_when_agent_has_no_remote() {
         let c = chain(None, "/work/bar");
-        assert!(!room_matches(
-            &RoomScope::Remote("github.com/foo/bar".to_string()),
-            &c
-        ));
+        assert!(!room_matches(&RoomScope::Remote("github.com/foo/bar".to_string()), &c));
     }
 
     #[test]
@@ -190,10 +174,7 @@ mod tests {
         // ancestor relationship is what we assert.
         let c = chain(None, "/home/u/workspace/monorepo/services/api");
         assert!(
-            room_matches(
-                &RoomScope::PathPrefix(PathBuf::from("/home/u/workspace/monorepo")),
-                &c
-            ),
+            room_matches(&RoomScope::PathPrefix(PathBuf::from("/home/u/workspace/monorepo")), &c),
             "a room at an ancestor dir should cover a nested agent"
         );
     }

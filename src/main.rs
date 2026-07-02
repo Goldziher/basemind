@@ -262,8 +262,7 @@ fn main() -> Result<()> {
     // default threshold tracks `--quiet` / `--verbose` so `-q` actually silences subsystem logs.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new(default_log_directive(verbosity))),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_log_directive(verbosity))),
         )
         .with_target(false)
         .with_writer(std::io::stderr)
@@ -296,8 +295,7 @@ fn main() -> Result<()> {
     // `dispatch` collapses the identical `cli::run` tool arms (same root/view/json/overrides,
     // differing only in the `ToolCmd` variant) into one call site — removes the duplication and
     // keeps main.rs under the per-file line cap.
-    let dispatch =
-        |tc| basemind::cli::run(&root, &view, DocumentsCliOverrides::default(), json, tc);
+    let dispatch = |tc| basemind::cli::run(&root, &view, DocumentsCliOverrides::default(), json, tc);
     match cli.cmd {
         Cmd::Init => cmd_init(&root),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
@@ -313,9 +311,7 @@ fn main() -> Result<()> {
         Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
         #[cfg(all(feature = "shells", any(unix, windows)))]
         Cmd::Shells(s) => dispatch(basemind::cli::ToolCmd::Shells(s)),
-        Cmd::Telemetry { window, tool } => {
-            dispatch(basemind::cli::ToolCmd::Telemetry { window, tool })
-        }
+        Cmd::Telemetry { window, tool } => dispatch(basemind::cli::ToolCmd::Telemetry { window, tool }),
         Cmd::Hook { action } => match action {
             HookCmd::Install => cmd_hook_install(&root),
         },
@@ -395,10 +391,7 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
         match rpc {
             CommsRpc::Stop => {
-                client
-                    .stop()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("stop: {e}"))?;
+                client.stop().await.map_err(|e| anyhow::anyhow!("stop: {e}"))?;
                 if json {
                     println!("{{\"stopped\":true}}");
                 } else {
@@ -406,15 +399,11 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                 }
             }
             CommsRpc::Status => {
-                let status = client
-                    .status()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("status: {e}"))?;
+                let status = client.status().await.map_err(|e| anyhow::anyhow!("status: {e}"))?;
                 if json {
                     println!(
                         "{}",
-                        serde_json::to_string(&status)
-                            .map_err(|e| anyhow::anyhow!("serialize status: {e}"))?
+                        serde_json::to_string(&status).map_err(|e| anyhow::anyhow!("serialize status: {e}"))?
                     );
                 } else {
                     println!(
@@ -467,8 +456,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
 }
 
 fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
-    let summary = basemind::lang::ensure_grammars()
-        .map_err(|e| anyhow::anyhow!("grammar bootstrap failed: {e}"))?;
+    let summary = basemind::lang::ensure_grammars().map_err(|e| anyhow::anyhow!("grammar bootstrap failed: {e}"))?;
     let mut out = render::stdout(no_color);
     render::render_grammar_bootstrap(&mut out, &summary, verbosity);
     Ok(())
@@ -510,10 +498,7 @@ fn load_or_default(root: &std::path::Path) -> Result<Config> {
 /// Variant of [`load_or_default`] that also applies a CLI override layer through
 /// the layered merger. Used by `scan` / `serve` to flow `#[command(flatten)]`
 /// flags down to the resolved config.
-fn load_or_default_with(
-    root: &std::path::Path,
-    cli: Option<DocumentsCliOverrides>,
-) -> Result<Config> {
+fn load_or_default_with(root: &std::path::Path, cli: Option<DocumentsCliOverrides>) -> Result<Config> {
     match config::load_with_overrides(root, None, cli) {
         Ok(loaded) => Ok(loaded.config),
         Err(config::ConfigError::NotFound(_)) => {
@@ -533,12 +518,7 @@ fn load_or_default_with(
 /// `is_lock_contention` collapses both into one friendly message that leads with what to
 /// do; the underlying `StoreError` is preserved as the error source (visible under `-v` /
 /// the full anyhow chain) so we never swallow the cause.
-fn open_store_for_write(
-    root: &std::path::Path,
-    view: &str,
-    what: &str,
-    holder: LockHolder,
-) -> Result<Store> {
+fn open_store_for_write(root: &std::path::Path, view: &str, what: &str, holder: LockHolder) -> Result<Store> {
     Store::open_with_holder(root, view, holder).map_err(|err| {
         if err.is_lock_contention() {
             anyhow::Error::new(err).context(basemind::store::LOCK_CONTENTION_HELP.to_string())
@@ -564,9 +544,7 @@ fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
              `rescan` tool to refresh the index, or stop it first.",
             meta.command, meta.pid
         )),
-        basemind::store::WriterProbe::Held { holder: None } => {
-            Some(basemind::store::LOCK_CONTENTION_HELP.to_string())
-        }
+        basemind::store::WriterProbe::Held { holder: None } => Some(basemind::store::LOCK_CONTENTION_HELP.to_string()),
     }
 }
 
@@ -599,9 +577,7 @@ fn sync_git_history_after_scan(
     match basemind::git_history::builder::sync(&index, &repo, &basemind_dir) {
         Ok(outcome) => {
             let summary = match outcome {
-                basemind::git_history::builder::RebuildOutcome::Fresh => {
-                    "git-history index: up to date".to_string()
-                }
+                basemind::git_history::builder::RebuildOutcome::Fresh => "git-history index: up to date".to_string(),
                 basemind::git_history::builder::RebuildOutcome::Incremental { added } => {
                     format!("git-history index: +{added} commits")
                 }
@@ -615,12 +591,7 @@ fn sync_git_history_after_scan(
     }
 }
 
-fn cmd_scan(
-    root: &std::path::Path,
-    args: &ScanArgs,
-    verbosity: Verbosity,
-    no_color: bool,
-) -> Result<()> {
+fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default_with(root, Some(args.documents.clone()))?;
 
@@ -628,30 +599,18 @@ fn cmd_scan(
     // here. WorkingTree doesn't need a repo at all.
     let mut out = render::stdout(no_color);
     if args.staged {
-        let repo = basemind::git::Repo::discover(root)
-            .context("`--staged` requires being inside a git repository")?;
-        let mut store = open_store_for_write(
-            root,
-            basemind::store::VIEW_STAGED,
-            "staged",
-            LockHolder::Scan,
-        )?;
+        let repo = basemind::git::Repo::discover(root).context("`--staged` requires being inside a git repository")?;
+        let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged", LockHolder::Scan)?;
         render::render_scan_header(&mut out, "staged index", verbosity);
-        let report = basemind::scanner::scan(
-            root,
-            &mut store,
-            &config,
-            basemind::scanner::ScanSource::Staged(&repo),
-        )
-        .context("scan staged")?;
+        let report = basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::Staged(&repo))
+            .context("scan staged")?;
         render::render_report(&mut out, &report, verbosity);
         // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
         // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
         return Ok(());
     }
     if let Some(rev_spec) = &args.rev {
-        let repo = basemind::git::Repo::discover(root)
-            .context("`--rev` requires being inside a git repository")?;
+        let repo = basemind::git::Repo::discover(root).context("`--rev` requires being inside a git repository")?;
         let sha = repo.resolve_rev(rev_spec).context("resolve rev")?;
         let short = &sha[..7.min(sha.len())];
         let view = basemind::store::view_name_for_rev(short);
@@ -678,37 +637,17 @@ fn cmd_scan(
         let _ = writeln!(out, "{notice}");
         return Ok(());
     }
-    let mut store = open_store_for_write(
-        root,
-        basemind::store::VIEW_WORKING,
-        "scan",
-        LockHolder::Scan,
-    )?;
-    let report = basemind::scanner::scan(
-        root,
-        &mut store,
-        &config,
-        basemind::scanner::ScanSource::WorkingTree,
-    )
-    .context("scan")?;
+    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan", LockHolder::Scan)?;
+    let report = basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
+        .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
-    sync_git_history_after_scan(
-        root,
-        !args.no_git_history,
-        args.rebuild_git_history,
-        &mut out,
-    );
+    sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
     // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
     Ok(())
 }
 
-fn cmd_rescan(
-    root: &std::path::Path,
-    args: &RescanArgs,
-    verbosity: Verbosity,
-    no_color: bool,
-) -> Result<()> {
+fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, no_color: bool) -> Result<()> {
     bootstrap_grammars(verbosity, no_color)?;
     let config = load_or_default(root)?;
     let mut out = render::stdout(no_color);
@@ -717,35 +656,20 @@ fn cmd_rescan(
         let _ = writeln!(out, "{notice}");
         return Ok(());
     }
-    let mut store = open_store_for_write(
-        root,
-        basemind::store::VIEW_WORKING,
-        "rescan",
-        LockHolder::Rescan,
-    )?;
+    let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "rescan", LockHolder::Rescan)?;
 
     // `--full` or no paths → full working-tree re-index. Otherwise re-index only the
     // supplied paths incrementally. `scan_paths` resolves paths against `root`, so make
     // each path absolute first (repo-relative input is the documented contract).
     let report = if args.full || args.paths.is_empty() {
-        basemind::scanner::scan(
-            root,
-            &mut store,
-            &config,
-            basemind::scanner::ScanSource::WorkingTree,
-        )
-        .context("rescan (full)")?
+        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
+            .context("rescan (full)")?
     } else {
         let abs: Vec<PathBuf> = args.paths.iter().map(|p| root.join(p)).collect();
         basemind::scanner::scan_paths(root, &mut store, &config, &abs).context("rescan (paths)")?
     };
     render::render_report(&mut out, &report, verbosity);
-    sync_git_history_after_scan(
-        root,
-        !args.no_git_history,
-        args.rebuild_git_history,
-        &mut out,
-    );
+    sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0
     // (matches `cmd_scan`; a genuine failure-to-update aborts earlier via `?`). Bug #24.
     Ok(())
@@ -755,8 +679,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     bootstrap_grammars(verbosity, no_color)?;
     let config = Arc::new(load_or_default(root)?);
     let store = Arc::new(Mutex::new(
-        Store::open_with_holder(root, basemind::store::VIEW_WORKING, LockHolder::Watch)
-            .context("open store")?,
+        Store::open_with_holder(root, basemind::store::VIEW_WORKING, LockHolder::Watch).context("open store")?,
     ));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -770,16 +693,15 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     let root_buf = root.to_path_buf();
     let watcher_handle = std::thread::spawn(move || {
         let mut stdout = render::stdout(no_color);
-        let cb: basemind::watcher::BatchCallback =
-            Box::new(move |batch: WatchBatch<'_>| match batch.kind {
-                BatchKind::InitialScan => {
-                    render::render_report(&mut stdout, batch.report, verbosity);
-                }
-                BatchKind::Incremental { paths } => {
-                    render::render_batch_header(&mut stdout, paths, verbosity);
-                    render::render_lines(&mut stdout, batch.report, verbosity);
-                }
-            });
+        let cb: basemind::watcher::BatchCallback = Box::new(move |batch: WatchBatch<'_>| match batch.kind {
+            BatchKind::InitialScan => {
+                render::render_report(&mut stdout, batch.report, verbosity);
+            }
+            BatchKind::Incremental { paths } => {
+                render::render_batch_header(&mut stdout, paths, verbosity);
+                render::render_lines(&mut stdout, batch.report, verbosity);
+            }
+        });
         basemind::watcher::watch(&root_buf, store_w, config_w, shutdown_rx, cb)
     });
 
@@ -866,12 +788,8 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     // tools (`working_tree_status`, `recent_changes`, …) work without re-discovering.
     let repo = basemind::git::Repo::discover(root).ok().map(Arc::new);
     let git_cache = Arc::new(
-        basemind::git_cache::GitCache::open(
-            &basemind_dir,
-            args.git_cache_mem,
-            !args.no_git_cache_disk,
-        )
-        .context("open git cache")?,
+        basemind::git_cache::GitCache::open(&basemind_dir, args.git_cache_mem, !args.no_git_cache_disk)
+            .context("open git cache")?,
     );
 
     let options = basemind::mcp::ServerOptions {
@@ -891,9 +809,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     );
     let outcome = runtime.block_on(async move {
         use rmcp::ServiceExt;
-        let server = basemind::mcp::BasemindServer::new_with_options(
-            store, root_buf, config, repo, git_cache, options,
-        );
+        let server = basemind::mcp::BasemindServer::new_with_options(store, root_buf, config, repo, git_cache, options);
         let transport = rmcp::transport::stdio();
         let service = server
             .serve(transport)
@@ -910,10 +826,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         // Clean shutdown is the normal exit: the MCP client closed the stdio transport. Restarting
         // a stdio server is the client's responsibility — a new process can't resume the client's
         // initialize handshake — so we exit cleanly and let the client relaunch on its next call.
-        Ok(()) => tracing::info!(
-            pid = std::process::id(),
-            "basemind serve: client disconnected, exiting"
-        ),
+        Ok(()) => tracing::info!(pid = std::process::id(), "basemind serve: client disconnected, exiting"),
         Err(error) => {
             tracing::error!(pid = std::process::id(), %error, "basemind serve: exiting on error")
         }

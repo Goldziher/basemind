@@ -40,13 +40,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result = super::helpers_git::run_search_git_history(&self.state, params);
-        record_call(
-            &self.state,
-            "search_git_history",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "search_git_history", &__params_json, __started, &__result);
         __result
     }
 
@@ -83,13 +77,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "working_tree_status",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "working_tree_status", &__params_json, __started, &__result);
         __result
     }
 
@@ -138,21 +126,17 @@ impl BasemindServer {
             };
 
             // Walk one extra commit past the page so we can tell whether more remain.
-            let walk_depth =
-                (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-            let commits: Vec<crate::git::CommitInfo> =
-                match git_history_if_fresh(&self.state, &head) {
-                    Some(index) => {
-                        index.recent_commits(0, walk_depth as usize, params.include_files)
-                    }
-                    None => self
-                        .state
-                        .git_cache
-                        .log(repo, &head, None, walk_depth, params.include_files)
-                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                        .as_ref()
-                        .clone(),
-                };
+            let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
+            let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
+                Some(index) => index.recent_commits(0, walk_depth as usize, params.include_files),
+                None => self
+                    .state
+                    .git_cache
+                    .log(repo, &head, None, walk_depth, params.include_files)
+                    .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                    .as_ref()
+                    .clone(),
+            };
             let page: Vec<CommitView> = commits
                 .iter()
                 .skip(skip)
@@ -161,9 +145,8 @@ impl BasemindServer {
                 .map(|c| commit_to_view(c, params.include_files))
                 .collect();
             let has_more = commits.len() > skip + page.len();
-            let next_cursor = has_more.then(|| {
-                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
-            });
+            let next_cursor =
+                has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
             let truncated = repo.is_shallow();
             json_result(&RecentChangesResponse {
                 commits: page,
@@ -174,13 +157,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "recent_changes",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "recent_changes", &__params_json, __started, &__result);
         __result
     }
 
@@ -222,21 +199,19 @@ impl BasemindServer {
                 None => 0,
             };
 
-            let walk_depth =
-                (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
+            let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
             // Indexed fast path when the git-history index is current; live walk otherwise. Both
             // return the same newest-first `CommitInfo` prefix, so paging below is identical.
-            let commits: Vec<crate::git::CommitInfo> =
-                match git_history_if_fresh(&self.state, &head) {
-                    Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
-                    None => self
-                        .state
-                        .git_cache
-                        .log(repo, &head, Some(&params.path), walk_depth, false)
-                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                        .as_ref()
-                        .clone(),
-                };
+            let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
+                Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
+                None => self
+                    .state
+                    .git_cache
+                    .log(repo, &head, Some(&params.path), walk_depth, false)
+                    .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                    .as_ref()
+                    .clone(),
+            };
             let page: Vec<CommitView> = commits
                 .iter()
                 .skip(skip)
@@ -245,9 +220,8 @@ impl BasemindServer {
                 .map(|c| commit_to_view(c, false))
                 .collect();
             let has_more = commits.len() > skip + page.len();
-            let next_cursor = has_more.then(|| {
-                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
-            });
+            let next_cursor =
+                has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
             let truncated = repo.is_shallow();
             json_result(&CommitsTouchingResponse {
                 path: params.path,
@@ -259,13 +233,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "commits_touching",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "commits_touching", &__params_json, __started, &__result);
         __result
     }
 
@@ -285,9 +253,9 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
             let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
-            let rev_sha = repo.resolve_rev(rev_spec).map_err(|e| {
-                McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None)
-            })?;
+            let rev_sha = repo
+                .resolve_rev(rev_spec)
+                .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
 
             let cache = self.state.cache.load_full();
             let here = cache.by_path.get(&params.path).map(|l1| {
@@ -297,32 +265,19 @@ impl BasemindServer {
                     .collect::<Vec<(String, &'static str)>>()
             });
 
-            let rev_blob = repo.read_blob_at_rev(&rev_sha, &params.path).map_err(|e| {
-                McpError::internal_error(format!("read blob {rev_sha}:{}: {e}", params.path), None)
-            })?;
+            let rev_blob = repo
+                .read_blob_at_rev(&rev_sha, &params.path)
+                .map_err(|e| McpError::internal_error(format!("read blob {rev_sha}:{}: {e}", params.path), None))?;
 
             let there: Option<Vec<(String, &'static str)>> = match rev_blob {
                 Some(bytes) => {
-                    let lang = crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(
-                        || {
-                            McpError::invalid_params(
-                                format!("unsupported language for {}", params.path),
-                                None,
-                            )
-                        },
-                    )?;
-                    let l1 = crate::extract::l1::extract_l1(lang, &bytes).map_err(|e| {
-                        McpError::internal_error(
-                            format!("extract {rev_sha}:{}: {e}", params.path),
-                            None,
-                        )
+                    let lang = crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(|| {
+                        McpError::invalid_params(format!("unsupported language for {}", params.path), None)
                     })?;
-                    Some(
-                        l1.symbols
-                            .into_iter()
-                            .map(|s| (s.name, kind_to_str(s.kind)))
-                            .collect(),
-                    )
+                    let l1 = crate::extract::l1::extract_l1(lang, &bytes).map_err(|e| {
+                        McpError::internal_error(format!("extract {rev_sha}:{}: {e}", params.path), None)
+                    })?;
+                    Some(l1.symbols.into_iter().map(|s| (s.name, kind_to_str(s.kind))).collect())
                 }
                 None => None,
             };
@@ -369,9 +324,7 @@ impl BasemindServer {
                         .collect(),
                     Vec::new(),
                     Vec::new(),
-                    Some(format!(
-                        "path absent at {rev_spec}; entire file treated as added"
-                    )),
+                    Some(format!("path absent at {rev_spec}; entire file treated as added")),
                 ),
                 (None, Some(t)) => (
                     Vec::new(),
@@ -382,17 +335,11 @@ impl BasemindServer {
                         })
                         .collect(),
                     Vec::new(),
-                    Some(
-                        "path not indexed in the current view; entire file treated as removed"
-                            .to_string(),
-                    ),
+                    Some("path not indexed in the current view; entire file treated as removed".to_string()),
                 ),
                 (None, None) => {
                     return Err(McpError::invalid_params(
-                        format!(
-                            "path not present in current view or at {rev_spec}: {}",
-                            params.path
-                        ),
+                        format!("path not present in current view or at {rev_spec}: {}", params.path),
                         None,
                     ));
                 }
@@ -408,13 +355,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "diff_outline",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "diff_outline", &__params_json, __started, &__result);
         __result
     }
 
@@ -462,17 +403,16 @@ impl BasemindServer {
                 None => 0,
             };
 
-            let commits: Vec<crate::git::CommitInfo> =
-                match git_history_if_fresh(&self.state, &head) {
-                    Some(index) => index.window_commits(window as usize),
-                    None => self
-                        .state
-                        .git_cache
-                        .log(repo, &head, None, window, true)
-                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                        .as_ref()
-                        .clone(),
-                };
+            let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
+                Some(index) => index.window_commits(window as usize),
+                None => self
+                    .state
+                    .git_cache
+                    .log(repo, &head, None, window, true)
+                    .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                    .as_ref()
+                    .clone(),
+            };
 
             let mut hits: Vec<CommitView> = Vec::new();
             let mut seen: usize = 0;
@@ -492,9 +432,8 @@ impl BasemindServer {
                 seen += 1;
                 hits.push(commit_to_view(c.clone(), true));
             }
-            let next_cursor = has_more.then(|| {
-                super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot)
-            });
+            let next_cursor =
+                has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + hits.len()) as u64, snapshot));
             json_result(&FindCommitsByPathResponse {
                 pattern: params.pattern,
                 window_inspected: window,
@@ -532,29 +471,25 @@ impl BasemindServer {
             let window = params.window.unwrap_or(200).min(2000);
             let top_k = params.top_k.unwrap_or(20).min(200) as usize;
             let head = head_sha(repo)?;
-            let commits: Vec<crate::git::CommitInfo> =
-                match git_history_if_fresh(&self.state, &head) {
-                    Some(index) => index.window_commits(window as usize),
-                    None => self
-                        .state
-                        .git_cache
-                        .log(repo, &head, None, window, true)
-                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                        .as_ref()
-                        .clone(),
-                };
+            let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
+                Some(index) => index.window_commits(window as usize),
+                None => self
+                    .state
+                    .git_cache
+                    .log(repo, &head, None, window, true)
+                    .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                    .as_ref()
+                    .clone(),
+            };
 
-            let mut counts: ahash::AHashMap<crate::path::RelPath, (u32, u32, u32, u32)> =
-                ahash::AHashMap::new();
+            let mut counts: ahash::AHashMap<crate::path::RelPath, (u32, u32, u32, u32)> = ahash::AHashMap::new();
             for c in commits.iter() {
                 for (path, kind) in &c.files {
                     let entry = counts.entry(path.clone()).or_insert((0, 0, 0, 0));
                     entry.0 += 1;
                     match kind {
                         crate::git::ChangeKind::Added => entry.1 += 1,
-                        crate::git::ChangeKind::Modified | crate::git::ChangeKind::Renamed => {
-                            entry.2 += 1
-                        }
+                        crate::git::ChangeKind::Modified | crate::git::ChangeKind::Renamed => entry.2 += 1,
                         crate::git::ChangeKind::Deleted => entry.3 += 1,
                     }
                 }
@@ -570,11 +505,7 @@ impl BasemindServer {
                     deleted,
                 })
                 .collect();
-            ranked.sort_by(|a, b| {
-                b.commits_touching
-                    .cmp(&a.commits_touching)
-                    .then(a.path.cmp(&b.path))
-            });
+            ranked.sort_by(|a, b| b.commits_touching.cmp(&a.commits_touching).then(a.path.cmp(&b.path)));
             ranked.truncate(top_k);
 
             json_result(&HotFilesResponse {
@@ -584,13 +515,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "hot_files",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "hot_files", &__params_json, __started, &__result);
         __result
     }
 
@@ -610,12 +535,12 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let repo = require_git_repo(&self.state)?;
-            let old_sha = repo.resolve_rev(&params.rev_old).map_err(|e| {
-                McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_old), None)
-            })?;
-            let new_sha = repo.resolve_rev(&params.rev_new).map_err(|e| {
-                McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_new), None)
-            })?;
+            let old_sha = repo
+                .resolve_rev(&params.rev_old)
+                .map_err(|e| McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_old), None))?;
+            let new_sha = repo
+                .resolve_rev(&params.rev_new)
+                .map_err(|e| McpError::invalid_params(format!("resolve_rev({}): {e}", params.rev_new), None))?;
             let result = repo
                 .diff_file(&old_sha, &new_sha, &params.path)
                 .map_err(|e| McpError::internal_error(format!("diff: {e}"), None))?;
@@ -641,13 +566,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "diff_file",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "diff_file", &__params_json, __started, &__result);
         __result
     }
 
@@ -669,10 +588,8 @@ impl BasemindServer {
             let repo = require_git_repo(&self.state)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params.limit.unwrap_or(20).min(100) as usize;
-            let lang =
-                crate::lang::detect(std::path::Path::new(&params.path)).ok_or_else(|| {
-                    McpError::invalid_params(format!("unsupported language: {}", params.path), None)
-                })?;
+            let lang = crate::lang::detect(std::path::Path::new(&params.path))
+                .ok_or_else(|| McpError::invalid_params(format!("unsupported language: {}", params.path), None))?;
             let hash_mode = match params.hash_mode.as_deref() {
                 Some(s) => parse_hash_mode(s)?,
                 None => HashMode::Normalized,
@@ -705,27 +622,21 @@ impl BasemindServer {
                 None => 0,
             };
 
-            let walk_depth = (skip
-                .saturating_add(limit)
-                .saturating_add(1)
-                .saturating_mul(4))
-            .min(LOG_WALK_MAX) as u32;
+            let walk_depth = (skip.saturating_add(limit).saturating_add(1).saturating_mul(4)).min(LOG_WALK_MAX) as u32;
             // Only the candidate-commit enumeration is accelerated; the per-blob fingerprint loop
             // below is unchanged. Both sources yield the same newest-first path-filtered commits.
-            let commits: Vec<crate::git::CommitInfo> =
-                match git_history_if_fresh(&self.state, &head) {
-                    Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
-                    None => self
-                        .state
-                        .git_cache
-                        .log(repo, &head, Some(&params.path), walk_depth, false)
-                        .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
-                        .as_ref()
-                        .clone(),
-                };
+            let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
+                Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
+                None => self
+                    .state
+                    .git_cache
+                    .log(repo, &head, Some(&params.path), walk_depth, false)
+                    .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
+                    .as_ref()
+                    .clone(),
+            };
 
-            let chronological: Vec<crate::git::CommitInfo> =
-                commits.iter().cloned().rev().collect();
+            let chronological: Vec<crate::git::CommitInfo> = commits.iter().cloned().rev().collect();
 
             let mut history = Vec::new();
             let mut prev_fp: Option<Vec<u8>> = None;
@@ -737,12 +648,8 @@ impl BasemindServer {
                     .read_blob_at_rev_with_oid(&c.sha, &params.path)
                     .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
                 let fingerprint = match blob {
-                    Some((bytes, oid)) => {
-                        outline_entry_for_blob(&self.state.outline_cache, oid, lang, bytes)
-                            .and_then(|entry| {
-                                symbol_fingerprint(&entry, &params.name, kind, lang, hash_mode)
-                            })
-                    }
+                    Some((bytes, oid)) => outline_entry_for_blob(&self.state.outline_cache, oid, lang, bytes)
+                        .and_then(|entry| symbol_fingerprint(&entry, &params.name, kind, lang, hash_mode)),
                     None => None,
                 };
                 let change = match (prev_existed, fingerprint.as_ref()) {
@@ -773,12 +680,10 @@ impl BasemindServer {
             history.reverse();
 
             let total_history = history.len();
-            let page: Vec<SymbolHistoryEntry> =
-                history.into_iter().skip(skip).take(limit).collect();
+            let page: Vec<SymbolHistoryEntry> = history.into_iter().skip(skip).take(limit).collect();
             let has_more = total_history > skip + page.len();
-            let next_cursor = has_more.then(|| {
-                super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot)
-            });
+            let next_cursor =
+                has_more.then(|| super::cursor::Cursor::encode_in_memory((skip + page.len()) as u64, snapshot));
 
             let truncated = repo.is_shallow();
             json_result(&SymbolHistoryResponse {
@@ -795,13 +700,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "symbol_history",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "symbol_history", &__params_json, __started, &__result);
         __result
     }
 
@@ -825,9 +724,9 @@ impl BasemindServer {
             let repo = require_git_repo(&self.state)?;
             super::helpers_git::reject_external_path(&params.path)?;
             let suspect_sha = match params.rev.as_deref() {
-                Some(r) => repo.resolve_rev(r).map_err(|e| {
-                    McpError::invalid_params(format!("resolve_rev({r}): {e}"), None)
-                })?,
+                Some(r) => repo
+                    .resolve_rev(r)
+                    .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
                 None => head_sha(repo)?,
             };
             let range = match (params.line_start, params.line_end) {
@@ -846,23 +745,16 @@ impl BasemindServer {
                 Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
                 None => 0,
             };
-            let result = match self
-                .state
-                .git_cache
-                .blame(repo, &suspect_sha, &params.path, range)
-            {
+            let result = match self.state.git_cache.blame(repo, &suspect_sha, &params.path, range) {
                 Ok(r) => r,
                 Err(e) => {
-                    if let Some(too_large) =
-                        blame_too_large_response(&params.path, &suspect_sha, &e)
-                    {
+                    if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e) {
                         return json_result(&too_large);
                     }
                     return Err(McpError::internal_error(format!("blame: {e}"), None));
                 }
             };
-            let (hunks, next_cursor) =
-                paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
+            let (hunks, next_cursor) = paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
             let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
                 Some("shallow_clone") => Some("shallow_clone"),
                 Some(_) => Some("truncated"),
@@ -879,13 +771,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "blame_file",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "blame_file", &__params_json, __started, &__result);
         __result
     }
 
@@ -910,10 +796,7 @@ impl BasemindServer {
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let cache = self.state.cache.load_full();
             let l1 = cache.by_path.get(&params.path).ok_or_else(|| {
-                McpError::invalid_params(
-                    format!("file not indexed in current view: {}", params.path),
-                    None,
-                )
+                McpError::invalid_params(format!("file not indexed in current view: {}", params.path), None)
             })?;
             let sym = l1
                 .symbols
@@ -924,8 +807,7 @@ impl BasemindServer {
                         format!(
                             "symbol `{}`{} not found in {}",
                             params.name,
-                            kind.map(|k| format!(" (kind={})", kind_to_str(k)))
-                                .unwrap_or_default(),
+                            kind.map(|k| format!(" (kind={})", kind_to_str(k))).unwrap_or_default(),
                             params.path
                         ),
                         None,
@@ -933,38 +815,32 @@ impl BasemindServer {
                 })?;
             let (line_start, line_end) = symbol_line_range(repo, &params.path, sym);
             let suspect_sha = match params.rev.as_deref() {
-                Some(r) => repo.resolve_rev(r).map_err(|e| {
-                    McpError::invalid_params(format!("resolve_rev({r}): {e}"), None)
-                })?,
+                Some(r) => repo
+                    .resolve_rev(r)
+                    .map_err(|e| McpError::invalid_params(format!("resolve_rev({r}): {e}"), None))?,
                 None => head_sha(repo)?,
             };
             let resume_after: u32 = match params.cursor.as_ref() {
                 Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
                 None => 0,
             };
-            let result = match self.state.git_cache.blame(
-                repo,
-                &suspect_sha,
-                &params.path,
-                Some((line_start, line_end)),
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    if let Some(too_large) = blame_symbol_too_large_response(
-                        &params.path,
-                        &suspect_sha,
-                        sym,
-                        line_start,
-                        line_end,
-                        &e,
-                    ) {
-                        return json_result(&too_large);
+            let result =
+                match self
+                    .state
+                    .git_cache
+                    .blame(repo, &suspect_sha, &params.path, Some((line_start, line_end)))
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        if let Some(too_large) =
+                            blame_symbol_too_large_response(&params.path, &suspect_sha, sym, line_start, line_end, &e)
+                        {
+                            return json_result(&too_large);
+                        }
+                        return Err(McpError::internal_error(format!("blame: {e}"), None));
                     }
-                    return Err(McpError::internal_error(format!("blame: {e}"), None));
-                }
-            };
-            let (hunks, next_cursor) =
-                paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
+                };
+            let (hunks, next_cursor) = paginate_blame_hunks(result.hunks.iter(), resume_after, params.limit);
             let truncated_reason: Option<&'static str> = match result.truncated_reason.as_deref() {
                 Some("shallow_clone") => Some("shallow_clone"),
                 Some(_) => Some("truncated"),
@@ -985,13 +861,7 @@ impl BasemindServer {
             })
         }
         .await;
-        record_call(
-            &self.state,
-            "blame_symbol",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "blame_symbol", &__params_json, __started, &__result);
         __result
     }
 }

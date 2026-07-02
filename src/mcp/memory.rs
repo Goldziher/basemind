@@ -14,9 +14,9 @@ use super::helpers::json_result;
 use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResponse};
 #[cfg(feature = "memory")]
 use super::types_memory::{
-    MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams,
-    MemoryListResponse, MemoryPutParams, MemoryPutResponse, MemoryRecord, MemorySearchHit,
-    MemorySearchParams, MemorySearchResponse, Visibility,
+    MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
+    MemoryPutParams, MemoryPutResponse, MemoryRecord, MemorySearchHit, MemorySearchParams, MemorySearchResponse,
+    Visibility,
 };
 #[cfg(feature = "documents")]
 use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
@@ -42,9 +42,7 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 }
 
 #[cfg(any(feature = "memory", feature = "documents"))]
-pub(super) async fn lance_store(
-    state: &ServerState,
-) -> Result<Arc<crate::lance::LanceStore>, McpError> {
+pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
     state
         .lance
@@ -60,24 +58,17 @@ pub(super) async fn lance_store(
                 .map_err(|e| format!("embedder init: {e}"))?;
             let dim = embedder.dim();
             let model = embedder.model().to_string();
-            let lance_dir = state
-                .store
-                .read()
-                .await
-                .basemind_dir
-                .join(crate::store::LANCE_DIR);
+            let lance_dir = state.store.read().await.basemind_dir.join(crate::store::LANCE_DIR);
             // LanceStore::open builds its own current-thread tokio runtime and
             // calls `block_on`, which panics when invoked from inside the live
             // server runtime. Offload to a blocking thread so the inner runtime
             // owns its own thread.
             let model_for_open = model.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open)
-            })
-            .await
-            .map_err(|e| format!("lance open join: {e}"))?
-            .map(Arc::new)
-            .map_err(|e| format!("open LanceStore: {e}"))
+            tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open))
+                .await
+                .map_err(|e| format!("lance open join: {e}"))?
+                .map(Arc::new)
+                .map_err(|e| format!("open LanceStore: {e}"))
         })
         .await
         .cloned()
@@ -169,29 +160,15 @@ const MEMORY_PUT_LOCK_CAP: std::num::NonZeroUsize = std::num::NonZeroUsize::new(
 type MemoryPutLockKey = (String, u8, String, String);
 
 #[cfg(feature = "memory")]
-type MemoryPutLockRegistry =
-    std::sync::Mutex<lru::LruCache<MemoryPutLockKey, Arc<tokio::sync::Mutex<()>>>>;
+type MemoryPutLockRegistry = std::sync::Mutex<lru::LruCache<MemoryPutLockKey, Arc<tokio::sync::Mutex<()>>>>;
 
 #[cfg(feature = "memory")]
-fn memory_put_lock(
-    scope: &str,
-    vis_byte: u8,
-    owner: &str,
-    key: &str,
-) -> Arc<tokio::sync::Mutex<()>> {
+fn memory_put_lock(scope: &str, vis_byte: u8, owner: &str, key: &str) -> Arc<tokio::sync::Mutex<()>> {
     use std::sync::OnceLock;
     static LOCKS: OnceLock<MemoryPutLockRegistry> = OnceLock::new();
-    let registry =
-        LOCKS.get_or_init(|| std::sync::Mutex::new(lru::LruCache::new(MEMORY_PUT_LOCK_CAP)));
-    let mut guard = registry
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let registry_key = (
-        scope.to_string(),
-        vis_byte,
-        owner.to_string(),
-        key.to_string(),
-    );
+    let registry = LOCKS.get_or_init(|| std::sync::Mutex::new(lru::LruCache::new(MEMORY_PUT_LOCK_CAP)));
+    let mut guard = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let registry_key = (scope.to_string(), vis_byte, owner.to_string(), key.to_string());
     // `get_or_insert` bumps recency on hit and inserts (evicting LRU) on miss,
     // returning a reference to the live `Arc` either way. We clone the `Arc`
     // while holding the std mutex — never across an `.await`.
@@ -223,10 +200,7 @@ fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
 }
 
 #[cfg(feature = "memory")]
-pub(super) async fn run_memory_put(
-    state: &ServerState,
-    params: MemoryPutParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
     // Serialize same-key puts within the SAME namespace so the read-modify-write below is
     // atomic w.r.t. `created_at` derivation and the Fjall + Lance stores cannot interleave.
@@ -295,10 +269,7 @@ pub(super) async fn run_memory_put(
 }
 
 #[cfg(feature = "memory")]
-pub(super) async fn run_memory_get(
-    state: &ServerState,
-    params: MemoryGetParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
     let store = state.store.read().await;
     let idx = store
@@ -320,10 +291,7 @@ pub(super) async fn run_memory_get(
 const MEMORY_PREVIEW_CHARS: usize = 200;
 
 #[cfg(feature = "memory")]
-pub(super) async fn run_memory_list(
-    state: &ServerState,
-    params: MemoryListParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParams) -> Result<CallToolResult, McpError> {
     use std::ops::Bound;
 
     use super::cursor::{Cursor, prefix_upper_bound};
@@ -339,11 +307,7 @@ pub(super) async fn run_memory_list(
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(&state.scope, vis_byte, owner);
     let upper = prefix_upper_bound(&ns_prefix);
-    let cursor_bytes = params
-        .cursor
-        .as_ref()
-        .map(|c| c.decode_fjall())
-        .transpose()?;
+    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let lower: Bound<Vec<u8>> = match cursor_bytes.as_deref() {
         Some(k) => Bound::Excluded(k.to_vec()),
         None => Bound::Included(ns_prefix.clone()),
@@ -440,14 +404,7 @@ pub(super) async fn run_memory_search(
     let scope = state.scope.clone();
     let tag = params.tag.clone();
     let hits_raw = tokio::task::spawn_blocking(move || {
-        lance.search_memory(
-            &scope,
-            &visibility,
-            &agent_id,
-            embedding,
-            limit,
-            tag.as_deref(),
-        )
+        lance.search_memory(&scope, &visibility, &agent_id, embedding, limit, tag.as_deref())
     })
     .await
     .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
@@ -490,11 +447,7 @@ pub(super) async fn run_memory_delete(
         // signal, so a Lance failure here is non-fatal — but it leaves Fjall and
         // Lance divergent (a stale embedding lingers), so log it rather than
         // swallow it silently with `.ok()`.
-        match tokio::task::spawn_blocking(move || {
-            lance.delete_memory(&scope, &visibility, &agent_id, &key)
-        })
-        .await
-        {
+        match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &visibility, &agent_id, &key)).await {
             Ok(Ok(_rows_deleted)) => {}
             Ok(Err(error)) => {
                 tracing::warn!(
@@ -512,9 +465,7 @@ pub(super) async fn run_memory_delete(
             }
         }
     }
-    json_result(&MemoryDeleteResponse {
-        deleted: deleted_fjall,
-    })
+    json_result(&MemoryDeleteResponse { deleted: deleted_fjall })
 }
 
 #[cfg(feature = "documents")]
@@ -527,43 +478,36 @@ pub(super) async fn run_search_documents(
     // entirely. Only pay the clone when overrides actually need to be layered.
     // We capture both the output format AND the reranker config in one pass so we
     // only clone once even when the reranker is enabled via TOML (no overrides).
-    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) =
-        if params.overrides.any() {
-            let mut effective = (*state.config).clone();
-            crate::config::layered::apply_documents_overrides(
-                &mut effective,
-                &params.overrides,
-                crate::config::ConfigSource::Mcp,
-                None,
-            );
-            let r = &effective.documents.reranker;
-            (
-                effective.documents.output.format,
-                r.enabled,
-                r.preset.clone(),
-                r.top_k,
-            )
-        } else {
-            let r = &state.config.documents.reranker;
-            (
-                state.config.documents.output.format,
-                r.enabled,
-                r.preset.clone(),
-                r.top_k,
-            )
-        };
+    let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = if params.overrides.any() {
+        let mut effective = (*state.config).clone();
+        crate::config::layered::apply_documents_overrides(
+            &mut effective,
+            &params.overrides,
+            crate::config::ConfigSource::Mcp,
+            None,
+        );
+        let r = &effective.documents.reranker;
+        (effective.documents.output.format, r.enabled, r.preset.clone(), r.top_k)
+    } else {
+        let r = &state.config.documents.reranker;
+        (
+            state.config.documents.output.format,
+            r.enabled,
+            r.preset.clone(),
+            r.top_k,
+        )
+    };
 
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
     let scope = state.scope.clone();
     let mime = params.mime_type.clone();
-    let hits_raw = tokio::task::spawn_blocking(move || {
-        lance.search_documents(&scope, embedding, limit, mime.as_deref())
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
+    let hits_raw =
+        tokio::task::spawn_blocking(move || lance.search_documents(&scope, embedding, limit, mime.as_deref()))
+            .await
+            .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
+            .map_err(|e| McpError::internal_error(format!("search_documents: {e}"), None))?;
     let mut hits: Vec<DocumentSearchHit> = hits_raw
         .into_iter()
         .map(|h| DocumentSearchHit {
@@ -607,9 +551,7 @@ pub(super) async fn run_search_documents(
             ));
         }
         let krz_config = xberg::core::config::RerankerConfig {
-            model: xberg::core::config::RerankerModelType::Preset {
-                name: reranker_preset,
-            },
+            model: xberg::core::config::RerankerModelType::Preset { name: reranker_preset },
             top_k: Some(reranker_top_k),
             ..Default::default()
         };
@@ -622,10 +564,7 @@ pub(super) async fn run_search_documents(
                 // substring-match the Display impl — better than the opaque `rerank: {e}`
                 // we had before, even if it occasionally misclassifies.
                 let msg = e.to_string();
-                let kind = if msg.contains("download")
-                    || msg.contains("HuggingFace")
-                    || msg.contains("model")
-                {
+                let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
                     "rerank model load"
                 } else {
                     "rerank inference"
@@ -734,8 +673,7 @@ async fn attach_doc_metadata(
     // Option<DocSummary>)` triple N times.
     type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
     let meta: ahash::AHashMap<String, Arc<DocMeta>> = tokio::task::spawn_blocking(move || {
-        let mut out: ahash::AHashMap<String, Arc<DocMeta>> =
-            ahash::AHashMap::with_capacity(pairs.len());
+        let mut out: ahash::AHashMap<String, Arc<DocMeta>> = ahash::AHashMap::with_capacity(pairs.len());
         for (path, blob_path) in pairs {
             if !blob_path.exists() {
                 continue;
@@ -749,10 +687,7 @@ async fn attach_doc_metadata(
             };
             match rmp_serde::from_slice::<crate::extract::doc::FileMapDoc>(&bytes) {
                 Ok(doc) => {
-                    out.insert(
-                        path,
-                        Arc::new((doc.keywords, doc.entities, doc.summary)),
-                    );
+                    out.insert(path, Arc::new((doc.keywords, doc.entities, doc.summary)));
                 }
                 Err(e) => {
                     tracing::warn!(path = %path, error = %e, "decode doc blob for metadata attach failed");
@@ -777,10 +712,7 @@ async fn attach_doc_metadata(
         // Apply filters first via borrows — drop the hit before any owned clone.
         if let Some(needle) = cat_needle.as_deref() {
             let ents = meta_arc.as_ref().map(|m| m.1.as_slice()).unwrap_or(&[]);
-            if !ents
-                .iter()
-                .any(|e| e.category.to_lowercase().contains(needle))
-            {
+            if !ents.iter().any(|e| e.category.to_lowercase().contains(needle)) {
                 return false;
             }
         }

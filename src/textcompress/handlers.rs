@@ -51,11 +51,7 @@ fn compress_git_status(text: &str) -> String {
         if let Some(rest) = line.strip_prefix("On branch ") {
             branch = rest.trim().to_string();
         } else if line.contains("ahead") || line.contains("behind") {
-            ahead_behind = line
-                .trim()
-                .trim_start_matches('(')
-                .trim_end_matches(')')
-                .to_string();
+            ahead_behind = line.trim().trim_start_matches('(').trim_end_matches(')').to_string();
         } else if line.trim() == "nothing to commit, working tree clean"
             || line.trim() == "nothing to commit (working directory clean)"
             || line.trim() == "nothing to commit, working directory clean"
@@ -97,18 +93,10 @@ fn compress_git_status(text: &str) -> String {
         parts.push(format!("{} staged: {}", staged.len(), staged.join(", ")));
     }
     if !unstaged.is_empty() {
-        parts.push(format!(
-            "{} unstaged: {}",
-            unstaged.len(),
-            unstaged.join(", ")
-        ));
+        parts.push(format!("{} unstaged: {}", unstaged.len(), unstaged.join(", ")));
     }
     if !untracked.is_empty() {
-        parts.push(format!(
-            "{} untracked: {}",
-            untracked.len(),
-            untracked.join(", ")
-        ));
+        parts.push(format!("{} untracked: {}", untracked.len(), untracked.join(", ")));
     }
     if parts.len() > 2 {
         parts.join("\n")
@@ -122,11 +110,7 @@ fn compress_git_log(text: &str) -> String {
     let mut out = Vec::new();
     for line in text.lines() {
         let s = line.trim();
-        if s.is_empty()
-            || s.starts_with("gpg:")
-            || s.starts_with("Primary key")
-            || s.starts_with("Merge:")
-        {
+        if s.is_empty() || s.starts_with("gpg:") || s.starts_with("Primary key") || s.starts_with("Merge:") {
             continue;
         }
         out.push(s.to_string());
@@ -157,10 +141,7 @@ fn compress_git_diff(text: &str) -> String {
             deletions += 1;
         }
     }
-    let mut out: Vec<String> = lines[..GIT_DIFF_KEEP_LINES]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut out: Vec<String> = lines[..GIT_DIFF_KEEP_LINES].iter().map(|s| s.to_string()).collect();
     out.push(format!(
         "... ({} more lines, +{additions}/-{deletions} total)",
         lines.len() - GIT_DIFF_KEEP_LINES
@@ -246,12 +227,7 @@ fn compress_cargo_build(text: &str) -> String {
 }
 
 /// Explicit runner summary markers (cargo, pytest short-summary, jest).
-const TEST_SUMMARY_MARKERS: [&str; 4] = [
-    "test result:",
-    "short test summary",
-    "tests:",
-    "test suites:",
-];
+const TEST_SUMMARY_MARKERS: [&str; 4] = ["test result:", "short test summary", "tests:", "test suites:"];
 
 /// Matches a `<digits> <result-word>` count phrase with only whitespace between
 /// the number and the word (`39 passed`, `2 failed`, `1 skipped`). The `\b`
@@ -392,10 +368,7 @@ fn compress_grep(text: &str) -> String {
 
     for (i, fname) in order.iter().enumerate() {
         if i >= GREP_MAX_FILES {
-            out.push(format!(
-                "... {} more files with matches omitted ...",
-                order.len() - i
-            ));
+            out.push(format!("... {} more files with matches omitted ...", order.len() - i));
             break;
         }
         let file_lines = &groups[fname];
@@ -414,10 +387,7 @@ fn compress_grep(text: &str) -> String {
         out.push(String::new());
         out.extend(no_file.iter().take(10).cloned());
         if no_file.len() > 10 {
-            out.push(format!(
-                "... {} more non-file lines omitted ...",
-                no_file.len() - 10
-            ));
+            out.push(format!("... {} more non-file lines omitted ...", no_file.len() - 10));
         }
     }
 
@@ -491,10 +461,7 @@ mod tests {
 
     #[test]
     fn grep_file_parse() {
-        assert_eq!(
-            parse_grep_file("src/a.rs:10:foo"),
-            Some("src/a.rs".to_string())
-        );
+        assert_eq!(parse_grep_file("src/a.rs:10:foo"), Some("src/a.rs".to_string()));
         assert_eq!(
             parse_grep_file("C:/win/path.rs:3:x"),
             Some("C:/win/path.rs".to_string())

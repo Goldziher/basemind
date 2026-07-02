@@ -39,12 +39,7 @@ pub enum WebCmd {
 }
 
 #[cfg(feature = "crawl")]
-pub async fn run(
-    server: &BasemindServer,
-    cmd: WebCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: WebCmd, json: bool, out: &mut impl Write) -> Result<()> {
     use crate::mcp::params::*;
 
     use super::render::emit;
@@ -56,11 +51,7 @@ pub async fn run(
     }
 
     match cmd {
-        WebCmd::Scrape {
-            url,
-            no_index,
-            scope,
-        } => {
+        WebCmd::Scrape { url, no_index, scope } => {
             let p = WebScrapeParams {
                 url: parse_url(&url)?,
                 index: !no_index,
@@ -85,9 +76,7 @@ pub async fn run(
             emit("web_crawl", &r, json, out)
         }
         WebCmd::Map { url } => {
-            let p = WebMapParams {
-                url: parse_url(&url)?,
-            };
+            let p = WebMapParams { url: parse_url(&url)? };
             let r = run_tool("web_map", server.web_map(Parameters(p)).await)?;
             emit("web_map", &r, json, out)
         }
@@ -95,13 +84,6 @@ pub async fn run(
 }
 
 #[cfg(not(feature = "crawl"))]
-pub async fn run(
-    _server: &BasemindServer,
-    _cmd: WebCmd,
-    _json: bool,
-    _out: &mut impl Write,
-) -> Result<()> {
-    anyhow::bail!(
-        "this `basemind` was built without the `crawl` feature; rebuild with --features crawl"
-    )
+pub async fn run(_server: &BasemindServer, _cmd: WebCmd, _json: bool, _out: &mut impl Write) -> Result<()> {
+    anyhow::bail!("this `basemind` was built without the `crawl` feature; rebuild with --features crawl")
 }

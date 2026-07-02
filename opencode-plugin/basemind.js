@@ -56,9 +56,7 @@ function readCommsInbox(directory, limit) {
 // Condense inbox messages to front-matter lines (subject/from/id) — never bodies,
 // to stay token-frugal, matching the session-start / inbox-notify hook contract.
 function formatMessages(messages) {
-  return messages
-    .map((message) => `  • [${message.subject}] from ${message.from} (id: ${message.id})`)
-    .join("\n");
+  return messages.map((message) => `  • [${message.subject}] from ${message.from} (id: ${message.id})`).join("\n");
 }
 
 // Resolve the skills directory across both install modes:
@@ -130,10 +128,7 @@ const hooks = ({ client, directory } = {}) => {
         if (messages.length === 0) {
           return;
         }
-        commsHighWaterMicros = Math.max(
-          commsHighWaterMicros,
-          ...messages.map((message) => message.ts_micros ?? 0),
-        );
+        commsHighWaterMicros = Math.max(commsHighWaterMicros, ...messages.map((message) => message.ts_micros ?? 0));
         await surface(
           `agent-comms: ${messages.length} recent message(s). Use room_post / message_get to participate.\n${formatMessages(messages)}`,
         );
@@ -148,10 +143,7 @@ const hooks = ({ client, directory } = {}) => {
         if (fresh.length === 0) {
           return;
         }
-        commsHighWaterMicros = Math.max(
-          commsHighWaterMicros,
-          ...fresh.map((message) => message.ts_micros ?? 0),
-        );
+        commsHighWaterMicros = Math.max(commsHighWaterMicros, ...fresh.map((message) => message.ts_micros ?? 0));
         await surface(
           `agent-comms: ${fresh.length} new message(s) since last turn. Reply with room_post {reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
         );

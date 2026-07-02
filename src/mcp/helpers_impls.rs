@@ -12,9 +12,7 @@ use rmcp::model::CallToolResult;
 
 use super::cursor::Cursor;
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
-use super::types_impls::{
-    FindImplementationsParams, FindImplementationsResponse, ImplementationHit,
-};
+use super::types_impls::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 
 /// Body of the `find_implementations` MCP tool. Performs a full-partition scan over the
 /// `implementations_by_trait` Fjall partition with a case-sensitive substring filter on
@@ -24,10 +22,7 @@ pub(super) fn run_find_implementations(
     params: FindImplementationsParams,
     cache: &super::MapCache,
 ) -> Result<CallToolResult, McpError> {
-    let limit = params
-        .limit
-        .unwrap_or(SEARCH_LIMIT_DEFAULT)
-        .min(SEARCH_LIMIT_MAX) as usize;
+    let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
     // No Fjall index (read-only session that lost the single-holder lock): answer
     // from the in-RAM impl index built off the L1 blobs.
@@ -35,11 +30,7 @@ pub(super) fn run_find_implementations(
         return find_implementations_in_ram(cache, params, limit);
     };
 
-    let cursor_bytes = params
-        .cursor
-        .as_ref()
-        .map(|c| c.decode_fjall())
-        .transpose()?;
+    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
     // Build the finder once for the full-partition substring scan.
     let finder = memchr::memmem::Finder::new(params.trait_name.as_bytes());
@@ -68,9 +59,7 @@ pub(super) fn run_find_implementations(
             .into_inner()
             .map_err(|e| McpError::internal_error(format!("impl index iter: {e}"), None))?;
 
-        let Some((trait_name, impl_type, rel, start_byte)) =
-            crate::index::keys::parse_impl_by_trait(&k)
-        else {
+        let Some((trait_name, impl_type, rel, start_byte)) = crate::index::keys::parse_impl_by_trait(&k) else {
             continue;
         };
 
@@ -147,11 +136,7 @@ pub(super) fn run_find_implementations(
 ///
 /// `start_byte` is the sole discriminant: an impl/class block has a unique byte offset
 /// within a file, so no additional fields are needed.
-fn resolve_impl_row_col(
-    cache: &super::MapCache,
-    rel: &crate::path::RelPath,
-    start_byte: u32,
-) -> (u32, u32) {
+fn resolve_impl_row_col(cache: &super::MapCache, rel: &crate::path::RelPath, start_byte: u32) -> (u32, u32) {
     let Some(l1) = cache.by_path.get(rel) else {
         return (0, 0);
     };
@@ -159,11 +144,7 @@ fn resolve_impl_row_col(
     // within a file, so start_byte is a sufficient key into l1.implementations. The
     // index writer encodes exactly one record per (path, start_byte) pair, making
     // trait_name and impl_type redundant discriminants here.
-    if let Some(imp) = l1
-        .implementations
-        .iter()
-        .find(|i| i.start_byte == start_byte)
-    {
+    if let Some(imp) = l1.implementations.iter().find(|i| i.start_byte == start_byte) {
         // start_row is 0-based in the blob; emit 1-based for line numbers per editor convention.
         (imp.start_row + 1, imp.start_col)
     } else {
@@ -189,11 +170,7 @@ fn find_implementations_in_ram(
             next_cursor: None,
         });
     };
-    let cursor_bytes = params
-        .cursor
-        .as_ref()
-        .map(|c| c.decode_fjall())
-        .transpose()?;
+    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let finder = memchr::memmem::Finder::new(params.trait_name.as_bytes());
     // Entries are sorted by key; resume = first entry strictly past the cursor.
     let start = match cursor_bytes.as_deref() {
@@ -282,18 +259,13 @@ struct InRamImpl {
 }
 
 impl InRamImplIndex {
-    pub(crate) fn build(
-        by_path: &std::collections::BTreeMap<crate::path::RelPath, crate::extract::FileMapL1>,
-    ) -> Self {
+    pub(crate) fn build(by_path: &std::collections::BTreeMap<crate::path::RelPath, crate::extract::FileMapL1>) -> Self {
         let mut entries: Vec<InRamImpl> = Vec::new();
         for (rel, l1) in by_path {
             for imp in &l1.implementations {
-                if let Some(key) = crate::index::keys::impl_by_trait(
-                    &imp.trait_name,
-                    &imp.impl_type,
-                    rel,
-                    imp.start_byte,
-                ) {
+                if let Some(key) =
+                    crate::index::keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte)
+                {
                     entries.push(InRamImpl {
                         key,
                         trait_name: imp.trait_name.clone(),

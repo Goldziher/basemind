@@ -141,8 +141,7 @@ pub fn encode_commit_meta(
     summary: &[u8],
     files: &[(u32, u8)],
 ) -> Vec<u8> {
-    let mut out =
-        Vec::with_capacity(20 + 16 + author.len() + email.len() + summary.len() + files.len() * 2);
+    let mut out = Vec::with_capacity(20 + 16 + author.len() + email.len() + summary.len() + files.len() * 2);
     out.extend_from_slice(sha20);
     write_uvarint(&mut out, zigzag(author_time_unix));
     write_bytes(&mut out, author);
@@ -311,14 +310,7 @@ mod tests {
     fn commit_meta_round_trips() {
         let sha = [7u8; 20];
         let files = vec![(5u32, 1u8), (2, 0), (100, 2)]; // unsorted on input
-        let buf = encode_commit_meta(
-            &sha,
-            1_700_000_000,
-            b"Ada",
-            b"ada@x.io",
-            b"fix: thing",
-            &files,
-        );
+        let buf = encode_commit_meta(&sha, 1_700_000_000, b"Ada", b"ada@x.io", b"fix: thing", &files);
         let decoded = decode_commit_meta(&buf).expect("decodes");
         assert_eq!(decoded.sha20, sha);
         assert_eq!(decoded.author_time_unix, 1_700_000_000);
@@ -333,14 +325,7 @@ mod tests {
     fn commit_meta_head_decodes_without_files() {
         let sha = [9u8; 20];
         let files = vec![(5u32, 1u8), (2, 0), (100, 2)];
-        let buf = encode_commit_meta(
-            &sha,
-            1_700_000_000,
-            b"Ada",
-            b"ada@x.io",
-            b"fix: thing",
-            &files,
-        );
+        let buf = encode_commit_meta(&sha, 1_700_000_000, b"Ada", b"ada@x.io", b"fix: thing", &files);
         let head = decode_commit_meta_head(&buf).expect("head decodes");
         assert_eq!(head.sha20, sha);
         assert_eq!(head.author_time_unix, 1_700_000_000);
@@ -352,10 +337,7 @@ mod tests {
         assert_eq!(head.sha20, full.sha20);
         assert_eq!(head.author_email, full.author_email);
         assert_eq!(head.summary, full.summary);
-        assert!(
-            decode_commit_meta_head(&buf[..5]).is_none(),
-            "truncated → None"
-        );
+        assert!(decode_commit_meta_head(&buf[..5]).is_none(), "truncated → None");
     }
 
     #[test]

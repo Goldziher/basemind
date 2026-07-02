@@ -8,9 +8,7 @@
 //! helpers) can map them to MCP errors at the boundary.
 
 use anyhow::{Context, Result};
-use rmux_sdk::{
-    EnsureSession, Input, Pane, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec,
-};
+use rmux_sdk::{EnsureSession, Input, Pane, Rmux, RmuxError, Session, SessionName, TerminalSizeSpec};
 
 /// Fallback terminal geometry for a headless session. Wide enough that typical
 /// command output is not wrapped, tall enough to hold a screenful for snapshot
@@ -66,16 +64,8 @@ pub struct SpawnSpec {
 pub async fn spawn_session(rmux: &Rmux, spec: SpawnSpec) -> Result<Session> {
     // Apply the documented fallback for a degenerate zero-sized request, so the daemon never gets a
     // 0×0 PTY even if a caller threads through an unset geometry.
-    let cols = if spec.cols == 0 {
-        DEFAULT_COLS
-    } else {
-        spec.cols
-    };
-    let rows = if spec.rows == 0 {
-        DEFAULT_ROWS
-    } else {
-        spec.rows
-    };
+    let cols = if spec.cols == 0 { DEFAULT_COLS } else { spec.cols };
+    let rows = if spec.rows == 0 { DEFAULT_ROWS } else { spec.rows };
     let mut ensure = EnsureSession::named(spec.name)
         .detached(true)
         .size(TerminalSizeSpec::new(cols, rows));
@@ -92,10 +82,7 @@ pub async fn spawn_session(rmux: &Rmux, spec: SpawnSpec) -> Result<Session> {
         ensure = ensure.environment(spec.environment);
     }
 
-    ensure
-        .ensure(rmux)
-        .await
-        .context("create detached rmux session")
+    ensure.ensure(rmux).await.context("create detached rmux session")
 }
 
 /// Send `text` to the session's primary pane.
@@ -104,14 +91,8 @@ pub async fn spawn_session(rmux: &Rmux, spec: SpawnSpec) -> Result<Session> {
 /// line. Targets the first pane of the first window (`pane(0, 0)`).
 pub async fn send_text(session: &Session, text: &str, enter: bool) -> Result<()> {
     let pane = session.pane(0, 0);
-    let payload = if enter {
-        format!("{text}\n")
-    } else {
-        text.to_string()
-    };
-    pane.send_text(payload)
-        .await
-        .context("send text to rmux pane")
+    let payload = if enter { format!("{text}\n") } else { text.to_string() };
+    pane.send_text(payload).await.context("send text to rmux pane")
 }
 
 /// Capture the currently-visible text of the session's primary pane.
@@ -122,10 +103,7 @@ pub async fn send_text(session: &Session, text: &str, enter: bool) -> Result<()>
 /// screen. Trailing all-blank rows are always trimmed.
 pub async fn capture(session: &Session, lines: Option<usize>) -> Result<String> {
     let pane = session.pane(0, 0);
-    let snapshot = pane
-        .snapshot()
-        .await
-        .context("snapshot rmux pane for capture")?;
+    let snapshot = pane.snapshot().await.context("snapshot rmux pane for capture")?;
     let mut rows: Vec<String> = snapshot.visible_lines();
 
     // Drop trailing blank rows — a 50-row pane running a short command is mostly
@@ -157,12 +135,7 @@ pub async fn list_sessions(rmux: &Rmux) -> Result<Vec<SessionName>> {
 /// A partial failure (some panes rejected the input) is surfaced as an error that
 /// reports how many of the targeted panes succeeded versus failed, so the caller
 /// learns the broadcast was not fully delivered rather than silently losing it.
-pub async fn broadcast(
-    rmux: &Rmux,
-    names: &[SessionName],
-    text: &str,
-    enter: bool,
-) -> Result<usize> {
+pub async fn broadcast(rmux: &Rmux, names: &[SessionName], text: &str, enter: bool) -> Result<usize> {
     if names.is_empty() {
         return Ok(0);
     }
@@ -176,11 +149,7 @@ pub async fn broadcast(
         panes.push(session.pane(0, 0));
     }
 
-    let payload = if enter {
-        format!("{text}\n")
-    } else {
-        text.to_string()
-    };
+    let payload = if enter { format!("{text}\n") } else { text.to_string() };
 
     match rmux.broadcast(&panes, Input::text(&payload)).await {
         Ok(result) => Ok(result.len()),

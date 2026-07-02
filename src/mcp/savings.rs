@@ -89,18 +89,13 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         // reading the top hits. The grep emits the matching lines (≈ our response
         // payload) and the agent reads a few top files to confirm — modelled as
         // the response times GREP_READ_MULTIPLIER, independent of corpus size.
-        "search_symbols" => (
-            actual.saturating_mul(GREP_READ_MULTIPLIER),
-            "grep_plus_read_top_hits",
-        ),
+        "search_symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
 
         // Reference / caller lookups: same grep-output-plus-confirm model as
         // search_symbols. `find_references` already returns the call sites inline,
         // so the payload is the grep output and the multiplier covers reading a
         // few sites to confirm. Corpus-independent.
-        "find_references" | "find_callers" => {
-            (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits")
-        }
+        "find_references" | "find_callers" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
         // Implementation lookups: alternative is `rg 'impl.*Trait'` / `grep class.*extends`
         // plus manual filtering across languages. Same grep-output-plus-confirm model —
@@ -138,26 +133,17 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         // search_documents: the agent's alternative is reading whole documents
         // to locate the relevant passages. The response is just the matching
         // chunks, so model the saving like outline (~5× the snippet).
-        "search_documents" => (
-            actual.saturating_mul(DOCUMENT_READ_MULTIPLIER),
-            "full_document_read",
-        ),
+        "search_documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
         // list_files: alternative is `find` / `ls -R` then reading the listing
         // the agent filters by hand. basemind returns the filtered set, so a
         // modest 2× over the response covers the extra listing read.
-        "list_files" => (
-            actual.saturating_mul(LIST_FILES_READ_MULTIPLIER),
-            "find_plus_filter",
-        ),
+        "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
         // Web ingestion: alternative is the agent browsing the page(s) and
         // pasting raw page text into context. The extracted response is a
         // fraction of that — model conservatively at 3× the payload.
-        "web_scrape" | "web_crawl" | "web_map" => (
-            actual.saturating_mul(WEB_INGEST_MULTIPLIER),
-            "manual_browse_paste",
-        ),
+        "web_scrape" | "web_crawl" | "web_map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
         // Tools where basemind is the only practical path — no honest grep+read
         // baseline. Record the call but don't claim savings. The git tools have
@@ -206,14 +192,8 @@ mod tests {
     /// Used by the structural tests so they pass under `documents` (real o200k) too.
     fn assert_grep_model(s: &SavingsRow, expected_baseline: &str) {
         assert_eq!(s.baseline, expected_baseline);
-        assert_eq!(
-            s.baseline_tokens,
-            s.actual_tokens.saturating_mul(GREP_READ_MULTIPLIER)
-        );
-        assert_eq!(
-            s.est_tokens_saved,
-            s.baseline_tokens.saturating_sub(s.actual_tokens)
-        );
+        assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(GREP_READ_MULTIPLIER));
+        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
     }
 
     #[test]
@@ -311,10 +291,7 @@ mod tests {
         let s = estimate_from_text("search_documents", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline, "full_document_read");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
-        assert_eq!(
-            s.est_tokens_saved,
-            s.baseline_tokens.saturating_sub(s.actual_tokens)
-        );
+        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
         #[cfg(not(feature = "documents"))]
         {
             // 400 bytes → 100 actual; baseline = 100 * 5 = 500; saved = 400.
@@ -329,10 +306,7 @@ mod tests {
         let s = estimate_from_text("list_files", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline, "find_plus_filter");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(2));
-        assert_eq!(
-            s.est_tokens_saved,
-            s.baseline_tokens.saturating_sub(s.actual_tokens)
-        );
+        assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
         #[cfg(not(feature = "documents"))]
         {
             // 400 bytes → 100 actual; baseline = 100 * 2 = 200; saved = 100.

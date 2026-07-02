@@ -29,10 +29,7 @@ pub fn documents_schema(dim: u16) -> SchemaRef {
         Field::new("byte_end", DataType::UInt32, false),
         Field::new(
             "embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                i32::from(dim),
-            ),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), i32::from(dim)),
             false,
         ),
     ]))
@@ -61,22 +58,11 @@ pub fn memory_schema(dim: u16) -> SchemaRef {
         Field::new("agent_id", DataType::Utf8, false),
         Field::new(
             "embedding",
-            DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)),
-                i32::from(dim),
-            ),
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), i32::from(dim)),
             false,
         ),
-        Field::new(
-            "created_at",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            false,
-        ),
-        Field::new(
-            "updated_at",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            false,
-        ),
+        Field::new("created_at", DataType::Timestamp(TimeUnit::Microsecond, None), false),
+        Field::new("updated_at", DataType::Timestamp(TimeUnit::Microsecond, None), false),
     ]))
 }
 

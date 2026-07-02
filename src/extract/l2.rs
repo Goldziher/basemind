@@ -2,9 +2,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, QueryMatch};
 
 use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER};
-use crate::lang::{
-    LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser,
-};
+use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
 
 pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
     // Use the timeout-bounded parse so L2 gets the same protection as L1 against
@@ -14,9 +12,7 @@ pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError
         ParseOutcome::Ok(t) => t,
         ParseOutcome::Failed => return Err(ExtractError::ParseFailure),
         ParseOutcome::TimedOut => {
-            return Err(ExtractError::ParseTimeout(
-                crate::lang::DEFAULT_PARSE_TIMEOUT,
-            ));
+            return Err(ExtractError::ParseTimeout(crate::lang::DEFAULT_PARSE_TIMEOUT));
         }
     };
     extract_l2_from_tree(lang, &tree, source)
@@ -51,11 +47,7 @@ pub(crate) fn extract_l2_from_tree(
     })
 }
 
-fn run_calls(
-    lang: LangId,
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Result<Vec<Call>, ExtractError> {
+fn run_calls(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<Call>, ExtractError> {
     let Some(q) = try_get_query(lang, QueryKind::Calls)? else {
         return Ok(Vec::new());
     };
@@ -70,11 +62,7 @@ fn run_calls(
     Ok(out)
 }
 
-fn run_docs(
-    lang: LangId,
-    root: tree_sitter::Node,
-    source: &[u8],
-) -> Result<Vec<DocComment>, ExtractError> {
+fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<DocComment>, ExtractError> {
     let Some(q) = try_get_query(lang, QueryKind::Docs)? else {
         return Ok(Vec::new());
     };
@@ -220,14 +208,7 @@ fn scan_body_line(line: &[u8], line_start: usize, row: u32, out: &mut Vec<Call>)
     scan_inline_tags(line, line_start, row, out);
 }
 
-fn push_call(
-    out: &mut Vec<Call>,
-    callee: String,
-    line_start: usize,
-    col: usize,
-    span: usize,
-    row: u32,
-) {
+fn push_call(out: &mut Vec<Call>, callee: String, line_start: usize, col: usize, span: usize, row: u32) {
     let start = line_start + col;
     out.push(Call {
         callee,
@@ -269,14 +250,7 @@ fn scan_standard_links(line: &[u8], line_start: usize, row: u32, out: &mut Vec<C
         let dest_end = dest_start + close_rel;
         if let Some(target) = mdlink_target(&line[dest_start..dest_end]) {
             // Anchor the call at the `(` — precise enough for a backlink and cheap to compute.
-            push_call(
-                out,
-                target,
-                line_start,
-                dest_start,
-                dest_end - dest_start,
-                row,
-            );
+            push_call(out, target, line_start, dest_start, dest_end - dest_start, row);
         }
         i = dest_end + 1;
     }
@@ -329,13 +303,7 @@ fn is_tag_char(b: u8) -> bool {
 /// Parse a frontmatter line for `tags:` entries, emitting each as a `#tag` call. Handles the inline
 /// `tags: [a, b]` / `tags: a, b` form and the block form (`tags:` followed by `  - a` list lines);
 /// `in_tags_block` carries the block state across lines. Any other unindented `key:` ends the block.
-fn scan_frontmatter_line(
-    line: &[u8],
-    line_start: usize,
-    row: u32,
-    in_tags_block: &mut bool,
-    out: &mut Vec<Call>,
-) {
+fn scan_frontmatter_line(line: &[u8], line_start: usize, row: u32, in_tags_block: &mut bool, out: &mut Vec<Call>) {
     let Ok(text) = std::str::from_utf8(line) else {
         return;
     };
@@ -357,20 +325,13 @@ fn scan_frontmatter_line(
 
     let key = trimmed.split(':').next().unwrap_or("");
     if key == "tags" || key == "tag" {
-        let rest = trimmed
-            .strip_prefix(key)
-            .unwrap_or("")
-            .trim_start_matches(':')
-            .trim();
+        let rest = trimmed.strip_prefix(key).unwrap_or("").trim_start_matches(':').trim();
         if rest.is_empty() {
             *in_tags_block = true; // block/list form follows on subsequent lines
             return;
         }
         // Inline form: `[a, b]` or `a, b`.
-        let inner = rest
-            .strip_prefix('[')
-            .and_then(|r| r.strip_suffix(']'))
-            .unwrap_or(rest);
+        let inner = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(rest);
         for part in inner.split(',') {
             emit_tag_value(part.trim(), line_start, indent, row, out);
         }
@@ -458,19 +419,13 @@ mod markdown_ref_tests {
 
     #[test]
     fn ignores_unclosed_and_empty_wikilinks() {
-        assert_eq!(
-            callees("an [[unclosed link\nand [[ ]] empty\n"),
-            Vec::<String>::new()
-        );
+        assert_eq!(callees("an [[unclosed link\nand [[ ]] empty\n"), Vec::<String>::new());
     }
 
     #[test]
     fn extracts_standard_note_links_and_skips_external_urls() {
         let src = "[to a note](My%20Note.md) [image](img/Diagram.png) [site](https://example.com) [top](#heading)\n";
-        assert_eq!(
-            callees(src),
-            vec!["My Note".to_string(), "Diagram.png".to_string()]
-        );
+        assert_eq!(callees(src), vec!["My Note".to_string(), "Diagram.png".to_string()]);
     }
 
     #[test]
@@ -479,11 +434,7 @@ mod markdown_ref_tests {
         let src = "Tagged #project and #area/sub here. Not a#tag, not #123, anchor [[N#Head]].\n";
         assert_eq!(
             callees(src),
-            vec![
-                "N".to_string(),
-                "#project".to_string(),
-                "#area/sub".to_string()
-            ]
+            vec!["N".to_string(), "#project".to_string(), "#area/sub".to_string()]
         );
     }
 
@@ -498,11 +449,7 @@ mod markdown_ref_tests {
         let inline = "---\ntitle: Note\ntags: [alpha, beta]\n---\nbody #gamma\n";
         assert_eq!(
             callees(inline),
-            vec![
-                "#alpha".to_string(),
-                "#beta".to_string(),
-                "#gamma".to_string()
-            ]
+            vec!["#alpha".to_string(), "#beta".to_string(), "#gamma".to_string()]
         );
         let block = "---\ntags:\n  - one\n  - two\naliases: [x]\n---\n";
         assert_eq!(callees(block), vec!["#one".to_string(), "#two".to_string()]);

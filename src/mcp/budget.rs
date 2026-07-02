@@ -40,10 +40,7 @@ pub(super) struct Budgeted<T> {
 /// there is no per-item re-serialize in the accumulation loop.
 pub(super) fn apply_budget<T: Serialize>(items: Vec<T>, max_tokens: Option<u32>) -> Budgeted<T> {
     let Some(budget) = max_tokens.map(u64::from) else {
-        return Budgeted {
-            items,
-            budgeted: false,
-        };
+        return Budgeted { items, budgeted: false };
     };
 
     let total = items.len();

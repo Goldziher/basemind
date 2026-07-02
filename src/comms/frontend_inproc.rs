@@ -90,19 +90,12 @@ impl InProcFrontend {
         tokio::spawn(async move {
             serve_link(broker, link, to_client).await;
         });
-        InProcClientLink {
-            to_broker,
-            from_broker,
-        }
+        InProcClientLink { to_broker, from_broker }
     }
 }
 
 impl CommsFrontend for InProcFrontend {
-    async fn serve(
-        self: Box<Self>,
-        _broker: Arc<Broker>,
-        mut shutdown: watch::Receiver<bool>,
-    ) -> std::io::Result<()> {
+    async fn serve(self: Box<Self>, _broker: Arc<Broker>, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
         // The in-process front-end is driven by explicit `connect()` calls, so `serve` just
         // parks until shutdown — it exists to satisfy the trait for symmetry with the UDS
         // front-end.
@@ -166,10 +159,7 @@ mod tests {
             })
             .await
             .expect("hello");
-            assert!(matches!(
-                expect_response(link).await,
-                CommsResponse::Welcome { .. }
-            ));
+            assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
         }
 
         // Create a shared global room and have the reader subscribe + join.
@@ -182,19 +172,13 @@ mod tests {
             })
             .await
             .expect("create");
-        assert!(matches!(
-            expect_response(&mut writer).await,
-            CommsResponse::Room(_)
-        ));
+        assert!(matches!(expect_response(&mut writer).await, CommsResponse::Room(_)));
 
         reader
             .send_request(CommsRequest::Join { room: room.clone() })
             .await
             .expect("join");
-        assert!(matches!(
-            expect_response(&mut reader).await,
-            CommsResponse::Ok
-        ));
+        assert!(matches!(expect_response(&mut reader).await, CommsResponse::Ok));
 
         // Writer posts.
         writer
@@ -262,11 +246,7 @@ mod tests {
             .expect("inbox");
         match expect_response(&mut reader).await {
             CommsResponse::Inbox { messages, .. } => {
-                assert_eq!(
-                    messages.len(),
-                    1,
-                    "the posted message is unread for the reader"
-                );
+                assert_eq!(messages.len(), 1, "the posted message is unread for the reader");
                 assert_eq!(messages[0].meta.subject, "status");
             }
             other => panic!("expected Inbox, got {other:?}"),
@@ -313,10 +293,7 @@ mod tests {
             })
             .await
             .expect("hello");
-            assert!(matches!(
-                expect_response(link).await,
-                CommsResponse::Welcome { .. }
-            ));
+            assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
         }
 
         // A global room both agents auto-join (Global scope matches every chain).
@@ -329,10 +306,7 @@ mod tests {
             })
             .await
             .expect("create");
-        assert!(matches!(
-            expect_response(&mut writer).await,
-            CommsResponse::Room(_)
-        ));
+        assert!(matches!(expect_response(&mut writer).await, CommsResponse::Room(_)));
 
         // The author posts to the room.
         writer
@@ -364,17 +338,9 @@ mod tests {
             .await
             .expect("inbox");
         match expect_response(&mut writer).await {
-            CommsResponse::Inbox {
-                messages, unread, ..
-            } => {
-                assert!(
-                    messages.is_empty(),
-                    "an agent's own post must not appear in its inbox"
-                );
-                assert_eq!(
-                    unread, 0,
-                    "self-authored messages are not unread for the author"
-                );
+            CommsResponse::Inbox { messages, unread, .. } => {
+                assert!(messages.is_empty(), "an agent's own post must not appear in its inbox");
+                assert_eq!(unread, 0, "self-authored messages are not unread for the author");
             }
             other => panic!("expected Inbox, got {other:?}"),
         }

@@ -346,19 +346,11 @@ mod tests {
         for path in DOCUMENT_LEAVES {
             provenance.insert(path, ConfigSource::Default);
         }
-        apply_documents_overrides(
-            &mut config,
-            &overrides,
-            ConfigSource::Cli,
-            Some(&mut provenance),
-        );
+        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
 
         // The llm override survived despite the invalid output_format.
         assert_eq!(config.llm.model, "gpt-test");
-        assert_eq!(
-            provenance.get("llm.model").copied(),
-            Some(ConfigSource::Cli)
-        );
+        assert_eq!(provenance.get("llm.model").copied(), Some(ConfigSource::Cli));
         // The invalid output_format recorded no provenance (field was skipped).
         assert_eq!(
             provenance.get("documents.output.format").copied(),
@@ -379,12 +371,7 @@ mod tests {
         for path in DOCUMENT_LEAVES {
             provenance.insert(path, ConfigSource::Default);
         }
-        apply_documents_overrides(
-            &mut config,
-            &overrides,
-            ConfigSource::Cli,
-            Some(&mut provenance),
-        );
+        apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
 
         assert_eq!(config.documents.output.format, OutputFormat::Toon);
         assert_eq!(

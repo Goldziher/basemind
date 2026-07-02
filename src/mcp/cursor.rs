@@ -45,8 +45,7 @@ impl Cursor {
 
     /// Decode a Fjall cursor back into the raw key bytes.
     pub(super) fn decode_fjall(&self) -> Result<Vec<u8>, McpError> {
-        base64url_decode(&self.0)
-            .map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))
+        base64url_decode(&self.0).map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))
     }
 
     /// Encode an in-memory (offset, snapshot_id) cursor. `pub(crate)` so the
@@ -64,11 +63,10 @@ impl Cursor {
 
     /// Decode an in-memory cursor back into `(offset, snapshot_id)`.
     pub(super) fn decode_in_memory(&self) -> Result<(u64, u32), McpError> {
-        let bytes = base64url_decode(&self.0)
-            .map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))?;
-        let payload: InMemCursor = rmp_serde::from_slice(&bytes).map_err(|e| {
-            McpError::invalid_params(format!("invalid in-memory cursor payload: {e}"), None)
-        })?;
+        let bytes =
+            base64url_decode(&self.0).map_err(|e| McpError::invalid_params(format!("invalid cursor: {e}"), None))?;
+        let payload: InMemCursor = rmp_serde::from_slice(&bytes)
+            .map_err(|e| McpError::invalid_params(format!("invalid in-memory cursor payload: {e}"), None))?;
         Ok((payload.o, payload.s))
     }
 }
@@ -192,10 +190,7 @@ mod tests {
     fn prefix_upper_bound_increments_last_byte() {
         // Use a non-ASCII tail byte so the dictionary-based typos linter
         // doesn't object to plausible-looking three-letter test strings.
-        assert_eq!(
-            prefix_upper_bound(b"prefix\x01"),
-            Some(b"prefix\x02".to_vec())
-        );
+        assert_eq!(prefix_upper_bound(b"prefix\x01"), Some(b"prefix\x02".to_vec()));
     }
 
     #[test]

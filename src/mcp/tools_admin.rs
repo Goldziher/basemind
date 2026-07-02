@@ -12,9 +12,7 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types::{
-    CacheClearParams, CacheGcParams, CacheStatsParams, RescanParams, TelemetrySummaryParams,
-};
+use super::types::{CacheClearParams, CacheGcParams, CacheStatsParams, RescanParams, TelemetrySummaryParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
@@ -42,13 +40,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let progress_token = meta.get_progress_token();
         let __result: Result<CallToolResult, McpError> = async {
-            super::helpers_admin::run_rescan(
-                std::sync::Arc::clone(&self.state),
-                p,
-                &peer,
-                progress_token,
-            )
-            .await
+            super::helpers_admin::run_rescan(std::sync::Arc::clone(&self.state), p, &peer, progress_token).await
         }
         .await;
         record_call(&self.state, "rescan", &__params_json, __started, &__result);
@@ -70,13 +62,7 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> =
             async { super::helpers::run_telemetry_summary(&self.state, p).await }.await;
-        record_call(
-            &self.state,
-            "telemetry_summary",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "telemetry_summary", &__params_json, __started, &__result);
         __result
     }
 
@@ -96,17 +82,9 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            super::helpers_admin::run_cache_stats(std::sync::Arc::clone(&self.state), p).await
-        }
-        .await;
-        record_call(
-            &self.state,
-            "cache_stats",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> =
+            async { super::helpers_admin::run_cache_stats(std::sync::Arc::clone(&self.state), p).await }.await;
+        record_call(&self.state, "cache_stats", &__params_json, __started, &__result);
         __result
     }
 
@@ -123,23 +101,12 @@ impl BasemindServer {
             open_world_hint = false
         )
     )]
-    pub(crate) async fn cache_gc(
-        &self,
-        Parameters(p): Parameters<CacheGcParams>,
-    ) -> Result<CallToolResult, McpError> {
+    pub(crate) async fn cache_gc(&self, Parameters(p): Parameters<CacheGcParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            super::helpers_admin::run_cache_gc(std::sync::Arc::clone(&self.state), p).await
-        }
-        .await;
-        record_call(
-            &self.state,
-            "cache_gc",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> =
+            async { super::helpers_admin::run_cache_gc(std::sync::Arc::clone(&self.state), p).await }.await;
+        record_call(&self.state, "cache_gc", &__params_json, __started, &__result);
         __result
     }
 
@@ -150,11 +117,7 @@ impl BasemindServer {
             rescan rebuilds it). `views`/`all` would yank the live Fjall index from under the \
             server, so they are refused in-process — stop it and run `basemind cache clear \
             --component views|all`. Returns the component and whether it was cleared.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = true,
-            open_world_hint = false
-        )
+        annotations(read_only_hint = false, destructive_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn cache_clear(
         &self,
@@ -162,17 +125,9 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            super::helpers_admin::run_cache_clear(std::sync::Arc::clone(&self.state), p).await
-        }
-        .await;
-        record_call(
-            &self.state,
-            "cache_clear",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        let __result: Result<CallToolResult, McpError> =
+            async { super::helpers_admin::run_cache_clear(std::sync::Arc::clone(&self.state), p).await }.await;
+        record_call(&self.state, "cache_clear", &__params_json, __started, &__result);
         __result
     }
 }

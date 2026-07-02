@@ -24,10 +24,7 @@ pub struct DocumentsCliOverrides {
     pub enabled: Option<bool>,
 
     /// Override `documents.max_characters` (chunk size).
-    #[arg(
-        long = "documents-max-characters",
-        env = "BASEMIND_DOCUMENTS_MAX_CHARACTERS"
-    )]
+    #[arg(long = "documents-max-characters", env = "BASEMIND_DOCUMENTS_MAX_CHARACTERS")]
     pub max_characters: Option<usize>,
 
     /// Override `documents.overlap` (chunk overlap).
@@ -35,10 +32,7 @@ pub struct DocumentsCliOverrides {
     pub overlap: Option<usize>,
 
     /// Override `documents.embedding_preset`.
-    #[arg(
-        long = "documents-embedding-preset",
-        env = "BASEMIND_DOCUMENTS_EMBEDDING_PRESET"
-    )]
+    #[arg(long = "documents-embedding-preset", env = "BASEMIND_DOCUMENTS_EMBEDDING_PRESET")]
     pub embedding_preset: Option<String>,
 
     /// Override `documents.embed` (write embeddings to LanceDB).
@@ -67,31 +61,19 @@ pub struct DocumentsCliOverrides {
     pub language_detect_multiple: Option<bool>,
 
     /// Override `documents.reranker.enabled`.
-    #[arg(
-        long = "documents-reranker-enabled",
-        env = "BASEMIND_DOCUMENTS_RERANKER_ENABLED"
-    )]
+    #[arg(long = "documents-reranker-enabled", env = "BASEMIND_DOCUMENTS_RERANKER_ENABLED")]
     pub reranker_enabled: Option<bool>,
 
     /// Override `documents.reranker.preset`.
-    #[arg(
-        long = "documents-reranker-preset",
-        env = "BASEMIND_DOCUMENTS_RERANKER_PRESET"
-    )]
+    #[arg(long = "documents-reranker-preset", env = "BASEMIND_DOCUMENTS_RERANKER_PRESET")]
     pub reranker_preset: Option<String>,
 
     /// Override `documents.reranker.top_k`.
-    #[arg(
-        long = "documents-reranker-top-k",
-        env = "BASEMIND_DOCUMENTS_RERANKER_TOP_K"
-    )]
+    #[arg(long = "documents-reranker-top-k", env = "BASEMIND_DOCUMENTS_RERANKER_TOP_K")]
     pub reranker_top_k: Option<usize>,
 
     /// Override `documents.keywords.enabled`.
-    #[arg(
-        long = "documents-keywords-enabled",
-        env = "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED"
-    )]
+    #[arg(long = "documents-keywords-enabled", env = "BASEMIND_DOCUMENTS_KEYWORDS_ENABLED")]
     pub keywords_enabled: Option<bool>,
 
     /// Override `documents.keywords.max_keywords` (maximum keywords per document).
@@ -102,10 +84,7 @@ pub struct DocumentsCliOverrides {
     pub keywords_max_keywords: Option<usize>,
 
     /// Override `documents.keywords.min_score`.
-    #[arg(
-        long = "documents-keywords-min-score",
-        env = "BASEMIND_DOCUMENTS_KEYWORDS_MIN_SCORE"
-    )]
+    #[arg(long = "documents-keywords-min-score", env = "BASEMIND_DOCUMENTS_KEYWORDS_MIN_SCORE")]
     pub keywords_min_score: Option<f32>,
 
     /// Override `documents.ner.enabled`.
@@ -134,10 +113,7 @@ pub struct DocumentsCliOverrides {
     pub summarization_max_tokens: Option<u32>,
 
     /// Override `documents.output.format` (json / toon).
-    #[arg(
-        long = "documents-output-format",
-        env = "BASEMIND_DOCUMENTS_OUTPUT_FORMAT"
-    )]
+    #[arg(long = "documents-output-format", env = "BASEMIND_DOCUMENTS_OUTPUT_FORMAT")]
     pub output_format: Option<String>,
 
     /// Override `llm.model` (liter-llm routing format, e.g. `openai/gpt-4o`).
@@ -147,11 +123,7 @@ pub struct DocumentsCliOverrides {
     /// Override `llm.api_key` (literal). Use a shell expansion against an env var
     /// (`--llm-api-key "$OPENAI_API_KEY"`) rather than a hard-coded literal.
     /// `hide_env_values = true` keeps the resolved value out of `--help` output.
-    #[arg(
-        long = "llm-api-key",
-        env = "BASEMIND_LLM_API_KEY",
-        hide_env_values = true
-    )]
+    #[arg(long = "llm-api-key", env = "BASEMIND_LLM_API_KEY", hide_env_values = true)]
     pub llm_api_key: Option<String>,
 
     /// Override `llm.base_url` (for self-hosted vLLM, Azure OpenAI, …).

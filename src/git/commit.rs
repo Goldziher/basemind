@@ -8,19 +8,12 @@
 
 use super::*;
 
-pub(super) fn build_commit_info(
-    local: &gix::Repository,
-    id: gix::ObjectId,
-    include_files: bool,
-) -> Option<CommitInfo> {
+pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, include_files: bool) -> Option<CommitInfo> {
     let commit = local.find_commit(id).ok()?;
     let sha = id.to_string();
     let short_sha = sha[..7.min(sha.len())].to_string();
     let message = commit.message().ok();
-    let summary = message
-        .as_ref()
-        .map(|m| m.summary().to_string())
-        .unwrap_or_default();
+    let summary = message.as_ref().map(|m| m.summary().to_string()).unwrap_or_default();
     // Everything after the summary line; `None` (summary-only commit) → empty.
     let body = message
         .as_ref()
@@ -28,12 +21,8 @@ pub(super) fn build_commit_info(
         .map(|b| b.to_string())
         .unwrap_or_default();
     let author_ref = commit.author().ok()?;
-    let author = std::str::from_utf8(author_ref.name)
-        .unwrap_or("?")
-        .to_string();
-    let author_email = std::str::from_utf8(author_ref.email)
-        .unwrap_or("")
-        .to_string();
+    let author = std::str::from_utf8(author_ref.name).unwrap_or("?").to_string();
+    let author_email = std::str::from_utf8(author_ref.email).unwrap_or("").to_string();
     let author_time_unix = author_ref.time().ok().map(|t| t.seconds).unwrap_or(0);
 
     let files = if include_files {
@@ -73,10 +62,7 @@ pub(super) fn commit_files(
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
         let mut out = Vec::with_capacity(recorder.len());
         for e in recorder {
-            out.push((
-                crate::path::RelPath::from(e.filepath.as_slice()),
-                ChangeKind::Added,
-            ));
+            out.push((crate::path::RelPath::from(e.filepath.as_slice()), ChangeKind::Added));
         }
         return Some(out);
     }
@@ -130,11 +116,7 @@ fn change_severity(k: ChangeKind) -> u8 {
 /// **not** follow renames, so history built on it (`log_for_path`, `commits_touching`,
 /// `symbol_history`) stops at a rename. Deliberate asymmetry with [`Repo::blame_file`], which
 /// passes `Rewrites::default()` to gix and follows renames line-by-line.
-pub(super) fn commit_touches_path(
-    local: &gix::Repository,
-    commit_id: gix::ObjectId,
-    rel: &[u8],
-) -> bool {
+pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &[u8]) -> bool {
     // Path-scoped TREESAME check: compare the entry at `rel` in this commit's tree against
     // each parent's, by (blob oid, mode). `lookup_entry` walks the path component-by-component
     // and never recurses into sibling subtrees, so this is O(path depth) tree object reads per
@@ -145,10 +127,7 @@ pub(super) fn commit_touches_path(
     // Semantics match `commit_files`' union-across-parents: the path is "touched" when it
     // differs from at least one parent (covers add / modify / delete / mode-change). Exact-path
     // only — like the diff path, it does not follow renames.
-    let components: Vec<&[u8]> = rel
-        .split(|&b| b == b'/')
-        .filter(|c| !c.is_empty())
-        .collect();
+    let components: Vec<&[u8]> = rel.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
     if components.is_empty() {
         return false;
     }
@@ -179,14 +158,8 @@ pub(super) fn commit_touches_path(
 /// path is absent. `lookup_entry` follows the path component-by-component without recursing into
 /// sibling subtrees, so this is O(path depth) tree reads — not a full tree diff. The mode is part
 /// of the identity so a pure mode flip still registers as a change, matching a real diff.
-fn entry_ident_at(
-    tree: &gix::Tree<'_>,
-    components: &[&[u8]],
-) -> Option<(gix::ObjectId, gix::object::tree::EntryMode)> {
-    let entry = tree
-        .lookup_entry(components.iter().copied())
-        .ok()
-        .flatten()?;
+fn entry_ident_at(tree: &gix::Tree<'_>, components: &[&[u8]]) -> Option<(gix::ObjectId, gix::object::tree::EntryMode)> {
+    let entry = tree.lookup_entry(components.iter().copied()).ok().flatten()?;
     Some((entry.object_id(), entry.mode()))
 }
 
@@ -201,8 +174,7 @@ pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
 
     let old_lines = line_byte_offsets(old);
     let new_lines = line_byte_offsets(new);
-    let mut out =
-        Vec::with_capacity(diff.count_additions() as usize + diff.count_removals() as usize);
+    let mut out = Vec::with_capacity(diff.count_additions() as usize + diff.count_removals() as usize);
     for hunk in diff.hunks() {
         let removed_count = hunk.before.end - hunk.before.start;
         let added_count = hunk.after.end - hunk.after.start;
@@ -289,9 +261,9 @@ fn classify_tree_change(
 pub(super) fn decode_path(bstr: &gix::bstr::BStr) -> Option<crate::path::RelPath> {
     // Preserve raw bytes — gix hands us paths in the on-disk byte form. The discriminated
     // serde wire format on RelPath round-trips non-UTF-8 bytes losslessly to MCP clients.
-    Some(crate::path::RelPath::from(<gix::bstr::BStr as AsRef<
-        [u8],
-    >>::as_ref(bstr)))
+    Some(crate::path::RelPath::from(<gix::bstr::BStr as AsRef<[u8]>>::as_ref(
+        bstr,
+    )))
 }
 
 // ── typed commit-walk surface for the git-history index ──────────────────────
@@ -320,10 +292,7 @@ impl Repo {
                 what: "rev walk".to_string(),
                 msg: e.to_string(),
             })?;
-        Ok(walk
-            .filter_map(|i| i.ok())
-            .map(|i| i.id.to_string())
-            .collect())
+        Ok(walk.filter_map(|i| i.ok()).map(|i| i.id.to_string()).collect())
     }
 
     /// Commit shas reachable from HEAD but **not** from `hidden` (the previously-indexed head),
@@ -347,10 +316,7 @@ impl Repo {
             what: "rev walk (hidden)".to_string(),
             msg: e.to_string(),
         })?;
-        Ok(walk
-            .filter_map(|i| i.ok())
-            .map(|i| i.id.to_string())
-            .collect())
+        Ok(walk.filter_map(|i| i.ok()).map(|i| i.id.to_string()).collect())
     }
 
     /// Full record (header + per-file change list, union-across-parents) for one commit sha — the

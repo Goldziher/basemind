@@ -17,9 +17,7 @@ fn bench_hash(c: &mut Criterion) {
     for &size in SIZES {
         // Deterministic pseudo-random fill — avoids the all-zero fast path some
         // hashers take and keeps the input stable across runs.
-        let buf: Vec<u8> = (0..size)
-            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
-            .collect();
+        let buf: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &buf, |b, buf| {
             b.iter(|| hash_bytes(black_box(buf)));

@@ -7,10 +7,8 @@ name = "basemind"
 version = "0.16.0"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
 readme = "README.md"
-license = {text = "MIT"}
-authors = [
-    {name = "Na'aman Hirschfeld", email = "nhirschfeld@gmail.com"}
-]
+license = { text = "MIT" }
+authors = [{ name = "Na'aman Hirschfeld", email = "nhirschfeld@gmail.com" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -22,13 +20,11 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Code Generators",
-    "Environment :: Console"
+    "Environment :: Console",
 ]
 keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 requires-python = ">=3.10"
-dependencies = [
-    "certifi>=2024.7.4"
-]
+dependencies = ["certifi>=2024.7.4"]
 
 [project.urls]
 Homepage = "https://github.com/Goldziher/basemind"

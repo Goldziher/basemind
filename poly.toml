@@ -9,6 +9,7 @@ trim_trailing_whitespace = true
 [discovery]
 exclude = [
     "**/*.lock",
+    "**/*.svg",
     "**/Cargo.lock",
     "**/go.sum",
     "**/package-lock.json",
@@ -22,29 +23,15 @@ exclude = [
 ]
 
 [lint.markdown.rumdl]
-disable = [
-    "MD013",
-    "MD024",
-    "MD033",
-    "MD036",
-    "MD041",
-]
+disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
 
 [fmt.markdown.rumdl]
-disable = [
-    "MD013",
-    "MD024",
-    "MD033",
-    "MD036",
-    "MD041",
-]
+disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
 
 [lint.typos]
 extend_words = { patern = "patern", pattrn = "pattrn" }
 extend_identifiers = { rela_path = "rela_path" }
-extend_exclude = [
-    "tests/fixtures/**",
-]
+extend_exclude = ["tests/fixtures/**"]
 
 # Python packaging helper never linted under the old prek setup (no ruff hook).
 # Exempt the pre-existing findings so poly stays green; fix separately if desired.

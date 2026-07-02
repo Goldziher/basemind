@@ -29,29 +29,29 @@ fn credential_set() -> &'static RegexSet {
     static SET: OnceLock<RegexSet> = OnceLock::new();
     SET.get_or_init(|| {
         RegexSet::new([
-            r"AKIA[0-9A-Z]{16}",             // AWS access key id
-            r"ASIA[0-9A-Z]{16}",             // AWS temp access key id
-            r"sk-ant-[a-zA-Z0-9_\-]{20,}",   // Anthropic (before generic sk-)
-            r"sk-[a-zA-Z0-9]{20,}",          // OpenAI / generic sk-
-            r"ghp_[a-zA-Z0-9]{36}",          // GitHub personal access token
-            r"gho_[a-zA-Z0-9]{36}",          // GitHub OAuth token
-            r"ghu_[a-zA-Z0-9]{36}",          // GitHub user-to-server
-            r"ghs_[a-zA-Z0-9]{36}",          // GitHub server-to-server
-            r"ghr_[a-zA-Z0-9]{36}",          // GitHub refresh token
-            r"github_pat_[a-zA-Z0-9_]{80,}", // GitHub fine-grained PAT
-            r"npm_[a-zA-Z0-9]{36}",          // npm token
-            r"hf_[a-zA-Z0-9]{34}",           // HuggingFace token
-            r"xox[baprs]-[0-9A-Za-z-]{10,}", // Slack tokens
-            r"sk_live_[a-zA-Z0-9]{24,}",     // Stripe live secret
-            r"rk_live_[a-zA-Z0-9]{24,}",     // Stripe restricted live
-            r"AIza[0-9A-Za-z_\-]{35}",       // Google API key
-            r"ya29\.[0-9A-Za-z_\-]{20,}",    // Google OAuth access token
+            r"AKIA[0-9A-Z]{16}",                                                 // AWS access key id
+            r"ASIA[0-9A-Z]{16}",                                                 // AWS temp access key id
+            r"sk-ant-[a-zA-Z0-9_\-]{20,}",                                       // Anthropic (before generic sk-)
+            r"sk-[a-zA-Z0-9]{20,}",                                              // OpenAI / generic sk-
+            r"ghp_[a-zA-Z0-9]{36}",                                              // GitHub personal access token
+            r"gho_[a-zA-Z0-9]{36}",                                              // GitHub OAuth token
+            r"ghu_[a-zA-Z0-9]{36}",                                              // GitHub user-to-server
+            r"ghs_[a-zA-Z0-9]{36}",                                              // GitHub server-to-server
+            r"ghr_[a-zA-Z0-9]{36}",                                              // GitHub refresh token
+            r"github_pat_[a-zA-Z0-9_]{80,}",                                     // GitHub fine-grained PAT
+            r"npm_[a-zA-Z0-9]{36}",                                              // npm token
+            r"hf_[a-zA-Z0-9]{34}",                                               // HuggingFace token
+            r"xox[baprs]-[0-9A-Za-z-]{10,}",                                     // Slack tokens
+            r"sk_live_[a-zA-Z0-9]{24,}",                                         // Stripe live secret
+            r"rk_live_[a-zA-Z0-9]{24,}",                                         // Stripe restricted live
+            r"AIza[0-9A-Za-z_\-]{35}",                                           // Google API key
+            r"ya29\.[0-9A-Za-z_\-]{20,}",                                        // Google OAuth access token
             r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", // JWT
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----", // PEM private key
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----",                               // PEM private key
             r"(?i)(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|amqp)://[^:\s/]+:[^@\s]+@", // db URL w/ creds
-            r"(?i)https?://[^:\s/@]+:[^@\s]+@", // basic-auth URL
+            r"(?i)https?://[^:\s/@]+:[^@\s]+@",                                  // basic-auth URL
             r"(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*[=:]\s*\S+", // generic assignment
-            r"(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*", // bearer token
+            r"(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*",                               // bearer token
         ])
         .expect("static credential patterns compile")
     })
@@ -105,9 +105,7 @@ fn ansi_csi_re() -> &'static Regex {
 /// credential embedded in the visible text survives the pre-compression scan.
 fn ansi_osc8_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"\x1b\]8;[^\x07]*\x07([^\x1b]*)\x1b\]8;;\x07").expect("ansi osc8 compiles")
-    })
+    RE.get_or_init(|| Regex::new(r"\x1b\]8;[^\x07]*\x07([^\x1b]*)\x1b\]8;;\x07").expect("ansi osc8 compiles"))
 }
 
 /// Remove ANSI escape codes while preserving visible text.
@@ -223,9 +221,7 @@ mod tests {
 
     #[test]
     fn looks_like_failure_on_npm_err_bang() {
-        assert!(looks_like_failure(
-            "npm ERR! code ELIFECYCLE\nnpm ERR! errno 1"
-        ));
+        assert!(looks_like_failure("npm ERR! code ELIFECYCLE\nnpm ERR! errno 1"));
     }
 
     #[test]

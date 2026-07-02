@@ -50,17 +50,11 @@ fn extra_root_files_indexed_under_absolute_keys() {
     scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
 
     // Repo file: relative key.
-    assert!(
-        store.lookup("main.rs").is_some(),
-        "repo file keyed relative"
-    );
+    assert!(store.lookup("main.rs").is_some(), "repo file keyed relative");
 
     // External file: absolute key; the relative form must NOT be indexed (no collision).
     let ext_key = abs_key(&ext, "pkg/lib.rs");
-    assert!(
-        ext_key.starts_with('/'),
-        "external key must be absolute, got {ext_key}"
-    );
+    assert!(ext_key.starts_with('/'), "external key must be absolute, got {ext_key}");
     let entry = store
         .lookup(ext_key.as_bytes())
         .unwrap_or_else(|| panic!("external file indexed under absolute key {ext_key}"));
@@ -146,18 +140,12 @@ fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
     scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
 
     // The valid external root still indexed.
-    assert!(
-        store
-            .lookup(abs_key(&ext, "pkg/lib.rs").as_bytes())
-            .is_some()
-    );
+    assert!(store.lookup(abs_key(&ext, "pkg/lib.rs").as_bytes()).is_some());
     // The inside-repo file is indexed once, under its RELATIVE key (via the primary walk), and
     // NOT duplicated under an absolute key.
     assert!(store.lookup("subdir/in.rs").is_some());
     assert!(
-        store
-            .lookup(abs_key(&repo, "subdir/in.rs").as_bytes())
-            .is_none(),
+        store.lookup(abs_key(&repo, "subdir/in.rs").as_bytes()).is_none(),
         "inside-repo extra_root must not double-index under an absolute key"
     );
 }

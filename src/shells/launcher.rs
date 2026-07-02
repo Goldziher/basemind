@@ -145,11 +145,7 @@ enum Surface {
 }
 
 #[cfg(target_os = "macos")]
-fn build_for_surface(
-    terminal: TerminalChoice,
-    target: &AttachTarget,
-    surface: Surface,
-) -> Option<PresentCommand> {
+fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: Surface) -> Option<PresentCommand> {
     let attach = target.attach_command();
     let use_iterm = match terminal {
         TerminalChoice::Iterm2 => true,
@@ -172,9 +168,7 @@ fn build_for_surface(
 
 #[cfg(target_os = "macos")]
 fn detected_macos_is_iterm() -> bool {
-    std::env::var("TERM_PROGRAM")
-        .map(|v| v == "iTerm.app")
-        .unwrap_or(false)
+    std::env::var("TERM_PROGRAM").map(|v| v == "iTerm.app").unwrap_or(false)
 }
 
 /// AppleScript driving iTerm2: a new tab in the current window, or a brand-new window.
@@ -247,11 +241,7 @@ fn applescript_quote(value: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn build_for_surface(
-    terminal: TerminalChoice,
-    target: &AttachTarget,
-    surface: Surface,
-) -> Option<PresentCommand> {
+fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: Surface) -> Option<PresentCommand> {
     // The only Windows terminal the launcher drives is Windows Terminal (`wt.exe`). Honour an
     // explicit `WindowsTerminal` choice and treat `Auto` the same (it is the platform default on
     // Windows 11). Any non-Windows emulator choice is meaningless here, so fall through to the
@@ -291,11 +281,7 @@ fn windows_terminal_command(target: &AttachTarget, surface: Surface) -> PresentC
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn build_for_surface(
-    terminal: TerminalChoice,
-    target: &AttachTarget,
-    surface: Surface,
-) -> Option<PresentCommand> {
+fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: Surface) -> Option<PresentCommand> {
     let attach = target.attach_command();
     let emulator = resolve_linux_emulator(terminal);
     Some(linux_command(emulator, &attach, surface))
@@ -474,11 +460,7 @@ fn linux_command(emulator: LinuxEmulator, attach: &str, surface: Surface) -> Pre
 ///
 /// Returns [`Presentation::Headless`] for headless mode, [`Presentation::AttachCommand`] when no
 /// command could be built (Web mode), and [`Presentation::Spawned`] once the terminal is launched.
-pub fn present(
-    mode: VisualMode,
-    terminal: TerminalChoice,
-    target: &AttachTarget,
-) -> Result<Presentation> {
+pub fn present(mode: VisualMode, terminal: TerminalChoice, target: &AttachTarget) -> Result<Presentation> {
     if mode == VisualMode::Headless {
         return Ok(Presentation::Headless);
     }
@@ -524,9 +506,7 @@ mod tests {
 
     #[test]
     fn headless_builds_no_command() {
-        assert!(
-            build_present_command(VisualMode::Headless, TerminalChoice::Auto, &target()).is_none()
-        );
+        assert!(build_present_command(VisualMode::Headless, TerminalChoice::Auto, &target()).is_none());
     }
 
     #[test]
@@ -549,22 +529,15 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_iterm_tab_drives_osascript() {
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Iterm2, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Iterm2, &target()).expect("command");
         assert_eq!(cmd.program, "osascript");
         assert_eq!(cmd.args.len(), 2);
         assert_eq!(cmd.args[0], "-e");
         let script = &cmd.args[1];
         assert!(script.contains("iTerm2"), "script: {script}");
         assert!(script.contains("create tab"), "script: {script}");
-        assert!(
-            script.contains("--__internal-attach 'bmsh-1-2'"),
-            "script: {script}"
-        );
-        assert!(
-            script.contains("--socket '/tmp/rmux.sock'"),
-            "script: {script}"
-        );
+        assert!(script.contains("--__internal-attach 'bmsh-1-2'"), "script: {script}");
+        assert!(script.contains("--socket '/tmp/rmux.sock'"), "script: {script}");
         assert!(script.contains("--size 200x50"), "script: {script}");
     }
 
@@ -586,8 +559,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_iterm_window_creates_window() {
-        let cmd = build_present_command(VisualMode::Window, TerminalChoice::Iterm2, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Window, TerminalChoice::Iterm2, &target()).expect("command");
         assert_eq!(cmd.program, "osascript");
         assert!(cmd.args[1].contains("create window"), "{}", cmd.args[1]);
     }
@@ -595,9 +567,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_terminal_app_tab_uses_front_window() {
-        let cmd =
-            build_present_command(VisualMode::Current, TerminalChoice::TerminalApp, &target())
-                .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::TerminalApp, &target()).expect("command");
         assert_eq!(cmd.program, "osascript");
         let script = &cmd.args[1];
         assert!(script.contains("Terminal"), "{script}");
@@ -608,8 +578,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_terminal_app_window_omits_front_window() {
-        let cmd = build_present_command(VisualMode::Window, TerminalChoice::TerminalApp, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Window, TerminalChoice::TerminalApp, &target()).expect("command");
         let script = &cmd.args[1];
         assert!(script.contains("do script"), "{script}");
         assert!(!script.contains("in front window"), "{script}");
@@ -618,12 +587,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_current_builds_wt_new_tab_in_current_window() {
-        let cmd = build_present_command(
-            VisualMode::Current,
-            TerminalChoice::WindowsTerminal,
-            &target(),
-        )
-        .expect("wt.exe command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::WindowsTerminal, &target())
+            .expect("wt.exe command");
         assert_eq!(cmd.program, "wt.exe");
         // `-w 0 new-tab --` then the attach argv, each a separate process argument.
         assert_eq!(cmd.args[0], "-w");
@@ -642,12 +607,8 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_window_forces_a_fresh_wt_window() {
-        let cmd = build_present_command(
-            VisualMode::Window,
-            TerminalChoice::WindowsTerminal,
-            &target(),
-        )
-        .expect("wt.exe command");
+        let cmd = build_present_command(VisualMode::Window, TerminalChoice::WindowsTerminal, &target())
+            .expect("wt.exe command");
         assert_eq!(cmd.program, "wt.exe");
         assert_eq!(cmd.args[0], "-w");
         assert_eq!(cmd.args[1], "new");
@@ -659,12 +620,9 @@ mod tests {
     fn windows_auto_uses_wt() {
         // `Auto` is Windows Terminal on Windows; a non-Windows emulator choice hands the
         // attach command back instead of spawning the wrong terminal.
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Auto, &target())
-            .expect("auto -> wt.exe");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Auto, &target()).expect("auto -> wt.exe");
         assert_eq!(cmd.program, "wt.exe");
-        assert!(
-            build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target()).is_none()
-        );
+        assert!(build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target()).is_none());
     }
 
     #[cfg(target_os = "windows")]
@@ -681,12 +639,8 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_gnome_terminal_tab() {
-        let cmd = build_present_command(
-            VisualMode::Current,
-            TerminalChoice::GnomeTerminal,
-            &target(),
-        )
-        .expect("command");
+        let cmd =
+            build_present_command(VisualMode::Current, TerminalChoice::GnomeTerminal, &target()).expect("command");
         assert_eq!(cmd.program, "gnome-terminal");
         assert_eq!(cmd.args[0], "--tab");
         assert_eq!(cmd.args[1], "--");
@@ -698,17 +652,14 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_gnome_terminal_window() {
-        let cmd =
-            build_present_command(VisualMode::Window, TerminalChoice::GnomeTerminal, &target())
-                .expect("command");
+        let cmd = build_present_command(VisualMode::Window, TerminalChoice::GnomeTerminal, &target()).expect("command");
         assert_eq!(cmd.args[0], "--window");
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_konsole_new_tab() {
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Konsole, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Konsole, &target()).expect("command");
         assert_eq!(cmd.program, "konsole");
         assert_eq!(cmd.args[0], "--new-tab");
         assert_eq!(cmd.args[1], "-e");
@@ -717,8 +668,7 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_wezterm_tab_spawns_cli() {
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Wezterm, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Wezterm, &target()).expect("command");
         assert_eq!(cmd.program, "wezterm");
         assert_eq!(cmd.args[0], "cli");
         assert_eq!(cmd.args[1], "spawn");
@@ -728,8 +678,7 @@ mod tests {
     #[test]
     fn linux_alacritty_falls_back_to_window_for_tab() {
         // Alacritty has no tab model — both surfaces yield the same new-window argv.
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Alacritty, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Alacritty, &target()).expect("command");
         assert_eq!(cmd.program, "alacritty");
         assert_eq!(cmd.args[0], "-e");
     }
@@ -737,8 +686,7 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_xterm_is_the_fallback() {
-        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target())
-            .expect("command");
+        let cmd = build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target()).expect("command");
         assert_eq!(cmd.program, "xterm");
         assert_eq!(cmd.args[0], "-e");
     }

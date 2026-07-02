@@ -108,11 +108,7 @@ pub struct GitCache {
 impl GitCache {
     /// Open the cache. When `persist=true`, the disk dir is created under `basemind_dir`;
     /// when `false`, only the RAM layer is used.
-    pub fn open(
-        basemind_dir: &Path,
-        mem_capacity: usize,
-        persist: bool,
-    ) -> Result<Self, CacheError> {
+    pub fn open(basemind_dir: &Path, mem_capacity: usize, persist: bool) -> Result<Self, CacheError> {
         let disk = if persist {
             let root = basemind_dir.join(GIT_CACHE_DIR);
             ensure_subdir(&root, "commit_files")?;
@@ -138,11 +134,7 @@ impl GitCache {
 
     /// Look up (or compute) the per-file change list for a commit. Sha-keyed: result is
     /// immutable, so any hit is correct forever.
-    pub fn commit_files(
-        &self,
-        repo: &Repo,
-        commit_sha: &str,
-    ) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
+    pub fn commit_files(&self, repo: &Repo, commit_sha: &str) -> Result<Arc<Vec<CommitFileChange>>, CacheError> {
         if let Some(hit) = self.commit_files.lock().unwrap().get(commit_sha).cloned() {
             return Ok(hit);
         }
@@ -217,18 +209,12 @@ impl GitCache {
         }
         if let Some(disk) = self.read_blame_disk(&key) {
             let arc = Arc::new(disk);
-            self.blame
-                .lock()
-                .unwrap()
-                .put(key.clone(), Arc::clone(&arc));
+            self.blame.lock().unwrap().put(key.clone(), Arc::clone(&arc));
             return Ok(arc);
         }
         let computed = repo.blame_file(suspect_sha, path, range)?;
         let arc = Arc::new(computed);
-        self.blame
-            .lock()
-            .unwrap()
-            .put(key.clone(), Arc::clone(&arc));
+        self.blame.lock().unwrap().put(key.clone(), Arc::clone(&arc));
         self.write_blame_disk(&key, &arc);
         Ok(arc)
     }
@@ -368,10 +354,7 @@ impl GitCache {
                 format!("path-{}-{}", hex::encode(&h.as_bytes()[..8]), key.limit)
             }
         };
-        Some(
-            root.join("log")
-                .join(format!("{}__{}.msgpack", key.head_sha, scope)),
-        )
+        Some(root.join("log").join(format!("{}__{}.msgpack", key.head_sha, scope)))
     }
 }
 
@@ -491,9 +474,6 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
             .collect();
-        assert!(
-            leftovers.is_empty(),
-            "temp files must be renamed away, not orphaned"
-        );
+        assert!(leftovers.is_empty(), "temp files must be renamed away, not orphaned");
     }
 }

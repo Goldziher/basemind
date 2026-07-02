@@ -109,13 +109,7 @@ pub struct FindReferencesParams {
     /// The callee identifier to look up. Substring match — case-sensitive, no scope
     /// resolution; both `Foo::bar()` and `bar()` register as callee `"bar"`. Use with
     /// caution on common names like `new` or `get`.
-    #[serde(
-        alias = "needle",
-        alias = "pattern",
-        alias = "query",
-        alias = "symbol",
-        alias = "q"
-    )]
+    #[serde(alias = "needle", alias = "pattern", alias = "query", alias = "symbol", alias = "q")]
     pub name: String,
     /// Cap on results returned. Default 100, max 1000.
     #[serde(default)]
@@ -389,13 +383,7 @@ pub(super) struct RepoInfoResponse {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceGrepParams {
     /// Rust regex syntax (`regex` crate). Required.
-    #[serde(
-        alias = "query",
-        alias = "needle",
-        alias = "regex",
-        alias = "q",
-        alias = "search"
-    )]
+    #[serde(alias = "query", alias = "needle", alias = "regex", alias = "q", alias = "search")]
     pub pattern: String,
     /// Optional language filter (e.g. `"rust"`, `"typescript"`). Same ID convention as
     /// `list_files`.
@@ -666,15 +654,14 @@ pub use super::types_documents::SearchDocumentsParams;
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
 pub use super::types_git::{
     BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DiffFileParams, DiffOutlineParams,
-    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams,
-    SymbolHistoryParams, WorkingTreeStatusParams,
+    FindCommitsByPathParams, HotFilesParams, RecentChangesParams, SearchGitHistoryParams, SymbolHistoryParams,
+    WorkingTreeStatusParams,
 };
 pub(super) use super::types_git::{
-    BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView,
-    CommitsTouchingResponse, DiffFileResponse, DiffOutlineResponse, DiffSymbolView,
-    FindCommitsByPathResponse, GitCommitHit, HotFileEntry, HotFilesResponse, HunkView,
-    RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry, SymbolHistoryResponse,
-    WorkingTreeStatusView,
+    BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView, CommitsTouchingResponse,
+    DiffFileResponse, DiffOutlineResponse, DiffSymbolView, FindCommitsByPathResponse, GitCommitHit, HotFileEntry,
+    HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
+    SymbolHistoryResponse, WorkingTreeStatusView,
 };
 pub use super::types_graph::CallGraphParams;
 pub use super::types_impls::FindImplementationsParams;
@@ -685,46 +672,39 @@ mod tests {
 
     #[test]
     fn workspace_grep_accepts_query_alias_for_pattern() {
-        let params: WorkspaceGrepParams =
-            serde_json::from_value(serde_json::json!({ "query": "foo" })).unwrap();
+        let params: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "query": "foo" })).unwrap();
         assert_eq!(params.pattern, "foo");
     }
 
     #[test]
     fn search_symbols_accepts_pattern_alias_for_needle() {
-        let params: SearchSymbolsParams =
-            serde_json::from_value(serde_json::json!({ "pattern": "x" })).unwrap();
+        let params: SearchSymbolsParams = serde_json::from_value(serde_json::json!({ "pattern": "x" })).unwrap();
         assert_eq!(params.needle, "x");
     }
 
     #[test]
     fn search_symbols_accepts_symbol_alias_for_needle() {
-        let params: SearchSymbolsParams =
-            serde_json::from_value(serde_json::json!({ "symbol": "Foo" })).unwrap();
+        let params: SearchSymbolsParams = serde_json::from_value(serde_json::json!({ "symbol": "Foo" })).unwrap();
         assert_eq!(params.needle, "Foo");
     }
 
     #[test]
     fn workspace_grep_accepts_regex_and_needle_aliases() {
-        let by_regex: WorkspaceGrepParams =
-            serde_json::from_value(serde_json::json!({ "regex": "a.*b" })).unwrap();
+        let by_regex: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "regex": "a.*b" })).unwrap();
         assert_eq!(by_regex.pattern, "a.*b");
-        let by_needle: WorkspaceGrepParams =
-            serde_json::from_value(serde_json::json!({ "needle": "lit" })).unwrap();
+        let by_needle: WorkspaceGrepParams = serde_json::from_value(serde_json::json!({ "needle": "lit" })).unwrap();
         assert_eq!(by_needle.pattern, "lit");
     }
 
     #[test]
     fn find_references_accepts_symbol_alias_for_name() {
-        let params: FindReferencesParams =
-            serde_json::from_value(serde_json::json!({ "symbol": "spawn" })).unwrap();
+        let params: FindReferencesParams = serde_json::from_value(serde_json::json!({ "symbol": "spawn" })).unwrap();
         assert_eq!(params.name, "spawn");
     }
 
     #[test]
     fn call_graph_accepts_query_alias_for_name() {
-        let params: super::CallGraphParams =
-            serde_json::from_value(serde_json::json!({ "query": "main" })).unwrap();
+        let params: super::CallGraphParams = serde_json::from_value(serde_json::json!({ "query": "main" })).unwrap();
         assert_eq!(params.name, "main");
     }
 

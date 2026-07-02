@@ -13,9 +13,9 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::json_result;
 use super::types_shells::{
-    ShellBroadcastParams, ShellBroadcastResponse, ShellCaptureParams, ShellCaptureResponse,
-    ShellEnv, ShellKillParams, ShellKillResponse, ShellListParams, ShellListResponse,
-    ShellSendParams, ShellSessionView, ShellSpawnParams, ShellSpawnResponse,
+    ShellBroadcastParams, ShellBroadcastResponse, ShellCaptureParams, ShellCaptureResponse, ShellEnv, ShellKillParams,
+    ShellKillResponse, ShellListParams, ShellListResponse, ShellSendParams, ShellSessionView, ShellSpawnParams,
+    ShellSpawnResponse,
 };
 use crate::shells::SessionId;
 use crate::shells::session::ShellCommand;
@@ -30,19 +30,13 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
 /// against the in-process map decides validity.
 fn parse_session_id(raw: &str) -> Result<SessionId, McpError> {
     if raw.trim().is_empty() {
-        return Err(McpError::invalid_params(
-            "session_id must not be empty",
-            None,
-        ));
+        return Err(McpError::invalid_params("session_id must not be empty", None));
     }
     Ok(SessionId::new(raw))
 }
 
 /// Resolve a `session_id` to its rmux session name, erroring when unknown.
-async fn require_session(
-    state: &ServerState,
-    raw: &str,
-) -> Result<(SessionId, rmux_sdk::SessionName), McpError> {
+async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, rmux_sdk::SessionName), McpError> {
     let id = parse_session_id(raw)?;
     match state.shell_runtime.resolve(&id).await {
         Some(name) => Ok((id, name)),
@@ -63,10 +57,7 @@ async fn require_session(
 /// auto-identifies and auto-joins the same room on its first `Hello`. The coupling is created
 /// atomically before the spawn: a room-creation failure aborts the spawn, so no room-less session
 /// leaks. When comms is disabled the tool behaves headless and `room_id` / `child_agent` are `None`.
-pub(super) async fn run_shell_spawn(
-    state: &ServerState,
-    params: ShellSpawnParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParams) -> Result<CallToolResult, McpError> {
     // Honour the config master switch. `ShellsConfig::enabled` defaults to `true`, so a default
     // build behaves exactly as before; an operator who set `[shells].enabled = false` gets the
     // tool wired but inert, mirroring the documented contract on the config field.
@@ -108,8 +99,7 @@ pub(super) async fn run_shell_spawn(
     // the child process starts already pointed at its room. `(None, None)` when comms is off. The
     // pre-minted `session_id` keys the room so the child joins the same one the client addresses.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let (room_id, child_agent) =
-        couple_session_room(state, session_id.as_str(), &mut environment).await?;
+    let (room_id, child_agent) = couple_session_room(state, session_id.as_str(), &mut environment).await?;
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let (room_id, child_agent): (Option<String>, Option<String>) = (None, None);
 
@@ -316,11 +306,7 @@ async fn try_couple_session_room(
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
         client
-            .create_room(
-                room.clone(),
-                RoomScope::Session(comms_session_id.clone()),
-                Some(title),
-            )
+            .create_room(room.clone(), RoomScope::Session(comms_session_id.clone()), Some(title))
             .await
             .map_err(comms_err)?;
         // Subscribe the PARENT (this server) so it receives the child's posts.
@@ -332,11 +318,7 @@ async fn try_couple_session_room(
     // identity + session lineage so its basemind auto-identifies and auto-joins the same session
     // room on its first `Hello`. The child reaches the same per-user broker by default, so no
     // socket env is needed.
-    const IDENTITY_KEYS: [&str; 3] = [
-        "BASEMIND_AGENT_ID",
-        "BASEMIND_PARENT_AGENT_ID",
-        "BASEMIND_SESSION_ID",
-    ];
+    const IDENTITY_KEYS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_SESSION_ID"];
     environment.retain(|entry| {
         let key = entry.split('=').next().unwrap_or(entry);
         !IDENTITY_KEYS.contains(&key)
@@ -367,10 +349,7 @@ async fn rollback_session_room(state: &ServerState, room_id: &str) {
     let leave = async {
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
-        client
-            .leave_room(room)
-            .await
-            .map_err(super::helpers_comms::comms_err)
+        client.leave_room(room).await.map_err(super::helpers_comms::comms_err)
     };
     if let Err(error) = leave.await {
         tracing::warn!(
@@ -382,10 +361,7 @@ async fn rollback_session_room(state: &ServerState, room_id: &str) {
 }
 
 /// `shell_send`: write text (optionally with a newline) to a session's stdin.
-pub(super) async fn run_shell_send(
-    state: &ServerState,
-    params: ShellSendParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_shell_send(state: &ServerState, params: ShellSendParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
         .shell_runtime
@@ -422,10 +398,7 @@ pub(super) async fn run_shell_capture(
 }
 
 /// `shell_kill`: terminate a session and forget its mapping.
-pub(super) async fn run_shell_kill(
-    state: &ServerState,
-    params: ShellKillParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
         .shell_runtime
@@ -481,10 +454,7 @@ pub(super) async fn run_shell_broadcast(
     params: ShellBroadcastParams,
 ) -> Result<CallToolResult, McpError> {
     if params.session_ids.is_empty() {
-        return Err(McpError::invalid_params(
-            "session_ids must not be empty",
-            None,
-        ));
+        return Err(McpError::invalid_params("session_ids must not be empty", None));
     }
     // Validate every id up front so an unknown id fails before any delivery.
     let mut ids = Vec::with_capacity(params.session_ids.len());
@@ -513,10 +483,7 @@ pub(super) async fn run_shell_broadcast(
 ///
 /// The comms enrichment is best-effort: if the client is unavailable or the call fails, the
 /// runtime-only list is returned rather than failing `shell_list`.
-pub(super) async fn run_shell_list(
-    state: &ServerState,
-    _params: ShellListParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
         .shell_runtime
         .list()
@@ -568,19 +535,13 @@ pub(super) async fn run_shell_list(
 /// Best-effort: acquiring the client or the `list_sessions` call failing is logged at WARN and
 /// swallowed, so `shell_list` still returns the runtime-only view when comms is down.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-async fn enrich_with_lineage(
-    state: &ServerState,
-    by_id: &mut ahash::AHashMap<String, ShellSessionView>,
-) {
+async fn enrich_with_lineage(state: &ServerState, by_id: &mut ahash::AHashMap<String, ShellSessionView>) {
     use super::helpers_comms::resolve_comms_client;
 
     let lineage = async {
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
-        client
-            .list_sessions()
-            .await
-            .map_err(super::helpers_comms::comms_err)
+        client.list_sessions().await.map_err(super::helpers_comms::comms_err)
     }
     .await;
 
@@ -604,16 +565,14 @@ async fn enrich_with_lineage(
         // row (`name = session_id`, `alive = false`) because this process holds no rmux handle for a
         // session spawned elsewhere in the chain. Either way the three lineage values are moved in,
         // not cloned, since each is consumed exactly once.
-        let view = by_id
-            .entry(row.session_id.clone())
-            .or_insert_with(|| ShellSessionView {
-                name: row.session_id.clone(),
-                session_id: row.session_id,
-                alive: false,
-                parent_agent: None,
-                child_agent: None,
-                room_id: None,
-            });
+        let view = by_id.entry(row.session_id.clone()).or_insert_with(|| ShellSessionView {
+            name: row.session_id.clone(),
+            session_id: row.session_id,
+            alive: false,
+            parent_agent: None,
+            child_agent: None,
+            room_id: None,
+        });
         view.parent_agent = parent_agent;
         view.child_agent = Some(child_agent);
         view.room_id = Some(room_id);

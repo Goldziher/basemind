@@ -15,9 +15,7 @@ use super::types::default_true;
 /// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
 /// behavior, with an empty owner segment. `individual` scopes the entry to the calling
 /// agent (owner = its `AgentId`), so two agents can keep private same-key entries.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Shared, cross-agent memory (owner segment is empty). The default.
@@ -224,29 +222,24 @@ mod param_alias_tests {
 
     #[test]
     fn memory_search_accepts_query_aliases() {
-        let by_needle: MemorySearchParams =
-            serde_json::from_value(serde_json::json!({ "needle": "retry" })).unwrap();
+        let by_needle: MemorySearchParams = serde_json::from_value(serde_json::json!({ "needle": "retry" })).unwrap();
         assert_eq!(by_needle.query, "retry");
-        let by_q: MemorySearchParams =
-            serde_json::from_value(serde_json::json!({ "q": "retry" })).unwrap();
+        let by_q: MemorySearchParams = serde_json::from_value(serde_json::json!({ "q": "retry" })).unwrap();
         assert_eq!(by_q.query, "retry");
         // Canonical name still binds after the alias additions.
-        let by_query: MemorySearchParams =
-            serde_json::from_value(serde_json::json!({ "query": "retry" })).unwrap();
+        let by_query: MemorySearchParams = serde_json::from_value(serde_json::json!({ "query": "retry" })).unwrap();
         assert_eq!(by_query.query, "retry");
     }
 
     #[test]
     fn memory_get_accepts_name_alias_for_key() {
-        let params: MemoryGetParams =
-            serde_json::from_value(serde_json::json!({ "name": "skill/foo" })).unwrap();
+        let params: MemoryGetParams = serde_json::from_value(serde_json::json!({ "name": "skill/foo" })).unwrap();
         assert_eq!(params.key, "skill/foo");
     }
 
     #[test]
     fn memory_put_accepts_name_alias_for_key() {
-        let params: MemoryPutParams =
-            serde_json::from_value(serde_json::json!({ "name": "k", "value": "v" })).unwrap();
+        let params: MemoryPutParams = serde_json::from_value(serde_json::json!({ "name": "k", "value": "v" })).unwrap();
         assert_eq!(params.key, "k");
         assert_eq!(params.value, "v");
     }
@@ -278,8 +271,7 @@ mod tests {
         };
         // `to_vec_named` mirrors `write_memory_record`'s on-disk encoding exactly.
         let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy record");
-        let decoded: MemoryRecord =
-            rmp_serde::from_slice(&bytes).expect("decode legacy bytes into current record");
+        let decoded: MemoryRecord = rmp_serde::from_slice(&bytes).expect("decode legacy bytes into current record");
 
         assert_eq!(decoded.value, "build with cargo test");
         assert_eq!(decoded.tags, vec!["build".to_string()]);
@@ -322,9 +314,6 @@ mod tests {
         assert_eq!(decoded.verified, VerifyState::Stale);
         assert_eq!(decoded.importance, 0.42);
         assert_eq!(decoded.provenance.symbols.len(), 1);
-        assert_eq!(
-            decoded.provenance.symbols[0].structural_hash,
-            Some([7u8; 32])
-        );
+        assert_eq!(decoded.provenance.symbols[0].structural_hash, Some([7u8; 32]));
     }
 }

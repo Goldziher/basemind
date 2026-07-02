@@ -158,10 +158,7 @@ async fn robots_txt_blocks_forbidden_path() {
         .await
         .expect("scrape returns even when robots forbids");
 
-    assert!(
-        !result.is_allowed,
-        "/forbidden must be blocked by robots.txt"
-    );
+    assert!(!result.is_allowed, "/forbidden must be blocked by robots.txt");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -171,17 +168,12 @@ async fn map_urls_discovers_sitemap_entries() {
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/", server.uri());
-    let map = crawlberg::map_urls(&engine, &url)
-        .await
-        .expect("map_urls succeeds");
+    let map = crawlberg::map_urls(&engine, &url).await.expect("map_urls succeeds");
 
     // The sitemap lists 2 URLs; crawlberg may also discover links from the
     // root page, so assert >= 1 (the bare minimum that signals discovery
     // actually ran) and that at least one entry is our `/about` URL.
-    assert!(
-        !map.urls.is_empty(),
-        "map_urls must surface at least one URL"
-    );
+    assert!(!map.urls.is_empty(), "map_urls must surface at least one URL");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -231,10 +223,7 @@ async fn redirect_to_private_host_is_rejected_post_fetch() {
     // A 302 whose Location points at the AWS link-local metadata endpoint.
     Mock::given(method("GET"))
         .and(path("/redirect"))
-        .respond_with(
-            ResponseTemplate::new(302)
-                .insert_header("location", "http://169.254.169.254/latest/meta-data/"),
-        )
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/latest/meta-data/"))
         .mount(&server)
         .await;
     // robots must allow the seed so the fetch proceeds to the redirect.
@@ -411,9 +400,8 @@ async fn scrape_handles_empty_body() {
 async fn crawl_dedupes_circular_links() {
     let server = MockServer::start().await;
     let origin = server.uri();
-    let self_referencing = format!(
-        "<html><body><a href=\"{origin}/\">self</a><a href=\"{origin}/leaf\">leaf</a></body></html>"
-    );
+    let self_referencing =
+        format!("<html><body><a href=\"{origin}/\">self</a><a href=\"{origin}/leaf\">leaf</a></body></html>");
     Mock::given(method("GET"))
         .and(path("/"))
         .respond_with(
@@ -423,8 +411,7 @@ async fn crawl_dedupes_circular_links() {
         )
         .mount(&server)
         .await;
-    let leaf_referencing_root =
-        format!("<html><body><a href=\"{origin}/\">back to root</a></body></html>");
+    let leaf_referencing_root = format!("<html><body><a href=\"{origin}/\">back to root</a></body></html>");
     Mock::given(method("GET"))
         .and(path("/leaf"))
         .respond_with(
@@ -574,10 +561,7 @@ async fn missing_robots_txt_defaults_to_allowed() {
     let url = format!("{}/", server.uri());
     let result = crawlberg::scrape(&engine, &url).await.expect("scrape");
 
-    assert!(
-        result.is_allowed,
-        "missing robots.txt must default to is_allowed=true"
-    );
+    assert!(result.is_allowed, "missing robots.txt must default to is_allowed=true");
     assert_eq!(result.status_code, 200);
 }
 
@@ -586,10 +570,7 @@ async fn missing_robots_txt_defaults_to_allowed() {
 #[test]
 fn url_newtype_strips_no_components() {
     let u = Url::parse("https://docs.rs/rmcp/latest/rmcp/?q=tool#anchor").unwrap();
-    assert_eq!(
-        u.as_str(),
-        "https://docs.rs/rmcp/latest/rmcp/?q=tool#anchor"
-    );
+    assert_eq!(u.as_str(), "https://docs.rs/rmcp/latest/rmcp/?q=tool#anchor");
     assert_eq!(u.host_str(), Some("docs.rs"));
 }
 
@@ -632,10 +613,7 @@ fn url_from_str_rejects_bad_scheme() {
 fn build_engine_accepts_default_config() {
     let cfg = crawl_config();
     let engine = build_engine(&cfg);
-    assert!(
-        engine.is_ok(),
-        "default CrawlConfig must build a valid engine"
-    );
+    assert!(engine.is_ok(), "default CrawlConfig must build a valid engine");
 }
 
 #[test]

@@ -101,16 +101,7 @@ fn author_search_matches_real_git_at_full_depth() {
     eprintln!("git_parity: author under test = {deep:?}");
 
     // Oracle: git's own case-insensitive author search over the pinned head's history.
-    let git_shas = git_lines(
-        &repo,
-        &[
-            "log",
-            &head,
-            "-i",
-            &format!("--author={deep}"),
-            "--format=%H",
-        ],
-    );
+    let git_shas = git_lines(&repo, &["log", &head, "-i", &format!("--author={deep}"), "--format=%H"]);
     assert!(!git_shas.is_empty(), "git found no commits for {deep:?}");
     let git_newest = &git_shas[0];
     let git_set: std::collections::HashSet<&String> = git_shas.iter().collect();
@@ -169,10 +160,7 @@ fn recent_and_path_history_match_real_git() {
 
     // commits_touching parity for a real tracked path: use a file changed in the head commit.
     if let Some(path) = git_one(&repo, &["show", "--format=", "--name-only", &head]) {
-        let git_touch = git_lines(
-            &repo,
-            &["log", &head, "--full-history", "--format=%H", "--", &path],
-        );
+        let git_touch = git_lines(&repo, &["log", &head, "--full-history", "--format=%H", "--", &path]);
         let idx_touch: Vec<String> = index
             .commits_touching(&path.as_bytes().into(), 0, git_touch.len())
             .into_iter()

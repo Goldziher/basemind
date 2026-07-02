@@ -2,13 +2,7 @@
   "name": "basemind",
   "version": "0.16.0",
   "description": "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.",
-  "keywords": [
-    "agent-context",
-    "code-map",
-    "mcp",
-    "rag",
-    "tree-sitter"
-  ],
+  "keywords": ["agent-context", "code-map", "mcp", "rag", "tree-sitter"],
   "homepage": "https://github.com/Goldziher/basemind#readme",
   "bugs": {
     "url": "https://github.com/Goldziher/basemind/issues"
@@ -22,11 +16,7 @@
   "bin": {
     "basemind": "bin/basemind.js"
   },
-  "files": [
-    "index.js",
-    "install.js",
-    "bin/"
-  ],
+  "files": ["index.js", "install.js", "bin/"],
   "main": "index.js",
   "scripts": {
     "postinstall": "node install.js"

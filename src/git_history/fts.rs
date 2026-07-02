@@ -115,11 +115,7 @@ pub fn index_commit_terms(
 /// live `CommitInfo` populated (e.g. a summary-only live record contributes no body terms). Takes
 /// pre-tokenized query terms so the caller tokenizes the (loop-invariant) query ONCE, not per
 /// commit across the whole window.
-pub fn commit_matches_terms(
-    info: &CommitInfo,
-    query_terms: &AHashSet<String>,
-    scope: FtsScope,
-) -> bool {
+pub fn commit_matches_terms(info: &CommitInfo, query_terms: &AHashSet<String>, scope: FtsScope) -> bool {
     if query_terms.is_empty() {
         return false;
     }
@@ -154,13 +150,7 @@ impl GitHistoryIndex {
     /// cap), so a page-K request is O(|matching set|), not O(skip + take). Fine for typical
     /// queries; a very common single token over a huge repo pays for the whole posting list per
     /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
-    pub fn search_commits(
-        &self,
-        query: &str,
-        scope: FtsScope,
-        skip: usize,
-        take: usize,
-    ) -> Vec<CommitInfo> {
+    pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
         let mut query_terms: AHashSet<String> = AHashSet::new();
         tokenize(query, &mut query_terms);
         if query_terms.is_empty() || take == 0 {
@@ -236,10 +226,7 @@ mod tests {
 
     #[test]
     fn tokenize_email_splits_into_local_and_host_parts() {
-        assert_eq!(
-            toks("Jane.Doe@Example.com"),
-            vec!["com", "doe", "example", "jane"]
-        );
+        assert_eq!(toks("Jane.Doe@Example.com"), vec!["com", "doe", "example", "jane"]);
     }
 
     #[test]

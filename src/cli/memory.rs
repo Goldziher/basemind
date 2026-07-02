@@ -87,12 +87,7 @@ pub enum MemoryCmd {
     },
 }
 
-pub async fn run(
-    server: &BasemindServer,
-    cmd: MemoryCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut impl Write) -> Result<()> {
     match cmd {
         MemoryCmd::Put {
             key,

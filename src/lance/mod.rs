@@ -19,8 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use arrow_array::builder::{
-    FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder,
-    UInt32Builder,
+    FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder, UInt32Builder,
 };
 use arrow_array::{Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
 use arrow_schema::ArrowError;
@@ -128,9 +127,7 @@ struct LanceStoreInner {
 impl LanceStoreInner {
     /// The owned tokio runtime. Present until `Drop` takes it.
     fn rt(&self) -> &Runtime {
-        self.runtime
-            .as_ref()
-            .expect("LanceStore runtime is present until drop")
+        self.runtime.as_ref().expect("LanceStore runtime is present until drop")
     }
 }
 
@@ -182,8 +179,7 @@ impl LanceStore {
 
         if !meta_path.exists() {
             let body = serde_json::to_vec_pretty(&expected).context("serialize lance meta.json")?;
-            std::fs::write(&meta_path, body)
-                .with_context(|| format!("write {}", meta_path.display()))?;
+            std::fs::write(&meta_path, body).with_context(|| format!("write {}", meta_path.display()))?;
         }
 
         Ok(Self {
@@ -258,36 +254,22 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {MEMORY_TABLE} table"))?;
-            let predicate =
-                memory_row_predicate(&row.scope, &row.visibility, &row.agent_id, &row.key);
-            table
-                .delete(&predicate)
-                .await
-                .context("delete previous memory entry")?;
+            let predicate = memory_row_predicate(&row.scope, &row.visibility, &row.agent_id, &row.key);
+            table.delete(&predicate).await.context("delete previous memory entry")?;
             let batch = build_memory_batch(self.inner.dim, std::slice::from_ref(&row))?;
             let schema = batch.schema();
             let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
                 vec![Ok::<_, ArrowError>(batch)].into_iter(),
                 schema,
             ));
-            table
-                .add(reader)
-                .execute()
-                .await
-                .context("insert memory row")?;
+            table.add(reader).execute().await.context("insert memory row")?;
             anyhow::Ok(())
         })
     }
 
     /// Delete one memory entry by `(scope, visibility, agent_id, key)`. Returns the
     /// number of rows LanceDB actually deleted (`0` when no row matched the predicate).
-    pub fn delete_memory(
-        &self,
-        scope: &str,
-        visibility: &str,
-        agent_id: &str,
-        key: &str,
-    ) -> Result<u64> {
+    pub fn delete_memory(&self, scope: &str, visibility: &str, agent_id: &str, key: &str) -> Result<u64> {
         self.inner.rt().block_on(async {
             let table = self
                 .inner
@@ -297,10 +279,7 @@ impl LanceStore {
                 .await
                 .with_context(|| format!("open {MEMORY_TABLE} table"))?;
             let predicate = memory_row_predicate(scope, visibility, agent_id, key);
-            let result = table
-                .delete(&predicate)
-                .await
-                .context("delete memory entry")?;
+            let result = table.delete(&predicate).await.context("delete memory entry")?;
             anyhow::Ok(result.num_deleted_rows)
         })
     }
@@ -328,16 +307,10 @@ impl LanceStore {
                 .execute()
                 .await
                 .with_context(|| format!("open {DOCUMENTS_TABLE} table"))?;
-            let mut q = table
-                .vector_search(query)
-                .context("build vector search")?
-                .limit(limit);
+            let mut q = table.vector_search(query).context("build vector search")?.limit(limit);
             let scope_clause = format!("scope = '{}'", escape_sql_literal(scope));
             q = match mime_type_filter {
-                Some(m) => q.only_if(format!(
-                    "{scope_clause} AND mime_type = '{}'",
-                    escape_sql_literal(m)
-                )),
+                Some(m) => q.only_if(format!("{scope_clause} AND mime_type = '{}'", escape_sql_literal(m))),
                 None => q.only_if(scope_clause),
             };
             let mut stream = q.execute().await.context("run document search")?;
@@ -403,10 +376,8 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
     if !meta_path.exists() {
         return Ok(());
     }
-    let bytes =
-        std::fs::read(meta_path).with_context(|| format!("read {}", meta_path.display()))?;
-    let actual: LanceMeta =
-        serde_json::from_slice(&bytes).with_context(|| format!("parse {}", meta_path.display()))?;
+    let bytes = std::fs::read(meta_path).with_context(|| format!("read {}", meta_path.display()))?;
+    let actual: LanceMeta = serde_json::from_slice(&bytes).with_context(|| format!("parse {}", meta_path.display()))?;
     if actual == *expected {
         return Ok(());
     }
@@ -434,16 +405,8 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
     Ok(())
 }
 
-async fn ensure_table(
-    connection: &Connection,
-    name: &str,
-    schema: arrow_schema::SchemaRef,
-) -> Result<()> {
-    let existing: Vec<String> = connection
-        .table_names()
-        .execute()
-        .await
-        .context("list lance tables")?;
+async fn ensure_table(connection: &Connection, name: &str, schema: arrow_schema::SchemaRef) -> Result<()> {
+    let existing: Vec<String> = connection.table_names().execute().await.context("list lance tables")?;
     if existing.iter().any(|t| t == name) {
         return Ok(());
     }
@@ -672,9 +635,7 @@ fn memory_row_predicate(scope: &str, visibility: &str, agent_id: &str, key: &str
 /// Convenience: current time as microseconds since unix epoch, saturating on
 /// the (effectively impossible) clock-before-epoch case.
 pub fn now_micros() -> i64 {
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     i64::try_from(dur.as_micros()).unwrap_or(i64::MAX)
 }
 
@@ -696,10 +657,7 @@ mod tests {
     #[test]
     fn search_predicate_isolates_namespaces() {
         let group = memory_namespace_predicate("scope-a", "group", "");
-        assert_eq!(
-            group,
-            "scope = 'scope-a' AND visibility = 'group' AND agent_id = ''"
-        );
+        assert_eq!(group, "scope = 'scope-a' AND visibility = 'group' AND agent_id = ''");
 
         let indiv_a = memory_namespace_predicate("scope-a", "individual", "agent-a");
         assert_eq!(
@@ -742,10 +700,7 @@ mod tests {
             embedding_model: "balanced".to_string(),
             schema_ver: MEMORY_SCHEMA_VER,
         };
-        assert_ne!(
-            MEMORY_SCHEMA_VER, 0,
-            "current schema ver must differ from the legacy 0"
-        );
+        assert_ne!(MEMORY_SCHEMA_VER, 0, "current schema ver must differ from the legacy 0");
         wipe_on_mismatch(dir.path(), &meta_path, &expected).unwrap();
         assert!(!keep.exists(), "stale lance dir should have been wiped");
     }

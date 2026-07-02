@@ -40,24 +40,24 @@ jobs:
         include:
           # Unix: default-features + full-features builds.
           - os: ubuntu-latest
-            features: ''
+            features: ""
             timeout_minutes: 30
           - os: ubuntu-latest
-            features: 'full'
+            features: "full"
             timeout_minutes: 60
           - os: macos-latest
-            features: ''
+            features: ""
             timeout_minutes: 30
           # Pinned to macos-14 (Xcode 16): the macos-latest image (Xcode 26.5) ships a clang
           # whose compiler-rt moved, so linking the `full` build's prebuilt onnxruntime (`ort`)
           # fails with `ld: library 'clang_rt.osx' not found`. macos-14 has a working toolchain.
           # Revisit once the macos-latest image is fixed upstream.
           - os: macos-14
-            features: 'full'
+            features: "full"
             timeout_minutes: 90
           # Windows: comms+shells only (no heavy doc deps that require system libs).
           - os: windows-latest
-            features: 'comms shells'
+            features: "comms shells"
             timeout_minutes: 30
     steps:
       - uses: actions/checkout@v4

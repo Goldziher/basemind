@@ -5,8 +5,8 @@ use super::super::OutlineEntry;
 use super::super::helpers::{HashMode, symbol_fingerprint};
 use super::super::types_memory::{MemoryRecord, Provenance, SymbolRef, VerifyState, Visibility};
 use super::{
-    ARCHIVE_AFTER_MICROS, AuditCtx, EntryOutcome, STALE_DECAY, audit_one_record,
-    audit_scope_persist, evaluate_one, write_live,
+    ARCHIVE_AFTER_MICROS, AuditCtx, EntryOutcome, STALE_DECAY, audit_one_record, audit_scope_persist, evaluate_one,
+    write_live,
 };
 use crate::index::keys::memory_by_key;
 use crate::path::RelPath;
@@ -14,24 +14,14 @@ use crate::path::RelPath;
 // ── Fixture helpers ──────────────────────────────────────────────────────
 
 /// Scan a single Rust file and return `(TempDir, Store, MapCache)`.
-fn scanned_fixture(
-    rel_path: &str,
-    src: &[u8],
-) -> (tempfile::TempDir, crate::store::Store, MapCache) {
+fn scanned_fixture(rel_path: &str, src: &[u8]) -> (tempfile::TempDir, crate::store::Store, MapCache) {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join(rel_path), src).expect("write fixture");
     let _ = crate::lang::ensure_grammars().expect("grammars");
     let cfg = crate::config::default_for_root(root);
-    let mut store =
-        crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open store");
-    crate::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        crate::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open store");
+    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
     let cache = MapCache::build(&store);
     (dir, store, cache)
 }
@@ -81,10 +71,7 @@ fn should_return_stale_when_referenced_file_deleted() {
     };
     let verdict = audit_one_record(&cache, &store, _dir.path(), &record);
     assert_eq!(verdict.state, VerifyState::Stale);
-    assert!(
-        !verdict.reasons.is_empty(),
-        "Stale verdict must carry a reason"
-    );
+    assert!(!verdict.reasons.is_empty(), "Stale verdict must carry a reason");
 }
 
 #[test]
@@ -149,8 +136,7 @@ fn structural_hash_of_alpha(_root: &std::path::Path, src: &[u8]) -> [u8; 32] {
         map: Arc::new(l1),
         source: Arc::new(src.to_vec()),
     };
-    let hash_vec =
-        symbol_fingerprint(&entry, "alpha", None, lang, HashMode::Structural).expect("fingerprint");
+    let hash_vec = symbol_fingerprint(&entry, "alpha", None, lang, HashMode::Structural).expect("fingerprint");
     hash_vec.try_into().expect("[u8; 32] from hash vec")
 }
 
@@ -194,13 +180,7 @@ fn should_return_stale_when_symbol_body_changed() {
     std::fs::write(root.join("a.rs"), edited_src).expect("write edited");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open");
-    crate::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        crate::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
     let cache = MapCache::build(&store);
     // Stored hash was for original body; disk now has edited body.
     let record = MemoryRecord {
@@ -222,10 +202,7 @@ fn should_return_stale_when_symbol_body_changed() {
         "semantic body change must produce Stale"
     );
     assert!(
-        verdict
-            .reasons
-            .iter()
-            .any(|r| r.contains("symbol body changed")),
+        verdict.reasons.iter().any(|r| r.contains("symbol body changed")),
         "expected 'symbol body changed' reason, got: {:?}",
         verdict.reasons
     );
@@ -245,13 +222,7 @@ fn should_remain_verified_after_formatting_only_edit() {
     std::fs::write(root.join("a.rs"), formatted_src).expect("write formatted");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open");
-    crate::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        crate::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
     let cache = MapCache::build(&store);
 
     let record = MemoryRecord {
@@ -330,10 +301,7 @@ fn should_archive_stale_record_exceeding_archive_threshold() {
         audit_result,
     } = evaluate_one(&ctx, "k", &raw, false).expect("evaluate_one returned None");
 
-    assert!(
-        audit_result.archived,
-        "record stale > 90 days must be archived"
-    );
+    assert!(audit_result.archived, "record stale > 90 days must be archived");
     assert_eq!(
         out.importance,
         1.0 * STALE_DECAY,
@@ -361,15 +329,8 @@ fn should_decay_importance_but_not_archive_recently_stale_record() {
         audit_result,
     } = evaluate_one(&ctx, "k", &raw, false).expect("evaluate_one returned None");
 
-    assert!(
-        !audit_result.archived,
-        "recently stale record must not be archived"
-    );
-    assert_eq!(
-        out.importance,
-        1.0 * STALE_DECAY,
-        "importance must still be halved"
-    );
+    assert!(!audit_result.archived, "recently stale record must not be archived");
+    assert_eq!(out.importance, 1.0 * STALE_DECAY, "importance must still be halved");
 }
 
 #[test]
@@ -398,10 +359,7 @@ fn should_not_mutate_record_when_dry_run_is_true() {
         VerifyState::Unverified,
         "dry_run must not update verified"
     );
-    assert_eq!(
-        out.last_verified, 0,
-        "dry_run must not update last_verified"
-    );
+    assert_eq!(out.last_verified, 0, "dry_run must not update last_verified");
     assert!(!audit_result.archived, "dry_run must not archive");
     // But the state string in audit_result still reflects the computed verdict.
     assert_eq!(audit_result.state, "stale");
@@ -427,14 +385,8 @@ fn should_not_mutate_record_when_from_archive_is_true() {
     } = evaluate_one(&ctx, "k", &raw, true).expect("evaluate_one returned None");
 
     // from_archive → no mutations.
-    assert_eq!(
-        out.importance, 1.0,
-        "from_archive must not decay importance"
-    );
-    assert!(
-        !audit_result.archived,
-        "from_archive path must never set archived"
-    );
+    assert_eq!(out.importance, 1.0, "from_archive must not decay importance");
+    assert!(!audit_result.archived, "from_archive path must never set archived");
     assert_eq!(audit_result.state, "stale");
 }
 
@@ -448,11 +400,7 @@ fn should_not_mutate_record_when_from_archive_is_true() {
 const NOW: i64 = 1_000_000_000_000_000_000;
 
 /// Build an `AuditCtx` over a scanned fixture (live, non-dry-run) pinned to `NOW`.
-fn persist_ctx<'a>(
-    cache: &'a MapCache,
-    store: &'a crate::store::Store,
-    root: &'a std::path::Path,
-) -> AuditCtx<'a> {
+fn persist_ctx<'a>(cache: &'a MapCache, store: &'a crate::store::Store, root: &'a std::path::Path) -> AuditCtx<'a> {
     AuditCtx {
         cache,
         store,
@@ -463,13 +411,7 @@ fn persist_ctx<'a>(
 }
 
 /// Decode the live record at `(scope, vis, owner, key)`, or `None` if absent.
-fn read_live(
-    idx: &crate::index::IndexDb,
-    scope: &str,
-    vis: u8,
-    owner: &str,
-    key: &str,
-) -> Option<MemoryRecord> {
+fn read_live(idx: &crate::index::IndexDb, scope: &str, vis: u8, owner: &str, key: &str) -> Option<MemoryRecord> {
     let raw = idx
         .memory_by_key
         .get(memory_by_key(scope, vis, owner, key))
@@ -558,8 +500,7 @@ fn should_not_touch_foreign_scope_record() {
     assert_eq!(local_after.importance, 1.0 * STALE_DECAY);
 
     // ...while the foreign-scope record is left completely untouched.
-    let untouched =
-        read_live(idx, "scope-other", vis, "", "kf").expect("foreign record must remain live");
+    let untouched = read_live(idx, "scope-other", vis, "", "kf").expect("foreign record must remain live");
     assert_eq!(
         untouched.verified,
         VerifyState::Unverified,

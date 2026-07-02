@@ -151,24 +151,21 @@ mod tests {
     #[test]
     fn expand_accepts_symbol_alias_for_name() {
         let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" }))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "symbol": "scan" })).unwrap();
         assert_eq!(params.name, "scan");
     }
 
     #[test]
     fn expand_accepts_query_alias_for_name() {
         let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "query": "scan" }))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "query": "scan" })).unwrap();
         assert_eq!(params.name, "scan");
     }
 
     #[test]
     fn expand_canonical_name_still_binds() {
         let params: ExpandParams =
-            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "name": "scan" }))
-                .unwrap();
+            serde_json::from_value(serde_json::json!({ "path": "src/lib.rs", "name": "scan" })).unwrap();
         assert_eq!(params.name, "scan");
     }
 }

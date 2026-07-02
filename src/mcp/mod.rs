@@ -81,8 +81,8 @@ use rmcp::ServerHandler;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{
-    CompleteRequestParams, CompleteResult, GetPromptRequestParams, GetPromptResult,
-    ListPromptsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    CompleteRequestParams, CompleteResult, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::tool_handler;
 use tokio::sync::RwLock;
@@ -101,11 +101,10 @@ pub mod params {
     pub(crate) use super::lenient::Lenient;
 
     pub use super::types::{
-        BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams,
-        DiffFileParams, DiffOutlineParams, FindCallersParams, FindCommitsByPathParams,
-        FindReferencesParams, HotFilesParams, ListFilesParams, OutlineParams, RecentChangesParams,
-        RepoInfoParams, RescanParams, SearchDocumentsParams, SearchGitHistoryParams,
-        SearchSymbolsParams, StatusParams, SymbolHistoryParams, TelemetrySummaryParams,
+        BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
+        FindCallersParams, FindCommitsByPathParams, FindReferencesParams, HotFilesParams, ListFilesParams,
+        OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams, SearchDocumentsParams,
+        SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams, TelemetrySummaryParams,
         WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     #[cfg(feature = "crawl")]
@@ -113,19 +112,17 @@ pub mod params {
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_compress::ExpandParams;
     pub use super::types_governance::{
-        MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams,
-        ProposalsMineParams,
+        MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
     };
     pub use super::types_graph::CallGraphParams;
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
-        MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
-        Visibility,
+        MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
     };
     #[cfg(all(feature = "shells", any(unix, windows)))]
     pub use super::types_shells::{
-        ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams,
-        ShellSendParams, ShellSpawnParams,
+        ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams, ShellSendParams,
+        ShellSpawnParams,
     };
 }
 
@@ -335,12 +332,7 @@ impl MapCache {
     /// session serves those from the blobs and never reaches the rescan path — `scan_and_refresh`
     /// early-returns on `state.read_only`). If they are somehow present, fall back to a full rebuild
     /// rather than let the in-RAM call/impl indexes drift out of sync.
-    fn with_delta(
-        &self,
-        store: &Store,
-        updated: &[crate::path::RelPath],
-        removed: &[crate::path::RelPath],
-    ) -> Self {
+    fn with_delta(&self, store: &Store, updated: &[crate::path::RelPath], removed: &[crate::path::RelPath]) -> Self {
         use rayon::prelude::*;
         if self.calls.is_some() || self.impls.is_some() {
             return Self::build(store);
@@ -431,14 +423,7 @@ impl BasemindServer {
         repo: Option<Arc<crate::git::Repo>>,
         git_cache: Arc<crate::git_cache::GitCache>,
     ) -> Self {
-        Self::new_with_options(
-            store,
-            root,
-            config,
-            repo,
-            git_cache,
-            ServerOptions::default(),
-        )
+        Self::new_with_options(store, root, config, repo, git_cache, ServerOptions::default())
     }
 
     /// Construct a one-shot server with every background facility disabled.
@@ -486,21 +471,17 @@ impl BasemindServer {
         // A read-only serve, or losing the Fjall lock to another process, degrades to `None`
         // (live-walk fallback) exactly like the symbol index does — never an error.
         let basemind_dir = store.basemind_dir.clone();
-        let git_history =
-            if !options.read_only && repo.is_some() && crate::git_history::index_enabled() {
-                match crate::git_history::GitHistoryIndex::open(&basemind_dir) {
-                    Ok(idx) => Some(Arc::new(idx)),
-                    Err(error) => {
-                        tracing::warn!(
-                            ?error,
-                            "git-history index unavailable; tools will live-walk"
-                        );
-                        None
-                    }
+        let git_history = if !options.read_only && repo.is_some() && crate::git_history::index_enabled() {
+            match crate::git_history::GitHistoryIndex::open(&basemind_dir) {
+                Ok(idx) => Some(Arc::new(idx)),
+                Err(error) => {
+                    tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         // Resolve this server's stable agent identity once. Used as the individual-memory
         // owner segment AND the comms-broker handle, so it must be NUL-free — every candidate
         // is validated through `AgentId` and rejected candidates fall through to the next tier.
@@ -534,9 +515,8 @@ impl BasemindServer {
         // re-runs a trivially fast no-op scan; that is acceptable and not worth a freshness flag.
         // A read-only serve never auto-scans — it holds no write lock; the lock-holding writer
         // owns index refresh, and this serve sees it via the passive view watcher.
-        let needs_initial_scan = !options.read_only
-            && view_is_working
-            && (cache.by_path.is_empty() || fjall_index_empty);
+        let needs_initial_scan =
+            !options.read_only && view_is_working && (cache.by_path.is_empty() || fjall_index_empty);
         tracing::info!(
             files = cache.by_path.len(),
             corpus_bytes,
@@ -552,10 +532,7 @@ impl BasemindServer {
         let crawl_engine = match crate::web::build_engine(&config.crawl) {
             Ok(e) => Some(e),
             Err(error) => {
-                tracing::warn!(
-                    ?error,
-                    "crawl engine init failed; web_* tools will report errors"
-                );
+                tracing::warn!(?error, "crawl engine init failed; web_* tools will report errors");
                 None
             }
         };
@@ -620,8 +597,7 @@ impl BasemindServer {
             // incremental append). Never blocks serve startup; the history tools fall back to the
             // live walk until `last_indexed_head` reaches HEAD. The first build on a deep repo is
             // minutes-scale and one-time; later syncs are incremental.
-            if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone())
-            {
+            if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
                 let basemind_dir = basemind_dir.clone();
                 tokio::task::spawn_blocking(move || {
                     match crate::git_history::builder::sync(&git_history, &repo, &basemind_dir) {
@@ -769,12 +745,8 @@ impl ServerHandler for BasemindServer {
         request: GetPromptRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<GetPromptResult, rmcp::ErrorData> {
-        let prompt_context = rmcp::handler::server::prompt::PromptContext::new(
-            self,
-            request.name,
-            request.arguments,
-            context,
-        );
+        let prompt_context =
+            rmcp::handler::server::prompt::PromptContext::new(self, request.name, request.arguments, context);
         self.prompt_router.get_prompt(prompt_context).await
     }
 
@@ -909,13 +881,7 @@ mod map_cache_tests {
         let cfg = crate::config::ConfigV1::with_defaults();
 
         let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
-        crate::scanner::scan(
-            root,
-            &mut store,
-            &cfg,
-            crate::scanner::ScanSource::WorkingTree,
-        )
-        .unwrap();
+        crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).unwrap();
 
         let cache = MapCache::build(&store);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
@@ -924,13 +890,8 @@ mod map_cache_tests {
         assert!(cache.calls.is_none() && cache.impls.is_none());
 
         // Edit a.rs, re-scan just that path, then patch the cache incrementally.
-        fs::write(
-            root.join("a.rs"),
-            b"pub fn alpha2() {}\npub fn alpha3() {}\n",
-        )
-        .unwrap();
-        let report =
-            crate::scanner::scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+        fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
+        let report = crate::scanner::scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
         assert_eq!(report.stats.updated, 1);
 
         let updated = vec![crate::path::RelPath::from("a.rs")];
@@ -950,22 +911,15 @@ mod map_cache_tests {
         let removed = vec![crate::path::RelPath::from("b.rs")];
         let after = next.with_delta(&store, &[], &removed);
         assert!(
-            !after
-                .by_path
-                .contains_key(&crate::path::RelPath::from("b.rs")),
+            !after.by_path.contains_key(&crate::path::RelPath::from("b.rs")),
             "removed path dropped from by_path"
         );
         assert!(
-            after
-                .by_path
-                .contains_key(&crate::path::RelPath::from("a.rs")),
+            after.by_path.contains_key(&crate::path::RelPath::from("a.rs")),
             "other path kept"
         );
         assert!(
-            !after
-                .imports_index
-                .iter()
-                .any(|(p, _)| p == Path::new("b.rs")),
+            !after.imports_index.iter().any(|(p, _)| p == Path::new("b.rs")),
             "imports_index must not retain a removed path"
         );
     }

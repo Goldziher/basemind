@@ -158,26 +158,16 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
         .await
         .expect("bob inbox");
     assert_eq!(bob_inbox.len(), 2, "both messages are unread for Bob");
-    let first = bob_inbox
-        .iter()
-        .find(|sm| sm.meta.id == m1)
-        .expect("m1 in inbox");
+    let first = bob_inbox.iter().find(|sm| sm.meta.id == m1).expect("m1 in inbox");
     assert!(first.meta.ts_micros > 0, "ts_micros surfaced");
     assert_eq!(first.meta.tags, vec!["ops".to_string()], "tags surfaced");
     assert_eq!(first.meta.scope, scope, "scope round-trips through post");
     assert_eq!(first.seq, 1, "seq surfaced (first message in the room)");
 
     // (1) Bob acks the first message BY ID → his cursor advances past it.
-    let (acked, cursors) = bob
-        .ack_inbox(vec![m1.clone()], None, None)
-        .await
-        .expect("bob ack m1");
+    let (acked, cursors) = bob.ack_inbox(vec![m1.clone()], None, None).await.expect("bob ack m1");
     assert_eq!(acked, 1, "one id resolved + acked");
-    assert_eq!(
-        cursors,
-        vec![("team".to_string(), 1)],
-        "cursor advanced to seq 1"
-    );
+    assert_eq!(cursors, vec![("team".to_string(), 1)], "cursor advanced to seq 1");
 
     // Bob's next inbox no longer shows the acked message; only "second" remains.
     let (bob_after, _u, _c) = bob
@@ -188,10 +178,7 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
     assert_eq!(bob_after[0].meta.subject, "second");
 
     // (2) The shared log is intact — room_history STILL returns BOTH messages.
-    let (history, _next) = bob
-        .read_history(room.clone(), None, 100, None)
-        .await
-        .expect("history");
+    let (history, _next) = bob.read_history(room.clone(), None, 100, None).await.expect("history");
     assert_eq!(history.len(), 2, "ack must not delete from the shared log");
 
     // (3) Carol's inbox is unaffected by Bob's ack — per-agent isolation.
@@ -525,10 +512,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .create_room(room.clone(), RoomScope::Global, Some("review".to_string()))
         .await
         .expect("create room");
-    reviewer
-        .join_room(room.clone())
-        .await
-        .expect("reviewer joins");
+    reviewer.join_room(room.clone()).await.expect("reviewer joins");
     tester.join_room(room.clone()).await.expect("tester joins");
     reviewer
         .post_message(
@@ -557,10 +541,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .read_history(room.clone(), None, 100, None)
         .await
         .expect("history");
-    let forms: Vec<String> = history
-        .iter()
-        .map(|m| m.meta.from.as_str().to_string())
-        .collect();
+    let forms: Vec<String> = history.iter().map(|m| m.meta.from.as_str().to_string()).collect();
     assert!(
         forms.contains(&"reviewer".to_string()) && forms.contains(&"tester".to_string()),
         "both distinct senders appear in the shared room: {forms:?}"
@@ -579,10 +560,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         )
         .await
         .expect("create dm room");
-    reviewer
-        .join_room(dm.clone())
-        .await
-        .expect("reviewer dm join");
+    reviewer.join_room(dm.clone()).await.expect("reviewer dm join");
     tester.join_room(dm.clone()).await.expect("tester dm join");
     reviewer
         .post_message(
@@ -602,9 +580,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .await
         .expect("tester inbox");
     assert!(
-        tester_inbox
-            .iter()
-            .any(|sm| sm.meta.subject == "private note"),
+        tester_inbox.iter().any(|sm| sm.meta.subject == "private note"),
         "tester must receive the DM"
     );
 
@@ -614,9 +590,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .await
         .expect("outsider inbox");
     assert!(
-        !outsider_inbox
-            .iter()
-            .any(|sm| sm.meta.subject == "private note"),
+        !outsider_inbox.iter().any(|sm| sm.meta.subject == "private note"),
         "the DM must not leak to an agent outside the pairwise room"
     );
 }
@@ -645,10 +619,7 @@ async fn read_history_recency_cutoff_and_room_freshness() {
         .create_room(room.clone(), RoomScope::Global, Some("Fresh".to_string()))
         .await
         .expect("create room");
-    assert_eq!(
-        created.last_activity, 0,
-        "a freshly-created room has no activity yet"
-    );
+    assert_eq!(created.last_activity, 0, "a freshly-created room has no activity yet");
 
     // now_micros() is read BEFORE the posts so `now + 1h` is strictly after both their timestamps.
     let before_posts = basemind::comms::model::now_micros();
@@ -670,12 +641,7 @@ async fn read_history_recency_cutoff_and_room_freshness() {
 
     // (1) A cutoff strictly AFTER both posts returns nothing — recency elides the older messages.
     let (future, _next) = alice
-        .read_history(
-            room.clone(),
-            None,
-            100,
-            Some(before_posts + ONE_HOUR_MICROS),
-        )
+        .read_history(room.clone(), None, 100, Some(before_posts + ONE_HOUR_MICROS))
         .await
         .expect("history with future cutoff");
     assert!(
@@ -704,10 +670,7 @@ async fn read_history_recency_cutoff_and_room_freshness() {
         .create_room(room.clone(), RoomScope::Global, Some("Fresh".to_string()))
         .await
         .expect("re-create room reads carried-forward activity");
-    assert!(
-        refreshed.last_activity > 0,
-        "last_activity is stamped after a post"
-    );
+    assert!(refreshed.last_activity > 0, "last_activity is stamped after a post");
     let now = basemind::comms::model::now_micros();
     const STALE_WINDOW_MICROS: i64 = 168 * ONE_HOUR_MICROS; // 7 days
     assert!(

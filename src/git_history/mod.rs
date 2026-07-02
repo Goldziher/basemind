@@ -70,9 +70,7 @@ const GH_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50
 /// `BASEMIND_GH_INDEX=0` to disable it (the history tools then fall back to the live walk). The
 /// `scan` / `rescan` CLIs additionally honor a `--no-git-history` flag.
 pub fn index_enabled() -> bool {
-    std::env::var("BASEMIND_GH_INDEX")
-        .map(|v| v != "0")
-        .unwrap_or(true)
+    std::env::var("BASEMIND_GH_INDEX").map(|v| v != "0").unwrap_or(true)
 }
 
 #[derive(Debug, Error)]
@@ -163,9 +161,7 @@ impl GitHistoryIndex {
         // half of `index::IndexDb::open`.
         let mut db = Database::builder(dir).open()?;
         let mut meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
-        let on_disk_ver = meta
-            .get(keys::META_SCHEMA_VER)?
-            .and_then(|b| keys::parse_u32(&b));
+        let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
             // Schema drifted: drop every handle first so fjall releases the directory lock, then
             // wipe and reopen fresh. The caller rebuilds via the builder.
@@ -187,8 +183,7 @@ impl GitHistoryIndex {
         let path_id_by_path = db.keyspace("gh_path_id_by_path", KeyspaceCreateOptions::default)?;
         let path_by_id = db.keyspace("gh_path_by_id", KeyspaceCreateOptions::default)?;
         let path_to_ords = db.keyspace("gh_path_to_ords", KeyspaceCreateOptions::default)?;
-        let commit_text_by_ord =
-            db.keyspace("gh_commit_text_by_ord", KeyspaceCreateOptions::default)?;
+        let commit_text_by_ord = db.keyspace("gh_commit_text_by_ord", KeyspaceCreateOptions::default)?;
         let term_to_ords = db.keyspace("gh_term_to_ords", KeyspaceCreateOptions::default)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
@@ -219,10 +214,7 @@ impl GitHistoryIndex {
             &self.term_to_ords,
             &self.meta,
         ] {
-            let keys: Vec<_> = ks
-                .iter()
-                .filter_map(|g| g.into_inner().ok().map(|(k, _)| k))
-                .collect();
+            let keys: Vec<_> = ks.iter().filter_map(|g| g.into_inner().ok().map(|(k, _)| k)).collect();
             for k in keys {
                 ks.remove(k)?;
             }
@@ -352,21 +344,14 @@ impl GitHistoryIndex {
     /// The stored full message body for `ord`, or `None` when the commit had a summary-only message
     /// (no body row is written for those).
     pub(crate) fn commit_text(&self, ord: u32) -> Option<String> {
-        let bytes = self
-            .commit_text_by_ord
-            .get(keys::u32_key(ord))
-            .ok()
-            .flatten()?;
+        let bytes = self.commit_text_by_ord.get(keys::u32_key(ord)).ok().flatten()?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Iterate `gh_commit_by_ord` descending (newest ordinal first) — the source for the global
     /// `recent_changes` / `hot_files` / `find_commits_by_path` window scans. `want_files=false`
     /// skips the changed-file decode for the callers that don't need it.
-    pub(crate) fn commits_desc(
-        &self,
-        want_files: bool,
-    ) -> impl Iterator<Item = (u32, CommitMeta)> + '_ {
+    pub(crate) fn commits_desc(&self, want_files: bool) -> impl Iterator<Item = (u32, CommitMeta)> + '_ {
         self.commit_by_ord.iter().rev().filter_map(move |g| {
             let (k, v) = g.into_inner().ok()?;
             let ord = keys::parse_u32(&k)?;
@@ -429,14 +414,12 @@ impl GitHistoryWriter {
             meta.summary.as_bytes(),
             &meta.files,
         );
-        self.batch
-            .insert(&self.index.commit_by_ord, keys::u32_key(ord), value);
+        self.batch.insert(&self.index.commit_by_ord, keys::u32_key(ord), value);
         self.maybe_flush()
     }
 
     pub fn put_ord_for_sha(&mut self, sha20: &[u8; 20], ord: u32) -> Result<(), GitHistoryError> {
-        self.batch
-            .insert(&self.index.ord_by_sha, *sha20, keys::u32_key(ord));
+        self.batch.insert(&self.index.ord_by_sha, *sha20, keys::u32_key(ord));
         self.maybe_flush()
     }
 
@@ -445,44 +428,28 @@ impl GitHistoryWriter {
             self.batch
                 .insert(&self.index.path_id_by_path, key, keys::u32_key(path_id));
         }
-        self.batch.insert(
-            &self.index.path_by_id,
-            keys::u32_key(path_id),
-            rel.as_bytes().to_vec(),
-        );
+        self.batch
+            .insert(&self.index.path_by_id, keys::u32_key(path_id), rel.as_bytes().to_vec());
         self.maybe_flush()
     }
 
     pub fn put_posting(&mut self, path_id: u32, encoded: &[u8]) -> Result<(), GitHistoryError> {
-        self.batch.insert(
-            &self.index.path_to_ords,
-            keys::u32_key(path_id),
-            encoded.to_vec(),
-        );
+        self.batch
+            .insert(&self.index.path_to_ords, keys::u32_key(path_id), encoded.to_vec());
         self.maybe_flush()
     }
 
     /// Store one commit's full message body (skipped by the caller when empty).
     pub fn put_commit_text(&mut self, ord: u32, body: &[u8]) -> Result<(), GitHistoryError> {
-        self.batch.insert(
-            &self.index.commit_text_by_ord,
-            keys::u32_key(ord),
-            body.to_vec(),
-        );
+        self.batch
+            .insert(&self.index.commit_text_by_ord, keys::u32_key(ord), body.to_vec());
         self.maybe_flush()
     }
 
     /// Store the newest-first posting list for one `(field, term)` search key.
-    pub fn put_term_posting(
-        &mut self,
-        term_key: &[u8],
-        encoded: &[u8],
-    ) -> Result<(), GitHistoryError> {
-        self.batch.insert(
-            &self.index.term_to_ords,
-            term_key.to_vec(),
-            encoded.to_vec(),
-        );
+    pub fn put_term_posting(&mut self, term_key: &[u8], encoded: &[u8]) -> Result<(), GitHistoryError> {
+        self.batch
+            .insert(&self.index.term_to_ords, term_key.to_vec(), encoded.to_vec());
         self.maybe_flush()
     }
 
@@ -516,21 +483,9 @@ impl GitHistoryWriter {
         // before `last_indexed_head` is published.
         self.flush()?;
         let mut meta = self.index.db.batch();
-        meta.insert(
-            &self.index.meta,
-            keys::META_NEXT_ORD,
-            next_ord.to_be_bytes(),
-        );
-        meta.insert(
-            &self.index.meta,
-            keys::META_NEXT_PATH_ID,
-            next_path_id.to_be_bytes(),
-        );
-        meta.insert(
-            &self.index.meta,
-            keys::META_COMMIT_COUNT,
-            commit_count.to_be_bytes(),
-        );
+        meta.insert(&self.index.meta, keys::META_NEXT_ORD, next_ord.to_be_bytes());
+        meta.insert(&self.index.meta, keys::META_NEXT_PATH_ID, next_path_id.to_be_bytes());
+        meta.insert(&self.index.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.index.meta, keys::META_ROOT_SHA, root.to_vec());
         // last_indexed_head LAST within this final batch's logical write set.
         meta.insert(&self.index.meta, keys::META_LAST_HEAD, head.to_vec());

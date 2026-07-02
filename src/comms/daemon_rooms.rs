@@ -44,8 +44,7 @@ pub(super) fn default_room_for(chain: &ScopeChain) -> Room {
         (None, false) => {
             let path = chain.cwd.clone();
             (
-                RoomId::parse(sanitize_id(&path.to_string_lossy()))
-                    .unwrap_or_else(|_| fallback_room()),
+                RoomId::parse(sanitize_id(&path.to_string_lossy())).unwrap_or_else(|_| fallback_room()),
                 RoomScope::PathPrefix(path.clone()),
                 format!("workspace: {}", path.display()),
             )
@@ -109,11 +108,5 @@ pub(super) fn sanitize_id(s: &str) -> String {
 pub(super) fn mint_message_id(room: &RoomId, agent: &AgentId) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{}:{}:{}:{}",
-        room.as_str(),
-        agent.as_str(),
-        now_micros(),
-        n
-    )
+    format!("{}:{}:{}:{}", room.as_str(), agent.as_str(), now_micros(), n)
 }

@@ -53,10 +53,7 @@ impl ResponseFormat {
 /// `Json` delegates to the canonical [`super::helpers::json_result`] (`Content::json`). `Toon`
 /// renders [`encode`] output into a plain `Content::text` item so the agent receives the compact
 /// table on the wire.
-pub(super) fn format_result<T: Serialize>(
-    value: &T,
-    fmt: ResponseFormat,
-) -> Result<CallToolResult, McpError> {
+pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Result<CallToolResult, McpError> {
     match fmt {
         ResponseFormat::Json => super::helpers::json_result(value),
         ResponseFormat::Toon => {
@@ -122,11 +119,7 @@ fn encode_table_block(field: &str, items: &[Value]) -> Option<String> {
     if rows.is_empty() {
         return Some(header);
     }
-    let body = rows
-        .iter()
-        .map(|r| format!("  {r}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let body = rows.iter().map(|r| format!("  {r}")).collect::<Vec<_>>().join("\n");
     Some(format!("{header}\n{body}"))
 }
 
@@ -208,11 +201,7 @@ fn scalar_cell(value: &Value) -> String {
 /// Quote a string only when leaving it bare would be ambiguous (empty, leading/trailing space,
 /// or a leading character that would otherwise parse as a non-string scalar).
 fn maybe_quote(s: &str) -> String {
-    if needs_quote(s) {
-        quote(s)
-    } else {
-        s.to_string()
-    }
+    if needs_quote(s) { quote(s) } else { s.to_string() }
 }
 
 fn needs_quote(s: &str) -> bool {
