@@ -109,13 +109,17 @@ pub fn index_commit_terms(
     }
 }
 
-/// Does `info` match `query` under `scope`, by the same tokenized-AND semantics the index uses?
-/// Reused by the bounded live-walk fallback (when the git-history index isn't fresh) so its results
-/// are consistent with the indexed path — modulo whichever fields the live `CommitInfo` populated
-/// (e.g. a summary-only live record contributes no body terms).
-pub fn commit_matches(info: &CommitInfo, query: &str, scope: FtsScope) -> bool {
-    let mut query_terms: AHashSet<String> = AHashSet::new();
-    tokenize(query, &mut query_terms);
+/// Does `info` match the already-tokenized `query_terms` under `scope`, by the same tokenized-AND
+/// semantics the index uses? Reused by the bounded live-walk fallback (when the git-history index
+/// isn't fresh) so its results are consistent with the indexed path — modulo whichever fields the
+/// live `CommitInfo` populated (e.g. a summary-only live record contributes no body terms). Takes
+/// pre-tokenized query terms so the caller tokenizes the (loop-invariant) query ONCE, not per
+/// commit across the whole window.
+pub fn commit_matches_terms(
+    info: &CommitInfo,
+    query_terms: &AHashSet<String>,
+    scope: FtsScope,
+) -> bool {
     if query_terms.is_empty() {
         return false;
     }
@@ -131,12 +135,25 @@ pub fn commit_matches(info: &CommitInfo, query: &str, scope: FtsScope) -> bool {
     query_terms.iter().all(|term| have.contains(term))
 }
 
+/// Convenience wrapper: tokenize `query` then delegate to [`commit_matches_terms`]. Prefer the
+/// terms variant in a per-commit loop to avoid re-tokenizing the invariant query.
+pub fn commit_matches(info: &CommitInfo, query: &str, scope: FtsScope) -> bool {
+    let mut query_terms: AHashSet<String> = AHashSet::new();
+    tokenize(query, &mut query_terms);
+    commit_matches_terms(info, &query_terms, scope)
+}
+
 impl GitHistoryIndex {
     /// Full-text search over indexed commits. Tokenizes `query` the same way the index was built,
     /// then returns the commits (newest-first) that contain EVERY query term in the scoped field
     /// set — after skipping `skip` and taking at most `take`. Result [`CommitInfo`]s carry the full
     /// body (read from `gh_commit_text_by_ord`). An empty query, or one that tokenizes to nothing,
     /// returns no results.
+    ///
+    /// Note: this rebuilds the full term intersection on every call (offset pagination, no scan
+    /// cap), so a page-K request is O(|matching set|), not O(skip + take). Fine for typical
+    /// queries; a very common single token over a huge repo pays for the whole posting list per
+    /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
     pub fn search_commits(
         &self,
         query: &str,
