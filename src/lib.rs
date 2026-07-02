@@ -29,6 +29,7 @@ pub mod shells;
 pub mod store;
 pub mod store_blob;
 pub mod store_gc;
+mod store_lock;
 pub mod sysres;
 pub mod textcompress;
 #[cfg(feature = "crawl")]
