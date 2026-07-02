@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Resource footprint in `cache_stats` (disk + RAM).** The `cache_stats` MCP tool and
+  `basemind cache stats` CLI now report a `total_bytes` that reconciles with `du` exactly, a
+  per-component breakdown that **includes the `git-history.fjall/` index** (previously uncounted —
+  the "1.15 GB reported vs 1.5 GB on disk" gap), an `other_bytes` catch-all so an uncounted
+  directory can never silently vanish again, and process memory (`rss_bytes` + `peak_rss_bytes`) via
+  a new cross-platform RSS reader (`src/sysres.rs`; mach on macOS, `/proc` + `getrusage` on Linux).
+  Disk sizing now uses on-disk block counts, so Fjall's sparse journals are no longer over-reported.
+  The Claude statusline gains the on-disk total + serve-process RSS.
+- **Full CLI↔MCP parity.** Every MCP tool an agent can call is now reachable from the CLI: new
+  `git search` (→ `search_git_history`), `governance audit` (→ `memory_audit`), `query expand`
+  (→ `expand`), and a new `shells` group (`spawn`/`send`/`capture`/`kill`/`broadcast`/`list`
+  → the `shell_*` tools, `--features shells`; sessions persist via the shared rmux daemon). Three
+  CLI-only text primitives gained MCP tools — `delta`, `checkpoint`, `detect_waste`. A new
+  `tests/cli_parity.rs` guard enumerates the advertised MCP tool set and fails if any tool lacks a
+  CLI counterpart.
 - **`scan.extra_roots` — index directories outside the repository root** ([#34]). Point the new
   `[scan] extra_roots = [...]` config knob at absolute paths outside the repo (e.g. a Bazel
   external repo cache, `/private/var/tmp/_bazel_<user>/<hash>/external`) and their files join the
@@ -23,6 +38,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   does not track them — and git blame short-circuits with a clear error for external (untracked)
   files. The feature itself changes no index/blob format; a re-scan populates external files (and
   this release's `RELEASE_MINOR` bump wipes + rebuilds `.basemind/` anyway).
+
+### Fixed
+
+- **Git author/keyword lookups routed to the wrong tool.** `search_git_history` and `recent_changes`
+  descriptions now state their contracts sharply — author/"what did X do"/keyword questions belong
+  to the full-depth `search_git_history` (scans every commit reachable from HEAD), not the bounded
+  100-commit `recent_changes` window. Precision is verified against real `git` at full branch depth
+  by the new `tests/git_parity.rs` harness (opt-in via `BASEMIND_GIT_PARITY_REPO`).
+- **Double-run lock UX.** `basemind scan` / `rescan` now pre-detect a live `basemind serve`/`watch`
+  holding the store lock (via a non-blocking `probe_writer_lock`) and print an actionable notice
+  naming the holder, exiting cleanly instead of colliding with a raw lock error.
+- **Misleading `status` latency.** `status` uses a non-blocking read, so a multi-minute rebuild
+  holding the write lock is no longer recorded as the call's wall-clock; it returns immediately with
+  `rebuild_in_progress: true` when a writer is live.
+- **`cache_stats` no longer hard-fails on a stale/unreadable index.** It reports sizes regardless and
+  flags `blob_accounting_ok: false` when orphan accounting had to be skipped (e.g. a schema-version
+  mismatch), instead of erroring out.
+- **`/bm-stats` works offline.** The plugin command is now CLI-first (like `/bm-doctor`), reading
+  `basemind cache stats` / `basemind telemetry` when the MCP server is disconnected.
 
 [#34]: https://github.com/Goldziher/basemind/issues/34
 
