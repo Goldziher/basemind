@@ -111,6 +111,7 @@ pub mod params {
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_compress::ExpandParams;
     pub use super::types_governance::{
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams,
         ProposalsMineParams,
