@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-02
+
+Minor release: `RELEASE_MINOR` bumps 14 → 15, so every `.basemind/` index + blob store (including
+`git-history.fjall/`) is wiped and rebuilt on the next `basemind scan` — which is also how existing
+repos populate the new git-history full-text search index.
+
 ### Added
 
 - **`search_git_history` — full-text search over commit history.** Search commit **author name +
