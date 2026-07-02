@@ -364,6 +364,36 @@ async fn mcp_server_exercises_representative_tools() {
         Some(0),
         "'tweak' is a message token, not an author token"
     );
+    // Multi-token AND: both tokens live in the SAME commit ("tweak alpha") → 1 hit.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_git_history",
+                json!({ "pattern": "tweak alpha", "field": "all" }),
+            ))
+            .await
+            .expect("search_git_history AND same-commit"),
+    );
+    assert_eq!(
+        body.get("commits").and_then(Value::as_array).map(Vec::len),
+        Some(1),
+        "'tweak' AND 'alpha' both in the 'tweak alpha' commit"
+    );
+    // Multi-token AND across DIFFERENT commits ("init" in c1, "tweak" in c2) → 0 hits.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "search_git_history",
+                json!({ "pattern": "init tweak", "field": "all" }),
+            ))
+            .await
+            .expect("search_git_history AND cross-commit"),
+    );
+    assert_eq!(
+        body.get("commits").and_then(Value::as_array).map(Vec::len),
+        Some(0),
+        "'init' (c1) AND 'tweak' (c2) share no commit"
+    );
 
     // symbol_history on alpha: Stage 5's normalization keeps whitespace-only commits silent.
     // The 'tweak alpha' commit changes a literal so we expect ≥ 1 "modified" entry.

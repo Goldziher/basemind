@@ -56,6 +56,9 @@ pub(super) fn run_search_git_history(
         None => {
             // No fresh index (read-only session or still building): bounded live fallback. Walk the
             // recent window and reuse the same tokenized-AND matcher for consistent semantics.
+            // Tokenize the (loop-invariant) query ONCE, not per commit across the whole window.
+            let mut query_terms = ahash::AHashSet::new();
+            fts::tokenize(&params.pattern, &mut query_terms);
             let window = LOG_WALK_MAX as u32;
             let live = state
                 .git_cache
@@ -63,7 +66,7 @@ pub(super) fn run_search_git_history(
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;
             let matched: Vec<CommitInfo> = live
                 .iter()
-                .filter(|c| fts::commit_matches(c, &params.pattern, scope))
+                .filter(|c| fts::commit_matches_terms(c, &query_terms, scope))
                 .skip(skip)
                 .take(want)
                 .cloned()

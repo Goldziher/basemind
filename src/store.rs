@@ -327,10 +327,19 @@ impl Store {
         // force the rightful writer into read-only (the multi-session writer-downgrade race). So we
         // only open Fjall when NO writer holds `.basemind/.lock`; otherwise we serve from the
         // concurrently-readable blobs (`index_db = None`, the in-RAM MapCache fallback covers
-        // find_references/callers/impls/call_graph). A single `.ok()` open with no retry — a reader
-        // never holds the lock, and any race with a starting writer just degrades to `None`.
+        // find_references/callers/impls/call_graph). A single open with no retry — a reader never
+        // holds the lock, and any race with a starting writer just degrades to `None`. A transient
+        // `Locked` is the expected silent degradation; any OTHER error (corrupt WAL, truncated SST,
+        // IO) is logged so a genuinely broken index isn't indistinguishable from "writer holds it".
         let index_db = if schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
-            IndexDb::open(&view_dir).ok()
+            match IndexDb::open(&view_dir) {
+                Ok(db) => Some(db),
+                Err(IndexError::Fjall(fjall::Error::Locked)) => None,
+                Err(error) => {
+                    tracing::warn!(%error, "read-only index open failed; degrading to blob-only reads");
+                    None
+                }
+            }
         } else {
             None
         };
