@@ -368,4 +368,27 @@ mod tests {
         let out = should_extract_document(Path::new("dummy.pdf"), &cfg);
         assert!(out.is_none());
     }
+
+    #[test]
+    fn doc_scope_keeps_default_for_repo_relative_paths() {
+        let cfg = crate::config::ConfigV1::with_defaults();
+        // Repo-relative keys (no leading `/`) keep the scan-wide default scope, borrowed.
+        let scope = doc_scope_for("docs/manual.pdf", "repo:origin", &cfg);
+        assert_eq!(scope, "repo:origin");
+        assert!(matches!(scope, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn doc_scope_namespaces_external_files_under_their_extra_root() {
+        // An external (absolute) key is scoped by the owning `extra_roots` entry so out-of-repo
+        // documents don't land in the repository's own doc scope.
+        let ext = tempfile::tempdir().expect("tempdir");
+        let ext_canonical = std::fs::canonicalize(ext.path()).unwrap();
+        let mut cfg = crate::config::ConfigV1::with_defaults();
+        cfg.scan.extra_roots = vec![ext.path().to_path_buf()];
+
+        let file_key = ext_canonical.join("pkg/notes.pdf");
+        let scope = doc_scope_for(file_key.to_str().unwrap(), "repo:origin", &cfg);
+        assert_eq!(scope, format!("path:{}", ext_canonical.to_str().unwrap()));
+    }
 }
