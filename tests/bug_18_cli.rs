@@ -21,13 +21,7 @@ fn serve_errors_on_never_scanned_named_view() {
     // stdin = null so that *if* the guard were broken and serve actually started, the MCP
     // stdio server would hit EOF and exit rather than hanging the test.
     let output = Command::new(bin())
-        .args([
-            "--root",
-            root.to_str().unwrap(),
-            "serve",
-            "--view",
-            "rev-deadbee",
-        ])
+        .args(["--root", root.to_str().unwrap(), "serve", "--view", "rev-deadbee"])
         .stdin(Stdio::null())
         .output()
         .expect("run basemind serve");

@@ -59,15 +59,7 @@ pub type LangId = &'static str;
 ///
 /// Order is the bootstrap download order — keep `rust` first so the most common cold-start case
 /// stays fast.
-pub const OVERRIDE_LANGUAGES: &[LangId] = &[
-    "rust",
-    "python",
-    "typescript",
-    "tsx",
-    "javascript",
-    "go",
-    "markdown",
-];
+pub const OVERRIDE_LANGUAGES: &[LangId] = &["rust", "python", "typescript", "tsx", "javascript", "go", "markdown"];
 
 /// Back-compat alias used by `basemind lang install` and tests that pre-warm the cache.
 pub const SUPPORTED_LANGUAGES: &[LangId] = OVERRIDE_LANGUAGES;
@@ -186,9 +178,7 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 // clean typed error so MCP clients / CLI users see a useful message instead of
                 // silent empty parses. Set `BASEMIND_GRAMMAR_OFFLINE=1` to opt in (e.g. CI
                 // environments where the cache is pre-warmed and outbound traffic is blocked).
-                if std::env::var("BASEMIND_GRAMMAR_OFFLINE")
-                    .is_ok_and(|v| v != "0" && !v.is_empty())
-                {
+                if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
                     return Err(Arc::new(LangError::Download(format!(
                         "offline mode: missing grammars {missing:?} and \
                          BASEMIND_GRAMMAR_OFFLINE is set",
@@ -215,9 +205,7 @@ pub fn downloaded_languages() -> Vec<String> {
 
 /// Path to the tslp cache directory, if it can be resolved.
 pub fn grammar_cache_dir() -> Option<PathBuf> {
-    tree_sitter_language_pack::cache_dir()
-        .ok()
-        .map(PathBuf::from)
+    tree_sitter_language_pack::cache_dir().ok().map(PathBuf::from)
 }
 
 /// Clear the tslp grammar cache. Forces re-download on next use.
@@ -399,11 +387,7 @@ fn extract_section(source: &str, name: &str) -> Option<String> {
             out.push('\n');
         }
     }
-    if out.trim().is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.trim().is_empty() { None } else { Some(out) }
 }
 
 /// Adapt an upstream TSLP `tags.scm` source into basemind's override-shaped section convention.
@@ -653,11 +637,7 @@ fn tslp_tags_adapted(lang: LangId) -> Option<Arc<str>> {
 /// section source is present but fails to compile.
 pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError> {
     let lock = COMBINED_L1_QUERIES.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock
-        .read()
-        .expect("combined L1 query pool poisoned")
-        .get(&lang)
-    {
+    if let Some(slot) = lock.read().expect("combined L1 query pool poisoned").get(&lang) {
         return Ok(slot.as_ref().map(Arc::clone));
     }
 
@@ -712,15 +692,9 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
 ///
 /// The returned [`ClassifiedQuery`] has `classes[i]` set for every capture index `i` in the
 /// compiled query. Cached globally per language; built at most once per process per language.
-pub fn try_get_classified_combined_l1_query(
-    lang: LangId,
-) -> Result<Option<Arc<ClassifiedQuery>>, LangError> {
+pub fn try_get_classified_combined_l1_query(lang: LangId) -> Result<Option<Arc<ClassifiedQuery>>, LangError> {
     let lock = CLASSIFIED_COMBINED_L1.get_or_init(|| RwLock::new(AHashMap::new()));
-    if let Some(slot) = lock
-        .read()
-        .expect("classified L1 query pool poisoned")
-        .get(&lang)
-    {
+    if let Some(slot) = lock.read().expect("classified L1 query pool poisoned").get(&lang) {
         return Ok(slot.as_ref().map(Arc::clone));
     }
 
@@ -785,10 +759,7 @@ pub fn try_get_query(lang: LangId, kind: QueryKind) -> Result<CachedQuery, LangE
 
     let source: Option<String> = if let Some(raw) = override_query_source(lang) {
         extract_section(raw, kind.name())
-    } else if matches!(
-        kind,
-        QueryKind::Symbols | QueryKind::Calls | QueryKind::Implementations
-    ) {
+    } else if matches!(kind, QueryKind::Symbols | QueryKind::Calls | QueryKind::Implementations) {
         tslp_tags_adapted(lang).and_then(|adapted| extract_section(&adapted, kind.name()))
     } else {
         None

@@ -21,13 +21,7 @@ fn scanned_repo() -> TempDir {
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("write b.rs");
     {
         let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-        scan(
-            root,
-            &mut store,
-            &ConfigV1::with_defaults(),
-            ScanSource::WorkingTree,
-        )
-        .expect("scan");
+        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
     } // drop → release the fs2 advisory lock AND Fjall's directory lock
     dir
 }
@@ -75,11 +69,7 @@ fn second_session_loses_the_fjall_index_but_keeps_blob_reads() {
     // Reads that go through the blobs already work on the 2nd session regardless of
     // the Fjall lock: symbols come straight from the msgpack blobs.
     let hits = basemind::query::search_symbols(&serve2, "alpha", None).expect("search");
-    assert_eq!(
-        hits.len(),
-        1,
-        "blob-backed search still works on the 2nd session"
-    );
+    assert_eq!(hits.len(), 1, "blob-backed search still works on the 2nd session");
 }
 
 /// Regression guard for the writer→read-only DOWNGRADE race (peer B reproduced it 4/4 under load

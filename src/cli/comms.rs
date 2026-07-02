@@ -274,9 +274,7 @@ pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
 /// helper keeps every verb's identity resolution DRY.
 async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
     let agent = match as_agent {
-        Some(raw) => {
-            AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?
-        }
+        Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
         None => cli_agent_id(root)?,
     };
     let (remote, cwd) = scope_context_for(root);
@@ -308,11 +306,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .await
                 .map_err(|e| anyhow::anyhow!("register: {e}"))?;
             if json {
-                writeln!(
-                    out,
-                    "{}",
-                    json!({ "agent_id": agent_id, "registered": true })
-                )?;
+                writeln!(out, "{}", json!({ "agent_id": agent_id, "registered": true }))?;
             } else {
                 writeln!(out, "registered as {agent_id}")?;
             }
@@ -340,13 +334,7 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "no agents")?;
             } else {
                 for a in &agents {
-                    writeln!(
-                        out,
-                        "{}\t{}\t{}",
-                        a.agent_id.as_str(),
-                        a.card.name,
-                        a.card.version
-                    )?;
+                    writeln!(out, "{}\t{}\t{}", a.agent_id.as_str(), a.card.name, a.card.version)?;
                 }
             }
         }
@@ -538,9 +526,7 @@ async fn dm(
 ) -> Result<()> {
     // Sender = --as-agent (validated) or the CLI default; recipient = --to.
     let from_agent = match &as_agent {
-        Some(raw) => {
-            AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?
-        }
+        Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
         None => cli_agent_id(root)?,
     };
     let to_agent = AgentId::parse(to.clone()).with_context(|| format!("invalid --to {to:?}"))?;
@@ -581,24 +567,13 @@ async fn dm(
     // Post via the sender.
     let body = body.unwrap_or_default().into_bytes();
     let message_id = sender
-        .post_message(
-            room.clone(),
-            subject,
-            body,
-            Vec::new(),
-            reply_to,
-            Vec::new(),
-        )
+        .post_message(room.clone(), subject, body, Vec::new(), reply_to, Vec::new())
         .await
         .map_err(|e| anyhow::anyhow!("dm post: {e}"))?;
 
     let room_label = room.into_string();
     if json {
-        writeln!(
-            out,
-            "{}",
-            json!({ "message_id": message_id, "room": room_label })
-        )?;
+        writeln!(out, "{}", json!({ "message_id": message_id, "room": room_label }))?;
     } else {
         writeln!(out, "{message_id}\t{room_label}")?;
     }
@@ -632,11 +607,7 @@ async fn room_for_path(
 
     let mut client = connect_as(root, as_agent).await?;
     client
-        .create_room(
-            room.room_id.clone(),
-            room.scope.clone(),
-            Some(room.title.clone()),
-        )
+        .create_room(room.room_id.clone(), room.scope.clone(), Some(room.title.clone()))
         .await
         .map_err(|e| anyhow::anyhow!("create room: {e}"))?;
     client
@@ -660,8 +631,7 @@ async fn room_for_path(
 /// Whether a room reads as STALE at `now_micros`: no posts yet (`last_activity == 0`) or its last
 /// post is older than the [`STALE_AFTER_HOURS`] window. Mirrors the MCP `RoomSummary` rule.
 fn is_stale(room: &Room, now_micros: i64) -> bool {
-    room.last_activity == 0
-        || (now_micros - room.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
+    room.last_activity == 0 || (now_micros - room.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
 }
 
 /// JSON view of a room front-matter row, including freshness (`last_activity` + `stale`).
@@ -735,14 +705,7 @@ fn render_front_matter(
         // Front-matter table: subject, from, ts, id — bodies are fetched with `read`.
         for sm in messages {
             let m = &sm.meta;
-            writeln!(
-                out,
-                "{}\t{}\t{}\t{}",
-                m.subject,
-                m.from.as_str(),
-                m.ts_micros,
-                m.id
-            )?;
+            writeln!(out, "{}\t{}\t{}\t{}", m.subject, m.from.as_str(), m.ts_micros, m.id)?;
         }
     }
     if let Some(c) = next_cursor {

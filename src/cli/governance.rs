@@ -78,12 +78,7 @@ pub enum GovernanceCmd {
     },
 }
 
-pub async fn run(
-    server: &BasemindServer,
-    cmd: GovernanceCmd,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, json: bool, out: &mut impl Write) -> Result<()> {
     match cmd {
         GovernanceCmd::Mine {
             window,
@@ -111,18 +106,12 @@ pub async fn run(
         }
         GovernanceCmd::Accept { id, key } => {
             let p = ProposalAcceptParams { id, key };
-            let r = run_tool(
-                "proposal_accept",
-                server.proposal_accept(Parameters(p)).await,
-            )?;
+            let r = run_tool("proposal_accept", server.proposal_accept(Parameters(p)).await)?;
             emit("proposal_accept", &r, json, out)
         }
         GovernanceCmd::Reject { id, reason } => {
             let p = ProposalRejectParams { id, reason };
-            let r = run_tool(
-                "proposal_reject",
-                server.proposal_reject(Parameters(p)).await,
-            )?;
+            let r = run_tool("proposal_reject", server.proposal_reject(Parameters(p)).await)?;
             emit("proposal_reject", &r, json, out)
         }
         GovernanceCmd::Audit {

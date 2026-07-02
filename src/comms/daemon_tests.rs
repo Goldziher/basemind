@@ -91,11 +91,7 @@ async fn subscribe_then_post_fans_out_notification() {
         )
         .await;
     let sub_resp = broker
-        .handle(
-            CommsRequest::Subscribe { room: room.clone() },
-            &mut session,
-            &tx,
-        )
+        .handle(CommsRequest::Subscribe { room: room.clone() }, &mut session, &tx)
         .await;
     assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
     assert_eq!(broker.subscriber_count(), 1);
@@ -133,12 +129,7 @@ fn sanitize_id_maps_to_alphabet() {
 }
 
 /// Drive Hello → CreateRoom → Join for an agent, returning a session bound to it.
-async fn hello_join(
-    broker: &Broker,
-    tx: &mpsc::Sender<CommsOut>,
-    who: &str,
-    room: &RoomId,
-) -> Session {
+async fn hello_join(broker: &Broker, tx: &mpsc::Sender<CommsOut>, who: &str, room: &RoomId) -> Session {
     let mut session = Session::default();
     broker
         .handle(
@@ -198,11 +189,7 @@ async fn post(
     }
 }
 
-async fn inbox(
-    broker: &Broker,
-    session: &mut Session,
-    tx: &mpsc::Sender<CommsOut>,
-) -> Vec<SeqMeta> {
+async fn inbox(broker: &Broker, session: &mut Session, tx: &mpsc::Sender<CommsOut>) -> Vec<SeqMeta> {
     match broker
         .handle(
             CommsRequest::Inbox {
@@ -380,9 +367,7 @@ async fn ack_does_not_report_phantom_advance() {
         )
         .await;
     match resp2 {
-        CommsResponse::Acked {
-            cursors_advanced, ..
-        } => assert!(
+        CommsResponse::Acked { cursors_advanced, .. } => assert!(
             cursors_advanced.is_empty(),
             "re-acking an already-acked seq must not report an advance"
         ),
@@ -453,12 +438,7 @@ async fn idle_reaper_tracks_links_and_activity() {
 
 /// Drive a `Hello` carrying a `session_id` and return the bound session. No cwd → the base
 /// chain is path-empty, so only the explicit session room can match.
-async fn hello_session(
-    broker: &Broker,
-    tx: &mpsc::Sender<CommsOut>,
-    who: &str,
-    session_id: Option<&str>,
-) -> Session {
+async fn hello_session(broker: &Broker, tx: &mpsc::Sender<CommsOut>, who: &str, session_id: Option<&str>) -> Session {
     let mut session = Session::default();
     broker
         .handle(
@@ -507,14 +487,8 @@ async fn session_scoped_room_auto_joins_only_matching_session() {
 
     // The matching session's agents were auto-joined to the room; the outsider was not.
     let subs = broker.store.subscribers(&room).expect("subs");
-    assert!(
-        subs.contains(&agent("parent")),
-        "parent auto-joins session room"
-    );
-    assert!(
-        subs.contains(&agent("child")),
-        "child auto-joins session room"
-    );
+    assert!(subs.contains(&agent("parent")), "parent auto-joins session room");
+    assert!(subs.contains(&agent("child")), "child auto-joins session room");
     assert!(
         !subs.contains(&agent("outsider")),
         "a different session id must not auto-join"
@@ -639,19 +613,11 @@ async fn re_hello_preserves_session_created_at() {
         .await;
 
     let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
-    let first = broker
-        .store
-        .get_session("s2")
-        .expect("get")
-        .expect("first row");
+    let first = broker.store.get_session("s2").expect("get").expect("first row");
 
     // A reconnect (a second Hello) for the same session must not move `created_at`.
     let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
-    let second = broker
-        .store
-        .get_session("s2")
-        .expect("get")
-        .expect("second row");
+    let second = broker.store.get_session("s2").expect("get").expect("second row");
     assert_eq!(
         second.created_at, first.created_at,
         "created_at is preserved across reconnects"

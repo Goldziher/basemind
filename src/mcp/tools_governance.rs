@@ -14,8 +14,7 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_governance::{
-    MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams,
-    ProposalsMineParams,
+    MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
 };
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
@@ -67,13 +66,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_audit",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_audit", &__params_json, __started, &__result);
         __result
     }
 
@@ -109,13 +102,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "proposals_mine",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "proposals_mine", &__params_json, __started, &__result);
         __result
     }
 
@@ -149,13 +136,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "proposals_list",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "proposals_list", &__params_json, __started, &__result);
         __result
     }
 
@@ -194,13 +175,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "proposal_accept",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "proposal_accept", &__params_json, __started, &__result);
         __result
     }
 
@@ -237,13 +212,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "proposal_reject",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "proposal_reject", &__params_json, __started, &__result);
         __result
     }
 }

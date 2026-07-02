@@ -19,9 +19,7 @@ use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 use super::cursor::Cursor;
 use super::ids::{AgentId, RoomId};
 use super::model::{AgentCard, AgentRecord, Room, RoomScope};
-use super::protocol::{
-    CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport,
-};
+use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
 
@@ -259,9 +257,7 @@ impl CommsClient {
 
     /// Dial the endpoint and build the framing codec. No handshake yet. The connect is
     /// platform-specific (Unix socket vs Windows named pipe); the codec is identical.
-    async fn dial(
-        paths: &CommsPaths,
-    ) -> Result<(PlatformStream, LengthDelimitedCodec), CommsClientError> {
+    async fn dial(paths: &CommsPaths) -> Result<(PlatformStream, LengthDelimitedCodec), CommsClientError> {
         let stream = Self::connect_stream(&paths.socket_path).await?;
         let mut codec = LengthDelimitedCodec::new();
         codec.set_max_frame_length(MAX_FRAME_BYTES);
@@ -322,9 +318,7 @@ impl CommsClient {
                 daemon: proto_ver,
                 client: PROTO_VER,
             }),
-            CommsResponse::Error { code, message } => {
-                Err(CommsClientError::Broker { code, message })
-            }
+            CommsResponse::Error { code, message } => Err(CommsClientError::Broker { code, message }),
             _ => Err(CommsClientError::Unexpected { request: "hello" }),
         }
     }
@@ -337,8 +331,7 @@ impl CommsClient {
         // `spawn` is a borrow of `self`, but `ensure_daemon_with` only needs it as `FnOnce`;
         // borrow it through a closure so we do not move it out of `self`.
         let spawn = &self.spawn;
-        singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths))
-            .await?;
+        singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths)).await?;
         let (stream, codec) = Self::dial(&self.paths).await?;
         self.stream = stream;
         self.codec = codec;
@@ -356,15 +349,11 @@ impl CommsClient {
 
     /// Register or update this agent's card.
     pub async fn register_agent(&mut self, card: AgentCard) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Register { card }, "register")
-            .await
+        self.expect_ok(CommsRequest::Register { card }, "register").await
     }
 
     /// List known agents, optionally restricted to subscribers of one room.
-    pub async fn list_agents(
-        &mut self,
-        room: Option<RoomId>,
-    ) -> Result<Vec<AgentRecord>, CommsClientError> {
+    pub async fn list_agents(&mut self, room: Option<RoomId>) -> Result<Vec<AgentRecord>, CommsClientError> {
         match self.request(CommsRequest::ListAgents { room }).await? {
             CommsResponse::Agents(a) => Ok(a),
             other => Err(self.shape_err(other, "list_agents")),
@@ -378,10 +367,7 @@ impl CommsClient {
         scope: RoomScope,
         title: Option<String>,
     ) -> Result<Room, CommsClientError> {
-        match self
-            .request(CommsRequest::CreateRoom { room, scope, title })
-            .await?
-        {
+        match self.request(CommsRequest::CreateRoom { room, scope, title }).await? {
             CommsResponse::Room(r) => Ok(r),
             other => Err(self.shape_err(other, "create_room")),
         }
@@ -393,10 +379,7 @@ impl CommsClient {
         remote: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Vec<Room>, CommsClientError> {
-        match self
-            .request(CommsRequest::ListRooms { remote, cwd })
-            .await?
-        {
+        match self.request(CommsRequest::ListRooms { remote, cwd }).await? {
             CommsResponse::Rooms(r) => Ok(r),
             other => Err(self.shape_err(other, "list_rooms")),
         }
@@ -404,14 +387,12 @@ impl CommsClient {
 
     /// Subscribe this agent to a room (durable membership; drives the inbox).
     pub async fn join_room(&mut self, room: RoomId) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Join { room }, "join_room")
-            .await
+        self.expect_ok(CommsRequest::Join { room }, "join_room").await
     }
 
     /// Unsubscribe this agent from a room.
     pub async fn leave_room(&mut self, room: RoomId) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Leave { room }, "leave_room")
-            .await
+        self.expect_ok(CommsRequest::Leave { room }, "leave_room").await
     }
 
     /// Post a message to a room. Returns the new message id. `scope` carries optional glob / path
@@ -489,19 +470,13 @@ impl CommsClient {
             })
             .await?
         {
-            CommsResponse::History {
-                messages,
-                next_cursor,
-            } => Ok((messages, next_cursor)),
+            CommsResponse::History { messages, next_cursor } => Ok((messages, next_cursor)),
             other => Err(self.shape_err(other, "read_history")),
         }
     }
 
     /// Fetch a single message body by id. `None` when the id is unknown.
-    pub async fn get_body(
-        &mut self,
-        message_id: String,
-    ) -> Result<Option<Vec<u8>>, CommsClientError> {
+    pub async fn get_body(&mut self, message_id: String) -> Result<Option<Vec<u8>>, CommsClientError> {
         match self.request(CommsRequest::GetBody { message_id }).await? {
             CommsResponse::Body { body } => Ok(body),
             other => Err(self.shape_err(other, "get_body")),
@@ -551,8 +526,7 @@ impl CommsClient {
 
     /// Cancel a notification stream.
     pub async fn unsubscribe(&mut self, sub: u64) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Unsubscribe { sub }, "unsubscribe")
-            .await
+        self.expect_ok(CommsRequest::Unsubscribe { sub }, "unsubscribe").await
     }
 
     /// Ask the daemon for its status snapshot.
@@ -565,9 +539,7 @@ impl CommsClient {
 
     /// List every recorded session lineage row (the spawn graph: each `session_id` mapped to its
     /// parent/child agents and the session-scoped room they share).
-    pub async fn list_sessions(
-        &mut self,
-    ) -> Result<Vec<crate::comms::model::SessionLineage>, CommsClientError> {
+    pub async fn list_sessions(&mut self) -> Result<Vec<crate::comms::model::SessionLineage>, CommsClientError> {
         match self.request(CommsRequest::ListSessions {}).await? {
             CommsResponse::Sessions { sessions } => Ok(sessions),
             other => Err(self.shape_err(other, "list_sessions")),
@@ -599,9 +571,7 @@ impl CommsClient {
     }
 
     /// Await the next notification directly from the socket (after draining any buffered ones).
-    pub async fn poll_notification(
-        &mut self,
-    ) -> Result<Option<CommsNotification>, CommsClientError> {
+    pub async fn poll_notification(&mut self) -> Result<Option<CommsNotification>, CommsClientError> {
         if let Some(n) = self.pending_notifications.pop_front() {
             return Ok(Some(n));
         }
@@ -616,11 +586,7 @@ impl CommsClient {
 
     // ─── transport plumbing ───────────────────────────────────────────────────────────────
 
-    async fn expect_ok(
-        &mut self,
-        req: CommsRequest,
-        label: &'static str,
-    ) -> Result<(), CommsClientError> {
+    async fn expect_ok(&mut self, req: CommsRequest, label: &'static str) -> Result<(), CommsClientError> {
         match self.request(req).await? {
             CommsResponse::Ok => Ok(()),
             other => Err(self.shape_err(other, label)),
@@ -672,10 +638,7 @@ impl CommsClient {
     /// Write the request and read frames until the direct response arrives, buffering any
     /// notifications seen in the meantime. No reconnect — the single-shot retry lives in
     /// [`CommsClient::request`].
-    async fn send_and_await(
-        &mut self,
-        req: CommsRequest,
-    ) -> Result<CommsResponse, CommsClientError> {
+    async fn send_and_await(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
         self.write_request(&req).await?;
         loop {
             match self.read_frame().await? {
@@ -860,11 +823,7 @@ pub fn scope_context_for(cwd: &Path) -> (Option<String>, Option<PathBuf>) {
     let repo = crate::git::Repo::discover(cwd).ok();
     let remote = repo.as_ref().and_then(|r| {
         let key = crate::git::scope_key(r);
-        if key.starts_with("path:") {
-            None
-        } else {
-            Some(key)
-        }
+        if key.starts_with("path:") { None } else { Some(key) }
     });
     (remote, Some(cwd.to_path_buf()))
 }

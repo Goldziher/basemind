@@ -13,9 +13,7 @@ use crate::index::{IndexDb, writer::IndexWriter};
 use crate::lang;
 use crate::path::RelPath;
 #[cfg(feature = "documents")]
-use crate::scanner_docs::{
-    PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document,
-};
+use crate::scanner_docs::{PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document};
 use crate::scanner_filter::{Filters, IndexFilter, ignore_walk_builder};
 use crate::store::{FileEntry, Store, StoreError};
 
@@ -109,8 +107,7 @@ fn run_candidates(
         .fold(
             || WorkerIndexBatch::new(store),
             |mut batch, rel| {
-                let result =
-                    process_file(root, rel, filters, store, source, config, scope, &mut batch);
+                let result = process_file(root, rel, filters, store, source, config, scope, &mut batch);
                 batch.results.push(result);
                 batch
             },
@@ -268,10 +265,7 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
     };
     // Filters work on forward-slash strings; non-UTF-8 submodule roots are extremely rare
     // and lossy here only affects which paths the scanner *skips* (still indexed if lossy).
-    paths
-        .into_iter()
-        .map(|p| p.to_str_lossy().into_owned())
-        .collect()
+    paths.into_iter().map(|p| p.to_str_lossy().into_owned()).collect()
 }
 
 /// One-shot scan: enumerate every candidate file *via the requested source*, process them
@@ -280,25 +274,15 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
 /// Source-aware behavior:
 /// - `WorkingTree` uses `ignore::WalkBuilder` to walk the on-disk tree and `std::fs::read`.
 /// - `Staged` and `Rev` enumerate paths via gix and read bytes via gix.
-pub fn scan(
-    root: &Path,
-    store: &mut Store,
-    config: &Config,
-    source: ScanSource<'_>,
-) -> Result<ScanReport, ScanError> {
+pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<'_>) -> Result<ScanReport, ScanError> {
     let submodule_roots = submodule_roots_for_source(root, &source);
     let filters = Filters::build(config, submodule_roots)?;
     let candidates = candidates_for_source(root, config, &filters, &source)?;
-    debug!(
-        count = candidates.len(),
-        kind = source.label(),
-        "scan candidates"
-    );
+    debug!(count = candidates.len(), kind = source.label(), "scan candidates");
 
     let scope = derive_scope(root, &source);
 
-    let outcomes: Vec<FileResult> =
-        run_candidates(&candidates, root, &filters, store, &source, config, &scope);
+    let outcomes: Vec<FileResult> = run_candidates(&candidates, root, &filters, store, &source, config, &scope);
 
     // Borrow path strings directly from `outcomes` — avoids one String clone per indexed
     // file. The `seen` set is built and consumed before `outcomes` is moved into
@@ -331,13 +315,9 @@ pub fn scan(
         store.remove(k);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
-            let _ = w
-                .remove_file(&RelPath::from(k.as_str()))
-                .and_then(|()| w.commit());
+            let _ = w.remove_file(&RelPath::from(k.as_str())).and_then(|()| w.commit());
         }
-        report
-            .results
-            .push(FileResult::bare(k.clone(), FileStatus::Removed));
+        report.results.push(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
@@ -352,12 +332,7 @@ pub fn scan(
 /// Paths outside `root`, inside `.basemind/`, or not matching the include globs are
 /// silently dropped (the watcher pre-filters but we re-check defensively).
 /// Removed files (path no longer exists) are purged from the index.
-pub fn scan_paths(
-    root: &Path,
-    store: &mut Store,
-    config: &Config,
-    paths: &[PathBuf],
-) -> Result<ScanReport, ScanError> {
+pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[PathBuf]) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     let filter = IndexFilter::new(root, config)?;
 
@@ -397,15 +372,7 @@ pub fn scan_paths(
     }
 
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> = run_candidates(
-        &rels,
-        root,
-        filter.filters(),
-        store,
-        &source,
-        config,
-        &scope,
-    );
+    let outcomes: Vec<FileResult> = run_candidates(&rels, root, filter.filters(), store, &source, config, &scope);
 
     let mut report = ScanReport::default();
     let doc_batches = apply_outcomes(store, &mut report, outcomes);
@@ -414,13 +381,9 @@ pub fn scan_paths(
         store.remove(&rel);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
-            let _ = w
-                .remove_file(&RelPath::from(rel.as_str()))
-                .and_then(|()| w.commit());
+            let _ = w.remove_file(&RelPath::from(rel.as_str())).and_then(|()| w.commit());
         }
-        report
-            .results
-            .push(FileResult::bare(rel, FileStatus::Removed));
+        report.results.push(FileResult::bare(rel, FileStatus::Removed));
         report.stats.removed += 1;
     }
 
@@ -433,11 +396,7 @@ pub fn scan_paths(
 /// list of buffered document batches so the caller can flush them into LanceDB after the
 /// index is consistent.
 #[cfg_attr(not(feature = "documents"), allow(clippy::needless_pass_by_ref_mut))]
-fn apply_outcomes(
-    store: &mut Store,
-    report: &mut ScanReport,
-    outcomes: Vec<FileResult>,
-) -> Vec<PendingDocBatchOpt> {
+fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<FileResult>) -> Vec<PendingDocBatchOpt> {
     #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
     let mut doc_batches: Vec<PendingDocBatchOpt> = Vec::new();
     for mut o in outcomes {
@@ -604,14 +563,12 @@ fn process_file(
                 return FileResult::bare(rel.to_string(), status);
             }
         },
-        ScanSource::Rev { repo, sha } => {
-            match read_via_git(filters, repo.read_blob_at_rev(sha, rel)) {
-                Ok(triple) => triple,
-                Err(status) => {
-                    return FileResult::bare(rel.to_string(), status);
-                }
+        ScanSource::Rev { repo, sha } => match read_via_git(filters, repo.read_blob_at_rev(sha, rel)) {
+            Ok(triple) => triple,
+            Err(status) => {
+                return FileResult::bare(rel.to_string(), status);
             }
-        }
+        },
     };
 
     // Cheap NUL-byte scan in the first 8 KiB — anything that's actually binary (ONGs,
@@ -645,31 +602,27 @@ fn process_file(
     // Parse once and run both tiers against the shared tree. When eager_l2 is off only L1
     // runs; when it's on L2 runs against the same Tree with no second parse. L2 failure is
     // non-fatal (extract_l1_l2 returns None for the L2 slot rather than propagating).
-    let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) =
-        match extract::extract_l1_l2(lang, &bytes, want_l2) {
-            Ok(pair) => pair,
-            Err(ExtractError::ParseTimeout(_)) => {
-                return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
-            }
-            Err(source) => {
-                return FileResult::bare(
-                    rel.to_string(),
-                    FileStatus::ExtractFailed {
-                        msg: format_extract_err(&source),
-                    },
-                );
-            }
-        };
+    let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match extract::extract_l1_l2(lang, &bytes, want_l2) {
+        Ok(pair) => pair,
+        Err(ExtractError::ParseTimeout(_)) => {
+            return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
+        }
+        Err(source) => {
+            return FileResult::bare(
+                rel.to_string(),
+                FileStatus::ExtractFailed {
+                    msg: format_extract_err(&source),
+                },
+            );
+        }
+    };
 
     // Persist both extraction tiers as one content-addressed frame — one `open` + `write` +
     // atomic `rename` instead of a separate write per tier. L1 is essential, so a write
     // failure is fatal for this file (the index stage below is skipped).
     let l2: Option<FileMapL2> = l2_opt;
     if let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
-        return FileResult::bare(
-            rel.to_string(),
-            FileStatus::ExtractFailed { msg: e.to_string() },
-        );
+        return FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg: e.to_string() });
     }
 
     // Stage the file's symbols / calls / imports into the worker's Fjall write batch. The
@@ -677,10 +630,7 @@ fn process_file(
     // than per file, so workers no longer serialize on Fjall's write lock per file.
     let rel_path = RelPath::from(rel);
     if !index_batch.stage(&rel_path, &l1, l2.as_ref()) {
-        tracing::warn!(
-            rel,
-            "index upsert failed; reference search may be incomplete"
-        );
+        tracing::warn!(rel, "index upsert failed; reference search may be incomplete");
     }
 
     let entry = FileEntry {
@@ -705,14 +655,7 @@ fn process_file(
 /// route through xberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
 /// when documents are disabled or the MIME type is filtered out.
 #[cfg(feature = "documents")]
-fn process_doc(
-    root: &Path,
-    rel: &str,
-    filters: &Filters,
-    store: &Store,
-    config: &Config,
-    scope: &str,
-) -> FileResult {
+fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config: &Config, scope: &str) -> FileResult {
     let abs = root.join(rel);
     // External-root docs (absolute key) get their own LanceDB scope keyed by the owning extra
     // root, so out-of-repo documents don't pollute the repository's doc scope. Retrieval is
@@ -776,20 +719,14 @@ fn is_unsupported_format_error(msg: &str) -> bool {
     msg.to_ascii_lowercase().contains("unsupported format")
 }
 
-fn read_working_tree(
-    root: &Path,
-    rel: &str,
-    filters: &Filters,
-) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+fn read_working_tree(root: &Path, rel: &str, filters: &Filters) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     let abs = root.join(rel);
     let metadata = std::fs::metadata(&abs).map_err(|e| FileStatus::ReadFailed {
         kind: e.kind(),
         msg: e.to_string(),
     })?;
     if metadata.len() > filters.max_file_bytes {
-        return Err(FileStatus::SkippedTooLarge {
-            size: metadata.len(),
-        });
+        return Err(FileStatus::SkippedTooLarge { size: metadata.len() });
     }
     let bytes = std::fs::read(&abs).map_err(|e| FileStatus::ReadFailed {
         kind: e.kind(),
@@ -805,10 +742,7 @@ fn read_working_tree(
     Ok((bytes, size, mtime))
 }
 
-fn read_via_git(
-    filters: &Filters,
-    blob: Result<Option<Vec<u8>>, GitError>,
-) -> Result<(Vec<u8>, u64, i64), FileStatus> {
+fn read_via_git(filters: &Filters, blob: Result<Option<Vec<u8>>, GitError>) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     let blob = blob.map_err(|e| FileStatus::ReadFailed {
         kind: std::io::ErrorKind::Other,
         msg: e.to_string(),
@@ -856,12 +790,7 @@ fn derive_scope(root: &Path, source: &ScanSource<'_>) -> String {
 
 /// Push the buffered document batches into LanceDB. No-op without the `documents` feature.
 #[cfg(feature = "documents")]
-fn flush_doc_batches_if_any(
-    store: &mut Store,
-    config: &Config,
-    scope: &str,
-    batches: Vec<PendingDocBatchOpt>,
-) {
+fn flush_doc_batches_if_any(store: &mut Store, config: &Config, scope: &str, batches: Vec<PendingDocBatchOpt>) {
     if batches.is_empty() {
         return;
     }
@@ -869,13 +798,7 @@ fn flush_doc_batches_if_any(
 }
 
 #[cfg(not(feature = "documents"))]
-fn flush_doc_batches_if_any(
-    _store: &mut Store,
-    _config: &Config,
-    _scope: &str,
-    _batches: Vec<PendingDocBatchOpt>,
-) {
-}
+fn flush_doc_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingDocBatchOpt>) {}
 
 #[cfg(test)]
 mod tests {
@@ -890,9 +813,7 @@ mod tests {
             "document extract: Unsupported format: application/x-wais-source"
         ));
         // Case-insensitive on the xberg phrasing.
-        assert!(is_unsupported_format_error(
-            "Unsupported Format: text/x-foo"
-        ));
+        assert!(is_unsupported_format_error("Unsupported Format: text/x-foo"));
         // A genuine extraction failure on a real document stays a failure.
         assert!(!is_unsupported_format_error(
             "document extract: failed to parse PDF: corrupt xref table"

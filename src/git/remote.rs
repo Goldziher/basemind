@@ -112,10 +112,7 @@ mod tests {
             normalize_remote_url("https://github.com/Foo/bar.git"),
             "github.com/Foo/bar"
         );
-        assert_eq!(
-            normalize_remote_url("git@github.com:Foo/bar.git"),
-            "github.com/Foo/bar"
-        );
+        assert_eq!(normalize_remote_url("git@github.com:Foo/bar.git"), "github.com/Foo/bar");
         assert_eq!(
             normalize_remote_url("ssh://git@github.com/Foo/bar.git/"),
             "github.com/Foo/bar"
@@ -125,25 +122,16 @@ mod tests {
     #[test]
     fn ssh_with_port_normalizes_to_same_scope_as_https_and_scp() {
         let expected = "github.com/Foo/bar";
-        assert_eq!(
-            normalize_remote_url("ssh://git@github.com:22/Foo/bar"),
-            expected
-        );
+        assert_eq!(normalize_remote_url("ssh://git@github.com:22/Foo/bar"), expected);
         assert_eq!(normalize_remote_url("git@github.com:Foo/bar"), expected);
         assert_eq!(normalize_remote_url("https://github.com/Foo/bar"), expected);
         // `.git` suffix + ssh port should still collapse identically.
-        assert_eq!(
-            normalize_remote_url("ssh://git@github.com:22/Foo/bar.git"),
-            expected
-        );
+        assert_eq!(normalize_remote_url("ssh://git@github.com:22/Foo/bar.git"), expected);
     }
 
     #[test]
     fn lowercases_host_but_preserves_path_case() {
-        assert_eq!(
-            normalize_remote_url("https://GitHub.COM/Foo/Bar"),
-            "github.com/Foo/Bar"
-        );
+        assert_eq!(normalize_remote_url("https://GitHub.COM/Foo/Bar"), "github.com/Foo/Bar");
     }
 
     #[test]

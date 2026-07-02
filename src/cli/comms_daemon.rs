@@ -96,9 +96,7 @@ pub fn run() -> Result<()> {
             loop {
                 tick.tick().await;
                 if broker_for_reaper.is_idle_for(IDLE_REAP_AFTER).await {
-                    tracing::info!(
-                        "comms: idle with no clients past the reap window; self-terminating"
-                    );
+                    tracing::info!("comms: idle with no clients past the reap window; self-terminating");
                     broker_for_reaper.begin_drain().await;
                     let _ = shutdown_for_reaper.send(true);
                     break;
@@ -157,10 +155,7 @@ pub fn run() -> Result<()> {
         // dispatches through the same `CommsFrontendObj` trait object.
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
-            crate::comms::frontend_uds::UdsFrontend::from_listener(
-                listener,
-                paths.socket_path.clone(),
-            ),
+            crate::comms::frontend_uds::UdsFrontend::from_listener(listener, paths.socket_path.clone()),
         ));
         #[cfg(windows)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(NamedPipeFrontendBox(
@@ -255,11 +250,7 @@ mod tests {
 
         let ident_a = socket_inode(&a).expect("a exists");
         // Stable while the file is unchanged — the watchdog must not false-positive on its own socket.
-        assert_eq!(
-            socket_inode(&a),
-            Some(ident_a),
-            "identity is stable across stats"
-        );
+        assert_eq!(socket_inode(&a), Some(ident_a), "identity is stable across stats");
         // A different file has a different (dev, inode) — models a reclaim that rebound the path.
         assert_ne!(
             socket_inode(&b),

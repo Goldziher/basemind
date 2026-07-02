@@ -46,9 +46,7 @@ function getPlatformTriple() {
 
   if (type === "Darwin") {
     if (isAppleSilicon()) return "aarch64-apple-darwin";
-    throw new Error(
-      "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries",
-    );
+    throw new Error("Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries");
   }
 
   throw new Error(`Unsupported platform: ${type} ${arch}`);
@@ -137,9 +135,7 @@ function retryWithBackoff(fn, maxAttempts = 3) {
       }
 
       const delay = delays[index];
-      console.log(
-        `Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`,
-      );
+      console.log(`Transient error (attempt ${index + 1}/${maxAttempts}): ${err.message}; retrying in ${delay}ms...`);
       await new Promise((resolve) => setTimeout(resolve, delay));
       return attempt(index + 1);
     }
@@ -231,9 +227,7 @@ async function verifyChecksum(archivePath, assetName, checksumsUrl) {
 
   const expected = expectedDigest(checksumsText, assetName);
   if (!expected) {
-    throw new Error(
-      `no checksum entry for ${assetName} in ${checksumsUrl} — refusing to install unverified binary`,
-    );
+    throw new Error(`no checksum entry for ${assetName} in ${checksumsUrl} — refusing to install unverified binary`);
   }
 
   const actual = sha256File(archivePath).toLowerCase();

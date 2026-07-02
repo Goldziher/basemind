@@ -70,11 +70,7 @@ fn build_repo() -> TempDir {
     )
     .unwrap();
     // d.py: Python subclass so find_implementations has a Python hit.
-    std::fs::write(
-        root.join("d.py"),
-        b"class Foo: pass\nclass Bar(Foo): pass\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("d.py"), b"class Foo: pass\nclass Bar(Foo): pass\n").unwrap();
     // e.rs: caller chain `outer -> middle -> inner` so the call_graph BFS has
     // something multi-hop to chew on.
     std::fs::write(
@@ -103,15 +99,8 @@ fn build_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    let mut store =
-        basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
 }
 
 fn decode_text(result: &CallToolResult) -> Value {
@@ -159,11 +148,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
@@ -198,10 +183,7 @@ async fn mcp_server_exercises_representative_tools() {
         .get("languages")
         .and_then(Value::as_object)
         .expect("languages object");
-    assert!(
-        langs.contains_key("rust"),
-        "rust should be present: {langs:?}"
-    );
+    assert!(langs.contains_key("rust"), "rust should be present: {langs:?}");
     assert!(
         langs.contains_key("typescript"),
         "typescript should be present: {langs:?}"
@@ -210,17 +192,11 @@ async fn mcp_server_exercises_representative_tools() {
     // outline: a.rs surfaces alpha, Beta, doit (method); the new impl-kind symbol exists too
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "outline",
-                json!({ "path": "a.rs", "l2": false }),
-            ))
+            .call_tool(call_params("outline", json!({ "path": "a.rs", "l2": false })))
             .await
             .expect("outline"),
     );
-    let symbols = body
-        .get("symbols")
-        .and_then(Value::as_array)
-        .expect("symbols");
+    let symbols = body.get("symbols").and_then(Value::as_array).expect("symbols");
     let names: Vec<String> = symbols
         .iter()
         .filter_map(|s| s.get("name").and_then(Value::as_str).map(str::to_string))
@@ -230,25 +206,16 @@ async fn mcp_server_exercises_representative_tools() {
     let impl_kind = symbols
         .iter()
         .any(|s| s.get("kind").and_then(Value::as_str) == Some("impl"));
-    assert!(
-        impl_kind,
-        "Stage 2 impl-kind symbol should be present: {names:?}"
-    );
+    assert!(impl_kind, "Stage 2 impl-kind symbol should be present: {names:?}");
 
     // search_symbols: arrow-fn const is now kind=function (Stage 2)
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "Greet", "limit": 10 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
             .await
             .expect("search_symbols"),
     );
-    let results = body
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("results");
+    let results = body.get("results").and_then(Value::as_array).expect("results");
     assert_eq!(results.len(), 1, "one Greet hit: {results:?}");
     assert_eq!(
         results[0].get("kind").and_then(Value::as_str),
@@ -260,10 +227,7 @@ async fn mcp_server_exercises_representative_tools() {
     // form and round-trip the same hit data. Use a needle with several hits to exercise the
     // tabular block.
     let json_result = service
-        .call_tool(call_params(
-            "search_symbols",
-            json!({ "needle": "draw", "limit": 50 }),
-        ))
+        .call_tool(call_params("search_symbols", json!({ "needle": "draw", "limit": 50 })))
         .await
         .expect("search_symbols json");
     let json_body = decode_text(&json_result);
@@ -273,10 +237,7 @@ async fn mcp_server_exercises_representative_tools() {
         .and_then(Value::as_array)
         .expect("json results")
         .clone();
-    assert!(
-        !json_results.is_empty(),
-        "expected draw hits: {json_body:?}"
-    );
+    assert!(!json_results.is_empty(), "expected draw hits: {json_body:?}");
 
     let toon_result = service
         .call_tool(call_params(
@@ -317,10 +278,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("recent_changes"),
     );
-    let commits = body
-        .get("commits")
-        .and_then(Value::as_array)
-        .expect("commits");
+    let commits = body.get("commits").and_then(Value::as_array).expect("commits");
     assert_eq!(commits.len(), 2, "two commits expected");
     assert!(
         body.get("truncated").is_none() || body.get("truncated") == Some(&Value::Bool(false)),
@@ -339,15 +297,8 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("search_git_history"),
     );
-    let hits = body
-        .get("commits")
-        .and_then(Value::as_array)
-        .expect("commits");
-    assert_eq!(
-        hits.len(),
-        1,
-        "one commit summary contains 'tweak', got {hits:?}"
-    );
+    let hits = body.get("commits").and_then(Value::as_array).expect("commits");
+    assert_eq!(hits.len(), 1, "one commit summary contains 'tweak', got {hits:?}");
     assert!(
         hits[0]
             .get("summary")
@@ -412,10 +363,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("symbol_history"),
     );
-    let history = body
-        .get("history")
-        .and_then(Value::as_array)
-        .expect("history");
+    let history = body.get("history").and_then(Value::as_array).expect("history");
     let modifieds = history
         .iter()
         .filter(|e| e.get("change").and_then(Value::as_str) == Some("modified"))
@@ -445,10 +393,7 @@ async fn mcp_server_exercises_representative_tools() {
         Some("structural"),
         "structural hash_mode should be echoed back to the caller"
     );
-    let history = body
-        .get("history")
-        .and_then(Value::as_array)
-        .expect("history");
+    let history = body.get("history").and_then(Value::as_array).expect("history");
     let modifieds = history
         .iter()
         .filter(|e| e.get("change").and_then(Value::as_str) == Some("modified"))
@@ -461,10 +406,7 @@ async fn mcp_server_exercises_representative_tools() {
     // find_references (Stage 3): c.rs calls alpha() three times — index should reflect that.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "find_references",
-                json!({ "name": "alpha", "limit": 100 }),
-            ))
+            .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 100 })))
             .await
             .expect("find_references"),
     );
@@ -490,17 +432,11 @@ async fn mcp_server_exercises_representative_tools() {
     // should contain the 3rd alpha() hit with no overlap, then next_cursor=None.
     let page1 = decode_text(
         &service
-            .call_tool(call_params(
-                "find_references",
-                json!({ "name": "alpha", "limit": 2 }),
-            ))
+            .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 2 })))
             .await
             .expect("find_references page1"),
     );
-    let page1_hits = page1
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("page1 hits");
+    let page1_hits = page1.get("hits").and_then(Value::as_array).expect("page1 hits");
     assert_eq!(page1_hits.len(), 2, "limit=2 → 2 hits on first page");
     let cursor1 = page1
         .get("next_cursor")
@@ -516,10 +452,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("find_references page2"),
     );
-    let page2_hits = page2
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("page2 hits");
+    let page2_hits = page2.get("hits").and_then(Value::as_array).expect("page2 hits");
     assert_eq!(page2_hits.len(), 1, "remaining single hit on second page");
     assert!(
         page2.get("next_cursor").is_none(),
@@ -543,10 +476,7 @@ async fn mcp_server_exercises_representative_tools() {
     // find_callers (Stage 3): anchor on the alpha *definition* and confirm the same 3 hits.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "find_callers",
-                json!({ "path": "a.rs", "name": "alpha" }),
-            ))
+            .call_tool(call_params("find_callers", json!({ "path": "a.rs", "name": "alpha" })))
             .await
             .expect("find_callers"),
     );
@@ -569,10 +499,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("find_callers page1"),
     );
-    let page1_hits = page1
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("page1 hits");
+    let page1_hits = page1.get("hits").and_then(Value::as_array).expect("page1 hits");
     assert_eq!(page1_hits.len(), 2, "find_callers limit=2 → 2 hits");
     let cursor1 = page1
         .get("next_cursor")
@@ -593,10 +520,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("find_callers page2"),
     );
-    let page2_hits = page2
-        .get("hits")
-        .and_then(Value::as_array)
-        .expect("page2 hits");
+    let page2_hits = page2.get("hits").and_then(Value::as_array).expect("page2 hits");
     assert_eq!(page2_hits.len(), 1, "find_callers tail page → 1 hit");
     assert!(
         page2.get("next_cursor").is_none(),
@@ -674,17 +598,11 @@ async fn mcp_server_exercises_representative_tools() {
     // above the limit=1 page size, so we can validate the two-page round trip.
     let page1 = decode_text(
         &service
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 1 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
             .await
             .expect("search_symbols page1"),
     );
-    let page1_results = page1
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("page1 results");
+    let page1_results = page1.get("results").and_then(Value::as_array).expect("page1 results");
     assert_eq!(page1_results.len(), 1, "search_symbols limit=1 → 1 result");
     let cursor1 = page1
         .get("next_cursor")
@@ -700,31 +618,16 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("search_symbols page2"),
     );
-    let page2_results = page2
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("page2 results");
+    let page2_results = page2.get("results").and_then(Value::as_array).expect("page2 results");
     assert_eq!(page2_results.len(), 1, "page2 must also have 1 result");
     // Verify the two pages don't return the same symbol (path,name pair).
     let key1 = (
-        page1_results[0]
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-        page1_results[0]
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
+        page1_results[0].get("path").and_then(Value::as_str).unwrap_or(""),
+        page1_results[0].get("name").and_then(Value::as_str).unwrap_or(""),
     );
     let key2 = (
-        page2_results[0]
-            .get("path")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
-        page2_results[0]
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(""),
+        page2_results[0].get("path").and_then(Value::as_str).unwrap_or(""),
+        page2_results[0].get("name").and_then(Value::as_str).unwrap_or(""),
     );
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
@@ -734,10 +637,7 @@ async fn mcp_server_exercises_representative_tools() {
     // non-null cursor so the dropped tail is pageable.
     let unbudgeted = decode_text(
         &service
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 100 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 100 })))
             .await
             .expect("search_symbols unbudgeted"),
     );
@@ -779,10 +679,7 @@ async fn mcp_server_exercises_representative_tools() {
         "budgeted response must set budgeted=true: {budgeted}"
     );
     assert!(
-        budgeted
-            .get("next_cursor")
-            .and_then(Value::as_str)
-            .is_some(),
+        budgeted.get("next_cursor").and_then(Value::as_str).is_some(),
         "budgeted response must carry a non-null next_cursor: {budgeted}"
     );
 
@@ -793,10 +690,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("list_files page1"),
     );
-    let page1_files = page1
-        .get("files")
-        .and_then(Value::as_array)
-        .expect("page1 files");
+    let page1_files = page1.get("files").and_then(Value::as_array).expect("page1 files");
     assert_eq!(page1_files.len(), 4, "list_files limit=4 → 4 files");
     let cursor1 = page1
         .get("next_cursor")
@@ -805,22 +699,12 @@ async fn mcp_server_exercises_representative_tools() {
         .to_string();
     let page2 = decode_text(
         &service
-            .call_tool(call_params(
-                "list_files",
-                json!({ "limit": 4, "cursor": cursor1 }),
-            ))
+            .call_tool(call_params("list_files", json!({ "limit": 4, "cursor": cursor1 })))
             .await
             .expect("list_files page2"),
     );
-    let page2_files = page2
-        .get("files")
-        .and_then(Value::as_array)
-        .expect("page2 files");
-    assert_eq!(
-        page2_files.len(),
-        1,
-        "list_files page2 → 1 remaining file: {page2}"
-    );
+    let page2_files = page2.get("files").and_then(Value::as_array).expect("page2 files");
+    assert_eq!(page2_files.len(), 1, "list_files page2 → 1 remaining file: {page2}");
     assert!(
         page2.get("next_cursor").is_none(),
         "list_files page2 must NOT carry next_cursor"
@@ -842,10 +726,7 @@ async fn mcp_server_exercises_representative_tools() {
     // and the previously-minted cursor must surface cursor_invalidated=true.
     let page1 = decode_text(
         &service
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "a", "limit": 1 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
             .await
             .expect("search_symbols pre-rescan"),
     );
@@ -891,10 +772,7 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("rescan");
     let stale_response = decode_text(
         &service
-            .call_tool(call_params(
-                "list_files",
-                json!({ "limit": 1, "cursor": stale_cursor }),
-            ))
+            .call_tool(call_params("list_files", json!({ "limit": 1, "cursor": stale_cursor })))
             .await
             .expect("list_files with stale cursor"),
     );
@@ -925,10 +803,7 @@ async fn mcp_server_exercises_representative_tools() {
             .expect("blame_file"),
     );
     let hunks = body.get("hunks").and_then(Value::as_array).expect("hunks");
-    assert!(
-        !hunks.is_empty(),
-        "blame should return hunks on a real file"
-    );
+    assert!(!hunks.is_empty(), "blame should return hunks on a real file");
 
     // workspace_grep: pattern "pub fn" should find hits in a.rs and c.rs.
     let body = decode_text(
@@ -970,28 +845,15 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("workspace_grep(limit=1)"),
     );
-    let truncated = body
-        .get("truncated")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let truncated = body.get("truncated").and_then(Value::as_bool).unwrap_or(false);
     let hits_with_limit = body.get("hits").and_then(Value::as_array).expect("hits");
-    assert_eq!(
-        hits_with_limit.len(),
-        1,
-        "limit=1 should return exactly 1 hit"
-    );
-    assert!(
-        truncated,
-        "limit=1 with multiple matches should set truncated=true"
-    );
+    assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
+    assert!(truncated, "limit=1 with multiple matches should set truncated=true");
 
     // workspace_grep with an invalid regex should return an MCP protocol error (invalid_params).
     // rmcp surfaces this as Err(McpError) from call_tool, not as Ok with is_error=true.
     let invalid_result = service
-        .call_tool(call_params(
-            "workspace_grep",
-            json!({ "pattern": "[invalid_regex(" }),
-        ))
+        .call_tool(call_params("workspace_grep", json!({ "pattern": "[invalid_regex(" })))
         .await;
     assert!(
         invalid_result.is_err(),
@@ -1010,9 +872,7 @@ async fn mcp_server_exercises_representative_tools() {
     let _ = service
         .call_tool(call_params("memory_get", json!({ "key": "smoke_key" })))
         .await;
-    let _ = service
-        .call_tool(call_params("memory_list", json!({})))
-        .await;
+    let _ = service.call_tool(call_params("memory_list", json!({}))).await;
     let _ = service
         .call_tool(call_params("memory_delete", json!({ "key": "smoke_key" })))
         .await;
@@ -1078,8 +938,7 @@ async fn mcp_server_exercises_representative_tools() {
                         _ => None,
                     })
                     .unwrap_or_default();
-                let toon_body: Value =
-                    serde_toon::from_str(&toon_raw).expect("toon body deserializes to JSON value");
+                let toon_body: Value = serde_toon::from_str(&toon_raw).expect("toon body deserializes to JSON value");
                 assert_eq!(
                     json_body.get("query"),
                     toon_body.get("query"),
@@ -1139,10 +998,7 @@ async fn mcp_server_exercises_representative_tools() {
                 .await
                 .expect("memory_list page1"),
         );
-        let page1_entries = page1
-            .get("entries")
-            .and_then(Value::as_array)
-            .expect("page1 entries");
+        let page1_entries = page1.get("entries").and_then(Value::as_array).expect("page1 entries");
         assert_eq!(page1_entries.len(), 2, "memory_list limit=2 → 2 entries");
         let cursor1 = page1
             .get("next_cursor")
@@ -1162,10 +1018,7 @@ async fn mcp_server_exercises_representative_tools() {
                 .await
                 .expect("memory_list page2"),
         );
-        let page2_entries = page2
-            .get("entries")
-            .and_then(Value::as_array)
-            .expect("page2 entries");
+        let page2_entries = page2.get("entries").and_then(Value::as_array).expect("page2 entries");
         assert_eq!(page2_entries.len(), 1, "memory_list page2 → 1 remaining");
         assert!(
             page2.get("next_cursor").is_none(),
@@ -1203,10 +1056,7 @@ async fn mcp_server_exercises_representative_tools() {
             Some(1),
             "memory_audit single-key must report audited=1: {body}"
         );
-        let results = body
-            .get("results")
-            .and_then(Value::as_array)
-            .expect("results");
+        let results = body.get("results").and_then(Value::as_array).expect("results");
         assert_eq!(results.len(), 1, "single-key audit must return one result");
         assert_eq!(
             results[0].get("state").and_then(Value::as_str),
@@ -1238,10 +1088,7 @@ async fn mcp_server_exercises_representative_tools() {
                 .await
                 .expect("memory_audit range"),
         );
-        let range_audited = range_body
-            .get("audited")
-            .and_then(Value::as_u64)
-            .expect("audited");
+        let range_audited = range_body.get("audited").and_then(Value::as_u64).expect("audited");
         assert!(
             range_audited >= 1,
             "range audit must cover at least the audit_probe key: {range_body}"
@@ -1249,10 +1096,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         // Clean up.
         let _ = service
-            .call_tool(call_params(
-                "memory_delete",
-                json!({ "key": "audit_probe" }),
-            ))
+            .call_tool(call_params("memory_delete", json!({ "key": "audit_probe" })))
             .await
             .expect("memory_delete audit_probe");
     }
@@ -1288,20 +1132,14 @@ async fn mcp_server_exercises_representative_tools() {
             "proposals_mine must echo window_inspected=200 (default): {mine_body}"
         );
         assert!(
-            mine_body
-                .get("skipped_bulk")
-                .and_then(Value::as_u64)
-                .is_some(),
+            mine_body.get("skipped_bulk").and_then(Value::as_u64).is_some(),
             "proposals_mine must return `skipped_bulk` field: {mine_body}"
         );
 
         // (b) proposals_list after zero-candidate mine returns a well-formed empty list.
         let list_body = decode_text(
             &service
-                .call_tool(call_params(
-                    "proposals_list",
-                    json!({ "kind": "skill", "limit": 50 }),
-                ))
+                .call_tool(call_params("proposals_list", json!({ "kind": "skill", "limit": 50 })))
                 .await
                 .expect("proposals_list after default mine"),
         );
@@ -1316,11 +1154,7 @@ async fn mcp_server_exercises_representative_tools() {
             "proposals_list must return truncated=false for an empty list: {list_body}"
         );
         assert!(
-            list_body
-                .get("proposals")
-                .and_then(Value::as_array)
-                .map(Vec::is_empty)
-                == Some(true),
+            list_body.get("proposals").and_then(Value::as_array).map(Vec::is_empty) == Some(true),
             "proposals array must be empty: {list_body}"
         );
 
@@ -1551,10 +1385,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("rescan"),
     );
-    let scanned = body
-        .get("scanned")
-        .and_then(Value::as_u64)
-        .expect("scanned");
+    let scanned = body.get("scanned").and_then(Value::as_u64).expect("scanned");
     assert!(scanned > 0, "rescan should walk at least the fixture files");
 
     // rescan {full:true}: forcing a full re-index must walk the working tree even though a
@@ -1569,10 +1400,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("rescan full"),
     );
-    let scanned_full = body
-        .get("scanned")
-        .and_then(Value::as_u64)
-        .expect("scanned (full)");
+    let scanned_full = body.get("scanned").and_then(Value::as_u64).expect("scanned (full)");
     assert!(
         scanned_full > 0,
         "rescan {{full:true}} must force a full working-tree scan even with a paths scope, \
@@ -1610,23 +1438,14 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("telemetry_summary"),
     );
-    let total_calls = body
-        .get("total_calls")
-        .and_then(Value::as_u64)
-        .expect("total_calls");
+    let total_calls = body.get("total_calls").and_then(Value::as_u64).expect("total_calls");
     assert!(
         total_calls >= 4,
         "telemetry_summary should see at least the prior fixture calls (status/outline/search_symbols/recent_changes), got {total_calls}"
     );
-    let per_tool = body
-        .get("per_tool")
-        .and_then(Value::as_array)
-        .expect("per_tool array");
+    let per_tool = body.get("per_tool").and_then(Value::as_array).expect("per_tool array");
     assert!(!per_tool.is_empty(), "per_tool histogram must not be empty");
-    let savings_note = body
-        .get("savings_note")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
+    let savings_note = body.get("savings_note").and_then(Value::as_str).unwrap_or_default();
     assert!(
         savings_note.contains("estimate") || savings_note.contains("heuristic"),
         "savings_note must disclose the heuristic nature: {savings_note:?}"
@@ -1640,10 +1459,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("cache_stats"),
     );
-    let blob_count = body
-        .get("blob_count")
-        .and_then(Value::as_u64)
-        .expect("blob_count");
+    let blob_count = body.get("blob_count").and_then(Value::as_u64).expect("blob_count");
     assert!(
         blob_count >= 1,
         "freshly-scanned fixture should have blobs on disk: {body}"
@@ -1657,10 +1473,7 @@ async fn mcp_server_exercises_representative_tools() {
         .get("per_view_file_count")
         .and_then(Value::as_array)
         .expect("per_view_file_count array");
-    assert!(
-        !per_view.is_empty(),
-        "the working view should be listed: {body}"
-    );
+    assert!(!per_view.is_empty(), "the working view should be listed: {body}");
 
     // 0.16 resource-footprint fields: the ground-truth total must reconcile exactly to the sum of
     // the named components plus the unattributed remainder (so no directory can go uncounted), and
@@ -1683,9 +1496,7 @@ async fn mcp_server_exercises_representative_tools() {
         "total_bytes must be at least the component sum: {body}"
     );
     assert!(
-        body.get("git_history_bytes")
-            .and_then(Value::as_u64)
-            .is_some(),
+        body.get("git_history_bytes").and_then(Value::as_u64).is_some(),
         "git_history_bytes field must be present: {body}"
     );
     // A freshly-scanned fixture has a readable index, so orphan accounting ran.
@@ -1697,10 +1508,7 @@ async fn mcp_server_exercises_representative_tools() {
     // RSS is best-effort per platform; when present it must be a positive number (the MCP server
     // process is alive while answering).
     if let Some(rss) = body.get("rss_bytes").and_then(Value::as_u64) {
-        assert!(
-            rss > 0,
-            "rss_bytes, when reported, is the live server RSS: {body}"
-        );
+        assert!(rss > 0, "rss_bytes, when reported, is the live server RSS: {body}");
     }
 
     // cache_gc: nothing is orphaned right after a scan, so removed == 0 and bytes_freed == 0.
@@ -1720,19 +1528,13 @@ async fn mcp_server_exercises_representative_tools() {
         Some(0),
         "zero bytes freed when nothing is orphaned: {body}"
     );
-    let scanned = body
-        .get("scanned")
-        .and_then(Value::as_u64)
-        .expect("scanned");
+    let scanned = body.get("scanned").and_then(Value::as_u64).expect("scanned");
     assert!(scanned >= 1, "GC should have inspected blob files: {body}");
 
     // cache_clear: a non-live component (telemetry) clears without confirm.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "cache_clear",
-                json!({ "component": "telemetry" }),
-            ))
+            .call_tool(call_params("cache_clear", json!({ "component": "telemetry" })))
             .await
             .expect("cache_clear(telemetry)"),
     );
@@ -1865,14 +1667,8 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let impl_key_of = |h: &Value| -> (String, String) {
         (
-            h.get("impl_type")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-            h.get("path")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
+            h.get("impl_type").and_then(Value::as_str).unwrap_or("").to_string(),
+            h.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
         )
     };
     assert_ne!(
@@ -1910,10 +1706,7 @@ async fn mcp_server_exercises_representative_tools() {
     // still be the full captured identifier "alpha", not just the substring.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "find_references",
-                json!({ "name": "lph", "limit": 100 }),
-            ))
+            .call_tool(call_params("find_references", json!({ "name": "lph", "limit": 100 })))
             .await
             .expect("find_references(substring)"),
     );
@@ -1963,17 +1756,11 @@ async fn mcp_server_exercises_representative_tools() {
     // search_symbols empty needle guard: empty string must return 0 results without scanning.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "", "limit": 100 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "", "limit": 100 })))
             .await
             .expect("search_symbols(empty)"),
     );
-    let results = body
-        .get("results")
-        .and_then(Value::as_array)
-        .expect("results");
+    let results = body.get("results").and_then(Value::as_array).expect("results");
     assert!(
         results.is_empty(),
         "search_symbols with empty needle must return 0 results, got {results:?}"
@@ -2002,10 +1789,7 @@ async fn mcp_server_exercises_representative_tools() {
         .get("compressed_bytes")
         .and_then(Value::as_u64)
         .expect("compressed_bytes");
-    assert!(
-        original_bytes > 0,
-        "original_bytes must be positive for a.rs: {body}"
-    );
+    assert!(original_bytes > 0, "original_bytes must be positive for a.rs: {body}");
     assert!(
         compressed_bytes > 0,
         "compressed_bytes must be positive for a non-empty outline: {body}"
@@ -2030,10 +1814,7 @@ async fn mcp_server_exercises_representative_tools() {
         cfg!(feature = "documents"),
         "tokens_counted must track the documents feature"
     );
-    let tokens_note = body
-        .get("tokens_note")
-        .and_then(Value::as_str)
-        .expect("tokens_note");
+    let tokens_note = body.get("tokens_note").and_then(Value::as_str).expect("tokens_note");
     if cfg!(feature = "documents") {
         assert!(
             tokens_note.contains("tokenizer"),
@@ -2121,10 +1902,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     // compress: supplying both text and path must be rejected with an error.
     let err = service
-        .call_tool(call_params(
-            "compress",
-            json!({ "text": "hello", "path": "a.rs" }),
-        ))
+        .call_tool(call_params("compress", json!({ "text": "hello", "path": "a.rs" })))
         .await;
     assert!(
         err.is_err(),
@@ -2143,10 +1921,7 @@ async fn mcp_server_exercises_representative_tools() {
     // explicitly excludes from its output. expand must include it.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "expand",
-                json!({ "path": "a.rs", "name": "alpha" }),
-            ))
+            .call_tool(call_params("expand", json!({ "path": "a.rs", "name": "alpha" })))
             .await
             .expect("expand(path=a.rs, name=alpha)"),
     );
@@ -2170,14 +1945,8 @@ async fn mcp_server_exercises_representative_tools() {
         expand_body.contains("let _ = 1"),
         "expanded body must include the function body literal (compress omits it, expand includes it): {expand_body:?}"
     );
-    let start_row = body
-        .get("start_row")
-        .and_then(Value::as_u64)
-        .expect("start_row");
-    let end_row = body
-        .get("end_row")
-        .and_then(Value::as_u64)
-        .expect("end_row");
+    let start_row = body.get("start_row").and_then(Value::as_u64).expect("start_row");
+    let end_row = body.get("end_row").and_then(Value::as_u64).expect("end_row");
     assert!(start_row >= 1, "start_row must be one-based: {body}");
     assert!(end_row >= start_row, "end_row must be >= start_row: {body}");
     assert_eq!(
@@ -2193,18 +1962,12 @@ async fn mcp_server_exercises_representative_tools() {
             json!({ "path": "a.rs", "name": "nonexistent_symbol_xyz" }),
         ))
         .await;
-    assert!(
-        err.is_err(),
-        "expand with unknown symbol must be rejected: {err:?}"
-    );
+    assert!(err.is_err(), "expand with unknown symbol must be rejected: {err:?}");
 
     // expand: `kind` alias `symbol` must work (serde alias).
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "expand",
-                json!({ "path": "a.rs", "symbol": "alpha" }),
-            ))
+            .call_tool(call_params("expand", json!({ "path": "a.rs", "symbol": "alpha" })))
             .await
             .expect("expand(path=a.rs, symbol=alpha via alias)"),
     );
@@ -2257,10 +2020,7 @@ async fn mcp_server_exercises_representative_tools() {
     // delta: identical inputs must report unchanged.
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "delta",
-                json!({ "old": "same\n", "new": "same\n" }),
-            ))
+            .call_tool(call_params("delta", json!({ "old": "same\n", "new": "same\n" })))
             .await
             .expect("delta(identical)"),
     );
@@ -2314,10 +2074,7 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("detect_waste(log)"),
     );
-    let findings = body
-        .get("findings")
-        .and_then(Value::as_array)
-        .expect("findings");
+    let findings = body.get("findings").and_then(Value::as_array).expect("findings");
     assert_eq!(
         findings.len(),
         1,
@@ -2345,8 +2102,7 @@ async fn mcp_server_exercises_representative_tools() {
         "waste is the bytes of every read after the first: {finding}"
     );
     assert_eq!(
-        body.get("total_estimated_waste_bytes")
-            .and_then(Value::as_u64),
+        body.get("total_estimated_waste_bytes").and_then(Value::as_u64),
         Some(100),
         "total_estimated_waste_bytes: {body}"
     );
@@ -2392,11 +2148,7 @@ async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::
     run_scan(root);
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
@@ -2432,10 +2184,7 @@ async fn recent_changes_paginates_with_stable_cursor() {
         .to_string();
     let page2 = decode_text(
         &service
-            .call_tool(call_params(
-                "recent_changes",
-                json!({ "limit": 2, "cursor": cursor1 }),
-            ))
+            .call_tool(call_params("recent_changes", json!({ "limit": 2, "cursor": cursor1 })))
             .await
             .expect("recent_changes page2"),
     );
@@ -2448,10 +2197,7 @@ async fn recent_changes_paginates_with_stable_cursor() {
     let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
     let stale = decode_text(
         &service
-            .call_tool(call_params(
-                "recent_changes",
-                json!({ "limit": 2, "cursor": bogus }),
-            ))
+            .call_tool(call_params("recent_changes", json!({ "limit": 2, "cursor": bogus })))
             .await
             .expect("recent_changes stale"),
     );
@@ -2524,10 +2270,7 @@ async fn hot_files_ranks_the_churned_file_first() {
     let (_dir, service) = spawn_paging_server().await;
     let body = decode_text(
         &service
-            .call_tool(call_params(
-                "hot_files",
-                json!({ "window": 50, "top_k": 5 }),
-            ))
+            .call_tool(call_params("hot_files", json!({ "window": 50, "top_k": 5 })))
             .await
             .expect("hot_files"),
     );
@@ -2563,11 +2306,7 @@ async fn find_commits_by_path_paginates_with_stable_cursor() {
             .expect("find_commits_by_path page1"),
     );
     let p1_shas = commit_shas(&page1);
-    assert_eq!(
-        p1_shas.len(),
-        2,
-        "find_commits_by_path page1 → 2 commits: {page1}"
-    );
+    assert_eq!(p1_shas.len(), 2, "find_commits_by_path page1 → 2 commits: {page1}");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
@@ -2642,11 +2381,7 @@ async fn symbol_history_paginates_with_stable_cursor() {
             .expect("symbol_history page1"),
     );
     let p1_shas = history_shas(&page1);
-    assert_eq!(
-        p1_shas.len(),
-        2,
-        "symbol_history page1 → 2 entries: {page1}"
-    );
+    assert_eq!(p1_shas.len(), 2, "symbol_history page1 → 2 entries: {page1}");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
@@ -2667,10 +2402,7 @@ async fn symbol_history_paginates_with_stable_cursor() {
             .expect("symbol_history page2"),
     );
     let p2_shas = history_shas(&page2);
-    assert!(
-        !p2_shas.is_empty(),
-        "symbol_history page2 must have ≥ 1 entry: {page2}"
-    );
+    assert!(!p2_shas.is_empty(), "symbol_history page2 must have ≥ 1 entry: {page2}");
     assert!(
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
         "symbol_history pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
@@ -2716,10 +2448,7 @@ async fn blame_file_paginates_by_start_line() {
     let _ = service.call_tool(call_params("rescan", json!({}))).await;
     let page1 = decode_text(
         &service
-            .call_tool(call_params(
-                "blame_file",
-                json!({ "path": "paged.rs", "limit": 1 }),
-            ))
+            .call_tool(call_params("blame_file", json!({ "path": "paged.rs", "limit": 1 })))
             .await
             .expect("blame_file page1"),
     );
@@ -2750,10 +2479,7 @@ async fn blame_file_paginates_by_start_line() {
         .get("hunks")
         .and_then(Value::as_array)
         .expect("blame_file page2 hunks");
-    assert!(
-        !p2_hunks.is_empty(),
-        "blame_file page2 must have ≥ 1 hunk: {page2}"
-    );
+    assert!(!p2_hunks.is_empty(), "blame_file page2 must have ≥ 1 hunk: {page2}");
     let p2_start: Vec<u64> = p2_hunks
         .iter()
         .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
@@ -2852,11 +2578,7 @@ async fn reranks_search_results() {
     run_scan(root);
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
@@ -2946,11 +2668,7 @@ async fn summarizes_via_extractive_default() {
 
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
@@ -2992,9 +2710,7 @@ async fn summarizes_via_extractive_default() {
                         let strategy = summary
                             .get("strategy")
                             .and_then(Value::as_str)
-                            .unwrap_or_else(|| {
-                                panic!("summary must carry `strategy` str: {summary}")
-                            });
+                            .unwrap_or_else(|| panic!("summary must carry `strategy` str: {summary}"));
                         assert_eq!(
                             strategy, "extractive",
                             "per-query strategy=extractive must round-trip; got {strategy}"
@@ -3033,11 +2749,7 @@ async fn search_documents_accepts_post_filter_params() {
 
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
@@ -3112,8 +2824,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
     let broker = Arc::new(Broker::new(store));
     let listener = {
-        let std_listener =
-            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
+        let std_listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
         std_listener.set_nonblocking(true).expect("nonblocking");
         tokio::net::UnixListener::from_std(std_listener).expect("adopt listener")
     };
@@ -3154,10 +2865,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .expect("post");
 
     // B reads history → FRONT-MATTER only: subject present, NO body field on the meta record.
-    let (history, _next) = b
-        .read_history(room.clone(), None, 10, None)
-        .await
-        .expect("history");
+    let (history, _next) = b.read_history(room.clone(), None, 10, None).await.expect("history");
     assert_eq!(history.len(), 1, "exactly one posted message");
     let seq_meta = &history[0];
     let meta = &seq_meta.meta;
@@ -3200,10 +2908,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("inbox read+mark");
     assert_eq!(inbox.len(), 1, "the posted message is in B's inbox");
-    assert_eq!(
-        inbox[0].meta.subject, subject,
-        "inbox carries front-matter subject"
-    );
+    assert_eq!(inbox[0].meta.subject, subject, "inbox carries front-matter subject");
     assert_eq!(unread, 0, "mark_read drained the unread count in this page");
 
     // A second inbox read after mark_read returns nothing new.
@@ -3211,10 +2916,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .read_inbox(None, None, None, 10, false, None)
         .await
         .expect("inbox re-read");
-    assert!(
-        inbox2.is_empty(),
-        "no unread messages remain after mark_read"
-    );
+    assert!(inbox2.is_empty(), "no unread messages remain after mark_read");
     assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
 
     // inbox_ack: A posts a second message; B dismisses it via `ack_inbox` (a cursor advance,
@@ -3235,15 +2937,9 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("inbox shows second");
     assert_eq!(inbox3.len(), 1, "the second message is unread in B's inbox");
-    assert_eq!(
-        inbox3[0].meta.id, second_id,
-        "inbox shows the second message"
-    );
+    assert_eq!(inbox3[0].meta.id, second_id, "inbox shows the second message");
 
-    let (acked, cursors_advanced) = b
-        .ack_inbox(vec![second_id.clone()], None, None)
-        .await
-        .expect("ack");
+    let (acked, cursors_advanced) = b.ack_inbox(vec![second_id.clone()], None, None).await.expect("ack");
     assert_eq!(acked, 1, "exactly one message acked");
     assert_eq!(
         cursors_advanced,
@@ -3262,11 +2958,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .read_history(room.clone(), None, 10, None)
         .await
         .expect("history after ack");
-    assert_eq!(
-        history_after.len(),
-        2,
-        "ack does not delete from the shared log"
-    );
+    assert_eq!(history_after.len(), 2, "ack does not delete from the shared log");
 
     // Tear down the broker.
     let _ = shutdown_tx.send(true);
@@ -3306,11 +2998,7 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let bin = env!("CARGO_BIN_EXE_basemind");
     let socket_for_env = socket.clone();
     let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
         c.env("BASEMIND_SHELLS_SOCKET", &socket_for_env);
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
@@ -3359,10 +3047,7 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let captured = service
-            .call_tool(call_params(
-                "shell_capture",
-                json!({ "session_id": session_id }),
-            ))
+            .call_tool(call_params("shell_capture", json!({ "session_id": session_id })))
             .await
             .expect("shell_capture call");
         let text = decode_text(&captured)
@@ -3382,10 +3067,7 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 
     // Kill the session and assert it reports killed.
     let killed = service
-        .call_tool(call_params(
-            "shell_kill",
-            json!({ "session_id": session_id }),
-        ))
+        .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
         .await
         .expect("shell_kill call");
     let killed = decode_text(&killed);
@@ -3397,34 +3079,21 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 
     // A second kill (now-unknown id) must be an error, proving the mapping was forgotten.
     let second = service
-        .call_tool(call_params(
-            "shell_kill",
-            json!({ "session_id": session_id }),
-        ))
+        .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
         .await;
-    assert!(
-        second.is_err(),
-        "killing an already-forgotten session_id should error"
-    );
+    assert!(second.is_err(), "killing an already-forgotten session_id should error");
 
     let _ = service.cancel().await;
 }
 
 /// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
 /// connected rmcp client service.
-async fn spawn_serve(
-    root: &Path,
-    lean: Option<&str>,
-) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let bin = env!("CARGO_BIN_EXE_basemind");
     let lean = lean.map(str::to_string);
     let root = root.to_path_buf();
     let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root")
-            .arg(&root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(&root).arg("serve").arg("--view").arg("working");
         // Mirror env so the lean toggle is read by the child only when requested; the unset
         // case must reproduce the default full surface exactly.
         c.env_remove("BASEMIND_MCP_LEAN");
@@ -3478,13 +3147,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .clone()
             .unwrap_or_else(|| panic!("tool {name} must carry ToolAnnotations"))
     };
-    for read_only in [
-        "outline",
-        "search_symbols",
-        "find_references",
-        "status",
-        "list_files",
-    ] {
+    for read_only in ["outline", "search_symbols", "find_references", "status", "list_files"] {
         assert_eq!(
             annotations_of(read_only).read_only_hint,
             Some(true),
@@ -3506,10 +3169,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     // Baseline result from a direct call on the full surface.
     let direct = decode_text(
         &full
-            .call_tool(call_params(
-                "search_symbols",
-                json!({ "needle": "Greet", "limit": 10 }),
-            ))
+            .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
             .await
             .expect("direct search_symbols"),
     );
@@ -3533,10 +3193,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .await
             .expect("lean list_tools"),
     );
-    let listed = listing
-        .get("tools")
-        .and_then(Value::as_array)
-        .expect("tools array");
+    let listed = listing.get("tools").and_then(Value::as_array).expect("tools array");
     assert!(
         listed
             .iter()
@@ -3547,10 +3204,7 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     // `get_tool_schema` returns the real tool's input schema.
     let schema = decode_text(
         &lean
-            .call_tool(call_params(
-                "get_tool_schema",
-                json!({ "tool_name": "search_symbols" }),
-            ))
+            .call_tool(call_params("get_tool_schema", json!({ "tool_name": "search_symbols" })))
             .await
             .expect("lean get_tool_schema"),
     );
@@ -3607,12 +3261,7 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
     // prompts/list advertises the curated templates.
     let prompts = server.list_all_prompts().await.expect("list_all_prompts");
     let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
-    for expected in [
-        "onboard-repo",
-        "trace-symbol",
-        "explain-file",
-        "review-working-tree",
-    ] {
+    for expected in ["onboard-repo", "trace-symbol", "explain-file", "review-working-tree"] {
         assert!(
             names.contains(&expected),
             "prompt `{expected}` must be advertised, got: {names:?}"
@@ -3624,10 +3273,7 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
         .iter()
         .find(|p| p.name == "trace-symbol")
         .expect("trace-symbol present");
-    let args = trace
-        .arguments
-        .as_ref()
-        .expect("trace-symbol has arguments");
+    let args = trace.arguments.as_ref().expect("trace-symbol has arguments");
     assert!(
         args.iter().any(|a| a.name == "symbol"),
         "trace-symbol must declare a `symbol` argument, got: {:?}",
@@ -3637,12 +3283,8 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
     // prompts/get renders the template, interpolating the argument into the message.
     let rendered = server
         .get_prompt(
-            GetPromptRequestParams::new("trace-symbol").with_arguments(
-                serde_json::json!({ "symbol": "Greeter" })
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
+            GetPromptRequestParams::new("trace-symbol")
+                .with_arguments(serde_json::json!({ "symbol": "Greeter" }).as_object().unwrap().clone()),
         )
         .await
         .expect("get_prompt trace-symbol");
@@ -3740,11 +3382,7 @@ async fn rescan_emits_logging_and_progress_notifications() {
         ) {
             self.logs.lock().unwrap().push(params);
         }
-        async fn on_progress(
-            &self,
-            params: ProgressNotificationParam,
-            _context: NotificationContext<RoleClient>,
-        ) {
+        async fn on_progress(&self, params: ProgressNotificationParam, _context: NotificationContext<RoleClient>) {
             self.progress.lock().unwrap().push(params);
         }
     }
@@ -3760,11 +3398,7 @@ async fn rescan_emits_logging_and_progress_notifications() {
     let bin = env!("CARGO_BIN_EXE_basemind");
     let root_buf = root.to_path_buf();
     let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root")
-            .arg(&root_buf)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(&root_buf).arg("serve").arg("--view").arg("working");
         c.env_remove("BASEMIND_MCP_LEAN");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");

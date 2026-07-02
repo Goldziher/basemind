@@ -79,8 +79,7 @@ fn pre_iter6_doc_blob_deserialises_into_new_filemap_doc() {
         embedding_dim: 0,
     };
     let bytes = rmp_serde::to_vec_named(&old).expect("serialize old shape");
-    let new_doc: FileMapDoc =
-        rmp_serde::from_slice(&bytes).expect("old shape must deserialise via serde(default)");
+    let new_doc: FileMapDoc = rmp_serde::from_slice(&bytes).expect("old shape must deserialise via serde(default)");
 
     assert_eq!(new_doc.mime_type, "text/plain");
     assert_eq!(new_doc.chunks.len(), 1);
@@ -170,8 +169,8 @@ fn pre_iter7_doc_blob_deserialises_into_new_filemap_doc() {
         }],
     };
     let bytes = rmp_serde::to_vec_named(&old).expect("serialize pre-iter-7 shape");
-    let new_doc: FileMapDoc = rmp_serde::from_slice(&bytes)
-        .expect("pre-iter-7 shape must deserialise via serde(default)");
+    let new_doc: FileMapDoc =
+        rmp_serde::from_slice(&bytes).expect("pre-iter-7 shape must deserialise via serde(default)");
 
     assert_eq!(new_doc.keywords.len(), 1, "iter-6 keywords preserved");
     assert_eq!(new_doc.entities.len(), 1, "iter-6 entities preserved");
@@ -203,10 +202,7 @@ fn opening_against_stale_schema_index_refreshes_durably_without_wiping_blobs() {
             mtime: 0,
         },
     );
-    let legacy = LegacyIndex {
-        schema_ver: 99,
-        files,
-    };
+    let legacy = LegacyIndex { schema_ver: 99, files };
     let bytes = rmp_serde::to_vec_named(&legacy).unwrap();
     fs::write(basemind_dir.join("index.msgpack"), bytes).unwrap();
 
@@ -244,10 +240,7 @@ fn opening_against_stale_schema_index_refreshes_durably_without_wiping_blobs() {
 fn open_read_only_degrades_to_empty_on_stale_schema_without_error() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    let view_dir = root
-        .join(".basemind")
-        .join("views")
-        .join(basemind::store::VIEW_WORKING);
+    let view_dir = root.join(".basemind").join("views").join(basemind::store::VIEW_WORKING);
     fs::create_dir_all(&view_dir).unwrap();
 
     // Forge a stale-schema index directly in the view dir.
@@ -261,10 +254,7 @@ fn open_read_only_degrades_to_empty_on_stale_schema_without_error() {
             mtime: 0,
         },
     );
-    let legacy = LegacyIndex {
-        schema_ver: 99,
-        files,
-    };
+    let legacy = LegacyIndex { schema_ver: 99, files };
     fs::write(
         view_dir.join("index.msgpack"),
         rmp_serde::to_vec_named(&legacy).unwrap(),
@@ -305,13 +295,8 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     // First scan: populate blobs + index at the current schema.
     {
         let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        basemind::scanner::scan(
-            root,
-            &mut store,
-            &config,
-            basemind::scanner::ScanSource::WorkingTree,
-        )
-        .expect("first scan");
+        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
+            .expect("first scan");
         store.flush().expect("flush");
     }
 
@@ -329,10 +314,7 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     };
 
     let before = blob_files("before");
-    assert!(
-        !before.is_empty(),
-        "first scan must write at least one blob"
-    );
+    assert!(!before.is_empty(), "first scan must write at least one blob");
 
     // Capture the working view index so we can corrupt its schema version.
     let view_index = basemind_dir
@@ -381,13 +363,8 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     // blob set is stable.
     {
         let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        basemind::scanner::scan(
-            root,
-            &mut store,
-            &config,
-            basemind::scanner::ScanSource::WorkingTree,
-        )
-        .expect("refresh scan");
+        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
+            .expect("refresh scan");
         store.flush().expect("flush");
     }
 

@@ -22,11 +22,7 @@ use basemind::store::{LockHolder, Store, VIEW_WORKING};
 fn scanned_repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
-    fs::write(
-        root.join("a.rs"),
-        b"pub fn alpha() {}\npub fn beta() { alpha(); }\n",
-    )
-    .expect("write source");
+    fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub fn beta() { alpha(); }\n").expect("write source");
     let cfg = ConfigV1::with_defaults();
     let mut store = Store::open(root, VIEW_WORKING).expect("initial open");
     scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("initial scan");
@@ -38,8 +34,7 @@ fn scanned_repo() -> tempfile::TempDir {
 fn second_writer_fails_fast_without_spinning() {
     let dir = scanned_repo();
     let root = dir.path();
-    let _writer =
-        Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("first writer opens");
+    let _writer = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("first writer opens");
 
     let started = Instant::now();
     let result = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve);
@@ -66,14 +61,12 @@ fn second_writer_fails_fast_without_spinning() {
 fn read_only_serve_coexists_with_live_writer() {
     let dir = scanned_repo();
     let root = dir.path();
-    let _writer =
-        Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
+    let _writer = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
 
     // The read-only fallback takes no write lock and opens alongside the live writer — the same
     // concurrent-reader path the CLI `query` uses. This is what a contending serve does instead of
     // dying with `-32000`.
-    let reader =
-        Store::open_read_only(root, VIEW_WORKING).expect("read-only open alongside live writer");
+    let reader = Store::open_read_only(root, VIEW_WORKING).expect("read-only open alongside live writer");
     let hits = basemind::query::search_symbols(&reader, "alpha", None).expect("search");
     assert_eq!(
         hits.len(),
@@ -91,8 +84,7 @@ fn cli_scan_exits_cleanly_when_a_writer_holds_the_lock() {
     // a raw lock error or busy-wait.
     let dir = scanned_repo();
     let root = dir.path();
-    let _writer =
-        Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
+    let _writer = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
 
     let started = Instant::now();
     let output = Command::new(env!("CARGO_BIN_EXE_basemind"))

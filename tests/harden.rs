@@ -130,16 +130,10 @@ async fn connect(repo_root: &Path) -> ServiceHandle {
     let bin = basemind_bin();
     let root = repo_root.to_path_buf();
     let cmd = Command::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(&root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(&root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
-    ().serve(transport)
-        .await
-        .expect("rmcp handshake with basemind serve")
+    ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 
 /// Decode the first text-content item from a `CallToolResult` as JSON.
@@ -250,8 +244,7 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
     // xberg + embedding cost that has nothing to do with the canaries.
     // Disable it so per-repo scan ceilings stay meaningful.
     config.documents.enabled = false;
-    let mut store =
-        basemind::store::Store::open(repo_root, basemind::store::VIEW_WORKING).expect("open store");
+    let mut store = basemind::store::Store::open(repo_root, basemind::store::VIEW_WORKING).expect("open store");
     let t0 = Instant::now();
     let report = basemind::scanner::scan(
         repo_root,
@@ -291,15 +284,8 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
                 }
             }
         }
-        if sample.is_none()
-            && !l1.symbols.is_empty()
-            && l1.symbols.iter().any(|s| !s.name.is_empty())
-        {
-            let sym = l1
-                .symbols
-                .iter()
-                .find(|s| !s.name.is_empty())
-                .map(|s| s.name.clone());
+        if sample.is_none() && !l1.symbols.is_empty() && l1.symbols.iter().any(|s| !s.name.is_empty()) {
+            let sym = l1.symbols.iter().find(|s| !s.name.is_empty()).map(|s| s.name.clone());
             let module = l1
                 .imports
                 .iter()
@@ -392,13 +378,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             json!({ "pattern": "fix", "field": "message", "limit": 20 }),
         )
         .await;
-        call(
-            svc,
-            &mut records,
-            "hot_files",
-            json!({ "window": 200, "top_k": 20 }),
-        )
-        .await;
+        call(svc, &mut records, "hot_files", json!({ "window": 200, "top_k": 20 })).await;
         call(
             svc,
             &mut records,
@@ -413,13 +393,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             json!({ "path": &sample.path, "rev_old": "HEAD~1", "rev_new": "HEAD" }),
         )
         .await;
-        call(
-            svc,
-            &mut records,
-            "blame_file",
-            json!({ "path": &sample.path }),
-        )
-        .await;
+        call(svc, &mut records, "blame_file", json!({ "path": &sample.path })).await;
 
         if let Some(sym) = &sample.sample_symbol {
             call(
@@ -470,13 +444,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
 
     // compress (structural): sweep with the sample file path when available.
     if let Some(sample) = sample {
-        call(
-            svc,
-            &mut records,
-            "compress",
-            json!({ "path": &sample.path }),
-        )
-        .await;
+        call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
 
         // expand: pull the first symbol's body from the same sample file.
         // We only call expand when a sample_symbol is available; errors on
@@ -509,21 +477,9 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "key": "harden_probe", "value": "basemind harden probe", "embed": false }),
     )
     .await;
-    call(
-        svc,
-        &mut records,
-        "memory_get",
-        json!({ "key": "harden_probe" }),
-    )
-    .await;
+    call(svc, &mut records, "memory_get", json!({ "key": "harden_probe" })).await;
     call(svc, &mut records, "memory_list", json!({})).await;
-    call(
-        svc,
-        &mut records,
-        "memory_delete",
-        json!({ "key": "harden_probe" }),
-    )
-    .await;
+    call(svc, &mut records, "memory_delete", json!({ "key": "harden_probe" })).await;
     // memory_audit: write a probe key then sweep; MCP error when memory feature is off is ok.
     call(
         svc,
@@ -606,11 +562,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
 // ─── Per-repo assertions ────────────────────────────────────────────────────
 
 /// Returns the human-readable failure summary if anything tripped; None on pass.
-fn assert_passing(
-    repo_name: &str,
-    scan: &ScanOutcome,
-    repo_record: &mut RepoRecord,
-) -> Vec<String> {
+fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRecord) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
     let ceiling = Duration::from_secs(scan_ceiling_secs(repo_name));
     if scan.elapsed > ceiling {
@@ -674,10 +626,7 @@ fn assert_passing(
                     m.commits
                 ));
             }
-            if let Some(total) = repo_record
-                .canaries
-                .get("stats_total_bytes")
-                .and_then(Value::as_u64)
+            if let Some(total) = repo_record.canaries.get("stats_total_bytes").and_then(Value::as_u64)
                 && total < gh
             {
                 failures.push(format!(
@@ -723,8 +672,7 @@ fn assert_passing(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             if !truncated {
-                failures
-                    .push("shallow canary: no history-walking tool reported truncated=true".into());
+                failures.push("shallow canary: no history-walking tool reported truncated=true".into());
             }
         }
         "tokio" => {
@@ -820,11 +768,7 @@ fn assert_passing(
             // bug): full-depth author search must find the deep-history author sampled from real
             // git, and must not leak commits by other authors into the author scope. Only asserted
             // when the sample was taken (canary present).
-            if let Some(author_hits) = repo_record
-                .canaries
-                .get("author_search_hits")
-                .and_then(Value::as_u64)
-            {
+            if let Some(author_hits) = repo_record.canaries.get("author_search_hits").and_then(Value::as_u64) {
                 if author_hits < 1 {
                     let token = repo_record
                         .canaries
@@ -850,10 +794,7 @@ fn assert_passing(
             // value is present, i.e. the harness was built with `--features memory`). Django
             // yields several co-change candidates at the default thresholds; ≥ 1 is a
             // conservative, churn-stable lower bound.
-            if let Some(mined) = repo_record
-                .canaries
-                .get("proposals_mined")
-                .and_then(Value::as_u64)
+            if let Some(mined) = repo_record.canaries.get("proposals_mined").and_then(Value::as_u64)
                 && mined < 1
             {
                 failures.push(format!(
@@ -888,12 +829,7 @@ fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
         .map(|line| line.trim().to_string())
 }
 
-async fn capture_canaries(
-    svc: &ServiceHandle,
-    repo_name: &str,
-    repo_root: &Path,
-    record: &mut RepoRecord,
-) {
+async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path, record: &mut RepoRecord) {
     // Always evaluate canaries on a best-effort basis — failures here don't block
     // the rest of the suite. We feed the results back into assert_passing.
 
@@ -904,14 +840,10 @@ async fn capture_canaries(
     if let Ok(out) = svc.call_tool(call_params("cache_stats", &json!({}))).await {
         let body = decode_text(&out);
         if let Some(gh) = body.get("git_history_bytes").and_then(Value::as_u64) {
-            record
-                .canaries
-                .insert("stats_git_history_bytes".into(), json!(gh));
+            record.canaries.insert("stats_git_history_bytes".into(), json!(gh));
         }
         if let Some(total) = body.get("total_bytes").and_then(Value::as_u64) {
-            record
-                .canaries
-                .insert("stats_total_bytes".into(), json!(total));
+            record.canaries.insert("stats_total_bytes".into(), json!(total));
         }
     }
 
@@ -957,9 +889,7 @@ async fn capture_canaries(
                     }
                 }
             }
-            record
-                .canaries
-                .insert("any_truncated".into(), json!(truncated));
+            record.canaries.insert("any_truncated".into(), json!(truncated));
         }
         "tokio" => {
             if let Ok(out) = svc
@@ -991,9 +921,7 @@ async fn capture_canaries(
                     .and_then(Value::as_array)
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
-                record
-                    .canaries
-                    .insert("future_impl_hits".into(), json!(hits));
+                record.canaries.insert("future_impl_hits".into(), json!(hits));
             }
             // Iteration-4 canary: call_graph callers from `spawn`, max_depth=2. tokio has
             // dense indirection around its runtime spawn helpers, so the BFS should pull
@@ -1011,9 +939,7 @@ async fn capture_canaries(
                     .and_then(Value::as_array)
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
-                record
-                    .canaries
-                    .insert("spawn_call_graph_nodes".into(), json!(nodes));
+                record.canaries.insert("spawn_call_graph_nodes".into(), json!(nodes));
             }
             // workspace_grep canary for tokio: count "fn spawn" across source files.
             if let Ok(out) = svc
@@ -1024,21 +950,13 @@ async fn capture_canaries(
                 .await
             {
                 let body = decode_text(&out);
-                let hits = body
-                    .get("total_matches")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                record
-                    .canaries
-                    .insert("grep_fn_spawn_hits".into(), json!(hits));
+                let hits = body.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
+                record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
             }
         }
         "django" => {
             if let Ok(out) = svc
-                .call_tool(call_params(
-                    "find_references",
-                    &json!({ "name": "get", "limit": 200 }),
-                ))
+                .call_tool(call_params("find_references", &json!({ "name": "get", "limit": 200 })))
                 .await
             {
                 let body = decode_text(&out);
@@ -1066,9 +984,7 @@ async fn capture_canaries(
                     .and_then(Value::as_array)
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
-                record
-                    .canaries
-                    .insert("query_py_commits".into(), json!(hits));
+                record.canaries.insert("query_py_commits".into(), json!(hits));
             }
             // git-history FTS canary: Django's commit convention is "Fixed #NNNNN -- …", so the
             // message token "fixed" appears in a huge fraction of commits. Exercises
@@ -1087,9 +1003,7 @@ async fn capture_canaries(
                     .and_then(Value::as_array)
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
-                record
-                    .canaries
-                    .insert("search_fixed_commits".into(), json!(hits));
+                record.canaries.insert("search_fixed_commits".into(), json!(hits));
             }
             // Author-parity canary (the reported bug): sample an author deep in history (skip 500,
             // far outside any recent window), then prove full-depth `search_git_history` by author
@@ -1097,8 +1011,7 @@ async fn capture_canaries(
             // queried token — the FTS must not leak commits by other authors into an author scope.
             // Derived from real git so it self-adapts across django releases; skipped if the sample
             // can't be taken (canary simply absent, never a spurious fail).
-            if let Some(author) =
-                git_first_line(repo_root, &["log", "--format=%an", "-1", "--skip=500"])
+            if let Some(author) = git_first_line(repo_root, &["log", "--format=%an", "-1", "--skip=500"])
                 && let Some(token) = author
                     .split_whitespace()
                     .find(|w| w.chars().all(char::is_alphabetic) && w.len() >= 3)
@@ -1117,11 +1030,7 @@ async fn capture_canaries(
                     .unwrap_or_default();
                 let token_lc = token.to_lowercase();
                 let consistent = commits.iter().all(|c| {
-                    let name = c
-                        .get("author")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                        .to_lowercase();
+                    let name = c.get("author").and_then(Value::as_str).unwrap_or("").to_lowercase();
                     let email = c
                         .get("author_email")
                         .and_then(Value::as_str)
@@ -1135,9 +1044,7 @@ async fn capture_canaries(
                 record
                     .canaries
                     .insert("author_search_consistent".into(), json!(consistent));
-                record
-                    .canaries
-                    .insert("author_search_token".into(), json!(token));
+                record.canaries.insert("author_search_token".into(), json!(token));
             }
             // Governance canary — only populated under `--features memory`; with the feature
             // off, `proposals_mine` returns an MCP error and the canary stays absent (so the
@@ -1153,9 +1060,7 @@ async fn capture_canaries(
             {
                 let body = decode_text(&out);
                 if let Some(mined) = body.get("mined").and_then(Value::as_u64) {
-                    record
-                        .canaries
-                        .insert("proposals_mined".into(), json!(mined));
+                    record.canaries.insert("proposals_mined".into(), json!(mined));
                 }
             }
         }
@@ -1252,10 +1157,7 @@ fn sample_paths(
             *counts.entry(rel.clone()).or_default() += 1;
         }
     }
-    let hot = counts
-        .iter()
-        .max_by_key(|(_, n)| **n)
-        .map(|(p, _)| p.clone())?;
+    let hot = counts.iter().max_by_key(|(_, n)| **n).map(|(p, _)| p.clone())?;
     let rare = counts
         .iter()
         .find(|(_, n)| **n == 1)
@@ -1276,11 +1178,7 @@ fn bench_query(
     let live_ns = median_ns(GITOPS_ITERS_LIVE, &mut live);
     let indexed_us = indexed_ns as f64 / 1000.0;
     let live_us = live_ns as f64 / 1000.0;
-    let speedup = if indexed_us > 0.0 {
-        live_us / indexed_us
-    } else {
-        0.0
-    };
+    let speedup = if indexed_us > 0.0 { live_us / indexed_us } else { 0.0 };
     GitOpsQuery {
         name,
         scope,
@@ -1498,9 +1396,7 @@ async fn harden_repo() {
     //     slower than the live walk it replaces. Recorded for all repos; asserted in `assert_passing`
     //     only where the history is deep enough for the comparison to be stable.
     if let Some(m) = &record.git_history {
-        record
-            .canaries
-            .insert("gh_index_commits".to_string(), json!(m.commits));
+        record.canaries.insert("gh_index_commits".to_string(), json!(m.commits));
         if let Some(ct) = m
             .queries
             .iter()

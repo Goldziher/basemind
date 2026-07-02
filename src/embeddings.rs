@@ -15,21 +15,14 @@ pub struct SharedEmbedder {
 impl SharedEmbedder {
     /// Build a `SharedEmbedder` from a named xberg preset.
     pub fn load(preset: &str) -> Result<Self> {
-        let meta = EMBEDDING_PRESETS
-            .iter()
-            .find(|p| p.name == preset)
-            .ok_or_else(|| {
-                anyhow!(
-                    "unknown embedding preset '{preset}'; \
+        let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
+            anyhow!(
+                "unknown embedding preset '{preset}'; \
                      available: fast, balanced, quality, multilingual"
-                )
-            })?;
-        let dim = u16::try_from(meta.dimensions).with_context(|| {
-            format!(
-                "preset '{preset}' dimension {} exceeds u16",
-                meta.dimensions
             )
         })?;
+        let dim = u16::try_from(meta.dimensions)
+            .with_context(|| format!("preset '{preset}' dimension {} exceeds u16", meta.dimensions))?;
         let config = EmbeddingConfig {
             model: EmbeddingModelType::Preset {
                 name: preset.to_string(),

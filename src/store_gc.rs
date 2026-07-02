@@ -24,9 +24,7 @@ use ahash::AHashSet;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::store::{
-    BLOBS_DIR, INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index, wipe_blobs,
-};
+use crate::store::{BLOBS_DIR, INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index, wipe_blobs};
 
 /// The blob filename suffixes the scanner emits today, both keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem.
@@ -256,9 +254,7 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
         // Pre-0.9 split-tier blobs are dead format — reclaim unconditionally (their stem may
         // still be referenced by the live combined `.fm` blob, so the stem check below would
         // wrongly keep them).
-        let is_legacy = LEGACY_BLOB_SUFFIXES
-            .iter()
-            .any(|suffix| file_name.ends_with(suffix));
+        let is_legacy = LEGACY_BLOB_SUFFIXES.iter().any(|suffix| file_name.ends_with(suffix));
         let Some(stem) = blob_stem(file_name) else {
             report.scanned += 1;
             if is_legacy {
@@ -316,9 +312,7 @@ pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result
         CacheComponent::Blobs => wipe_blobs(basemind_dir)?,
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
         CacheComponent::Lance => clear_lance(basemind_dir)?,
-        CacheComponent::GitCache => {
-            remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?
-        }
+        CacheComponent::GitCache => remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
         CacheComponent::Telemetry => remove_file_if_exists(&basemind_dir.join(TELEMETRY_FILENAME))?,
         CacheComponent::All => remove_dir_if_exists(basemind_dir)?,
     }
@@ -383,11 +377,7 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
             if !path.is_file() {
                 continue;
             }
-            let Some(stem) = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(blob_stem)
-            else {
+            let Some(stem) = path.file_name().and_then(|n| n.to_str()).and_then(blob_stem) else {
                 continue;
             };
             blob_count += 1;
@@ -411,12 +401,7 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
     // Ground-truth footprint: size the whole tree, then derive `other` as the remainder so the
     // breakdown always reconciles to the total and no directory can go uncounted.
     let total_bytes = dir_size(basemind_dir)?;
-    let accounted = blobs_bytes
-        + views_bytes
-        + lance_bytes
-        + git_cache_bytes
-        + telemetry_bytes
-        + git_history_bytes;
+    let accounted = blobs_bytes + views_bytes + lance_bytes + git_cache_bytes + telemetry_bytes + git_history_bytes;
     let other_bytes = total_bytes.saturating_sub(accounted);
 
     let rss = crate::sysres::sample();
@@ -444,9 +429,7 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
 /// Strip a known blob suffix off a filename, returning the hex stem. `None` if the filename
 /// is not a recognized blob (so the caller never treats stray files as reclaimable).
 fn blob_stem(file_name: &str) -> Option<&str> {
-    BLOB_SUFFIXES
-        .iter()
-        .find_map(|suffix| file_name.strip_suffix(suffix))
+    BLOB_SUFFIXES.iter().find_map(|suffix| file_name.strip_suffix(suffix))
 }
 
 /// Per-view indexed file count. A view whose index is missing or unreadable contributes a
@@ -466,15 +449,8 @@ fn per_view_file_count(basemind_dir: &Path) -> Result<Vec<(String, usize)>, GcEr
         if !view_dir.is_dir() {
             continue;
         }
-        let name = view_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        let count = read_index(&view_dir)
-            .ok()
-            .flatten()
-            .map_or(0, |idx| idx.files.len());
+        let name = view_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+        let count = read_index(&view_dir).ok().flatten().map_or(0, |idx| idx.files.len());
         out.push((name, count));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -561,9 +537,7 @@ fn dir_size(dir: &Path) -> Result<u64, GcError> {
         return Ok(0);
     }
     // The directory's own allocation (`du` counts it too).
-    let mut total = std::fs::symlink_metadata(dir)
-        .map(|m| on_disk_size(&m))
-        .unwrap_or(0);
+    let mut total = std::fs::symlink_metadata(dir).map(|m| on_disk_size(&m)).unwrap_or(0);
     for entry in read_dir(dir)? {
         let entry = entry.map_err(|source| GcError::Io {
             path: dir.to_path_buf(),
@@ -615,16 +589,11 @@ mod tests {
         let orphan_stem = "b".repeat(64);
 
         // Referenced blob: one combined filemap for the live stem.
-        fs::write(blobs.join(format!("{referenced_stem}.fm.msgpack")), b"fm")
-            .expect("write ref fm");
+        fs::write(blobs.join(format!("{referenced_stem}.fm.msgpack")), b"fm").expect("write ref fm");
         // Orphan blob: a single filemap with a known byte length.
         let orphan_bytes = b"orphan-blob-bytes";
         let orphan_len = orphan_bytes.len() as u64;
-        fs::write(
-            blobs.join(format!("{orphan_stem}.fm.msgpack")),
-            orphan_bytes,
-        )
-        .expect("write orphan");
+        fs::write(blobs.join(format!("{orphan_stem}.fm.msgpack")), orphan_bytes).expect("write orphan");
 
         // Hand-build a real Index referencing only the live stem, serialized with the same
         // rmp-serde `to_vec_named` the store's `flush` uses.
@@ -728,10 +697,7 @@ mod tests {
             stats.orphan_blob_count, 0,
             "orphan count is 0 (skipped), not a real zero"
         );
-        assert!(
-            stats.blob_count >= 2,
-            "blob files are still counted by size walk"
-        );
+        assert!(stats.blob_count >= 2, "blob files are still counted by size walk");
         assert!(stats.total_bytes > 0, "sizes are still reported");
         assert_eq!(
             stats.total_bytes,
@@ -745,10 +711,7 @@ mod tests {
         let fx = build_fixture();
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
         assert_eq!(referenced.len(), 1, "exactly one live stem");
-        assert!(
-            referenced.contains(&fx.referenced_stem),
-            "live stem present"
-        );
+        assert!(referenced.contains(&fx.referenced_stem), "live stem present");
         assert!(
             !referenced.contains(&fx.orphan_stem),
             "orphan stem must not be referenced"
@@ -770,15 +733,11 @@ mod tests {
 
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
         assert!(
-            blobs
-                .join(format!("{}.fm.msgpack", fx.referenced_stem))
-                .exists(),
+            blobs.join(format!("{}.fm.msgpack", fx.referenced_stem)).exists(),
             "referenced filemap survives"
         );
         assert!(
-            !blobs
-                .join(format!("{}.fm.msgpack", fx.orphan_stem))
-                .exists(),
+            !blobs.join(format!("{}.fm.msgpack", fx.orphan_stem)).exists(),
             "orphan filemap gone"
         );
     }
@@ -790,16 +749,8 @@ mod tests {
         // must still be reaped.
         let fx = build_fixture();
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
-        fs::write(
-            blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)),
-            b"legacy-l1",
-        )
-        .expect("write legacy l1");
-        fs::write(
-            blobs.join(format!("{}.l2.msgpack", fx.referenced_stem)),
-            b"legacy-l2",
-        )
-        .expect("write legacy l2");
+        fs::write(blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)), b"legacy-l1").expect("write legacy l1");
+        fs::write(blobs.join(format!("{}.l2.msgpack", fx.referenced_stem)), b"legacy-l2").expect("write legacy l2");
 
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
         assert!(
@@ -808,26 +759,17 @@ mod tests {
         );
         let report = gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
 
-        assert_eq!(
-            report.removed, 3,
-            "two legacy split blobs + the orphan filemap"
-        );
+        assert_eq!(report.removed, 3, "two legacy split blobs + the orphan filemap");
         assert!(
-            !blobs
-                .join(format!("{}.l1.msgpack", fx.referenced_stem))
-                .exists(),
+            !blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)).exists(),
             "legacy l1 reclaimed despite a referenced stem"
         );
         assert!(
-            !blobs
-                .join(format!("{}.l2.msgpack", fx.referenced_stem))
-                .exists(),
+            !blobs.join(format!("{}.l2.msgpack", fx.referenced_stem)).exists(),
             "legacy l2 reclaimed despite a referenced stem"
         );
         assert!(
-            blobs
-                .join(format!("{}.fm.msgpack", fx.referenced_stem))
-                .exists(),
+            blobs.join(format!("{}.fm.msgpack", fx.referenced_stem)).exists(),
             "the live combined filemap survives"
         );
     }
@@ -919,11 +861,7 @@ mod tests {
             "named view removed"
         );
         assert!(
-            basemind_dir
-                .join(VIEWS_DIR)
-                .join("working")
-                .join(INDEX_FILE)
-                .exists(),
+            basemind_dir.join(VIEWS_DIR).join("working").join(INDEX_FILE).exists(),
             "other view survives single-view clear"
         );
     }
@@ -964,9 +902,6 @@ mod tests {
             let parsed: CacheComponent = token.parse().expect("parse token");
             assert_eq!(parsed, component, "round-trip {token}");
         }
-        assert!(
-            "nonsense".parse::<CacheComponent>().is_err(),
-            "unknown token rejected"
-        );
+        assert!("nonsense".parse::<CacheComponent>().is_err(), "unknown token rejected");
     }
 }

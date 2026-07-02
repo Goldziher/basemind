@@ -84,13 +84,7 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
 ///
 /// `cache` commands are dispatched separately by the caller via
 /// [`admin::run_cache`] because they are the offline path and need no server.
-pub fn run(
-    root: &Path,
-    view: &str,
-    documents: DocumentsCliOverrides,
-    json: bool,
-    cmd: ToolCmd,
-) -> Result<()> {
+pub fn run(root: &Path, view: &str, documents: DocumentsCliOverrides, json: bool, cmd: ToolCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -108,9 +102,7 @@ pub fn run(
             ToolCmd::Web(w) => web::run(&server, w, json, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]
             ToolCmd::Shells(s) => shells::run(&server, s, json, &mut out).await?,
-            ToolCmd::Telemetry { window, tool } => {
-                admin::run_telemetry(&server, window, tool, json, &mut out).await?
-            }
+            ToolCmd::Telemetry { window, tool } => admin::run_telemetry(&server, window, tool, json, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

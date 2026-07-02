@@ -39,9 +39,7 @@ pub fn intercept_from_env() -> Option<Result<()>> {
     let mut args = std::env::args_os();
     let _argv0 = args.next();
     match args.next() {
-        Some(first) if first == rmux_client::INTERNAL_DAEMON_FLAG => {
-            Some(run_internal_daemon(args))
-        }
+        Some(first) if first == rmux_client::INTERNAL_DAEMON_FLAG => Some(run_internal_daemon(args)),
         _ => {
             // Not the daemon re-exec: point the rmux SDK at our own executable so a
             // later `shell_spawn` re-execs basemind (not a missing `rmux`) as the
@@ -83,10 +81,7 @@ fn point_sdk_daemon_at_self() {
 /// runtime is doing other work.
 pub unsafe fn point_sdk_daemon_at(binary: &std::path::Path) {
     unsafe {
-        std::env::set_var(
-            rmux_sdk::bootstrap::discovery::SDK_DAEMON_BINARY_ENV,
-            binary,
-        );
+        std::env::set_var(rmux_sdk::bootstrap::discovery::SDK_DAEMON_BINARY_ENV, binary);
     }
 }
 
@@ -105,8 +100,7 @@ pub fn run_internal_daemon<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let socket_path = parse_socket_path(args)
-        .context("the embedded rmux daemon requires a socket path argument")?;
+    let socket_path = parse_socket_path(args).context("the embedded rmux daemon requires a socket path argument")?;
     validate_socket_path(&socket_path)?;
 
     let config = rmux_server::DaemonConfig::new(socket_path);
@@ -121,10 +115,7 @@ where
             .bind()
             .await
             .context("bind embedded rmux daemon socket")?;
-        server
-            .wait()
-            .await
-            .context("embedded rmux daemon wait loop")?;
+        server.wait().await.context("embedded rmux daemon wait loop")?;
         Ok::<(), anyhow::Error>(())
     })
 }
@@ -167,17 +158,13 @@ pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
         const PIPE_PREFIX: &str = r"\\.\pipe\";
         let display = path.to_string_lossy();
         if !display.starts_with(PIPE_PREFIX) {
-            bail!(
-                "embedded rmux daemon named-pipe path must start with `{PIPE_PREFIX}`, got {display}"
-            );
+            bail!("embedded rmux daemon named-pipe path must start with `{PIPE_PREFIX}`, got {display}");
         }
         // The pipe NAME (the part after the prefix) must be non-empty and must not smuggle
         // a path separator that would escape the pipe namespace.
         let name = &display[PIPE_PREFIX.len()..];
         if name.is_empty() || name.contains('\\') || name.contains('/') {
-            bail!(
-                "embedded rmux daemon named-pipe name is empty or contains a separator: {display}"
-            );
+            bail!("embedded rmux daemon named-pipe name is empty or contains a separator: {display}");
         }
         Ok(())
     }
@@ -215,16 +202,15 @@ mod tests {
     #[cfg(not(windows))]
     #[test]
     fn validate_socket_path_rejects_relative_path() {
-        let err = validate_socket_path(Path::new("relative/evil.sock"))
-            .expect_err("relative path must be rejected");
+        let err = validate_socket_path(Path::new("relative/evil.sock")).expect_err("relative path must be rejected");
         assert!(err.to_string().contains("must be absolute"), "{err}");
     }
 
     #[cfg(not(windows))]
     #[test]
     fn validate_socket_path_rejects_parent_dir_traversal() {
-        let err = validate_socket_path(Path::new("/var/run/../../evil.sock"))
-            .expect_err("`..` component must be rejected");
+        let err =
+            validate_socket_path(Path::new("/var/run/../../evil.sock")).expect_err("`..` component must be rejected");
         assert!(err.to_string().contains("must not contain `..`"), "{err}");
     }
 
@@ -261,10 +247,7 @@ mod tests {
 
     #[test]
     fn skips_leading_config_flags_and_finds_socket() {
-        let args = vec![
-            OsString::from("/tmp/sock"),
-            OsString::from("--config-quiet"),
-        ];
+        let args = vec![OsString::from("/tmp/sock"), OsString::from("--config-quiet")];
         assert_eq!(parse_socket_path(args), Some(PathBuf::from("/tmp/sock")));
     }
 

@@ -98,10 +98,7 @@ pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Opti
     if cfg.mime_allowlist.is_empty() {
         return Some(mime_type);
     }
-    let allowed = cfg
-        .mime_allowlist
-        .iter()
-        .any(|entry| matches_mime(entry, &mime_type));
+    let allowed = cfg.mime_allowlist.iter().any(|entry| matches_mime(entry, &mime_type));
     if allowed { Some(mime_type) } else { None }
 }
 
@@ -113,8 +110,7 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
         // Treat "image/" as the prefix "image/" — match `image/png` etc.
         // Zero-alloc: check the prefix then that the very next byte is `/`,
         // instead of building a throwaway `format!("{prefix}/")` per call.
-        return mime_type.starts_with(prefix)
-            && mime_type.as_bytes().get(prefix.len()) == Some(&b'/');
+        return mime_type.starts_with(prefix) && mime_type.as_bytes().get(prefix.len()) == Some(&b'/');
     }
     false
 }
@@ -138,8 +134,8 @@ pub(crate) fn extract_and_persist_doc(
     scope: &str,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
     let doc_config = doc_config_from(cfg, llm);
-    let doc: FileMapDoc = extract_doc(abs, Some(mime_type), &doc_config)
-        .with_context(|| format!("extract document {rel}"))?;
+    let doc: FileMapDoc =
+        extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
 
     // Content-address the blob on the source bytes — same flow as L1/L2 so the
     // blob is shared across views that hash the same content.
@@ -202,11 +198,7 @@ pub(crate) fn flush_document_batches(
     let mut inserted = 0usize;
     // Determine the dim from the first batch that actually has rows; if every
     // batch is empty (no embeddings), there's nothing to push.
-    let Some(dim) = batches
-        .iter()
-        .find(|b| b.embedding_dim > 0)
-        .map(|b| b.embedding_dim)
-    else {
+    let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
         return 0;
     };
 

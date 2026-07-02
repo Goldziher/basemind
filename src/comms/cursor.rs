@@ -30,8 +30,7 @@ impl Cursor {
             seq,
         };
         // msgpack is already a workspace dep; the payload is a short string + an int.
-        let bytes =
-            rmp_serde::to_vec_named(&payload).expect("encoding a (room, seq) cursor never fails");
+        let bytes = rmp_serde::to_vec_named(&payload).expect("encoding a (room, seq) cursor never fails");
         Cursor(base64url_encode(&bytes))
     }
 
@@ -125,9 +124,6 @@ mod tests {
 
     #[test]
     fn malformed_cursor_rejected() {
-        assert_eq!(
-            Cursor("***".to_string()).decode(),
-            Err(CursorError::Malformed)
-        );
+        assert_eq!(Cursor("***".to_string()).decode(), Err(CursorError::Malformed));
     }
 }

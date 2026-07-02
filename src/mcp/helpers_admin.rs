@@ -22,8 +22,7 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::{json_result, scan_and_refresh};
 use super::types::{
-    CacheClearParams, CacheClearResponse, CacheGcParams, CacheGcResponse, CacheStatsParams,
-    CacheStatsResponse,
+    CacheClearParams, CacheClearResponse, CacheGcParams, CacheGcResponse, CacheStatsParams, CacheStatsResponse,
 };
 use crate::store_gc::{self, CacheComponent};
 
@@ -50,10 +49,7 @@ pub(super) async fn run_cache_stats(
 /// Body for the `cache_gc` MCP tool. In-process mark-and-sweep over orphaned blobs.
 /// Uses the unlocked `collect_referenced_hashes` + `gc_blobs` primitives under a
 /// `blocking_read()` guard — NEVER `run_gc` (which would deadlock on serve's flock).
-pub(super) async fn run_cache_gc(
-    state: Arc<ServerState>,
-    _params: CacheGcParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_cache_gc(state: Arc<ServerState>, _params: CacheGcParams) -> Result<CallToolResult, McpError> {
     let state_for_gc = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
         // The read guard blocks the only in-process writer (`scan_and_refresh`) for the
@@ -157,10 +153,7 @@ pub(super) async fn run_cache_clear(
 
 /// Clear a single component under a `blocking_write()` store guard. The write guard
 /// serializes against `scan_and_refresh` and the stats/GC read guards for the wipe.
-async fn clear_live_component(
-    state: Arc<ServerState>,
-    component: CacheComponent,
-) -> Result<(), McpError> {
+async fn clear_live_component(state: Arc<ServerState>, component: CacheComponent) -> Result<(), McpError> {
     tokio::task::spawn_blocking(move || {
         let store = state.store.blocking_write();
         store_gc::clear_component(&store.basemind_dir, component)
@@ -195,14 +188,7 @@ pub(super) async fn run_rescan(
     // Tell the client the rescan has started (progress is indeterminate up front — the scanner
     // discovers the file count as it walks).
     if let Some(token) = progress_token.clone() {
-        super::notifications::emit_progress(
-            peer,
-            token,
-            0.0,
-            None,
-            "rescan: scanning working tree",
-        )
-        .await;
+        super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
     }
 
     let report = scan_and_refresh(Arc::clone(&state), scoped_paths).await?;

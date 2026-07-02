@@ -188,11 +188,7 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
         matches!(outcome, RebuildOutcome::FullRebuild { .. }),
         "reset-back forces a full rebuild, got {outcome:?}"
     );
-    assert_eq!(
-        index.commit_count(),
-        1,
-        "index reflects the rewound history"
-    );
+    assert_eq!(index.commit_count(), 1, "index reflects the rewound history");
     assert_eq!(
         index_commits_touching(&index, "a.rs"),
         git_commits_touching(root, "a.rs"),
@@ -235,11 +231,7 @@ fn recent_commits_newest_first_matches_git() {
     commit_file(root, "c.rs", "3\n", "c3");
 
     let (index, _) = sync(root);
-    let indexed: Vec<String> = index
-        .recent_commits(0, 10, false)
-        .into_iter()
-        .map(|c| c.sha)
-        .collect();
+    let indexed: Vec<String> = index.recent_commits(0, 10, false).into_iter().map(|c| c.sha).collect();
     let git: Vec<String> = capture(root, &["log", "--format=%H"])
         .lines()
         .map(|s| s.to_string())
@@ -261,9 +253,7 @@ fn bench_warm_query_latency() {
     };
     let bdir = Path::new(&repo_root).join(".basemind");
     if !bdir.join("git-history.fjall").exists() {
-        eprintln!(
-            "no git-history index at {repo_root}; run `basemind scan` there first — skipping"
-        );
+        eprintln!("no git-history index at {repo_root}; run `basemind scan` there first — skipping");
         return;
     }
     let index = GitHistoryIndex::open(&bdir).expect("open index");
@@ -289,9 +279,7 @@ fn bench_warm_query_latency() {
     }
     let elapsed = start.elapsed();
     let per_us = elapsed.as_micros() as f64 / n as f64;
-    eprintln!(
-        "commits_touching warm: {n} queries in {elapsed:?} = {per_us:.1} µs/query ({hits} total hits)"
-    );
+    eprintln!("commits_touching warm: {n} queries in {elapsed:?} = {per_us:.1} µs/query ({hits} total hits)");
     assert!(
         per_us < 1000.0,
         "warm commits_touching must be well under 1ms, got {per_us:.1} µs"
@@ -335,15 +323,7 @@ fn bench_rebuild_peak_rss() {
 
 /// Commit `path=content` authored by a specific name/email, with a subject line and an optional
 /// body (git joins the two `-m` args as `subject\n\nbody`).
-fn commit_authored(
-    root: &Path,
-    path: &str,
-    content: &str,
-    name: &str,
-    email: &str,
-    subject: &str,
-    body: &str,
-) {
+fn commit_authored(root: &Path, path: &str, content: &str, name: &str, email: &str, subject: &str, body: &str) {
     fs::write(root.join(path), content).unwrap();
     run(root, &["add", path]);
     let mut args = vec!["commit", "-q", "-m", subject];
@@ -408,11 +388,7 @@ fn full_text_search_over_author_message_and_body() {
     let (index, _) = sync(root);
 
     let all_by_ada = search_shas(&index, "ada", FtsScope::Author);
-    assert_eq!(
-        all_by_ada.len(),
-        2,
-        "two commits authored by Ada, got {all_by_ada:?}"
-    );
+    assert_eq!(all_by_ada.len(), 2, "two commits authored by Ada, got {all_by_ada:?}");
 
     // Author email token matches the author field.
     assert_eq!(
@@ -427,24 +403,15 @@ fn full_text_search_over_author_message_and_body() {
     assert_eq!(search_shas(&index, "adder", FtsScope::All).len(), 1);
     // Body-only word (not in the summary) proves the body is indexed.
     let addition = index.search_commits("addition", FtsScope::Message, 0, 10);
-    assert_eq!(
-        addition.len(),
-        1,
-        "body-only term 'addition' finds the feat commit"
-    );
+    assert_eq!(addition.len(), 1, "body-only term 'addition' finds the feat commit");
     assert!(
-        addition[0]
-            .body
-            .contains("Implements the addition routine."),
+        addition[0].body.contains("Implements the addition routine."),
         "search result carries the full body, got {:?}",
         addition[0].body
     );
 
     // AND semantics: both terms in one commit's message → match.
-    assert_eq!(
-        search_shas(&index, "null deref", FtsScope::Message).len(),
-        1
-    );
+    assert_eq!(search_shas(&index, "null deref", FtsScope::Message).len(), 1);
     // Terms that live in DIFFERENT commits → no single commit satisfies the AND.
     assert!(
         search_shas(&index, "adder parser", FtsScope::All).is_empty(),
@@ -490,15 +457,7 @@ fn empty_index_before_sync_falls_back() {
 /// unambiguous even across many commits (the shared `commit_authored` pins a single timestamp,
 /// which leaves same-second ordering to the traversal — fine for a handful of commits, not for the
 /// deep history this test builds).
-fn commit_authored_at(
-    root: &Path,
-    path: &str,
-    content: &str,
-    name: &str,
-    email: &str,
-    subject: &str,
-    date: &str,
-) {
+fn commit_authored_at(root: &Path, path: &str, content: &str, name: &str, email: &str, subject: &str, date: &str) {
     fs::write(root.join(path), content).unwrap();
     run(root, &["add", path]);
     let status = Command::new("git")
@@ -553,12 +512,9 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
     assert_eq!(index.commit_count(), 121);
 
     // Oracle: git's own HEAD-scoped, case-insensitive author search, newest first.
-    let git_newest = capture(
-        root,
-        &["log", "-i", "--author=Dor Green", "--format=%H", "-1"],
-    )
-    .trim()
-    .to_string();
+    let git_newest = capture(root, &["log", "-i", "--author=Dor Green", "--format=%H", "-1"])
+        .trim()
+        .to_string();
     assert!(!git_newest.is_empty(), "git finds Dor Green's commit");
 
     // search_git_history(author) returns exactly Dor's commit — full-depth, matching git.
@@ -569,11 +525,7 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
     );
 
     // And it lives beyond the newest-100 window that `recent_changes` scans — the bug's root cause.
-    let recent: Vec<String> = index
-        .recent_commits(0, 100, false)
-        .into_iter()
-        .map(|c| c.sha)
-        .collect();
+    let recent: Vec<String> = index.recent_commits(0, 100, false).into_iter().map(|c| c.sha).collect();
     assert_eq!(recent.len(), 100, "the recent window is capped at 100");
     assert!(
         !recent.contains(&git_newest),

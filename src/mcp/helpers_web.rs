@@ -25,8 +25,8 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::memory::lance_store;
 use super::types::{
-    WebCrawlPageOutcome, WebCrawlParams, WebCrawlResponse, WebMapEntry, WebMapParams,
-    WebMapResponse, WebScrapeParams, WebScrapeResponse,
+    WebCrawlPageOutcome, WebCrawlParams, WebCrawlResponse, WebMapEntry, WebMapParams, WebMapResponse, WebScrapeParams,
+    WebScrapeResponse,
 };
 use crate::embeddings::SharedEmbedder;
 use crate::web::ingest::{default_scope, index_page};
@@ -93,10 +93,7 @@ fn resolve_scope(explicit: Option<&str>, requested: &crate::url::Url, final_url:
 #[cfg(feature = "crawl")]
 fn reject_zero_override(field: &str, value: Option<u32>) -> Result<(), McpError> {
     if value == Some(0) {
-        return Err(McpError::invalid_params(
-            format!("{field} must be >= 1"),
-            None,
-        ));
+        return Err(McpError::invalid_params(format!("{field} must be >= 1"), None));
     }
     Ok(())
 }
@@ -143,17 +140,11 @@ async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> 
 
 fn engine(state: &ServerState) -> Result<&crawlberg::CrawlEngineHandle, McpError> {
     state.crawl_engine.as_ref().ok_or_else(|| {
-        McpError::internal_error(
-            "crawl engine not initialised; check basemind serve startup logs",
-            None,
-        )
+        McpError::internal_error("crawl engine not initialised; check basemind serve startup logs", None)
     })
 }
 
-pub(super) async fn run_web_scrape(
-    state: &ServerState,
-    params: WebScrapeParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
 
@@ -226,10 +217,7 @@ pub(super) async fn run_web_scrape(
     json_result(&response)
 }
 
-pub(super) async fn run_web_crawl(
-    state: &ServerState,
-    params: WebCrawlParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<CallToolResult, McpError> {
     // When both overrides are None reuse the shared engine — no config clone,
     // no new engine construction. When either override is set, build a one-shot
     // engine from a cloned config (crawlberg bakes caps into the engine handle).
@@ -261,10 +249,7 @@ pub(super) async fn run_web_crawl(
     // Top-level scope echoed in the response: explicit when supplied, else
     // derived from the seed URL's host. Per-page rows derive their own scope
     // from the page's final URL below (a crawl can span subdomains).
-    let scope = params
-        .scope
-        .clone()
-        .unwrap_or_else(|| default_scope(&params.url));
+    let scope = params.scope.clone().unwrap_or_else(|| default_scope(&params.url));
 
     // Maximum concurrent ONNX embed + LanceDB write tasks per `web_crawl` call.
     // Each task runs on a blocking thread. The semaphore caps active tasks so
@@ -286,8 +271,7 @@ pub(super) async fn run_web_crawl(
     let mut pages_indexed = 0usize;
     // Track outcomes in insertion order. SSRF-rejected pages are written
     // directly as `Some`; indexing futures write their slot on completion.
-    let mut outcomes: Vec<Option<WebCrawlPageOutcome>> =
-        Vec::with_capacity(crawl_outcome.pages.len());
+    let mut outcomes: Vec<Option<WebCrawlPageOutcome>> = Vec::with_capacity(crawl_outcome.pages.len());
     let mut futs: FuturesUnordered<_> = FuturesUnordered::new();
     let semaphore = Arc::new(tokio::sync::Semaphore::new(CRAWL_INDEX_CONCURRENCY));
 
@@ -418,10 +402,7 @@ pub(super) async fn run_web_crawl(
     })
 }
 
-pub(super) async fn run_web_map(
-    state: &ServerState,
-    params: WebMapParams,
-) -> Result<CallToolResult, McpError> {
+pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
 
@@ -487,9 +468,8 @@ mod tests {
         unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
         // Simulates the URL crawlberg landed on AFTER following a redirect from a
         // public seed to the AWS metadata endpoint — the canonical SSRF target.
-        let err =
-            reject_redirected_private_url("web_scrape", "http://169.254.169.254/latest/meta-data/")
-                .expect_err("link-local redirect target must be rejected");
+        let err = reject_redirected_private_url("web_scrape", "http://169.254.169.254/latest/meta-data/")
+            .expect_err("link-local redirect target must be rejected");
         assert!(
             err.message.contains("169.254.169.254"),
             "rejection should name the private host; got: {}",

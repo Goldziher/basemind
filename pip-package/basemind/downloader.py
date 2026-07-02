@@ -58,8 +58,7 @@ def _platform_triple() -> str:
         if _is_apple_silicon(machine):
             return "aarch64-apple-darwin"
         raise RuntimeError(
-            "Intel macOS (x86_64) is not supported; basemind ships only "
-            "Apple Silicon (arm64) macOS binaries"
+            "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
         )
 
     raise RuntimeError(f"Unsupported platform: {system} {machine}")
@@ -102,9 +101,7 @@ def _is_retryable_error(error: Exception | str) -> bool:
     )
 
 
-def _retry_with_backoff(
-    fn, max_attempts: int = 3, delays: list[int] | None = None
-) -> None:
+def _retry_with_backoff(fn, max_attempts: int = 3, delays: list[int] | None = None) -> None:
     """Execute fn with exponential backoff retry on transient errors.
 
     Only retries on transient errors (network, 5xx). Deterministic failures
@@ -124,8 +121,7 @@ def _retry_with_backoff(
 
             delay = delays[attempt]
             print(
-                f"Transient error (attempt {attempt + 1}/{max_attempts}): {error}; "
-                f"retrying in {delay}s...",
+                f"Transient error (attempt {attempt + 1}/{max_attempts}): {error}; retrying in {delay}s...",
                 file=sys.stderr,
             )
             time.sleep(delay)
@@ -137,6 +133,7 @@ def _retry_with_backoff(
 
 def _download(url: str, destination: Path) -> None:
     """Download a file with retry-with-backoff on transient errors."""
+
     def download_attempt():
         request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
         context = ssl.create_default_context(cafile=certifi.where())
@@ -153,6 +150,7 @@ def _download(url: str, destination: Path) -> None:
 
 def _download_text(url: str) -> str:
     """Download text content with retry-with-backoff on transient errors."""
+
     def download_attempt():
         request = Request(url, headers={"User-Agent": "basemind-python-wrapper"})
         context = ssl.create_default_context(cafile=certifi.where())
@@ -194,24 +192,20 @@ def _verify_checksum(archive: Path, asset_name: str, checksums_url: str) -> None
         checksums_text = _download_text(checksums_url)
     except RuntimeError as exc:
         raise RuntimeError(
-            f"could not fetch checksums ({checksums_url}): {exc} — "
-            "refusing to install unverified binary"
+            f"could not fetch checksums ({checksums_url}): {exc} — refusing to install unverified binary"
         ) from exc
 
     expected = _expected_digest(checksums_text, asset_name)
     if not expected:
         raise RuntimeError(
-            f"no checksum entry for {asset_name} in {checksums_url} — "
-            "refusing to install unverified binary"
+            f"no checksum entry for {asset_name} in {checksums_url} — refusing to install unverified binary"
         )
 
     digest = hashlib.sha256()
     digest.update(archive.read_bytes())
     actual = digest.hexdigest().lower()
     if actual != expected:
-        raise RuntimeError(
-            f"checksum mismatch for {asset_name} (expected {expected}, got {actual})"
-        )
+        raise RuntimeError(f"checksum mismatch for {asset_name} (expected {expected}, got {actual})")
 
 
 def _extract(archive: Path, ext: str, destination: Path) -> None:
@@ -310,9 +304,7 @@ def ensure_binary():
                     shutil.rmtree(cache_dir, ignore_errors=True)
                     staging_dir.replace(cache_dir)
                 if not binary_path.exists():
-                    raise RuntimeError(
-                        f"binary {_binary_name()} not found after extracting {asset_name}"
-                    )
+                    raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
 
         if not binary_path.exists():
             raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")

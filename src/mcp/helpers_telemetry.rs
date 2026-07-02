@@ -58,11 +58,7 @@ pub(super) fn record_call(
     // `documents`, bytes/4 otherwise). The raw response-byte figure stays the UTF-8 length.
     let resp_text = result_text(r);
     let resp_bytes = resp_text.len() as u64;
-    let corpus = state
-        .corpus_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let corpus = state.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
     let savings = super::savings::estimate_from_text(tool, corpus, resp_text.as_ref());
-    state
-        .telemetry
-        .record(tool, params, resp_bytes, elapsed_ms, &savings);
+    state.telemetry.record(tool, params, resp_bytes, elapsed_ms, &savings);
 }

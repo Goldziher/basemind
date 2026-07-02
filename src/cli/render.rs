@@ -22,12 +22,7 @@ const MAX_HUMAN_ITEMS: usize = 1000;
 ///
 /// `tool_name` selects the human special-case renderer. On a tool error the
 /// `McpError` is surfaced as an `anyhow` error by the caller before this runs.
-pub fn emit(
-    tool_name: &str,
-    result: &CallToolResult,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<()> {
+pub fn emit(tool_name: &str, result: &CallToolResult, json: bool, out: &mut impl Write) -> Result<()> {
     let value = result_to_value(result)?;
     if json {
         render_json(&value, out)
@@ -94,9 +89,7 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
             let object_arrays: Vec<(&str, &Vec<Value>)> = map
                 .iter()
                 .filter_map(|(k, v)| match v {
-                    Value::Array(items) if items.first().is_some_and(|i| i.is_object()) => {
-                        Some((k.as_str(), items))
-                    }
+                    Value::Array(items) if items.first().is_some_and(|i| i.is_object()) => Some((k.as_str(), items)),
                     _ => None,
                 })
                 .collect();
@@ -213,24 +206,12 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Res
                 };
                 let name = obj.get("name").and_then(Value::as_str).unwrap_or("");
                 let kind = obj.get("kind").and_then(Value::as_str).unwrap_or("");
-                let row = obj
-                    .get("start_row")
-                    .and_then(Value::as_u64)
-                    .map(|r| r + 1)
-                    .unwrap_or(0);
+                let row = obj.get("start_row").and_then(Value::as_u64).map(|r| r + 1).unwrap_or(0);
                 let path = obj.get("path").and_then(Value::as_str);
                 let sig = obj.get("signature").and_then(Value::as_str).unwrap_or("");
                 match path {
-                    Some(p) => writeln!(
-                        out,
-                        "  {p}:{row} {kind:<10} {name} {sig}",
-                        sig = truncate(sig)
-                    )?,
-                    None => writeln!(
-                        out,
-                        "  {row:>5} {kind:<10} {name} {sig}",
-                        sig = truncate(sig)
-                    )?,
+                    Some(p) => writeln!(out, "  {p}:{row} {kind:<10} {name} {sig}", sig = truncate(sig))?,
+                    None => writeln!(out, "  {row:>5} {kind:<10} {name} {sig}", sig = truncate(sig))?,
                 }
             }
             if items.len() > MAX_HUMAN_ITEMS {
@@ -280,23 +261,11 @@ mod tests {
             "common": [{"name": "gamma"}],
         });
         let out = render(&value);
-        assert!(
-            out.contains("added (1 items):"),
-            "missing added table: {out}"
-        );
-        assert!(
-            out.contains("removed (1 items):"),
-            "missing removed table: {out}"
-        );
-        assert!(
-            out.contains("common (1 items):"),
-            "missing common table: {out}"
-        );
+        assert!(out.contains("added (1 items):"), "missing added table: {out}");
+        assert!(out.contains("removed (1 items):"), "missing removed table: {out}");
+        assert!(out.contains("common (1 items):"), "missing common table: {out}");
         assert!(out.contains("alpha") && out.contains("beta") && out.contains("gamma"));
         // No array should be summarized away.
-        assert!(
-            !out.contains("items)\nremoved"),
-            "removed was summarized: {out}"
-        );
+        assert!(!out.contains("items)\nremoved"), "removed was summarized: {out}");
     }
 }

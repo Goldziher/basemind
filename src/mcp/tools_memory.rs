@@ -14,9 +14,7 @@ use super::BasemindServer;
 use super::helpers::record_call;
 use super::lenient::Lenient;
 use super::types::SearchDocumentsParams;
-use super::types_memory::{
-    MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams,
-};
+use super::types_memory::{MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams};
 
 fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
     Err(McpError::invalid_request(
@@ -62,13 +60,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_put",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_put", &__params_json, __started, &__result);
         __result
     }
 
@@ -98,13 +90,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_get",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_get", &__params_json, __started, &__result);
         __result
     }
 
@@ -134,13 +120,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_list",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_list", &__params_json, __started, &__result);
         __result
     }
 
@@ -170,13 +150,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_search",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_search", &__params_json, __started, &__result);
         __result
     }
 
@@ -210,13 +184,7 @@ impl BasemindServer {
             not_enabled("memory")
         }
         .await;
-        record_call(
-            &self.state,
-            "memory_delete",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "memory_delete", &__params_json, __started, &__result);
         __result
     }
 
@@ -248,13 +216,7 @@ impl BasemindServer {
             not_enabled("documents")
         }
         .await;
-        record_call(
-            &self.state,
-            "search_documents",
-            &__params_json,
-            __started,
-            &__result,
-        );
+        record_call(&self.state, "search_documents", &__params_json, __started, &__result);
         __result
     }
 }

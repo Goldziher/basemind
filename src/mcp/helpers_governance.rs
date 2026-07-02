@@ -75,13 +75,7 @@ fn write_archive(
 }
 
 /// Remove a `MemoryRecord` from the **live** `memory_by_key` keyspace.
-fn delete_live(
-    idx: &crate::index::IndexDb,
-    scope: &str,
-    vis_byte: u8,
-    owner: &str,
-    key: &str,
-) -> Result<(), McpError> {
+fn delete_live(idx: &crate::index::IndexDb, scope: &str, vis_byte: u8, owner: &str, key: &str) -> Result<(), McpError> {
     let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
     idx.memory_by_key
         .remove(raw_key)
@@ -173,13 +167,9 @@ pub(super) fn audit_one_record(
                         source: Arc::new(source),
                     };
                     let kind_opt = sym_ref.kind.as_deref().and_then(parse_kind_opt);
-                    if let Some(current_hash) = symbol_fingerprint(
-                        &entry,
-                        &sym_ref.name,
-                        kind_opt,
-                        lang,
-                        HashMode::Structural,
-                    ) && current_hash != stored_hash
+                    if let Some(current_hash) =
+                        symbol_fingerprint(&entry, &sym_ref.name, kind_opt, lang, HashMode::Structural)
+                        && current_hash != stored_hash
                     {
                         reasons.push(format!("symbol body changed: {}", sym_ref.name));
                         stale = true;
@@ -281,12 +271,7 @@ pub(super) struct AuditCtx<'a> {
 
 /// Decode, audit, and mutate one memory record. Returns `None` when the raw bytes
 /// cannot be decoded (silently skip). Does NOT write to Fjall.
-fn evaluate_one(
-    ctx: &AuditCtx<'_>,
-    key: &str,
-    raw_val: &[u8],
-    from_archive: bool,
-) -> Option<EntryOutcome> {
+fn evaluate_one(ctx: &AuditCtx<'_>, key: &str, raw_val: &[u8], from_archive: bool) -> Option<EntryOutcome> {
     let mut record: MemoryRecord = rmp_serde::from_slice(raw_val).ok()?;
 
     let verdict = audit_one_record(ctx.cache, ctx.store, ctx.root, &record);
@@ -332,10 +317,7 @@ pub(super) async fn run_memory_audit(
     state: &ServerState,
     params: MemoryAuditParams,
 ) -> Result<CallToolResult, McpError> {
-    let limit = params
-        .limit
-        .unwrap_or(DEFAULT_AUDIT_LIMIT)
-        .min(MAX_AUDIT_LIMIT) as usize;
+    let limit = params.limit.unwrap_or(DEFAULT_AUDIT_LIMIT).min(MAX_AUDIT_LIMIT) as usize;
     let scan_cap = limit.saturating_mul(8).max(1_000);
 
     // Resolve namespace coordinates — mirrors `memory::namespace` exactly.
@@ -382,24 +364,10 @@ pub(super) async fn run_memory_audit(
         {
             if !ctx.dry_run {
                 if outcome.audit_result.archived {
-                    write_archive(
-                        idx,
-                        &state.scope,
-                        vis_byte,
-                        owner,
-                        single_key,
-                        &outcome.record,
-                    )?;
+                    write_archive(idx, &state.scope, vis_byte, owner, single_key, &outcome.record)?;
                     delete_live(idx, &state.scope, vis_byte, owner, single_key)?;
                 } else {
-                    write_live(
-                        idx,
-                        &state.scope,
-                        vis_byte,
-                        owner,
-                        single_key,
-                        &outcome.record,
-                    )?;
+                    write_live(idx, &state.scope, vis_byte, owner, single_key, &outcome.record)?;
                 }
             }
             results.push(outcome.audit_result);
@@ -422,24 +390,10 @@ pub(super) async fn run_memory_audit(
             if let Some(outcome) = evaluate_one(&ctx, &key_str, &raw_val, false) {
                 if !ctx.dry_run {
                     if outcome.audit_result.archived {
-                        write_archive(
-                            idx,
-                            &state.scope,
-                            vis_byte,
-                            owner,
-                            &key_str,
-                            &outcome.record,
-                        )?;
+                        write_archive(idx, &state.scope, vis_byte, owner, &key_str, &outcome.record)?;
                         delete_live(idx, &state.scope, vis_byte, owner, &key_str)?;
                     } else {
-                        write_live(
-                            idx,
-                            &state.scope,
-                            vis_byte,
-                            owner,
-                            &key_str,
-                            &outcome.record,
-                        )?;
+                        write_live(idx, &state.scope, vis_byte, owner, &key_str, &outcome.record)?;
                     }
                 }
                 results.push(outcome.audit_result);
@@ -515,12 +469,7 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
 /// back **only** Stale records (decay always; archive once stale > `ARCHIVE_AFTER_MICROS`). The
 /// scope-prefix scan guarantees every key belongs to `scope`, so foreign-scope records are never
 /// touched. Fail-open: any per-record error is warn-logged and the loop continues.
-pub(super) fn audit_scope_persist(
-    idx: &crate::index::IndexDb,
-    ctx: &AuditCtx<'_>,
-    scope: &str,
-    limit: usize,
-) {
+pub(super) fn audit_scope_persist(idx: &crate::index::IndexDb, ctx: &AuditCtx<'_>, scope: &str, limit: usize) {
     // Scope-bounded prefix scan — never iterates another repo's keys (the prefix encodes this
     // repo's scope across every visibility tier / owner), so the per-key scope check is needless.
     //
@@ -541,9 +490,7 @@ pub(super) fn audit_scope_persist(
                 continue;
             }
         };
-        let Some((_scope, vis_byte, owner, key_str)) =
-            crate::index::keys::parse_memory_by_key(&raw_key_bytes)
-        else {
+        let Some((_scope, vis_byte, owner, key_str)) = crate::index::keys::parse_memory_by_key(&raw_key_bytes) else {
             continue;
         };
         let Some(outcome) = evaluate_one(ctx, &key_str, &raw_val, false) else {

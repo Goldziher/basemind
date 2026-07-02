@@ -50,11 +50,7 @@ fn git(repo: &Path, args: &[&str]) {
         .env("GIT_COMMITTER_EMAIL", "t@e.x")
         .status()
         .expect("git in PATH");
-    assert!(
-        status.success(),
-        "git {args:?} failed in {}",
-        repo.display()
-    );
+    assert!(status.success(), "git {args:?} failed in {}", repo.display());
 }
 
 /// Build a minimal git repo that co-changes two files across two commits so
@@ -81,11 +77,7 @@ fn build_governance_repo() -> TempDir {
     git(root, &["commit", "-qm", "init"]);
 
     // Touch core.rs in a second commit so the repo has some co-change history.
-    std::fs::write(
-        root.join("core.rs"),
-        b"pub fn process() { helper(); let _ = 1; }\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("core.rs"), b"pub fn process() { helper(); let _ = 1; }\n").unwrap();
     git(root, &["commit", "-aqm", "update core"]);
 
     dir
@@ -95,15 +87,8 @@ fn build_governance_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    let mut store =
-        basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(
-        root,
-        &mut store,
-        &cfg,
-        basemind::scanner::ScanSource::WorkingTree,
-    )
-    .expect("scan");
+    let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
 }
 
 /// Decode the first JSON text payload from an MCP `CallToolResult`.
@@ -168,27 +153,15 @@ fn build_confidence_repo() -> TempDir {
 
     // 5 commits touching BOTH a.rs and b.rs together → cochange(a,b) = 5.
     for i in 0..5u32 {
-        std::fs::write(
-            root.join("a.rs"),
-            format!("pub fn a() {{ /* both {i} */ }}\n"),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join("b.rs"),
-            format!("pub fn b() {{ /* both {i} */ }}\n"),
-        )
-        .unwrap();
+        std::fs::write(root.join("a.rs"), format!("pub fn a() {{ /* both {i} */ }}\n")).unwrap();
+        std::fs::write(root.join("b.rs"), format!("pub fn b() {{ /* both {i} */ }}\n")).unwrap();
         git(root, &["add", "a.rs", "b.rs"]);
         git(root, &["commit", "-qm", &format!("both {i}")]);
     }
 
     // 5 commits touching ONLY a.rs → freq[a] += 5, cochange unchanged.
     for i in 0..5u32 {
-        std::fs::write(
-            root.join("a.rs"),
-            format!("pub fn a() {{ /* only-a {i} */ }}\n"),
-        )
-        .unwrap();
+        std::fs::write(root.join("a.rs"), format!("pub fn a() {{ /* only-a {i} */ }}\n")).unwrap();
         git(root, &["add", "a.rs"]);
         git(root, &["commit", "-qm", &format!("only-a {i}")]);
     }
@@ -220,10 +193,7 @@ fn build_bulk_repo() -> TempDir {
         std::fs::write(root.join(f), format!("pub fn {f}() {{}}\n")).unwrap();
     }
     // Bulk commit: all 6 files.
-    git(
-        root,
-        &["add", "p.rs", "q.rs", "r.rs", "s.rs", "t.rs", "u.rs"],
-    );
+    git(root, &["add", "p.rs", "q.rs", "r.rs", "s.rs", "t.rs", "u.rs"]);
     git(root, &["commit", "-qm", "bulk init"]);
 
     // 3 small commits touching ONLY p.rs + q.rs.
@@ -280,11 +250,7 @@ fn build_two_cluster_repo() -> TempDir {
 async fn spawn_serve(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let bin = env!("CARGO_BIN_EXE_basemind");
     let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root")
-            .arg(root)
-            .arg("serve")
-            .arg("--view")
-            .arg("working");
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
     });
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     ().serve(transport).await.expect("rmcp handshake")
@@ -469,10 +435,7 @@ async fn should_skip_bulk_commits_and_not_inflate_cochange() {
     // bulk commit). List proposals and assert none of them contain both r.rs and s.rs.
     let list_body = decode_text(
         &service
-            .call_tool(call_params(
-                "proposals_list",
-                json!({ "limit": 100, "kind": "skill" }),
-            ))
+            .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "skill" })))
             .await
             .expect("proposals_list after bulk mine"),
     );
@@ -523,10 +486,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
             .expect("proposals_mine first"),
     );
     let mined1 = mine1.get("mined").and_then(Value::as_u64).unwrap_or(0);
-    assert!(
-        mined1 >= 1,
-        "first mine must yield at least one proposal: {mine1}"
-    );
+    assert!(mined1 >= 1, "first mine must yield at least one proposal: {mine1}");
 
     let list1 = decode_text(
         &service
@@ -541,10 +501,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
         .iter()
         .filter_map(|p| p.get("id").and_then(Value::as_str).map(String::from))
         .collect();
-    assert!(
-        !ids1.is_empty(),
-        "first proposals_list must return ids: {list1}"
-    );
+    assert!(!ids1.is_empty(), "first proposals_list must return ids: {list1}");
 
     // Second mine (proposals are overwritten, not duplicated — same content-addressed ids).
     let mine2 = decode_text(
@@ -568,10 +525,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
         .iter()
         .filter_map(|p| p.get("id").and_then(Value::as_str).map(String::from))
         .collect();
-    assert!(
-        !ids2.is_empty(),
-        "second proposals_list must return ids: {list2}"
-    );
+    assert!(!ids2.is_empty(), "second proposals_list must return ids: {list2}");
 
     // The first id from both mines must match (content-addressed over the same file-set).
     assert_eq!(
@@ -624,10 +578,7 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     // Page 1: limit=1 → first proposal + truncated=true + next_cursor.
     let page1 = decode_text(
         &service
-            .call_tool(call_params(
-                "proposals_list",
-                json!({ "limit": 1, "kind": "skill" }),
-            ))
+            .call_tool(call_params("proposals_list", json!({ "limit": 1, "kind": "skill" })))
             .await
             .expect("proposals_list page 1"),
     );
@@ -652,11 +603,7 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
         .iter()
         .filter_map(|p| p.get("id").and_then(Value::as_str).map(String::from))
         .collect();
-    assert_eq!(
-        page1_ids.len(),
-        1,
-        "page 1 must contain exactly 1 proposal: {page1}"
-    );
+    assert_eq!(page1_ids.len(), 1, "page 1 must contain exactly 1 proposal: {page1}");
 
     // Page 2: follow next_cursor → remaining proposals, truncated=false.
     let page2 = decode_text(
@@ -697,10 +644,7 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     // kind="memory" → v1 only mines skill proposals, so memory list is always empty.
     let memory_list = decode_text(
         &service
-            .call_tool(call_params(
-                "proposals_list",
-                json!({ "limit": 100, "kind": "memory" }),
-            ))
+            .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "memory" })))
             .await
             .expect("proposals_list kind=memory"),
     );

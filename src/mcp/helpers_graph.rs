@@ -38,11 +38,7 @@ const DEFAULT_MAX_NODES: u32 = 100;
 fn is_function_like(kind: SymbolKind) -> bool {
     matches!(
         kind,
-        SymbolKind::Function
-            | SymbolKind::Method
-            | SymbolKind::Constructor
-            | SymbolKind::Getter
-            | SymbolKind::Setter
+        SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Getter | SymbolKind::Setter
     )
 }
 
@@ -62,35 +58,15 @@ pub(super) fn run_call_graph(
             ));
         }
     };
-    let max_depth = params
-        .max_depth
-        .unwrap_or(DEFAULT_MAX_DEPTH)
-        .min(MAX_DEPTH_CEILING);
-    let max_nodes = params
-        .max_nodes
-        .unwrap_or(DEFAULT_MAX_NODES)
-        .min(MAX_NODES_CEILING) as usize;
+    let max_depth = params.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).min(MAX_DEPTH_CEILING);
+    let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_NODES_CEILING) as usize;
 
     // A read-only session (no Fjall) routes through the in-RAM call index built
     // from the shared blobs — see `collect_callers` / `collect_callees_for_name`.
     let outcome = if direction == "callers" {
-        bfs_callers(
-            idx,
-            cache,
-            &params.name,
-            params.path.as_ref(),
-            max_depth,
-            max_nodes,
-        )?
+        bfs_callers(idx, cache, &params.name, params.path.as_ref(), max_depth, max_nodes)?
     } else {
-        bfs_callees(
-            idx,
-            cache,
-            &params.name,
-            params.path.as_ref(),
-            max_depth,
-            max_nodes,
-        )?
+        bfs_callees(idx, cache, &params.name, params.path.as_ref(), max_depth, max_nodes)?
     };
 
     json_result(&CallGraphResponse {
@@ -203,9 +179,7 @@ fn bfs_callers(
             Err(CallerScanError::Other(e)) => return Err(e),
         };
 
-        let current_idx = *index_of
-            .get(&current_name)
-            .expect("frontier entry must be indexed");
+        let current_idx = *index_of.get(&current_name).expect("frontier entry must be indexed");
 
         for (parent_name, parent_sites) in parents {
             // Self-recursion: add a self-edge and stop expanding.
@@ -302,10 +276,7 @@ fn collect_callers(
             start_col: parent_sym.start_col,
         };
         if seen_sites.insert((rel, site.start_row, site.start_col)) {
-            parents
-                .entry(parent_sym.name.clone())
-                .or_default()
-                .push(site);
+            parents.entry(parent_sym.name.clone()).or_default().push(site);
         }
     };
 
@@ -317,22 +288,15 @@ fn collect_callers(
                 None => Bound::Unbounded,
             };
             let lower = Bound::Included(prefix);
-            for guard in idx
-                .calls_by_callee
-                .range::<Vec<u8>, _>((lower, upper_bound))
-            {
+            for guard in idx.calls_by_callee.range::<Vec<u8>, _>((lower, upper_bound)) {
                 scanned += 1;
                 if scanned > scan_cap {
                     return Err(CallerScanError::ScanCap);
                 }
-                let (k, _) = guard.into_inner().map_err(|e| {
-                    CallerScanError::Other(McpError::internal_error(
-                        format!("index iter: {e}"),
-                        None,
-                    ))
-                })?;
-                let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k)
-                else {
+                let (k, _) = guard
+                    .into_inner()
+                    .map_err(|e| CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None)))?;
+                let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k) else {
                     continue;
                 };
                 // Defensive exact-name guard (the length-prefixed key already ensures it).
@@ -402,9 +366,7 @@ fn bfs_callees(
             Err(CallerScanError::Other(e)) => return Err(e),
         };
 
-        let current_idx = *index_of
-            .get(&current_name)
-            .expect("frontier entry must be indexed");
+        let current_idx = *index_of.get(&current_name).expect("frontier entry must be indexed");
 
         for callee in callees {
             if callee == current_name {
@@ -530,10 +492,7 @@ fn collect_callees_for_name(
                         return Err(CallerScanError::ScanCap);
                     }
                     let (_, v) = guard.into_inner().map_err(|e| {
-                        CallerScanError::Other(McpError::internal_error(
-                            format!("index iter: {e}"),
-                            None,
-                        ))
+                        CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None))
                     })?;
                     let call: Call = match rmp_serde::from_slice(&v) {
                         Ok(c) => c,

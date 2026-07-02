@@ -1,8 +1,7 @@
 use basemind::extract::SymbolKind;
 use basemind::index::keys::{
-    call_by_callee, impl_by_path, impl_by_trait, import_by_module, parse_call_by_callee,
-    parse_impl_by_path, parse_impl_by_trait, parse_import_by_module, parse_symbol_by_name,
-    symbol_by_name,
+    call_by_callee, impl_by_path, impl_by_trait, import_by_module, parse_call_by_callee, parse_impl_by_path,
+    parse_impl_by_trait, parse_import_by_module, parse_symbol_by_name, symbol_by_name,
 };
 use basemind::path::RelPath;
 use proptest::prelude::*;
