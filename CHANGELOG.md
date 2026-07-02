@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-07-02
+
+Minor release: `RELEASE_MINOR` bumps 15 → 16, so every `.basemind/` index + blob store (including
+`git-history.fjall/`) is wiped and rebuilt on the next `basemind scan`.
+
 ### Added
 
 - **Resource footprint in `cache_stats` (disk + RAM).** The `cache_stats` MCP tool and
