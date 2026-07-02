@@ -20,6 +20,7 @@ mod helpers_comms;
 mod helpers_compress;
 #[cfg(feature = "documents")]
 mod helpers_documents;
+mod helpers_git;
 #[cfg(feature = "memory")]
 mod helpers_governance;
 mod helpers_graph;

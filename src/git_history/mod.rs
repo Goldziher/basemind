@@ -29,9 +29,12 @@
 //! | `gh_path_id_by_path` | `u16:len ‖ rel` | `path_id:u32_be` |
 //! | `gh_path_by_id` | `path_id:u32_be` | raw `rel` bytes |
 //! | `gh_path_to_ords` | `path_id:u32_be` | delta-varint ordinal posting list |
+//! | `gh_commit_text_by_ord` | `ord:u32_be` | full commit message body (FTS) |
+//! | `gh_term_to_ords` | `field:u8 ‖ term` | delta-varint ordinal posting list (FTS) |
 
 pub mod builder;
 pub mod encoding;
+pub mod fts;
 pub mod keys;
 pub mod reader;
 
@@ -113,6 +116,13 @@ pub struct GitHistoryIndex {
     path_id_by_path: Keyspace,
     path_by_id: Keyspace,
     path_to_ords: Keyspace,
+    /// `gh_commit_text_by_ord`: ord → full commit message body. Kept out of `gh_commit_by_ord` so
+    /// the head-decode hot path (`recent_changes` / `commits_touching`) never loads body bytes;
+    /// read only when a full-text search returns a commit.
+    commit_text_by_ord: Keyspace,
+    /// `gh_term_to_ords`: `field:u8 ‖ term` → newest-first ordinal posting list. Backs
+    /// `search_git_history`. See [`fts`].
+    term_to_ords: Keyspace,
 }
 
 impl GitHistoryIndex {
@@ -175,6 +185,9 @@ impl GitHistoryIndex {
         let path_id_by_path = db.keyspace("gh_path_id_by_path", KeyspaceCreateOptions::default)?;
         let path_by_id = db.keyspace("gh_path_by_id", KeyspaceCreateOptions::default)?;
         let path_to_ords = db.keyspace("gh_path_to_ords", KeyspaceCreateOptions::default)?;
+        let commit_text_by_ord =
+            db.keyspace("gh_commit_text_by_ord", KeyspaceCreateOptions::default)?;
+        let term_to_ords = db.keyspace("gh_term_to_ords", KeyspaceCreateOptions::default)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
             db,
@@ -184,6 +197,8 @@ impl GitHistoryIndex {
             path_id_by_path,
             path_by_id,
             path_to_ords,
+            commit_text_by_ord,
+            term_to_ords,
         })
     }
 
@@ -198,6 +213,8 @@ impl GitHistoryIndex {
             &self.path_id_by_path,
             &self.path_by_id,
             &self.path_to_ords,
+            &self.commit_text_by_ord,
+            &self.term_to_ords,
             &self.meta,
         ] {
             let keys: Vec<_> = ks
@@ -226,6 +243,8 @@ impl GitHistoryIndex {
             &self.path_id_by_path,
             &self.path_by_id,
             &self.path_to_ords,
+            &self.commit_text_by_ord,
+            &self.term_to_ords,
         ] {
             keyspace.rotate_memtable_and_wait()?;
             keyspace.major_compact()?;
@@ -321,6 +340,22 @@ impl GitHistoryIndex {
 
     pub(crate) fn posting_bytes(&self, path_id: u32) -> Option<fjall::Slice> {
         self.path_to_ords.get(keys::u32_key(path_id)).ok().flatten()
+    }
+
+    /// Raw newest-first posting bytes for one `(field, term)` search key, or `None` if unindexed.
+    pub(crate) fn term_posting_bytes(&self, term_key: &[u8]) -> Option<fjall::Slice> {
+        self.term_to_ords.get(term_key).ok().flatten()
+    }
+
+    /// The stored full message body for `ord`, or `None` when the commit had a summary-only message
+    /// (no body row is written for those).
+    pub(crate) fn commit_text(&self, ord: u32) -> Option<String> {
+        let bytes = self
+            .commit_text_by_ord
+            .get(keys::u32_key(ord))
+            .ok()
+            .flatten()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     /// Iterate `gh_commit_by_ord` descending (newest ordinal first) — the source for the global
@@ -420,6 +455,30 @@ impl GitHistoryWriter {
         self.batch.insert(
             &self.index.path_to_ords,
             keys::u32_key(path_id),
+            encoded.to_vec(),
+        );
+        self.maybe_flush()
+    }
+
+    /// Store one commit's full message body (skipped by the caller when empty).
+    pub fn put_commit_text(&mut self, ord: u32, body: &[u8]) -> Result<(), GitHistoryError> {
+        self.batch.insert(
+            &self.index.commit_text_by_ord,
+            keys::u32_key(ord),
+            body.to_vec(),
+        );
+        self.maybe_flush()
+    }
+
+    /// Store the newest-first posting list for one `(field, term)` search key.
+    pub fn put_term_posting(
+        &mut self,
+        term_key: &[u8],
+        encoded: &[u8],
+    ) -> Result<(), GitHistoryError> {
+        self.batch.insert(
+            &self.index.term_to_ords,
+            term_key.to_vec(),
             encoded.to_vec(),
         );
         self.maybe_flush()

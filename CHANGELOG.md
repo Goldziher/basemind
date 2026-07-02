@@ -10,14 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`search_git_history` — full-text search over commit history.** Search commit **author name +
+  email** and **message summary + full body**, tokenized (lowercased, split on non-alphanumeric)
+  and matched as an AND. `field` scopes to `author`, `message`, or `all` (default); `limit` +
+  `cursor` paginate like the other git-log tools. Backed by two new git-history partitions — a
+  `gh_term_to_ords` inverted term→commit-ordinal index (reusing the newest-first delta-varint
+  posting encoding) and a `gh_commit_text_by_ord` body store kept out of the head-decode hot path.
+  When the git-history index isn't fresh (read-only session / mid-build) the tool degrades to a
+  bounded live walk over the recent window, flagged `partial` (author + summary only). To support
+  it, commit extraction now captures `author_email` + full `body`, and the stored commit-meta head
+  gains an `author_email` field (`sha ‖ time ‖ author ‖ email ‖ summary ‖ files`).
+
+### Fixed
+
+- **Multi-session MCP contention: the writer→read-only downgrade race.** A `basemind serve` that
+  rightfully held the `.basemind/.lock` write lock could still come up read-only when a concurrent
+  reader transiently held Fjall's single-holder index lock — leaving the repo with _zero_ writers
+  (no auto-scan / watcher / rescan → a silently stale index). Fixed on both single-holder Fjall
+  stores: the writer now **retries** a transient `Locked` on open (it already owns `.basemind/.lock`,
+  so the contention always clears), read-only openers **probe `.basemind/.lock` and skip the Fjall
+  open** entirely when a writer is live (serving from the concurrently-readable blobs), and the
+  schema-version check no longer does a throwaway **double-open** that widened the race window. The
+  downgrade log now names the real lock holder instead of always blaming "another serve".
+
 ### Changed
 
-- **git-history: capture author email + full commit body** for the in-progress git-history
-  full-text search. `CommitInfo` now carries `author_email` and `body`; the stored commit-meta head
-  gains an `author_email` field (`sha ‖ time ‖ author ‖ email ‖ summary ‖ files`). `GIT_HISTORY_SCHEMA`
-  bumps `+4 → +5`, wiping and rebuilding `.basemind/git-history.fjall/` on the next scan — a no-op for
-  released users since the git-history index is still an unreleased feature (only in-flight dev
-  indexes rebuild).
+- **git-history / index / comms Fjall opens** collapsed to a single `Database` open + inline schema
+  read (was: a throwaway peek-open before the real open). `GIT_HISTORY_SCHEMA` bumps `+4 → +5` for
+  the FTS commit-meta layout, wiping and rebuilding `.basemind/git-history.fjall/` on the next scan
+  — a no-op for released users (the git-history index only became user-visible with this release).
 
 ## [0.14.0] — 2026-06-30
 
