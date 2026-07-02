@@ -63,7 +63,7 @@ pub struct ToolCall {
 }
 
 /// One flagged anti-pattern.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct WasteFinding {
     /// Stable detector tag: `redundant_read`, `repeated_query`, or
     /// `oversized_read`.
@@ -77,7 +77,7 @@ pub struct WasteFinding {
 }
 
 /// The full analysis result.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub struct WasteReport {
     /// Deterministically ordered (`kind`, then `target`) findings, capped at
     /// `MAX_FINDINGS`.

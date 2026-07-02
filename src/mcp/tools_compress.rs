@@ -9,7 +9,9 @@ use rmcp::tool;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_compress::{CompressParams, ExpandParams};
+use super::types_compress::{
+    CheckpointParams, CompressParams, DeltaParams, DetectWasteParams, ExpandParams,
+};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_compress")]
 impl BasemindServer {
@@ -71,6 +73,100 @@ impl BasemindServer {
         record_call(
             &self.state,
             "compress",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    #[tool(
+        description = "Compute a compact +N/-M line-diff from `old` to `new` — the stateless \
+            re-read primitive: when re-reading content you've already seen, emit only what \
+            changed instead of the full text. Both sides are supplied inline (unlike the CLI, \
+            which reads `old` from a file). Identical inputs return `changed=false` with a \
+            `# unchanged` marker. Either side over 50,000 bytes or 2,000 lines bails to a full \
+            re-read: `bailed=true`, `output` carries the NEW content verbatim behind a marker, \
+            and `added`/`removed` are 0. Otherwise an LCS line diff runs and `output` is a \
+            `+A/-R` header followed by `-`/`+` lines for the changed regions only; common lines \
+            are omitted. Pure and stateless — it does not know what the caller has previously \
+            seen; the caller supplies both sides.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn delta(
+        &self,
+        Parameters(p): Parameters<DeltaParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_compress::run_delta(&self.state, p).await;
+        record_call(&self.state, "delta", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Extract decisions, errors, and changed files from session `text` (a \
+            transcript chunk or concatenated tool output) into a compact, credential-safe \
+            checkpoint — persist or re-inject this instead of the whole session. \
+            `decisions` are lines matching conservative decision markers (decided/chose/\
+            \"we will\"/\"going with\"/opted for/conclusion:/TODO/FIXME); `errors` are lines \
+            matching the error-line heuristic. `files_changed` comes from THIS server's git \
+            working tree (staged + modified + untracked paths at call time) — never scraped \
+            from `text`. Any candidate line that embeds a credential (API key, token, etc.) is \
+            dropped entirely from every field before it can be returned. Each list is capped \
+            (decisions/errors 50, files 200); a list that exceeded its cap sets the matching \
+            `*_truncated` flag. Fails open on git: if this server is not running inside a git \
+            repository (or git errors), `files_changed` is simply empty — checkpoint never \
+            errors because the working tree could not be read.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn checkpoint(
+        &self,
+        Parameters(p): Parameters<CheckpointParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_compress::run_checkpoint(&self.state, p).await;
+        record_call(
+            &self.state,
+            "checkpoint",
+            &__params_json,
+            __started,
+            &__result,
+        );
+        __result
+    }
+
+    #[tool(
+        description = "Flag redundant reads, repeated queries, and oversized reads from a \
+            JSON-Lines tool-call `log` (one `{\"tool\", \"target\", \"bytes\"}` record per \
+            line; malformed or `tool`-less lines are silently skipped). Three detectors, each \
+            producing a `WasteFinding {kind, target, count, estimated_waste_bytes}`: \
+            `redundant_read` — a `Read` `target` (file path) seen 2+ times, waste = bytes of \
+            every read after the first; `repeated_query` — a search/grep tool (Grep, \
+            workspace_grep, search_symbols, find_references, grep) with an identical `target` \
+            (query string) 2+ times, same waste accounting; `oversized_read` — any single \
+            `Read` with `bytes >= 32768` (suggesting `outline`/`search_symbols` instead of a \
+            full read). Findings are sorted deterministically by `(kind, target)` and capped at \
+            200 (`truncated=true` past the cap; `total_estimated_waste_bytes` still sums every \
+            finding found, before truncation). A finding whose `target` embeds a credential is \
+            dropped entirely. Pure analysis — this tool executes nothing and holds no state \
+            across calls.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn detect_waste(
+        &self,
+        Parameters(p): Parameters<DetectWasteParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(serde_json::Value::Null);
+        let __result: Result<CallToolResult, McpError> =
+            super::helpers_compress::run_detect_waste(&self.state, p).await;
+        record_call(
+            &self.state,
+            "detect_waste",
             &__params_json,
             __started,
             &__result,

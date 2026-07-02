@@ -114,6 +114,36 @@ pub(super) struct CompressResponse {
     pub tokens_note: String,
 }
 
+/// Parameters for the `delta` MCP tool.
+///
+/// Both sides are supplied inline as strings (unlike the CLI, which reads `old` from a file
+/// and `new` from stdin): the caller passes whatever OLD content it previously saw and the
+/// NEW content it just read.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DeltaParams {
+    /// Previously seen content.
+    pub old: String,
+    /// Current content to diff against `old`.
+    pub new: String,
+}
+
+/// Parameters for the `checkpoint` MCP tool.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct CheckpointParams {
+    /// Session text (a transcript chunk or concatenated tool output) to extract a
+    /// checkpoint from. The changed-file list is NOT derived from this text — it comes
+    /// from this server's git working tree.
+    pub text: String,
+}
+
+/// Parameters for the `detect_waste` MCP tool.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct DetectWasteParams {
+    /// JSON-Lines tool-call log, one `{"tool", "target", "bytes"}` record per line.
+    /// Malformed or `tool`-less lines are silently skipped.
+    pub log: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2214,6 +2214,148 @@ async fn mcp_server_exercises_representative_tools() {
         "expand via `symbol` alias must resolve correctly: {body}"
     );
 
+    // delta: a stateless line-diff between two inline strings. `old` -> `new` swaps one line
+    // and appends another: 1 delete + 2 adds.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "delta",
+                json!({
+                    "old": "alpha\nbeta\ngamma\n",
+                    "new": "alpha\nbeta2\ngamma\ndelta\n",
+                }),
+            ))
+            .await
+            .expect("delta(old, new)"),
+    );
+    assert_eq!(
+        body.get("changed").and_then(Value::as_bool),
+        Some(true),
+        "differing inputs must report changed=true: {body}"
+    );
+    assert_eq!(
+        body.get("bailed").and_then(Value::as_bool),
+        Some(false),
+        "small inputs must not bail: {body}"
+    );
+    assert_eq!(
+        body.get("added").and_then(Value::as_u64),
+        Some(2),
+        "beta2 + delta are the two adds: {body}"
+    );
+    assert_eq!(
+        body.get("removed").and_then(Value::as_u64),
+        Some(1),
+        "beta is the single deletion: {body}"
+    );
+    let delta_output = body.get("output").and_then(Value::as_str).expect("output");
+    assert!(
+        delta_output.starts_with("+2/-1"),
+        "delta output must lead with the +A/-R header: {delta_output:?}"
+    );
+
+    // delta: identical inputs must report unchanged.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "delta",
+                json!({ "old": "same\n", "new": "same\n" }),
+            ))
+            .await
+            .expect("delta(identical)"),
+    );
+    assert_eq!(
+        body.get("changed").and_then(Value::as_bool),
+        Some(false),
+        "identical inputs must report changed=false: {body}"
+    );
+
+    // checkpoint: session text with a decision line + an untracked file in the working tree.
+    // `files_changed` must come from git status, not be scraped from `text`.
+    std::fs::write(root.join("checkpoint_probe.txt"), b"probe\n").unwrap();
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "checkpoint",
+                json!({ "text": "We decided to use rayon.\nerror: build failed\n" }),
+            ))
+            .await
+            .expect("checkpoint(text)"),
+    );
+    assert_eq!(
+        body.get("decisions").and_then(Value::as_array),
+        Some(&vec![Value::String("We decided to use rayon.".to_string())]),
+        "checkpoint must extract the decision line: {body}"
+    );
+    assert_eq!(
+        body.get("errors").and_then(Value::as_array),
+        Some(&vec![Value::String("error: build failed".to_string())]),
+        "checkpoint must extract the error line: {body}"
+    );
+    let files_changed: Vec<&str> = body
+        .get("files_changed")
+        .and_then(Value::as_array)
+        .expect("files_changed")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        files_changed.contains(&"checkpoint_probe.txt"),
+        "files_changed must come from this repo's git working tree: {files_changed:?}"
+    );
+
+    // detect_waste: two JSON-Lines reads of the same target must fire redundant_read with the
+    // exact count + waste accounting.
+    let log = "{\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n\
+               {\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n";
+    let body = decode_text(
+        &service
+            .call_tool(call_params("detect_waste", json!({ "log": log })))
+            .await
+            .expect("detect_waste(log)"),
+    );
+    let findings = body
+        .get("findings")
+        .and_then(Value::as_array)
+        .expect("findings");
+    assert_eq!(
+        findings.len(),
+        1,
+        "two redundant reads of one target must yield exactly one finding: {body}"
+    );
+    let finding = &findings[0];
+    assert_eq!(
+        finding.get("kind").and_then(Value::as_str),
+        Some("redundant_read"),
+        "finding kind: {finding}"
+    );
+    assert_eq!(
+        finding.get("target").and_then(Value::as_str),
+        Some("a.rs"),
+        "finding target: {finding}"
+    );
+    assert_eq!(
+        finding.get("count").and_then(Value::as_u64),
+        Some(2),
+        "finding count: {finding}"
+    );
+    assert_eq!(
+        finding.get("estimated_waste_bytes").and_then(Value::as_u64),
+        Some(100),
+        "waste is the bytes of every read after the first: {finding}"
+    );
+    assert_eq!(
+        body.get("total_estimated_waste_bytes")
+            .and_then(Value::as_u64),
+        Some(100),
+        "total_estimated_waste_bytes: {body}"
+    );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "well under MAX_FINDINGS must not truncate: {body}"
+    );
+
     let _ = service.cancel().await;
 }
 

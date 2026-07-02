@@ -38,7 +38,7 @@ const BAIL_MARKER: &str = "# file too large for delta; full content follows";
 /// `output` is the text to surface: the compact diff when `changed && !bailed`,
 /// the `UNCHANGED_MARKER` when `!changed`, or the `BAIL_MARKER` followed by
 /// the NEW content verbatim when `bailed`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, schemars::JsonSchema)]
 pub struct DeltaOutcome {
     /// The text to emit downstream (diff, unchanged marker, or bail + content).
     pub output: String,
