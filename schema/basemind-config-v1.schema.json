@@ -23,7 +23,8 @@
         "respect_gitignore": true,
         "max_file_bytes": 2097152,
         "skip_submodules": true,
-        "eager_l2": true
+        "eager_l2": true,
+        "extra_roots": []
       }
     },
     "watch": {
@@ -216,6 +217,14 @@
           "description": "When true (default), the scanner runs L2 extraction (calls + docs) inline with L1.\nL2 populates the `calls_by_callee` Fjall partition that drives `find_references` and\n`find_callers`. Flipping to `false` halves the scan budget on large repos at the cost\nof empty reference-search results until a foreground L2 pass is triggered (or the\nexisting on-demand `query::file_outline_l2` lazy path runs).",
           "type": "boolean",
           "default": true
+        },
+        "extra_roots": {
+          "description": "Extra directories to index in addition to the repository root. Each entry is an\nabsolute path to a directory *outside* the repo — e.g. a Bazel external repo cache\n(`/private/var/tmp/_bazel_<user>/<hash>/external`) — whose files should resolve in\nsymbol search, references, outlines, and document search.\n\nFiles under an extra root are keyed by their **absolute** path (repo files stay\nrepo-relative), so returned paths for external files are absolute. Missing or\nunreadable roots are skipped with a warning; a root inside the repo is ignored (the\nprimary walk already covers it). Extra roots are (re-)indexed on a full `basemind\nscan` only — the live watcher does not track them. Symlinks are followed for extra\nroots (Bazel `external/` is symlink-heavy). Because these trees can be large, scope\nthem narrowly and lean on `exclude` + `max_file_bytes`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
         }
       },
       "additionalProperties": false

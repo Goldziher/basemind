@@ -52,6 +52,14 @@ impl RelPath {
         self.0.is_empty()
     }
 
+    /// True when this key refers to a file outside the repository root — i.e. one indexed
+    /// via `scan.extra_roots`. Repo-relative keys never start with `/`; external files are
+    /// keyed by their absolute (forward-slash) path, so a leading `/` is the discriminator.
+    /// Git-history / blame tools use this to short-circuit paths that git cannot resolve.
+    pub fn is_external(&self) -> bool {
+        self.0.first() == Some(&b'/')
+    }
+
     /// True when the path encodes as valid UTF-8. The common case in practice; we treat
     /// it as a fast-path in serialization and rendering.
     pub fn is_utf8(&self) -> bool {
@@ -203,18 +211,28 @@ impl std::borrow::Borrow<BStr> for RelPath {
 /// the repository. An empty result (path resolves to the repo root itself) also
 /// yields `None` since there is no file key for the root.
 pub(crate) fn normalize_query_path(user_path: &str, repo_root: &std::path::Path) -> Option<String> {
-    use std::path::Component;
-
     let path = std::path::Path::new(user_path);
 
     // For absolute inputs, re-root against `repo_root` first. We compare on the
     // logical (non-canonicalized) prefix so the helper stays pure and testable
     // without touching the filesystem.
-    let relative: &std::path::Path = if path.is_absolute() {
-        path.strip_prefix(repo_root).ok()?
-    } else {
-        path
-    };
+    if path.is_absolute() {
+        if let Ok(inside) = path.strip_prefix(repo_root) {
+            return normalize_relative_components(inside);
+        }
+        // Outside the repo: this is how `scan.extra_roots` files are keyed — by their
+        // absolute path (see `RelPath::is_external`). Preserve the leading `/` so the key
+        // matches what the scanner emitted. Lexical only (no filesystem canonicalization);
+        // a non-canonical input simply misses on lookup.
+        return normalize_absolute_components(path);
+    }
+    normalize_relative_components(path)
+}
+
+/// Collapse a repo-relative path to a `/`-joined key, honoring `.` and repo-bounded `..`.
+/// Returns `None` when the path escapes the root or resolves to the root itself.
+fn normalize_relative_components(relative: &std::path::Path) -> Option<String> {
+    use std::path::Component;
 
     let mut parts: Vec<&str> = Vec::new();
     for component in relative.components() {
@@ -239,6 +257,30 @@ pub(crate) fn normalize_query_path(user_path: &str, repo_root: &std::path::Path)
         return None;
     }
     Some(parts.join("/"))
+}
+
+/// Collapse an absolute (out-of-repo) path to a `/`-prefixed key for an `extra_roots` file.
+/// `..` is resolved lexically and clamped at the filesystem root; returns `None` for a
+/// non-UTF-8 component or a bare `/`.
+fn normalize_absolute_components(path: &std::path::Path) -> Option<String> {
+    use std::path::Component;
+
+    let mut parts: Vec<&str> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::Prefix(_) => return None,
+            Component::Normal(os) => parts.push(os.to_str()?),
+            Component::ParentDir => {
+                parts.pop();
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("/{}", parts.join("/")))
 }
 
 // ─── serde — discriminated wire format ──────────────────────────────────────
@@ -409,9 +451,27 @@ mod tests {
     }
 
     #[test]
-    fn normalize_absolute_outside_repo_is_none() {
+    fn normalize_absolute_outside_repo_passes_through_as_external_key() {
+        // An absolute path outside the repo is an `scan.extra_roots` file — keyed by its
+        // absolute path so the CLI can query it verbatim.
         let root = std::path::Path::new("/abs/repo");
-        assert_eq!(normalize_query_path("/other/place/foo.rs", root), None);
+        assert_eq!(
+            normalize_query_path("/other/place/foo.rs", root),
+            Some("/other/place/foo.rs".to_string())
+        );
+        // Lexical `..` is resolved; a bare `/` has no file key.
+        assert_eq!(
+            normalize_query_path("/other/sub/../place/foo.rs", root),
+            Some("/other/place/foo.rs".to_string())
+        );
+        assert_eq!(normalize_query_path("/", root), None);
+    }
+
+    #[test]
+    fn is_external_flags_absolute_keys_only() {
+        assert!(RelPath::from("/abs/ext/foo.rs").is_external());
+        assert!(!RelPath::from("src/foo.rs").is_external());
+        assert!(!RelPath::from("").is_external());
     }
 
     #[test]

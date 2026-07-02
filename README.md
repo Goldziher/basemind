@@ -460,6 +460,12 @@ A minimal config — the full schema is at `schema/basemind-config-v1.schema.jso
 file_watch_glob = "**/*.{rs,ts,tsx,py,go}"
 eager_l2 = true
 
+[scan]
+# Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
+# symbols resolve in search / references / outlines. External files are keyed by absolute path;
+# (re-)indexed on a full `basemind scan` only (not live-watched).
+extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
+
 [documents]
 enabled = true
 ```

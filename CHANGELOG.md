@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scan.extra_roots` — index directories outside the repository root** ([#34]). Point the new
+  `[scan] extra_roots = [...]` config knob at absolute paths outside the repo (e.g. a Bazel
+  external repo cache, `/private/var/tmp/_bazel_<user>/<hash>/external`) and their files join the
+  code map (symbol search, references, callers, outlines) and document search. External files are
+  keyed by their **absolute** path — repo files stay repo-relative, so the two namespaces never
+  collide and `find_references` resolves across the boundary. Missing/unreadable roots are skipped
+  with a warning; a root inside the repo is ignored. Symlinks are followed (Bazel `external/` is
+  symlink-heavy). Extra roots are (re-)indexed on a full `basemind scan` only — the live watcher
+  does not track them — and git blame short-circuits with a clear error for external (untracked)
+  files. No index/blob format change; existing caches are untouched (a re-scan populates external
+  files).
+
+[#34]: https://github.com/Goldziher/basemind/issues/34
+
 ## [0.15.1] — 2026-07-02
 
 Patch release: docs / skills / plugin-manifest only. No schema or `RELEASE_MINOR` change, so
