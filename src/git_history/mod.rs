@@ -56,7 +56,9 @@ use crate::path::RelPath;
 /// feature, so the bump only forces in-flight dev indexes to rebuild.
 pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 5;
 
-const GIT_HISTORY_DIR: &str = "git-history.fjall";
+/// On-disk directory name of the git-history index under `.basemind/`. `pub(crate)` so the cache
+/// accounting in [`crate::store_gc::cache_stats`] can size it (it is a sibling of `views/`).
+pub(crate) const GIT_HISTORY_DIR: &str = "git-history.fjall";
 
 /// Retry budget + backoff for a transient fjall `Locked` when opening the git-history DB. The
 /// caller is writer-gated, so any `Locked` is a short-lived concurrent open that clears — mirrors

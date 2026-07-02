@@ -95,6 +95,20 @@ fmt_thousands() {
   local n="$1"
   LC_ALL=en_US.UTF-8 printf "%'d" "$n" 2>/dev/null || printf '%d' "$n"
 }
+# Kilobytes → human size (matches `du -h` / the MCP cache_stats units): 900 → 900K,
+# 15360 → 15M, 1572864 → 1.5G. Input is KB (what `du -sk` and `ps -o rss=` report).
+fmt_kb() {
+  local kb="$1"
+  [[ -z "$kb" || "$kb" -le 0 ]] 2>/dev/null && {
+    printf '0'
+    return
+  }
+  if [[ "$kb" -lt 1024 ]]; then
+    printf '%dK' "$kb"
+  elif [[ "$kb" -lt 1048576 ]]; then
+    printf '%dM' "$((kb / 1024))"
+  else printf '%d.%dG' "$((kb / 1048576))" "$(((kb * 10 / 1048576) % 10))"; fi
+}
 
 # Agent-comms state — prints "<unread> <agent>" or nothing. Cheap and side-effect-free:
 #   * only runs when a comms-capable `basemind` is on PATH (the cargo `--features comms`
@@ -298,6 +312,27 @@ build_basemind_line() {
 
   out+="  ${sep}│${reset}  "
   out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
+
+  # Resource footprint (full tier only): on-disk `.basemind/` size + live serve-process RSS. Both
+  # are cheap best-effort probes — `du -sk` on the cache dir and `ps` on the serve pid — and are
+  # simply omitted if the tools/values aren't available. Mirrors the MCP/CLI cache_stats surface.
+  if [[ "$tier" == "full" ]]; then
+    local disk_kb="" rss_kb="" res_seg=""
+    res_add() {
+      [[ -n "$res_seg" ]] && res_seg+=" ${sep}·${reset} "
+      res_seg+="$1"
+    }
+    disk_kb="$(du -sk "$bm_dir" 2>/dev/null | awk '{print $1}')"
+    [[ -n "$disk_kb" ]] && res_add "${bold}${cyan}$(fmt_kb "$disk_kb")${reset} ${label}disk${reset}"
+    if [[ $serve_running -eq 1 ]] && command -v ps >/dev/null 2>&1; then
+      local serve_pid
+      serve_pid="$(pgrep -f "basemind serve" 2>/dev/null | head -1)"
+      [[ -n "$serve_pid" ]] && rss_kb="$(ps -o rss= -p "$serve_pid" 2>/dev/null | tr -d ' ')"
+      [[ -n "$rss_kb" && "$rss_kb" -gt 0 ]] 2>/dev/null &&
+        res_add "${bold}${cyan}$(fmt_kb "$rss_kb")${reset} ${label}rss${reset}"
+    fi
+    [[ -n "$res_seg" ]] && out+="  ${sep}│${reset}  $res_seg"
+  fi
 
   # Comms segment: unread (bright when >0, dim at zero) + identity in the full tier.
   if [[ -n "$comms_unread" ]]; then
