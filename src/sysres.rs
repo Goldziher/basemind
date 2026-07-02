@@ -106,11 +106,13 @@ fn peak_rss() -> Option<u64> {
     None
 }
 
-#[cfg(test)]
+// Unix-only: the sole test exercises the unix RSS readers. Gating the whole module (not just the
+// test) keeps `use super::*` from being an unused import under `-D warnings` on Windows, where
+// `sample()`/`peak_rss()` return `None` and there is nothing to assert.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn sample_reports_nonzero_rss_on_unix() {
         let s = sample();
