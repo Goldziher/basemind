@@ -55,6 +55,6 @@ Basemind is a single Rust crate that builds a CLI binary (`basemind`) and expose
 
 - `schema/` — JSON Schemas (e.g. `basemind-config-v1.schema.json`), regenerated from the Rust types via `schemars` and asserted byte-equal by `tests/config_schema.rs`. Never hand-edit.
 - `build.rs` — code generation (tree-sitter query bundles; `rerun-if-changed` plumbing).
-- `.pre-commit-config.yaml` — prek hooks: typos, markdown, cargo fmt/clippy/sort/machete/deny, rustdoc-lint, rust-max-lines (1000-line cap).
+- `poly.toml` — poly checks: typos, markdown, cargo fmt/clippy/sort/machete/deny, rustdoc-lint, rust-max-lines (1000-line cap).
 - `deny.toml` — cargo-deny license / source allow-list.
 - `Cargo.toml` — single-binary crate; key deps: `fjall`, `gix`, `ahash`, `memchr`, `rayon`, `rmcp`, `rmp-serde`, `tree-sitter*`.

@@ -19,7 +19,7 @@ You add MCP tools to basemind's server. Follow the `mcp-tool-checklist` skill ex
    - `tests/mcp_smoke.rs` (synthetic-fixture assertion)
    - `tests/harden.rs` (sweep call; per-repo canary if natural)
    - `README.md` (one-line table row)
-4. Run `cargo test`, `cargo clippy -- -D warnings`, `prek run -a`, then the harden harness with `BASEMIND_HARDEN_NO_BUILD=1`.
+4. Run `cargo test`, `cargo clippy -- -D warnings`, `poly lint .`, then the harden harness with `BASEMIND_HARDEN_NO_BUILD=1`.
 
 ## Description-string discipline
 
