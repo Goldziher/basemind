@@ -55,6 +55,12 @@ pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 5;
 
 const GIT_HISTORY_DIR: &str = "git-history.fjall";
 
+/// Retry budget + backoff for a transient fjall `Locked` when opening the git-history DB. The
+/// caller is writer-gated, so any `Locked` is a short-lived concurrent open that clears — mirrors
+/// `store::INDEX_OPEN_RETRIES` / `INDEX_OPEN_BACKOFF`.
+const GH_OPEN_RETRIES: u32 = 5;
+const GH_OPEN_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Whether the git-history index is enabled for this process. On by default; set
 /// `BASEMIND_GH_INDEX=0` to disable it (the history tools then fall back to the live walk). The
 /// `scan` / `rescan` CLIs additionally honor a `--no-git-history` flag.
@@ -115,14 +121,21 @@ impl GitHistoryIndex {
     /// holds the Fjall lock — read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
-        let needs_wipe = matches!(peek_schema(&dir), Some(ver) if ver != GIT_HISTORY_SCHEMA);
-        if needs_wipe && dir.exists() {
-            std::fs::remove_dir_all(&dir).map_err(|source| GitHistoryError::Io {
-                path: dir.clone(),
-                source,
-            })?;
+        // Retry a transient fjall `Locked` instead of propagating it. This open is writer-gated
+        // (read-only consumers skip it and serve from the live walk before reaching here), so any
+        // `Locked` is a short-lived concurrent open that clears — mirrors
+        // `store::open_index_with_retry`, the F1 half of the multi-session-downgrade fix.
+        let mut attempt = 0;
+        loop {
+            match Self::open_at(&dir) {
+                Ok(index) => return Ok(index),
+                Err(GitHistoryError::Fjall(fjall::Error::Locked)) if attempt < GH_OPEN_RETRIES => {
+                    attempt += 1;
+                    std::thread::sleep(GH_OPEN_BACKOFF);
+                }
+                Err(other) => return Err(other),
+            }
         }
-        Self::open_at(&dir)
     }
 
     fn open_at(dir: &Path) -> Result<Self, GitHistoryError> {
@@ -130,8 +143,33 @@ impl GitHistoryIndex {
             path: dir.to_path_buf(),
             source,
         })?;
-        let db = Database::builder(dir).open()?;
-        let meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
+        // Open the fjall database ONCE and read the persisted schema through the same handle we
+        // keep. The previous code peeked the version via a throwaway `Database::open` before this
+        // real open — two exclusive fjall-lock acquisitions per open, doubling the window a
+        // concurrent reader's transient open could collide with a rightful writer. One open closes
+        // that extra window; only the rare schema-mismatch path pays a second open. Mirrors the F2
+        // half of `index::IndexDb::open`.
+        let mut db = Database::builder(dir).open()?;
+        let mut meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
+        let on_disk_ver = meta
+            .get(keys::META_SCHEMA_VER)?
+            .and_then(|b| keys::parse_u32(&b));
+        if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
+            // Schema drifted: drop every handle first so fjall releases the directory lock, then
+            // wipe and reopen fresh. The caller rebuilds via the builder.
+            drop(meta);
+            drop(db);
+            std::fs::remove_dir_all(dir).map_err(|source| GitHistoryError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+            std::fs::create_dir_all(dir).map_err(|source| GitHistoryError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+            db = Database::builder(dir).open()?;
+            meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
+        }
         let commit_by_ord = db.keyspace("gh_commit_by_ord", KeyspaceCreateOptions::default)?;
         let ord_by_sha = db.keyspace("gh_ord_by_sha", KeyspaceCreateOptions::default)?;
         let path_id_by_path = db.keyspace("gh_path_id_by_path", KeyspaceCreateOptions::default)?;
@@ -440,18 +478,4 @@ impl GitHistoryWriter {
         self.index.compact()?;
         Ok(())
     }
-}
-
-/// Best-effort peek at the on-disk schema version without a full open (mirrors
-/// `index::peek_schema_version`). `None` if the dir is absent or has no readable meta row.
-fn peek_schema(dir: &Path) -> Option<u32> {
-    if !dir.exists() {
-        return None;
-    }
-    let db = Database::builder(dir).open().ok()?;
-    let meta = db
-        .keyspace("gh_meta", KeyspaceCreateOptions::default)
-        .ok()?;
-    let bytes = meta.get(keys::META_SCHEMA_VER).ok().flatten()?;
-    keys::parse_u32(&bytes)
 }
