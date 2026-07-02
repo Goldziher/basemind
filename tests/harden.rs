@@ -659,6 +659,32 @@ fn assert_passing(
         if m.commits == 0 {
             failures.push("git-history index built zero commits".to_string());
         }
+        // Resource-stats canary: a built git-history index must be counted by cache_stats
+        // (`git_history_bytes > 0`) and rolled into the total — the WS1 fix for the reported
+        // disk-footprint undercount. Only asserted when the stats canary was captured.
+        if m.commits > 0
+            && let Some(gh) = repo_record
+                .canaries
+                .get("stats_git_history_bytes")
+                .and_then(Value::as_u64)
+        {
+            if gh == 0 {
+                failures.push(format!(
+                    "cache_stats: git_history_bytes is 0 despite a built git-history index ({} commits) — the index is uncounted",
+                    m.commits
+                ));
+            }
+            if let Some(total) = repo_record
+                .canaries
+                .get("stats_total_bytes")
+                .and_then(Value::as_u64)
+                && total < gh
+            {
+                failures.push(format!(
+                    "cache_stats: total_bytes ({total}) < git_history_bytes ({gh}) — git-history not rolled into the total"
+                ));
+            }
+        }
         if let Some(ct) = m
             .queries
             .iter()
@@ -790,6 +816,36 @@ fn assert_passing(
                     "django canary: commits_touching(\"django/db/models/query.py\") returned {query_commits} commits (expected ≥ 10)"
                 ));
             }
+            // Author-parity canary (anti-regression for the reported "author's commits missing"
+            // bug): full-depth author search must find the deep-history author sampled from real
+            // git, and must not leak commits by other authors into the author scope. Only asserted
+            // when the sample was taken (canary present).
+            if let Some(author_hits) = repo_record
+                .canaries
+                .get("author_search_hits")
+                .and_then(Value::as_u64)
+            {
+                if author_hits < 1 {
+                    let token = repo_record
+                        .canaries
+                        .get("author_search_token")
+                        .and_then(Value::as_str)
+                        .unwrap_or("?");
+                    failures.push(format!(
+                        "django canary: search_git_history(author={token:?}) found 0 commits for a deep-history author — full-depth author search regressed"
+                    ));
+                }
+                if repo_record
+                    .canaries
+                    .get("author_search_consistent")
+                    .and_then(Value::as_bool)
+                    == Some(false)
+                {
+                    failures.push(
+                        "django canary: search_git_history(field=author) returned a commit whose author does not match the query — author scope leaked".into(),
+                    );
+                }
+            }
             // Governance canary — enforced only when mining actually ran (the `proposals_mined`
             // value is present, i.e. the harness was built with `--features memory`). Django
             // yields several co-change candidates at the default thresholds; ≥ 1 is a
@@ -811,9 +867,54 @@ fn assert_passing(
     failures
 }
 
-async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut RepoRecord) {
+/// Run `git -C <repo> <args>` and return the first non-blank stdout line, trimmed. `None` on any
+/// failure or empty output. Used by canaries that need a real-git oracle (e.g. sampling a
+/// deep-history author). Best-effort: a canary that can't derive its input is simply not recorded,
+/// so a git hiccup never turns into a spurious failure.
+fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8(out.stdout)
+        .ok()?
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+}
+
+async fn capture_canaries(
+    svc: &ServiceHandle,
+    repo_name: &str,
+    repo_root: &Path,
+    record: &mut RepoRecord,
+) {
     // Always evaluate canaries on a best-effort basis — failures here don't block
     // the rest of the suite. We feed the results back into assert_passing.
+
+    // Global (every repo): resource-stats canary. `cache_stats` must count the git-history index in
+    // its per-component breakdown — the reported "1.15 GB reported vs 1.5 GB on disk" gap was the
+    // uncounted `git-history.fjall/` — and roll every component into `total_bytes`. Asserted in
+    // `assert_passing` only where the git-history index actually built (`commits > 0`).
+    if let Ok(out) = svc.call_tool(call_params("cache_stats", &json!({}))).await {
+        let body = decode_text(&out);
+        if let Some(gh) = body.get("git_history_bytes").and_then(Value::as_u64) {
+            record
+                .canaries
+                .insert("stats_git_history_bytes".into(), json!(gh));
+        }
+        if let Some(total) = body.get("total_bytes").and_then(Value::as_u64) {
+            record
+                .canaries
+                .insert("stats_total_bytes".into(), json!(total));
+        }
+    }
+
     match repo_name {
         "react" => {
             let res = svc
@@ -989,6 +1090,54 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, record: &mut Rep
                 record
                     .canaries
                     .insert("search_fixed_commits".into(), json!(hits));
+            }
+            // Author-parity canary (the reported bug): sample an author deep in history (skip 500,
+            // far outside any recent window), then prove full-depth `search_git_history` by author
+            // finds them. Self-consistent: every returned hit's author name/email must contain the
+            // queried token — the FTS must not leak commits by other authors into an author scope.
+            // Derived from real git so it self-adapts across django releases; skipped if the sample
+            // can't be taken (canary simply absent, never a spurious fail).
+            if let Some(author) =
+                git_first_line(repo_root, &["log", "--format=%an", "-1", "--skip=500"])
+                && let Some(token) = author
+                    .split_whitespace()
+                    .find(|w| w.chars().all(char::is_alphabetic) && w.len() >= 3)
+                && let Ok(out) = svc
+                    .call_tool(call_params(
+                        "search_git_history",
+                        &json!({ "pattern": token, "field": "author", "limit": 100 }),
+                    ))
+                    .await
+            {
+                let body = decode_text(&out);
+                let commits = body
+                    .get("commits")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let token_lc = token.to_lowercase();
+                let consistent = commits.iter().all(|c| {
+                    let name = c
+                        .get("author")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let email = c
+                        .get("author_email")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_lowercase();
+                    name.contains(&token_lc) || email.contains(&token_lc)
+                });
+                record
+                    .canaries
+                    .insert("author_search_hits".into(), json!(commits.len() as u64));
+                record
+                    .canaries
+                    .insert("author_search_consistent".into(), json!(consistent));
+                record
+                    .canaries
+                    .insert("author_search_token".into(), json!(token));
             }
             // Governance canary — only populated under `--features memory`; with the feature
             // off, `proposals_mine` returns an MCP error and the canary stays absent (so the
@@ -1370,7 +1519,7 @@ async fn harden_repo() {
     }
 
     // 4. Per-repo canary captures (read-only; results go into record.canaries).
-    capture_canaries(&svc, &repo_name, &mut record).await;
+    capture_canaries(&svc, &repo_name, &repo, &mut record).await;
 
     // 5. Persist the per-repo record before assertions so we get partial data
     //    even when a later step panics.
