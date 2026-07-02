@@ -688,6 +688,31 @@ fn writer_lock_is_held(basemind_dir: &Path) -> bool {
     }
 }
 
+/// Non-blocking classification of the store write lock, for the CLI write path to pre-detect a
+/// live `serve` / `watch` *before* colliding with it. The reactive [`StoreError::Locked`] path
+/// remains the safety net for the race between this probe and the actual acquire.
+#[derive(Debug)]
+pub enum WriterProbe {
+    /// No live writer holds the lock — safe to open for write.
+    Free,
+    /// A writer holds the lock. `holder` names it from the `.lock.meta` sidecar when readable;
+    /// `None` when the sidecar is missing/corrupt (the holder is live but unidentified).
+    Held { holder: Option<LockMeta> },
+}
+
+/// Probe the store write lock without blocking or acquiring it. See [`WriterProbe`]. A `Free`
+/// result is advisory only — a writer may start between this call and a subsequent acquire, so
+/// callers must still handle [`StoreError::Locked`].
+pub fn probe_writer_lock(basemind_dir: &Path) -> WriterProbe {
+    if writer_lock_is_held(basemind_dir) {
+        WriterProbe::Held {
+            holder: read_lock_meta(basemind_dir),
+        }
+    } else {
+        WriterProbe::Free
+    }
+}
+
 pub(crate) fn acquire_lock(basemind_dir: &Path) -> Result<File, StoreError> {
     acquire_lock_as(basemind_dir, LockHolder::Maintenance)
 }
@@ -967,5 +992,34 @@ mod tests {
             expected: 2,
         };
         assert!(!err.is_lock_contention());
+    }
+
+    #[test]
+    fn probe_writer_lock_reports_free_when_unlocked() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        assert!(
+            matches!(probe_writer_lock(tmp.path()), WriterProbe::Free),
+            "an untouched .basemind dir has no live writer"
+        );
+    }
+
+    #[test]
+    fn probe_writer_lock_names_the_live_holder() {
+        // Pre-flight probe underpinning the CLI double-run guidance: while a writer holds the
+        // exclusive lock, the probe must report `Held` and surface the `.lock.meta` holder so
+        // `scan`/`rescan` can name the running `serve` instead of colliding with it.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let guard = acquire_lock_as(tmp.path(), LockHolder::Serve).expect("acquire exclusive lock");
+        match probe_writer_lock(tmp.path()) {
+            WriterProbe::Held { holder: Some(meta) } => {
+                assert_eq!(meta.command, "basemind serve", "sidecar names the holder")
+            }
+            other => panic!("expected Held with named holder, got {other:?}"),
+        }
+        drop(guard);
+        assert!(
+            matches!(probe_writer_lock(tmp.path()), WriterProbe::Free),
+            "lock is free once the holder drops"
+        );
     }
 }
