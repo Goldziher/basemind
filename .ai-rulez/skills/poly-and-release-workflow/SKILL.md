@@ -1,9 +1,9 @@
 ---
 priority: medium
-description: "Pre-commit lint/test/harness order"
+description: "Commit step lint/test/harness order"
 ---
 
-# Prek + Release Workflow
+# Poly + Release Workflow
 
 The canonical order to run before pushing a change. Each step gates the next; do not skip.
 
@@ -13,15 +13,15 @@ The canonical order to run before pushing a change. Each step gates the next; do
 cargo fmt
 cargo clippy --workspace --all-targets --tests -- -D warnings
 cargo test --workspace
-prek run -a
+poly lint .
 ```
 
 Why this order:
 
-- `cargo fmt` first so clippy / prek don't fail on formatting.
-- Clippy strict (`-D warnings`) — surface real issues before the broader prek sweep.
+- `cargo fmt` first so clippy / poly don't fail on formatting.
+- Clippy strict (`-D warnings`) — surface real issues before the broader poly sweep.
 - Unit + integration tests catch logic regressions before the slow harness.
-- `prek run -a` is the meta-linter: typos, markdownlint (120-char cap), cargo-deny licenses, cargo-machete unused deps, rustdoc-lint, rust-max-lines (1000-line cap on `src/**/*.rs`).
+- `poly lint .` is the meta-linter: typos, markdownlint (120-char cap), cargo-deny licenses, cargo-machete unused deps, rustdoc-lint, rust-max-lines (1000-line cap on `src/**/*.rs`).
 
 ## Harden harness
 

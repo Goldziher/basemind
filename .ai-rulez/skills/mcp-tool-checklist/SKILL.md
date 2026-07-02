@@ -40,5 +40,5 @@ Use this when adding a new `#[tool]` to basemind's MCP server. Skipping a step l
 
 - `cargo test --workspace` — green.
 - `cargo clippy --workspace --all-targets --tests -- -D warnings` — clean.
-- `prek run -a` — clean.
+- `poly lint .` — clean.
 - `BASEMIND_HARDEN_NO_BUILD=1 cargo test --release --test harden -- --ignored --nocapture` — 8/8 green; new canary passes.
