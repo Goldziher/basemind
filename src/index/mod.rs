@@ -25,16 +25,20 @@ use std::path::{Path, PathBuf};
 use fjall::{Database, Keyspace, KeyspaceCreateOptions};
 use thiserror::Error;
 
-/// Bumped whenever the on-disk key layout changes. Offset from the release minor:
-/// +1 was the `imports_by_path` companion partition; +2 added `implementations_by_trait` +
-/// `implementations_by_path` for `find_implementations`; +3 is this revision, which adds
-/// `refs_by_def` + `refs_by_path` for the code-intelligence tier's scope/import-resolved
-/// `find_references` / `goto_definition`. The offset is monotonic: `RELEASE_MINOR = 0` →
-/// `INDEX_SCHEMA_VER = 3`. When RELEASE_MINOR next bumps, both move together. Decoupled from
-/// blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied to `RELEASE_MINOR` — blobs
-/// remain valid across this index revision; only the secondary index rebuilds on next open via
-/// the wipe-on-mismatch flow in [`IndexDb::open`].
-pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + 3;
+/// The index-layout revision, added to `RELEASE_MINOR` to form [`INDEX_SCHEMA_VER`]. Bump this
+/// (per the `index-keyspace-evolution` skill) whenever the on-disk keyspace layout changes
+/// independently of a release: `+1` was the `imports_by_path` companion partition; `+2` the
+/// `implementations_by_trait` / `implementations_by_path` partitions for `find_implementations`;
+/// `+3` the `refs_by_def` / `refs_by_path` partitions for the code-intelligence tier's
+/// scope/import-resolved `find_references` / `goto_definition`.
+const INDEX_PARTITION_REVISION: u32 = 3;
+
+/// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
+/// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
+/// both move together. Decoupled from blob schema ([`crate::extract::SCHEMA_VER`]) which stays tied
+/// to `RELEASE_MINOR` — blobs remain valid across a pure index revision; only the secondary index
+/// rebuilds on next open via the wipe-on-mismatch flow in [`IndexDb::open`].
+pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_PARTITION_REVISION;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
 
