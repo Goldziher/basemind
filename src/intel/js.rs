@@ -10,6 +10,7 @@
 //! the index/blob layer, so it is unit-testable directly against oxc's parser.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -22,7 +23,9 @@ use oxc_syntax::module_record::{ExportExportName, ImportImportName};
 /// *correct* binding — not a name match.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRef {
-    pub name: String,
+    /// `Arc<str>` so the symbol name is promoted once per symbol and shared (atomic bump)
+    /// across all of its references, rather than heap-cloned per reference on the scan path.
+    pub name: Arc<str>,
     pub def_start: u32,
     pub def_end: u32,
     pub use_start: u32,
@@ -40,15 +43,24 @@ pub struct JsImport {
     /// Name exported by the source module: `Some("baz")` for `import { baz }`; `None` for
     /// `import x` (default) and `import * as ns` (namespace).
     pub imported: Option<String>,
+    /// True for type-only imports (`import type { Foo }`, `import { type Foo }`). These are
+    /// erased at runtime, so the cross-file stitch must not treat them as runtime reference edges.
+    pub is_type: bool,
     /// Start byte of the local binding identifier.
     pub local_start: u32,
 }
 
 /// A name this module exports (for the cross-file stitch: an importer binds to one of these).
+///
+/// Covers only direct named exports (`export function foo`, `export const foo`, `export { foo }`).
+/// Re-exports (`export { foo } from './mod'`) live in oxc's `indirect_export_entries` and star
+/// exports in `star_export_entries` — both are picked up by the cross-file stitch slice, not here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsExport {
     pub name: String,
-    /// Start byte of the exported name identifier.
+    /// Start byte of the exported name identifier in the export clause (not necessarily the
+    /// definition site — for `export { foo }` this is the clause `foo`, resolved to a def via
+    /// `resolved`).
     pub name_start: u32,
 }
 
@@ -58,7 +70,8 @@ pub struct JsAnalysis {
     pub resolved: Vec<ResolvedRef>,
     pub imports: Vec<JsImport>,
     pub exports: Vec<JsExport>,
-    /// True when oxc's parser bailed (`panicked`) — the analysis is best-effort in that case.
+    /// True when oxc reported any parse diagnostics or bailed (`panicked`) — the analysis is
+    /// best-effort in that case (the AST may be partial).
     pub had_errors: bool,
 }
 
@@ -86,11 +99,14 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
     let mut resolved = Vec::new();
     for symbol_id in scoping.symbol_ids() {
         let def_span = scoping.symbol_span(symbol_id);
-        let name = scoping.symbol_name(symbol_id).to_string();
+        // Promote the name once per symbol; each reference shares it via an atomic bump.
+        let name: Arc<str> = Arc::from(scoping.symbol_name(symbol_id));
         for reference in scoping.get_resolved_references(symbol_id) {
+            // A resolved reference's NodeId points at its `IdentifierReference` node, so this
+            // span is the use-site identifier token.
             let use_span = nodes.kind(reference.node_id()).span();
             resolved.push(ResolvedRef {
-                name: name.clone(),
+                name: Arc::clone(&name),
                 def_start: def_span.start,
                 def_end: def_span.end,
                 use_start: use_span.start,
@@ -111,6 +127,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
                 ImportImportName::Name(ns) => Some(ns.name.as_str().to_string()),
                 ImportImportName::Default(_) | ImportImportName::NamespaceObject => None,
             },
+            is_type: entry.is_type,
             local_start: entry.local_name.span.start,
         })
         .collect();
@@ -133,7 +150,7 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         resolved,
         imports,
         exports,
-        had_errors: parsed.panicked,
+        had_errors: parsed.panicked || !parsed.diagnostics.is_empty(),
     }
 }
 
@@ -156,7 +173,7 @@ mod tests {
         let call_ref = a
             .resolved
             .iter()
-            .find(|r| r.name == "greet" && r.use_start as usize == greet_call)
+            .find(|r| &*r.name == "greet" && r.use_start as usize == greet_call)
             .expect("greet call must resolve");
         assert_eq!(
             call_ref.def_start as usize, greet_def,
@@ -175,7 +192,7 @@ mod tests {
         let r = a
             .resolved
             .iter()
-            .find(|r| r.name == "x" && r.use_start as usize == use_x)
+            .find(|r| &*r.name == "x" && r.use_start as usize == use_x)
             .expect("inner x use must resolve");
         assert_eq!(r.def_start as usize, inner_x, "must bind to inner x, not outer");
         assert_ne!(r.def_start as usize, outer_x);
@@ -183,13 +200,17 @@ mod tests {
 
     #[test]
     fn extracts_named_and_default_imports() {
-        let src = "import def, { foo, bar as baz } from './mod';\nimport * as ns from 'pkg';\n";
-        let a = analyze(src, SourceType::mjs());
+        let src = "import def, { foo, bar as baz } from './mod';\nimport * as ns from 'pkg';\nimport type { T } from './t';\n";
+        let a = analyze(src, SourceType::ts());
         let by_local = |l: &str| a.imports.iter().find(|i| i.local == l).cloned();
 
         let foo = by_local("foo").expect("named import foo");
         assert_eq!(foo.specifier, "./mod");
         assert_eq!(foo.imported.as_deref(), Some("foo"));
+        assert!(!foo.is_type, "runtime import must have is_type=false");
+
+        let t = by_local("T").expect("type-only import T");
+        assert!(t.is_type, "`import type` must set is_type=true");
 
         let baz = by_local("baz").expect("aliased import baz");
         assert_eq!(
@@ -209,9 +230,9 @@ mod tests {
     fn extracts_named_exports() {
         let src = "export function alpha() {}\nexport const beta = 1;\n";
         let a = analyze(src, SourceType::mjs());
-        let names: Vec<&str> = a.exports.iter().map(|e| e.name.as_str()).collect();
-        assert!(names.contains(&"alpha"), "alpha must be exported; got {names:?}");
-        assert!(names.contains(&"beta"), "beta must be exported; got {names:?}");
+        let mut names: Vec<&str> = a.exports.iter().map(|e| e.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["alpha", "beta"], "exactly alpha and beta must be exported");
     }
 
     #[test]
@@ -221,7 +242,7 @@ mod tests {
         let src = "function f() {\n  return fetch('/x');\n}\n";
         let a = ts(src);
         assert!(
-            !a.resolved.iter().any(|r| r.name == "fetch"),
+            !a.resolved.iter().any(|r| &*r.name == "fetch"),
             "global `fetch` must not resolve to an in-file def"
         );
     }
