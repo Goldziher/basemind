@@ -156,7 +156,7 @@ fn line_col_to_offset(source: &[u8], line: u32, column: u32) -> Option<u32> {
 
 /// Convert an absolute byte offset into a 1-based line + 0-based byte column. Clamps to the source
 /// bounds so an out-of-range offset never panics.
-fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
+pub(super) fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
     let offset = (offset as usize).min(source.len());
     let before = &source[..offset];
     let line = 1 + memchr::memchr_iter(b'\n', before).count() as u32;
@@ -168,7 +168,7 @@ fn offset_to_line_col(source: &[u8], offset: u32) -> (u32, u32) {
 /// definition whose end span isn't indexed — cross-file `refs_by_path` edges and zero-width `locals`
 /// spans both store only the start byte. Empty when `start` is out of range or not an identifier
 /// start (non-ASCII identifiers are best-effort: the leading ASCII run is returned).
-fn identifier_at(source: &[u8], start: u32) -> String {
+pub(super) fn identifier_at(source: &[u8], start: u32) -> String {
     let start = start as usize;
     let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
     if start >= source.len() || !is_ident(source[start]) {
