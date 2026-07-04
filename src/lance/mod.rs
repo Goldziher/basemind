@@ -21,8 +21,7 @@ use anyhow::{Context, Result, anyhow};
 use arrow_array::builder::{
     FixedSizeListBuilder, Float32Builder, ListBuilder, StringBuilder, TimestampMicrosecondBuilder, UInt32Builder,
 };
-use arrow_array::{Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
-use arrow_schema::ArrowError;
+use arrow_array::{Array, RecordBatch, StringArray};
 use futures::TryStreamExt;
 use lancedb::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -229,13 +228,8 @@ impl LanceStore {
                 return Ok(());
             }
             let batch = build_documents_batch(self.inner.dim, &rows)?;
-            let schema = batch.schema();
-            let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
-                vec![Ok::<_, ArrowError>(batch)].into_iter(),
-                schema,
-            ));
             table
-                .add(reader)
+                .add(batch)
                 .execute()
                 .await
                 .with_context(|| format!("insert {} documents rows", rows.len()))?;
@@ -257,12 +251,7 @@ impl LanceStore {
             let predicate = memory_row_predicate(&row.scope, &row.visibility, &row.agent_id, &row.key);
             table.delete(&predicate).await.context("delete previous memory entry")?;
             let batch = build_memory_batch(self.inner.dim, std::slice::from_ref(&row))?;
-            let schema = batch.schema();
-            let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
-                vec![Ok::<_, ArrowError>(batch)].into_iter(),
-                schema,
-            ));
-            table.add(reader).execute().await.context("insert memory row")?;
+            table.add(batch).execute().await.context("insert memory row")?;
             anyhow::Ok(())
         })
     }

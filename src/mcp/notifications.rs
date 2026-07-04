@@ -10,12 +10,18 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use rmcp::Peer;
 use rmcp::RoleServer;
-use rmcp::model::{LoggingLevel, LoggingMessageNotificationParam, ProgressNotificationParam};
+// `LoggingLevel` / `LoggingMessageNotificationParam` are deprecated by SEP-2577 with no
+// replacement yet; allow the import until upstream ships a successor logging API.
+use rmcp::model::ProgressNotificationParam;
+#[allow(deprecated)]
+use rmcp::model::{LoggingLevel, LoggingMessageNotificationParam};
 use serde_json::Value;
 
 /// Severity ordinal (RFC 5424 order: lower = more verbose). `logging/setLevel L` means "send me
 /// messages at severity `L` and above", so a message is emitted when its ordinal `>=` the stored
 /// threshold.
+// MCP logging is deprecated upstream by SEP-2577 with no replacement yet; allow until we migrate.
+#[allow(deprecated)]
 pub(super) fn level_ordinal(level: LoggingLevel) -> u8 {
     match level {
         LoggingLevel::Debug => 0,
@@ -33,14 +39,17 @@ pub(super) fn level_ordinal(level: LoggingLevel) -> u8 {
 pub(super) const DEFAULT_LOG_ORDINAL: u8 = 1;
 
 /// True when a message at `level` should be sent given the client's current threshold.
+// MCP logging is deprecated upstream by SEP-2577 with no replacement yet; allow until we migrate.
+#[allow(deprecated)]
 pub(super) fn should_log(threshold: &AtomicU8, level: LoggingLevel) -> bool {
     level_ordinal(level) >= threshold.load(Ordering::Relaxed)
 }
 
 /// Emit a logging notification if `level` clears the client's threshold. Best-effort.
 //
-// MCP logging is deprecated upstream by SEP-2577 (rmcp 1.8); basemind keeps emitting it because
-// the statusline + rescan progress depend on these notifications. Allow until we migrate off it.
+// MCP logging is deprecated upstream by SEP-2577; basemind keeps emitting it because the
+// statusline + rescan progress depend on these notifications, and there is no replacement yet.
+// Allow until we migrate off it.
 #[allow(deprecated)]
 pub(super) async fn emit_log(
     peer: &Peer<RoleServer>,
@@ -53,11 +62,7 @@ pub(super) async fn emit_log(
         return;
     }
     if let Err(error) = peer
-        .notify_logging_message(LoggingMessageNotificationParam {
-            level,
-            logger: Some(logger.to_string()),
-            data,
-        })
+        .notify_logging_message(LoggingMessageNotificationParam::new(level, data).with_logger(logger))
         .await
     {
         tracing::debug!(?error, "logging notification dropped");
@@ -73,15 +78,12 @@ pub(super) async fn emit_progress(
     total: Option<f64>,
     message: impl Into<String>,
 ) {
-    if let Err(error) = peer
-        .notify_progress(ProgressNotificationParam {
-            progress_token: token,
-            progress,
-            total,
-            message: Some(message.into()),
-        })
-        .await
-    {
+    // `ProgressNotificationParam` is #[non_exhaustive] in rmcp 2.1; build it via the constructor.
+    let mut param = ProgressNotificationParam::new(token, progress).with_message(message);
+    if let Some(total) = total {
+        param = param.with_total(total);
+    }
+    if let Err(error) = peer.notify_progress(param).await {
         tracing::debug!(?error, "progress notification dropped");
     }
 }

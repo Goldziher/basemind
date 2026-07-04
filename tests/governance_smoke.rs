@@ -93,12 +93,12 @@ fn run_scan(root: &Path) {
 
 /// Decode the first JSON text payload from an MCP `CallToolResult`.
 fn decode_text(result: &CallToolResult) -> Value {
-    use rmcp::model::RawContent;
+    use rmcp::model::ContentBlock;
     let raw = result
         .content
         .iter()
-        .find_map(|c| match &c.raw {
-            RawContent::Text(t) => Some(t.text.clone()),
+        .find_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .unwrap_or_default();

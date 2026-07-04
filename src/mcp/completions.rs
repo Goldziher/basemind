@@ -26,6 +26,9 @@ impl BasemindServer {
                 self.complete_prompt_argument(&prompt.name, &params.argument.name, &params.argument.value)
             }
             Reference::Resource(_) => Vec::new(),
+            // `Reference` is #[non_exhaustive] in rmcp 2.1; basemind exposes no resources and
+            // completes only prompt arguments, so any future reference kind yields no candidates.
+            _ => Vec::new(),
         };
         // `CompletionInfo::new` only errors when `values.len() > 100`; every source caps at
         // MAX_COMPLETIONS, so this never errors — fall back to an empty set if it somehow does.

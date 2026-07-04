@@ -195,6 +195,8 @@ pub(super) async fn run_rescan(
 
     // Surface the outcome as a logging notification (gated on the client's level) and close out
     // progress with the discovered file count as both value and total.
+    // `LoggingLevel` is deprecated by SEP-2577 with no replacement yet; allow until we migrate.
+    #[allow(deprecated)]
     super::notifications::emit_log(
         peer,
         &state.log_level,
