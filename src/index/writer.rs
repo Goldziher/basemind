@@ -7,6 +7,7 @@ use fjall::OwnedWriteBatch;
 use super::keys;
 use super::{IndexDb, IndexError};
 use crate::extract::{FileMapL1, FileMapL2, Symbol};
+use crate::intel::model::FileResolvedRefs;
 use crate::path::RelPath;
 
 pub struct IndexWriter {
@@ -32,6 +33,35 @@ impl IndexWriter {
     /// Drop every index entry for `rel`. Used when a file is removed from the scan set.
     pub fn remove_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
         self.stage_deletes_for(rel)
+    }
+
+    /// Replace the resolved-reference edges whose *use* is in `use_rel` with those derived from
+    /// `refs` (the file's resolution facts). Deletes the file's existing edges first (keyed by
+    /// use file, O(prefix)), then inserts each intra-file edge into both `refs_by_def` (keyed by
+    /// the defining site → `find_references`) and `refs_by_path` (keyed by the use site →
+    /// `goto_definition`). Atomic within the batch. Cross-file edges are staged by the resolve
+    /// pass separately once import resolution lands.
+    pub fn upsert_resolved_file(&mut self, use_rel: &RelPath, refs: &FileResolvedRefs) -> Result<(), IndexError> {
+        self.stage_resolved_deletes_for(use_rel)?;
+        for edge in &refs.intra {
+            // Intra-file edge: the definition lives in the same file as the use.
+            self.batch.insert(
+                &self.db.refs_by_def,
+                keys::ref_by_def(use_rel, edge.def_start, use_rel, edge.use_start),
+                Vec::<u8>::new(),
+            );
+            self.batch.insert(
+                &self.db.refs_by_path,
+                keys::ref_by_path(use_rel, edge.use_start, use_rel, edge.def_start),
+                Vec::<u8>::new(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Drop every resolved edge whose use is in `use_rel`. Used when a file leaves the scan set.
+    pub fn remove_resolved_file(&mut self, use_rel: &RelPath) -> Result<(), IndexError> {
+        self.stage_resolved_deletes_for(use_rel)
     }
 
     /// Flush this batch to disk atomically. Consumes the writer.
@@ -123,6 +153,27 @@ impl IndexWriter {
             if let Some(trait_key) = keys::impl_by_trait(&trait_name, &impl_type, rel, start_byte) {
                 self.batch.remove(&self.db.implementations_by_trait, trait_key);
             }
+        }
+        Ok(())
+    }
+
+    /// Stage deletes for every resolved edge whose use is in `use_rel`. Scans `refs_by_path`
+    /// under the file prefix, reconstructs each companion `refs_by_def` key, and removes both.
+    fn stage_resolved_deletes_for(&mut self, use_rel: &RelPath) -> Result<(), IndexError> {
+        let prefix = keys::refs_by_path_prefix(use_rel);
+        let mut found: Vec<(Vec<u8>, RelPath, u32, u32)> = Vec::new();
+        for guard in self.db.refs_by_path.prefix(prefix) {
+            let (k, _) = guard.into_inner()?;
+            if let Some((_use_path, use_start, def_path, def_start)) = keys::parse_ref_by_path(&k) {
+                found.push(((*k).to_vec(), def_path, def_start, use_start));
+            }
+        }
+        for (path_key, def_path, def_start, use_start) in found {
+            self.batch.remove(&self.db.refs_by_path, path_key);
+            self.batch.remove(
+                &self.db.refs_by_def,
+                keys::ref_by_def(&def_path, def_start, use_rel, use_start),
+            );
         }
         Ok(())
     }
@@ -543,5 +594,77 @@ mod tests {
             .map(|g| g.into_inner().unwrap())
             .collect();
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn resolved_edges_dual_partition_consistency() {
+        use crate::intel::model::{FileResolvedRefs, ResolvedEdge};
+        let (_d, db) = fresh_db();
+        let rel = RelPath::from("src/app.ts");
+
+        // Two uses (@100, @200) both bind to the definition at @4.
+        let mut refs = FileResolvedRefs::new("typescript");
+        refs.intra = vec![
+            ResolvedEdge {
+                use_start: 100,
+                use_end: 103,
+                def_start: 4,
+                def_end: 7,
+            },
+            ResolvedEdge {
+                use_start: 200,
+                use_end: 203,
+                def_start: 4,
+                def_end: 7,
+            },
+        ];
+        let mut w = db.writer();
+        w.upsert_resolved_file(&rel, &refs).unwrap();
+        w.commit().unwrap();
+
+        assert_eq!(db.refs_by_def.iter().count(), 2);
+        assert_eq!(db.refs_by_path.iter().count(), 2);
+
+        // find_references: scan refs_by_def for the def at @4 → both use sites.
+        let mut uses: Vec<u32> = db
+            .refs_by_def
+            .prefix(keys::refs_by_def_prefix(&rel, 4))
+            .map(|g| {
+                let (k, _) = g.into_inner().unwrap();
+                let (_dp, dstart, _up, ustart) = keys::parse_ref_by_def(&k).unwrap();
+                assert_eq!(dstart, 4);
+                ustart
+            })
+            .collect();
+        uses.sort_unstable();
+        assert_eq!(uses, vec![100, 200], "both uses must resolve to def@4");
+
+        // goto_definition: scan refs_by_path for the use at @100 → def @4.
+        let defs: Vec<u32> = db
+            .refs_by_path
+            .prefix(keys::refs_by_use_prefix(&rel, 100))
+            .map(|g| {
+                let (k, _) = g.into_inner().unwrap();
+                let (_up, ustart, _dp, dstart) = keys::parse_ref_by_path(&k).unwrap();
+                assert_eq!(ustart, 100);
+                dstart
+            })
+            .collect();
+        assert_eq!(defs, vec![4], "use@100 must resolve to def@4");
+
+        // Re-upsert with one edge dropped → both partitions collapse to one.
+        refs.intra.truncate(1);
+        let mut w = db.writer();
+        w.upsert_resolved_file(&rel, &refs).unwrap();
+        w.commit().unwrap();
+        assert_eq!(db.refs_by_def.iter().count(), 1);
+        assert_eq!(db.refs_by_path.iter().count(), 1);
+
+        // Remove the file → both partitions empty.
+        let mut w = db.writer();
+        w.remove_resolved_file(&rel).unwrap();
+        w.commit().unwrap();
+        assert!(db.refs_by_def.iter().next().is_none());
+        assert!(db.refs_by_path.iter().next().is_none());
     }
 }

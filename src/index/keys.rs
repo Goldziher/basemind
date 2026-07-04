@@ -291,6 +291,93 @@ pub fn parse_impl_by_path(key: &[u8]) -> Option<(RelPath, String, String, u32)> 
     Some((RelPath::from(rel), trait_name, impl_type, start))
 }
 
+// ─── resolved references (code-intelligence tier) ───────────────────────────
+
+/// `refs_by_def`: resolved "references to a definition", prefix-scannable by the defining site.
+/// Shape:
+/// `u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be`.
+///
+/// A [`refs_by_def_prefix`] range scan over `(def_path, def_start)` returns every use resolved to
+/// that definition — the scope/import-resolved backing for `find_references` / `find_callers`.
+/// Both endpoints are byte offsets; the def and use paths may differ (cross-file edge).
+pub fn ref_by_def(def_path: &RelPath, def_start: u32, use_path: &RelPath, use_start: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + def_path.as_bytes().len() + 4 + 2 + use_path.as_bytes().len() + 4);
+    let _ = write_len_prefixed(&mut out, def_path.as_bytes());
+    out.extend_from_slice(&def_start.to_be_bytes());
+    let _ = write_len_prefixed(&mut out, use_path.as_bytes());
+    out.extend_from_slice(&use_start.to_be_bytes());
+    out
+}
+
+/// Prefix bytes for "all references to the definition at `(def_path, def_start)`".
+pub fn refs_by_def_prefix(def_path: &RelPath, def_start: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + def_path.as_bytes().len() + 4);
+    let _ = write_len_prefixed(&mut out, def_path.as_bytes());
+    out.extend_from_slice(&def_start.to_be_bytes());
+    out
+}
+
+pub fn parse_ref_by_def(key: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
+    let mut c = 0;
+    let def_path = read_len_prefixed_ref(key, &mut c)?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let def_start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    c += 4;
+    let use_path = read_len_prefixed_ref(key, &mut c)?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let use_start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    Some((RelPath::from(def_path), def_start, RelPath::from(use_path), use_start))
+}
+
+/// `refs_by_path`: companion keyed by the USE file. Serves two roles — O(prefix) delete of a
+/// file's resolved edges on re-resolve, and the forward lookup that backs `goto_definition`
+/// (a use position → its definition). Shape:
+/// `u16:len(use_path) ‖ use_path ‖ use_start:u32_be ‖ u16:len(def_path) ‖ def_path ‖ def_start:u32_be`.
+pub fn ref_by_path(use_path: &RelPath, use_start: u32, def_path: &RelPath, def_start: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + use_path.as_bytes().len() + 4 + 2 + def_path.as_bytes().len() + 4);
+    let _ = write_len_prefixed(&mut out, use_path.as_bytes());
+    out.extend_from_slice(&use_start.to_be_bytes());
+    let _ = write_len_prefixed(&mut out, def_path.as_bytes());
+    out.extend_from_slice(&def_start.to_be_bytes());
+    out
+}
+
+/// Prefix bytes for "every resolved edge whose use is in this file" — used for the per-file
+/// delete on re-resolve.
+pub fn refs_by_path_prefix(use_path: &RelPath) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + use_path.as_bytes().len());
+    let _ = write_len_prefixed(&mut out, use_path.as_bytes());
+    out
+}
+
+/// Prefix bytes for "the definition of the use at `(use_path, use_start)`" — backs `goto_definition`.
+pub fn refs_by_use_prefix(use_path: &RelPath, use_start: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + use_path.as_bytes().len() + 4);
+    let _ = write_len_prefixed(&mut out, use_path.as_bytes());
+    out.extend_from_slice(&use_start.to_be_bytes());
+    out
+}
+
+pub fn parse_ref_by_path(key: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
+    let mut c = 0;
+    let use_path = read_len_prefixed_ref(key, &mut c)?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let use_start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    c += 4;
+    let def_path = read_len_prefixed_ref(key, &mut c)?;
+    if key.len() < c + 4 {
+        return None;
+    }
+    let def_start = u32::from_be_bytes([key[c], key[c + 1], key[c + 2], key[c + 3]]);
+    Some((RelPath::from(use_path), use_start, RelPath::from(def_path), def_start))
+}
+
 // ─── memory_by_key ───────────────────────────────────────────────────────────
 
 /// Visibility ordinal for the **group** (shared) memory tier. Stable, append-only.
@@ -634,6 +721,80 @@ mod tests {
         assert!(
             !key_b.starts_with(&prefix_a),
             "rel_b's key must NOT match rel_a's prefix"
+        );
+    }
+
+    #[test]
+    fn ref_by_def_roundtrips() {
+        let def = RelPath::from("src/util.ts");
+        let usef = RelPath::from("src/app.ts");
+        let key = ref_by_def(&def, 100, &usef, 250);
+        let (back_def, def_start, back_use, use_start) = parse_ref_by_def(&key).unwrap();
+        assert_eq!(back_def, def);
+        assert_eq!(def_start, 100);
+        assert_eq!(back_use, usef);
+        assert_eq!(use_start, 250);
+    }
+
+    #[test]
+    fn ref_by_path_roundtrips() {
+        let usef = RelPath::from("src/app.ts");
+        let def = RelPath::from("src/util.ts");
+        let key = ref_by_path(&usef, 250, &def, 100);
+        let (back_use, use_start, back_def, def_start) = parse_ref_by_path(&key).unwrap();
+        assert_eq!(back_use, usef);
+        assert_eq!(use_start, 250);
+        assert_eq!(back_def, def);
+        assert_eq!(def_start, 100);
+    }
+
+    /// A `refs_by_def` scan for the definition at `(path, 100)` must not bleed into a
+    /// definition at `(path, 1000)` in the same file — the `u32` def offset disambiguates.
+    #[test]
+    fn refs_by_def_prefix_isolates_definitions() {
+        let def = RelPath::from("src/util.ts");
+        let usef = RelPath::from("src/app.ts");
+        let key_100 = ref_by_def(&def, 100, &usef, 5);
+        let key_1000 = ref_by_def(&def, 1000, &usef, 5);
+        let prefix_100 = refs_by_def_prefix(&def, 100);
+        assert!(
+            key_100.starts_with(&prefix_100),
+            "def@100's edge must extend the def@100 prefix"
+        );
+        assert!(
+            !key_1000.starts_with(&prefix_100),
+            "def@1000's edge must NOT match the def@100 prefix"
+        );
+    }
+
+    /// A `refs_by_path` file-level prefix must isolate one use-file's edges from another whose
+    /// path shares a leading substring; and the position-level prefix must pin one use site.
+    #[test]
+    fn refs_by_path_prefixes_isolate() {
+        let use_a = RelPath::from("src/app.ts");
+        let use_b = RelPath::from("src/app.ts.bak");
+        let def = RelPath::from("src/util.ts");
+        let key_a = ref_by_path(&use_a, 250, &def, 100);
+        let key_b = ref_by_path(&use_b, 250, &def, 100);
+        let file_prefix = refs_by_path_prefix(&use_a);
+        assert!(
+            key_a.starts_with(&file_prefix),
+            "use_a's edge must extend use_a's file prefix"
+        );
+        assert!(
+            !key_b.starts_with(&file_prefix),
+            "use_b's edge must NOT match use_a's file prefix"
+        );
+
+        let use_prefix = refs_by_use_prefix(&use_a, 250);
+        let key_other_pos = ref_by_path(&use_a, 9, &def, 100);
+        assert!(
+            key_a.starts_with(&use_prefix),
+            "use@250 edge must extend the use@250 prefix"
+        );
+        assert!(
+            !key_other_pos.starts_with(&use_prefix),
+            "a different use offset must NOT match the use@250 prefix"
         );
     }
 
