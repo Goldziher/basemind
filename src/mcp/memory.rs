@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
+#[cfg(any(feature = "memory", feature = "documents"))]
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
@@ -41,7 +42,7 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
         .map_err(|e| McpError::internal_error(format!("embed: {e}"), None))
 }
 
-#[cfg(any(feature = "memory", feature = "documents"))]
+#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
     state

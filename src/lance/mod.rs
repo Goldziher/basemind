@@ -107,6 +107,41 @@ pub struct MemoryHit {
     pub distance: f32,
 }
 
+/// One row in the `code_chunks` table.
+#[cfg(feature = "code-search")]
+#[derive(Debug, Clone)]
+pub struct CodeRow {
+    pub scope: String,
+    pub path: String,
+    pub chunk_id: String,
+    pub symbol: String,
+    pub kind: String,
+    pub lang: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub byte_start: u32,
+    pub byte_end: u32,
+    pub text: String,
+    pub embedding: Vec<f32>,
+}
+
+/// A search hit from the `code_chunks` table — a pointer, not a body.
+#[cfg(feature = "code-search")]
+#[derive(Debug, Clone)]
+pub struct CodeChunkHit {
+    pub path: String,
+    pub chunk_id: String,
+    pub symbol: String,
+    pub kind: String,
+    pub lang: String,
+    pub line_start: u32,
+    pub line_end: u32,
+    pub byte_start: u32,
+    pub byte_end: u32,
+    /// L2 distance from the query vector (lower = closer).
+    pub distance: f32,
+}
+
 /// Embedded LanceDB store. Cheap to clone (internal Arc).
 #[derive(Clone)]
 pub struct LanceStore {
@@ -173,6 +208,8 @@ impl LanceStore {
         runtime.block_on(async {
             ensure_table(&connection, DOCUMENTS_TABLE, documents_schema(dim)).await?;
             ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
+            #[cfg(feature = "code-search")]
+            ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
             anyhow::Ok(())
         })?;
 
@@ -359,6 +396,74 @@ impl LanceStore {
             anyhow::Ok(hits)
         })
     }
+
+    /// Replace all `code_chunks` rows for a `(scope, path)` pair and insert the supplied rows.
+    /// Delete-then-insert mirrors [`Self::replace_document`] so a re-scan never leaves stale
+    /// chunks behind.
+    #[cfg(feature = "code-search")]
+    pub fn replace_code_chunks(&self, scope: &str, path: &str, rows: Vec<CodeRow>) -> Result<()> {
+        self.inner.rt().block_on(async {
+            let table = self
+                .inner
+                .connection
+                .open_table(schema::CODE_CHUNKS_TABLE)
+                .execute()
+                .await
+                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
+            let predicate = format!(
+                "scope = '{}' AND path = '{}'",
+                escape_sql_literal(scope),
+                escape_sql_literal(path)
+            );
+            table
+                .delete(&predicate)
+                .await
+                .with_context(|| format!("delete existing code chunks for {scope}/{path}"))?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            let batch = build_code_chunks_batch(self.inner.dim, &rows)?;
+            table
+                .add(batch)
+                .execute()
+                .await
+                .with_context(|| format!("insert {} code_chunks rows", rows.len()))?;
+            anyhow::Ok(())
+        })
+    }
+
+    /// KNN over the `code_chunks` table for one scope. Returns pointer hits (path + span +
+    /// symbol + distance), best-first.
+    #[cfg(feature = "code-search")]
+    pub fn search_code_chunks(&self, scope: &str, query: Vec<f32>, limit: usize) -> Result<Vec<CodeChunkHit>> {
+        if query.len() != usize::from(self.inner.dim) {
+            return Err(anyhow!(
+                "query vector dim {} does not match store dim {}",
+                query.len(),
+                self.inner.dim
+            ));
+        }
+        self.inner.rt().block_on(async {
+            let table = self
+                .inner
+                .connection
+                .open_table(schema::CODE_CHUNKS_TABLE)
+                .execute()
+                .await
+                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
+            let q = table
+                .vector_search(query)
+                .context("build code chunk vector search")?
+                .limit(limit)
+                .only_if(format!("scope = '{}'", escape_sql_literal(scope)));
+            let mut stream = q.execute().await.context("run code chunk search")?;
+            let mut hits = Vec::new();
+            while let Some(batch) = stream.try_next().await.context("stream next batch")? {
+                decode_code_chunk_hits(&batch, &mut hits)?;
+            }
+            anyhow::Ok(hits)
+        })
+    }
 }
 
 fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Result<()> {
@@ -453,6 +558,112 @@ fn build_documents_batch(dim: u16, rows: &[DocumentRow]) -> Result<RecordBatch> 
         ],
     )
     .context("assemble documents batch")
+}
+
+#[cfg(feature = "code-search")]
+fn build_code_chunks_batch(dim: u16, rows: &[CodeRow]) -> Result<RecordBatch> {
+    let mut scope = StringBuilder::new();
+    let mut path = StringBuilder::new();
+    let mut chunk_id = StringBuilder::new();
+    let mut symbol = StringBuilder::new();
+    let mut kind = StringBuilder::new();
+    let mut lang = StringBuilder::new();
+    let mut line_start = UInt32Builder::new();
+    let mut line_end = UInt32Builder::new();
+    let mut byte_start = UInt32Builder::new();
+    let mut byte_end = UInt32Builder::new();
+    let mut text = StringBuilder::new();
+    let mut embedding = FixedSizeListBuilder::new(Float32Builder::new(), i32::from(dim));
+
+    for r in rows {
+        if r.embedding.len() != usize::from(dim) {
+            return Err(anyhow!(
+                "code_chunks row embedding dim {} does not match store dim {}",
+                r.embedding.len(),
+                dim
+            ));
+        }
+        scope.append_value(&r.scope);
+        path.append_value(&r.path);
+        chunk_id.append_value(&r.chunk_id);
+        symbol.append_value(&r.symbol);
+        kind.append_value(&r.kind);
+        lang.append_value(&r.lang);
+        line_start.append_value(r.line_start);
+        line_end.append_value(r.line_end);
+        byte_start.append_value(r.byte_start);
+        byte_end.append_value(r.byte_end);
+        text.append_value(&r.text);
+        for v in &r.embedding {
+            embedding.values().append_value(*v);
+        }
+        embedding.append(true);
+    }
+
+    let schema = schema::code_chunks_schema(dim);
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(scope.finish()),
+            Arc::new(path.finish()),
+            Arc::new(chunk_id.finish()),
+            Arc::new(symbol.finish()),
+            Arc::new(kind.finish()),
+            Arc::new(lang.finish()),
+            Arc::new(line_start.finish()),
+            Arc::new(line_end.finish()),
+            Arc::new(byte_start.finish()),
+            Arc::new(byte_end.finish()),
+            Arc::new(text.finish()),
+            Arc::new(embedding.finish()),
+        ],
+    )
+    .context("assemble code_chunks batch")
+}
+
+#[cfg(feature = "code-search")]
+fn decode_code_chunk_hits(batch: &RecordBatch, out: &mut Vec<CodeChunkHit>) -> Result<()> {
+    use arrow_array::{Float32Array, UInt32Array};
+    let str_col = |name: &str| -> Result<&StringArray> {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .ok_or_else(|| anyhow!("`{name}` column missing"))
+    };
+    let u32_col = |name: &str| -> Result<&UInt32Array> {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
+            .ok_or_else(|| anyhow!("`{name}` column missing"))
+    };
+    let path = str_col("path")?;
+    let chunk_id = str_col("chunk_id")?;
+    let symbol = str_col("symbol")?;
+    let kind = str_col("kind")?;
+    let lang = str_col("lang")?;
+    let line_start = u32_col("line_start")?;
+    let line_end = u32_col("line_end")?;
+    let byte_start = u32_col("byte_start")?;
+    let byte_end = u32_col("byte_end")?;
+    let distance = batch
+        .column_by_name("_distance")
+        .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
+
+    for i in 0..batch.num_rows() {
+        out.push(CodeChunkHit {
+            path: path.value(i).to_string(),
+            chunk_id: chunk_id.value(i).to_string(),
+            symbol: symbol.value(i).to_string(),
+            kind: kind.value(i).to_string(),
+            lang: lang.value(i).to_string(),
+            line_start: line_start.value(i),
+            line_end: line_end.value(i),
+            byte_start: byte_start.value(i),
+            byte_end: byte_end.value(i),
+            distance: distance.map(|d| d.value(i)).unwrap_or(0.0),
+        });
+    }
+    Ok(())
 }
 
 fn build_memory_batch(dim: u16, rows: &[MemoryRow]) -> Result<RecordBatch> {

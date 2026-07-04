@@ -1,3 +1,4 @@
+mod code;
 mod comms;
 mod documents;
 pub(crate) mod layered;
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+pub use code::CodeSearchConfig;
 pub use comms::CommsConfig;
 pub use documents::{
     ApiKey, DocLanguageConfig, DocumentsConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,

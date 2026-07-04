@@ -62,4 +62,18 @@ impl SharedEmbedder {
             .pop()
             .ok_or_else(|| anyhow!("embed_texts returned empty result"))
     }
+
+    /// Embed a batch of texts in one call. Returns one `Vec<f32>` of length `self.dim()` per
+    /// input, in order. Used by the code-search scanner to embed a file's chunks in bulk.
+    ///
+    /// Errors if any input text is empty (xberg rejects empty strings, which produce meaningless
+    /// embeddings). An empty batch returns an empty vector without touching the model.
+    #[cfg(feature = "code-search")]
+    pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        xberg::embeddings::embed_texts(texts, &self.config)
+            .with_context(|| format!("embed_texts(preset={}, batch={})", self.model_name, texts.len()))
+    }
 }

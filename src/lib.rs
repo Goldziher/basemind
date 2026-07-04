@@ -2,6 +2,8 @@
 // Flip this off once the public API is frozen.
 #![allow(missing_docs)]
 
+#[cfg(feature = "code-search")]
+pub mod chunk;
 pub mod cli;
 pub mod comms;
 pub mod config;
@@ -25,6 +27,8 @@ pub mod path;
 pub mod query;
 pub mod render;
 pub mod scanner;
+#[cfg(feature = "code-search")]
+pub mod scanner_code;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
 pub(crate) mod scanner_filter;
