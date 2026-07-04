@@ -63,43 +63,167 @@ pub(super) fn run_find_references(
     )
 }
 
-/// Body of the `find_callers` MCP tool. Resolves the definition via the in-RAM cache (the
-/// same source `outline` uses) for context, then delegates to the same callee-substring scan.
+/// Body of the `find_callers` MCP tool. Resolves the definition's L1 symbol (context echoed in
+/// `definition`), then **prefers scope/import-resolved callers**: when the definition resolves it
+/// returns only precise, scope-correct call sites (no same-name false positives) and marks the
+/// response `resolved: true`. When nothing resolves it falls back to the historical name-based
+/// callee scan (same `name`-only, no-scope semantics as `find_references`) — no regression.
+///
+/// Holds the store read guard for the call (like `goto_definition`): the resolved path reads the
+/// concurrently-readable `.rref` blobs plus, when open, the Fjall index; the fallback reads
+/// `store.index_db` or the in-RAM call cache for a read-only multi-session serve.
 pub(super) fn run_find_callers(
-    idx: Option<&crate::index::IndexDb>,
-    params: super::types::FindCallersParams,
+    store: &crate::store::Store,
+    root: &std::path::Path,
     cache: &super::MapCache,
+    params: super::types::FindCallersParams,
 ) -> Result<CallToolResult, McpError> {
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let kind_filter = params.kind.as_deref().map(parse_kind).transpose()?;
-    let definition: Option<DefinitionView> = cache
-        .by_path
-        .get(&params.path)
-        .and_then(|l1| {
-            l1.symbols
-                .iter()
-                .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
-        })
-        .map(|sym| DefinitionView {
-            path: params.path.clone(),
-            name: sym.name.clone(),
-            kind: kind_to_str(sym.kind),
-            start_row: sym.start_row,
-            start_col: sym.start_col,
+    let symbol = cache.by_path.get(&params.path).and_then(|l1| {
+        l1.symbols
+            .iter()
+            .find(|s| s.name == params.name && kind_filter.is_none_or(|k| s.kind == k))
+            .cloned()
+    });
+    let definition: Option<DefinitionView> = symbol.as_ref().map(|sym| DefinitionView {
+        path: params.path.clone(),
+        name: sym.name.clone(),
+        kind: kind_to_str(sym.kind),
+        start_row: sym.start_row,
+        start_col: sym.start_col,
+    });
+
+    // Resolved mode: precise, scope-correct callers. Only when the definition resolves to a
+    // symbol AND that symbol has resolved uses; otherwise fall through to the name scan.
+    if let Some(sym) = symbol.as_ref()
+        && let Some(page) = resolved_callers_page(store, root, &params.path, &params.name, sym, limit)
+    {
+        let total = page.total;
+        let total_is_partial = page.total_is_partial;
+        let budgeted = budget_call_page(page, params.max_tokens);
+        return json_result(&FindCallersResponse {
+            definition,
+            resolved: true,
+            total,
+            total_is_partial,
+            budgeted: budgeted.budgeted,
+            hits: budgeted.hits,
+            next_cursor: budgeted.next_cursor,
         });
+    }
+
+    // Name-scan fallback: substring on the callee, no scope resolution (`Foo::bar()` and `bar()`
+    // both match `name="bar"`). Cursor paging applies here.
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let scan = scan_calls(idx, cache, &params.name, limit, cursor_bytes.as_deref())?;
+    let scan = scan_calls(
+        store.index_db.as_ref(),
+        cache,
+        &params.name,
+        limit,
+        cursor_bytes.as_deref(),
+    )?;
     let total = scan.total;
     let total_is_partial = scan.total_is_partial;
     let budgeted = budget_call_page(scan, params.max_tokens);
     json_result(&FindCallersResponse {
         definition,
+        resolved: false,
         total,
         total_is_partial,
         budgeted: budgeted.budgeted,
         hits: budgeted.hits,
         next_cursor: budgeted.next_cursor,
+    })
+}
+
+/// Build a scope/import-resolved caller page for the definition `symbol` (named `name`) in
+/// `def_path`, or `None` when it has no resolved uses (the caller then falls back to the name
+/// scan with no regression). Cross-file callers are included when the Fjall index is open; a
+/// read-only multi-session serve sees intra-file callers from the `.rref` blob only.
+///
+/// Offset alignment (verified empirically, see the unit test): the resolver records `def_start`
+/// as the definition *identifier* byte, which is NOT the L1 `Symbol.start_byte` (the definition
+/// *node* start — e.g. the `function`/`export` keyword). So the true `def_start`(s) are recovered
+/// from the file's resolution blob: intra edges whose `def_start` falls inside the symbol's node
+/// span `[start_byte, end_byte)` AND whose identifier text equals `name`. That both bridges the
+/// offset gap and disambiguates same-named definitions living in other scopes.
+///
+/// Resolved caller sets are scope-bounded (small), so the page is returned whole — capped at
+/// `limit` with `total_is_partial` when exceeded, and no `next_cursor` (unlike the name scan).
+fn resolved_callers_page(
+    store: &crate::store::Store,
+    root: &std::path::Path,
+    def_path: &crate::path::RelPath,
+    name: &str,
+    symbol: &crate::extract::Symbol,
+    limit: usize,
+) -> Option<CallScanPage> {
+    let entry = store.lookup(def_path)?;
+    let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
+    let def_source = std::fs::read(root.join(def_path.to_path_buf())).ok()?;
+
+    // Recover the true resolved def identifier byte(s) inside the symbol's node span.
+    let mut def_starts: Vec<u32> = Vec::new();
+    for edge in &refs.intra {
+        if edge.def_start >= symbol.start_byte
+            && edge.def_start < symbol.end_byte
+            && super::helpers_intel::identifier_at(&def_source, edge.def_start) == name
+            && !def_starts.contains(&edge.def_start)
+        {
+            def_starts.push(edge.def_start);
+        }
+    }
+    if def_starts.is_empty() {
+        return None;
+    }
+
+    // Collect resolved uses (intra via blob / index; cross-file only when the index is open).
+    let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
+    for def_start in def_starts {
+        for use_ref in crate::query::resolved_references(store, def_path, def_start) {
+            if !uses.contains(&use_ref) {
+                uses.push(use_ref);
+            }
+        }
+    }
+    if uses.is_empty() {
+        return None;
+    }
+    // Deterministic order: (path, byte offset).
+    uses.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let total = uses.len() as u32;
+    let total_is_partial = uses.len() > limit;
+    // Cache per-file source (read once) to map each use offset to line/col + callee identifier.
+    let mut source_cache: ahash::AHashMap<crate::path::RelPath, Vec<u8>> = ahash::AHashMap::new();
+    let mut hits: Vec<ReferenceHit> = Vec::with_capacity(uses.len().min(limit));
+    for (use_path, use_start) in uses.into_iter().take(limit) {
+        if !source_cache.contains_key(&use_path) {
+            let bytes = if use_path == *def_path {
+                def_source.clone()
+            } else {
+                std::fs::read(root.join(use_path.to_path_buf())).unwrap_or_default()
+            };
+            source_cache.insert(use_path.clone(), bytes);
+        }
+        let source = &source_cache[&use_path];
+        let (line, column) = super::helpers_intel::offset_to_line_col(source, use_start);
+        let callee = super::helpers_intel::identifier_at(source, use_start);
+        hits.push(ReferenceHit {
+            path: use_path,
+            line,
+            column,
+            callee,
+        });
+    }
+    Some(CallScanPage {
+        total,
+        total_is_partial,
+        hits,
+        next_cursor: None,
+        hit_keys: Vec::new(),
     })
 }
 
@@ -438,6 +562,63 @@ mod tests {
         assert!(
             page.hits.iter().all(|h| h.path.as_str() == Some("b.rs")),
             "both references live in b.rs"
+        );
+    }
+
+    /// Resolved `find_callers` must prefer scope-resolved edges over the name scan: it returns
+    /// only the callers that actually bind to *this* definition (never a same-named function in
+    /// another file). Also pins the offset-alignment finding: the L1 node `start_byte` differs
+    /// from the resolver's `def_start` identifier byte, so the page can only be built by
+    /// recovering the true `def_start` from the blob. Feature-gated — only oxc (JS/TS) resolves
+    /// top-level function calls to their definition today.
+    #[cfg(feature = "code-intel-js")]
+    #[test]
+    fn find_callers_prefers_resolved_edges_over_name_scan() {
+        use crate::path::RelPath;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        // util.ts: the definition + two callers that resolve to it.
+        std::fs::write(
+            root.join("util.ts"),
+            b"export function target() { return 1; }\ntarget();\ntarget();\n",
+        )
+        .expect("util.ts");
+        // other.ts: a same-named function whose caller must NOT be conflated with util.ts's.
+        std::fs::write(root.join("other.ts"), b"function target() { return 3; }\ntarget();\n").expect("other.ts");
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+
+        let def_path = RelPath::from("util.ts".as_bytes());
+        let l1 = crate::query::file_outline(&store, &def_path).expect("outline");
+        let sym = l1
+            .symbols
+            .iter()
+            .find(|s| s.name == "target" && s.kind == crate::extract::SymbolKind::Function)
+            .cloned()
+            .expect("util.ts target function symbol");
+
+        // Offset-alignment finding: the L1 node start_byte is NOT the resolved def identifier byte.
+        let entry = store.lookup(&def_path).expect("indexed");
+        let refs = store
+            .read_resolved_by_hex(&entry.hash_hex)
+            .expect("read blob")
+            .expect("resolution facts present");
+        assert!(
+            !refs.intra.iter().any(|e| e.def_start == sym.start_byte),
+            "L1 node start_byte must differ from the resolver's def identifier byte"
+        );
+
+        let page =
+            super::resolved_callers_page(&store, root, &def_path, "target", &sym, 100).expect("resolved callers found");
+        assert_eq!(
+            page.total, 2,
+            "exactly the two util.ts callers resolve to util.ts target"
+        );
+        assert!(page.hits.iter().all(|h| h.callee == "target"));
+        assert!(
+            page.hits.iter().all(|h| h.path.as_str() == Some("util.ts")),
+            "other.ts target() (same name, different scope) must NOT be conflated"
         );
     }
 }

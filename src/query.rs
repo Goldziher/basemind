@@ -122,21 +122,140 @@ pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryE
 }
 
 /// Scope/import-resolved references to the definition at `(def_path, def_start)` — the resolved
-/// backing for `find_references`. Returns each binding `(use_path, use_start)`; empty when the
-/// store has no writable index or the definition has no resolved uses (the caller falls back to
-/// the name-based scan).
+/// backing for `find_references` / `find_callers`. Returns each binding `(use_path, use_start)`;
+/// empty when the definition has no resolved uses.
+///
+/// When the Fjall index is open it answers from `refs_by_def` (intra **and** cross-file edges).
+/// When it isn't — the documented read-only multi-session case, where a second `serve` lost the
+/// single-holder Fjall lock — it falls back to the concurrently-readable `.rref` blobs. Intra-file
+/// resolved edges are same-file, so only `def_path`'s own blob can hold references to a definition
+/// in `def_path`: a single blob read, no full scan. Cross-file resolved refs live only in Fjall
+/// and are therefore unavailable in the fallback (same caveat as `goto_definition`'s cross-file
+/// hop).
 pub fn resolved_references(store: &Store, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
     match store.index_db.as_ref() {
         Some(index) => index.references_to(def_path, def_start),
-        None => Vec::new(),
+        None => resolved_references_from_blob(store, def_path, def_start),
     }
 }
 
+/// Blob fallback for [`resolved_references`]: read `def_path`'s `.rref` blob and return every
+/// intra edge whose definition endpoint is exactly `def_start`. A read error / missing blob
+/// degrades to an empty result (the caller then falls back to the name-based scan), never an error.
+fn resolved_references_from_blob(store: &Store, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
+    let Some(entry) = store.lookup(def_path) else {
+        return Vec::new();
+    };
+    let refs = match store.read_resolved_by_hex(&entry.hash_hex) {
+        Ok(Some(refs)) => refs,
+        Ok(None) => return Vec::new(),
+        Err(error) => {
+            tracing::debug!(path = %def_path, %error, "resolved_references: resolution blob unreadable — no intra refs");
+            return Vec::new();
+        }
+    };
+    refs.intra
+        .iter()
+        .filter(|edge| edge.def_start == def_start)
+        .map(|edge| (def_path.clone(), edge.use_start))
+        .collect()
+}
+
 /// The definition the use at `(use_path, use_start)` resolves to — backs `goto_definition`.
-/// `None` when the position isn't a resolved reference (or the store has no index).
+/// `None` when the position isn't a resolved reference. Mirrors [`resolved_references`]: reads the
+/// Fjall `refs_by_path` partition when the index is open, else the file's `.rref` blob (intra-file
+/// bindings only; cross-file targets need the index open).
 pub fn definition_of(store: &Store, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
-    store
-        .index_db
-        .as_ref()
-        .and_then(|index| index.definition_of(use_path, use_start))
+    match store.index_db.as_ref() {
+        Some(index) => index.definition_of(use_path, use_start),
+        None => definition_of_from_blob(store, use_path, use_start),
+    }
+}
+
+/// Blob fallback for [`definition_of`]: read `use_path`'s `.rref` blob and return the definition
+/// endpoint of the intra edge whose use starts exactly at `use_start`.
+fn definition_of_from_blob(store: &Store, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
+    let entry = store.lookup(use_path)?;
+    let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
+    refs.intra
+        .iter()
+        .find(|edge| edge.use_start == use_start)
+        .map(|edge| (use_path.clone(), edge.def_start))
+}
+
+// The blob-fallback parity tests need real resolved edges, which today only the oxc JS/TS engine
+// produces intra-file. Feature-gated so a default build (locals-only) simply skips them.
+#[cfg(all(test, feature = "code-intel-js"))]
+mod tests {
+    use super::*;
+    use crate::config::ConfigV1;
+    use crate::scanner::{ScanSource, scan};
+    use crate::store::{Store, VIEW_WORKING};
+
+    /// Scan a one-file TS fixture whose two `foo()` calls resolve to the local `function foo`,
+    /// returning the opened store and its path handle.
+    fn scan_foo_fixture(root: &std::path::Path) -> Store {
+        std::fs::write(
+            root.join("u.ts"),
+            b"export function foo() { return 1; }\nfoo();\nfoo();\n",
+        )
+        .expect("u.ts");
+        let mut store = Store::open(root, VIEW_WORKING).expect("open");
+        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+        store
+    }
+
+    #[test]
+    fn resolved_references_blob_fallback_matches_index_for_intra_refs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = scan_foo_fixture(dir.path());
+        let path = RelPath::from("u.ts".as_bytes());
+        let entry = store.lookup(&path).expect("indexed");
+        let refs = store
+            .read_resolved_by_hex(&entry.hash_hex)
+            .expect("read blob")
+            .expect("resolution facts present");
+        let def_start = refs
+            .intra
+            .first()
+            .map(|e| e.def_start)
+            .expect("at least one intra edge");
+
+        let via_blob = resolved_references_from_blob(&store, &path, def_start);
+        let via_index = store
+            .index_db
+            .as_ref()
+            .expect("index open")
+            .references_to(&path, def_start);
+        assert!(!via_blob.is_empty(), "blob fallback must find the intra uses");
+        assert_eq!(
+            via_blob.len(),
+            via_index.len(),
+            "blob fallback and Fjall index must agree for single-file (all-intra) refs"
+        );
+        assert!(
+            via_blob.iter().all(|(p, _)| *p == path),
+            "single-file fixture → all uses in u.ts"
+        );
+    }
+
+    #[test]
+    fn definition_of_blob_fallback_returns_intra_definition() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = scan_foo_fixture(dir.path());
+        let path = RelPath::from("u.ts".as_bytes());
+        let entry = store.lookup(&path).expect("indexed");
+        let refs = store
+            .read_resolved_by_hex(&entry.hash_hex)
+            .expect("read blob")
+            .expect("resolution facts present");
+        let edge = refs.intra.first().cloned().expect("at least one intra edge");
+
+        let def = definition_of_from_blob(&store, &path, edge.use_start);
+        assert_eq!(
+            def,
+            Some((path.clone(), edge.def_start)),
+            "blob fallback resolves the use back to its in-file definition"
+        );
+    }
 }
