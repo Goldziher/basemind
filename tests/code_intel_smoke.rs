@@ -94,4 +94,45 @@ fn scan_resolves_cross_file_references_for_typescript() {
             .any(|(p, s)| p.as_str() == Some("b.ts") && *s == import_local_start),
         "the `helper` import in b.ts must resolve to the a.ts export at {export_name_start}; got {uses:?}"
     );
+
+    // The reverse direction is exactly `goto_definition`'s cross-file hop: from the import binding
+    // in b.ts to the `helper` export site in a.ts (the MCP tool formats this into line/column).
+    let b = RelPath::from("b.ts");
+    let def = basemind::query::definition_of(&store, &b, import_local_start);
+    assert_eq!(
+        def,
+        Some((a.clone(), export_name_start)),
+        "cross-file goto-definition: the b.ts import binding must resolve to the a.ts export"
+    );
+}
+
+#[test]
+fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // Both files define AND use a `count`, but they are unrelated (no import between them). A
+    // name-based `find_references("count")` would return all four sites; the scope-resolved edge
+    // must keep each file's `count` bound only to its own definition. This is the core "no
+    // conflation" guarantee — without it the resolve tier would be no better than the name scan.
+    let a_src = "const count = 1;\nfunction fa() {\n  return count;\n}\n";
+    let b_src = "const count = 2;\nfunction fb() {\n  return count;\n}\n";
+    fs::write(root.join("a.js"), a_src).unwrap();
+    fs::write(root.join("b.js"), b_src).unwrap();
+
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    let cfg = ConfigV1::with_defaults();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+
+    if store.lookup("a.js").is_none() || store.lookup("b.js").is_none() {
+        eprintln!("javascript grammar unavailable in this environment — skipping no-conflation assertions");
+        return;
+    }
+
+    let a = RelPath::from("a.js");
+    let a_count_def = (a_src.find("const count").unwrap() + "const ".len()) as u32;
+    let uses = basemind::query::resolved_references(&store, &a, a_count_def);
+    assert!(
+        !uses.is_empty() && uses.iter().all(|(p, _)| p.as_str() == Some("a.js")),
+        "a.js `count` must resolve only within a.js, never to b.js's unrelated `count`; got {uses:?}"
+    );
 }

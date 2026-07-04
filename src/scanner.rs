@@ -326,7 +326,13 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     }
 
     // Second pass: resolve scope/import-bound references now that the primary index is complete.
-    resolve_pass(root, store);
+    // Only for a working-tree scan: `resolve_pass` reads source bytes + resolves imports against the
+    // live filesystem, so on a `Staged`/`Rev` scan those bytes would not match the `FileEntry` blob
+    // hash the facts are keyed by (content-addressing violation). The resolved tier targets the
+    // working view; other sources skip it rather than persist wrongly-keyed facts.
+    if matches!(source, ScanSource::WorkingTree) {
+        resolve_pass(root, store);
+    }
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
@@ -370,6 +376,10 @@ fn resolve_pass(root: &Path, store: &Store) {
     let mut cross_file_facts: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
 
     let mut writer = index_db.writer();
+    // Commit in bounded batches like the primary scan (`INDEX_COMMIT_BATCH`) rather than one
+    // repo-sized batch: keeps peak memory flat and releases Fjall's write lock periodically so a
+    // concurrent MCP reader isn't blocked for the whole pass.
+    let mut staged_files = 0usize;
     for (rel_str, hash_hex, language) in files {
         let rel = RelPath::from(rel_str.as_str());
         // Cache hit: reuse persisted facts, no re-parse. Miss / schema drift: recompute + cache.
@@ -384,7 +394,12 @@ fn resolve_pass(root: &Path, store: &Store) {
                     continue;
                 };
                 let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes);
-                let _ = store.write_resolved_hex(&hash_hex, &computed);
+                // Only persist a blob when there are facts to persist — a file with no resolved
+                // edges (e.g. a data file, or a language without resolution coverage) would
+                // otherwise write an empty blob just to have `remove_resolved_file` clear it.
+                if !computed.is_empty() {
+                    let _ = store.write_resolved_hex(&hash_hex, &computed);
+                }
                 computed
             }
         };
@@ -408,6 +423,14 @@ fn resolve_pass(root: &Path, store: &Store) {
                     exports: refs.exports,
                 },
             );
+        }
+        staged_files += 1;
+        if staged_files >= INDEX_COMMIT_BATCH {
+            if let Err(e) = writer.commit() {
+                tracing::warn!(error = %e, "resolve pass: index commit failed — resolved navigation may be stale");
+            }
+            writer = index_db.writer();
+            staged_files = 0;
         }
     }
     if let Err(e) = writer.commit() {
