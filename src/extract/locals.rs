@@ -226,11 +226,9 @@ mod tests {
     //     return inner(a);             // ref inner @ 95, ref a @ 96
     //   }
     // Root scope [0, 200]. a is a param owned by S1.
-    fn fixture() -> (
-        Vec<(u32, u32)>,
-        Vec<(&'static [u8], u32, u32)>,
-        Vec<(&'static [u8], u32, u32)>,
-    ) {
+    type NamedSpan = (&'static [u8], u32, u32);
+    type Fixture = (Vec<(u32, u32)>, Vec<NamedSpan>, Vec<NamedSpan>);
+    fn fixture() -> Fixture {
         let scopes = vec![(0u32, 200u32), (10, 100), (50, 90)];
         let defs: Vec<(&[u8], u32, u32)> = vec![
             (b"a".as_slice(), 20, 21),

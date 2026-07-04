@@ -115,6 +115,12 @@ comms = ["dep:directories", "dep:tokio-util"]
 # the comms daemon uses). Opt in with --features shells.
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client", "dep:directories"]
 
+# JS/TS code-intelligence: scope + import-resolved find_references / goto_definition via oxc.
+# Self-contained — oxc parses JS/TS with its own parser, so no tree-sitter grammar is needed
+# (works even where the TSLP grammar cache is cold). Folds into the `code-intel` meta + `full`
+# once the cross-file second pass + MCP surface land.
+code-intel-js = ["dep:oxc_allocator", "dep:oxc_parser", "dep:oxc_semantic", "dep:oxc_span", "dep:oxc_syntax"]
+
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms,shells`. Use this when you want one flag
 # that always pulls in the full intelligence surface as we add tiers in the future.
@@ -158,6 +164,16 @@ lru = "0.18.0"
 memchr = "2"
 notify = "8"
 notify-debouncer-full = "0.7"
+# oxc powers the JS/TS code-intelligence tier (scope/import-resolved navigation). Pinned to an
+# exact version — oxc breaks APIs across minors, but the resolved-reference surface we use is its
+# stable core. All crates.io-published (MIT), so `cargo publish` stays clean (no git deps). These
+# share the 0.138 workspace version; the cross-file stitch slice adds `oxc_resolver` (a standalone
+# repo, Node/tsconfig module resolution) when it is first used.
+oxc_allocator = { version = "=0.138.0", optional = true }
+oxc_parser = { version = "=0.138.0", optional = true }
+oxc_semantic = { version = "=0.138.0", optional = true }
+oxc_span = { version = "=0.138.0", optional = true }
+oxc_syntax = { version = "=0.138.0", optional = true }
 rayon = "1"
 regex = "1.12.4"
 rmcp = { version = "2.1", features = ["server", "macros", "schemars", "transport-io"] }
@@ -198,10 +214,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "1.12.3"
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.6", default-features = false, features = [
-    "tokio-runtime",
-    "simd-utf8",
-], optional = true }
+xberg = { version = "1.0.0-rc.6", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 
 # macOS current-RSS reader (src/sysres.rs) via mach `task_info`. `mach2` is the maintained
 # replacement for libc's deprecated mach bindings; scoped to macOS so no other target pulls it.
