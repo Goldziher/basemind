@@ -1,5 +1,7 @@
 /target
 /.basemind
+# poly (polylint) local cache
+/.polylint
 *.swp
 
 # Release build artifacts
