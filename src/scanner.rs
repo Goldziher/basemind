@@ -453,11 +453,23 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
         store.remove(&rel);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
-            let _ = w.remove_file(&RelPath::from(rel.as_str())).and_then(|()| w.commit());
+            let rel = RelPath::from(rel.as_str());
+            // Purge the file's resolved edges too. `resolve_pass` recomputes wholesale over the
+            // CURRENT file set, so a removed file's stale `refs_by_def` / `refs_by_path` entries are
+            // never revisited — they must be dropped explicitly here (mirrors the full `scan`).
+            let _ = w
+                .remove_file(&rel)
+                .and_then(|()| w.remove_resolved_file(&rel))
+                .and_then(|()| w.commit());
         }
         report.results.push(FileResult::bare(rel, FileStatus::Removed));
         report.stats.removed += 1;
     }
+
+    // Second pass: resolve scope/import-bound references now that the primary index is complete.
+    // Recomputed wholesale (cheap: index reads, blob-cache hits, no re-parse for unchanged files)
+    // to sidestep cross-file dependency invalidation — same call site as the full `scan`.
+    resolve_pass(root, store);
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
