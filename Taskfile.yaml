@@ -10,8 +10,7 @@ tasks:
     desc: "Install all dependencies and initialize project. Idempotent."
     cmds:
       - cargo fetch
-      - prek install
-      - prek install --hook-type commit-msg
+      - poly hooks install
       - echo "Setup complete"
 
   build:
