@@ -121,6 +121,7 @@ pub fn resolve_locals(lang: LangId, tree: &Tree, source: &[u8]) -> Result<LocalB
 /// grammar-independent and unit-testable.
 fn build_bindings(query: &Query, root: Node, source: &[u8]) -> LocalBindings {
     let names = query.capture_names();
+    debug_assert!(source.len() <= u32::MAX as usize, "source exceeds u32 byte range");
     let src_len = source.len() as u32;
 
     // index 0 is always the implicit whole-file root scope.
@@ -162,6 +163,15 @@ fn build_bindings(query: &Query, root: Node, source: &[u8]) -> LocalBindings {
 /// chain innermost-first and taking the first scope that owns a same-named definition. Binding
 /// to the root scope (a module-level definition) still counts — the signal is "defined in this
 /// file", which is what cross-file filtering needs.
+///
+/// Two deliberate simplifications, correct for the "is this name local to the file?" goal but
+/// NOT for precise scope-exact goto-definition:
+/// - **Source order is not enforced** — a reference may bind to a *later* definition in the same
+///   scope (harmless for hoisted names; imprecise for `let`/`const` temporal-dead-zone cases).
+/// - **`local.scope-inherits` predicates are ignored** — every scope inherits from all ancestors,
+///   so an isolated scope (e.g. a grammar marking `(#set! local.scope-inherits false)`) may
+///   over-resolve to an outer binding. Both are acceptable because over-resolving still yields an
+///   in-file binding; JS/TS precise resolution goes through the oxc engine, not this path.
 fn resolve_bindings(
     scopes: &[(u32, u32)],
     defs: &[(&[u8], u32, u32)],
@@ -174,18 +184,19 @@ fn resolve_bindings(
         defs_by_scope.entry(owner).or_default().push(di);
     }
 
+    // Scope indices sorted innermost-first (smallest area), once — reused for every reference so
+    // the per-ref containment walk is an allocation-free linear scan instead of a per-ref
+    // collect-and-sort.
+    let mut scope_order: Vec<usize> = (0..scopes.len()).collect();
+    scope_order.sort_by_key(|&i| scopes[i].1 - scopes[i].0);
+
     let mut ref_to_def: AHashMap<u32, u32> = AHashMap::new();
     for &(rname, rs, re) in refs {
-        // Scopes containing this reference, ordered innermost (smallest area) first.
-        let mut chain: Vec<usize> = (0..scopes.len())
-            .filter(|&i| {
-                let (s, e) = scopes[i];
-                s <= rs && re <= e
-            })
-            .collect();
-        chain.sort_by_key(|&i| scopes[i].1 - scopes[i].0);
-        for &sc in &chain {
-            if let Some(dis) = defs_by_scope.get(&sc)
+        for &sc in &scope_order {
+            let (s, e) = scopes[sc];
+            if s <= rs
+                && re <= e
+                && let Some(dis) = defs_by_scope.get(&sc)
                 && let Some(&di) = dis.iter().find(|&&di| defs[di].0 == rname)
             {
                 ref_to_def.insert(rs, defs[di].1);
@@ -199,6 +210,7 @@ fn resolve_bindings(
 /// Index of the innermost scope (smallest area) that contains the byte range `[start, end]`.
 /// Falls back to the root scope (index 0), which contains everything.
 fn innermost_scope(scopes: &[(u32, u32)], start: u32, end: u32) -> usize {
+    debug_assert!(!scopes.is_empty(), "scopes must contain at least the root scope");
     let mut best = 0usize;
     let mut best_area = scopes[0].1 - scopes[0].0;
     for (i, &(s, e)) in scopes.iter().enumerate() {
@@ -289,5 +301,39 @@ mod tests {
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 50, 56)];
         let map = resolve_bindings(&scopes, &defs, &refs);
         assert_eq!(map.get(&50), Some(&5), "root-level helper must still bind");
+    }
+
+    #[test]
+    fn resolve_locals_binds_real_javascript() {
+        // Grammar-backed smoke covering build_bindings' capture-name matching against a real
+        // locals.scm. Skips gracefully if the grammar (or its locals query) can't be loaded in
+        // this environment — the TSLP grammar download can be unavailable in a cold sandbox/CI.
+        use crate::lang::{self, ParseOutcome};
+        let lang = "javascript";
+        let Ok(Some(_)) = locals_query(lang) else {
+            return; // grammar or locals query unavailable — skip, don't fail
+        };
+        let src = "function outer(a) {\n  let x = 1;\n  return function () { return x + a; };\n}\n";
+        let bytes = src.as_bytes();
+        let tree = match lang::with_parser(lang, |p| lang::parse_with_default_timeout(p, bytes)) {
+            Ok(ParseOutcome::Ok(t)) => t,
+            _ => return, // grammar unavailable / parse failed — skip
+        };
+        let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
+
+        let x_def = src.find("let x").unwrap() + "let ".len();
+        let a_def = src.find("(a)").unwrap() + "(".len();
+        let x_use = src.rfind("x + a").unwrap();
+        let a_use = src.rfind("x + a").unwrap() + "x + ".len();
+        assert_eq!(
+            bindings.resolved_def(x_use as u32),
+            Some(x_def as u32),
+            "inner `x` use must bind to outer `let x`"
+        );
+        assert_eq!(
+            bindings.resolved_def(a_use as u32),
+            Some(a_def as u32),
+            "inner `a` use must bind to param `a`"
+        );
     }
 }
