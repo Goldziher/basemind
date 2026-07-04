@@ -64,6 +64,40 @@ impl IndexWriter {
         self.stage_resolved_deletes_for(use_rel)
     }
 
+    /// Stage a single CROSS-FILE resolved edge: the use in `use_rel` binds to a definition in a
+    /// *different* file `def_rel` (`def_rel != use_rel`) — an importer's binding stitched to the
+    /// matching export in its resolved target module. Inserts into both `refs_by_def` (keyed by
+    /// the defining site → `find_references`) and `refs_by_path` (keyed by the use site →
+    /// `goto_definition`), mirroring the intra-file staging in [`Self::upsert_resolved_file`].
+    ///
+    /// Idempotency invariant: unlike `upsert_resolved_file`, this stages **no delete**. Every
+    /// cross-file edge is keyed on its *use* file in `refs_by_path`, so
+    /// [`Self::stage_resolved_deletes_for`] — invoked by `upsert_resolved_file` /
+    /// `remove_resolved_file` when the importer is re-resolved earlier in the same resolve pass —
+    /// has already purged the previous scan's cross-file edges for that importer. The cross-file
+    /// join therefore runs *after* every importer's per-file upsert, so the importer's slate is
+    /// clean before these inserts land, and a re-scan does not accumulate stale edges.
+    #[cfg(feature = "code-intel-js")]
+    pub fn upsert_cross_file_edge(
+        &mut self,
+        def_rel: &RelPath,
+        def_start: u32,
+        use_rel: &RelPath,
+        use_start: u32,
+    ) -> Result<(), IndexError> {
+        self.batch.insert(
+            &self.db.refs_by_def,
+            keys::ref_by_def(def_rel, def_start, use_rel, use_start),
+            Vec::<u8>::new(),
+        );
+        self.batch.insert(
+            &self.db.refs_by_path,
+            keys::ref_by_path(use_rel, use_start, def_rel, def_start),
+            Vec::<u8>::new(),
+        );
+        Ok(())
+    }
+
     /// Flush this batch to disk atomically. Consumes the writer.
     pub fn commit(self) -> Result<(), IndexError> {
         self.batch.commit()?;
