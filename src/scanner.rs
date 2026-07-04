@@ -326,123 +326,18 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     }
 
     // Second pass: resolve scope/import-bound references now that the primary index is complete.
-    // Only for a working-tree scan: `resolve_pass` reads source bytes + resolves imports against the
-    // live filesystem, so on a `Staged`/`Rev` scan those bytes would not match the `FileEntry` blob
-    // hash the facts are keyed by (content-addressing violation). The resolved tier targets the
-    // working view; other sources skip it rather than persist wrongly-keyed facts.
+    // Only for a working-tree scan: the resolve pass reads source bytes + resolves imports against
+    // the live filesystem, so on a `Staged`/`Rev` scan those bytes would not match the `FileEntry`
+    // blob hash the facts are keyed by (content-addressing violation). The resolved tier targets the
+    // working view; other sources skip it rather than persist wrongly-keyed facts. The pass itself
+    // (parallel compute + serial staging + the cross-file join) lives in `crate::intel::resolve_pass`.
     if matches!(source, ScanSource::WorkingTree) {
-        resolve_pass(root, store);
+        crate::intel::resolve_pass::resolve_pass(root, store);
     }
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
     Ok(report)
-}
-
-/// Post-scan resolution pass: for every indexed file, load its cached resolution facts (or
-/// recompute and cache them on a content-hash miss), then stage the intra-file resolved edges
-/// into the `refs_by_def` / `refs_by_path` index. Runs after the primary index is populated so a
-/// future cross-file join sees every file's exports.
-///
-/// Best-effort: resolution is an enhancement over the name-based fallback, so any failure is
-/// logged and the scan still succeeds. Skipped in a read-only (no-writable-index) session.
-///
-/// Unchanged files are a blob-cache hit (no re-parse); only new/changed files run an engine. The
-/// engine parse is a second parse for those files (the L1/L2 pass already parsed them) — an
-/// accepted cold-scan cost that a later slice can remove by folding the locals path into
-/// `process_file`. Incremental (`scan_paths`) resolution is a follow-up; today only the full scan
-/// refreshes resolved edges.
-fn resolve_pass(root: &Path, store: &Store) {
-    let Some(index_db) = store.index_db.as_ref() else {
-        return;
-    };
-    // Snapshot (rel, hash, language) so no borrow of `store.index` is held across the blob writes.
-    let files: Vec<(String, String, String)> = store
-        .index
-        .files
-        .iter()
-        .map(|(rel, entry)| {
-            (
-                rel.to_str_lossy().into_owned(),
-                entry.hash_hex.clone(),
-                entry.language.clone(),
-            )
-        })
-        .collect();
-
-    // Import/export facts harvested during the loop below so the cross-file join needs no second
-    // blob read. Only JS/TS files carry these (the locals path leaves them empty).
-    #[cfg(feature = "code-intel-js")]
-    let mut cross_file_facts: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
-
-    let mut writer = index_db.writer();
-    // Commit in bounded batches like the primary scan (`INDEX_COMMIT_BATCH`) rather than one
-    // repo-sized batch: keeps peak memory flat and releases Fjall's write lock periodically so a
-    // concurrent MCP reader isn't blocked for the whole pass.
-    let mut staged_files = 0usize;
-    for (rel_str, hash_hex, language) in files {
-        let rel = RelPath::from(rel_str.as_str());
-        // Cache hit: reuse persisted facts, no re-parse. Miss / schema drift: recompute + cache.
-        let refs = match store.read_resolved_by_hex(&hash_hex) {
-            Ok(Some(cached)) => cached,
-            _ => {
-                let Some(lang) = lang::intern(&language) else {
-                    continue;
-                };
-                let abs = root.join(&rel_str);
-                let Ok(bytes) = std::fs::read(&abs) else {
-                    continue;
-                };
-                let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes);
-                // Only persist a blob when there are facts to persist — a file with no resolved
-                // edges (e.g. a data file, or a language without resolution coverage) would
-                // otherwise write an empty blob just to have `remove_resolved_file` clear it.
-                if !computed.is_empty() {
-                    let _ = store.write_resolved_hex(&hash_hex, &computed);
-                }
-                computed
-            }
-        };
-        let staged = if refs.is_empty() {
-            // No facts — still clear any edges a prior scan left for this file. This delete also
-            // purges the previous scan's cross-file edges keyed by this file's use side.
-            writer.remove_resolved_file(&rel)
-        } else {
-            writer.upsert_resolved_file(&rel, &refs)
-        };
-        if let Err(e) = staged {
-            tracing::warn!(path = %rel, error = %e, "resolve pass: failed to stage resolved edges — skipping file");
-        }
-        // Retain this file's import/export lists for the cross-file join (move, no clone).
-        #[cfg(feature = "code-intel-js")]
-        if !refs.imports.is_empty() || !refs.exports.is_empty() {
-            cross_file_facts.insert(
-                rel_str,
-                crate::intel::xfile::FileFacts {
-                    imports: refs.imports,
-                    exports: refs.exports,
-                },
-            );
-        }
-        staged_files += 1;
-        if staged_files >= INDEX_COMMIT_BATCH {
-            if let Err(e) = writer.commit() {
-                tracing::warn!(error = %e, "resolve pass: index commit failed — resolved navigation may be stale");
-            }
-            writer = index_db.writer();
-            staged_files = 0;
-        }
-    }
-    if let Err(e) = writer.commit() {
-        tracing::warn!(error = %e, "resolve pass: index commit failed — resolved navigation may be stale");
-    }
-
-    // Cross-file JOIN sub-pass (JS/TS only): stitch importer bindings to resolved-target exports.
-    // Runs after every importer's per-file upsert has committed, so each importer's slate is clean
-    // — the delete inside `upsert_resolved_file` / `remove_resolved_file` already purged the prior
-    // scan's cross-file edges keyed by that importer, keeping re-scans idempotent.
-    #[cfg(feature = "code-intel-js")]
-    crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file_facts);
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher
@@ -513,10 +408,11 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
         report.stats.removed += 1;
     }
 
-    // Second pass: resolve scope/import-bound references now that the primary index is complete.
-    // Recomputed wholesale (cheap: index reads, blob-cache hits, no re-parse for unchanged files)
-    // to sidestep cross-file dependency invalidation — same call site as the full `scan`.
-    resolve_pass(root, store);
+    // Second pass: resolve scope/import-bound references, scoped to what actually changed. Only the
+    // changed files' intra facts are restaged, and only the affected importer set (changed files
+    // plus every file that imports one — the reverse-import invariant) is re-stitched; every other
+    // file's resolved edges are left untouched. See `crate::intel::resolve_pass`.
+    crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels);
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
