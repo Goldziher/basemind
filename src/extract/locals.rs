@@ -80,20 +80,36 @@ pub fn locals_query(lang: LangId) -> Result<CachedQuery, LangError> {
     Ok(cached)
 }
 
+/// The definition span (and the reference's own end byte) a resolved reference binds to.
+///
+/// Kept `Copy` and value-sized so the binding map stays a flat `AHashMap<u32, ResolvedSpan>` with
+/// no per-reference heap allocation. All three ends come straight from the tree-sitter capture
+/// nodes — no extra tree walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedSpan {
+    /// End byte of the reference identifier (its start is the map key).
+    use_end: u32,
+    /// Start byte of the bound definition identifier.
+    def_start: u32,
+    /// End byte of the bound definition identifier.
+    def_end: u32,
+}
+
 /// Intra-file scope-resolution result.
 ///
-/// Maps a reference identifier's start byte to the start byte of the nearest enclosing local
-/// definition of the same name. References that bind to no in-file definition (module-imported
-/// or otherwise free names) are simply absent — callers treat those as cross-file candidates.
+/// Maps a reference identifier's start byte to the nearest enclosing local definition of the same
+/// name, carrying both identifiers' end bytes so callers can recover real spans (name extraction,
+/// span-containment). References that bind to no in-file definition (module-imported or otherwise
+/// free names) are simply absent — callers treat those as cross-file candidates.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LocalBindings {
-    ref_to_def: AHashMap<u32, u32>,
+    ref_to_def: AHashMap<u32, ResolvedSpan>,
 }
 
 impl LocalBindings {
     /// Start byte of the in-file definition the reference at `ref_start_byte` binds to, if any.
     pub fn resolved_def(&self, ref_start_byte: u32) -> Option<u32> {
-        self.ref_to_def.get(&ref_start_byte).copied()
+        self.ref_to_def.get(&ref_start_byte).map(|span| span.def_start)
     }
 
     /// True when the reference at `ref_start_byte` binds to a definition in this file.
@@ -105,7 +121,17 @@ impl LocalBindings {
     pub fn edges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.ref_to_def
             .iter()
-            .map(|(&use_start, &def_start)| (use_start, def_start))
+            .map(|(&use_start, span)| (use_start, span.def_start))
+    }
+
+    /// Iterate the resolved edges with full spans: `(use_start, use_end, def_start, def_end)`.
+    /// The end bytes come from the tree-sitter capture nodes, so both spans are real identifier
+    /// extents — unlike the interim zero-width ends the locals path used to emit. Order is
+    /// unspecified.
+    pub fn edges_spanned(&self) -> impl Iterator<Item = (u32, u32, u32, u32)> + '_ {
+        self.ref_to_def
+            .iter()
+            .map(|(&use_start, span)| (use_start, span.use_end, span.def_start, span.def_end))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -188,7 +214,7 @@ fn resolve_bindings(
     scopes: &[(u32, u32)],
     defs: &[(&[u8], u32, u32)],
     refs: &[(&[u8], u32, u32)],
-) -> AHashMap<u32, u32> {
+) -> AHashMap<u32, ResolvedSpan> {
     // Each definition's owning scope = the innermost scope containing its range.
     let mut defs_by_scope: AHashMap<usize, Vec<usize>> = AHashMap::new();
     for (di, &(_, ds, de)) in defs.iter().enumerate() {
@@ -205,7 +231,7 @@ fn resolve_bindings(
     // wrapping to a huge value in release builds.
     scope_order.sort_by_key(|&i| scopes[i].1.saturating_sub(scopes[i].0));
 
-    let mut ref_to_def: AHashMap<u32, u32> = AHashMap::new();
+    let mut ref_to_def: AHashMap<u32, ResolvedSpan> = AHashMap::new();
     for &(rname, rs, re) in refs {
         for &sc in &scope_order {
             let (s, e) = scopes[sc];
@@ -214,7 +240,15 @@ fn resolve_bindings(
                 && let Some(dis) = defs_by_scope.get(&sc)
                 && let Some(&di) = dis.iter().find(|&&di| defs[di].0 == rname)
             {
-                ref_to_def.insert(rs, defs[di].1);
+                let (_, def_start, def_end) = defs[di];
+                ref_to_def.insert(
+                    rs,
+                    ResolvedSpan {
+                        use_end: re,
+                        def_start,
+                        def_end,
+                    },
+                );
                 break;
             }
         }
@@ -276,14 +310,34 @@ mod tests {
     fn reference_binds_to_nearest_enclosing_definition() {
         let (scopes, defs, refs) = fixture();
         let map = resolve_bindings(&scopes, &defs, &refs);
-        // x (in inner) binds to the outer `let x` at 30.
-        assert_eq!(map.get(&70), Some(&30), "x should bind to outer let x@30");
-        // b binds to inner's param at 60.
-        assert_eq!(map.get(&74), Some(&60), "b should bind to inner param b@60");
-        // inner (called in outer) binds to the function def at 45.
-        assert_eq!(map.get(&95), Some(&45), "inner should bind to function inner@45");
+        // x (in inner) binds to the outer `let x` at 30..31, ref span 70..71.
+        let x = map.get(&70).expect("x should bind");
+        assert_eq!(
+            (x.def_start, x.def_end),
+            (30, 31),
+            "x should bind to outer let x@30..31"
+        );
+        assert_eq!(x.use_end, 71, "x ref end must be the identifier end, not the start");
+        // b binds to inner's param at 60..61.
+        assert_eq!(
+            map.get(&74).map(|s| s.def_start),
+            Some(60),
+            "b should bind to inner param b@60"
+        );
+        // inner (called in outer) binds to the function def at 45..50, ref span 95..100.
+        let inner = map.get(&95).expect("inner should bind");
+        assert_eq!(
+            (inner.def_start, inner.def_end),
+            (45, 50),
+            "inner should bind to function inner@45..50"
+        );
+        assert_eq!(inner.use_end, 100, "inner ref end must be the identifier end");
         // a binds to outer's param at 20.
-        assert_eq!(map.get(&96), Some(&20), "a should bind to outer param a@20");
+        assert_eq!(
+            map.get(&96).map(|s| s.def_start),
+            Some(20),
+            "a should bind to outer param a@20"
+        );
     }
 
     #[test]
@@ -294,7 +348,11 @@ mod tests {
         let defs: Vec<(&[u8], u32, u32)> = vec![(b"v".as_slice(), 30, 31), (b"v".as_slice(), 55, 56)];
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"v".as_slice(), 70, 71)];
         let map = resolve_bindings(&scopes, &defs, &refs);
-        assert_eq!(map.get(&70), Some(&55), "inner v@55 must shadow outer v@30");
+        assert_eq!(
+            map.get(&70).map(|s| s.def_start),
+            Some(55),
+            "inner v@55 must shadow outer v@30"
+        );
     }
 
     #[test]
@@ -315,7 +373,11 @@ mod tests {
         let defs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 5, 11)];
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 50, 56)];
         let map = resolve_bindings(&scopes, &defs, &refs);
-        assert_eq!(map.get(&50), Some(&5), "root-level helper must still bind");
+        assert_eq!(
+            map.get(&50).map(|s| s.def_start),
+            Some(5),
+            "root-level helper must still bind"
+        );
     }
 
     /// Parse `bytes` with `lang`'s grammar, returning the tree — or `None` when the grammar (or
@@ -330,6 +392,12 @@ mod tests {
             Ok(ParseOutcome::Ok(tree)) => Some(tree),
             _ => None,
         }
+    }
+
+    /// The full spanned edge `(use_start, use_end, def_start, def_end)` for the reference that
+    /// starts at `use_start`, if it resolved. Used to assert the enriched end offsets.
+    fn spanned_for(bindings: &LocalBindings, use_start: u32) -> Option<(u32, u32, u32, u32)> {
+        bindings.edges_spanned().find(|&(us, ..)| us == use_start)
     }
 
     #[test]
@@ -356,6 +424,18 @@ mod tests {
             bindings.resolved_def(a_use as u32),
             Some(a_def as u32),
             "python: `a` use must bind to param `a`"
+        );
+        // The enriched ends are real identifier extents, not the interim zero-width spans.
+        let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("python: x edge spanned");
+        assert_eq!(
+            ue - us,
+            "x".len() as u32,
+            "python: x ref end must be the identifier end"
+        );
+        assert_eq!(
+            de - ds,
+            "x".len() as u32,
+            "python: x def end must be the identifier end"
         );
     }
 
@@ -385,6 +465,9 @@ mod tests {
             Some(a_def as u32),
             "go: `a` use must bind to param `a`"
         );
+        let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("go: x edge spanned");
+        assert_eq!(ue - us, "x".len() as u32, "go: x ref end must be the identifier end");
+        assert_eq!(de - ds, "x".len() as u32, "go: x def end must be the identifier end");
     }
 
     #[test]
@@ -410,6 +493,17 @@ mod tests {
             bindings.resolved_def(a_use as u32),
             Some(a_def as u32),
             "typescript: `a` use must bind to param `a`"
+        );
+        let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("typescript: x edge spanned");
+        assert_eq!(
+            ue - us,
+            "x".len() as u32,
+            "typescript: x ref end must be the identifier end"
+        );
+        assert_eq!(
+            de - ds,
+            "x".len() as u32,
+            "typescript: x def end must be the identifier end"
         );
     }
 
@@ -437,6 +531,9 @@ mod tests {
             Some(a_def as u32),
             "tsx: `a` use must bind to param `a`"
         );
+        let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("tsx: x edge spanned");
+        assert_eq!(ue - us, "x".len() as u32, "tsx: x ref end must be the identifier end");
+        assert_eq!(de - ds, "x".len() as u32, "tsx: x def end must be the identifier end");
     }
 
     #[test]
@@ -470,6 +567,17 @@ mod tests {
             bindings.resolved_def(a_use as u32),
             Some(a_def as u32),
             "inner `a` use must bind to param `a`"
+        );
+        let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("javascript: x edge spanned");
+        assert_eq!(
+            ue - us,
+            "x".len() as u32,
+            "javascript: x ref end must be the identifier end"
+        );
+        assert_eq!(
+            de - ds,
+            "x".len() as u32,
+            "javascript: x def end must be the identifier end"
         );
     }
 }
