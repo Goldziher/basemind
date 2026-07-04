@@ -157,7 +157,7 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 match writer.upsert_cross_file_edge(&target_rel, name_start, &importer_rel, import.local_start) {
                     Ok(()) => {
                         edges += 1;
-                        if edges % COMMIT_BATCH == 0 {
+                        if edges.is_multiple_of(COMMIT_BATCH) {
                             if let Err(error) = writer.commit() {
                                 tracing::warn!(%error, "cross-file stitch: batch commit failed — navigation may be stale");
                             }
