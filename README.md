@@ -46,6 +46,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Code intelligence** | Find where things are defined, what calls what, who implements what, and how calls chain — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `find_implementations` · `workspace_grep` |
 | **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and full-text search commit authors + messages. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` · `search_git_history` |
 | **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. | `search_documents` |
+| **Code search** | Find source code by meaning, not exact name — semantic (vector) search over code chunks derived from the cached parse; returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
 | **Shared memory** | A per-repo memory agents can write to and search; clones of the same repo share it, unrelated repos stay separate. | `memory_put` · `memory_search` · `memory_audit` |
 | **Suggestions** | Spots files that change together and suggests notes worth saving — you approve before anything is kept. | `proposals_mine` · `proposal_accept` |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web_scrape` · `web_crawl` · `web_map` |
@@ -503,6 +504,8 @@ machine-readable output.
 | `list-files [--path-contains --language]` | List indexed files. |
 | `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
 | `dependents <module>` | What imports a given module. |
+| `search-code <query> [--limit --format]` | Semantic (vector) search over code chunks; returns pointers. Needs `--features code-search`. |
+| `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
 | `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
 
 **Git (`basemind git`)**

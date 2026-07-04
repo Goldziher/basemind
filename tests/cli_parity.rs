@@ -49,6 +49,9 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("symbol_history", "git symbol-history"),
         ("rescan", "rescan"),
         ("telemetry_summary", "telemetry"),
+        // semantic code search (tool_router_code — shims compile without the feature)
+        ("search_code", "query search-code"),
+        ("get_chunk", "query get-chunk"),
         // code-aware compression (tool_router_compress)
         ("expand", "query expand"),
         ("compress", "compress-output"),

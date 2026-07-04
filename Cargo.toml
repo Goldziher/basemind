@@ -87,6 +87,12 @@ documents = [
     "dep:serde_toon_format",
 ]
 
+# Semantic code search: chunk + embed source code (from cached L1/L2, no re-parse) into a
+# LanceDB `code_chunks` table for vector KNN via the `search_code` MCP tool. Needs the embedding
+# engine + LanceDB (`intelligence`) plus xberg's ORT-bundled embedding generation. Phase 1 is
+# vector-only; BM25 + RRF fusion land in later phases.
+code-search = ["intelligence", "xberg/embeddings"]
+
 # Shared agent memory: needs the embedding engine + LanceDB, plus the bits of
 # RAG infrastructure that make memory search useful (keywords for hybrid rank,
 # NER for entity-anchored retrieval). No document parsing backends.
@@ -134,7 +140,7 @@ code-intel = ["code-intel-js"]
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
 # `--features documents,memory,crawl,comms,shells,code-intel`. Use this when you want one flag
 # that always pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory", "crawl", "comms", "shells", "code-intel"]
+full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
 [dependencies]
 ahash = "0.8"

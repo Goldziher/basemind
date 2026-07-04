@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::code::CodeSearchConfig;
 use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
 use super::shells::ShellsConfig;
@@ -22,6 +23,10 @@ pub struct ConfigV1 {
     pub languages: std::collections::BTreeMap<String, LanguageConfig>,
     #[serde(default)]
     pub documents: DocumentsConfig,
+    /// Semantic code-search tier: chunk + embed source for the `search_code` MCP tool.
+    /// Inert unless the `code-search` cargo feature is compiled in.
+    #[serde(default)]
+    pub code_search: CodeSearchConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
     #[serde(default)]
@@ -359,6 +364,7 @@ impl ConfigV1 {
             mcp: McpConfig::default(),
             languages: Default::default(),
             documents: DocumentsConfig::default(),
+            code_search: CodeSearchConfig::default(),
             memory: MemoryConfig::default(),
             comms: CommsConfig::default(),
             crawl: CrawlConfig::default(),

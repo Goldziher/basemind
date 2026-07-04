@@ -15,6 +15,8 @@ pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
 mod helpers_calls;
+#[cfg(feature = "code-search")]
+mod helpers_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
 mod helpers_compress;
@@ -37,7 +39,7 @@ mod helpers_web;
 mod identity;
 mod lean;
 mod lenient;
-#[cfg(any(feature = "memory", feature = "documents"))]
+#[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 mod notifications;
 mod prompts;
@@ -46,6 +48,7 @@ mod telemetry;
 mod tokens;
 mod tools;
 mod tools_admin;
+mod tools_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
 mod tools_compress;
@@ -59,6 +62,7 @@ mod tools_web;
 mod toon;
 mod types;
 mod types_admin;
+mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod types_comms;
 mod types_compress;
@@ -111,6 +115,7 @@ pub mod params {
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_code::{GetChunkParams, SearchCodeParams};
     pub use super::types_compress::ExpandParams;
     pub use super::types_governance::{
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
@@ -210,8 +215,8 @@ pub(crate) struct ServerState {
     /// NUL-free) or `"anon"` when unset/invalid. Group-tier writes ignore it.
     #[allow(dead_code)] // used by the memory feature tools
     pub(crate) agent_id: String,
-    /// LanceDB vector store. Lazy-init on first memory/document call.
-    #[cfg(any(feature = "memory", feature = "documents"))]
+    /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
+    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
     pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
     /// Shared embedding engine. Lazy-init on first embed call.
     #[cfg(feature = "intelligence")]
@@ -551,7 +556,7 @@ impl BasemindServer {
             cache_generation: std::sync::atomic::AtomicU32::new(1),
             scope,
             agent_id,
-            #[cfg(any(feature = "memory", feature = "documents"))]
+            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
             #[cfg(feature = "intelligence")]
             embedder: tokio::sync::OnceCell::new(),
@@ -645,6 +650,7 @@ impl BasemindServer {
         let mut router = Self::tool_router_core()
             + Self::tool_router_git()
             + Self::tool_router_memory()
+            + Self::tool_router_code()
             + Self::tool_router_governance()
             + Self::tool_router_admin()
             + Self::tool_router_compress();
