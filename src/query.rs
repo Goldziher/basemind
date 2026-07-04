@@ -120,3 +120,23 @@ pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryE
     let paths = crate::extract::l3::dependents_of(module, &by_path);
     Ok(paths.into_iter().map(|p| RelPath::from(p.as_path())).collect())
 }
+
+/// Scope/import-resolved references to the definition at `(def_path, def_start)` — the resolved
+/// backing for `find_references`. Returns each binding `(use_path, use_start)`; empty when the
+/// store has no writable index or the definition has no resolved uses (the caller falls back to
+/// the name-based scan).
+pub fn resolved_references(store: &Store, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
+    match store.index_db.as_ref() {
+        Some(index) => index.references_to(def_path, def_start),
+        None => Vec::new(),
+    }
+}
+
+/// The definition the use at `(use_path, use_start)` resolves to — backs `goto_definition`.
+/// `None` when the position isn't a resolved reference (or the store has no index).
+pub fn definition_of(store: &Store, use_path: &RelPath, use_start: u32) -> Option<(RelPath, u32)> {
+    store
+        .index_db
+        .as_ref()
+        .and_then(|index| index.definition_of(use_path, use_start))
+}
