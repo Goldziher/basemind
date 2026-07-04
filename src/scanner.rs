@@ -315,15 +315,87 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
         store.remove(k);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
-            let _ = w.remove_file(&RelPath::from(k.as_str())).and_then(|()| w.commit());
+            let rel = RelPath::from(k.as_str());
+            let _ = w
+                .remove_file(&rel)
+                .and_then(|()| w.remove_resolved_file(&rel))
+                .and_then(|()| w.commit());
         }
         report.results.push(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
+    // Second pass: resolve scope/import-bound references now that the primary index is complete.
+    resolve_pass(root, store);
+
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     store.flush()?;
     Ok(report)
+}
+
+/// Post-scan resolution pass: for every indexed file, load its cached resolution facts (or
+/// recompute and cache them on a content-hash miss), then stage the intra-file resolved edges
+/// into the `refs_by_def` / `refs_by_path` index. Runs after the primary index is populated so a
+/// future cross-file join sees every file's exports.
+///
+/// Best-effort: resolution is an enhancement over the name-based fallback, so any failure is
+/// logged and the scan still succeeds. Skipped in a read-only (no-writable-index) session.
+///
+/// Unchanged files are a blob-cache hit (no re-parse); only new/changed files run an engine. The
+/// engine parse is a second parse for those files (the L1/L2 pass already parsed them) — an
+/// accepted cold-scan cost that a later slice can remove by folding the locals path into
+/// `process_file`. Incremental (`scan_paths`) resolution is a follow-up; today only the full scan
+/// refreshes resolved edges.
+fn resolve_pass(root: &Path, store: &Store) {
+    let Some(index_db) = store.index_db.as_ref() else {
+        return;
+    };
+    // Snapshot (rel, hash, language) so no borrow of `store.index` is held across the blob writes.
+    let files: Vec<(String, String, String)> = store
+        .index
+        .files
+        .iter()
+        .map(|(rel, entry)| {
+            (
+                rel.to_str_lossy().into_owned(),
+                entry.hash_hex.clone(),
+                entry.language.clone(),
+            )
+        })
+        .collect();
+
+    let mut writer = index_db.writer();
+    for (rel_str, hash_hex, language) in files {
+        let rel = RelPath::from(rel_str.as_str());
+        // Cache hit: reuse persisted facts, no re-parse. Miss / schema drift: recompute + cache.
+        let refs = match store.read_resolved_by_hex(&hash_hex) {
+            Ok(Some(cached)) => cached,
+            _ => {
+                let Some(lang) = lang::intern(&language) else {
+                    continue;
+                };
+                let abs = root.join(&rel_str);
+                let Ok(bytes) = std::fs::read(&abs) else {
+                    continue;
+                };
+                let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes);
+                let _ = store.write_resolved_hex(&hash_hex, &computed);
+                computed
+            }
+        };
+        let staged = if refs.is_empty() {
+            // No facts — still clear any edges a prior scan left for this file.
+            writer.remove_resolved_file(&rel)
+        } else {
+            writer.upsert_resolved_file(&rel, &refs)
+        };
+        if let Err(e) = staged {
+            tracing::warn!(path = %rel, error = %e, "resolve pass: failed to stage resolved edges — skipping file");
+        }
+    }
+    if let Err(e) = writer.commit() {
+        tracing::warn!(error = %e, "resolve pass: index commit failed — resolved navigation may be stale");
+    }
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher
