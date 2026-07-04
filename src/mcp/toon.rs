@@ -23,14 +23,14 @@
 //! output is always lossless and round-trippable.
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 use serde_json::Value;
 
 /// Wire format an agent can opt into per tool call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResponseFormat {
-    /// Compact JSON via the existing `Content::json` path (the default, backward compatible).
+    /// Compact JSON via the existing `ContentBlock::json` path (the default, backward compatible).
     Json,
     /// Native TOON for the list array, scalars as `key: value` lines.
     Toon,
@@ -50,8 +50,8 @@ impl ResponseFormat {
 
 /// Serialize `value` into a `CallToolResult` honoring the requested wire format.
 ///
-/// `Json` delegates to the canonical [`super::helpers::json_result`] (`Content::json`). `Toon`
-/// renders [`encode`] output into a plain `Content::text` item so the agent receives the compact
+/// `Json` delegates to the canonical [`super::helpers::json_result`] (`ContentBlock::json`). `Toon`
+/// renders [`encode`] output into a plain `ContentBlock::text` item so the agent receives the compact
 /// table on the wire.
 pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Result<CallToolResult, McpError> {
     match fmt {
@@ -59,7 +59,7 @@ pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Res
         ResponseFormat::Toon => {
             let json = serde_json::to_value(value)
                 .map_err(|e| McpError::internal_error(format!("toon: serialize: {e}"), None))?;
-            Ok(CallToolResult::success(vec![Content::text(encode(&json))]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(encode(&json))]))
         }
     }
 }

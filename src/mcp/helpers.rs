@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde::Serialize;
 
 use super::types::{BlameHunkView, BlameResponse, BlameSymbolResponse, CommitFileView, CommitView};
@@ -116,7 +116,7 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
 
 pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let content =
-        Content::json(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
+        ContentBlock::json(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
     Ok(CallToolResult::success(vec![content]))
 }
 

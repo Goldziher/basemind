@@ -104,12 +104,12 @@ fn run_scan(root: &Path) {
 }
 
 fn decode_text(result: &CallToolResult) -> Value {
-    use rmcp::model::RawContent;
+    use rmcp::model::ContentBlock;
     let raw = result
         .content
         .iter()
-        .find_map(|c| match &c.raw {
-            RawContent::Text(t) => Some(t.text.clone()),
+        .find_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .unwrap_or_default();
@@ -119,12 +119,12 @@ fn decode_text(result: &CallToolResult) -> Value {
 /// Return the first text content item verbatim (no JSON parse) — used to inspect the
 /// raw TOON payload a tool emits when `format="toon"`.
 fn raw_text(result: &CallToolResult) -> String {
-    use rmcp::model::RawContent;
+    use rmcp::model::ContentBlock;
     result
         .content
         .iter()
-        .find_map(|c| match &c.raw {
-            RawContent::Text(t) => Some(t.text.clone()),
+        .find_map(|c| match c {
+            ContentBlock::Text(t) => Some(t.text.clone()),
             _ => None,
         })
         .unwrap_or_default()
@@ -933,8 +933,8 @@ async fn mcp_server_exercises_representative_tools() {
                 let toon_raw = toon_resp
                     .content
                     .iter()
-                    .find_map(|c| match &c.raw {
-                        rmcp::model::RawContent::Text(t) => Some(t.text.clone()),
+                    .find_map(|c| match c {
+                        rmcp::model::ContentBlock::Text(t) => Some(t.text.clone()),
                         _ => None,
                     })
                     .unwrap_or_default();
@@ -3296,7 +3296,7 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
         .messages
         .iter()
         .filter_map(|m| match &m.content {
-            rmcp::model::PromptMessageContent::Text { text } => Some(text.as_str()),
+            rmcp::model::ContentBlock::Text(t) => Some(t.text.as_str()),
             _ => None,
         })
         .collect::<String>();
@@ -3359,6 +3359,9 @@ async fn completes_prompt_arguments_from_the_code_map() {
 
 /// 0.8.0: `rescan` emits a logging notification (with counts) and progress notifications when
 /// the client supplies a progress token. Uses a capturing client handler to observe both.
+// SEP-2577 deprecated the MCP logging types (LoggingMessageNotificationParam); rmcp 2.1 offers no
+// replacement yet and basemind still emits these notifications, so this test intentionally uses them.
+#[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rescan_emits_logging_and_progress_notifications() {
     use std::sync::Arc;

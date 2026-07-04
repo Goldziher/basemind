@@ -126,19 +126,19 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.2"
-# Pinned to arrow 58 to match the version lancedb 0.30 resolves transitively
-# (lancedb → lance → datafusion → arrow 58). Depending on a newer arrow here
-# produces a dual-version skew where our `src/lance` RecordBatch/Schema types
+# Pinned to arrow 58 to match the version lancedb 0.31 resolves transitively
+# (lancedb → lance → datafusion → arrow 58). Depending on a different arrow major
+# here produces a dual-version skew where our `src/lance` RecordBatch/Schema types
 # don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-# crawlberg powers the on-demand web crawl tier. Pinned the same way xberg is.
+# crawlberg powers the on-demand web crawl tier.
 # Default features cover native-runtime (HTTP + tokio); we deliberately do NOT
 # opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
-crawlberg = { version = "=1.0.1", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.0.3", default-features = false, features = ["native-runtime"], optional = true }
 # User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
 fjall = "3.1.5"
@@ -149,7 +149,7 @@ globset = "0.4"
 hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
-lancedb = { version = "0.30", optional = true }
+lancedb = { version = "0.31", optional = true }
 # Process RSS / peak-RSS reporting (src/sysres.rs): non-deprecated `getrusage` (peak) on all Unix
 # and `/proc/self/statm` (current, Linux). macOS current RSS uses the `mach2` crate below. Windows
 # falls back to `None`.
@@ -160,15 +160,15 @@ notify = "8"
 notify-debouncer-full = "0.7"
 rayon = "1"
 regex = "1.12.4"
-rmcp = { version = "1.8", features = ["server", "macros", "schemars", "transport-io"] }
+rmcp = { version = "2.1", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
 # Embedded headless agent shells (shells feature only). The rmux trio is pulled
 # with default features off so the `web` frontend (and its crypto stack) never
 # enters the dep tree — basemind embeds only the daemon + SDK client. basemind
 # re-execs ITSELF as the rmux daemon, so no external `rmux` binary is required.
-rmux-client = { version = "0.7", default-features = false, optional = true }
-rmux-sdk = { version = "0.7", default-features = false, optional = true }
-rmux-server = { version = "0.7", default-features = false, optional = true }
+rmux-client = { version = "0.8", default-features = false, optional = true }
+rmux-sdk = { version = "0.8", default-features = false, optional = true }
+rmux-server = { version = "0.8", default-features = false, optional = true }
 # Drives the schema-first config: every config struct in src/config/v1.rs derives
 # JsonSchema so the committed JSON schema can be regenerated from the Rust types.
 # Pinned to 1.2 to match the transitive version rmcp already pulls in.
@@ -196,9 +196,9 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
-tree-sitter-language-pack = "=1.12.0"
+tree-sitter-language-pack = "1.12.3"
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "=1.0.0-rc.1", default-features = false, features = [
+xberg = { version = "1.0.0-rc.6", default-features = false, features = [
     "tokio-runtime",
     "simd-utf8",
 ], optional = true }
@@ -217,7 +217,7 @@ proptest = "1"
 # Client-side rmcp used by the `harden` integration test to drive `basemind serve`
 # over a stdio child-process transport. Composes with the [dependencies] entry
 # above — features are union-merged by cargo.
-rmcp = { version = "1.8", features = ["client", "transport-child-process"] }
+rmcp = { version = "2.1", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 # wiremock spins up an in-process HTTP server for the `crawl` smoke test so we

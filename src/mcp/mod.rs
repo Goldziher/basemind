@@ -752,6 +752,8 @@ impl ServerHandler for BasemindServer {
 
     /// `logging/setLevel`: record the minimum severity the client wants. Subsequent log
     /// notifications (e.g. from `rescan`) are gated on this threshold.
+    // `SetLevelRequestParams` is deprecated by SEP-2577 with no replacement yet; allow until we migrate.
+    #[allow(deprecated)]
     async fn set_level(
         &self,
         request: rmcp::model::SetLevelRequestParams,

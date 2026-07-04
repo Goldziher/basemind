@@ -12,7 +12,7 @@
 //! `#[prompt_handler]` macro, which would regenerate `get_info`).
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{PromptMessage, PromptMessageRole};
+use rmcp::model::{PromptMessage, Role};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{prompt, prompt_router};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ impl BasemindServer {
     )]
     pub async fn onboard_repo_prompt(&self) -> Vec<PromptMessage> {
         vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             "Help me get oriented in this repository. Work structure-first, using basemind \
              tools rather than reading files:\n\
              1. Call `repo_info` and `status` for the language mix, file count, and index state.\n\
@@ -67,7 +67,7 @@ impl BasemindServer {
     pub async fn trace_symbol_prompt(&self, Parameters(args): Parameters<TraceSymbolArgs>) -> Vec<PromptMessage> {
         let symbol = args.symbol;
         vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!(
                 "Trace the symbol `{symbol}` through this codebase using basemind:\n\
                  1. `search_symbols` for `{symbol}` to find its definition(s) — note path + \
@@ -90,7 +90,7 @@ impl BasemindServer {
     pub async fn explain_file_prompt(&self, Parameters(args): Parameters<ExplainFileArgs>) -> Vec<PromptMessage> {
         let path = args.path;
         vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             format!(
                 "Explain the file `{path}` using basemind, structure-first:\n\
                  1. `outline` `{path}` (add `l2: true`) for its symbols, signatures, imports, and \
@@ -111,7 +111,7 @@ impl BasemindServer {
     )]
     pub async fn review_working_tree_prompt(&self) -> Vec<PromptMessage> {
         vec![PromptMessage::new_text(
-            PromptMessageRole::User,
+            Role::User,
             "Review my uncommitted changes using basemind:\n\
              1. `working_tree_status` for the staged / unstaged / untracked breakdown.\n\
              2. For each changed file, `diff_outline` to see which symbols changed structurally \

@@ -6,13 +6,13 @@
 #[cfg(feature = "documents")]
 use rmcp::ErrorData as McpError;
 #[cfg(feature = "documents")]
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, ContentBlock};
 
 /// Serialize `value` into a `CallToolResult` using the requested wire format.
 ///
 /// `Json` delegates to the existing [`super::helpers::json_result`] helper
 /// (Content-type json). `Toon` serializes with `serde_toon::to_string` and wraps
-/// the body in a plain `Content::text` item so agents receive human-readable
+/// the body in a plain `ContentBlock::text` item so agents receive human-readable
 /// TOON on the wire.
 ///
 /// Feature-gated behind `documents` because TOON output is only meaningful for
@@ -28,7 +28,7 @@ pub(crate) fn format_response<T: serde::Serialize>(
         crate::config::OutputFormat::Toon => {
             let body =
                 serde_toon::to_string(value).map_err(|e| McpError::internal_error(format!("toon: {e}"), None))?;
-            Ok(CallToolResult::success(vec![Content::text(body)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
         }
     }
 }
