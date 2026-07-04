@@ -609,13 +609,15 @@ impl BasemindServer {
     #[tool(
         description = "Resolve the reference at `path`:`line`:`column` to its definition — \
                        scope-resolved, NOT name-matched, so it never conflates same-named symbols. \
-                       Returns the definition `{path, line, column, name}`, or omits `definition` \
+                       Returns the definition `{path, line, column, name}` (`path` may be another \
+                       file — cross-file imports are followed for JS/TS), or omits `definition` \
                        when the position holds no resolved binding (module-global, unresolved, or a \
                        language without resolution coverage). `line` is 1-based, `column` 0-based \
                        bytes; any byte inside the identifier resolves for span-aware engines (oxc \
-                       JS/TS), the tree-sitter `locals` fallback needs the identifier's start byte. \
-                       Reads the content-addressed resolution blobs, so it answers even in a \
-                       read-only session.",
+                       JS/TS), the tree-sitter `locals` fallback + the cross-file hop match the \
+                       identifier's start byte. The in-file hop reads the content-addressed blobs \
+                       (answers even in a read-only session); the cross-file hop also needs the \
+                       index open.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn goto_definition(

@@ -10,7 +10,6 @@
 //! the index/blob layer, so it is unit-testable directly against oxc's parser.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use oxc_allocator::Allocator;
 use oxc_parser::Parser;
@@ -20,12 +19,11 @@ use oxc_syntax::module_record::{ExportExportName, ImportImportName};
 
 /// A resolved intra-file reference: a use of a symbol linked to the definition it binds to, both
 /// as byte spans. oxc has already applied scope/shadowing resolution, so `def_start` is the
-/// *correct* binding — not a name match.
+/// *correct* binding — not a name match. The identifier text is intentionally not carried: the
+/// scanner only persists the spans (`ResolvedEdge`), and any name is recoverable from the source at
+/// `def_start..def_end` on demand.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRef {
-    /// `Arc<str>` so the symbol name is promoted once per symbol and shared (atomic bump)
-    /// across all of its references, rather than heap-cloned per reference on the scan path.
-    pub name: Arc<str>,
     pub def_start: u32,
     pub def_end: u32,
     pub use_start: u32,
@@ -41,7 +39,8 @@ pub struct JsImport {
     /// Module specifier, e.g. `./bar` or `react`.
     pub specifier: String,
     /// Name exported by the source module: `Some("baz")` for `import { baz }`; `None` for
-    /// `import x` (default) and `import * as ns` (namespace).
+    /// `import x` (default). Namespace imports (`import * as ns`) are dropped entirely — a namespace
+    /// object has no single export site to bind to — so they never produce a `JsImport`.
     pub imported: Option<String>,
     /// True for type-only imports (`import type { Foo }`, `import { type Foo }`). These are
     /// erased at runtime, so the cross-file stitch must not treat them as runtime reference edges.
@@ -99,14 +98,11 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
     let mut resolved = Vec::new();
     for symbol_id in scoping.symbol_ids() {
         let def_span = scoping.symbol_span(symbol_id);
-        // Promote the name once per symbol; each reference shares it via an atomic bump.
-        let name: Arc<str> = Arc::from(scoping.symbol_name(symbol_id));
         for reference in scoping.get_resolved_references(symbol_id) {
             // A resolved reference's NodeId points at its `IdentifierReference` node, so this
             // span is the use-site identifier token.
             let use_span = nodes.kind(reference.node_id()).span();
             resolved.push(ResolvedRef {
-                name: Arc::clone(&name),
                 def_start: def_span.start,
                 def_end: def_span.end,
                 use_start: use_span.start,
@@ -115,20 +111,26 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         }
     }
 
-    // Import edges from the module record.
+    // Import edges from the module record. Namespace imports are dropped (see below) — they bind a
+    // whole-module object with no single export site, so folding them into `default` would emit a
+    // spurious cross-file edge.
     let imports = parsed
         .module_record
         .import_entries
         .iter()
-        .map(|entry| JsImport {
-            local: entry.local_name.name.as_str().to_string(),
-            specifier: entry.module_request.name.as_str().to_string(),
-            imported: match &entry.import_name {
+        .filter_map(|entry| {
+            let imported = match &entry.import_name {
                 ImportImportName::Name(ns) => Some(ns.name.as_str().to_string()),
-                ImportImportName::Default(_) | ImportImportName::NamespaceObject => None,
-            },
-            is_type: entry.is_type,
-            local_start: entry.local_name.span.start,
+                ImportImportName::Default(_) => None,
+                ImportImportName::NamespaceObject => return None,
+            };
+            Some(JsImport {
+                local: entry.local_name.name.as_str().to_string(),
+                specifier: entry.module_request.name.as_str().to_string(),
+                imported,
+                is_type: entry.is_type,
+                local_start: entry.local_name.span.start,
+            })
         })
         .collect();
 
@@ -173,7 +175,7 @@ mod tests {
         let call_ref = a
             .resolved
             .iter()
-            .find(|r| &*r.name == "greet" && r.use_start as usize == greet_call)
+            .find(|r| r.use_start as usize == greet_call)
             .expect("greet call must resolve");
         assert_eq!(
             call_ref.def_start as usize, greet_def,
@@ -192,7 +194,7 @@ mod tests {
         let r = a
             .resolved
             .iter()
-            .find(|r| &*r.name == "x" && r.use_start as usize == use_x)
+            .find(|r| r.use_start as usize == use_x)
             .expect("inner x use must resolve");
         assert_eq!(r.def_start as usize, inner_x, "must bind to inner x, not outer");
         assert_ne!(r.def_start as usize, outer_x);
@@ -222,8 +224,10 @@ mod tests {
         let def = by_local("def").expect("default import");
         assert_eq!(def.imported, None, "default import has no source name");
 
-        let ns = by_local("ns").expect("namespace import");
-        assert_eq!(ns.imported, None, "namespace import has no source name");
+        assert!(
+            by_local("ns").is_none(),
+            "namespace import is dropped — no single export site to stitch"
+        );
     }
 
     #[test]
@@ -241,8 +245,9 @@ mod tests {
         // as a resolved reference. This is the cross-file-candidate signal.
         let src = "function f() {\n  return fetch('/x');\n}\n";
         let a = ts(src);
+        let fetch_use = src.find("fetch(").unwrap() as u32;
         assert!(
-            !a.resolved.iter().any(|r| &*r.name == "fetch"),
+            !a.resolved.iter().any(|r| r.use_start == fetch_use),
             "global `fetch` must not resolve to an in-file def"
         );
     }

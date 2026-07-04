@@ -200,7 +200,10 @@ fn resolve_bindings(
     // the per-ref containment walk is an allocation-free linear scan instead of a per-ref
     // collect-and-sort.
     let mut scope_order: Vec<usize> = (0..scopes.len()).collect();
-    scope_order.sort_by_key(|&i| scopes[i].1 - scopes[i].0);
+    // `saturating_sub`: a well-formed grammar always emits `end >= start`, but a malformed one could
+    // invert the span; saturating keeps the sort total (area 0 → treated as innermost) rather than
+    // wrapping to a huge value in release builds.
+    scope_order.sort_by_key(|&i| scopes[i].1.saturating_sub(scopes[i].0));
 
     let mut ref_to_def: AHashMap<u32, u32> = AHashMap::new();
     for &(rname, rs, re) in refs {

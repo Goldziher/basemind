@@ -37,11 +37,16 @@ pub struct FileFacts {
     pub exports: Vec<ExportEdge>,
 }
 
-/// The ES-module name an import binds to when it carries no explicit `imported` name — a default
-/// import (`import x from ...`) binds the target's `default` export. Namespace imports also have
-/// no `imported` name; matching them to `default` is a harmless best-effort (a namespace object
-/// has no single export site, so at most it stitches a spurious edge to a `default` export).
+/// The ES-module name a default import (`import x from ...`) binds to — its target's `default`
+/// export. Namespace imports (`import * as ns`) are dropped upstream in the oxc analysis (they bind
+/// a whole-module object with no single export site), so only genuine default imports — whose
+/// `imported` is `None` — reach this fallback.
 const DEFAULT_EXPORT_NAME: &str = "default";
+
+/// Commit the cross-file edge batch in bounded chunks, matching the primary scan's
+/// `INDEX_COMMIT_BATCH`: caps peak memory and periodically releases Fjall's write lock so a
+/// concurrent MCP reader isn't blocked for the whole stitch.
+const COMMIT_BATCH: usize = 256;
 
 /// JS/TS module-resolution extensions, TS-first so a bare `./util` specifier binds to `util.ts`
 /// before `util.js` (matching `tsc`'s module resolution precedence).
@@ -91,6 +96,17 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
     if facts.is_empty() {
         return;
     }
+    // Pre-index every target file's exports by name once, so the per-import lookup is O(1) instead
+    // of a linear scan over a barrel file's hundreds of re-exports.
+    let export_maps: AHashMap<&str, AHashMap<&str, u32>> = facts
+        .iter()
+        .filter(|(_, f)| !f.exports.is_empty())
+        .map(|(key, f)| {
+            let by_name: AHashMap<&str, u32> = f.exports.iter().map(|e| (e.name.as_str(), e.name_start)).collect();
+            (key.as_str(), by_name)
+        })
+        .collect();
+
     let resolver = build_resolver();
     let mut writer = index_db.writer();
     let mut edges = 0usize;
@@ -132,14 +148,22 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
             let Some(target_key) = target_rel.as_str() else {
                 continue;
             };
-            let Some(target_facts) = facts.get(target_key) else {
-                continue; // target has no import/export facts (nothing to bind to)
+            let Some(export_map) = export_maps.get(target_key) else {
+                continue; // target exports nothing (nothing to bind to)
             };
 
             let wanted = import.imported.as_deref().unwrap_or(DEFAULT_EXPORT_NAME);
-            if let Some(export) = target_facts.exports.iter().find(|e| e.name == wanted) {
-                match writer.upsert_cross_file_edge(&target_rel, export.name_start, &importer_rel, import.local_start) {
-                    Ok(()) => edges += 1,
+            if let Some(&name_start) = export_map.get(wanted) {
+                match writer.upsert_cross_file_edge(&target_rel, name_start, &importer_rel, import.local_start) {
+                    Ok(()) => {
+                        edges += 1;
+                        if edges % COMMIT_BATCH == 0 {
+                            if let Err(error) = writer.commit() {
+                                tracing::warn!(%error, "cross-file stitch: batch commit failed — navigation may be stale");
+                            }
+                            writer = index_db.writer();
+                        }
+                    }
                     Err(error) => tracing::warn!(
                         importer = %importer_rel,
                         target = %target_rel,

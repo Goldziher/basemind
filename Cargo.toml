@@ -187,7 +187,7 @@ oxc_syntax = { version = "=0.138.0", optional = true }
 # Node/tsconfig ESM+CJS module resolution (MIT, standalone repo — versioned independently of the
 # 0.138 oxc workspace above). Powers the cross-file stitch: an importer's specifier → the absolute
 # on-disk target file, honoring extension + index + package.json resolution.
-oxc_resolver = { version = "11", optional = true }
+oxc_resolver = { version = "=11.23.0", optional = true }
 rayon = "1"
 regex = "1.12.4"
 rmcp = { version = "2.1", features = ["server", "macros", "schemars", "transport-io"] }

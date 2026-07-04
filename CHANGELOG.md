@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
+  each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
+  across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX
+  / Go); JS/TS additionally get cross-file resolution via oxc scope analysis + `oxc_resolver` import
+  stitching. New `goto_definition` MCP tool + `query goto-definition` CLI resolve a `path:line:column`
+  to its definition, following cross-file import bindings. Behind the `code-intel-js` feature (folded
+  into `full`) for the JS/TS engine; the `locals` tier is always on.
+
+### Changed
+
+- **Index schema revision — new `refs_by_def` / `refs_by_path` Fjall partitions** back the resolved
+  edges; per-file resolution facts persist as content-addressed `<hash>.rref.msgpack` blobs. This
+  ships as a minor-release cut: `RELEASE_MINOR` bumps at release time, wiping and rebuilding every
+  `.basemind/` index + blob store on the next `basemind scan` (the resolve pass repopulates the new
+  partitions).
+
 ## [0.16.0] — 2026-07-02
 
 Minor release: `RELEASE_MINOR` bumps 15 → 16, so every `.basemind/` index + blob store (including
