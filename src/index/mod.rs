@@ -202,4 +202,38 @@ impl IndexDb {
     pub fn symbols_index_is_empty(&self) -> bool {
         self.symbols_by_path.iter().next().is_none()
     }
+
+    /// Resolved references to the definition at `(def_path, def_start)` — the scope/import-resolved
+    /// backing for `find_references`. Returns each binding `(use_path, use_start)`; empty when the
+    /// definition has no resolved uses (or resolution never ran for its file).
+    pub fn references_to(&self, def_path: &crate::path::RelPath, def_start: u32) -> Vec<(crate::path::RelPath, u32)> {
+        let prefix = keys::refs_by_def_prefix(def_path, def_start);
+        let mut out = Vec::new();
+        for guard in self.refs_by_def.prefix(prefix) {
+            if let Ok((k, _)) = guard.into_inner()
+                && let Some((_def_path, _def_start, use_path, use_start)) = keys::parse_ref_by_def(&k)
+            {
+                out.push((use_path, use_start));
+            }
+        }
+        out
+    }
+
+    /// The definition the use at `(use_path, use_start)` binds to — backs `goto_definition`.
+    /// `None` when the position isn't a resolved reference.
+    pub fn definition_of(
+        &self,
+        use_path: &crate::path::RelPath,
+        use_start: u32,
+    ) -> Option<(crate::path::RelPath, u32)> {
+        let prefix = keys::refs_by_use_prefix(use_path, use_start);
+        for guard in self.refs_by_path.prefix(prefix) {
+            if let Ok((k, _)) = guard.into_inner()
+                && let Some((_use_path, _use_start, def_path, def_start)) = keys::parse_ref_by_path(&k)
+            {
+                return Some((def_path, def_start));
+            }
+        }
+        None
+    }
 }

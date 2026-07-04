@@ -96,6 +96,13 @@ impl LocalBindings {
         self.ref_to_def.contains_key(&ref_start_byte)
     }
 
+    /// Iterate the resolved `(use_start_byte, def_start_byte)` edges. Order is unspecified.
+    pub fn edges(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.ref_to_def
+            .iter()
+            .map(|(&use_start, &def_start)| (use_start, def_start))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.ref_to_def.is_empty()
     }
