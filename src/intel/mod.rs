@@ -13,3 +13,4 @@
 
 #[cfg(feature = "code-intel-js")]
 pub mod js;
+pub mod model;

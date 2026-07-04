@@ -12,10 +12,9 @@ use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
 use crate::path::RelPath;
-#[cfg(feature = "documents")]
-use crate::store_blob::write_blob;
 use crate::store_blob::{
-    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists, write_bytes_atomic,
+    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists, write_blob,
+    write_bytes_atomic,
 };
 
 pub const INDEX_FILE: &str = "index.msgpack";
@@ -462,6 +461,41 @@ impl Store {
         Ok(Some(map))
     }
 
+    /// Path of a file's resolution blob (`<hash>.rref.msgpack`) — the per-file code-intelligence
+    /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
+    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
+        self.basemind_dir
+            .join(BLOBS_DIR)
+            .join(format!("{hash_hex}.rref.msgpack"))
+    }
+
+    /// Write a file's resolution facts. Content-addressed skip on matching schema (identical
+    /// source bytes already analyzed), else serialize + atomic write — mirrors `write_doc`.
+    pub fn write_resolved_hex(
+        &self,
+        hash_hex: &str,
+        refs: &crate::intel::model::FileResolvedRefs,
+    ) -> Result<(), StoreError> {
+        write_blob(self.blob_path_rref_hex(hash_hex), refs)
+    }
+
+    /// Read a file's resolution facts. `Ok(None)` when the file has no resolution blob (never
+    /// analyzed, or produced no facts). A schema mismatch surfaces as an error so the second pass
+    /// recomputes rather than trusting a stale blob.
+    pub fn read_resolved_by_hex(
+        &self,
+        hash_hex: &str,
+    ) -> Result<Option<crate::intel::model::FileResolvedRefs>, StoreError> {
+        let path = self.blob_path_rref_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&bytes)?;
+        check_schema(refs.schema_ver)?;
+        Ok(Some(refs))
+    }
+
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.index.files.insert(rel.into(), entry);
     }
@@ -709,6 +743,40 @@ mod tests {
             store.read_l2_by_hex(&hash_hex).expect("read l2").is_none(),
             "L2 absent in an L1-only frame (escalation will extract on demand)"
         );
+    }
+
+    #[test]
+    fn resolved_blob_round_trips_and_missing_reads_none() {
+        use crate::intel::model::{ExportEdge, FileResolvedRefs, ImportEdge, ResolvedEdge};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "d".repeat(64);
+
+        let mut refs = FileResolvedRefs::new("typescript");
+        refs.intra.push(ResolvedEdge {
+            use_start: 40,
+            use_end: 43,
+            def_start: 4,
+            def_end: 7,
+        });
+        refs.imports.push(ImportEdge {
+            local: "foo".to_string(),
+            specifier: "./bar".to_string(),
+            imported: Some("baz".to_string()),
+            is_type: false,
+            local_start: 9,
+        });
+        refs.exports.push(ExportEdge {
+            name: "alpha".to_string(),
+            name_start: 20,
+        });
+
+        store.write_resolved_hex(&hash_hex, &refs).expect("write resolved blob");
+        let read = store.read_resolved_by_hex(&hash_hex).expect("read resolved blob");
+        assert_eq!(read.as_ref(), Some(&refs), "resolution blob round-trips exactly");
+
+        let missing = store.read_resolved_by_hex(&"e".repeat(64)).expect("read missing");
+        assert_eq!(missing, None, "absent resolution blob reads back as None");
     }
 
     #[test]

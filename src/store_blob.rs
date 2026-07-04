@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-#[cfg(feature = "documents")]
 use crate::extract::SCHEMA_VER;
 use crate::extract::{FileMapL1, FileMapL2};
 use crate::store::StoreError;
@@ -95,8 +94,8 @@ pub(crate) fn peek_filemap_schema(path: &Path) -> Option<u16> {
         .map(|peek| peek.schema_ver)
 }
 
-/// Doc-tier peek: a plain (unframed) msgpack blob whose leading field is `schema_ver`.
-#[cfg(feature = "documents")]
+/// Plain (unframed) msgpack blob peek: read only the leading `schema_ver` field. Shared by the
+/// doc tier and the resolution tier (both are unframed single-map blobs).
 fn peek_blob_schema(path: &Path) -> Option<u16> {
     let bytes = std::fs::read(path).ok()?;
     rmp_serde::from_slice::<BlobSchemaPeek>(&bytes)
@@ -150,9 +149,9 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
     Ok(())
 }
 
-/// Doc-tier blob write: content-addressed skip on matching schema, else serialize + atomic
-/// write. The combined-filemap blobs go through `Store::write_filemap_hex` instead.
-#[cfg(feature = "documents")]
+/// Unframed single-map blob write (doc tier + resolution tier): content-addressed skip on
+/// matching schema, else serialize + atomic write. The combined-filemap blobs go through
+/// `Store::write_filemap_hex` instead.
 pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     // A schema bump leaves a stale-schema blob at the same content-hash path; the durable
     // refresh re-extracts and relies on this write to OVERWRITE it. Only short-circuit when
