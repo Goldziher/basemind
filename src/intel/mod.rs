@@ -15,3 +15,7 @@
 pub mod js;
 pub mod model;
 pub mod resolve;
+/// Cross-file JS/TS resolution stitch (importer binding → resolved target export), run once at the
+/// end of the scanner's resolve pass. oxc-backed, hence gated on `code-intel-js`.
+#[cfg(feature = "code-intel-js")]
+pub mod xfile;

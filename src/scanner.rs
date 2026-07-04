@@ -364,6 +364,11 @@ fn resolve_pass(root: &Path, store: &Store) {
         })
         .collect();
 
+    // Import/export facts harvested during the loop below so the cross-file join needs no second
+    // blob read. Only JS/TS files carry these (the locals path leaves them empty).
+    #[cfg(feature = "code-intel-js")]
+    let mut cross_file_facts: ahash::AHashMap<String, crate::intel::xfile::FileFacts> = ahash::AHashMap::new();
+
     let mut writer = index_db.writer();
     for (rel_str, hash_hex, language) in files {
         let rel = RelPath::from(rel_str.as_str());
@@ -384,7 +389,8 @@ fn resolve_pass(root: &Path, store: &Store) {
             }
         };
         let staged = if refs.is_empty() {
-            // No facts — still clear any edges a prior scan left for this file.
+            // No facts — still clear any edges a prior scan left for this file. This delete also
+            // purges the previous scan's cross-file edges keyed by this file's use side.
             writer.remove_resolved_file(&rel)
         } else {
             writer.upsert_resolved_file(&rel, &refs)
@@ -392,10 +398,28 @@ fn resolve_pass(root: &Path, store: &Store) {
         if let Err(e) = staged {
             tracing::warn!(path = %rel, error = %e, "resolve pass: failed to stage resolved edges — skipping file");
         }
+        // Retain this file's import/export lists for the cross-file join (move, no clone).
+        #[cfg(feature = "code-intel-js")]
+        if !refs.imports.is_empty() || !refs.exports.is_empty() {
+            cross_file_facts.insert(
+                rel_str,
+                crate::intel::xfile::FileFacts {
+                    imports: refs.imports,
+                    exports: refs.exports,
+                },
+            );
+        }
     }
     if let Err(e) = writer.commit() {
         tracing::warn!(error = %e, "resolve pass: index commit failed — resolved navigation may be stale");
     }
+
+    // Cross-file JOIN sub-pass (JS/TS only): stitch importer bindings to resolved-target exports.
+    // Runs after every importer's per-file upsert has committed, so each importer's slate is clean
+    // — the delete inside `upsert_resolved_file` / `remove_resolved_file` already purged the prior
+    // scan's cross-file edges keyed by that importer, keeping re-scans idempotent.
+    #[cfg(feature = "code-intel-js")]
+    crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &cross_file_facts);
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher

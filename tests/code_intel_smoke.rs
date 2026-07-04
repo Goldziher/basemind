@@ -58,3 +58,40 @@ fn scan_resolves_intra_file_references_for_javascript() {
         "goto-definition of the use must point at the const definition"
     );
 }
+
+#[test]
+fn scan_resolves_cross_file_references_for_typescript() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // `a.ts` exports `helper`; `b.ts` imports and calls it. The cross-file stitch must link the
+    // import binding in `b.ts` back to the `helper` export site in `a.ts`.
+    let a_src = "export function helper() {\n  return 1;\n}\n";
+    let b_src = "import { helper } from './a';\nexport function run() {\n  return helper();\n}\n";
+    fs::write(root.join("a.ts"), a_src).unwrap();
+    fs::write(root.join("b.ts"), b_src).unwrap();
+
+    let mut store = Store::open(root, VIEW_WORKING).unwrap();
+    let cfg = ConfigV1::with_defaults();
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+
+    // Both files must be indexed: the resolve pass only sees indexed files, and the join's
+    // `store.lookup` gate drops unindexed targets. The TS grammar may be cold in a sandbox, so
+    // skip (rather than fail) when either file didn't index — resolution itself is grammar-free.
+    if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
+        eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
+        return;
+    }
+
+    let a = RelPath::from("a.ts");
+    // The `helper` export name-site in a.ts (the identifier in `export function helper`).
+    let export_name_start = (a_src.find("function helper").unwrap() + "function ".len()) as u32;
+    // The `helper` import binding site in b.ts (the local name in the import clause).
+    let import_local_start = b_src.find("helper").unwrap() as u32;
+
+    let uses = basemind::query::resolved_references(&store, &a, export_name_start);
+    assert!(
+        uses.iter()
+            .any(|(p, s)| p.as_str() == Some("b.ts") && *s == import_local_start),
+        "the `helper` import in b.ts must resolve to the a.ts export at {export_name_start}; got {uses:?}"
+    );
+}
