@@ -17,6 +17,13 @@ You'll need:
 - [`task`](https://taskfile.dev) — task runner
 - [`prek`](https://github.com/j178/prek) — pre-commit hook runner (installed by `task setup`)
 
+## Pre-commit hooks
+
+Install the git hooks with `task setup` (or `poly hooks install` directly). On
+every commit, poly runs lint, format, and file-safety checks plus `cargo clippy`;
+the commit-msg hook validates the message. Run all hooks manually with
+`poly hooks run pre-commit --all-files`.
+
 ## Workflow
 
 1. Open an issue or comment on an existing one before starting non-trivial work.
