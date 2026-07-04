@@ -13,6 +13,10 @@ pub mod git_cache;
 pub mod git_history;
 pub mod hashing;
 pub mod index;
+/// Code-intelligence tier: scope/import-resolved navigation. Gated per-language on the
+/// engine that backs it (`code-intel-js` = oxc). See `src/extract/locals.rs` for the
+/// grammar-native intra-file layer that needs no feature flag.
+pub mod intel;
 #[cfg(feature = "intelligence")]
 pub mod lance;
 pub mod lang;
