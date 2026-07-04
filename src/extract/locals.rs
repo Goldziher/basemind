@@ -27,14 +27,19 @@ use tree_sitter::{Node, Query, QueryCursor, Tree};
 use crate::lang::{self, LangError, LangId};
 
 /// Vendored `locals.scm` for override languages TSLP ships no usable upstream locals for
-/// (python, typescript, tsx, go — confirmed absent in the 1.12.3 bundle). Follows the standard
-/// tree-sitter locals capture convention so [`build_bindings`] treats them identically to
-/// upstream queries. Empty today; populated in the follow-up slice that authors + validates the
-/// four `.scm` files against their grammars.
-fn vendored_locals(_lang: LangId) -> Option<&'static str> {
-    // Populated in the follow-up slice that authors + validates python/typescript/tsx/go
-    // `locals.scm` against their grammars. Until then every language uses the TSLP query.
-    None
+/// (python, typescript, tsx, go — empirically confirmed `None` from `get_locals_query` in the
+/// 1.12.3 bundle; only `javascript` ships one). Each follows the standard tree-sitter locals
+/// capture convention so [`build_bindings`] treats them identically to upstream queries. Returns
+/// a `&'static str` via `include_str!` — no runtime allocation. Any language not listed here
+/// falls through to the raw TSLP `get_locals_query`.
+fn vendored_locals(lang: LangId) -> Option<&'static str> {
+    match lang {
+        "python" => Some(include_str!("../queries/python-locals.scm")),
+        "typescript" => Some(include_str!("../queries/typescript-locals.scm")),
+        "tsx" => Some(include_str!("../queries/tsx-locals.scm")),
+        "go" => Some(include_str!("../queries/go-locals.scm")),
+        _ => None,
+    }
 }
 
 type CachedQuery = Option<Arc<Query>>;
@@ -308,6 +313,127 @@ mod tests {
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 50, 56)];
         let map = resolve_bindings(&scopes, &defs, &refs);
         assert_eq!(map.get(&50), Some(&5), "root-level helper must still bind");
+    }
+
+    /// Parse `bytes` with `lang`'s grammar, returning the tree — or `None` when the grammar (or
+    /// its download) is unavailable in this environment, so grammar-gated tests can skip cleanly.
+    fn try_parse(lang: LangId, bytes: &[u8]) -> Option<Tree> {
+        use crate::lang::{self, ParseOutcome};
+        // A vendored/compiled locals query is a prerequisite for a meaningful assertion.
+        if !matches!(locals_query(lang), Ok(Some(_))) {
+            return None;
+        }
+        match lang::with_parser(lang, |p| lang::parse_with_default_timeout(p, bytes)) {
+            Ok(ParseOutcome::Ok(tree)) => Some(tree),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn resolve_locals_binds_python_local() {
+        // `x` and param `a` used inside `outer` must bind to the in-file local defs, not a global.
+        let lang = "python";
+        let src = "def outer(a):\n    x = 1\n    return x + a\n";
+        let bytes = src.as_bytes();
+        let Some(tree) = try_parse(lang, bytes) else {
+            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
+            return;
+        };
+        let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
+        let x_def = src.find("x = 1").expect("x def present");
+        let a_def = src.find("(a)").expect("a param present") + "(".len();
+        let x_use = src.rfind("x + a").expect("x use present");
+        let a_use = src.rfind("x + a").expect("a use present") + "x + ".len();
+        assert_eq!(
+            bindings.resolved_def(x_use as u32),
+            Some(x_def as u32),
+            "python: `x` use must bind to local `x = 1`"
+        );
+        assert_eq!(
+            bindings.resolved_def(a_use as u32),
+            Some(a_def as u32),
+            "python: `a` use must bind to param `a`"
+        );
+    }
+
+    #[test]
+    fn resolve_locals_binds_go_local() {
+        // `x` (block-scoped short var) and param `a` used in the return must bind to the local
+        // defs across the nested function/block scopes.
+        let lang = "go";
+        let src = "package main\n\nfunc outer(a int) int {\n\tx := 1\n\treturn x + a\n}\n";
+        let bytes = src.as_bytes();
+        let Some(tree) = try_parse(lang, bytes) else {
+            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
+            return;
+        };
+        let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
+        let x_def = src.find("x :=").expect("x def present");
+        let a_def = src.find("a int").expect("a param present");
+        let x_use = src.rfind("x + a").expect("x use present");
+        let a_use = src.rfind("x + a").expect("a use present") + "x + ".len();
+        assert_eq!(
+            bindings.resolved_def(x_use as u32),
+            Some(x_def as u32),
+            "go: `x` use must bind to local `x := 1`"
+        );
+        assert_eq!(
+            bindings.resolved_def(a_use as u32),
+            Some(a_def as u32),
+            "go: `a` use must bind to param `a`"
+        );
+    }
+
+    #[test]
+    fn resolve_locals_binds_typescript_local() {
+        let lang = "typescript";
+        let src = "function outer(a: number): number {\n  const x = 1;\n  return x + a;\n}\n";
+        let bytes = src.as_bytes();
+        let Some(tree) = try_parse(lang, bytes) else {
+            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
+            return;
+        };
+        let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
+        let x_def = src.find("x = 1").expect("x def present");
+        let a_def = src.find("a: number").expect("a param present");
+        let x_use = src.rfind("x + a").expect("x use present");
+        let a_use = src.rfind("x + a").expect("a use present") + "x + ".len();
+        assert_eq!(
+            bindings.resolved_def(x_use as u32),
+            Some(x_def as u32),
+            "typescript: `x` use must bind to local `const x`"
+        );
+        assert_eq!(
+            bindings.resolved_def(a_use as u32),
+            Some(a_def as u32),
+            "typescript: `a` use must bind to param `a`"
+        );
+    }
+
+    #[test]
+    fn resolve_locals_binds_tsx_local() {
+        let lang = "tsx";
+        let src = "function outer(a: number): number {\n  const x = 1;\n  return x + a;\n}\n";
+        let bytes = src.as_bytes();
+        let Some(tree) = try_parse(lang, bytes) else {
+            eprintln!("skip {lang}: grammar or locals query unavailable in this environment");
+            return;
+        };
+        let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
+        let x_def = src.find("x = 1").expect("x def present");
+        let a_def = src.find("a: number").expect("a param present");
+        let x_use = src.rfind("x + a").expect("x use present");
+        let a_use = src.rfind("x + a").expect("a use present") + "x + ".len();
+        assert_eq!(
+            bindings.resolved_def(x_use as u32),
+            Some(x_def as u32),
+            "tsx: `x` use must bind to local `const x`"
+        );
+        assert_eq!(
+            bindings.resolved_def(a_use as u32),
+            Some(a_def as u32),
+            "tsx: `a` use must bind to param `a`"
+        );
     }
 
     #[test]
