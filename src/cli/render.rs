@@ -10,7 +10,7 @@
 use std::io::Write;
 
 use anyhow::{Context, Result};
-use rmcp::model::{CallToolResult, RawContent};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 /// Maximum characters of a string value rendered inline before truncation.
@@ -37,7 +37,7 @@ pub fn emit(tool_name: &str, result: &CallToolResult, json: bool, out: &mut impl
 /// field is the serialized response. We parse that text back into a [`Value`].
 pub fn result_to_value(result: &CallToolResult) -> Result<Value> {
     for content in &result.content {
-        if let RawContent::Text(text) = &content.raw {
+        if let ContentBlock::Text(text) = content {
             return serde_json::from_str(&text.text).with_context(|| "parse tool JSON response");
         }
     }

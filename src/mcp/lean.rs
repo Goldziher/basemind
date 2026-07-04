@@ -20,7 +20,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, JsonObject, ListToolsResult, Tool, ToolAnnotations, object,
+    CallToolRequestParams, CallToolResult, ContentBlock, JsonObject, ListToolsResult, Tool, ToolAnnotations, object,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -231,7 +231,7 @@ pub(super) async fn lean_call_tool(
 fn structured_ok(value: Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(&value)
         .map_err(|e| McpError::internal_error(format!("serialize lean response: {e}"), None))?;
-    let mut result = CallToolResult::success(vec![Content::text(text)]);
+    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
     result.structured_content = Some(value);
     Ok(result)
 }

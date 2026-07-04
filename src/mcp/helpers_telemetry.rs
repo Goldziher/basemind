@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, RawContent};
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::Value;
 
 use super::ServerState;
@@ -20,8 +20,8 @@ use super::ServerState;
 /// `json_result` returns exactly one item), so `record_call` allocates nothing there; only a
 /// multi-content result pays one concatenation.
 fn result_text(result: &CallToolResult) -> std::borrow::Cow<'_, str> {
-    let mut texts = result.content.iter().filter_map(|c| match &c.raw {
-        RawContent::Text(t) => Some(t.text.as_str()),
+    let mut texts = result.content.iter().filter_map(|c| match c {
+        ContentBlock::Text(t) => Some(t.text.as_str()),
         _ => None,
     });
     let Some(first) = texts.next() else {
