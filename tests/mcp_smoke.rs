@@ -99,8 +99,17 @@ fn build_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+    // The scanner is designed to run OFF a tokio runtime (production scans on a CLI thread or via
+    // `spawn_blocking`). Its deferred vector flush opens `LanceStore`, which `block_on`s an owned
+    // current-thread runtime — that panics if run on a tokio worker thread. These smoke tests are
+    // `#[tokio::test]`, so run the scan on a dedicated std thread to mirror the production context.
+    // (Harmless without the intelligence features; required once code chunks/docs flush to LanceDB.)
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+        });
+    });
 }
 
 fn decode_text(result: &CallToolResult) -> Value {
@@ -915,6 +924,39 @@ async fn mcp_server_exercises_representative_tools() {
     let _ = service
         .call_tool(call_params("search_documents", json!({ "query": "hello" })))
         .await;
+
+    // search_code / get_chunk: the shims are always registered. Without `--features code-search`
+    // they return a graceful MCP-level "feature not compiled" error; with it they dispatch (and
+    // may error on the fixture, which has no embedder/LanceDB). Either way: no crash, no
+    // protocol-level param-rejection.
+    #[cfg(not(feature = "code-search"))]
+    {
+        let sc = service
+            .call_tool(call_params("search_code", json!({ "query": "hello" })))
+            .await;
+        assert!(
+            sc.is_err(),
+            "search_code without the code-search feature must return an MCP error"
+        );
+        let gc = service
+            .call_tool(call_params("get_chunk", json!({ "path": "src/lib.rs" })))
+            .await;
+        assert!(
+            gc.is_err(),
+            "get_chunk without the code-search feature must return an MCP error"
+        );
+    }
+    #[cfg(feature = "code-search")]
+    {
+        // Feature on: dispatch must not panic. The synthetic fixture may lack an embedder, so an
+        // is_error result or a protocol error is acceptable — the assertion is "no crash".
+        let _ = service
+            .call_tool(call_params("search_code", json!({ "query": "hello" })))
+            .await;
+        let _ = service
+            .call_tool(call_params("get_chunk", json!({ "path": "src/lib.rs" })))
+            .await;
+    }
 
     // Per-query override round-trip: pass `reranker_preset` as a flattened override
     // field. The fixture has no LanceDB store so the call will error at the vector-

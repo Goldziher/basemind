@@ -520,6 +520,15 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "code map scanner" }),
     )
     .await;
+    // search_code: semantic code search. MCP error when the code-search feature is off is ok
+    // (same gate as the memory/document sweep). On success the hit count varies per repo.
+    call(
+        svc,
+        &mut records,
+        "search_code",
+        json!({ "query": "parse the file and extract symbols" }),
+    )
+    .await;
 
     // proposals_mine: co-change mining over recent history. MCP error when memory feature is
     // off is ok (same gate as memory_audit). On success we just verify the call completes

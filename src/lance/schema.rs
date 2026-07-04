@@ -66,7 +66,48 @@ pub fn memory_schema(dim: u16) -> SchemaRef {
     ]))
 }
 
+/// Build the schema for the per-chunk `code_chunks` table (semantic code search).
+///
+/// Columns mirror the pointer fields `search_code` returns plus the chunk `text` and the
+/// embedding. Shares the single `meta.json` dim/model with the `documents` / `memory` tables.
+///
+/// - `scope`      UTF-8    repo identity
+/// - `path`       UTF-8    repo-relative source path
+/// - `chunk_id`   UTF-8    content-addressed `<hash>:<ordinal>`
+/// - `symbol`     UTF-8    symbol name (empty for a module-level gap chunk)
+/// - `kind`       UTF-8    symbol kind (`function`, `method`, `module`, …)
+/// - `lang`       UTF-8    tree-sitter language pack name
+/// - `line_start` UInt32   1-based inclusive start line
+/// - `line_end`   UInt32   1-based inclusive end line
+/// - `byte_start` UInt32   chunk start byte offset
+/// - `byte_end`   UInt32   chunk end byte offset
+/// - `text`       UTF-8    the chunk text
+/// - `embedding`  FixedSizeList<Float32, DIM>
+#[cfg(feature = "code-search")]
+pub fn code_chunks_schema(dim: u16) -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("scope", DataType::Utf8, false),
+        Field::new("path", DataType::Utf8, false),
+        Field::new("chunk_id", DataType::Utf8, false),
+        Field::new("symbol", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
+        Field::new("lang", DataType::Utf8, false),
+        Field::new("line_start", DataType::UInt32, false),
+        Field::new("line_end", DataType::UInt32, false),
+        Field::new("byte_start", DataType::UInt32, false),
+        Field::new("byte_end", DataType::UInt32, false),
+        Field::new("text", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), i32::from(dim)),
+            false,
+        ),
+    ]))
+}
+
 /// Table names — small constants in one place so the `LanceStore` impl and any
 /// future migration code agree on what's where.
 pub const DOCUMENTS_TABLE: &str = "documents";
 pub const MEMORY_TABLE: &str = "memory";
+#[cfg(feature = "code-search")]
+pub const CODE_CHUNKS_TABLE: &str = "code_chunks";

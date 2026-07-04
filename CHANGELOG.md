@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Semantic code search (Phase 1, vector-only).** New `search_code` MCP tool runs vector KNN over
+  source-code chunks and `get_chunk` fetches a chunk's body — the same two-call pointer pattern as
+  `search_symbols` → `expand`. Chunks are derived from the cached L1/L2 extraction + source bytes
+  (no re-parse): one chunk per symbol span plus module-level gap chunks, oversized spans split with
+  overlap. A content-addressed `<hash>.chunk.msgpack` sidecar caches chunks + embeddings so an
+  unchanged file skips re-embedding. Vectors land in a new LanceDB `code_chunks` table alongside the
+  documents/memory tables (shared embedding preset). CLI: `query search-code` / `query get-chunk`.
+  Behind the `code-search` cargo feature (folded into `full`); BM25 keyword + RRF hybrid fusion land
+  in later phases. The `code_chunks` table is created lazily on open, so it rides the existing
+  minor-release `.basemind/` rebuild — no separate schema bump.
 - **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
   each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
   across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX

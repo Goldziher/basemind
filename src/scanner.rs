@@ -12,6 +12,8 @@ use crate::hashing;
 use crate::index::{IndexDb, writer::IndexWriter};
 use crate::lang;
 use crate::path::RelPath;
+#[cfg(feature = "code-search")]
+use crate::scanner_code::PendingCodeBatch;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::{PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document};
 use crate::scanner_filter::{Filters, IndexFilter, ignore_walk_builder};
@@ -193,6 +195,10 @@ pub struct FileResult {
     /// Drained by the single-threaded `flush_document_batches` pass into LanceDB.
     #[cfg(feature = "documents")]
     pub(crate) doc_batch: Option<PendingDocBatch>,
+    /// Internal: buffered code-chunk batch when this source file went through the code-search
+    /// branch. Drained by the single-threaded `flush_code_batches` pass into LanceDB.
+    #[cfg(feature = "code-search")]
+    pub(crate) code_batch: Option<PendingCodeBatch>,
 }
 
 impl FileResult {
@@ -205,6 +211,8 @@ impl FileResult {
             upsert: None,
             #[cfg(feature = "documents")]
             doc_batch: None,
+            #[cfg(feature = "code-search")]
+            code_batch: None,
         }
     }
 }
@@ -308,7 +316,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     drop(seen);
 
     let mut report = ScanReport::default();
-    let doc_batches = apply_outcomes(store, &mut report, outcomes);
+    let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
 
     // Purge index entries for files no longer present / no longer allowed.
     for k in &stale {
@@ -336,6 +344,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     }
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
+    flush_code_batches_if_any(store, config, &scope, code_batches);
     store.flush()?;
     Ok(report)
 }
@@ -389,7 +398,7 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     let outcomes: Vec<FileResult> = run_candidates(&rels, root, filter.filters(), store, &source, config, &scope);
 
     let mut report = ScanReport::default();
-    let doc_batches = apply_outcomes(store, &mut report, outcomes);
+    let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
 
     for rel in removed {
         store.remove(&rel);
@@ -415,6 +424,7 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels);
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
+    flush_code_batches_if_any(store, config, &scope, code_batches);
     store.flush()?;
     Ok(report)
 }
@@ -423,9 +433,15 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
 /// list of buffered document batches so the caller can flush them into LanceDB after the
 /// index is consistent.
 #[cfg_attr(not(feature = "documents"), allow(clippy::needless_pass_by_ref_mut))]
-fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<FileResult>) -> Vec<PendingDocBatchOpt> {
+fn apply_outcomes(
+    store: &mut Store,
+    report: &mut ScanReport,
+    outcomes: Vec<FileResult>,
+) -> (Vec<PendingDocBatchOpt>, Vec<PendingCodeBatchOpt>) {
     #[cfg_attr(not(feature = "documents"), allow(unused_mut))]
     let mut doc_batches: Vec<PendingDocBatchOpt> = Vec::new();
+    #[cfg_attr(not(feature = "code-search"), allow(unused_mut))]
+    let mut code_batches: Vec<PendingCodeBatchOpt> = Vec::new();
     for mut o in outcomes {
         report.stats.scanned += 1;
         match &o.status {
@@ -469,10 +485,14 @@ fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<File
         if let Some(batch) = o.doc_batch.take() {
             doc_batches.push(batch);
         }
+        #[cfg(feature = "code-search")]
+        if let Some(batch) = o.code_batch.take() {
+            code_batches.push(batch);
+        }
         let cleared = FileResult::bare(o.path, o.status);
         report.results.push(cleared);
     }
-    doc_batches
+    (doc_batches, code_batches)
 }
 
 /// Alias that's `PendingDocBatch` under the `documents` feature and `()` otherwise. Lets
@@ -482,6 +502,13 @@ fn apply_outcomes(store: &mut Store, report: &mut ScanReport, outcomes: Vec<File
 type PendingDocBatchOpt = PendingDocBatch;
 #[cfg(not(feature = "documents"))]
 type PendingDocBatchOpt = ();
+
+/// Alias that's `PendingCodeBatch` under the `code-search` feature and `()` otherwise. Keeps
+/// `apply_outcomes`' return type consistent across feature sets.
+#[cfg(feature = "code-search")]
+type PendingCodeBatchOpt = PendingCodeBatch;
+#[cfg(not(feature = "code-search"))]
+type PendingCodeBatchOpt = ();
 
 fn candidates_for_source(
     root: &Path,
@@ -660,6 +687,26 @@ fn process_file(
         tracing::warn!(rel, "index upsert failed; reference search may be incomplete");
     }
 
+    // Code-search tier: chunk + embed from the cached L1/L2 + source bytes (no re-parse). The
+    // embed compute runs here in the parallel worker; the LanceDB write is deferred to the serial
+    // apply pass. Best-effort — a chunk/embed failure never aborts the file's index update.
+    #[cfg(feature = "code-search")]
+    let code_batch = if crate::scanner_code::should_chunk(config) {
+        match crate::scanner_code::chunk_and_embed(store, rel, &bytes, &l1, l2.as_ref(), hash_hex_str, config) {
+            Ok(batch) => batch,
+            Err(error) => {
+                tracing::debug!(
+                    rel,
+                    ?error,
+                    "code chunk/embed failed; skipping code-search for this file"
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let entry = FileEntry {
         hash_hex: hash_hex_str.to_string(),
         language: lang.to_string(),
@@ -675,6 +722,8 @@ fn process_file(
         upsert: Some(entry),
         #[cfg(feature = "documents")]
         doc_batch: None,
+        #[cfg(feature = "code-search")]
+        code_batch,
     }
 }
 
@@ -716,6 +765,8 @@ fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config:
                 status,
                 upsert: None,
                 doc_batch: Some(batch),
+                #[cfg(feature = "code-search")]
+                code_batch: None,
             }
         }
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
@@ -826,6 +877,18 @@ fn flush_doc_batches_if_any(store: &mut Store, config: &Config, scope: &str, bat
 
 #[cfg(not(feature = "documents"))]
 fn flush_doc_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingDocBatchOpt>) {}
+
+/// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
+#[cfg(feature = "code-search")]
+fn flush_code_batches_if_any(store: &mut Store, config: &Config, scope: &str, batches: Vec<PendingCodeBatchOpt>) {
+    if batches.is_empty() {
+        return;
+    }
+    let _ = crate::scanner_code::flush_code_batches(store, scope, batches, &config.documents.embedding_preset);
+}
+
+#[cfg(not(feature = "code-search"))]
+fn flush_code_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingCodeBatchOpt>) {}
 
 #[cfg(test)]
 mod tests {

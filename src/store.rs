@@ -496,6 +496,38 @@ impl Store {
         Ok(Some(refs))
     }
 
+    /// Path of a file's code-chunk sidecar (`<hash>.chunk.msgpack`) — the per-file chunk list +
+    /// embeddings that back the semantic code-search tier. A sibling of the `.fm`/`.doc`/`.rref`
+    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    #[cfg(feature = "code-search")]
+    pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
+        self.basemind_dir
+            .join(BLOBS_DIR)
+            .join(format!("{hash_hex}.chunk.msgpack"))
+    }
+
+    /// Write a file's code-chunk sidecar. Content-addressed skip on matching schema (identical
+    /// source bytes already chunked + embedded) — this is what lets an unchanged file skip
+    /// re-embedding. Otherwise serialize + atomic write; mirrors `write_doc`.
+    #[cfg(feature = "code-search")]
+    pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
+        write_blob(self.blob_path_chunk_hex(hash_hex), blob)
+    }
+
+    /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never
+    /// chunked, or produced no chunks). A schema mismatch surfaces as an error so the scanner
+    /// re-chunks rather than trusting a stale blob.
+    #[cfg(feature = "code-search")]
+    pub fn read_chunks_by_hex(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlob>, StoreError> {
+        let path = self.blob_path_chunk_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let blob: crate::chunk::CodeChunkBlob = rmp_serde::from_slice(&bytes)?;
+        check_schema(blob.schema_ver)?;
+        Ok(Some(blob))
+    }
+
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.index.files.insert(rel.into(), entry);
     }

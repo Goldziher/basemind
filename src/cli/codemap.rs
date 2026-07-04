@@ -129,6 +129,25 @@ pub enum QueryCmd {
     RepoInfo,
     /// Files whose imports mention the given module (heuristic).
     Dependents { module: String },
+    /// Semantic (vector) search over indexed code chunks. Returns pointers; fetch bodies with
+    /// `get-chunk`. Needs `--features code-search`.
+    SearchCode {
+        query: String,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        format: Option<String>,
+    },
+    /// Fetch one code chunk's body by path (from a `search-code` hit). Needs `--features
+    /// code-search`.
+    GetChunk {
+        /// Repository-relative path of the source file.
+        path: String,
+        #[arg(long)]
+        chunk_id: Option<String>,
+        #[arg(long)]
+        byte_start: Option<u32>,
+    },
     /// Expand a symbol to its raw source body (the inverse of an outline entry).
     Expand {
         /// Repository-relative path of the indexed file.
@@ -285,6 +304,29 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             let p = DependentsParams { module };
             let r = run_tool("dependents", server.dependents(Parameters(Lenient(p))).await)?;
             emit("dependents", &r, json, out)
+        }
+        QueryCmd::SearchCode { query, limit, format } => {
+            let p = SearchCodeParams {
+                query,
+                limit,
+                max_tokens: None,
+                format,
+            };
+            let r = run_tool("search_code", server.search_code(Parameters(Lenient(p))).await)?;
+            emit("search_code", &r, json, out)
+        }
+        QueryCmd::GetChunk {
+            path,
+            chunk_id,
+            byte_start,
+        } => {
+            let p = GetChunkParams {
+                path: resolve_path(server, &path),
+                chunk_id,
+                byte_start,
+            };
+            let r = run_tool("get_chunk", server.get_chunk(Parameters(Lenient(p))).await)?;
+            emit("get_chunk", &r, json, out)
         }
         QueryCmd::Expand { path, name, kind } => {
             let p = ExpandParams {
