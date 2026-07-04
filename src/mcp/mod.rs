@@ -26,6 +26,7 @@ mod helpers_governance;
 mod helpers_graph;
 mod helpers_grep;
 mod helpers_impls;
+mod helpers_intel;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
 #[cfg(all(feature = "shells", any(unix, windows)))]
@@ -102,8 +103,8 @@ pub mod params {
 
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
-        FindCallersParams, FindCommitsByPathParams, FindReferencesParams, HotFilesParams, ListFilesParams,
-        OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams, SearchDocumentsParams,
+        FindCallersParams, FindCommitsByPathParams, FindReferencesParams, GotoDefinitionParams, HotFilesParams,
+        ListFilesParams, OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams, SearchDocumentsParams,
         SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams, TelemetrySummaryParams,
         WorkingTreeStatusParams, WorkspaceGrepParams,
     };
