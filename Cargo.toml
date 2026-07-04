@@ -117,14 +117,17 @@ shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client", "dep:directories
 
 # JS/TS code-intelligence: scope + import-resolved find_references / goto_definition via oxc.
 # Self-contained — oxc parses JS/TS with its own parser, so no tree-sitter grammar is needed
-# (works even where the TSLP grammar cache is cold). Folds into the `code-intel` meta + `full`
-# once the cross-file second pass + MCP surface land.
+# (works even where the TSLP grammar cache is cold).
 code-intel-js = ["dep:oxc_allocator", "dep:oxc_parser", "dep:oxc_semantic", "dep:oxc_span", "dep:oxc_syntax"]
 
+# Convenience meta-feature over the code-intelligence tier. `code-intel-graph` (stack-graphs
+# cross-file resolution) folds in here once Phase 3 lands.
+code-intel = ["code-intel-js"]
+
 # Convenience meta-feature: everything basemind exposes today. Equivalent to
-# `--features documents,memory,crawl,comms,shells`. Use this when you want one flag
+# `--features documents,memory,crawl,comms,shells,code-intel`. Use this when you want one flag
 # that always pulls in the full intelligence surface as we add tiers in the future.
-full = ["documents", "memory", "crawl", "comms", "shells"]
+full = ["documents", "memory", "crawl", "comms", "shells", "code-intel"]
 
 [dependencies]
 ahash = "0.8"

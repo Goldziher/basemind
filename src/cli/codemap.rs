@@ -71,6 +71,16 @@ pub enum QueryCmd {
         #[arg(long)]
         limit: Option<u32>,
     },
+    /// Resolve the reference at a position to its scope-resolved definition.
+    GotoDefinition {
+        /// Repository-relative path of the file holding the reference.
+        path: String,
+        /// 1-based line of the reference identifier.
+        line: u32,
+        /// 0-based byte column of the reference within the line (default 0).
+        #[arg(long, default_value_t = 0)]
+        column: u32,
+    },
     /// Types implementing / extending / inheriting from a trait or base class.
     Implementations {
         trait_name: String,
@@ -182,6 +192,15 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             };
             let r = run_tool("find_callers", server.find_callers(Parameters(Lenient(p))).await)?;
             emit("find_callers", &r, json, out)
+        }
+        QueryCmd::GotoDefinition { path, line, column } => {
+            let p = GotoDefinitionParams {
+                path: resolve_path(server, &path),
+                line,
+                column,
+            };
+            let r = run_tool("goto_definition", server.goto_definition(Parameters(Lenient(p))).await)?;
+            emit("goto_definition", &r, json, out)
         }
         QueryCmd::Implementations {
             trait_name,

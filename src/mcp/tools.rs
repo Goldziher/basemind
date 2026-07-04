@@ -605,6 +605,30 @@ impl BasemindServer {
         __result
     }
 
+    /// Resolve a reference position to its scope/import-resolved definition.
+    #[tool(
+        description = "Resolve the reference at `path`:`line`:`column` to its definition — \
+                       scope-resolved, NOT name-matched, so it never conflates same-named symbols. \
+                       Returns the definition `{path, line, column, name}`, or omits `definition` \
+                       when the position holds no resolved binding (module-global, unresolved, or a \
+                       language without resolution coverage). `line` is 1-based, `column` 0-based \
+                       bytes; any byte inside the identifier resolves for span-aware engines (oxc \
+                       JS/TS), the tree-sitter `locals` fallback needs the identifier's start byte. \
+                       Reads the content-addressed resolution blobs, so it answers even in a \
+                       read-only session.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn goto_definition(
+        &self,
+        Parameters(Lenient(params)): Parameters<Lenient<GotoDefinitionParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result = super::helpers_intel::run_goto_definition(&self.state, params).await;
+        record_call(&self.state, "goto_definition", &__params_json, __started, &__result);
+        __result
+    }
+
     /// Regex content search across indexed files.
     #[tool(
         description = "Regex search across indexed files (`pattern` is Rust regex syntax). Returns \

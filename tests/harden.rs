@@ -342,6 +342,17 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         )
         .await;
 
+        // goto_definition sweep: resolve the first position of the sampled file. Bare-success
+        // only — whether that byte holds a resolved binding depends on the file's contents and the
+        // per-language resolution engine, so no hit is asserted.
+        call(
+            svc,
+            &mut records,
+            "goto_definition",
+            json!({ "path": &sample.path, "line": 1, "column": 0 }),
+        )
+        .await;
+
         if let Some(module) = &sample.sample_module {
             call(svc, &mut records, "dependents", json!({ "module": module })).await;
         }

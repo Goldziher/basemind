@@ -527,6 +527,42 @@ async fn mcp_server_exercises_representative_tools() {
         "find_callers second page must NOT have next_cursor: {page2}"
     );
 
+    // goto_definition: the tool is wired and returns the stable envelope. Whether the fixture's
+    // Rust positions carry a resolved binding depends on the `locals` engine (the deep resolved
+    // path is asserted in `tests/code_intel_smoke.rs` with the oxc JS/TS engine); here we only pin
+    // that the MCP surface answers with the queried position echoed back and normalized.
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "goto_definition",
+                json!({ "path": "a.rs", "line": 1, "column": 0 }),
+            ))
+            .await
+            .expect("goto_definition"),
+    );
+    assert_eq!(
+        body.get("path").and_then(Value::as_str),
+        Some("a.rs"),
+        "goto_definition must echo the queried path: {body}"
+    );
+    assert_eq!(
+        body.get("line").and_then(Value::as_u64),
+        Some(1),
+        "goto_definition must echo the normalized 1-based line: {body}"
+    );
+    // `definition` is optional (absent when no binding is recorded) but, when present, must carry a
+    // path + 1-based line.
+    if let Some(def) = body.get("definition").filter(|d| !d.is_null()) {
+        assert!(
+            def.get("path").and_then(Value::as_str).is_some(),
+            "resolved definition must carry a path: {body}"
+        );
+        assert!(
+            def.get("line").and_then(Value::as_u64).unwrap_or(0) >= 1,
+            "resolved definition must carry a 1-based line: {body}"
+        );
+    }
+
     // call_graph (Iteration 4): walk the e.rs caller chain `outer -> middle -> inner`.
     // direction="callers" from `inner` with max_depth=2 must surface inner, middle, outer.
     let body = decode_text(

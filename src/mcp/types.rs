@@ -153,6 +153,20 @@ pub struct FindCallersParams {
     pub cursor: Option<Cursor>,
 }
 
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GotoDefinitionParams {
+    /// Repository-relative path of the file holding the reference.
+    pub path: RelPath,
+    /// 1-based line of the reference identifier.
+    #[serde(alias = "row")]
+    pub line: u32,
+    /// 0-based byte column of the reference within the line. Any byte inside the identifier
+    /// resolves for span-aware engines (oxc JS/TS); the tree-sitter `locals` fallback matches
+    /// only the identifier's start byte. Defaults to 0 (line start).
+    #[serde(default, alias = "col")]
+    pub column: u32,
+}
+
 pub(super) fn default_true() -> bool {
     true
 }
@@ -366,6 +380,32 @@ pub(super) struct DefinitionView {
     pub kind: &'static str,
     pub start_row: u32,
     pub start_col: u32,
+}
+
+/// A resolved definition site returned by `goto_definition`.
+#[derive(Debug, Serialize)]
+pub(super) struct DefinitionLocation {
+    pub path: RelPath,
+    /// 1-based.
+    pub line: u32,
+    /// 0-based byte column.
+    pub column: u32,
+    /// The definition identifier text, when the engine recorded its span (empty otherwise).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GotoDefinitionResponse {
+    /// Echo of the queried file.
+    pub path: RelPath,
+    /// Normalized 1-based line / 0-based byte column of the queried position.
+    pub line: u32,
+    pub column: u32,
+    /// The resolved definition, or absent when the position holds no resolved binding
+    /// (module-global, unresolved name, or a language without resolution coverage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition: Option<DefinitionLocation>,
 }
 
 #[derive(Debug, Serialize)]
