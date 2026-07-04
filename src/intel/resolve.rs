@@ -79,9 +79,9 @@ fn resolve_js(lang: LangId, path: &Path, source: &[u8]) -> Option<FileResolvedRe
 
 /// tree-sitter `locals`-backed intra-file resolution for any language with a locals query.
 ///
-/// The index only needs start offsets, which `LocalBindings` provides. Span ends for the
-/// locals path are set equal to their starts for now — enriched when `LocalBindings` grows to
-/// carry identifier ends in the follow-up that fully wires + grammar-tests the locals path.
+/// Emits real identifier spans via `LocalBindings::edges_spanned` — the end bytes come straight
+/// from the tree-sitter capture nodes, so `goto_definition` name extraction and span-containment
+/// work on non-JS languages instead of degrading against zero-width spans.
 fn resolve_via_locals(lang: LangId, source: &[u8]) -> FileResolvedRefs {
     use crate::lang::{ParseOutcome, parse_with_default_timeout, with_parser};
 
@@ -94,12 +94,12 @@ fn resolve_via_locals(lang: LangId, source: &[u8]) -> FileResolvedRefs {
         return out;
     };
     out.intra = bindings
-        .edges()
-        .map(|(use_start, def_start)| ResolvedEdge {
+        .edges_spanned()
+        .map(|(use_start, use_end, def_start, def_end)| ResolvedEdge {
             use_start,
-            use_end: use_start,
+            use_end,
             def_start,
-            def_end: def_start,
+            def_end,
         })
         .collect();
     out
@@ -125,6 +125,46 @@ mod tests {
                 .iter()
                 .any(|i| i.local == "helper" && i.specifier == "./util"),
             "the `helper` import edge must be captured"
+        );
+    }
+
+    #[test]
+    fn resolve_via_locals_emits_real_spans() {
+        // Non-JS path: python resolves through tree-sitter locals. A real local binding must carry
+        // a non-zero-width use span (use_end > use_start), unlike the old interim that set the end
+        // equal to the start. Skips cleanly if the grammar can't be loaded in this environment.
+        if !matches!(crate::extract::locals::locals_query("python"), Ok(Some(_))) {
+            eprintln!("skip: python locals query unavailable in this environment");
+            return;
+        }
+        let src = b"def outer(a):\n    count = 1\n    return count + a\n";
+        let refs = resolve_via_locals("python", src);
+        if refs.intra.is_empty() {
+            eprintln!("skip: python grammar unavailable — no intra edges");
+            return;
+        }
+        assert!(
+            refs.intra
+                .iter()
+                .all(|e| e.use_end > e.use_start && e.def_end > e.def_start),
+            "locals-path edges must carry real (non-zero-width) spans"
+        );
+        // `count` is 5 chars — assert exact span widths for that binding on both ends.
+        let count_use = b"def outer(a):\n    count = 1\n    return ".len() as u32;
+        let edge = refs
+            .intra
+            .iter()
+            .find(|e| e.use_start == count_use)
+            .expect("the `count` use edge must be present");
+        assert_eq!(
+            edge.use_end - edge.use_start,
+            "count".len() as u32,
+            "count ref span width"
+        );
+        assert_eq!(
+            edge.def_end - edge.def_start,
+            "count".len() as u32,
+            "count def span width"
         );
     }
 
