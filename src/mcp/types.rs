@@ -360,6 +360,11 @@ pub(super) struct FindReferencesResponse {
 pub(super) struct FindCallersResponse {
     /// Echo of the definition we resolved before scanning for callers.
     pub definition: Option<DefinitionView>,
+    /// True when `hits` came from the scope/import-resolved edges — precise callers that never
+    /// conflate same-named symbols in other scopes. Absent/false when they came from the
+    /// name-based callee scan (the fallback used when the definition doesn't resolve).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resolved: bool,
     pub total: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,

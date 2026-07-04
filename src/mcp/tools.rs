@@ -579,10 +579,15 @@ impl BasemindServer {
     /// Callers of a specific definition (path + name + optional kind).
     #[tool(
         description = "Call sites of a specific definition (`path` + `name` + optional kind). \
-                       Resolves it via the symbols index (echoed in `definition`), then runs the \
-                       same name-based scan as `find_references` (same name-only, no-scope \
-                       caveat). Default limit 100, max 1000. `cursor` pages results. `max_tokens` \
-                       budgets the response (sets `budgeted` + `next_cursor`).",
+                       Resolves it via the symbols index (echoed in `definition`), then PREFERS \
+                       scope/import-resolved edges: when the definition resolves, returns only \
+                       precise, scope-correct callers (never conflates same-named symbols) and \
+                       sets `resolved: true` — cross-file callers need the index open, a read-only \
+                       multi-session serve sees intra-file callers from the resolution blobs. \
+                       Falls back to the same name-based scan as `find_references` (name-only, \
+                       no-scope) when nothing resolves. Default limit 100, max 1000. `cursor` \
+                       pages the name-scan fallback (resolved results return in one page). \
+                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_callers(
@@ -592,13 +597,12 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            // Hold the store read guard for the call (like `goto_definition`): the resolved path
+            // reads the `.rref` blobs + Fjall index, the fallback reads the index or the in-RAM
+            // call cache (shared blobs) so a read-only multi-session serve still answers.
             let store = self.state.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
-            // In-RAM call index (from shared blobs) covers the lock-held case, so a
-            // read-only session can still resolve callers — no early-out error here.
             let cache = self.state.cache.load_full();
-            run_find_callers(idx.as_ref(), params, &cache)
+            run_find_callers(&store, &self.state.root, &cache, params)
         }
         .await;
         record_call(&self.state, "find_callers", &__params_json, __started, &__result);
