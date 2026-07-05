@@ -1,0 +1,160 @@
+---
+title: Agent Shells
+description: Agents open, type into, and watch terminal sessions in the background — no extra tools to install.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+Included in every prebuilt download. Agents can spawn detached terminal sessions, send
+input, read screen output, and coordinate with each other over agent comms. Sessions can
+be fully headless or opened in a real terminal tab or window so you watch along.
+
+<Badge text="--features shells" /> or `--features full`
+
+## Tools
+
+### `shell_spawn`
+
+Start a detached headless shell session.
+
+```json
+{
+  "command": "bash",
+  "cwd": "/home/user/project",
+  "env": {
+    "RUST_LOG": "debug"
+  },
+  "title": "test-runner"
+}
+```
+
+Returns a `session_id` you use in subsequent calls. The session stays alive until you
+`shell_kill` it or it exits naturally.
+
+### `shell_send`
+
+Type input into a session's stdin.
+
+```json
+{
+  "session_id": "abc123def456",
+  "text": "cargo test --all",
+  "no_enter": false
+}
+```
+
+Set `no_enter: true` to send text without a newline, useful for interactive prompts.
+
+### `shell_capture`
+
+Read the visible screen of a session — stdout/stderr buffer, last N lines.
+
+```json
+{
+  "session_id": "abc123def456",
+  "lines": 50
+}
+```
+
+Returns the visible output buffer. Useful for polling session status without waiting for
+it to finish.
+
+### `shell_list`
+
+List all live sessions — returns `session_id`, `command`, `pid`, creation time.
+
+```json
+{}
+```
+
+### `shell_kill`
+
+Terminate a session.
+
+```json
+{
+  "session_id": "abc123def456"
+}
+```
+
+### `shell_broadcast`
+
+Send the same input to multiple sessions at once.
+
+```json
+{
+  "text": "echo 'ready'",
+  "session_ids": [
+    "abc123def456",
+    "def456ghi789"
+  ]
+}
+```
+
+## Coordination
+
+A spawned session and the agent that started it can message each other over agent comms
+(see [Agent comms](/concepts/agent-comms/)). This lets orchestrating agents delegate
+long-running tasks (builds, tests, deploys) to background workers and check in on progress
+asynchronously.
+
+## Examples
+
+**Run a test suite in the background:**
+
+```json
+shell_spawn {
+  "command": "bash",
+  "cwd": "/repo"
+}
+→ session_id: "test-runner-001"
+
+shell_send {
+  "session_id": "test-runner-001",
+  "text": "cargo test --release"
+}
+
+shell_capture {
+  "session_id": "test-runner-001"
+}
+→ "running test_outline ... ok"
+```
+
+**Coordinate builds across shards:**
+
+```json
+shell_spawn { "command": "bash", "cwd": "/repo" }
+→ "shard-1"
+shell_spawn { "command": "bash", "cwd": "/repo" }
+→ "shard-2"
+
+shell_broadcast {
+  "text": "cargo build --release -p basemind",
+  "session_ids": ["shard-1", "shard-2"]
+}
+
+// poll each shard's output
+shell_capture { "session_id": "shard-1" }
+shell_capture { "session_id": "shard-2" }
+```
+
+## Discipline
+
+- **Use `shell_spawn` for long-running tasks.** Don't block on test suites or deployments;
+  let them run in the background.
+- **Poll with `shell_capture`, don't assume completion time.** Machine speed varies; check
+  output before proceeding.
+- **Coordinate with comms.** A background worker can post updates to a room while an
+  orchestrator polls and decides next steps.
+- **Clean up with `shell_kill`** or let sessions exit naturally. Don't accumulate idle
+  sessions.
+
+<Aside type="note">
+Headless sessions have no real terminal — they buffer stdout/stderr and you read it with
+`shell_capture`. For interactive shells (passing `-it` flags) or to watch a session's
+output in real time, the agent can open a tab or window in your terminal emulator.
+</Aside>
+
+## See also
+
+[Agent comms](/concepts/agent-comms/)

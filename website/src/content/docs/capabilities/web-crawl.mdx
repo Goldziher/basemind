@@ -1,0 +1,115 @@
+---
+title: Web Crawl
+description: Fetch and crawl web pages, adding them to the document search store — discovery, indexing, and RAG all in one.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+Web pages can be scraped one-off or crawled from a seed URL. Results land in the document
+search store and are queryable the same way as local PDFs and Office files.
+
+<Badge text="--features crawl" /> or `--features full`
+
+## Tools
+
+### `web_scrape`
+
+Fetch and index a single page, adding it to the document store.
+
+```json
+{
+  "url": "https://docs.example.com/guide/overview",
+  "scope": "docs"
+}
+```
+
+Results land tagged with a `scope` (default: `web:<host>`), searchable via `search_documents`
+alongside local documents. Override the scope to group related pages under a custom label.
+
+### `web_crawl`
+
+Follow links from a seed URL up to a configurable depth, indexing all discovered pages.
+
+```json
+{
+  "url": "https://docs.example.com/",
+  "max_depth": 3,
+  "max_pages": 200
+}
+```
+
+The crawler:
+
+- Honors `robots.txt` by default (disable with config).
+- SSRF-blocks private and loopback hosts by default to prevent exfil. Allow them with
+  `[crawl].allow_private_network = true` in `.basemind/basemind.toml`.
+- Tags all pages under a `scope` of `web:<host>` by default, overridable per-request.
+- Stops when it hits `max_depth`, `max_pages`, or no new links.
+
+### `web_map`
+
+Discover a site's pages without fetching bodies — returns a sitemap-like list.
+
+```json
+{
+  "url": "https://docs.example.com"
+}
+```
+
+Useful for reconnaissance: "what pages exist on this site?" without the download and
+embedding cost. Use `web_crawl` if you want to index them all, or `web_scrape` for one
+page.
+
+## Configuration
+
+In `.basemind/basemind.toml` (config-file-only):
+
+```toml
+[crawl]
+respect_robots_txt = true         # honor robots.txt (default: true)
+allow_private_network = false     # allow crawling localhost, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (default: false)
+```
+
+These are **config-file-only** settings — the MCP tools do not expose overrides for
+security.
+
+## Security
+
+The crawler SSRF-blocks private and loopback networks (`localhost`, `127.0.0.1`,
+`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) to prevent exfiltration attacks. Set
+`allow_private_network = true` **only** if you trust the crawl target.
+
+<Aside type="caution">
+SSRF blocking is **default-on**. Disable only when crawling internal docs on a trusted
+network. Never disable in a shared environment or against untrusted URLs.
+</Aside>
+
+## Searching crawled pages
+
+Once indexed, crawled pages are searchable via `search_documents`:
+
+```json
+{
+  "query": "rate limiting",
+  "mime_type": "text/html"
+}
+```
+
+Filter by `scope: "web:docs.example.com"` to search only pages from a specific host, or
+search across all web pages with no filter.
+
+## Discipline
+
+- **Use `web_scrape` for one-off pages.** Pull docs into context without committing to
+  a full crawl.
+- **Use `web_crawl` for docs sites.** Point it at `/docs` or `/api` and let it discover
+  the rest.
+- **Use `web_map` for reconnaissance.** Check what pages exist before committing to a
+  crawl.
+- **Search with `mime_type: "text/html"` to focus on web results.** Keeps web docs separate
+  from local files.
+- **Expect crawls to take time.** A 100-page site with embedding will take ~10–30 seconds.
+
+## See also
+
+[Document search](/capabilities/document-search/) · [Code search](/capabilities/code-search/)

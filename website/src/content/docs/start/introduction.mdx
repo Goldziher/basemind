@@ -1,0 +1,104 @@
+---
+title: Introduction
+description: >-
+  What basemind is and why it exists — the context layer that lets agents answer
+  from structure instead of burning tokens on grep and whole-file reads.
+---
+
+import { Aside, Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+basemind turns any repository into an always-current map of its code, documents,
+history, and memory — so agents answer from **structure and search** instead of
+burning their context window on `grep` and file reads, and gives a team of agents
+a **shared channel to coordinate** while they work.
+
+One server does both.
+
+## The problem basemind solves
+
+When an agent needs to understand code, it has three expensive options:
+
+1. **Read whole files** — costs hundreds of tokens per file, and most of a file is
+   irrelevant to the question.
+2. **Shell out to grep** — and wade through comment noise, test file matches, and
+   lines torn from context.
+3. **Navigate back and forth** — opening one file to find a call, opening another
+   to find the definition, parsing manually to understand the shape.
+
+basemind does all three jobs in **milliseconds**, and answers with **paths, line
+numbers, and signatures** — a fraction of the tokens, and no manual parsing.
+
+Once an agent knows a symbol lives at `src/parser.rs:142`, it can `read_file` that
+exact span instead of the whole file. Once it knows what calls a function, it stops
+guessing. Once it knows what changed yesterday, it stops reading git logs.
+
+## What you get
+
+| Capability | What it does |
+|---|---|
+| **Code intelligence** | Find where things are defined, what calls what, who implements what, and how calls chain — across 300+ languages. |
+| **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and search commit authors + messages. |
+| **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. |
+| **Code search** | Find source code by meaning, term, or symbol — vector KNN, native BM25, or exact-symbol lanes, with optional reranking. Returns pointers; fetch bodies on demand. |
+| **Shared memory** | Per-repo memory agents can write to and search; clones of the same repo share it, unrelated repos stay separate. |
+| **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search. |
+| **Agent comms** | A shared chat for agents on the same repo: rooms they auto-join, direct messages, and orchestration of many named subagents. |
+| **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. |
+| **Token saving** | Hand an agent a file's outline instead of its full text, pull back only the one function it needs, diff a re-read instead of resending it whole. |
+
+## The operating rule: basemind first, shell/grep/git fallback
+
+basemind is built on one discipline: **prefer structure over content**.
+
+- **`outline` a file before you open it.** Read only the exact span you need from
+  the outline, not the whole file.
+- **`search_symbols` instead of grep.** It matches on indexed symbol names and
+  returns `path:line`, skipping comment and test noise.
+- **`find_references` / `find_callers` instead of grepping call sites.** Indexed
+  call edges, not text matches.
+- **`recent_changes` / `blame_symbol` / `diff_outline` instead of `git log` /
+  `git blame`.** History at symbol resolution, in tens of microseconds.
+- **`rescan` after you edit code**, not a server reconnect. Optionally limit it to
+  the files you touched.
+- **Do not re-read a file basemind already mapped.** If the outline answered the
+  question, stop.
+
+## Two jobs from one server
+
+### 1. Indexed context layer
+
+`basemind scan` reads your project once, in parallel, and saves the result to a
+local cache in `.basemind/`. After that, `basemind serve` keeps the map in memory
+and answers questions instantly — no re-reading the project for each one. When
+files change, it updates only what changed.
+
+Outlines are held in RAM. Git history is precomputed and indexed. Documents are
+vectorized once and cached. The result: most code questions answer in **under a
+millisecond**, call-graph searches in a few milliseconds, and document searches
+in around 200 ms.
+
+### 2. Multi-agent comms
+
+A single shared service in the background lets agents talk to each other — even
+across different tools and different repos on the same machine. Agents join
+**rooms** automatically based on what they're working on, and each has a personal
+**inbox**. Messages come in two parts: a short headline (cheap to skim) and the
+full body (fetched only when an agent wants to read it).
+
+## How to use it
+
+Pick a plugin (recommended — it sets up everything for you), or run it as an MCP
+server or standalone CLI.
+
+<CardGrid>
+  <LinkCard
+    title="Installation"
+    href="/start/installation/"
+    description="Three ways to run basemind — pick your tool."
+  />
+  <LinkCard
+    title="Quickstart"
+    href="/start/quickstart/"
+    description="Scan a repo and ask your first questions."
+  />
+</CardGrid>

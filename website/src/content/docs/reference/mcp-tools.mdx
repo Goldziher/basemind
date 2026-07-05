@@ -1,0 +1,177 @@
+---
+title: MCP Tools Reference
+description: Complete catalog of basemind tools grouped by capability area.
+---
+
+import { Aside, Badge } from '@astrojs/starlight/components';
+
+basemind exposes all tools over stdio MCP, making them available to any compatible agent. All paths are byte-precise repo-relative (`RelPath`). Lists are capped at 1000 items; by default 100. Tool descriptions state matching semantics (substring, prefix, scope-aware) and what's indexed (name-only vs scope-resolved).
+
+## Code Intelligence
+
+Query your project's structure: symbols, references, calls, and definitions across **300+ languages** via tree-sitter.
+
+| Tool | Purpose | Matching |
+|---|---|---|
+| `outline` | Full per-file structure: symbols, line/col, signatures, imports. `l2: true` adds calls + docs. | scope-aware |
+| `search_symbols` | Find symbols by name across all indexed files, optional kind filter. | substring |
+| `find_references` | Where a name is called — all call sites of any callee matching the name. | substring |
+| `find_callers` | Who calls one specific definition (path + name + optional kind). Resolves the definition first, then runs a name-only scan. | resolves def, then name-only |
+| `goto_definition` | Resolve a reference at a source position to its definition. | scope-aware |
+| `call_graph` | Walk the call chain up or down from a symbol. `--direction` (up/down), `--max-depth`. | exact name |
+| `find_implementations` | Types that implement or inherit from a trait/interface. | substring |
+| `dependents` | Heuristic reverse lookup: what imports a given module. | import-based |
+| `workspace_grep` | Pattern search with optional language and path filters. | regex |
+| `list_files` | Enumerate indexed paths, optional `path_contains` and `language` filters. | substring |
+
+See [Code Intelligence capabilities](/capabilities/code-intelligence/) for detailed examples.
+
+## Git Intelligence
+
+Query your repository's history, blame, diffs, and churn — powered by `gix` with a built-in history index for microsecond latency.
+
+| Tool | Purpose | Scope |
+|---|---|---|
+| `working_tree_status` | Staged and unstaged files right now. | — |
+| `recent_changes` | Recent commits with their file lists. | branch depth |
+| `search_git_history` | Full-text search commit authors and messages. | branch depth |
+| `commits_touching` | Commits that modified a given path. | posting-list (indexed) |
+| `find_commits_by_path` | Commits matching a path pattern. | branch depth |
+| `hot_files` | The most frequently changed files, ranked by churn. | branch depth |
+| `diff_file` | File diff across two revisions. | — |
+| `diff_outline` | Structure diff of a file across revisions. | scope-aware |
+| `blame_file` | Who last changed each line. | per-line |
+| `blame_symbol` | Who last changed a symbol's body. | per-symbol |
+| `symbol_history` | When a symbol's body changed over time. | commit walk |
+
+See [Git Intelligence capabilities](/capabilities/git-intelligence/) for examples.
+
+## Document Search
+
+Full-text and semantic search over **90+ document formats** — PDFs, Office files, HTML, email, and images — with built-in extraction and OCR.
+
+| Tool | Purpose |
+|---|---|
+| `search_documents` | Search PDFs, Office, HTML, images by meaning and text. Returns pointers + snippets. |
+
+See [Document Search capabilities](/capabilities/document-search/) for setup and examples.
+
+## Code Search
+
+Semantic + keyword search over indexed code chunks. Returns pointers; fetch bodies with `get_chunk`. Requires `--features code-search`.
+
+| Tool | Purpose | Modes |
+|---|---|---|
+| `search_code` | Search code by meaning, term, or symbol. `mode`: `hybrid` (RRF fusion, default), `semantic` (vector KNN), `keyword` (BM25). Optional `rerank` cross-encoder pass. | vector + BM25 + symbol |
+| `get_chunk` | Fetch one code chunk's source body (pairs with `search_code`). | — |
+
+See [Code Search capabilities](/capabilities/code-search/) for examples and mode details.
+
+## Shared Memory
+
+Per-repo memory agents can read and write. Clones of the same repo share it; unrelated repos stay separate. Vectors powered by LanceDB.
+
+| Tool | Purpose | Scope |
+|---|---|---|
+| `memory_put` | Store a key/value pair (text, optionally grouped). | per-repo |
+| `memory_get` | Retrieve a value by key. | per-repo |
+| `memory_delete` | Remove a key. | per-repo |
+| `memory_list` | List keys, optionally by prefix. | per-repo |
+| `memory_search` | Search stored values by meaning. | per-repo |
+| `memory_audit` | Recompute memory importance, archive stale entries, refresh verdicts. | per-repo |
+
+See [Shared memory](/concepts/memory/) for examples.
+
+## Suggestions
+
+Spot files that change together and suggest notes worth saving — you approve before anything is kept.
+
+| Tool | Purpose |
+|---|---|
+| `proposals_mine` | Suggest notes from files that change together. `--commits`, `--min-count`, `--min-confidence`, `--max-files-per-commit`. |
+| `proposals_list` | List pending suggestions, optional kind filter. |
+| `proposal_accept` | Keep a suggestion as a memory entry. |
+| `proposal_reject` | Dismiss a suggestion for good. |
+
+## Web Crawl
+
+Fetch and index web pages. Results join the document search index.
+
+| Tool | Purpose |
+|---|---|
+| `web_scrape` | Fetch and index a single page. |
+| `web_crawl` | Follow links from a starting URL. |
+| `web_map` | Discover a site's pages without fetching bodies. |
+
+## Agent Comms
+
+A shared chat layer for agents on the same repo: per-repo rooms (auto-join by scope), direct messages, and a recency-filtered inbox. Requires `--features comms`.
+
+| Tool | Purpose |
+|---|---|
+| `room_post` | Post a message to a room. Required: `room`, `subject`. Optional: `body`, `reply_to`, `tag`. |
+| `room_history` | Recent messages in a room (front-matter only). |
+| `dm_send` | Send a direct message to another agent. |
+| `inbox_read` | Your inbox (front-matter only). |
+| `message_get` | Read one message in full. |
+| `room_list` | List rooms and their member counts. |
+| `room_create` | Create a new room (explicit or via post to a new name). |
+| `room_join` | Join a room. |
+| `room_leave` | Leave a room. |
+| `agent_list` | Active agents in the comms system. |
+| `agent_register` | Set or update your agent handle. |
+
+See [Agent Comms capabilities](/concepts/agent-comms/) for orchestration examples.
+
+## Agent Shells
+
+Let agents spawn, type into, and read terminal sessions. Requires `--features shells`.
+
+| Tool | Purpose |
+|---|---|
+| `shell_spawn` | Start a detached shell session (`--cwd`, `--env`, `--title`). Returns `session_id`. |
+| `shell_send` | Type into a session's stdin (`--no-enter` to suppress newline). |
+| `shell_capture` | Read a session's visible screen (`--lines` to limit). |
+| `shell_list` | List live sessions. |
+| `shell_kill` | End a session. |
+| `shell_broadcast` | Send input to multiple sessions at once. |
+
+## Token Saving
+
+Compression, expansion, and delta utilities for keeping context window efficient.
+
+| Tool | Purpose |
+|---|---|
+| `compress` | Shrink code (keep shape, drop bodies) or prose. Returns honest token counts. |
+| `expand` | Fetch a symbol's full body (inverse of outline). |
+| `delta` | Show only what changed when re-reading a file. |
+| `checkpoint` | Summarize a session: what was queried, tokens saved. |
+| `detect_waste` | Flag wasteful tool use (e.g., re-reading files basemind already mapped). |
+
+## Admin
+
+Refresh the index, telemetry, and cache management.
+
+| Tool | Purpose |
+|---|---|
+| `rescan` | Update one path (or full scan if no path). |
+| `status` | Project overview: file count, languages, cache path. |
+| `repo_info` | Git info: branch, HEAD, origin remote. |
+| `telemetry_summary` | What's been queried and tokens saved. |
+| `cache_stats` | Disk footprint (per-component, matches `du`) and RAM. |
+| `cache_gc` | Reclaim unused space (safe while the server runs). |
+| `cache_clear` | Clear part of the cache by component (`views`, `blobs`, `lance`, `git-cache`, `telemetry`, `all`). |
+
+## Metadata & Pagination
+
+All list-returning tools:
+
+- **`limit`** parameter: 1–1000 items (default 100).
+- **`cursor`** for pagination: opaque token returned in response; pass back to continue.
+- **`any_truncated` flag**: set to `true` if the result hit the limit and more results exist.
+
+For index scans (symbol + reference tools), basemind internally uses `scan_cap = limit * 8` to bound work on common names.
+
+<Aside>
+Tool descriptions are the routing surface for agents. Read them carefully — they describe matching semantics (substring vs. prefix), scope resolution (name-only vs. scope-aware), and what each tool trades off. This helps agents pick the right tool for the question.
+</Aside>

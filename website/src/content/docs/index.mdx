@@ -1,0 +1,91 @@
+---
+title: basemind
+description: >-
+  The context and communication layer for coding agents. A pure-Rust code map, document RAG,
+  git intelligence, shared memory, and agent-to-agent comms — served over MCP.
+template: splash
+hero:
+  tagline: >-
+    The context and communication layer for coding agents. Turn any repo into an always-current map of
+    its code, documents, history, and memory — so agents answer from structure and search instead of
+    burning their context window on grep and file reads.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get started
+      link: /start/introduction/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/Goldziher/basemind
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, Tabs, TabItem, Code } from '@astrojs/starlight/components';
+
+Code map across **300+ languages** · documents in **90+ formats** · semantic + full-text search ·
+git history & blame · shared memory · web crawl · agent-to-agent comms. One server does both jobs —
+and every answer comes back as **paths, line numbers, and signatures, not whole files**, so a
+question about your code costs a small fraction of the tokens it takes to read the source.
+
+## The operating rule: basemind first, shell/grep/git fallback
+
+<CardGrid>
+	<Card title="Answer from structure" icon="magnifier">
+		`outline` a file before you open it, `search_symbols` instead of grep, `find_references`
+		instead of grepping call sites. Pointers, not file bodies.
+	</Card>
+	<Card title="Ask history directly" icon="git-branch">
+		`recent_changes`, `blame_symbol`, `commits_touching`, `diff_outline` — git intelligence at
+		symbol resolution, in tens of microseconds.
+	</Card>
+	<Card title="Search everything" icon="open-book">
+		Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR) — plus scraped
+		web pages — with reranking and per-document summaries.
+	</Card>
+	<Card title="Coordinate agents" icon="comment">
+		A shared channel for a team of agents on the same repo: rooms, inboxes, direct messages, and
+		orchestration of many named subagents.
+	</Card>
+</CardGrid>
+
+## Install in one step
+
+The plugin sets up the server, helper skills, comms, and slash commands — and downloads the
+`basemind` program for you on first use.
+
+<Tabs syncKey="installer">
+	<TabItem label="Claude Code">
+		<Code
+			code={`/plugin marketplace add Goldziher/basemind\n/plugin install basemind@basemind`}
+			lang="text"
+		/>
+	</TabItem>
+	<TabItem label="Codex">
+		<Code
+			code={`codex plugin marketplace add Goldziher/basemind\ncodex plugin add basemind@basemind`}
+			lang="bash"
+		/>
+	</TabItem>
+	<TabItem label="Gemini CLI">
+		<Code code={`gemini extensions install https://github.com/Goldziher/basemind`} lang="bash" />
+	</TabItem>
+	<TabItem label="Homebrew">
+		<Code code={`brew install Goldziher/tap/basemind`} lang="bash" />
+	</TabItem>
+</Tabs>
+
+Not using a plugin host? basemind also runs as a plain [MCP server](/start/installation/#as-an-mcp-server)
+or a [standalone CLI](/reference/cli/). See the full [installation guide](/start/installation/).
+
+## Explore
+
+<CardGrid>
+	<LinkCard title="Introduction" href="/start/introduction/" description="What basemind is and why it exists." />
+	<LinkCard title="Quickstart" href="/start/quickstart/" description="Scan a repo and ask your first questions." />
+	<LinkCard title="How it works" href="/concepts/how-it-works/" description="One scan, then instant answers held in memory." />
+	<LinkCard title="MCP tools" href="/reference/mcp-tools/" description="Every tool, what it returns, and when to reach for it." />
+	<LinkCard title="CLI reference" href="/reference/cli/" description="The scriptable surface, at 1:1 parity with the MCP tools." />
+	<LinkCard title="Performance" href="/reference/performance/" description="Scan speed and microsecond git-history queries." />
+</CardGrid>

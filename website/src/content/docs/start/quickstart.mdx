@@ -1,0 +1,120 @@
+---
+title: Quickstart
+description: >-
+  Scan a repo, then ask your first questions. Index a small project in seconds
+  and see answers come back in milliseconds.
+---
+
+import { Steps, Code, Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+After installing, index a repository and ask it questions. Most answers come back
+in **under a millisecond** — queries are answered from RAM, not disk.
+
+<Steps>
+
+1. **Index the repository**
+
+   From the repository root:
+
+   <Code code={`basemind scan`} lang="bash" />
+
+   This walks the tree, parses with tree-sitter, and writes a content-addressed
+   blob store + inverted index under `.basemind/`. Takes a few seconds for small
+   repos, around 18 seconds for an 81k-file TypeScript monorepo.
+
+2. **Find where a symbol is defined**
+
+   <Code code={`basemind query symbol "parseQuery"`} lang="bash" />
+
+   Output:
+
+   <Code code={`src/parser.rs:142:1 parseQuery (function)
+src/utils.rs:89:1 parseQuery (type alias)`} lang="text" />
+
+   Now you know exactly where to read — no grep noise, no manual parsing.
+
+3. **See what calls a function**
+
+   <Code code={`basemind query references "processFile"`} lang="bash" />
+
+   Output:
+
+   <Code code={`src/scanner.rs:142:9 processFile
+src/scanner.rs:201:13 processFile
+src/extract.rs:57:20 processFile`} lang="text" />
+
+   Every place it's called, with line and column numbers.
+
+4. **Find who last touched a line**
+
+   <Code code={`basemind git blame-file src/main.rs`} lang="bash" />
+
+   Or drill down to a single symbol:
+
+   <Code code={`basemind git blame-symbol src/main.rs "processFile"`} lang="bash" />
+
+   Shows the last commit, author, and timestamp for each line or symbol.
+
+5. **Keep the index fresh**
+
+   As you edit, update the index with:
+
+   <Code code={`basemind watch`} lang="bash" />
+
+   This runs in the foreground and re-indexes on file changes. Or use `basemind
+   serve` if you're querying via the MCP server or plugin.
+
+</Steps>
+
+## What to expect
+
+- **Index build**: Seconds for small repos; the largest test case (81k TypeScript
+  files) scans in around 18 seconds. Re-scans are much faster — only changed
+  files are re-indexed.
+- **Query latency**: Under a millisecond for symbol and reference lookups.
+  Call-graph searches in a few milliseconds. Git history lookups in **tens of
+  microseconds**.
+- **Outline before you read**: Use `outline` to see a file's structure (symbols,
+  signatures, line numbers, imports) without opening it.
+
+  <Code code={`basemind query outline src/parser.rs`} lang="bash" />
+
+  Output shows every symbol and its line number, so you know exactly what to read.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard
+    title="CLI reference"
+    href="/reference/cli/"
+    description="Every command, from symbol search to git blame to memory management."
+  />
+  <LinkCard
+    title="How it works"
+    href="/concepts/how-it-works/"
+    description="One scan, then instant answers — the architecture behind basemind."
+  />
+  <LinkCard
+    title="MCP tools"
+    href="/reference/mcp-tools/"
+    description="The full tool list and when to reach for each one."
+  />
+</CardGrid>
+
+## Using the plugin or MCP server
+
+If you're using the plugin or MCP server instead of the CLI, you're already
+indexed once you run `/bm-scan` or call the `rescan` MCP tool. From there, use
+the tools in the chat:
+
+- **Find a definition**: Call `search_symbols` with a name.
+- **Find references**: Call `find_references` with a name.
+- **Browse before reading**: Call `outline` on a file path.
+- **Check git history**: Call `blame_symbol`, `recent_changes`, or `commits_touching`.
+
+All the same queries, just over the MCP surface instead of the CLI.
+
+<Aside>
+After re-indexing, both the CLI (`basemind query ...`) and the MCP tools have
+the fresh index. No server restart needed — use `rescan` to update in-process.
+</Aside>
