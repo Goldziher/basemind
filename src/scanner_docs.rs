@@ -84,9 +84,66 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConf
     }
 }
 
+/// Archive / compressed / binary-blob extensions that must NEVER reach xberg. xberg routes
+/// `.zip/.tar/.gz/...` into its `ZipExtractor`/`GzipExtractor`/`build_archive_doc` path, which
+/// recursively unpacks the archive and embeds every entry — an enormous, pointless cost during a
+/// code-map scan (the observed 1119%-CPU / 15 GB footgun). Binary blobs (`.so/.class/.wasm/...`)
+/// carry no extractable text and only waste an embed. This is the primary guard because
+/// `mime::detect_mime_type` is extension-based, and several of these (`.jar/.whl/.war/.so/...`)
+/// collapse to `application/octet-stream` via the `mime_guess` fallback, so a MIME-only denylist
+/// would miss them.
+const ARCHIVE_BINARY_EXTENSIONS: &[&str] = &[
+    // archives / compressed
+    "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br", "cab",
+    "ar", "iso", "dmg", // packaged archives (zip/tar underneath)
+    "jar", "war", "ear", "apk", "whl", "egg", "deb", "rpm", "nupkg", "pkg", "msi", "crate",
+    // native / compiled binaries
+    "so", "dylib", "dll", "a", "o", "obj", "bin", "exe", "wasm", "class", "pyc", "pyo", "pyd", "node", "pack", "idx",
+];
+
+/// MIME denylist (belt-and-suspenders with [`ARCHIVE_BINARY_EXTENSIONS`]) — catches content-typed
+/// archives xberg maps to a real archive MIME (`.zip/.tar/.gz/.tgz/.7z`) plus the unambiguously
+/// non-extractable audio/video/font families. Entries ending in `/` are prefix matches (see
+/// [`matches_mime`]). `image/` is deliberately NOT denied: xberg OCR can extract text from images,
+/// so images retain their pre-existing allowlist behavior.
+const DENY_MIME: &[&str] = &[
+    "application/zip",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-7z-compressed",
+    "application/java-archive",
+    "application/vnd.rar",
+    "application/wasm",
+    "application/x-executable",
+    "application/x-sharedlib",
+    "application/x-mach-binary",
+    "application/octet-stream",
+    "audio/",
+    "video/",
+    "font/",
+];
+
+/// True when a file must be skipped by the document tier because it is an archive, a compressed
+/// container, or a binary blob. Checks the extension denylist (the const floor plus any
+/// user-configured `extension_denylist`) first, then the MIME denylist.
+fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
+    if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
+        let ext_lower = ext.to_ascii_lowercase();
+        if ARCHIVE_BINARY_EXTENSIONS.contains(&ext_lower.as_str())
+            || cfg
+                .extension_denylist
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(&ext_lower))
+        {
+            return true;
+        }
+    }
+    DENY_MIME.iter().any(|entry| matches_mime(entry, mime_type))
+}
+
 /// Quick filter run before any xberg work happens. Returns the detected
 /// MIME type when the file should be document-extracted, or `None` when it
-/// should be skipped (configured-off, MIME unknown, MIME outside the allowlist).
+/// should be skipped (configured-off, archive/binary, MIME unknown, MIME outside the allowlist).
 ///
 /// The MIME allowlist is treated as "match this exact MIME OR a prefix ending
 /// in `/`" so callers can say `"image/"` to whitelist every image type.
@@ -95,6 +152,11 @@ pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Opti
         return None;
     }
     let mime_type = mime::detect_mime_type(abs, false).ok()?;
+    // Reject archives / compressed containers / binaries BEFORE the allowlist branch, so they never
+    // reach xberg's recursive archive extractor + embedder regardless of allowlist configuration.
+    if is_denied_binary_or_archive(abs, &mime_type, cfg) {
+        return None;
+    }
     if cfg.mime_allowlist.is_empty() {
         return Some(mime_type);
     }
@@ -143,6 +205,24 @@ pub(crate) fn extract_and_persist_doc(
     store
         .write_doc(&hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
+
+    // Guard against a pathological input exploding into tens of thousands of vector rows. The blob
+    // is still cached (so it round-trips), but we emit no LanceDB rows. NOTE: xberg embeds during
+    // `extract_doc`, so this bounds the LanceDB write, not the embed compute — WS4 gates compute.
+    if doc.chunks.len() > cfg.max_chunks_per_document {
+        tracing::warn!(
+            rel,
+            chunks = doc.chunks.len(),
+            cap = cfg.max_chunks_per_document,
+            "document exceeds max_chunks_per_document; caching blob but skipping vector rows"
+        );
+        return Ok(Some(PendingDocBatch {
+            rel_path: rel.to_string(),
+            chunk_count: doc.chunks.len(),
+            embedding_dim: doc.embedding_dim,
+            rows: Vec::new(),
+        }));
+    }
 
     if doc.embedding_dim == 0 || doc.chunks.is_empty() {
         return Ok(Some(PendingDocBatch {
@@ -359,6 +439,61 @@ mod tests {
         // before xberg ever touches the filesystem.
         let out = should_extract_document(Path::new("dummy.pdf"), &cfg);
         assert!(out.is_none());
+    }
+
+    #[test]
+    fn should_extract_document_rejects_archives_and_binaries() {
+        // `detect_mime_type(_, false)` is extension-based and does not stat the file, so
+        // non-existent paths are fine here.
+        let cfg = DocumentsConfig::default();
+        for path in [
+            "vendor/lib.zip",
+            "target/app.jar",
+            "dist/bundle.tar.gz",
+            "build/libfoo.so",
+            "pkg/module.wasm",
+            "out/Main.class",
+            "wheels/pkg-1.0.whl",
+            "bin/tool.exe",
+            "obj/thing.o",
+        ] {
+            assert!(
+                should_extract_document(Path::new(path), &cfg).is_none(),
+                "archive/binary must be denied: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_extract_document_allows_real_documents() {
+        let cfg = DocumentsConfig::default();
+        for path in ["docs/manual.pdf", "notes/readme.txt", "report.csv"] {
+            assert!(
+                should_extract_document(Path::new(path), &cfg).is_some(),
+                "extractable document must pass: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_extract_document_honors_extension_denylist_override() {
+        let cfg = DocumentsConfig {
+            extension_denylist: vec!["pdf".to_string()],
+            ..Default::default()
+        };
+        // The built-in floor still applies AND the user extension is now denied too.
+        assert!(should_extract_document(Path::new("docs/manual.pdf"), &cfg).is_none());
+        assert!(should_extract_document(Path::new("vendor/lib.zip"), &cfg).is_none());
+    }
+
+    #[test]
+    fn images_pass_but_audio_video_denied() {
+        let cfg = DocumentsConfig::default();
+        // Images retain allowlist behavior (xberg OCR may extract text) — not auto-denied.
+        assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
+        // Audio / video are never extractable → denied via the MIME prefix denylist.
+        assert!(should_extract_document(Path::new("clips/audio.mp3"), &cfg).is_none());
+        assert!(should_extract_document(Path::new("clips/movie.mp4"), &cfg).is_none());
     }
 
     #[test]

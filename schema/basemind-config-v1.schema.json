@@ -58,6 +58,8 @@
       "default": {
         "enabled": true,
         "mime_allowlist": [],
+        "extension_denylist": [],
+        "max_chunks_per_document": 2000,
         "max_characters": 1000,
         "overlap": 200,
         "embedding_preset": "balanced",
@@ -318,6 +320,22 @@
             "minLength": 1
           },
           "default": []
+        },
+        "extension_denylist": {
+          "description": "Extra file extensions (lowercase, no dot) to skip on top of the built-in archive/binary\ndenylist. The built-in floor (`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only\nadds to it — so archives and binaries are never routed to xberg extraction + embedding.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "max_chunks_per_document": {
+          "description": "Hard cap on chunks embedded per document. A pathological input (huge generated file, an\narchive that slipped the denylist) can otherwise explode into tens of thousands of ONNX\nembeds. Documents exceeding the cap are extracted but not embedded (blob written, no vector\nrows) with a warning.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 1,
+          "default": 2000
         },
         "max_characters": {
           "description": "Maximum chunk size in characters.",
