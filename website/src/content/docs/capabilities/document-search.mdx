@@ -1,0 +1,175 @@
+---
+title: Document Search
+description: Semantic and full-text search over PDFs, Office files, HTML, email, images, and web pages — with OCR, reranking, and NER filtering.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+basemind extracts 90+ file formats (PDF, Office, HTML, email, images via OCR) into a
+LanceDB vector store and answers meaning-based queries with optional cross-encoder reranking.
+Web pages scraped or crawled into the same store are searchable the same way.
+
+<Badge text="--features documents" /> or `--features full`
+
+## Requirements
+
+- `search_documents` needs a build with `--features documents` (or `full`). The `memory_*`
+  tools are a separate feature — `--features memory` (also in `full`). Without the relevant
+  feature the tool dispatches but returns an error.
+- Web ingestion (`web_scrape`, `web_crawl`, `web_map`) needs `--features crawl`. When
+  that feature is off these tools are not registered at all.
+- Documents must be scanned first: `basemind scan` with the documents feature extracts
+  and embeds them into `.basemind/`.
+
+## Core tool
+
+### `search_documents`
+
+Semantic search across PDFs, Office, HTML, email, images (OCR), and web pages. Returns
+chunk-level hits with path, matched text, byte span, vector distance, and — when enabled
+at scan time — cross-encoder rerank score, named entities, and document summary.
+
+```json
+{
+  "query": "how is the index schema versioned",
+  "limit": 10,
+  "entity_category": "PERSON",
+  "keywords_contains": "release"
+}
+```
+
+Filter results by:
+
+- **`entity_category`** — narrow to documents mentioning entities like `PERSON`, `LOCATION`,
+  `ORGANIZATION` (NER-extracted at scan time).
+- **`keywords_contains`** — narrow to documents with a matching keyword (extracted at scan
+  time).
+- **`mime_type`** — filter by file type, e.g. `"application/pdf"` or `"text/html"`.
+
+Each hit carries:
+
+- `path` — file path or web scope (`web:<host>/<path>`).
+- `chunk_idx` — which chunk within the document.
+- `text` — the matched passage.
+- `byte_span` — precise location in the source.
+- `distance` — L2 vector distance (lower = better).
+- `rerank_score` — cross-encoder score in `[0, 1]` (higher = better, only when reranking
+  is enabled).
+- `keywords` / `entities` / `summary` — document-level metadata (when enabled at scan).
+
+## Web ingestion
+
+### `web_scrape`
+
+Fetch and index a single page, adding it to the document store.
+
+```json
+{
+  "url": "https://docs.example.com/guide",
+  "scope": "docs"
+}
+```
+
+Results land tagged with a `scope` (default: `web:<host>`), making them queryable the same
+way as local documents.
+
+### `web_crawl`
+
+Follow links from a seed URL up to a configurable depth, indexing all discovered pages.
+
+```json
+{
+  "url": "https://docs.example.com/",
+  "max_depth": 2,
+  "max_pages": 100
+}
+```
+
+<Aside type="note">
+The crawler honors `robots.txt` by default (disable with config). It SSRF-blocks private
+and loopback hosts unless `[crawl].allow_private_network = true` is set in
+`.basemind/basemind.toml`.
+</Aside>
+
+### `web_map`
+
+Discover a site's pages without fetching bodies — returns a sitemap.
+
+```json
+{
+  "url": "https://docs.example.com"
+}
+```
+
+Useful for "what pages exist on this site?" without the download cost.
+
+## Shared memory
+
+Store key–value pairs that persist across sessions and are queryable by any agent on the
+same repo (determined by normalized git origin URL). Unrelated repos keep separate memory.
+
+### `memory_put`
+
+Store a value.
+
+```json
+{
+  "key": "architecture_notes",
+  "value": "The scanner uses rayon parallel iteration..."
+}
+```
+
+### `memory_get` / `memory_list`
+
+Retrieve a value by exact key or list keys by prefix.
+
+```json
+{
+  "key": "architecture"
+}
+```
+
+### `memory_search`
+
+Semantic search over stored values.
+
+```json
+{
+  "query": "how is parallelism managed",
+  "limit": 5
+}
+```
+
+## Configuration
+
+In `.basemind/basemind.toml`:
+
+```toml
+[documents]
+enabled = true
+embed = true  # set to false to disable embeddings (keyword search only)
+
+[documents.reranker]
+enabled = true  # cross-encoder reranking for document chunks
+```
+
+## Discipline
+
+- **Use `search_documents` instead of opening PDFs/Office/HTML by hand.** Semantic search
+  finds passages about a topic without keyword matching.
+- **Use `web_scrape` / `web_crawl` to pull docs into the RAG store.** Once indexed, they
+  are searchable alongside local documents.
+- **Use `memory_put` / `memory_search` for agent-generated insights.** Store findings that
+  you want to recall in future sessions.
+- **Filter by `entity_category` or `mime_type` when the query is too broad.** Narrow results
+  to a document class.
+
+<Aside type="note">
+All results are paginated. Use `next_cursor` from one response as `cursor` in the next to
+fetch additional pages.
+</Aside>
+
+## See also
+
+[Code intelligence](/capabilities/code-intelligence/) · [Git intelligence](/capabilities/git-intelligence/) ·
+[Code search](/capabilities/code-search/)

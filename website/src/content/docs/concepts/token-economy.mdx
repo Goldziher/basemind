@@ -1,0 +1,103 @@
+---
+title: Token economy
+description: >
+  Why basemind saves tokens: pointers (paths and line numbers) cost less than whole files.
+  Good habits the plugin sets up by default, plus optional guardrails.
+---
+
+basemind saves tokens by answering with **file paths, line numbers, and signatures — not whole
+files**. A question about your code costs a small fraction of the tokens it takes to read the
+source.
+
+## Why pointers beat file reads
+
+When you ask "where is the `User` class defined?", basemind returns:
+```
+src/models/user.ts:42
+```
+
+Reading the entire `user.ts` file would cost 200–2000 tokens, depending on size. The answer costs
+just a few tokens.
+
+When you ask "what calls `processFile`?", basemind returns 10 call sites with their paths and
+line numbers — enough for an agent to decide whether to open each one. Re-reading the whole
+calling files would explode your context.
+
+The same discipline applies to every tool: `outline` gives you a file's structure (signatures,
+imports) before you open it, so you read only the span you need. `find_references` returns
+pointers, not source. `recent_changes` shows what happened (commits + file list), not diffs.
+
+See [How it works](/concepts/how-it-works/) to understand how basemind builds the map that makes
+this possible.
+
+## Good habits the plugin sets up
+
+The plugin nudges agents toward the cheap path by default:
+
+- **Get a file's outline before opening it** — then read only the part you need.
+- **Search for a definition instead of grepping for it** — `search_symbols` vs `grep`.
+- **Look up who calls a function instead of grepping for call sites** — `find_references` vs
+  `grep`.
+- **Refresh the index after edits** — `rescan` instead of restarting the server.
+- **Don't re-read a file basemind already mapped** — use the outline instead.
+
+## Optional guardrails
+
+Three environment variables enforce token discipline at the moment a tool is used:
+
+### Guard: redirect wasteful searches
+
+```bash
+BASEMIND_GUARD=off      # disable (default: on)
+BASEMIND_GUARD=redirect # block instead of nudge
+```
+
+When an agent reaches for a built-in `Grep`/`Glob`-style search, `Guard` gently redirects it to
+the matching basemind tool (`workspace_grep` for patterns, `search_symbols` for names,
+`find_references` for call sites). Set `redirect` to block the command instead of nudging.
+
+### Output compressor: shrink large results
+
+```bash
+BASEMIND_COMPRESS_OUTPUT=1
+```
+
+When a tool returns a long result (e.g., 100 matching files), the compressor shrinks the output
+by keeping only the essential shape — file paths, signatures, keywords — and dropping verbose
+details. It never touches anything that looks like a credential and leaves output alone if it
+can't help.
+
+### Re-read shortcut: show only what changed
+
+```bash
+BASEMIND_DELTA_READS=1
+```
+
+When an agent re-reads a file it already read earlier in the session, `BASEMIND_DELTA_READS` shows
+just the changed lines instead of resending the whole file.
+
+## Compression that understands code
+
+basemind shrinks code by keeping the shape and dropping the bodies — function signatures and
+imports stay, implementations go — because a signature is useless without its shape:
+
+```rust
+// Original (2,400 tokens)
+pub fn process_file(path: &str) -> Result<Vec<Symbol>> {
+  let file = std::fs::read_to_string(path)?;
+  let mut tokens = vec![];
+  let mut depth = 0;
+  // 100 lines of parsing logic...
+  Ok(tokens)
+}
+
+// Compressed (240 tokens)
+pub fn process_file(path: &str) -> Result<Vec<Symbol>>;
+```
+
+For prose, compression does a light cleanup: extra whitespace, filler paragraphs, repeated
+content. It reports honest before/after token counts, and the code version is exact — nothing is
+lost, just set aside.
+
+The `expand` tool brings any one symbol's full body back when an agent actually needs it:
+compress to an outline, `expand` only what you read.

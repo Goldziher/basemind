@@ -1,0 +1,214 @@
+---
+title: Configuration
+description: Configure basemind via config file, environment variables, or per-request overrides.
+---
+
+import { Aside, Code } from '@astrojs/starlight/components';
+
+basemind merges configuration from five layers. Highest precedence wins: a per-request MCP
+override, then a CLI flag, then an environment variable, then the config file, then the built-in
+default (`Mcp > Cli > Env > File > Default`).
+
+## Config File
+
+Create `.basemind/basemind.toml` to customize behavior. `basemind init` generates a starter file (optional — all settings have sensible defaults).
+
+### Minimal Example
+
+```toml
+# .basemind/basemind.toml
+file_watch_glob = "**/*.{rs,ts,tsx,py,go}"
+eager_l2 = true
+
+[scan]
+extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
+
+[documents]
+enabled = true
+```
+
+### Top-Level Options
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `file_watch_glob` | string | `**/*` | Glob pattern for file watching and scanning. Speeds up cold scans. |
+| `eager_l2` | bool | `true` | Extract L2 (call sites) during scan. Set to `false` to trade call-graph queries for faster scans (reference search becomes unavailable). |
+
+### `[scan]` Section
+
+```toml
+[scan]
+extra_roots = ["/path/to/external/repo"]
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `extra_roots` | array of strings | Index directories outside the repo root (e.g., a Bazel external repo cache) so symbols resolve in search, references, and outlines. External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). |
+
+### `[documents]` Section
+
+Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search.
+
+```toml
+[documents]
+enabled = true
+embed = true
+max_chunks_per_document = 2000
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `enabled` | bool | Enable/disable document indexing. Requires the model files, which download on first use. |
+| `embed` | bool | Generate vector embeddings for semantic search. Set `false` to keep full-text only. |
+| `embedding_preset` | string | Named embedding model preset used to embed chunks. |
+| `max_chunks_per_document` | integer | Cap on chunks embedded per document, so one pathological file can't explode a scan. |
+| `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
+| `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
+
+The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR.
+See the [config schema](#config-file) for the full field set.
+
+### `[llm]` Section
+
+Optional language-model settings for LLM-backed document summarization. The stack stays dormant
+unless both `model` and `api_key` are supplied, so it imposes no config burden by default.
+
+```toml
+[llm]
+model = "..."
+api_key = "sk-..."  # or the BASEMIND_LLM_API_KEY env var
+base_url = "https://api.openai.com/v1"
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `model` | string | Model ID. The summarization stack is a no-op until this and `api_key` are both set. |
+| `api_key` | string | API key for the provider. Also read from `BASEMIND_LLM_API_KEY`. |
+| `base_url` | string | Override the provider endpoint URL. |
+| `temperature` | float | Sampling temperature. |
+| `timeout_secs` | integer | Per-request timeout. |
+| `max_retries` | integer | Retry budget on transient failures. |
+| `max_tokens` | integer | Cap on generated tokens. |
+
+### `[comms]` Section
+
+Agent communication settings.
+
+```toml
+[comms]
+agent_id = "my-agent"
+```
+
+| Key | Type | Notes |
+|---|---|---|
+| `agent_id` | string | Agent identifier. Auto-generated if not set. |
+
+## Environment Variables
+
+Settings map to environment variables in the obvious way. Prefix with `BASEMIND_`, uppercase, replace dots with underscores.
+
+```bash
+BASEMIND_FILE_WATCH_GLOB="**/*.rs"
+BASEMIND_EAGER_L2=false
+BASEMIND_LLM_API_KEY="sk-..."
+BASEMIND_SCAN_EXTRA_ROOTS="/path/to/external"
+BASEMIND_DOCUMENTS_ENABLED=true
+BASEMIND_COMMS_AGENT_ID="my-agent"
+```
+
+<Aside type="tip">
+Environment variables take precedence over the config file (except for CLI flags, which override everything). This is useful for CI/CD environments where you don't want to commit secrets.
+</Aside>
+
+## Per-Request Overrides
+
+MCP tools accept one-off overrides for that request only. These take highest precedence:
+
+```json
+{
+  "tool": "search_documents",
+  "params": {
+    "query": "how to authenticate",
+    "llm_api_key": "sk-override..."
+  }
+}
+```
+
+Override any top-level config key: `llm_api_key`, `eager_l2`, `file_watch_glob`, etc.
+
+## Cargo Features
+
+When installing basemind, select which features to compile.
+
+A vanilla `cargo install basemind` builds the code-map and git tools only (default features off, no
+ONNX Runtime). Opt into the rest:
+
+| Feature | Includes | In `full` |
+|---|---|---|
+| `documents` | PDF/Office/HTML/email/image extraction, OCR, and the RAG stack (xberg). | yes |
+| `memory` | LanceDB-backed shared memory (`memory_*` tools). | yes |
+| `crawl` | Web scraping and crawling (`web_scrape`, `web_crawl`, `web_map`); implies `documents`. | yes |
+| `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`search_code`, `get_chunk`). | yes |
+| `comms` | Agent-to-agent comms — rooms, per-agent inbox, DMs (Unix-only). | yes |
+| `shells` | Headless agent shells (`shell_spawn`, `shell_send`, …). | yes |
+| `code-intel` | Scope- and import-resolved JS/TS `find_references` / `goto_definition` (oxc). | yes |
+| `full` | `documents` + `memory` + `crawl` + `comms` + `shells` + `code-intel` + `code-search`. | — |
+
+### Installation Examples
+
+```bash
+# Everything (documents, memory, code-search, comms, shells)
+cargo install basemind --features full --locked
+
+# Code + git only (smallest build)
+cargo install basemind --locked
+
+# Code + git + comms
+cargo install basemind --features comms --locked
+
+# Homebrew / npm / pip (all features by default)
+brew install Goldziher/tap/basemind
+npm install -g basemind
+pip install basemind
+```
+
+Prebuilt downloads (GitHub releases, Homebrew, npm, pip) include the full feature set by default.
+
+## Schema Versioning
+
+basemind uses `RELEASE_MINOR` from `src/version.rs` as the single source of truth for both:
+
+- **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`.basemind/views/<view>/index.fjall/`)
+- **`SCHEMA_VER`** — msgpack blob format (`.basemind/blobs/<hash>.{l1,l2,l3}.msgpack`)
+
+When either schema changes (typically on minor version bumps), the next `basemind scan` automatically wipes the old caches and rebuilds from source. Patch releases are always cache-compatible.
+
+## Directory Layout
+
+All state lives under `.basemind/` in the repository root (or `--basemind-dir` override):
+
+```
+.basemind/
+├── basemind.toml           # Config file (this file)
+├── blobs/
+│   ├── <hash>.l1.msgpack   # Outlines (symbols, signatures, imports)
+│   ├── <hash>.l2.msgpack   # Call sites (if eager_l2 = true)
+│   └── <hash>.l3.msgpack   # Structural hashes
+├── views/
+│   └── <view>/
+│       └── index.fjall/    # Fjall LSM index (secondary)
+├── git-cache/              # Precomputed git-history index
+└── lance/                  # Vector store (memory, documents, code search)
+```
+
+The `.basemind/` directory is safe to delete; `basemind scan` rebuilds it.
+
+## Troubleshooting
+
+**Slow first scan?** The first scan indexes everything. Re-scans only touch what changed (`scan_paths`). For large projects, `eager_l2 = false` speeds initial indexing by skipping L2 (call-site) extraction, at the cost of disabling reference search.
+
+**`basemind serve` not starting?** Check that `basemind` is on your PATH (`which basemind`). In `.mcp.json`, use the full path if needed: `"command": "/path/to/basemind"`.
+
+**Out of disk space?** Run `basemind cache gc` to reclaim unused blobs. `basemind cache stats` shows per-component sizes.
+
+**Schema mismatch after upgrade?** Run `basemind scan` to automatically rebuild. Or delete `.basemind/` and re-scan. No data loss — everything is rebuilt from source.

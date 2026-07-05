@@ -1,0 +1,192 @@
+---
+title: Code Intelligence
+description: Navigate code structure across 300+ languages — symbols, references, call graphs, implementations, and definitions — without reading files.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+basemind pre-indexes your codebase using tree-sitter, mapping symbols, calls, and imports
+across 300+ languages. Structural queries resolve in milliseconds and return **paths, line
+numbers, and signatures — not file bodies** — so they cost a fraction of the tokens of
+reading source.
+
+## Core tools
+
+### `outline`
+
+Get a file's complete structure: symbols, signatures, line numbers, and doc comments. Add
+`l2: true` to include call sites and embedded documentation.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "l2": true
+}
+```
+
+Returns a table of contents you can scan in seconds instead of reading a thousand-line file.
+Once you have the exact span, read only that range.
+
+### `search_symbols`
+
+Find symbols by **substring** across all indexed files. Optionally filter by `kind`
+(function, class, type, etc.).
+
+```json
+{
+  "needle": "process_file",
+  "kind": "function"
+}
+```
+
+Returns `path:line:column` and signature for each match. No scope resolution — a substring
+match is exact.
+
+### `find_references`
+
+Find all call sites of any callee whose identifier matches `name`. **No scope resolution**
+— `Foo::bar()` and `bar()` both match `name="bar"`.
+
+```json
+{
+  "name": "spawn",
+  "limit": 50
+}
+```
+
+Backed by an indexed call-site table, returns tens of thousands of hits capped by `limit`
+(default 100, max 1000).
+
+### `find_callers`
+
+Find callers of a **specific definition** (path + name + optional kind). First resolves
+the definition, then returns all callers of that exact symbol.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "name": "process_file",
+  "kind": "function"
+}
+```
+
+Combines definition resolution with the same name-based scan as `find_references`, so
+results are disambiguated by location.
+
+### `goto_definition`
+
+Resolve a `path:line:column` reference to its actual definition. Intra-file resolution
+via tree-sitter `locals` across 80+ languages; JavaScript/TypeScript additionally get
+cross-file resolution via oxc scope analysis with `--features code-intel-js`.
+
+```json
+{
+  "path": "src/main.rs",
+  "line": 42,
+  "column": 10
+}
+```
+
+### `call_graph`
+
+Walk the call chain up or down from a function, bounded by `max_depth` and `max_nodes`.
+BFS traversal over the indexed call edges.
+
+```json
+{
+  "name": "query_symbol",
+  "direction": "down",
+  "max_depth": 3
+}
+```
+
+### `find_implementations`
+
+Types that implement or inherit from a given name. Rust `impl` blocks, Python `class`
+inheritance, TypeScript/JavaScript class declarations.
+
+```json
+{
+  "name": "Iterator"
+}
+```
+
+### `workspace_grep`
+
+Pattern search (regex) over file contents, backed by the in-RAM index. Returns capped,
+structured hits with path, line, and matching text.
+
+```json
+{
+  "pattern": "TODO:.*urgent",
+  "language": "rust",
+  "path_contains": "src"
+}
+```
+
+Faster than shelling out to ripgrep when you already have the index in memory.
+
+## Supporting tools
+
+### `expand`
+
+Fetch a symbol's raw source body (the inverse of an `outline` entry). Use this after an
+outline tells you the exact function to fetch.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "name": "process_file"
+}
+```
+
+### `list_files`
+
+Enumerate all indexed files. Filter by `language` or `path_contains`.
+
+```json
+{
+  "language": "rust",
+  "path_contains": "src/extract"
+}
+```
+
+### `dependents`
+
+What imports or references a given module. Heuristic reverse-lookup via import statements.
+
+```json
+{
+  "module": "src/store"
+}
+```
+
+### `status` / `repo_info`
+
+Overview of the indexed repo: file count by language, current branch, HEAD commit, origin
+URL, on-disk cache size, and index build time.
+
+## Discipline
+
+- **`outline` a file before you open it.** A 1000-line file becomes a 30-line table of
+  contents. Then read only the exact span you need.
+- **`search_symbols` instead of grep for a definition.** Returns indexed symbol names and
+  positions, skipping comment/string noise.
+- **`find_references` / `find_callers` instead of grepping call sites.** Indexed call
+  edges, not text matches.
+- **`workspace_grep` instead of shelling out to ripgrep** when you genuinely need regex —
+  it runs over the in-RAM index and returns capped, structured results.
+- **Do not re-read a file basemind already mapped.** If the outline answered the question,
+  stop.
+- **`rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit
+  it.
+
+<Aside type="note">
+Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8`
+to bound work on common names.
+</Aside>
+
+## See also
+
+[Git intelligence](/capabilities/git-intelligence/) · [Code search](/capabilities/code-search/) ·
+[Document search](/capabilities/document-search/)

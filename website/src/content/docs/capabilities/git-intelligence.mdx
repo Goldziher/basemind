@@ -1,0 +1,188 @@
+---
+title: Git Intelligence
+description: Explore git history without shelling out — commits, blame, diffs, churn ranking, and full-text search — all at symbol resolution.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+basemind precomputes a per-repo git-history index backed by `gix`, resolving blame and diffs
+at **symbol** resolution. History queries return commits, authors, and paths as structured
+data in **tens of microseconds** — a pure accelerator that rebuilds automatically when history
+changes.
+
+<Aside type="note">
+Git tools require `basemind serve` to be running inside a git repository. The history index
+auto-builds on first use; if it is fresh (matching HEAD), the tools use it. Otherwise they
+walk history directly, so results are always current.
+</Aside>
+
+## Core tools
+
+### `recent_changes`
+
+Recent commits with their affected files and summary lines.
+
+```json
+{
+  "limit": 10
+}
+```
+
+Returns the newest commits first, paths modified in each, and author/message. Useful for
+"what happened in the last few hours?"
+
+### `commits_touching`
+
+All commits that modified a given path, newest-first.
+
+```json
+{
+  "path": "src/scanner.rs"
+}
+```
+
+Backed by a posting-list index, resolves in **~37 microseconds** on a warm repo with
+thousands of commits.
+
+### `find_commits_by_path`
+
+Commits matching a path pattern, like glob or prefix matching.
+
+```json
+{
+  "pattern": "src/extract/**"
+}
+```
+
+### `blame_file`
+
+Per-line blame: who last changed each line and in which commit.
+
+```json
+{
+  "path": "src/scanner.rs"
+}
+```
+
+Returns author, commit hash, and timestamp for every line.
+
+### `blame_symbol`
+
+Blame at symbol resolution: who last changed a specific function, type, or definition, and
+when its body last changed structurally.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "name": "process_file"
+}
+```
+
+### `diff_file`
+
+File contents diff across revisions.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "old": "HEAD~5",
+  "new": "HEAD"
+}
+```
+
+### `diff_outline`
+
+Structural diff: which symbols were added, removed, or modified between revisions.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "old": "HEAD~10",
+  "new": "HEAD"
+}
+```
+
+Shows `+ function_name`, `- removed_type`, etc., without diffing implementation details.
+
+### `symbol_history`
+
+When a symbol's body changed over time. Uses structural hashing to track modifications
+across commits.
+
+```json
+{
+  "path": "src/scanner.rs",
+  "name": "process_file"
+}
+```
+
+Returns commits where this symbol's implementation changed, useful for "when was this
+function last refactored?"
+
+### `hot_files`
+
+Files ranked by churn frequency. What changes the most?
+
+```json
+{
+  "limit": 20
+}
+```
+
+### `search_git_history`
+
+Full-text search over commit authors and messages across all branches.
+
+```json
+{
+  "pattern": "fix.*index",
+  "field": "message"
+}
+```
+
+Search `"author"`, `"message"`, or `"all"` (default). Useful for "find commits mentioning
+the schema bump" or "what did Alice commit?"
+
+### `working_tree_status`
+
+What's staged and unstaged right now — the structured equivalent of `git status`.
+
+```json
+{}
+```
+
+## Performance
+
+On a typical repo with 2,000–4,000 commits:
+
+| Query | Latency | Notes |
+|---|---|---|
+| `commits_touching` | ~37 µs | Indexed posting-list lookup |
+| `recent_changes` | ~13 µs | Newest-first list scan |
+| Index build | 0.5–3.2 s | Depends on commit depth |
+| Index size | 6–22 % of `.git` | Space–time trade-off |
+
+The index is a **pure accelerator**: it rebuilds automatically when history is rewritten
+(rebase, force-push, filter-repo) and the tools fall back to live history walks if the
+index is stale.
+
+## Discipline
+
+- **Prefer these tools over shelling out to `git log`, `git blame`, `git diff`.** Structured
+  results cost fewer tokens to parse.
+- **Use `recent_changes` instead of parsing `git log` output.** Get commit hashes, paths,
+  and timestamps directly.
+- **Use `blame_file` / `blame_symbol` instead of `git blame`.** Symbol-level blame is more
+  precise than line-level.
+- **Use `diff_outline` for structural diffs.** Skip implementation details and focus on what
+  symbols changed.
+- **Use `search_git_history` for commit message mining.** Full-text search over message and
+  author is cheaper than parsing the log.
+
+<Aside type="note">
+All paths are repository-relative. Lists are capped (`limit`, default 100, max 1000).
+</Aside>
+
+## See also
+
+[Code intelligence](/capabilities/code-intelligence/) · [Document search](/capabilities/document-search/)

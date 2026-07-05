@@ -1,0 +1,235 @@
+---
+title: CLI Reference
+description: Complete command list for the basemind command-line interface.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+CLI commands mirror the MCP tools 1:1 (enforced by `tests/cli_parity.rs`). Add `--json` for machine-readable output. Each tool and example below matches the MCP surface exactly.
+
+## Query Commands
+
+```bash
+basemind query outline <path> [--l2]
+basemind query symbol <needle> [--kind]
+basemind query search <needle>
+basemind query references <name>
+basemind query callers <path> <name> [--kind]
+basemind query goto-definition <path> <line> [--column]
+basemind query implementations <trait>
+basemind query call-graph <name> [--direction --max-depth]
+basemind query grep <pattern> [--language --path-contains]
+basemind query list-files [--path-contains --language]
+basemind query status
+basemind query repo-info
+basemind query dependents <module>
+basemind query search-code <query> [--limit --format]
+basemind query get-chunk <path> [--chunk-id --byte-start]
+basemind query expand <path> <name> [--kind]
+```
+
+| Command | Purpose |
+|---|---|
+| `outline <path> [--l2]` | A file's structure: symbols, lines, signatures. `--l2` adds calls + docs. |
+| `symbol <needle> [--kind]` | Find a symbol by name, optionally filtered by kind. |
+| `search <needle>` | Text search across indexed files. |
+| `references <name>` | Find everywhere a name is called. |
+| `callers <path> <name> [--kind]` | Find callers of one specific definition. |
+| `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
+| `implementations <trait>` | Types that implement or inherit from a name. |
+| `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
+| `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
+| `list-files [--path-contains --language]` | List indexed files. |
+| `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
+| `dependents <module>` | What imports a given module. |
+| `search-code <query> [--limit --format]` | Semantic (vector) search over code chunks; returns pointers. Needs `--features code-search`. |
+| `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
+| `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
+
+## Git Commands
+
+```bash
+basemind git working-tree-status
+basemind git recent-changes [--limit]
+basemind git search <pattern> [--field author|message|all] [--limit]
+basemind git commits-touching <path>
+basemind git find-commits-by-path <pattern>
+basemind git hot-files [--limit]
+basemind git diff-file <path> <old> <new>
+basemind git diff-outline <path> [--rev]
+basemind git blame-file <path>
+basemind git blame-symbol <path> <name>
+basemind git symbol-history <path> <name>
+```
+
+| Command | Purpose |
+|---|---|
+| `working-tree-status` | What's staged and unstaged right now. |
+| `recent-changes [--limit]` | Recent commits with their files. |
+| `search <pattern> [--field author\|message\|all] [--limit]` | Full-text search over commit history at full branch depth. |
+| `commits-touching <path>` | Commits that modified a given path. |
+| `find-commits-by-path <pattern>` | Commits matching a path pattern. |
+| `hot-files [--limit]` | The most frequently changed files. |
+| `diff-file <path> <old> <new>` | File diff across commits. |
+| `diff-outline <path> [--rev]` | Structure diff across commits. |
+| `blame-file <path>` | Who last changed each line. |
+| `blame-symbol <path> <name>` | Who last changed a symbol. |
+| `symbol-history <path> <name>` | When a symbol's body changed over time. |
+
+## Memory Commands
+
+```bash
+basemind memory put <key> <value>
+basemind memory get <key>
+basemind memory delete <key>
+basemind memory list [--prefix]
+basemind memory search <query>
+basemind memory search-documents <query>
+```
+
+| Command | Purpose |
+|---|---|
+| `put <key> <value>` | Store a value. |
+| `get <key>` | Retrieve a value. |
+| `delete <key>` | Remove a value. |
+| `list [--prefix]` | List keys, optionally by prefix. |
+| `search <query>` | Search stored values by meaning. |
+| `search-documents <query>` | Search documents and memory together. |
+
+## Suggestions Commands
+
+```bash
+basemind governance mine [--commits --min-count --min-confidence --max-files-per-commit]
+basemind governance proposals [--kind --limit]
+basemind governance accept <id> [--key]
+basemind governance reject <id> [--reason]
+basemind governance audit [--key --individual --dry-run --include-archived]
+```
+
+| Command | Purpose |
+|---|---|
+| `mine [--commits --min-count --min-confidence --max-files-per-commit]` | Suggest notes from files that change together. |
+| `proposals [--kind --limit]` | List pending suggestions. |
+| `accept <id> [--key]` | Keep a suggestion. |
+| `reject <id> [--reason]` | Dismiss a suggestion. |
+| `audit [--key --individual --dry-run --include-archived]` | Recompute memory importance, archive stale entries. |
+
+## Cache Commands
+
+```bash
+basemind cache stats
+basemind cache gc
+basemind cache clear --component <comp>
+```
+
+| Command | Purpose |
+|---|---|
+| `stats` | Disk footprint (per-component + total, matches `du`) and process RAM. |
+| `gc` | Reclaim unused space (safe while the server runs). |
+| `clear --component <comp>` | Clear part of the cache (`blobs`, `views`, `views:<name>`, `lance`, `git-cache`, `telemetry`, `all`). |
+
+## Web Commands
+
+```bash
+basemind web scrape <url>
+basemind web crawl <seed-url>
+basemind web map <url>
+```
+
+| Command | Purpose |
+|---|---|
+| `scrape <url>` | Fetch and index a single page. |
+| `crawl <seed-url>` | Follow links from a starting URL. |
+| `map <url>` | Discover a site's pages without fetching bodies. |
+
+## Comms Commands
+
+```bash
+basemind comms rooms
+basemind comms join <room>
+basemind comms leave <room>
+basemind comms room-create <room>
+basemind comms post <room> <subject> [--body --reply-to --tag]
+basemind comms history <room>
+basemind comms inbox [--mark-read]
+basemind comms read <id>
+basemind comms register --name <handle>
+basemind comms agents
+basemind comms status
+basemind comms start
+basemind comms stop
+```
+
+| Command | Purpose |
+|---|---|
+| `rooms` | List rooms. |
+| `join <room>` | Join a room. |
+| `leave <room>` | Leave a room. |
+| `room-create <room>` | Create a room. |
+| `post <room> <subject> [--body --reply-to --tag]` | Post a message. |
+| `history <room>` | Recent messages in a room (front-matter only). |
+| `inbox [--mark-read]` | Your inbox (front-matter only). |
+| `read <id>` | Read one message in full. |
+| `register --name <handle>` | Set your agent handle. |
+| `agents` | List active agents. |
+| `status` / `start` / `stop` | Check, start, or stop the shared daemon. |
+
+## Shells Commands
+
+Requires `--features shells`.
+
+```bash
+basemind shells spawn <command> [--cwd --env --title]
+basemind shells send <session-id> <text> [--no-enter]
+basemind shells capture <session-id> [--lines]
+basemind shells kill <session-id>
+basemind shells list
+basemind shells broadcast <text> --session <id>…
+```
+
+| Command | Purpose |
+|---|---|
+| `spawn <command> [--cwd --env --title]` | Start a detached shell session; prints `session_id`. |
+| `send <session-id> <text> [--no-enter]` | Type into a session's stdin. |
+| `capture <session-id> [--lines]` | Read a session's visible screen. |
+| `kill <session-id>` | End a session. |
+| `list` | List live sessions. |
+| `broadcast <text> --session <id>…` | Send input to multiple sessions at once. |
+
+## Core Commands
+
+```bash
+basemind scan
+basemind rescan <path>
+basemind watch
+basemind serve [--no-watch]
+basemind init
+basemind lang <list|install|clean>
+basemind hook install
+basemind compress-output
+basemind delta --old <path>
+basemind checkpoint
+basemind detect-waste
+basemind telemetry
+```
+
+| Command | Purpose |
+|---|---|
+| `scan` | Full index of the project. |
+| `rescan <path>` | Update one path. |
+| `watch` | Keep the index fresh as files change (no server). |
+| `serve [--no-watch]` | Start the MCP server. Default keeps index fresh; `--no-watch` disables auto-refresh. |
+| `init` | Create a `.basemind/` folder with default config (optional). |
+| `lang <list\|install\|clean>` | Manage downloaded language grammars. |
+| `hook install` | Add a git pre-commit hook that runs a scan. |
+| `compress-output` | Backend for output compression guardrail. |
+| `delta --old <path>` | Backend for delta-reads guardrail. |
+| `checkpoint` | Summarize a session: what was queried, tokens saved. |
+| `detect-waste` | Flag wasteful tool use. |
+| `telemetry` | What's been queried and how many tokens were saved. |
+
+<Aside type="note">
+All commands support `--json` for machine-readable output. Query and git commands take the same
+filters as their MCP counterparts (`--limit`, `--language`, `--path-contains`, …). Cursor-based
+pagination (`--cursor`) is exposed on `comms history` and `comms inbox`.
+</Aside>

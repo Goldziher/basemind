@@ -1,0 +1,86 @@
+---
+title: Shared memory
+description: >
+  Per-repo memory agents can write to and search. Clones of the same repo share it;
+  unrelated repos stay separate. Suggestions spot files that change together.
+---
+
+basemind provides a shared memory layer scoped to your repository: agents can store notes, search
+them by meaning, and propose new notes worth remembering based on how files change together.
+
+## How it works
+
+Each repository (keyed by its normalized git `origin` URL) has its own memory store. When you clone
+a repo, its memory comes with you. When you work on an unrelated project, that memory stays
+separate — no leakage.
+
+Any agent can:
+
+- **Write a note:** `memory_put {key: "auth-flow", value: "…"}` stores a key-value pair.
+- **Search by meaning:** `memory_search {query: "password validation"}` finds stored notes by
+  semantic similarity, even if the exact words don't match.
+- **Retrieve exact keys:** `memory_get {key: "auth-flow"}` fetches one stored note.
+- **List by prefix:** `memory_list {prefix: "auth-"}` finds all keys starting with a prefix.
+- **Delete:** `memory_delete {key: "auth-flow"}` removes a note.
+- **Audit:** `memory_audit` recomputes importance scores, archives stale entries, and refreshes
+  verdicts on stored notes.
+
+## What notes look like
+
+Notes are simple key-value pairs:
+
+```
+key: "sqlinjection-mitigation"
+value: "All user inputs are parameterized at the data layer via the Query class.
+        Prepared statements escape at the database driver level."
+```
+
+The key is a short identifier; the value is prose explaining what you want to remember.
+
+## Suggestions: spots files that change together
+
+basemind watches how your files evolve and suggests notes worth saving. When it spots files that
+frequently change together (the `migrations/` and `models/` directories, for example), it proposes
+a note:
+
+```
+"Files that change together in this repo: [migrations, models, controllers].
+Consider documenting the pattern or relationship."
+```
+
+This is a suggestion, not a stored fact — you approve before anything is kept.
+
+### Proposal workflow
+
+1. **Mine for candidates:** `proposals_mine {commits: 10, min_count: 3}` analyzes the last 10
+   commits and finds groups of files that changed together at least 3 times. The tool returns
+   pending suggestions.
+2. **Accept:** `proposal_accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
+   as a note under the given key.
+3. **Reject:** `proposal_reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
+
+## Uses
+
+Shared memory is useful for:
+
+- **Architectural decisions:** "These modules are always deployed together."
+- **Refactoring markers:** "This legacy API is being phased out in favor of V2."
+- **Gotchas and workarounds:** "On Windows, the build requires Visual Studio 2022+."
+- **Patterns:** "Auth tokens are stored in Redis with a 1-hour TTL."
+- **Cross-session context:** "The last agent was working on the payment module."
+
+## Semantic search
+
+Memory search is powered by LanceDB's vector embeddings. You don't need exact keywords — search
+by meaning. If you stored "All inputs are parameterized at the database driver", you can find it
+with `memory_search {query: "SQL injection prevention"}`.
+
+## Scoping
+
+Memory is indexed by the repository's git origin URL, so:
+
+- Two clones of the same repo on different machines share the same memory.
+- Forks or different remotes have separate memory stores (different URLs).
+- Each unrelated repo has its own memory (different URL).
+
+This scoping is automatic — you don't configure it.

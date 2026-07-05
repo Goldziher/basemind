@@ -1,0 +1,120 @@
+---
+title: Performance
+description: Scan speeds, query latency, and git-history index measurements.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+All measurements are from an **Apple M4** (10 cores — 4 performance + 6 efficiency, 16 GB RAM, macOS 26) using the hardening harness (`scripts/harden.sh`), which clones upstream repos fresh and indexes them. Warm, steady-state numbers; the first scan is slower (cold I/O). Re-scans only touch what changed, so keeping a project up to date is far faster.
+
+## Scan Speed
+
+Measured with the hardening harness, which clones each project fresh, then runs `basemind scan`:
+
+| Project | Files | Languages | Scan time |
+|---|---|---|---|
+| gin | 130 | Go | 0.1 s |
+| requests | 128 | Python | 0.1 s |
+| ripgrep | 221 | Rust | 0.6 s |
+| tokio | 861 | Rust | 0.4 s |
+| react | 7 242 | TS / JSX | 2.0 s |
+| django | 7 065 | Python | 2.4 s |
+| TypeScript compiler | 81 324 | TS / JS / JSON | 18 s |
+
+The TypeScript compiler is the worst case — 81k files in 18 seconds. This is dominated by tree-sitter parsing (~30% of time) and per-file index commits (~14% mutex contention on Fjall). Blob I/O and serialization consume ~16%. Allocations are under 2%.
+
+Once running, most code questions answer in **under a millisecond**, symbol and call-graph searches in a few milliseconds, because the map is held in memory rather than read from disk each time.
+
+## Document Search
+
+Document indexing and semantic search (PDFs, Office, HTML, images, email) adds a separate pass after code scanning. Full-text + semantic queries over the document index run in approximately **200 ms** on a typical project, because the vector store (LanceDB) is in-memory and indexed for KNN.
+
+## Git-History Queries
+
+basemind precomputes a per-repo git-history index — posting lists mapping paths to commits (newest-first) — so the history tools are posting-list lookups rather than tree walks.
+
+Warm, in-process query latency on the same M4:
+
+| Repo | Commits | `commits_touching` | `recent_changes` | index build | index size |
+|---|---|---|---|---|---|
+| django | 2 000 | 39 µs | 15 µs | 0.5 s | 1.7 MB (6 % of `.git`) |
+| tokio | 3 984 | 37 µs | 13 µs | 0.9 s | 2.1 MB (12 %) |
+| requests | 6 480 | 38 µs | 15 µs | 1.0 s | 1.9 MB (14 %) |
+| TypeScript | 2 000 | 37 µs | 13 µs | 3.2 s | 30 MB (12 %) |
+
+History queries answer in **tens of microseconds**, flat across history depth, because the newest-first posting lists decode only the commits a query returns.
+
+The index builds in well under a second to a few seconds and costs **6–22 % of `.git`** on disk.
+
+### Index Freshness & Fallback
+
+The index is a pure accelerator: the tools use it **only when fresh** (`last_indexed_head == HEAD`) and otherwise walk history directly. This means:
+
+- The index can never serve stale results.
+- It rebuilds automatically when history is rewritten (filter-repo, rebase, force-push).
+- There are no consistency risks — the index is optional.
+
+To measure: `cargo bench --bench git_history` or the git-ops block in `scripts/harden.sh`.
+
+## Query Latency Summary
+
+Once the index is in memory (after `basemind serve` starts):
+
+- **Code questions** (outline, symbol search, call-graph): **< 1 ms** (in-memory hash lookup + tree walk)
+- **Reference search** (`find_references`): **a few ms** (Fjall prefix scan, bounded by `scan_cap = limit * 8`)
+- **Git history** (`commits_touching`, `blame_symbol`): **tens of µs** (posting-list lookup)
+- **Document search**: **~200 ms** (LanceDB KNN with embeddings)
+
+All are returned over MCP stdio, so network latency (if running remotely) adds on top.
+
+## Memory Usage
+
+`basemind serve` holds the index in memory so it can answer without re-reading the project. The
+footprint scales with project size; `basemind cache stats` reports both the on-disk cache
+(per-component, matching `du`) and process RAM for your project.
+
+## Scaling
+
+Performance is stable across project size:
+
+- **Scan time** scales roughly linearly with file count (tree-sitter parsing dominates).
+- **Query latency** stays flat: the map is held in memory, so lookups don't grow with history depth.
+- **Git-history index** costs **6–22 % of `.git`** on disk (the one index size that is measured).
+
+Eager L2 (call-site extraction) is on by default and adds to scan time. Set `eager_l2 = false` to
+skip it for faster scans, at the cost of disabling reference search.
+
+<Aside type="note">
+All numbers are from production basemind builds (`cargo build --release`). Debug builds are much slower and not representative.
+</Aside>
+
+## Re-scan Performance
+
+`basemind watch` and live-watched re-scans only process changed files:
+
+- Unchanged files are skipped via their content hash — identical content is never reprocessed.
+- For changed files, only affected index entries are updated (read-before-write batch).
+- Keeping the index fresh is far faster than the first scan, since only changed files are touched.
+
+## Hardening Harness
+
+The `tests/harden.rs` integration test clones 8 real OSS repos and exercises the full tool sweep:
+
+```bash
+cargo test --release --test harden -- --ignored --nocapture
+```
+
+It runs:
+- Full scan on each repo
+- All code-map tools (symbol search, find_references, call_graph, etc.)
+- Representative git tools (blame, recent_changes, commits_touching)
+- Git-history index build and query latency measurements
+
+Per-repo metrics land in `/tmp/basemind-harden-*.log`. The harness asserts canaries:
+
+- `tokio`: `find_references("spawn")` returns ≥ 200 hits
+- `django`: `find_references("get")` returns ≥ 200 hits
+- `react`: `search_symbols("useState")` returns ≥ 20 hits
+- `ripgrep-shallow`: shallow-clone signal surfaces (`any_truncated == true`)
+
+Regressions beyond ~20% on scan-time or index-build-time baselines should be investigated before merge.

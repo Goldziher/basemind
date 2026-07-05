@@ -1,0 +1,122 @@
+---
+title: Code Search
+description: Find source code by meaning, term, or exact symbol — hybrid RRF fusion of semantic vectors, BM25, and symbol matching with optional reranking.
+---
+
+import { Aside, Badge, Card, CardGrid } from '@astrojs/starlight/components';
+
+`search_code` finds code by meaning, full-text term, or exact symbol match. Three lanes
+fuse results via Reciprocal Rank Fusion (RRF): vector (semantic), BM25 (keyword), and
+exact symbol. Optional cross-encoder reranking re-scores the fused results. Returns code
+pointers; fetch bodies with `get_chunk`.
+
+<Badge text="--features code-search" /> or `--features full`
+
+## Modes
+
+### `hybrid` (default)
+
+RRF fusion of three lanes:
+
+1. **Vector lane** — KNN over embedded code chunks.
+2. **BM25 lane** — Okapi BM25 (`k1=1.2`, `b=0.75`) over symbol names, signatures, docs,
+   and body text.
+3. **Exact symbol lane** — scope-aware identifier resolution against the symbol index,
+   so `query: "spawn"` matches function definitions named `spawn` exactly.
+
+Fusion is score-scale-agnostic, so it blends L2 distance, BM25 score, and symbol order
+without normalization. Degrades gracefully if a lane is unavailable (e.g., without
+embeddings).
+
+```json
+{
+  "query": "spawn background task",
+  "mode": "hybrid",
+  "limit": 10,
+  "rerank": true
+}
+```
+
+Each hit carries per-lane provenance: `matched_lanes` lists which of `exact` / `vector` /
+`keyword` matched, plus the 1-based rank in each contributing lane (`exact_rank`,
+`vector_rank`, `keyword_rank`). This lets you tell an exact-symbol match from a semantic
+neighbor or a cross-lane agreement without a second call.
+
+### `semantic`
+
+Vector KNN alone — pure semantic search. No text matching, no symbol resolution. Useful
+when you want "code that means this" regardless of naming.
+
+```json
+{
+  "query": "spawn background task",
+  "mode": "semantic",
+  "limit": 20
+}
+```
+
+Requires embeddings to be enabled (`[code_search] embed = true`, the default).
+
+### `keyword`
+
+Native BM25 alone. No vectors, no symbol resolution. Works even with embeddings disabled.
+Full-text search over code.
+
+```json
+{
+  "query": "spawn",
+  "mode": "keyword",
+  "limit": 50
+}
+```
+
+## Fetching results
+
+`search_code` returns **pointers** with chunk ID, path, byte span, and a snippet. Fetch
+the full source body with `get_chunk`:
+
+```json
+{
+  "path": "src/scanner.rs",
+  "chunk_id": "abc123"
+}
+```
+
+Two-call pattern mirrors `search_symbols` → `expand`: cheap search returns pointers,
+then fetch only what you need.
+
+## Configuration
+
+In `.basemind/basemind.toml`:
+
+```toml
+[code_search]
+embed = true              # toggle embeddings (default: true)
+
+[code_search.reranker]
+enabled = true            # cross-encoder reranking (default: false)
+preset = "bge-reranker-base"
+```
+
+## Discipline
+
+- **Use `search_code` for semantic queries about what code does.** "Find code that spawns
+  a background task" → semantic search.
+- **Use `keyword` mode for term search.** "Find the word `spawn`" → faster, no embeddings.
+- **Use `hybrid` mode when you want all signals.** Symbol matches win for exact names,
+  semantic search wins for meaning, BM25 wins for terminology.
+- **Fetch with `get_chunk` only what you need.** Search returns pointers; don't waste
+  tokens re-reading the whole file.
+- **Enable `rerank` if latency allows.** Cross-encoder reranking improves top-1 relevance
+  but adds ~50–100 ms per query.
+
+<Aside type="note">
+- Chunks are derived from cached extraction (symbols, calls, docs) plus source bytes.
+- Content-addressed cache (`<hash>.chunk.msgpack`) deduplicates across identical files.
+- Results are paginated; use `next_cursor` → `cursor` for additional pages.
+- Capped by `limit` (default 10, max 100).
+</Aside>
+
+## See also
+
+[Code intelligence](/capabilities/code-intelligence/) · [Document search](/capabilities/document-search/)
