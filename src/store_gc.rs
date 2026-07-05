@@ -309,6 +309,24 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
 /// `basemind scan` / `basemind watch`, so every blob a scan has written is either already
 /// referenced (committed) or invisible to GC (scan still holds the lock).
 pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
+    // Safety: when the clone has linked git worktrees the blob cache is shared, but this sweep marks
+    // references from THIS worktree's views only — it would reap blobs a sibling worktree still
+    // needs. Skip (GC only reclaims orphaned disk; a worktree-spanning GC is a follow-up). Detected
+    // from the workdir (`basemind_dir`'s parent) so it holds from the main or a linked worktree.
+    if let Some(workdir) = basemind_dir.parent()
+        && crate::git::Repo::discover(workdir)
+            .map(|r| r.has_linked_worktrees())
+            .unwrap_or(false)
+    {
+        tracing::warn!(
+            "blob GC skipped: clone has linked worktrees (shared blob cache); run per-clone GC is not yet worktree-aware"
+        );
+        return Ok(GcReport {
+            scanned: 0,
+            removed: 0,
+            bytes_freed: 0,
+        });
+    }
     // Held for the whole mark+sweep; dropped when `_lock` goes out of scope.
     let _lock = acquire_lock(basemind_dir)?;
     let referenced = collect_referenced_hashes(basemind_dir)?;
