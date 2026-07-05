@@ -114,7 +114,12 @@
         "enabled": true,
         "max_characters": 1500,
         "overlap": 200,
-        "embed": true
+        "embed": true,
+        "reranker": {
+          "enabled": false,
+          "preset": "bge-reranker-base",
+          "top_k": 10
+        }
       }
     },
     "memory": {
@@ -678,9 +683,18 @@
           "default": 200
         },
         "embed": {
-          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). With\nembeddings off the `.chunk.msgpack` cache is still written, but no LanceDB rows land and\n`search_code` returns nothing.",
+          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). With\nembeddings off the `.chunk.msgpack` cache is still written and the BM25 keyword lane still\nworks, but no LanceDB rows land so the semantic (vector) lane returns nothing.",
           "type": "boolean",
           "default": true
+        },
+        "reranker": {
+          "description": "Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",
+          "$ref": "#/$defs/RerankerConfig",
+          "default": {
+            "enabled": false,
+            "preset": "bge-reranker-base",
+            "top_k": 10
+          }
         }
       },
       "additionalProperties": false

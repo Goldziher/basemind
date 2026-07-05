@@ -520,8 +520,9 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "code map scanner" }),
     )
     .await;
-    // search_code: semantic code search. MCP error when the code-search feature is off is ok
-    // (same gate as the memory/document sweep). On success the hit count varies per repo.
+    // search_code with no mode: exercises the DEFAULT lane, which is now hybrid (RRF fusion of
+    // vector + keyword + exact). MCP error when the code-search feature is off is ok (same gate as
+    // the memory/document sweep). On success the hit count varies per repo.
     call(
         svc,
         &mut records,
@@ -536,6 +537,15 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         &mut records,
         "search_code",
         json!({ "query": "parse file extract symbols", "mode": "keyword" }),
+    )
+    .await;
+    // search_code hybrid with an identifier-shaped query: fires the exact symbol lane, which resolves
+    // the bare identifier against `symbols_by_name` and maps it to its owning chunk before fusion.
+    call(
+        svc,
+        &mut records,
+        "search_code",
+        json!({ "query": "spawn", "mode": "hybrid" }),
     )
     .await;
 

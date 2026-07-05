@@ -287,6 +287,71 @@ fn search_code_keyword_mode_ranks_by_bm25() {
     );
 }
 
+/// End-to-end test for the hybrid lane's exact-symbol contribution (`mode=hybrid`, the default).
+///
+/// With `embed=false` there is no vector lane, so hybrid fuses keyword + exact deterministically. An
+/// identifier-shaped query (`parse_config`) fires the exact lane, which resolves the symbol to its
+/// owning chunk; the exact lane's 2x RRF weight must float that chunk to the top. No embedder needed.
+#[test]
+fn search_code_hybrid_ranks_exact_symbol_first() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+    std::fs::create_dir_all(root.join(".basemind")).expect("mkdir .basemind");
+    std::fs::write(
+        root.join(".basemind/basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write config");
+
+    let scan = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn scan");
+    assert!(
+        scan.status.success(),
+        "basemind scan failed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    // No `--mode`: exercises the DEFAULT, which Phase 3 flips to hybrid.
+    let out = Command::new(bin())
+        .current_dir(root)
+        .args(["--json", "query", "search-code", "parse_config"])
+        .output()
+        .expect("spawn hybrid search-code");
+    assert!(
+        out.status.success(),
+        "default (hybrid) search-code failed without an embedder: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("hybrid search-code emits JSON");
+    let hits = value
+        .get("hits")
+        .and_then(|h| h.as_array())
+        .expect("hybrid response carries a hits array");
+    assert!(
+        !hits.is_empty(),
+        "hybrid search must find the parse_config chunk: {value}"
+    );
+
+    let top = &hits[0];
+    assert_eq!(
+        top.get("symbol").and_then(|s| s.as_str()),
+        Some("parse_config"),
+        "the exact symbol lane must float parse_config's defining chunk to rank #1: {top}"
+    );
+    // Hybrid hits carry the fused RRF score, not a raw distance.
+    assert!(
+        top.get("score")
+            .and_then(serde_json::Value::as_f64)
+            .is_some_and(|s| s > 0.0),
+        "hybrid hit must carry a positive fused RRF score: {top}"
+    );
+}
+
 /// Recursively search `root/.basemind/` for the first file whose name ends with
 /// `.chunk.msgpack`. Returns `None` when no sidecar exists (clean scan or chunker disabled).
 fn find_chunk_sidecar(root: &std::path::Path) -> Option<std::path::PathBuf> {

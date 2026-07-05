@@ -7,6 +7,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::RerankerConfig;
+
 /// `[code_search]` table. Chunk + embed source code for the `search_code` MCP tool.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -25,10 +27,15 @@ pub struct CodeSearchConfig {
     #[schemars(range(min = 0))]
     pub overlap: usize,
     /// Generate embeddings (`true`) or chunk-only without vector storage (`false`). With
-    /// embeddings off the `.chunk.msgpack` cache is still written, but no LanceDB rows land and
-    /// `search_code` returns nothing.
+    /// embeddings off the `.chunk.msgpack` cache is still written and the BM25 keyword lane still
+    /// works, but no LanceDB rows land so the semantic (vector) lane returns nothing.
     #[serde(default = "CodeSearchConfig::default_embed")]
     pub embed: bool,
+    /// Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker
+    /// as the documents tier. Off by default — the first call downloads an ONNX model. Enable via
+    /// `[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.
+    #[serde(default)]
+    pub reranker: RerankerConfig,
 }
 
 impl CodeSearchConfig {
@@ -69,6 +76,7 @@ impl Default for CodeSearchConfig {
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
             embed: Self::default_embed(),
+            reranker: RerankerConfig::default(),
         }
     }
 }

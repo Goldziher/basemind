@@ -24,10 +24,21 @@ pub struct SearchCodeParams {
     /// config knob for this call.
     #[serde(default, alias = "encoding")]
     pub format: Option<String>,
-    /// Retrieval lane: "semantic" (vector KNN, the default) or "keyword" (native BM25 over the
-    /// chunk's symbol+signature+doc+body text). "hybrid" is reserved for a later phase.
+    /// Retrieval lane: "hybrid" (RRF fusion of the vector + keyword + exact-symbol lanes — the
+    /// default), "semantic" (vector KNN only), or "keyword" (native BM25 only). Hybrid degrades
+    /// gracefully — it drops any lane that is unavailable (e.g. the vector lane without embeddings).
     #[serde(default, alias = "lane")]
     pub mode: Option<String>,
+    /// Per-query override: run the cross-encoder rerank pass over the fused hits. Defaults to the
+    /// `[code_search.reranker] enabled` config knob. The first rerank downloads an ONNX model.
+    #[serde(default, alias = "rerank")]
+    pub reranker_enabled: Option<bool>,
+    /// Per-query override: the xberg reranker preset (e.g. `bge-reranker-base`).
+    #[serde(default, alias = "rerank_preset")]
+    pub reranker_preset: Option<String>,
+    /// Per-query override: how many top fused hits to rerank.
+    #[serde(default, alias = "rerank_top_k")]
+    pub reranker_top_k: Option<usize>,
 }
 
 /// Params for `get_chunk` — fetch a chunk body by path (the `search_code` pointer).
@@ -67,9 +78,13 @@ pub(crate) struct CodeSearchHit {
     /// L2 distance from the query vector (lower = closer). Semantic lane only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distance: Option<f32>,
-    /// BM25 relevance score (higher = better). Keyword lane only.
+    /// BM25 relevance score (higher = better). Keyword lane only. In hybrid mode this carries the
+    /// fused RRF score.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    /// Cross-encoder rerank score (higher = better). Present only when the rerank pass ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerank_score: Option<f32>,
 }
 
 #[cfg(feature = "code-search")]

@@ -6,3 +6,7 @@
 
 #[cfg(feature = "code-search")]
 pub mod bm25;
+#[cfg(feature = "code-search")]
+pub mod exact;
+#[cfg(feature = "code-search")]
+pub mod rrf;
