@@ -3261,6 +3261,39 @@ async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningS
     ().serve(transport).await.expect("rmcp handshake")
 }
 
+/// Security regression: `rescan` must reject a `paths` entry that escapes the repository root via
+/// `..` traversal. `rescan` takes raw strings (not `RelPath`), and before the fix
+/// `state.root.join("../../etc/passwd")` fed a traversal path into the scanner — which, with
+/// `scan.respect_gitignore = false`, read and indexed a file outside the repo. A valid in-repo
+/// path must still be accepted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rescan_rejects_paths_escaping_the_repo_root() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root, None).await;
+
+    // An escaping `..` path must fail the call (invalid_params), never reach the scanner.
+    let escaping = service
+        .call_tool(call_params(
+            "rescan",
+            json!({ "paths": ["../../../../../../etc/passwd"] }),
+        ))
+        .await;
+    assert!(
+        escaping.is_err(),
+        "rescan must reject a path that escapes the repo root, got: {escaping:?}"
+    );
+
+    // A valid in-repo path is still accepted (the guard doesn't break legitimate scoped rescans).
+    let ok = service
+        .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
+        .await;
+    assert!(ok.is_ok(), "rescan must accept a valid in-repo path, got: {ok:?}");
+
+    let _ = service.cancel().await;
+}
+
 /// W5 slice 3: the lean MCP surface is STRICTLY opt-in.
 ///
 /// * `BASEMIND_MCP_LEAN=1` → exactly the three wrapper tools are advertised, and

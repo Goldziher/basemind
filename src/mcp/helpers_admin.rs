@@ -175,13 +175,24 @@ pub(super) async fn run_rescan(
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
     // `full` forces a complete working-tree scan even when `paths` is supplied (full wins);
-    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Repo-relative request
-    // paths are joined to the absolute root — `scan_paths` strips the root prefix and silently
-    // drops anything that is not under it, so a bare relative path would be a no-op scan.
-    let scoped_paths: Option<Vec<std::path::PathBuf>> = params
-        .paths
-        .filter(|_| !params.full)
-        .map(|v| v.into_iter().map(|p| state.root.join(p)).collect());
+    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Request paths are raw
+    // strings (not `RelPath`), so validate each through `normalize_query_path` BEFORE joining to
+    // the root: a `../..`-style path would otherwise `root.join` into a traversal that reads (and
+    // indexes) a file outside the repo when `scan.respect_gitignore = false`. `normalize_query_path`
+    // rejects any `..` that escapes the root (→ `None`), mirroring the `shell_spawn` cwd guard.
+    let scoped_paths: Option<Vec<std::path::PathBuf>> = match params.paths.filter(|_| !params.full) {
+        None => None,
+        Some(requested) => {
+            let mut out = Vec::with_capacity(requested.len());
+            for p in requested {
+                let normalized = crate::path::normalize_query_path(&p, &state.root).ok_or_else(|| {
+                    McpError::invalid_params(format!("rescan: path {p:?} escapes the repository root"), None)
+                })?;
+                out.push(state.root.join(normalized));
+            }
+            Some(out)
+        }
+    };
 
     let root = state.root.display().to_string();
 

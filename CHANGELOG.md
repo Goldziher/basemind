@@ -79,6 +79,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`debug_assert!`) and silently dropping the symbol in release. A single such file could abort the
   whole parallel scan, leaving the index empty. Dispatch now scans to the first capture that
   classifies to a known L1 class, recovering those symbols across every fallback grammar.
+- **`rescan` rejects path parameters that escape the repository root.** The `rescan` tool took raw
+  path strings and joined them straight onto the repo root, so with `scan.respect_gitignore = false`
+  a `paths: ["../../etc/passwd"]` traversal would read (and index) a file outside the repo, then be
+  retrievable via `workspace_grep`. Request paths now pass through the same `normalize_query_path`
+  root-boundary guard as `shell_spawn`; an escaping path is rejected with `invalid_params` instead of
+  being scanned. Default `respect_gitignore = true` already blocked it structurally.
 
 ## [0.16.0] — 2026-07-02
 
