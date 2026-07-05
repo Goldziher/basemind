@@ -70,10 +70,17 @@ fn for_each_token(text: &str, mut f: impl FnMut(&str)) {
 }
 
 /// Tokenize `text` into `term -> term_frequency` counts (BM25 term frequencies for one document).
+/// Allocates a `String` key only on a token's first occurrence (via `get_mut`-then-`insert`), not on
+/// every repeat — repeats are the common case in code (keywords, an identifier used many times), and
+/// this runs in the scanner's per-file hot loop.
 fn tokenize_counts(text: &str) -> AHashMap<String, u32> {
     let mut counts: AHashMap<String, u32> = AHashMap::new();
     for_each_token(text, |tok| {
-        *counts.entry(tok.to_string()).or_insert(0) += 1;
+        if let Some(count) = counts.get_mut(tok) {
+            *count += 1;
+        } else {
+            counts.insert(tok.to_string(), 1);
+        }
     });
     counts
 }
@@ -107,11 +114,13 @@ pub fn build_chunk_postings(chunks: &[CodeChunk]) -> Vec<ChunkPosting> {
 
 /// BM25 inverse document frequency for a term appearing in `df` of `n` documents. Uses the
 /// `ln(1 + (N - df + 0.5) / (df + 0.5))` form, which stays non-negative for all `df <= N` (unlike
-/// the classic form that can go negative for very common terms).
+/// the classic form that can go negative for very common terms). The final `.max(0.0)` is defensive:
+/// a corrupt index reporting `df > n` would otherwise yield a negative contribution that could pull a
+/// chunk's fused score below an unrelated one — clamp keeps every term's contribution non-negative.
 pub fn bm25_idf(n: u64, df: u64) -> f32 {
     let numerator = (n as f32) - (df as f32) + 0.5;
     let denominator = (df as f32) + 0.5;
-    (1.0 + numerator / denominator).ln()
+    (1.0 + numerator / denominator).ln().max(0.0)
 }
 
 /// One term's BM25 contribution to a document's score, given the term's `idf`, its frequency `tf` in
@@ -144,7 +153,15 @@ pub fn bm25_search(db: &IndexDb, query: &str, limit: usize) -> Vec<Bm25Hit> {
         // before scoring — BM25's idf needs df up front.
         let mut postings: Vec<(String, u32, u32)> = Vec::new();
         for guard in db.code_bm25_postings.prefix(keys::code_bm25_postings_prefix(term)) {
-            let Ok((k, v)) = guard.into_inner() else { continue };
+            let (k, v) = match guard.into_inner() {
+                Ok(kv) => kv,
+                Err(error) => {
+                    // A Fjall read error on one posting shouldn't silently truncate the term's df —
+                    // surface it so a degraded index is diagnosable, then skip just this entry.
+                    tracing::warn!(%term, ?error, "bm25: posting read failed; skipping entry");
+                    continue;
+                }
+            };
             if let (Some(chunk_id), Some((tf, doclen))) = (
                 keys::parse_code_bm25_posting_chunk_id(&k),
                 keys::parse_code_bm25_posting_value(&v),
