@@ -136,6 +136,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Document blobs are no longer reaped by the blob GC.** Because docs weren't tracked in the index,
   `collect_referenced_hashes` never marked their `.doc.msgpack` blobs live, so the boot/background GC
   deleted the entire doc cache after every scan. Doc-tier hashes are now unioned into the live set.
+- **Full scans of large repos no longer abort with a stack overflow.** Tree-sitter parse trees and the
+  msgpack (de)serialization of large extraction blobs can recurse past rayon's small default worker
+  stack (~2 MiB) on pathological (deeply-nested / machine-generated) files, hard-aborting the process
+  on a first full scan (e.g. a freshly-checked-out git worktree; a warm rescan hid it by skipping
+  unchanged files). Extraction and the resolve pass now run on a dedicated rayon pool with a 256 MiB
+  per-worker stack (reserved lazily, so it costs nothing on the common shallow path).
 
 ## [0.16.0] — 2026-07-02
 
