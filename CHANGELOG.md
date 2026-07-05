@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-05
+
+> **Minor release — cache rebuild.** `RELEASE_MINOR` bumps to 17, so both the Fjall index and the
+> content-addressed blob store are wiped and rebuilt from source on the next `basemind scan` (the
+> standard minor-release migration). No config or on-wire tool-response change.
+
 ### Added
 
 - **Semantic code search (Phase 1, vector-only).** New `search_code` MCP tool runs vector KNN over
