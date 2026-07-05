@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fjall and the chunk sidecar — no LanceDB and no embedder — so it works even with
   `[code_search] embed = false`. RRF fusion of the two lanes plus an exact symbol lane lands in
   Phase 3.
+- **Hybrid code search (Phase 3, RRF fusion + exact lane + rerank).** `search_code` gains a third
+  `mode`, `hybrid` — now the **default** — that fuses three lanes via Reciprocal Rank Fusion: the
+  vector (semantic) lane, the BM25 keyword lane, and a new **exact symbol lane** that resolves an
+  identifier-shaped query against the `symbols_by_name` index to the chunks defining that symbol
+  (the scope-aware signal a pure vector+keyword stack can't produce). Fusion joins the lanes on
+  `chunk_id` and is score-scale-agnostic, so it blends an L2 distance, a BM25 score, and a symbol
+  match order without normalization; it degrades gracefully, dropping any lane that is unavailable
+  (e.g. the vector lane without embeddings). An optional cross-encoder **rerank** pass (`rerank:true`
+  / `[code_search.reranker]`, off by default) reuses the same xberg reranker as the documents tier.
+  No index-schema change — reuses the existing keyspaces and the `code_chunks` table.
 - **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
   each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
   across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX

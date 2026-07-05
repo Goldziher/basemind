@@ -1012,6 +1012,28 @@ async fn mcp_server_exercises_representative_tools() {
             bad_mode.is_err(),
             "search_code must reject an unknown mode with an MCP error"
         );
+
+        // Hybrid (the default) dispatches and returns the same shape; the Phase-3 rerank-override
+        // fields must deserialize (aliases included). `rerank: false` keeps the ONNX model out of CI
+        // — assert only that the params are accepted and the shape holds on success.
+        let hy = service
+            .call_tool(call_params(
+                "search_code",
+                json!({ "query": "hello", "mode": "hybrid", "rerank": false, "rerank_preset": "bge-reranker-base" }),
+            ))
+            .await;
+        if let Ok(result) = &hy {
+            let body = decode_text(result);
+            assert_eq!(
+                body.get("query").and_then(Value::as_str),
+                Some("hello"),
+                "hybrid search_code must echo the query field: {body}"
+            );
+            assert!(
+                body.get("hits").and_then(Value::as_array).is_some(),
+                "hybrid search_code response must carry a hits array: {body}"
+            );
+        }
     }
 
     // Per-query override round-trip: pass `reranker_preset` as a flattened override
