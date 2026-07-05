@@ -59,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`INDEX_PARTITION_REVISION` → 4) ride the same index rebuild — the blobs are unchanged, so
   re-embedding is skipped and only the secondary index repopulates.
 
+### Fixed
+
+- **Code-search BM25 postings survive an embedder failure.** With `[code_search] embed = true`, a
+  failed embedder load / inference / vector-count mismatch previously returned an error for the whole
+  file, dropping its BM25 postings too — so a transient embedding fault silently punched keyword-lane
+  holes. The scan now degrades to a keyword-only batch (chunks + BM25, no LanceDB rows, no embedded
+  sidecar) and retries embedding on the next scan. BM25 is independent of embeddings and is indexed
+  as such.
+
 ## [0.16.0] — 2026-07-02
 
 Minor release: `RELEASE_MINOR` bumps 15 → 16, so every `.basemind/` index + blob store (including

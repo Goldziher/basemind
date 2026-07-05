@@ -32,10 +32,12 @@ impl BasemindServer {
         description = "Search indexed source-code chunks. `mode` picks the strategy: \"hybrid\" \
         (default) fuses three lanes via Reciprocal Rank Fusion — vector KNN (semantic), native BM25 \
         (keyword), and an exact symbol lane that resolves an identifier-shaped query to the chunks \
-        defining that symbol; it degrades gracefully, dropping any lane that is unavailable (e.g. \
-        the vector lane without embeddings). \"semantic\" is vector-only (hits carry L2 `distance`, \
-        lower = closer); \"keyword\" is BM25-only (hits carry a `score`, higher = better; needs no \
-        embeddings). Set `rerank:true` for an optional cross-encoder rerank over the fused hits \
+        defining that symbol; it degrades gracefully, dropping any lane that is unavailable. When the \
+        index was built without embeddings (`[code_search] embed=false`, the default), hybrid runs \
+        keyword+exact only and \"semantic\" mode returns an error — use \"keyword\" or \"hybrid\" \
+        there. \"semantic\" is vector-only (hits carry L2 `distance`, lower = closer); \"keyword\" is \
+        BM25-only (hits carry a `score`, higher = better; needs no embeddings). Set `rerank:true` for \
+        an optional cross-encoder rerank over the fused hits \
         (first call downloads an ONNX model; off by default). Returns POINTERS (path + line/byte \
         range + symbol + kind), NOT bodies — call `get_chunk` to fetch a chunk's source. Default 10, \
         max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`). `format:\"toon\"` for \

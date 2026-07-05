@@ -12,7 +12,7 @@
 
 #![cfg(feature = "code-search")]
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 use crate::chunk::{ChunkOptions, CodeChunkBlob, chunk_file};
 use crate::config::Config;
@@ -41,6 +41,21 @@ pub(crate) struct PendingCodeBatch {
 /// Feature + config gate: chunk this scan only when `[code_search] enabled`.
 pub(crate) fn should_chunk(config: &Config) -> bool {
     config.code_search.enabled
+}
+
+/// A rows-empty [`PendingCodeBatch`] carrying only the BM25 postings for `chunks` — the
+/// graceful-degradation result when embeddings were requested but the embedder was unavailable.
+/// `None` for a chunkless file (nothing to index).
+fn bm25_batch_from_chunks(rel: &str, chunks: &[crate::chunk::CodeChunk]) -> Option<PendingCodeBatch> {
+    if chunks.is_empty() {
+        return None;
+    }
+    Some(PendingCodeBatch {
+        rel_path: rel.to_string(),
+        embedding_dim: 0,
+        rows: Vec::new(),
+        bm25: build_chunk_postings(chunks),
+    })
 }
 
 /// Chunk + embed one source file. Reuses the `.chunk` sidecar when an identical-content blob
@@ -96,7 +111,22 @@ pub(crate) fn chunk_and_embed(
 
     // Embeddings on. `SharedEmbedder::load` is cheap (config only; the ONNX model is cached in
     // xberg and loaded lazily on the first `embed_batch`).
-    let embedder = SharedEmbedder::load(&config.documents.embedding_preset).context("load code-search embedder")?;
+    //
+    // BM25 is independent of embeddings: if the embedder cannot load or run, we still want the
+    // keyword lane populated, so every embed-failure path below degrades to a rows-empty BM25 batch
+    // (via [`bm25_batch_from_chunks`]) rather than propagating an error that would drop the file's
+    // postings. No embedded sidecar is written on failure, so the next scan retries embedding.
+    let embedder = match SharedEmbedder::load(&config.documents.embedding_preset) {
+        Ok(embedder) => embedder,
+        Err(error) => {
+            tracing::warn!(rel, ?error, "load code-search embedder failed; indexing BM25 keyword lane only");
+            let chunks = match cached {
+                Some(blob) if !blob.chunks.is_empty() => blob.chunks,
+                _ => chunk_file(rel, hash_hex, l1, l2, bytes, opts),
+            };
+            return Ok(bm25_batch_from_chunks(rel, &chunks));
+        }
+    };
     let dim = embedder.dim();
 
     // Cache hit: identical content already chunked + embedded at the current dim.
@@ -131,16 +161,22 @@ pub(crate) fn chunk_and_embed(
         return Ok(None);
     }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
-    let embeddings = embedder
-        .embed_batch(&texts)
-        .with_context(|| format!("embed {} code chunks for {rel}", texts.len()))?;
-    if embeddings.len() != chunks.len() {
-        anyhow::bail!(
-            "embedder returned {} vectors for {} chunks in {rel}",
-            embeddings.len(),
-            chunks.len()
-        );
-    }
+    let embeddings = match embedder.embed_batch(&texts) {
+        Ok(embeddings) if embeddings.len() == chunks.len() => embeddings,
+        Ok(embeddings) => {
+            tracing::warn!(
+                rel,
+                got = embeddings.len(),
+                want = chunks.len(),
+                "embedder returned wrong vector count; indexing BM25 keyword lane only"
+            );
+            return Ok(bm25_batch_from_chunks(rel, &chunks));
+        }
+        Err(error) => {
+            tracing::warn!(rel, ?error, "embed code chunks failed; indexing BM25 keyword lane only");
+            return Ok(bm25_batch_from_chunks(rel, &chunks));
+        }
+    };
     // Build the deferred LanceDB rows + BM25 postings while borrowing `chunks` + `embeddings`, then
     // MOVE both into the sidecar blob — no clone of the per-chunk `String` fields on the hot path.
     let rows = build_rows(rel, &chunks, &embeddings);
@@ -284,4 +320,45 @@ pub(crate) fn flush_code_batches(
         }
     }
     inserted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chunk::CodeChunk;
+
+    fn chunk(chunk_id: &str, searchable_text: &str) -> CodeChunk {
+        CodeChunk {
+            chunk_id: chunk_id.to_string(),
+            path: "src/lib.rs".to_string(),
+            lang: "rust".to_string(),
+            kind: None,
+            symbol: None,
+            signature: None,
+            doc: None,
+            byte_start: 0,
+            byte_end: 0,
+            line_start: 1,
+            line_end: 1,
+            text: searchable_text.to_string(),
+            searchable_text: searchable_text.to_string(),
+        }
+    }
+
+    #[test]
+    fn bm25_batch_from_chunks_is_rows_empty_with_postings() {
+        // The embed-failure degradation: BM25 postings survive, no LanceDB rows, dim 0.
+        let batch = bm25_batch_from_chunks("src/lib.rs", &[chunk("h:0", "alpha beta alpha")])
+            .expect("non-empty chunks must yield a batch");
+        assert_eq!(batch.rel_path, "src/lib.rs");
+        assert_eq!(batch.embedding_dim, 0, "no embeddings on the degraded path");
+        assert!(batch.rows.is_empty(), "no LanceDB rows without embeddings");
+        assert_eq!(batch.bm25.len(), 1, "one posting per chunk");
+        assert_eq!(batch.bm25[0].doclen, 3, "three tokens incl. the repeat");
+    }
+
+    #[test]
+    fn bm25_batch_from_chunks_is_none_for_chunkless_file() {
+        assert!(bm25_batch_from_chunks("src/empty.rs", &[]).is_none());
+    }
 }
