@@ -32,6 +32,22 @@ pub struct CodeSearchConfig {
 }
 
 impl CodeSearchConfig {
+    /// Cross-field validation the per-field JSON-schema bounds can't express: `overlap` must be
+    /// strictly less than `max_characters`. When `overlap >= max_characters` the chunker's
+    /// `split_oversized` computes `step = max_characters.saturating_sub(overlap).max(1) = 1`,
+    /// emitting one degenerate window per character of an oversized chunk instead of a handful.
+    /// Returns a human-readable error naming both offending values on violation.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.overlap >= self.max_characters {
+            return Err(format!(
+                "[code_search] overlap ({}) must be less than max_characters ({}); an overlap \
+                 >= max_characters collapses the chunker step to 1 character",
+                self.overlap, self.max_characters
+            ));
+        }
+        Ok(())
+    }
+
     fn default_enabled() -> bool {
         true
     }
