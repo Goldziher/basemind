@@ -1,9 +1,11 @@
-//! Helper bodies for the semantic code-search tools (`search_code`, `get_chunk`).
+//! Helper bodies for the code-search tools (`search_code`, `get_chunk`).
 //!
-//! Gated on `feature = "code-search"`. `run_search_code` is the vector channel (Phase 1): embed
-//! the query, KNN over the LanceDB `code_chunks` table, budget + format the pointer hits.
-//! `run_get_chunk` is the offline fetch half — it reads the file's content-addressed `.chunk`
-//! sidecar and returns one chunk's body, no LanceDB round-trip.
+//! Gated on `feature = "code-search"`. `run_search_code` dispatches by `mode`: `hybrid` (default)
+//! fuses the vector, keyword, and exact-symbol lanes via RRF ([`hybrid_hits`]); `semantic`
+//! ([`semantic_hits`]) is vector KNN over the LanceDB `code_chunks` table; `keyword`
+//! ([`keyword_hits`]) is native BM25 over the Fjall index. An optional cross-encoder [`rerank_hits`]
+//! pass reorders the result. `run_get_chunk` is the offline fetch half — it reads the file's
+//! content-addressed `.chunk` sidecar and returns one chunk's body, no LanceDB round-trip.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -12,6 +14,10 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::memory::{embed_query, lance_store};
 use super::types_code::{CodeSearchHit, GetChunkParams, GetChunkResponse, SearchCodeParams, SearchCodeResponse};
+use crate::search::bm25::bm25_search;
+use crate::search::exact::exact_lane_chunk_ids;
+use crate::search::rrf::{DEFAULT_RRF_K, FusionLane, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR, rrf_fuse};
+use crate::store::Store;
 
 /// Serialize a code-search response honoring the requested wire format. TOON is only available
 /// when the `documents` feature (which links `serde_toon`) is also compiled in; a `toon` request
@@ -39,18 +45,36 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let want_toon = wants_toon(state, params.format.as_deref());
 
-    // Retrieval lane: "semantic" (default) embeds the query and runs vector KNN; "keyword" runs the
-    // native BM25 index over each chunk's lexical text. Any other value is an actionable error.
-    let mode = params.mode.as_deref().map(str::trim).unwrap_or("semantic");
-    let hits: Vec<CodeSearchHit> = if mode.is_empty() || mode.eq_ignore_ascii_case("semantic") {
-        semantic_hits(state, &params.query, limit).await?
+    // Rerank config: per-query override wins over the `[code_search.reranker]` knob.
+    let rr = &state.config.code_search.reranker;
+    let rerank_enabled = params.reranker_enabled.unwrap_or(rr.enabled);
+    let rerank_preset = params.reranker_preset.clone().unwrap_or_else(|| rr.preset.clone());
+    let rerank_top_k = params.reranker_top_k.unwrap_or(rr.top_k);
+
+    // When reranking, fetch at least `rerank_top_k` candidates so the cross-encoder has material.
+    let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
+
+    // Retrieval lane: "hybrid" (default) fuses vector + keyword + exact via RRF; "semantic" is
+    // vector KNN only; "keyword" is BM25 only. Any other value is an actionable error.
+    let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
+    let hits: Vec<CodeSearchHit> = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
+        hybrid_hits(state, &params.query, fetch_n).await
+    } else if mode.eq_ignore_ascii_case("semantic") {
+        semantic_hits(state, &params.query, fetch_n).await?
     } else if mode.eq_ignore_ascii_case("keyword") {
-        keyword_hits(state, &params.query, limit).await
+        keyword_hits(state, &params.query, fetch_n).await
     } else {
         return Err(McpError::invalid_request(
-            format!("search_code: unknown mode {mode:?}; valid modes are \"semantic\" or \"keyword\""),
+            format!("search_code: unknown mode {mode:?}; valid modes are \"hybrid\", \"semantic\", or \"keyword\""),
             None,
         ));
+    };
+
+    // Optional cross-encoder rerank over the produced hits (reorders + truncates to `rerank_top_k`).
+    let hits = if rerank_enabled {
+        rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
+    } else {
+        hits
     };
 
     // Token budget bounds the returned hits (best-first). No cursor — raise `max_tokens` for more.
@@ -63,6 +87,59 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         },
         want_toon,
     )
+}
+
+/// Hybrid lane: run the vector, keyword, and exact lanes best-effort and fuse their rankings via RRF
+/// on the shared `chunk_id` key. Each lane is independent — a lane that is unavailable (no embedder,
+/// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
+/// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
+async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
+    // Each lane fetches an expanded candidate set so fusion has material below rank-1.
+    let fuse_limit = (limit * 4).clamp(limit, 200);
+
+    // Vector lane (best-effort): only when embeddings are configured; any failure drops the lane.
+    let vector_ids: Vec<String> = if state.config.code_search.embed {
+        match semantic_hits(state, query, fuse_limit).await {
+            Ok(hits) => hits.into_iter().map(|h| h.chunk_id).collect(),
+            Err(error) => {
+                tracing::debug!(%error, "hybrid: vector lane unavailable — fusing keyword + exact only");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Keyword + exact lanes + hydration under a single store read lock.
+    let store = state.store.read().await;
+    let (keyword_ids, exact_ids): (Vec<String>, Vec<String>) = match store.index_db.as_ref() {
+        Some(db) => (
+            bm25_search(db, query, fuse_limit)
+                .into_iter()
+                .map(|h| h.chunk_id)
+                .collect(),
+            exact_lane_chunk_ids(&store, db, query, fuse_limit),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+
+    let fused = rrf_fuse(
+        &[
+            FusionLane::new(&exact_ids, WEIGHT_EXACT),
+            FusionLane::new(&vector_ids, WEIGHT_VECTOR),
+            FusionLane::new(&keyword_ids, WEIGHT_KEYWORD),
+        ],
+        DEFAULT_RRF_K,
+    );
+
+    let mut hits = Vec::with_capacity(fused.len().min(limit));
+    for (chunk_id, score) in fused.into_iter().take(limit) {
+        if let Some((mut hit, _text)) = hydrate_one(&store, &chunk_id) {
+            hit.score = Some(score);
+            hits.push(hit);
+        }
+    }
+    hits
 }
 
 /// Semantic lane: embed the query and run vector KNN over the scope-filtered LanceDB `code_chunks`
@@ -90,62 +167,131 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
             byte_end: h.byte_end,
             distance: Some(h.distance),
             score: None,
+            rerank_score: None,
         })
         .collect())
 }
 
-/// Keyword lane: native BM25 over the Fjall index, hydrating each hit's `chunk_id` back into a
-/// pointer via the content-addressed chunk sidecar (the same read `run_get_chunk` uses). Each hit
-/// carries a BM25 `score` (higher = better) and no `distance`. Hits whose sidecar or ordinal cannot
-/// be resolved are skipped (logged at debug), never fatal. Returns an empty vec when the index is
-/// read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
+/// Keyword lane: native BM25 over the Fjall index, hydrating each ranked `chunk_id` into a pointer.
+/// Each hit carries a BM25 `score` (higher = better) and no `distance`. Returns an empty vec when the
+/// index is read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
 async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
     let store = state.store.read().await;
     let Some(db) = store.index_db.as_ref() else {
         return Vec::new();
     };
-    let raw = crate::search::bm25::bm25_search(db, query, limit);
+    let raw = bm25_search(db, query, limit);
     let mut hits = Vec::with_capacity(raw.len());
     for hit in raw {
-        // chunk_id is `<source-hash-hex>:<ordinal>` — split on the LAST ':' (hex never contains one).
-        let Some((hash_hex, ordinal)) = hit.chunk_id.rsplit_once(':') else {
-            tracing::debug!(chunk_id = %hit.chunk_id, "keyword hit: malformed chunk_id, skipping");
-            continue;
-        };
-        let Ok(ordinal) = ordinal.parse::<usize>() else {
-            tracing::debug!(chunk_id = %hit.chunk_id, "keyword hit: non-numeric ordinal, skipping");
-            continue;
-        };
-        let blob = match store.read_chunks_by_hex(hash_hex) {
-            Ok(Some(blob)) => blob,
-            Ok(None) => {
-                tracing::debug!(hash = %hash_hex, "keyword hit: no chunk sidecar, skipping");
-                continue;
-            }
-            Err(error) => {
-                tracing::debug!(hash = %hash_hex, %error, "keyword hit: chunk sidecar read failed, skipping");
-                continue;
-            }
-        };
-        let Some(chunk) = blob.chunks.get(ordinal) else {
-            tracing::debug!(chunk_id = %hit.chunk_id, "keyword hit: ordinal out of range, skipping");
-            continue;
-        };
-        hits.push(CodeSearchHit {
-            path: chunk.path.clone(),
-            chunk_id: hit.chunk_id.clone(),
-            symbol: chunk.symbol.clone().unwrap_or_default(),
-            kind: chunk.kind.clone().unwrap_or_default(),
-            lang: chunk.lang.clone(),
-            line_start: chunk.line_start,
-            line_end: chunk.line_end,
-            byte_start: chunk.byte_start,
-            byte_end: chunk.byte_end,
-            distance: None,
-            score: Some(hit.score),
-        });
+        if let Some((mut ch, _text)) = hydrate_one(&store, &hit.chunk_id) {
+            ch.score = Some(hit.score);
+            hits.push(ch);
+        }
     }
     hits
+}
+
+/// Hydrate a ranked `chunk_id` (`<hash>:<ordinal>`) into a base `CodeSearchHit` (all score fields
+/// `None`) plus the chunk's body text (for the optional rerank pass), via the content-addressed
+/// sidecar. `None` when the sidecar is missing or the ordinal is out of range — the caller skips it.
+fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)> {
+    // chunk_id is `<source-hash-hex>:<ordinal>` — split on the LAST ':' (hex never contains one).
+    let (hash_hex, ordinal) = chunk_id.rsplit_once(':')?;
+    let ordinal: usize = ordinal.parse().ok()?;
+    let blob = store.read_chunks_by_hex(hash_hex).ok()??;
+    let chunk = blob.chunks.get(ordinal)?;
+    let hit = CodeSearchHit {
+        path: chunk.path.clone(),
+        chunk_id: chunk_id.to_string(),
+        symbol: chunk.symbol.clone().unwrap_or_default(),
+        kind: chunk.kind.clone().unwrap_or_default(),
+        lang: chunk.lang.clone(),
+        line_start: chunk.line_start,
+        line_end: chunk.line_end,
+        byte_start: chunk.byte_start,
+        byte_end: chunk.byte_end,
+        distance: None,
+        score: None,
+        rerank_score: None,
+    };
+    Some((hit, chunk.text.clone()))
+}
+
+/// Optional cross-encoder rerank of `hits`, reusing the same xberg reranker as the documents tier.
+/// Reads each hit's chunk body as the candidate text, scores against `query`, and returns the hits
+/// reordered best-first (truncated to `top_k`) with `rerank_score` set. Off-path when `hits` is
+/// empty. Errors on an unknown preset (before any model download) or an out-of-range rerank index.
+async fn rerank_hits(
+    state: &ServerState,
+    query: &str,
+    hits: Vec<CodeSearchHit>,
+    preset: &str,
+    top_k: usize,
+) -> Result<Vec<CodeSearchHit>, McpError> {
+    if hits.is_empty() {
+        return Ok(hits);
+    }
+    // Fail fast on an unknown preset before constructing the config / triggering a wrong download.
+    if xberg::get_reranker_preset(preset).is_none() {
+        return Err(McpError::invalid_params(
+            format!("unknown reranker preset: {preset:?}"),
+            None,
+        ));
+    }
+    // Candidate texts aligned 1:1 with `hits` (empty when a sidecar read fails — the reranker
+    // tolerates it and just scores it low).
+    let texts: Vec<String> = {
+        let store = state.store.read().await;
+        hits.iter()
+            .map(|h| {
+                hydrate_one(&store, &h.chunk_id)
+                    .map(|(_, text)| text)
+                    .unwrap_or_default()
+            })
+            .collect()
+    };
+    let krz_config = xberg::core::config::RerankerConfig {
+        model: xberg::core::config::RerankerModelType::Preset {
+            name: preset.to_string(),
+        },
+        top_k: Some(top_k),
+        ..Default::default()
+    };
+    let reranked = xberg::rerank_async(query.to_string(), texts, &krz_config)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
+                "rerank model load"
+            } else {
+                "rerank inference"
+            };
+            McpError::internal_error(format!("{kind}: {msg}"), None)
+        })?;
+    // Bounds-check every external index — a buggy ONNX run must not panic the server.
+    let original = hits;
+    reranked
+        .into_iter()
+        .map(|r| {
+            original
+                .get(r.index)
+                .cloned()
+                .map(|mut hit| {
+                    hit.rerank_score = Some(r.score);
+                    hit
+                })
+                .ok_or_else(|| {
+                    McpError::internal_error(
+                        format!(
+                            "reranker returned out-of-range index {} (got {} hits)",
+                            r.index,
+                            original.len()
+                        ),
+                        None,
+                    )
+                })
+        })
+        .collect()
 }
 
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {

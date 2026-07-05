@@ -260,6 +260,33 @@ impl IndexDb {
         None
     }
 
+    /// Symbols whose name starts with `name`, from the `symbols_by_name` keyspace — an index-backed
+    /// prefix scan (length-prefixed keys isolate `Foo` from `Foobar`). Returns `(name, kind, path,
+    /// start_byte)` for each match, capped at `cap` entries. Backs the code-search **exact lane**:
+    /// an identifier-shaped query resolves to the symbols that define it, which then map to their
+    /// owning chunks. The returned `name` lets the caller rank exact-name matches ahead of longer
+    /// prefix matches. `start_byte` is the L1 `Symbol.start_byte` (node start), which falls inside
+    /// the symbol's owning chunk span.
+    pub fn symbols_by_name_lookup(
+        &self,
+        name: &str,
+        cap: usize,
+    ) -> Vec<(String, crate::extract::SymbolKind, crate::path::RelPath, u32)> {
+        let prefix = keys::symbols_by_name_prefix(name);
+        let mut out = Vec::new();
+        for guard in self.symbols_by_name.prefix(prefix) {
+            if out.len() >= cap {
+                break;
+            }
+            if let Ok((k, _)) = guard.into_inner()
+                && let Some((matched, kind, rel, start_byte)) = keys::parse_symbol_by_name(&k)
+            {
+                out.push((matched, kind, rel, start_byte));
+            }
+        }
+        out
+    }
+
     /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
     /// number of indexed chunks and `total_len` the sum of their token lengths (so `avgdl =
     /// total_len / N`). Read from the `meta` keyspace at query time. `None` (or `N == 0`) means the

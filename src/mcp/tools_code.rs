@@ -29,14 +29,17 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_code")]
 impl BasemindServer {
     #[tool(
-        description = "Search indexed source-code chunks. Two lanes via `mode`: \"semantic\" \
-        (default) embeds `query` and runs vector KNN over the scope-filtered LanceDB `code_chunks` \
-        table (needs embeddings; hits carry L2 `distance`, lower = closer); \"keyword\" runs native \
-        BM25 exact-term matching over each chunk's symbol+signature+doc+body text (works even when \
-        embeddings are disabled; hits carry a BM25 `score`, higher = better). Returns POINTERS \
-        (path + line/byte range + symbol + kind), NOT bodies — call `get_chunk` to fetch a chunk's \
-        source. Default 10, max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`; no \
-        cursor — raise it for more). `format:\"toon\"` for compact rows. Needs --features code-search.",
+        description = "Search indexed source-code chunks. `mode` picks the strategy: \"hybrid\" \
+        (default) fuses three lanes via Reciprocal Rank Fusion — vector KNN (semantic), native BM25 \
+        (keyword), and an exact symbol lane that resolves an identifier-shaped query to the chunks \
+        defining that symbol; it degrades gracefully, dropping any lane that is unavailable (e.g. \
+        the vector lane without embeddings). \"semantic\" is vector-only (hits carry L2 `distance`, \
+        lower = closer); \"keyword\" is BM25-only (hits carry a `score`, higher = better; needs no \
+        embeddings). Set `rerank:true` for an optional cross-encoder rerank over the fused hits \
+        (first call downloads an ONNX model; off by default). Returns POINTERS (path + line/byte \
+        range + symbol + kind), NOT bodies — call `get_chunk` to fetch a chunk's source. Default 10, \
+        max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`). `format:\"toon\"` for \
+        compact rows. Needs --features code-search.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_code(

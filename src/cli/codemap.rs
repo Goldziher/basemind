@@ -129,15 +129,22 @@ pub enum QueryCmd {
     RepoInfo,
     /// Files whose imports mention the given module (heuristic).
     Dependents { module: String },
-    /// Search indexed code chunks — `semantic` (vector, default) or `keyword` (BM25). Returns
-    /// pointers; fetch bodies with `get-chunk`. Needs `--features code-search`.
+    /// Search indexed code chunks — `hybrid` (RRF fusion, default), `semantic` (vector), or
+    /// `keyword` (BM25). Returns pointers; fetch bodies with `get-chunk`. Needs `--features
+    /// code-search`.
     SearchCode {
         query: String,
         #[arg(long)]
         limit: Option<u32>,
-        /// Retrieval lane: `semantic` (default) or `keyword`.
+        /// Retrieval lane: `hybrid` (default), `semantic`, or `keyword`.
         #[arg(long)]
         mode: Option<String>,
+        /// Run the cross-encoder rerank pass over the fused hits (first call downloads a model).
+        #[arg(long)]
+        rerank: bool,
+        /// Reranker preset name (default `bge-reranker-base`).
+        #[arg(long)]
+        rerank_preset: Option<String>,
         #[arg(long)]
         format: Option<String>,
     },
@@ -312,6 +319,8 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             query,
             limit,
             mode,
+            rerank,
+            rerank_preset,
             format,
         } => {
             let p = SearchCodeParams {
@@ -319,6 +328,9 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 limit,
                 max_tokens: None,
                 mode,
+                reranker_enabled: rerank.then_some(true),
+                reranker_preset: rerank_preset,
+                reranker_top_k: None,
                 format,
             };
             let r = run_tool("search_code", server.search_code(Parameters(Lenient(p))).await)?;
