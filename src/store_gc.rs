@@ -225,6 +225,12 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
         for entry in index.files.values() {
             referenced.insert(entry.hash_hex.clone());
         }
+        // Doc-tier blobs (`.doc.msgpack`) are keyed by `doc_files` hashes, which are NOT in
+        // `index.files`. Without this union `gc_blobs` (which deletes by hex stem regardless of
+        // suffix) would reap every doc blob — destroying the doc cache after every boot GC.
+        for entry in index.doc_files.values() {
+            referenced.insert(entry.hash_hex.clone());
+        }
     }
     Ok(referenced)
 }
