@@ -201,7 +201,14 @@ mod tests {
         )
         .expect("u.ts");
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
-        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+        scan(
+            root,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
         store
     }
 

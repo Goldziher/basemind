@@ -25,7 +25,14 @@ fn scanned_repo() -> tempfile::TempDir {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub fn beta() { alpha(); }\n").expect("write source");
     let cfg = ConfigV1::with_defaults();
     let mut store = Store::open(root, VIEW_WORKING).expect("initial open");
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("initial scan");
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .expect("initial scan");
     drop(store); // release the scan lock
     dir
 }

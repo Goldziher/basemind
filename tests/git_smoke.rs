@@ -52,7 +52,14 @@ fn scan_staged_uses_index_blobs_not_working_tree() {
 
     let repo = Repo::discover(root).expect("repo discover");
     let mut store = Store::open(root, VIEW_STAGED).unwrap();
-    let report = scan(root, &mut store, &cfg, ScanSource::Staged(&repo)).expect("scan staged");
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::Staged(&repo),
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .expect("scan staged");
 
     assert_eq!(report.stats.updated, 1, "one file updated");
     let entry = store.lookup("a.rs").expect("a.rs indexed");
@@ -73,7 +80,14 @@ fn scan_rev_at_head_matches_clean_working_tree() {
 
     // Working-tree scan
     let mut wt_store = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut wt_store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut wt_store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     let wt_entry = wt_store.lookup("a.rs").expect("a.rs in WT view").clone();
     drop(wt_store);
 
@@ -90,6 +104,7 @@ fn scan_rev_at_head_matches_clean_working_tree() {
             repo: &repo,
             sha: head_sha,
         },
+        basemind::scanner::EmbedMode::Inline,
     )
     .unwrap();
     let rev_entry = rev_store.lookup("a.rs").expect("a.rs in rev view").clone();
@@ -111,11 +126,25 @@ fn views_live_in_separate_subdirs_under_dotbasemind() {
     let repo = Repo::discover(root).unwrap();
 
     let mut working = Store::open(root, VIEW_WORKING).unwrap();
-    scan(root, &mut working, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut working,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     drop(working);
 
     let mut staged = Store::open(root, VIEW_STAGED).unwrap();
-    scan(root, &mut staged, &cfg, ScanSource::Staged(&repo)).unwrap();
+    scan(
+        root,
+        &mut staged,
+        &cfg,
+        ScanSource::Staged(&repo),
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     drop(staged);
 
     let views_dir = root.join(".basemind").join("views");
@@ -204,7 +233,14 @@ fn scan_skips_submodule_paths_by_default() {
     // Default scan should NOT index the submodule's inner.rs.
     {
         let mut store = Store::open(root, VIEW_WORKING).unwrap();
-        scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("scan default");
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("scan default");
         assert!(store.lookup("top.rs").is_some(), "parent file should be indexed");
         assert!(
             store.lookup("vendored/inner.rs").is_none(),
@@ -216,7 +252,14 @@ fn scan_skips_submodule_paths_by_default() {
     let mut cfg2 = ConfigV1::with_defaults();
     cfg2.scan.skip_submodules = false;
     let mut store2 = Store::open(root, VIEW_STAGED).unwrap();
-    scan(root, &mut store2, &cfg2, ScanSource::WorkingTree).expect("scan opt-in");
+    scan(
+        root,
+        &mut store2,
+        &cfg2,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .expect("scan opt-in");
     assert!(
         store2.lookup("vendored/inner.rs").is_some(),
         "submodule file should be indexed when skip_submodules=false"

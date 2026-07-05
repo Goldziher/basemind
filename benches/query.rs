@@ -8,7 +8,7 @@
 
 use basemind::config::ConfigV1;
 use basemind::query::{dependents_of, file_outline, search_symbols};
-use basemind::scanner::{ScanSource, scan};
+use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -52,7 +52,7 @@ fn setup() -> (TempDir, Store) {
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("scan");
+    scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("scan");
     (dir, store)
 }
 

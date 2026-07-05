@@ -84,7 +84,14 @@ fn run_scan(root: &Path) {
     cfg.code_search.embed = false;
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
     let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+    basemind::scanner::scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .expect("scan");
 }
 
 fn decode_text(result: &CallToolResult) -> Value {

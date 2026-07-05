@@ -39,6 +39,57 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
     }
 }
 
+/// Boot-time initial index build for an empty index, spawned once from `BasemindServer::new`.
+///
+/// Two passes so serve becomes queryable fast without pinning the machine on ONNX embedding:
+/// 1. A `Deferred` scan writes the code-map + BM25 keyword lane + content-addressed blobs but NO
+///    embeddings — this is what clears `initial_scan_active`, so `status` reports the index ready.
+/// 2. A detached `Inline` scan then fills the vectors the fast pass skipped, reusing the fast pass'
+///    content-addressed caches (only not-yet-embedded content is embedded, bounded by WS4-A's embed
+///    pool). GC runs after it settles so the sweep reaps against the final blob set.
+pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
+    tracing::info!("empty index on startup; running initial scan in background");
+    tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
+        // Mark the index as building so a concurrent `status` poll reports `indexing: true` instead
+        // of an empty index — separating build time from query time.
+        state.initial_scan_active.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred).await {
+            Ok(report) => tracing::info!(
+                scanned = report.stats.scanned,
+                updated = report.stats.updated,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "initial background scan complete (code-map + keyword lane; embeddings deferred)"
+            ),
+            Err(error) => tracing::warn!(%error, "initial background scan failed"),
+        }
+        // Record the build duration and clear the building flag (even on failure, so a client never
+        // sees a permanently-"indexing" server). The code-map is queryable now; the embed pass runs
+        // unobtrusively afterward.
+        state
+            .initial_scan_ms
+            .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+        state.initial_scan_active.store(false, Ordering::Relaxed);
+        // Second pass (detached): fill in the vectors the fast pass skipped, then GC.
+        let embed_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let embed_started = std::time::Instant::now();
+            tracing::info!("background embedding pass starting");
+            match helpers::scan_and_refresh(Arc::clone(&embed_state), None, crate::scanner::EmbedMode::Inline).await {
+                Ok(report) => tracing::info!(
+                    scanned = report.stats.scanned,
+                    updated = report.stats.updated,
+                    elapsed_ms = embed_started.elapsed().as_millis() as u64,
+                    "background embedding pass complete"
+                ),
+                Err(error) => tracing::warn!(%error, "background embedding pass failed"),
+            }
+            run_background_gc(embed_state).await;
+        });
+    });
+}
+
 /// Active filesystem watcher embedded in `serve` for the working view.
 ///
 /// Unlike [`spawn_view_watcher`] (which is passive — it only reacts to an
@@ -82,8 +133,14 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
                 let refresh_state = Arc::clone(&state);
-                // Bridge the blocking watcher thread into the async refresh.
-                match handle.block_on(helpers::scan_and_refresh(refresh_state, Some(paths))) {
+                // Bridge the blocking watcher thread into the async refresh. Incremental watcher
+                // batches embed inline — they are small and already bounded by the WS4-A embed pool;
+                // only the serve-boot scan defers embedding to a background pass.
+                match handle.block_on(helpers::scan_and_refresh(
+                    refresh_state,
+                    Some(paths),
+                    crate::scanner::EmbedMode::Inline,
+                )) {
                     Ok(report) => tracing::debug!(
                         scanned = report.stats.scanned,
                         updated = report.stats.updated,

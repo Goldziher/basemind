@@ -141,7 +141,13 @@ pub fn watch(
     info!(root = %root.display(), "initial scan");
     {
         let mut guard = store.lock().expect("store poisoned");
-        let report = crate::scanner::scan(root, &mut guard, &config, crate::scanner::ScanSource::WorkingTree)?;
+        let report = crate::scanner::scan(
+            root,
+            &mut guard,
+            &config,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )?;
         on_batch(WatchBatch {
             kind: BatchKind::InitialScan,
             report: &report,
@@ -151,7 +157,7 @@ pub fn watch(
 
     watch_paths(root, &config, shutdown, |touched, kind| {
         let mut guard = store.lock().expect("store poisoned");
-        match crate::scanner::scan_paths(root, &mut guard, &config, &touched) {
+        match crate::scanner::scan_paths(root, &mut guard, &config, &touched, crate::scanner::EmbedMode::Inline) {
             Ok(report) => {
                 on_batch(WatchBatch { kind, report: &report });
             }

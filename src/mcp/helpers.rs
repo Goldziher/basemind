@@ -715,6 +715,7 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
 pub(super) async fn scan_and_refresh(
     state: Arc<ServerState>,
     scoped_paths: Option<Vec<std::path::PathBuf>>,
+    embed: crate::scanner::EmbedMode,
 ) -> Result<crate::scanner::ScanReport, McpError> {
     // This serve fell back to read-only because another serve owns the write lock for this repo
     // (issue #27). It cannot scan without the lock — return a clean, actionable error instead of
@@ -742,9 +743,15 @@ pub(super) async fn scan_and_refresh(
     let report = tokio::task::spawn_blocking(move || {
         let mut store = state_for_scan.store.blocking_write();
         if let Some(paths) = scoped_paths {
-            crate::scanner::scan_paths(&root, &mut store, &config, &paths)
+            crate::scanner::scan_paths(&root, &mut store, &config, &paths, embed)
         } else {
-            crate::scanner::scan(&root, &mut store, &config, crate::scanner::ScanSource::WorkingTree)
+            crate::scanner::scan(
+                &root,
+                &mut store,
+                &config,
+                crate::scanner::ScanSource::WorkingTree,
+                embed,
+            )
         }
     })
     .await

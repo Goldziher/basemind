@@ -630,35 +630,10 @@ impl BasemindServer {
             // branch switches. Detached so it never blocks serve startup, and it never
             // crashes serve (all errors are warned + swallowed).
             if needs_initial_scan {
-                // A fresh scan is what *creates* reclaimable orphans, so chain GC after it.
-                let scan_state = Arc::clone(&state);
-                tracing::info!("empty index on startup; running initial scan in background");
-                tokio::spawn(async move {
-                    use std::sync::atomic::Ordering;
-                    // Mark the index as building so a concurrent `status` poll reports `indexing:
-                    // true` instead of an empty index — separating build time from query time.
-                    scan_state.initial_scan_active.store(true, Ordering::Relaxed);
-                    let started = std::time::Instant::now();
-                    match helpers::scan_and_refresh(Arc::clone(&scan_state), None).await {
-                        Ok(report) => tracing::info!(
-                            scanned = report.stats.scanned,
-                            updated = report.stats.updated,
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            "initial background scan complete"
-                        ),
-                        Err(error) => {
-                            tracing::warn!(%error, "initial background scan failed");
-                        }
-                    }
-                    // Record the build duration and clear the building flag (even on failure, so a
-                    // client never sees a permanently-"indexing" server).
-                    scan_state
-                        .initial_scan_ms
-                        .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                    scan_state.initial_scan_active.store(false, Ordering::Relaxed);
-                    // Run GC after the scan settles, regardless of scan outcome.
-                    background::run_background_gc(scan_state).await;
-                });
+                // Two-pass boot: a fast `Deferred` scan makes serve queryable immediately, then a
+                // detached `Inline` embedding pass + GC. (A fresh scan is what *creates* reclaimable
+                // orphans, so GC is chained after the embed pass inside the helper.)
+                background::spawn_initial_scan(Arc::clone(&state));
             } else {
                 // No initial scan — run GC shortly after startup to reclaim any
                 // orphans from earlier sessions.
@@ -912,7 +887,14 @@ mod map_cache_tests {
         let cfg = crate::config::ConfigV1::with_defaults();
 
         let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).unwrap();
-        crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).unwrap();
+        crate::scanner::scan(
+            root,
+            &mut store,
+            &cfg,
+            crate::scanner::ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
 
         let cache = MapCache::build(&store);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
@@ -922,7 +904,14 @@ mod map_cache_tests {
 
         // Edit a.rs, re-scan just that path, then patch the cache incrementally.
         fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
-        let report = crate::scanner::scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+        let report = crate::scanner::scan_paths(
+            root,
+            &mut store,
+            &cfg,
+            &[root.join("a.rs")],
+            crate::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
         assert_eq!(report.stats.updated, 1);
 
         let updated = vec![crate::path::RelPath::from("a.rs")];

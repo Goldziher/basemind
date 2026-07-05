@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::embeddings::SharedEmbedder;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::lance::CodeRow;
+use crate::scanner::EmbedMode;
 use crate::search::bm25::{ChunkPosting, build_chunk_postings};
 use crate::store::Store;
 
@@ -61,6 +62,7 @@ fn bm25_batch_from_chunks(rel: &str, chunks: &[crate::chunk::CodeChunk]) -> Opti
 /// Chunk + embed one source file. Reuses the `.chunk` sidecar when an identical-content blob
 /// already exists (the embedding cache); otherwise chunks, embeds in bulk, and writes the blob.
 /// Returns `Ok(None)` when the file yields no chunks. Never opens LanceDB — the write is deferred.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn chunk_and_embed(
     store: &Store,
     rel: &str,
@@ -69,8 +71,12 @@ pub(crate) fn chunk_and_embed(
     l2: Option<&FileMapL2>,
     hash_hex: &str,
     config: &Config,
+    mode: EmbedMode,
 ) -> Result<Option<PendingCodeBatch>> {
     let cfg = &config.code_search;
+    // `Deferred` forces the chunk-only path regardless of the configured `code_search.embed`, so
+    // serve boot writes symbols + BM25 fast and leaves embeddings to the background `Inline` pass.
+    let embed = matches!(mode, EmbedMode::Inline) && cfg.embed;
     let opts = ChunkOptions {
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
@@ -79,20 +85,27 @@ pub(crate) fn chunk_and_embed(
     // failure as a cache miss and recompute.
     let cached = store.read_chunks_by_hex(hash_hex).ok().flatten();
 
-    if !cfg.embed {
+    if !embed {
         // Chunk-only: persist the sidecar (or reuse it) but emit no LanceDB rows.
         let chunks = match cached {
             Some(blob) => blob.chunks,
             None => {
                 let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
-                let blob = CodeChunkBlob {
-                    schema_ver: SCHEMA_VER,
-                    embedding_dim: 0,
-                    chunks: chunks.clone(),
-                    embeddings: Vec::new(),
-                };
-                if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
-                    tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
+                // Only a genuine `code_search.embed = false` (an `Inline` chunk-only scan) persists
+                // the sidecar. In `Deferred` mode we must NOT: the sidecar's presence is the
+                // "already processed" signal `process_file`'s unchanged-skip keys on, so writing a
+                // vector-less one here would make the background `Inline` fill-in pass skip the file
+                // and never embed it. Leaving it absent lets that pass re-chunk + embed.
+                if matches!(mode, EmbedMode::Inline) {
+                    let blob = CodeChunkBlob {
+                        schema_ver: SCHEMA_VER,
+                        embedding_dim: 0,
+                        chunks: chunks.clone(),
+                        embeddings: Vec::new(),
+                    };
+                    if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
+                        tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
+                    }
                 }
                 chunks
             }

@@ -116,6 +116,7 @@ impl<'a> WorkerIndexBatch<'a> {
 /// Drive the per-file pipeline across `candidates` on the rayon pool, batching index commits
 /// per worker. Order of the returned `FileResult`s is unspecified (the parallel fold
 /// concatenates per-worker slices) — every consumer keys by `path`, never by position.
+#[allow(clippy::too_many_arguments)]
 fn run_candidates(
     candidates: &[String],
     root: &Path,
@@ -124,13 +125,14 @@ fn run_candidates(
     source: &ScanSource<'_>,
     config: &Config,
     scope: &str,
+    embed: EmbedMode,
 ) -> Vec<FileResult> {
     candidates
         .par_iter()
         .fold(
             || WorkerIndexBatch::new(store),
             |mut batch, rel| {
-                let result = process_file(root, rel, filters, store, source, config, scope, &mut batch);
+                let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
                 batch.results.push(result);
                 batch
             },
@@ -304,13 +306,36 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
     paths.into_iter().map(|p| p.to_str_lossy().into_owned()).collect()
 }
 
+/// Whether the expensive embedding step runs during the scan.
+///
+/// - `Inline` (today's default; used by the CLI `basemind scan`, the watcher, and manual `rescan`)
+///   embeds during the scan — code chunks and documents get their vectors + LanceDB rows in one pass.
+/// - `Deferred` skips embedding: the scan still writes the code-map, the BM25 keyword lane, and the
+///   content-addressed blobs, but emits **no** vector rows and does **not** persist the
+///   embedding-completion markers (the `.chunk.msgpack` sidecar / the doc `DocEntry`). Serve boot uses
+///   this for a fast first pass, then runs a second `Inline` scan in the background to fill vectors in.
+///
+/// It is threaded as an explicit parameter rather than mutated onto `config` because the serve path
+/// shares a single `Arc<Config>` across every reader — mutating it would poison concurrent queries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EmbedMode {
+    Inline,
+    Deferred,
+}
+
 /// One-shot scan: enumerate every candidate file *via the requested source*, process them
 /// in parallel, purge stale index entries, flush the index, return a typed report.
 ///
 /// Source-aware behavior:
 /// - `WorkingTree` uses `ignore::WalkBuilder` to walk the on-disk tree and `std::fs::read`.
 /// - `Staged` and `Rev` enumerate paths via gix and read bytes via gix.
-pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<'_>) -> Result<ScanReport, ScanError> {
+pub fn scan(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    source: ScanSource<'_>,
+    embed: EmbedMode,
+) -> Result<ScanReport, ScanError> {
     let submodule_roots = submodule_roots_for_source(root, &source);
     let filters = Filters::build(config, submodule_roots)?;
     let candidates = candidates_for_source(root, config, &filters, &source)?;
@@ -318,7 +343,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
 
     let scope = derive_scope(root, &source);
 
-    let outcomes: Vec<FileResult> = run_candidates(&candidates, root, &filters, store, &source, config, &scope);
+    let outcomes: Vec<FileResult> = run_candidates(&candidates, root, &filters, store, &source, config, &scope, embed);
 
     // Borrow path strings directly from `outcomes` — avoids one String clone per indexed
     // file. The `seen` set is built and consumed before `outcomes` is moved into
@@ -407,7 +432,13 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
 /// Paths outside `root`, inside `.basemind/`, or not matching the include globs are
 /// silently dropped (the watcher pre-filters but we re-check defensively).
 /// Removed files (path no longer exists) are purged from the index.
-pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[PathBuf]) -> Result<ScanReport, ScanError> {
+pub fn scan_paths(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    paths: &[PathBuf],
+    embed: EmbedMode,
+) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     let filter = IndexFilter::new(root, config)?;
 
@@ -459,7 +490,8 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     }
 
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> = run_candidates(&rels, root, filter.filters(), store, &source, config, &scope);
+    let outcomes: Vec<FileResult> =
+        run_candidates(&rels, root, filter.filters(), store, &source, config, &scope, embed);
 
     let mut report = ScanReport::default();
     let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
@@ -678,11 +710,18 @@ fn process_file(
     config: &Config,
     scope: &str,
     index_batch: &mut WorkerIndexBatch<'_>,
+    embed: EmbedMode,
 ) -> FileResult {
     // No-op marker to keep the `scope`/`config` params in use when the feature is off.
     #[cfg(not(feature = "documents"))]
     {
         let _ = (config, scope);
+    }
+    // `embed` is consulted only by the code-search (chunk_and_embed) and documents (process_doc)
+    // tiers; without either feature it is inert.
+    #[cfg(not(any(feature = "documents", feature = "code-search")))]
+    {
+        let _ = embed;
     }
     let lang = match lang::detect(Path::new(rel)) {
         Some(l) => l,
@@ -690,7 +729,7 @@ fn process_file(
             #[cfg(feature = "documents")]
             {
                 if matches!(source, ScanSource::WorkingTree) {
-                    return process_doc(root, rel, filters, store, config, scope);
+                    return process_doc(root, rel, filters, store, config, scope, embed);
                 }
             }
             return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
@@ -702,10 +741,10 @@ fn process_file(
     // return without reading the bytes or computing the blake3 hash. On a large monorepo this turns a
     // warm rescan of an unchanged file into a single `stat()` instead of a full read + hash.
     //
-    // Racy tradeoff: mtime has 1-second resolution, so a same-second edit that keeps the byte size
-    // identical is missed until the next content change. The live serve watcher re-indexes real edits
-    // from filesystem events (not mtime polling), so this only narrows a full `scan`; git and most
-    // build tools accept the same window. Guarded on `mtime != 0` (git sources record 0 = unknown).
+    // Race window: mtime is recorded in nanoseconds (see `mtime_nanos`), so a same-size edit would
+    // have to reproduce the exact nanosecond mtime to be missed — effectively impossible. The live
+    // serve watcher also re-indexes real edits from filesystem events (not mtime polling), so even
+    // that vanishing case only narrows a full `scan`. Guarded on `mtime != 0` (git sources record 0).
     if matches!(source, ScanSource::WorkingTree)
         && let Some(existing) = store.lookup(rel)
         && existing.mtime != 0
@@ -813,7 +852,7 @@ fn process_file(
     // apply pass. Best-effort — a chunk/embed failure never aborts the file's index update.
     #[cfg(feature = "code-search")]
     let code_batch = if crate::scanner_code::should_chunk(config) {
-        match crate::scanner_code::chunk_and_embed(store, rel, &bytes, &l1, l2.as_ref(), hash_hex_str, config) {
+        match crate::scanner_code::chunk_and_embed(store, rel, &bytes, &l1, l2.as_ref(), hash_hex_str, config, embed) {
             Ok(batch) => batch,
             Err(error) => {
                 tracing::debug!(
@@ -862,7 +901,15 @@ fn process_file(
 /// route through xberg. Always returns a `FileResult` — falls back to `SkippedNoLang`
 /// when documents are disabled or the MIME type is filtered out.
 #[cfg(feature = "documents")]
-fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config: &Config, scope: &str) -> FileResult {
+fn process_doc(
+    root: &Path,
+    rel: &str,
+    filters: &Filters,
+    store: &Store,
+    config: &Config,
+    scope: &str,
+    embed: EmbedMode,
+) -> FileResult {
     let abs = root.join(rel);
     // External-root docs (absolute key) get their own LanceDB scope keyed by the owning extra
     // root, so out-of-repo documents don't pollute the repository's doc scope. Retrieval is
@@ -908,18 +955,28 @@ fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config:
         &config.documents,
         &config.llm,
         scope,
+        embed,
     ) {
         Ok(Some(batch)) => {
             let status = FileStatus::DocIndexed {
                 chunk_count: batch.chunk_count,
                 embedding_dim: batch.embedding_dim,
             };
+            // In `Deferred` mode the doc was extracted but not embedded, so we deliberately do NOT
+            // persist its `DocEntry`: the completion marker's absence is what lets the background
+            // `Inline` pass re-process this doc and fill in its vectors (a persisted entry would make
+            // `process_doc`'s unchanged-skip fire and never embed). The doc is still counted as
+            // "seen" via its (row-less) `doc_batch`, so this scan's prune won't drop it.
+            let doc_upsert = match embed {
+                EmbedMode::Inline => Some(doc_entry),
+                EmbedMode::Deferred => None,
+            };
             FileResult {
                 path: rel.to_string(),
                 status,
                 upsert: None,
                 doc_batch: Some(batch),
-                doc_upsert: Some(doc_entry),
+                doc_upsert,
                 #[cfg(feature = "code-search")]
                 code_batch: None,
             }

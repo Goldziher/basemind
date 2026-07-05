@@ -602,8 +602,14 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         let repo = basemind::git::Repo::discover(root).context("`--staged` requires being inside a git repository")?;
         let mut store = open_store_for_write(root, basemind::store::VIEW_STAGED, "staged", LockHolder::Scan)?;
         render::render_scan_header(&mut out, "staged index", verbosity);
-        let report = basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::Staged(&repo))
-            .context("scan staged")?;
+        let report = basemind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            basemind::scanner::ScanSource::Staged(&repo),
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .context("scan staged")?;
         render::render_report(&mut out, &report, verbosity);
         // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
         // A genuine failure-to-update aborts earlier via `?` and surfaces a nonzero exit.
@@ -624,6 +630,7 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
                 repo: &repo,
                 sha: sha.clone(),
             },
+            basemind::scanner::EmbedMode::Inline,
         )
         .context("scan rev")?;
         render::render_report(&mut out, &report, verbosity);
@@ -638,8 +645,14 @@ fn cmd_scan(root: &std::path::Path, args: &ScanArgs, verbosity: Verbosity, no_co
         return Ok(());
     }
     let mut store = open_store_for_write(root, basemind::store::VIEW_WORKING, "scan", LockHolder::Scan)?;
-    let report = basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
-        .context("scan")?;
+    let report = basemind::scanner::scan(
+        root,
+        &mut store,
+        &config,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .context("scan")?;
     render::render_report(&mut out, &report, verbosity);
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);
     // Per-file read/extract failures are non-fatal: the index WAS updated, so exit 0.
@@ -662,11 +675,18 @@ fn cmd_rescan(root: &std::path::Path, args: &RescanArgs, verbosity: Verbosity, n
     // supplied paths incrementally. `scan_paths` resolves paths against `root`, so make
     // each path absolute first (repo-relative input is the documented contract).
     let report = if args.full || args.paths.is_empty() {
-        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
-            .context("rescan (full)")?
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .context("rescan (full)")?
     } else {
         let abs: Vec<PathBuf> = args.paths.iter().map(|p| root.join(p)).collect();
-        basemind::scanner::scan_paths(root, &mut store, &config, &abs).context("rescan (paths)")?
+        basemind::scanner::scan_paths(root, &mut store, &config, &abs, basemind::scanner::EmbedMode::Inline)
+            .context("rescan (paths)")?
     };
     render::render_report(&mut out, &report, verbosity);
     sync_git_history_after_scan(root, !args.no_git_history, args.rebuild_git_history, &mut out);

@@ -295,8 +295,14 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     // First scan: populate blobs + index at the current schema.
     {
         let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
-            .expect("first scan");
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("first scan");
         store.flush().expect("flush");
     }
 
@@ -363,8 +369,14 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     // blob set is stable.
     {
         let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        basemind::scanner::scan(root, &mut store, &config, basemind::scanner::ScanSource::WorkingTree)
-            .expect("refresh scan");
+        basemind::scanner::scan(
+            root,
+            &mut store,
+            &config,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("refresh scan");
         store.flush().expect("flush");
     }
 
