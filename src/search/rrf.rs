@@ -10,7 +10,7 @@
 
 use std::cmp::Ordering;
 
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 
 /// The RRF rank-damping constant. 60 is the value from the original Cormack et al. paper and the
 /// de-facto default across search stacks — large enough that the top few ranks of each lane stay
@@ -26,8 +26,17 @@ pub const WEIGHT_VECTOR: f32 = 1.0;
 /// Weight for the keyword (BM25) lane.
 pub const WEIGHT_KEYWORD: f32 = 1.0;
 
-/// One ranked lane's contribution to the fusion: its chunk ids (best-first) and its weight.
+/// Stable lane names, surfaced as per-hit `matched_lanes` provenance in `search_code` responses.
+pub const LANE_EXACT: &str = "exact";
+/// Vector (semantic) lane name.
+pub const LANE_VECTOR: &str = "vector";
+/// Keyword (BM25) lane name.
+pub const LANE_KEYWORD: &str = "keyword";
+
+/// One ranked lane's contribution to the fusion: its name, chunk ids (best-first), and weight.
 pub struct FusionLane<'a> {
+    /// Stable lane identity (`"exact"` / `"vector"` / `"keyword"`) — echoed in per-hit provenance.
+    pub name: &'static str,
     /// Chunk ids in rank order, best first. Duplicates within a lane are ignored after the first.
     pub chunk_ids: &'a [String],
     /// Lane weight — scales this lane's `1 / (k + rank)` contribution.
@@ -35,36 +44,82 @@ pub struct FusionLane<'a> {
 }
 
 impl<'a> FusionLane<'a> {
-    /// Construct a lane from a ranked slice and a weight.
-    pub fn new(chunk_ids: &'a [String], weight: f32) -> Self {
-        Self { chunk_ids, weight }
+    /// Construct a lane from its name, a ranked slice, and a weight.
+    pub fn new(name: &'static str, chunk_ids: &'a [String], weight: f32) -> Self {
+        Self {
+            name,
+            chunk_ids,
+            weight,
+        }
     }
 }
 
-/// Fuse ranked lanes via RRF. Returns `(chunk_id, fused_score)` sorted by score descending, with a
-/// stable ascending-`chunk_id` tie-break so the order is deterministic across runs. Empty lanes (and
-/// an empty `lanes` slice) contribute nothing.
-pub fn rrf_fuse(lanes: &[FusionLane<'_>], k: f32) -> Vec<(String, f32)> {
-    let mut scores: AHashMap<&str, f32> = AHashMap::new();
+/// A fused hit with per-lane provenance: which lanes ranked this chunk and at what 1-based rank.
+/// `lane_ranks` follows the fixed lane order passed to [`rrf_fuse_detailed`] (the caller orders it
+/// exact → vector → keyword), listing only the lanes that actually ranked this chunk. It is NOT
+/// sorted by per-lane contribution, so `lane_ranks[0]` is the highest-precedence *present* lane
+/// (exact when it fired), not necessarily the largest score term.
+pub struct FusedHit {
+    /// The `<hash>:<ordinal>` join key.
+    pub chunk_id: String,
+    /// Summed RRF score across the lanes that ranked this chunk.
+    pub score: f32,
+    /// `(lane_name, 1-based rank)` for each lane that ranked this chunk, in lane order.
+    pub lane_ranks: Vec<(&'static str, u32)>,
+}
+
+/// Fuse ranked lanes via RRF, retaining per-lane provenance. Returns [`FusedHit`]s sorted by score
+/// descending, with a stable ascending-`chunk_id` tie-break so the order is deterministic across
+/// runs. Empty lanes (and an empty `lanes` slice) contribute nothing. Each hit's `lane_ranks`
+/// records every lane that ranked the chunk and at what 1-based rank, in the lane order passed in.
+pub fn rrf_fuse_detailed(lanes: &[FusionLane<'_>], k: f32) -> Vec<FusedHit> {
+    // Per-chunk fusion accumulator: running score + the (lane, rank) contributions.
+    #[derive(Default)]
+    struct Acc {
+        score: f32,
+        lane_ranks: Vec<(&'static str, u32)>,
+    }
+    // Keyed by borrowed chunk_id to avoid allocating a String per candidate until the final map.
+    let mut acc: AHashMap<&str, Acc> = AHashMap::new();
     for lane in lanes {
         // Guard against a duplicate chunk_id within a single lane inflating its own contribution —
         // only the best (first) rank of a chunk within a lane counts.
-        let mut seen_in_lane: AHashMap<&str, ()> = AHashMap::new();
+        let mut seen_in_lane: AHashSet<&str> = AHashSet::new();
         for (rank0, chunk_id) in lane.chunk_ids.iter().enumerate() {
-            if seen_in_lane.insert(chunk_id.as_str(), ()).is_some() {
+            if !seen_in_lane.insert(chunk_id.as_str()) {
                 continue;
             }
-            let rank = (rank0 + 1) as f32;
-            *scores.entry(chunk_id.as_str()).or_insert(0.0) += lane.weight / (k + rank);
+            let rank = (rank0 + 1) as u32;
+            let entry = acc.entry(chunk_id.as_str()).or_default();
+            entry.score += lane.weight / (k + rank as f32);
+            entry.lane_ranks.push((lane.name, rank));
         }
     }
-    let mut fused: Vec<(String, f32)> = scores.into_iter().map(|(id, s)| (id.to_string(), s)).collect();
+    let mut fused: Vec<FusedHit> = acc
+        .into_iter()
+        .map(|(id, a)| FusedHit {
+            chunk_id: id.to_string(),
+            score: a.score,
+            lane_ranks: a.lane_ranks,
+        })
+        .collect();
     fused.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
     });
     fused
+}
+
+/// Fuse ranked lanes via RRF. Returns `(chunk_id, fused_score)` sorted by score descending, with a
+/// stable ascending-`chunk_id` tie-break so the order is deterministic across runs. A thin
+/// projection of [`rrf_fuse_detailed`] for callers that don't need per-lane provenance.
+pub fn rrf_fuse(lanes: &[FusionLane<'_>], k: f32) -> Vec<(String, f32)> {
+    rrf_fuse_detailed(lanes, k)
+        .into_iter()
+        .map(|h| (h.chunk_id, h.score))
+        .collect()
 }
 
 #[cfg(test)]
@@ -79,7 +134,13 @@ mod tests {
     fn agreeing_lanes_rank_the_shared_top_first() {
         let a = ids(&["h:1", "h:2", "h:3"]);
         let b = ids(&["h:1", "h:3", "h:4"]);
-        let fused = rrf_fuse(&[FusionLane::new(&a, 1.0), FusionLane::new(&b, 1.0)], DEFAULT_RRF_K);
+        let fused = rrf_fuse(
+            &[
+                FusionLane::new(LANE_KEYWORD, &a, 1.0),
+                FusionLane::new(LANE_VECTOR, &b, 1.0),
+            ],
+            DEFAULT_RRF_K,
+        );
         // h:1 is rank-1 in both lanes → strictly highest fused score.
         assert_eq!(fused[0].0, "h:1");
         assert!(fused[0].1 > fused[1].1);
@@ -95,8 +156,8 @@ mod tests {
         // With a heavy exact weight, the exact-lane's sole hit outranks the keyword-lane's rank-1.
         let fused = rrf_fuse(
             &[
-                FusionLane::new(&exact, WEIGHT_EXACT),
-                FusionLane::new(&keyword, WEIGHT_KEYWORD),
+                FusionLane::new(LANE_EXACT, &exact, WEIGHT_EXACT),
+                FusionLane::new(LANE_KEYWORD, &keyword, WEIGHT_KEYWORD),
             ],
             DEFAULT_RRF_K,
         );
@@ -107,8 +168,8 @@ mod tests {
     fn duplicate_within_lane_counts_once() {
         let dupe = ids(&["h:1", "h:1", "h:1"]);
         let single = ids(&["h:1"]);
-        let a = rrf_fuse(&[FusionLane::new(&dupe, 1.0)], DEFAULT_RRF_K);
-        let b = rrf_fuse(&[FusionLane::new(&single, 1.0)], DEFAULT_RRF_K);
+        let a = rrf_fuse(&[FusionLane::new(LANE_KEYWORD, &dupe, 1.0)], DEFAULT_RRF_K);
+        let b = rrf_fuse(&[FusionLane::new(LANE_KEYWORD, &single, 1.0)], DEFAULT_RRF_K);
         assert_eq!(a.len(), 1);
         assert_eq!(a[0].1, b[0].1, "repeats of a chunk within a lane must not stack");
     }
@@ -116,7 +177,7 @@ mod tests {
     #[test]
     fn empty_lanes_produce_empty_output() {
         let empty: Vec<String> = Vec::new();
-        assert!(rrf_fuse(&[FusionLane::new(&empty, 1.0)], DEFAULT_RRF_K).is_empty());
+        assert!(rrf_fuse(&[FusionLane::new(LANE_KEYWORD, &empty, 1.0)], DEFAULT_RRF_K).is_empty());
         assert!(rrf_fuse(&[], DEFAULT_RRF_K).is_empty());
     }
 
@@ -125,8 +186,37 @@ mod tests {
         // Two lanes, disjoint single hits at the same rank → equal scores → deterministic id order.
         let a = ids(&["h:zzz"]);
         let b = ids(&["h:aaa"]);
-        let fused = rrf_fuse(&[FusionLane::new(&a, 1.0), FusionLane::new(&b, 1.0)], DEFAULT_RRF_K);
+        let fused = rrf_fuse(
+            &[
+                FusionLane::new(LANE_KEYWORD, &a, 1.0),
+                FusionLane::new(LANE_VECTOR, &b, 1.0),
+            ],
+            DEFAULT_RRF_K,
+        );
         assert_eq!(fused[0].0, "h:aaa");
         assert_eq!(fused[1].0, "h:zzz");
+    }
+
+    #[test]
+    fn detailed_fusion_records_per_lane_ranks_in_lane_order() {
+        // Chunk "h:1": rank-2 in exact, rank-1 in keyword. "h:9": rank-1 in exact only.
+        let exact = ids(&["h:9", "h:1"]);
+        let keyword = ids(&["h:1"]);
+        let fused = rrf_fuse_detailed(
+            &[
+                FusionLane::new(LANE_EXACT, &exact, WEIGHT_EXACT),
+                FusionLane::new(LANE_KEYWORD, &keyword, WEIGHT_KEYWORD),
+            ],
+            DEFAULT_RRF_K,
+        );
+        let h1 = fused.iter().find(|h| h.chunk_id == "h:1").expect("h:1 present");
+        // Lane order is preserved: exact contribution precedes keyword.
+        assert_eq!(h1.lane_ranks, vec![(LANE_EXACT, 2), (LANE_KEYWORD, 1)]);
+        let h9 = fused.iter().find(|h| h.chunk_id == "h:9").expect("h:9 present");
+        assert_eq!(
+            h9.lane_ranks,
+            vec![(LANE_EXACT, 1)],
+            "single-lane hit records only that lane"
+        );
     }
 }

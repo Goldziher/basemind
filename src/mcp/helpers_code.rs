@@ -16,7 +16,10 @@ use super::memory::{embed_query, lance_store};
 use super::types_code::{CodeSearchHit, GetChunkParams, GetChunkResponse, SearchCodeParams, SearchCodeResponse};
 use crate::search::bm25::bm25_search;
 use crate::search::exact::exact_lane_chunk_ids;
-use crate::search::rrf::{DEFAULT_RRF_K, FusionLane, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR, rrf_fuse};
+use crate::search::rrf::{
+    DEFAULT_RRF_K, FusionLane, LANE_EXACT, LANE_KEYWORD, LANE_VECTOR, WEIGHT_EXACT, WEIGHT_KEYWORD, WEIGHT_VECTOR,
+    rrf_fuse_detailed,
+};
 use crate::store::Store;
 
 /// Serialize a code-search response honoring the requested wire format. TOON is only available
@@ -123,19 +126,32 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
         None => (Vec::new(), Vec::new()),
     };
 
-    let fused = rrf_fuse(
+    // Fixed lane order exact → vector → keyword — `rrf_fuse_detailed` preserves it in each hit's
+    // `lane_ranks`, so `matched_lanes[0]` is the highest-precedence lane that ranked the chunk (exact
+    // when it fired). The numeric per-lane ranks carry the actual contribution detail.
+    let fused = rrf_fuse_detailed(
         &[
-            FusionLane::new(&exact_ids, WEIGHT_EXACT),
-            FusionLane::new(&vector_ids, WEIGHT_VECTOR),
-            FusionLane::new(&keyword_ids, WEIGHT_KEYWORD),
+            FusionLane::new(LANE_EXACT, &exact_ids, WEIGHT_EXACT),
+            FusionLane::new(LANE_VECTOR, &vector_ids, WEIGHT_VECTOR),
+            FusionLane::new(LANE_KEYWORD, &keyword_ids, WEIGHT_KEYWORD),
         ],
         DEFAULT_RRF_K,
     );
 
     let mut hits = Vec::with_capacity(fused.len().min(limit));
-    for (chunk_id, score) in fused.into_iter().take(limit) {
-        if let Some((mut hit, _text)) = hydrate_one(&store, &chunk_id) {
-            hit.score = Some(score);
+    for fh in fused.into_iter().take(limit) {
+        if let Some((mut hit, _text)) = hydrate_one(&store, &fh.chunk_id) {
+            hit.score = Some(fh.score);
+            // Surface why-matched provenance: which lanes ranked this chunk and at what rank.
+            hit.matched_lanes = fh.lane_ranks.iter().map(|(name, _)| name.to_string()).collect();
+            for (name, rank) in &fh.lane_ranks {
+                match *name {
+                    LANE_EXACT => hit.exact_rank = Some(*rank),
+                    LANE_VECTOR => hit.vector_rank = Some(*rank),
+                    LANE_KEYWORD => hit.keyword_rank = Some(*rank),
+                    _ => {}
+                }
+            }
             hits.push(hit);
         }
     }
@@ -168,6 +184,10 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
             distance: Some(h.distance),
             score: None,
             rerank_score: None,
+            matched_lanes: Vec::new(),
+            keyword_rank: None,
+            vector_rank: None,
+            exact_rank: None,
         })
         .collect())
 }
@@ -213,6 +233,10 @@ fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)>
         distance: None,
         score: None,
         rerank_score: None,
+        matched_lanes: Vec::new(),
+        keyword_rank: None,
+        vector_rank: None,
+        exact_rank: None,
     };
     Some((hit, chunk.text.clone()))
 }

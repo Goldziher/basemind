@@ -119,7 +119,11 @@ pub(crate) fn chunk_and_embed(
     let embedder = match SharedEmbedder::load(&config.documents.embedding_preset) {
         Ok(embedder) => embedder,
         Err(error) => {
-            tracing::warn!(rel, ?error, "load code-search embedder failed; indexing BM25 keyword lane only");
+            tracing::warn!(
+                rel,
+                ?error,
+                "load code-search embedder failed; indexing BM25 keyword lane only"
+            );
             let chunks = match cached {
                 Some(blob) if !blob.chunks.is_empty() => blob.chunks,
                 _ => chunk_file(rel, hash_hex, l1, l2, bytes, opts),

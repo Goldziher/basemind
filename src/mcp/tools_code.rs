@@ -38,7 +38,11 @@ impl BasemindServer {
         there. \"semantic\" is vector-only (hits carry L2 `distance`, lower = closer); \"keyword\" is \
         BM25-only (hits carry a `score`, higher = better; needs no embeddings). Set `rerank:true` for \
         an optional cross-encoder rerank over the fused hits \
-        (first call downloads an ONNX model; off by default). Returns POINTERS (path + line/byte \
+        (first call downloads an ONNX model; off by default). In hybrid mode each hit carries \
+        why-matched provenance: `matched_lanes` (which lanes produced it, in fixed order \
+        exact→vector→keyword) plus the 1-based `exact_rank` / `vector_rank` / `keyword_rank` it held \
+        in each contributing lane. \
+        Returns POINTERS (path + line/byte \
         range + symbol + kind), NOT bodies — call `get_chunk` to fetch a chunk's source. Default 10, \
         max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`). `format:\"toon\"` for \
         compact rows. Needs --features code-search.",
