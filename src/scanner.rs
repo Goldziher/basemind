@@ -120,10 +120,11 @@ impl<'a> WorkerIndexBatch<'a> {
 /// Per-worker stack size for the scanner's rayon pool. Tree-sitter parse trees and the recursive
 /// msgpack (de)serialization of large extraction blobs can recurse deeper than rayon's small default
 /// worker stack (~2 MiB), overflowing it on pathological inputs (deeply-nested or machine-generated
-/// files) — observed as a hard `stack overflow` abort on a full fresh scan of a large real repo. The
-/// stack is reserved lazily (not committed until touched), so this large ceiling costs nothing on the
-/// common shallow path.
-const SCANNER_STACK_SIZE: usize = 64 * 1024 * 1024;
+/// files) — observed as a hard `stack overflow` abort on a full fresh scan of a large real repo. A
+/// full scan of that repo was measured to complete under a 128 MiB stack, so 256 MiB carries a 2×
+/// margin. The stack is reserved lazily (VA only, not committed until touched), so this large ceiling
+/// costs nothing on the common shallow path.
+const SCANNER_STACK_SIZE: usize = 256 * 1024 * 1024;
 
 /// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
 /// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
