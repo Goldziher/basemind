@@ -18,6 +18,19 @@ pub struct DocumentsConfig {
     #[serde(default)]
     #[schemars(inner(length(min = 1)))]
     pub mime_allowlist: Vec<String>,
+    /// Extra file extensions (lowercase, no dot) to skip on top of the built-in archive/binary
+    /// denylist. The built-in floor (`.zip/.tar/.jar/.so/.wasm/...`) is always applied — this only
+    /// adds to it — so archives and binaries are never routed to xberg extraction + embedding.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub extension_denylist: Vec<String>,
+    /// Hard cap on chunks embedded per document. A pathological input (huge generated file, an
+    /// archive that slipped the denylist) can otherwise explode into tens of thousands of ONNX
+    /// embeds. Documents exceeding the cap are extracted but not embedded (blob written, no vector
+    /// rows) with a warning.
+    #[serde(default = "DocumentsConfig::default_max_chunks_per_document")]
+    #[schemars(range(min = 1))]
+    pub max_chunks_per_document: usize,
     /// Maximum chunk size in characters.
     #[serde(default = "DocumentsConfig::default_max_characters")]
     #[schemars(range(min = 64))]
@@ -71,6 +84,9 @@ impl DocumentsConfig {
     fn default_embed() -> bool {
         true
     }
+    fn default_max_chunks_per_document() -> usize {
+        2000
+    }
 }
 
 impl Default for DocumentsConfig {
@@ -78,6 +94,8 @@ impl Default for DocumentsConfig {
         Self {
             enabled: Self::default_enabled(),
             mime_allowlist: Vec::new(),
+            extension_denylist: Vec::new(),
+            max_chunks_per_document: Self::default_max_chunks_per_document(),
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
             embedding_preset: Self::default_embedding_preset(),
