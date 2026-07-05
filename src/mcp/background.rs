@@ -13,6 +13,14 @@ use super::{MapCache, ServerState};
 /// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
 /// mark+sweep; cross-process scans are impossible because serve holds the flock.
 pub(super) async fn run_background_gc(state: Arc<ServerState>) {
+    // Skip auto-GC when the blob cache is shared across git worktrees: this sweep would collect
+    // references from THIS worktree's views only and could reap blobs a sibling worktree still
+    // references. GC only reclaims orphaned disk, so skipping is safe; a worktree-spanning GC is a
+    // follow-up. (Checked before spawning so we don't even take the store guard.)
+    if state.store.read().await.blobs_shared {
+        tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees");
+        return;
+    }
     let result = tokio::task::spawn_blocking(move || {
         let store = state.store.blocking_read();
         let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
