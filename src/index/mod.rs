@@ -30,8 +30,9 @@ use thiserror::Error;
 /// independently of a release: `+1` was the `imports_by_path` companion partition; `+2` the
 /// `implementations_by_trait` / `implementations_by_path` partitions for `find_implementations`;
 /// `+3` the `refs_by_def` / `refs_by_path` partitions for the code-intelligence tier's
-/// scope/import-resolved `find_references` / `goto_definition`.
-const INDEX_PARTITION_REVISION: u32 = 3;
+/// scope/import-resolved `find_references` / `goto_definition`; `+4` the `code_bm25_postings` /
+/// `code_bm25_by_path` partitions for the code-search BM25 keyword lane (`search_code mode=keyword`).
+const INDEX_PARTITION_REVISION: u32 = 4;
 
 /// Bumped whenever the on-disk key layout changes — the sum of `RELEASE_MINOR` and the
 /// [`INDEX_PARTITION_REVISION`] offset, monotonic across both. When `RELEASE_MINOR` next bumps,
@@ -41,6 +42,12 @@ const INDEX_PARTITION_REVISION: u32 = 3;
 pub const INDEX_SCHEMA_VER: u32 = crate::version::RELEASE_MINOR as u32 + INDEX_PARTITION_REVISION;
 
 const META_SCHEMA_VER: &[u8] = b"schema_ver";
+
+/// `meta` rows carrying the corpus-global BM25 stats — recomputed at the end of each scan by
+/// [`IndexDb::recompute_bm25_stats`] and read at query time. `N` = number of indexed code chunks;
+/// `total_len` = sum of their token lengths (`avgdl = total_len / N`).
+const META_BM25_DOC_COUNT: &[u8] = b"code_bm25_n";
+const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
 const INDEX_DIR: &str = "index.fjall";
 
@@ -92,6 +99,14 @@ pub struct IndexDb {
     /// `refs_by_path`: companion keyed by the use file — O(prefix) delete on re-resolve and the
     /// forward lookup behind `goto_definition`. Written by the scanner's resolve pass (B3).
     pub(crate) refs_by_path: Keyspace,
+    /// `code_bm25_postings`: term → chunks (with inlined tf + doclen) for the code-search BM25
+    /// keyword lane. Always created for DB stability; read + written only under the `code-search`
+    /// feature (hence `dead_code`-allowed on a default build, mirroring `embeddings`).
+    #[allow(dead_code)]
+    pub(crate) code_bm25_postings: Keyspace,
+    /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
+    /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
+    pub(crate) code_bm25_by_path: Keyspace,
     #[allow(dead_code)] // reserved for the future vector iteration
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
@@ -160,6 +175,8 @@ impl IndexDb {
         let implementations_by_path = db.keyspace("implementations_by_path", KeyspaceCreateOptions::default)?;
         let refs_by_def = db.keyspace("refs_by_def", KeyspaceCreateOptions::default)?;
         let refs_by_path = db.keyspace("refs_by_path", KeyspaceCreateOptions::default)?;
+        let code_bm25_postings = db.keyspace("code_bm25_postings", KeyspaceCreateOptions::default)?;
+        let code_bm25_by_path = db.keyspace("code_bm25_by_path", KeyspaceCreateOptions::default)?;
         let embeddings = db.keyspace("embeddings", KeyspaceCreateOptions::default)?;
         let memory_by_key = db.keyspace("memory_by_key", KeyspaceCreateOptions::default)?;
         let memory_archive = db.keyspace("memory_archive", KeyspaceCreateOptions::default)?;
@@ -182,6 +199,8 @@ impl IndexDb {
             implementations_by_path,
             refs_by_def,
             refs_by_path,
+            code_bm25_postings,
+            code_bm25_by_path,
             embeddings,
             memory_by_key,
             memory_archive,
@@ -239,5 +258,54 @@ impl IndexDb {
             }
         }
         None
+    }
+
+    /// Corpus-global BM25 stats for the code-search keyword lane: `(N, total_len)` where `N` is the
+    /// number of indexed chunks and `total_len` the sum of their token lengths (so `avgdl =
+    /// total_len / N`). Read from the `meta` keyspace at query time. `None` (or `N == 0`) means the
+    /// BM25 index is empty — no chunks were indexed, or [`recompute_bm25_stats`] never ran.
+    ///
+    /// [`recompute_bm25_stats`]: Self::recompute_bm25_stats
+    pub fn bm25_stats(&self) -> Option<(u64, u64)> {
+        let n = self
+            .meta
+            .get(META_BM25_DOC_COUNT)
+            .ok()
+            .flatten()
+            .and_then(|b| <[u8; 8]>::try_from(&b[..]).ok())
+            .map(u64::from_be_bytes)?;
+        let total_len = self
+            .meta
+            .get(META_BM25_TOTAL_LEN)
+            .ok()
+            .flatten()
+            .and_then(|b| <[u8; 8]>::try_from(&b[..]).ok())
+            .map(u64::from_be_bytes)
+            .unwrap_or(0);
+        Some((n, total_len))
+    }
+
+    /// Recompute the corpus-global BM25 stats by sweeping the `code_bm25_by_path` forward keyspace
+    /// once (one entry per chunk; only its 4-byte `doclen` prefix is decoded — the term list is not
+    /// touched) and stamping `(N, total_len)` into `meta`. Runs single-threaded in the scanner's
+    /// serial apply pass, after every per-file batch has committed, so there is no cross-thread
+    /// counter contention — the per-file workers only ever append postings.
+    ///
+    /// The full sweep is exact regardless of what changed this scan. On a huge repo an incremental
+    /// rescan still pays a full (cheap — small-value) sweep; a delta-update path is the obvious
+    /// optimization if it ever shows up in the harden timings.
+    pub fn recompute_bm25_stats(&self) -> Result<(), IndexError> {
+        let mut n: u64 = 0;
+        let mut total_len: u64 = 0;
+        for guard in self.code_bm25_by_path.iter() {
+            let (_k, v) = guard.into_inner()?;
+            if v.len() >= 4 {
+                total_len += u64::from(u32::from_be_bytes([v[0], v[1], v[2], v[3]]));
+            }
+            n += 1;
+        }
+        self.meta.insert(META_BM25_DOC_COUNT, n.to_be_bytes())?;
+        self.meta.insert(META_BM25_TOTAL_LEN, total_len.to_be_bytes())?;
+        Ok(())
     }
 }

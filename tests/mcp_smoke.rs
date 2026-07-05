@@ -982,6 +982,36 @@ async fn mcp_server_exercises_representative_tools() {
                 "get_chunk success response must carry path + text: {body}"
             );
         }
+
+        // Keyword lane (BM25) needs no embedder, so `mode=keyword` must dispatch and return the same
+        // response shape (echoed query + hits array). Tolerate an empty index in CI.
+        let kw = service
+            .call_tool(call_params(
+                "search_code",
+                json!({ "query": "hello", "mode": "keyword" }),
+            ))
+            .await;
+        if let Ok(result) = &kw {
+            let body = decode_text(result);
+            assert_eq!(
+                body.get("query").and_then(Value::as_str),
+                Some("hello"),
+                "keyword search_code must echo the query field: {body}"
+            );
+            assert!(
+                body.get("hits").and_then(Value::as_array).is_some(),
+                "keyword search_code response must carry a hits array: {body}"
+            );
+        }
+
+        // An unknown mode is an actionable error, never a silent fallback to another lane.
+        let bad_mode = service
+            .call_tool(call_params("search_code", json!({ "query": "hello", "mode": "bogus" })))
+            .await;
+        assert!(
+            bad_mode.is_err(),
+            "search_code must reject an unknown mode with an MCP error"
+        );
     }
 
     // Per-query override round-trip: pass `reranker_preset` as a flattened override

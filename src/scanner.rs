@@ -75,6 +75,21 @@ impl<'a> WorkerIndexBatch<'a> {
         true
     }
 
+    /// Stage one file's BM25 keyword postings into the current batch, reusing the same
+    /// [`IndexWriter`] as [`Self::stage`] so the symbol upsert and the keyword postings ride the
+    /// same per-file commit. Does not touch the file counter (the file was already counted by
+    /// `stage`) and never force-commits. A `None` index is a successful no-op.
+    #[cfg(feature = "code-search")]
+    fn stage_bm25(&mut self, rel: &RelPath, postings: &[crate::search::bm25::ChunkPosting]) {
+        let Some(index) = self.index else {
+            return;
+        };
+        let writer = self.writer.get_or_insert_with(|| index.writer());
+        if writer.upsert_bm25_file(rel, postings).is_err() {
+            tracing::warn!(rel = %rel, "bm25 upsert failed; keyword search may be incomplete");
+        }
+    }
+
     /// Flush the staged batch under Fjall's write lock and reset the counter.
     fn commit(&mut self) {
         if let Some(writer) = self.writer.take()
@@ -324,10 +339,10 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
             let rel = RelPath::from(k.as_str());
-            let _ = w
-                .remove_file(&rel)
-                .and_then(|()| w.remove_resolved_file(&rel))
-                .and_then(|()| w.commit());
+            let res = w.remove_file(&rel).and_then(|()| w.remove_resolved_file(&rel));
+            #[cfg(feature = "code-search")]
+            let res = res.and_then(|()| w.remove_bm25_file(&rel));
+            let _ = res.and_then(|()| w.commit());
         }
         report.results.push(FileResult::bare(k.clone(), FileStatus::Removed));
         report.stats.removed += 1;
@@ -346,6 +361,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
     flush_code_removals_if_any(store, config, &scope, &stale);
+    finalize_bm25_stats_if_any(store, config);
     store.flush()?;
     Ok(report)
 }
@@ -409,10 +425,10 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
             // Purge the file's resolved edges too. `resolve_pass` recomputes wholesale over the
             // CURRENT file set, so a removed file's stale `refs_by_def` / `refs_by_path` entries are
             // never revisited — they must be dropped explicitly here (mirrors the full `scan`).
-            let _ = w
-                .remove_file(&rel)
-                .and_then(|()| w.remove_resolved_file(&rel))
-                .and_then(|()| w.commit());
+            let res = w.remove_file(&rel).and_then(|()| w.remove_resolved_file(&rel));
+            #[cfg(feature = "code-search")]
+            let res = res.and_then(|()| w.remove_bm25_file(&rel));
+            let _ = res.and_then(|()| w.commit());
         }
         report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
@@ -427,6 +443,7 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
     flush_code_removals_if_any(store, config, &scope, &removed);
+    finalize_bm25_stats_if_any(store, config);
     store.flush()?;
     Ok(report)
 }
@@ -721,6 +738,14 @@ fn process_file(
         None
     };
 
+    // Stage the file's BM25 keyword postings onto the same worker batch as its symbol upsert. Runs
+    // whenever chunks were produced — independent of embeddings, so the keyword lane works even with
+    // `[code_search] embed = false`.
+    #[cfg(feature = "code-search")]
+    if let Some(batch) = &code_batch {
+        index_batch.stage_bm25(&rel_path, &batch.bm25);
+    }
+
     let entry = FileEntry {
         hash_hex: hash_hex_str.to_string(),
         language: lang.to_string(),
@@ -913,6 +938,24 @@ fn flush_code_removals_if_any(store: &mut Store, config: &Config, scope: &str, s
 
 #[cfg(not(feature = "code-search"))]
 fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
+
+/// Recompute the corpus-global BM25 stats once the per-file postings have all committed, so the
+/// keyword lane's `N` / `avgdl` reflect this scan. Single-threaded; no-op without `code-search` or
+/// when chunking is disabled. No-op on a `None` (read-only) index.
+#[cfg(feature = "code-search")]
+fn finalize_bm25_stats_if_any(store: &Store, config: &Config) {
+    if !crate::scanner_code::should_chunk(config) {
+        return;
+    }
+    if let Some(db) = store.index_db.as_ref()
+        && let Err(error) = db.recompute_bm25_stats()
+    {
+        tracing::warn!(?error, "recompute bm25 stats failed; keyword search may be stale");
+    }
+}
+
+#[cfg(not(feature = "code-search"))]
+fn finalize_bm25_stats_if_any(_store: &Store, _config: &Config) {}
 
 #[cfg(test)]
 mod tests {

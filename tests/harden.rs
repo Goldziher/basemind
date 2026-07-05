@@ -529,6 +529,15 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "parse the file and extract symbols" }),
     )
     .await;
+    // search_code keyword lane (BM25): exercises the Fjall keyword path + sidecar hydration over a
+    // real repo. Needs no embedder; feature-off routes through the same tolerated `not_enabled` shim.
+    call(
+        svc,
+        &mut records,
+        "search_code",
+        json!({ "query": "parse file extract symbols", "mode": "keyword" }),
+    )
+    .await;
 
     // get_chunk: fetch chunks for an indexed file path. An MCP-level error (feature-off,
     // file-not-indexed, or needs-disambiguation) is a valid sweep outcome — tolerated in

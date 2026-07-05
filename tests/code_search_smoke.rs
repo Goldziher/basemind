@@ -192,6 +192,101 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
     );
 }
 
+/// End-to-end test for the BM25 keyword lane (`search_code --mode keyword`).
+///
+/// Unlike the semantic lane, keyword search needs no embedder — postings are pure Fjall + sidecar —
+/// so with `[code_search] embed = false` this test is fully deterministic and asserts strictly (no
+/// cold-model skip). The query term `config` appears in the fixture's `parse_config` / `Config`, so
+/// BM25 must rank the fixture's chunk first.
+#[test]
+fn search_code_keyword_mode_ranks_by_bm25() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+    // Force the embed-free path so chunking + BM25 postings are written deterministically without a
+    // model download — the keyword lane's documented `embed = false` guarantee.
+    std::fs::create_dir_all(root.join(".basemind")).expect("mkdir .basemind");
+    std::fs::write(
+        root.join(".basemind/basemind.toml"),
+        "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
+    )
+    .expect("write config");
+
+    let scan = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn scan");
+    assert!(
+        scan.status.success(),
+        "basemind scan failed: {}",
+        String::from_utf8_lossy(&scan.stderr)
+    );
+
+    let out = Command::new(bin())
+        .current_dir(root)
+        .args(["--json", "query", "search-code", "--mode", "keyword", "config parser"])
+        .output()
+        .expect("spawn keyword search-code");
+    assert!(
+        out.status.success(),
+        "keyword search-code failed (should not need an embedder): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("keyword search-code emits JSON");
+    let hits = value
+        .get("hits")
+        .and_then(|h| h.as_array())
+        .expect("keyword response carries a hits array");
+    assert!(
+        !hits.is_empty(),
+        "keyword search must find the `config`-bearing chunk (embed-free, deterministic): {value}"
+    );
+
+    let top = &hits[0];
+    assert_eq!(
+        top.get("path").and_then(|p| p.as_str()),
+        Some("lib.rs"),
+        "top keyword hit must point at the only indexed file: {top}"
+    );
+    // The keyword lane reports a BM25 `score` (higher = better), not a vector `distance`.
+    let score = top
+        .get("score")
+        .and_then(serde_json::Value::as_f64)
+        .expect("keyword hit carries a BM25 score");
+    assert!(
+        score > 0.0,
+        "a matching keyword hit must have a positive BM25 score: {top}"
+    );
+    assert!(
+        top.get("distance").is_none(),
+        "keyword hit must not carry a vector distance: {top}"
+    );
+
+    // The pointer round-trips through get-chunk exactly like the semantic lane.
+    let chunk_id = top
+        .get("chunk_id")
+        .and_then(|c| c.as_str())
+        .expect("keyword hit carries a chunk_id pointer");
+    let gc = Command::new(bin())
+        .current_dir(root)
+        .args(["--json", "query", "get-chunk", "lib.rs", "--chunk-id", chunk_id])
+        .output()
+        .expect("spawn get-chunk");
+    assert!(
+        gc.status.success(),
+        "get-chunk failed: {}",
+        String::from_utf8_lossy(&gc.stderr)
+    );
+    let gv: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&gc.stdout)).expect("get-chunk emits JSON");
+    assert!(
+        gv.get("text").and_then(|t| t.as_str()).is_some_and(|t| !t.is_empty()),
+        "get_chunk must return a non-empty body for the keyword hit: {gv}"
+    );
+}
+
 /// Recursively search `root/.basemind/` for the first file whose name ends with
 /// `.chunk.msgpack`. Returns `None` when no sidecar exists (clean scan or chunker disabled).
 fn find_chunk_sidecar(root: &std::path::Path) -> Option<std::path::PathBuf> {
