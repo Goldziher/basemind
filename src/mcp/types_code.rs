@@ -24,6 +24,10 @@ pub struct SearchCodeParams {
     /// config knob for this call.
     #[serde(default, alias = "encoding")]
     pub format: Option<String>,
+    /// Retrieval lane: "semantic" (vector KNN, the default) or "keyword" (native BM25 over the
+    /// chunk's symbol+signature+doc+body text). "hybrid" is reserved for a later phase.
+    #[serde(default, alias = "lane")]
+    pub mode: Option<String>,
 }
 
 /// Params for `get_chunk` — fetch a chunk body by path (the `search_code` pointer).
@@ -60,8 +64,12 @@ pub(crate) struct CodeSearchHit {
     pub line_end: u32,
     pub byte_start: u32,
     pub byte_end: u32,
-    /// L2 distance from the query vector (lower = closer).
-    pub distance: f32,
+    /// L2 distance from the query vector (lower = closer). Semantic lane only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distance: Option<f32>,
+    /// BM25 relevance score (higher = better). Keyword lane only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<f32>,
 }
 
 #[cfg(feature = "code-search")]

@@ -9,6 +9,8 @@ use super::{IndexDb, IndexError};
 use crate::extract::{FileMapL1, FileMapL2, Symbol};
 use crate::intel::model::FileResolvedRefs;
 use crate::path::RelPath;
+#[cfg(feature = "code-search")]
+use crate::search::bm25::ChunkPosting;
 
 pub struct IndexWriter {
     db: IndexDb,
@@ -62,6 +64,23 @@ impl IndexWriter {
     /// Drop every resolved edge whose use is in `use_rel`. Used when a file leaves the scan set.
     pub fn remove_resolved_file(&mut self, use_rel: &RelPath) -> Result<(), IndexError> {
         self.stage_resolved_deletes_for(use_rel)
+    }
+
+    /// Replace the BM25 keyword postings for `rel`'s chunks with those in `postings`. Reads the
+    /// file's existing forward entries first to derive the `code_bm25_postings` keys for deletion,
+    /// then stages the fresh postings in the same batch. Atomic. Mirrors the `calls_by_path` →
+    /// `calls_by_callee` dual-partition pattern for the code-search keyword lane.
+    #[cfg(feature = "code-search")]
+    pub fn upsert_bm25_file(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
+        self.stage_bm25_deletes_for(rel)?;
+        self.stage_bm25_inserts_for(rel, postings)?;
+        Ok(())
+    }
+
+    /// Drop every BM25 posting for `rel`'s chunks. Used when a source file leaves the scan set.
+    #[cfg(feature = "code-search")]
+    pub fn remove_bm25_file(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+        self.stage_bm25_deletes_for(rel)
     }
 
     /// Stage a single CROSS-FILE resolved edge: the use in `use_rel` binds to a definition in a
@@ -207,6 +226,75 @@ impl IndexWriter {
             self.batch.remove(
                 &self.db.refs_by_def,
                 keys::ref_by_def(&def_path, def_start, use_rel, use_start),
+            );
+        }
+        Ok(())
+    }
+
+    /// Stage deletes for every BM25 posting of `rel`'s chunks. Scans `code_bm25_by_path` under the
+    /// file prefix; each forward value carries `doclen:u32_be ‖ msgpack(Vec<String> terms)`, so the
+    /// companion `code_bm25_postings` keys are reconstructed from the decoded term list.
+    #[cfg(feature = "code-search")]
+    fn stage_bm25_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
+        let prefix = keys::code_bm25_by_path_prefix(rel);
+        let mut found: Vec<(Vec<u8>, String, Vec<String>)> = Vec::new();
+        for guard in self.db.code_bm25_by_path.prefix(prefix) {
+            let (k, v) = guard.into_inner()?;
+            let Some((_rel, chunk_id)) = keys::parse_code_bm25_by_path(&k) else {
+                continue;
+            };
+            // value = doclen:u32_be ‖ msgpack(Vec<String>); only the term list is needed to delete.
+            let terms: Vec<String> = if v.len() >= 4 {
+                match rmp_serde::from_slice::<Vec<String>>(&v[4..]) {
+                    Ok(terms) => terms,
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %rel,
+                            error = %e,
+                            "index: failed to decode BM25 term list during delete staging — skipping entry"
+                        );
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
+            found.push(((*k).to_vec(), chunk_id, terms));
+        }
+        for (path_key, chunk_id, terms) in found {
+            self.batch.remove(&self.db.code_bm25_by_path, path_key);
+            for term in terms {
+                if let Some(posting_key) = keys::code_bm25_posting(&term, &chunk_id) {
+                    self.batch.remove(&self.db.code_bm25_postings, posting_key);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stage inserts for `rel`'s BM25 postings: one `code_bm25_postings` entry per `(term, chunk)`
+    /// carrying `tf ‖ doclen`, plus one `code_bm25_by_path` forward entry per chunk carrying
+    /// `doclen ‖ msgpack(terms)` so the next re-scan can delete these in O(prefix).
+    #[cfg(feature = "code-search")]
+    fn stage_bm25_inserts_for(&mut self, rel: &RelPath, postings: &[ChunkPosting]) -> Result<(), IndexError> {
+        for posting in postings {
+            for (term, tf) in &posting.terms {
+                if let Some(posting_key) = keys::code_bm25_posting(term, &posting.chunk_id) {
+                    self.batch.insert(
+                        &self.db.code_bm25_postings,
+                        posting_key,
+                        keys::code_bm25_posting_value(*tf, posting.doclen).to_vec(),
+                    );
+                }
+            }
+            // Forward entry: doclen prefix (read cheaply by the stats recompute) then the term list.
+            let term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
+            let mut value = posting.doclen.to_be_bytes().to_vec();
+            value.extend_from_slice(&rmp_serde::to_vec(&term_names)?);
+            self.batch.insert(
+                &self.db.code_bm25_by_path,
+                keys::code_bm25_by_path(rel, &posting.chunk_id),
+                value,
             );
         }
         Ok(())
@@ -700,5 +788,75 @@ mod tests {
         w.commit().unwrap();
         assert!(db.refs_by_def.iter().next().is_none());
         assert!(db.refs_by_path.iter().next().is_none());
+    }
+
+    #[cfg(feature = "code-search")]
+    #[test]
+    fn bm25_dual_partition_consistency() {
+        use crate::search::bm25::ChunkPosting;
+        let (_d, db) = fresh_db();
+        let rel = RelPath::from("src/foo.rs");
+
+        let postings = vec![
+            ChunkPosting {
+                chunk_id: "h:0".to_string(),
+                doclen: 3,
+                terms: vec![("spawn".to_string(), 2), ("task".to_string(), 1)],
+            },
+            ChunkPosting {
+                chunk_id: "h:1".to_string(),
+                doclen: 1,
+                terms: vec![("spawn".to_string(), 1)],
+            },
+        ];
+        let mut w = db.writer();
+        w.upsert_bm25_file(&rel, &postings).unwrap();
+        w.commit().unwrap();
+
+        // Three postings total (spawn×2 chunks + task×1), two forward entries (one per chunk).
+        assert_eq!(db.code_bm25_postings.iter().count(), 3);
+        assert_eq!(db.code_bm25_by_path.iter().count(), 2);
+
+        // A `spawn` prefix scan returns exactly the two spawn postings (not `spawn_blocking`-style
+        // longer terms), carrying tf + doclen.
+        let mut spawn_docs: Vec<(String, u32, u32)> = db
+            .code_bm25_postings
+            .prefix(keys::code_bm25_postings_prefix("spawn"))
+            .map(|g| {
+                let (k, v) = g.into_inner().unwrap();
+                let chunk_id = keys::parse_code_bm25_posting_chunk_id(&k).unwrap().to_string();
+                let (tf, doclen) = keys::parse_code_bm25_posting_value(&v).unwrap();
+                (chunk_id, tf, doclen)
+            })
+            .collect();
+        spawn_docs.sort();
+        assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
+
+        // Re-upsert with the second chunk dropped and `task` gone → deletes reconstruct + purge the
+        // stale postings; only chunk h:0's single `spawn` posting survives.
+        let mut w = db.writer();
+        w.upsert_bm25_file(
+            &rel,
+            &[ChunkPosting {
+                chunk_id: "h:0".to_string(),
+                doclen: 1,
+                terms: vec![("spawn".to_string(), 1)],
+            }],
+        )
+        .unwrap();
+        w.commit().unwrap();
+        assert_eq!(db.code_bm25_postings.iter().count(), 1);
+        assert_eq!(db.code_bm25_by_path.iter().count(), 1);
+
+        // Stats recompute reflects the surviving single chunk of length 1.
+        db.recompute_bm25_stats().unwrap();
+        assert_eq!(db.bm25_stats(), Some((1, 1)));
+
+        // Remove the file → both partitions empty.
+        let mut w = db.writer();
+        w.remove_bm25_file(&rel).unwrap();
+        w.commit().unwrap();
+        assert!(db.code_bm25_postings.iter().next().is_none());
+        assert!(db.code_bm25_by_path.iter().next().is_none());
     }
 }

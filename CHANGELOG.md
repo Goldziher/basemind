@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Behind the `code-search` cargo feature (folded into `full`); BM25 keyword + RRF hybrid fusion land
   in later phases. The `code_chunks` table is created lazily on open, so it rides the existing
   minor-release `.basemind/` rebuild — no separate schema bump.
+- **Keyword code search (Phase 2, native BM25).** `search_code` gains a `mode` parameter:
+  `semantic` (the default vector lane) or `keyword`, a native Okapi BM25 (`k1 = 1.2`, `b = 0.75`)
+  lane over each chunk's symbol + signature + doc + body text. Postings live in two new Fjall
+  keyspaces (`code_bm25_postings` inverted + `code_bm25_by_path` forward for O(prefix) re-scan
+  deletes); term frequency and document length are inlined so scoring a term is a single prefix
+  scan, and corpus stats (`N`, `avgdl`) are recomputed once per scan. The keyword lane reads only
+  Fjall and the chunk sidecar — no LanceDB and no embedder — so it works even with
+  `[code_search] embed = false`. RRF fusion of the two lanes plus an exact symbol lane lands in
+  Phase 3.
 - **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
   each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
   across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX
@@ -36,7 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   edges; per-file resolution facts persist as content-addressed `<hash>.rref.msgpack` blobs. This
   ships as a minor-release cut: `RELEASE_MINOR` bumps at release time, wiping and rebuilding every
   `.basemind/` index + blob store on the next `basemind scan` (the resolve pass repopulates the new
-  partitions).
+  partitions). The `code_bm25_postings` / `code_bm25_by_path` partitions for the BM25 keyword lane
+  (`INDEX_PARTITION_REVISION` → 4) ride the same index rebuild — the blobs are unchanged, so
+  re-embedding is skipped and only the secondary index repopulates.
 
 ## [0.16.0] — 2026-07-02
 

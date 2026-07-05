@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::embeddings::SharedEmbedder;
 use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
 use crate::lance::CodeRow;
+use crate::search::bm25::{ChunkPosting, build_chunk_postings};
 use crate::store::Store;
 
 /// Per-file deferred LanceDB write for the code-search tier. Built inside the parallel worker;
@@ -32,6 +33,9 @@ pub(crate) struct PendingCodeBatch {
     /// The rows ready to land in the `code_chunks` table. Empty when embeddings were disabled.
     /// The `scope` field on each row is filled in by [`flush_code_batches`] at write time.
     pub rows: Vec<CodeRow>,
+    /// BM25 keyword postings for this file's chunks — staged into the Fjall index by the worker
+    /// (via [`crate::index::writer::IndexWriter::upsert_bm25_file`]), independent of embeddings.
+    pub bm25: Vec<ChunkPosting>,
 }
 
 /// Feature + config gate: chunk this scan only when `[code_search] enabled`.
@@ -81,10 +85,12 @@ pub(crate) fn chunk_and_embed(
         if chunks.is_empty() {
             return Ok(None);
         }
+        let bm25 = build_chunk_postings(&chunks);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
             embedding_dim: 0,
             rows: Vec::new(),
+            bm25,
         }));
     }
 
@@ -100,10 +106,12 @@ pub(crate) fn chunk_and_embed(
         && blob.embeddings.len() == blob.chunks.len()
     {
         let rows = build_rows(rel, &blob.chunks, &blob.embeddings);
+        let bm25 = build_chunk_postings(&blob.chunks);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
             embedding_dim: dim,
             rows,
+            bm25,
         }));
     }
 
@@ -133,9 +141,10 @@ pub(crate) fn chunk_and_embed(
             chunks.len()
         );
     }
-    // Build the deferred LanceDB rows while borrowing `chunks` + `embeddings`, then MOVE both into
-    // the sidecar blob — no clone of the per-chunk `String` fields on the scanner hot path.
+    // Build the deferred LanceDB rows + BM25 postings while borrowing `chunks` + `embeddings`, then
+    // MOVE both into the sidecar blob — no clone of the per-chunk `String` fields on the hot path.
     let rows = build_rows(rel, &chunks, &embeddings);
+    let bm25 = build_chunk_postings(&chunks);
     let blob = CodeChunkBlob {
         schema_ver: SCHEMA_VER,
         embedding_dim: dim,
@@ -150,6 +159,7 @@ pub(crate) fn chunk_and_embed(
         rel_path: rel.to_string(),
         embedding_dim: dim,
         rows,
+        bm25,
     }))
 }
 

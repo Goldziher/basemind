@@ -378,6 +378,99 @@ pub fn parse_ref_by_path(key: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
     Some((RelPath::from(use_path), use_start, RelPath::from(def_path), def_start))
 }
 
+// ─── code-search BM25 keyword lane ───────────────────────────────────────────
+//
+// Two always-created keyspaces back the native BM25 keyword lane over code chunks
+// (`code-search` feature). A "document" here is one code chunk, identified by its content-
+// addressed `chunk_id` (`<source-hash-hex>:<ordinal>`).
+//
+// - `code_bm25_postings` (inverted): term → the chunks it appears in, with per-posting term
+//   frequency and document length inlined so a single term-prefix scan yields everything the
+//   scorer needs. The posting-list length IS the term's document frequency.
+// - `code_bm25_by_path` (forward): file → its chunks' `(chunk_id, doclen, terms)`, so a re-scan
+//   can reconstruct and remove the previous scan's postings in O(prefix), mirroring the
+//   `calls_by_path` → `calls_by_callee` delete pattern.
+
+/// `code_bm25_postings`: `u16:len(term) ‖ term ‖ u16:len(chunk_id) ‖ chunk_id`.
+///
+/// Returns `None` when `term` exceeds 65535 bytes (the BM25 tokenizer caps term length far below
+/// this, so `None` is unreachable in practice — the guard mirrors the other identifier encoders so
+/// a pathological token is skipped rather than panicking inside a rayon `par_iter`).
+pub fn code_bm25_posting(term: &str, chunk_id: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(2 + term.len() + 2 + chunk_id.len());
+    write_len_prefixed(&mut out, term.as_bytes())?;
+    let _ = write_len_prefixed(&mut out, chunk_id.as_bytes());
+    Some(out)
+}
+
+/// Prefix bytes for "every chunk containing `term`" — feed to `keyspace.prefix(..)`.
+pub fn code_bm25_postings_prefix(term: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + term.len());
+    let _ = write_len_prefixed(&mut out, term.as_bytes());
+    out
+}
+
+/// Decode the trailing `chunk_id` from a `code_bm25_postings` key, skipping the (known-from-prefix)
+/// term without allocating it. Returns a borrowed slice into `key`.
+pub fn parse_code_bm25_posting_chunk_id(key: &[u8]) -> Option<&str> {
+    let mut c = 0;
+    read_len_prefixed_ref(key, &mut c)?; // skip term
+    let chunk_id = read_len_prefixed_ref(key, &mut c)?;
+    std::str::from_utf8(chunk_id).ok()
+}
+
+/// Decode `(term, chunk_id)` from a raw `code_bm25_postings` key. The allocating companion to
+/// [`parse_code_bm25_posting_chunk_id`]; used by the roundtrip tests.
+pub fn parse_code_bm25_posting(key: &[u8]) -> Option<(String, String)> {
+    let mut c = 0;
+    let term = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    let chunk_id = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    Some((term, chunk_id))
+}
+
+/// Encode a `code_bm25_postings` value: `tf:u32_be ‖ doclen:u32_be`. Both inlined so a single
+/// term-prefix scan carries the term frequency and the document length the scorer needs.
+pub fn code_bm25_posting_value(tf: u32, doclen: u32) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    out[..4].copy_from_slice(&tf.to_be_bytes());
+    out[4..].copy_from_slice(&doclen.to_be_bytes());
+    out
+}
+
+/// Decode `(tf, doclen)` from a `code_bm25_postings` value.
+pub fn parse_code_bm25_posting_value(value: &[u8]) -> Option<(u32, u32)> {
+    if value.len() < 8 {
+        return None;
+    }
+    let tf = u32::from_be_bytes([value[0], value[1], value[2], value[3]]);
+    let doclen = u32::from_be_bytes([value[4], value[5], value[6], value[7]]);
+    Some((tf, doclen))
+}
+
+/// `code_bm25_by_path`: `u16:len(rel) ‖ rel ‖ u16:len(chunk_id) ‖ chunk_id`. The forward map keyed
+/// by file so re-scan deletion is O(prefix). Both components are path/hash-shaped and never reach
+/// the 64 KiB ceiling.
+pub fn code_bm25_by_path(rel: &RelPath, chunk_id: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len() + 2 + chunk_id.len());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
+    let _ = write_len_prefixed(&mut out, chunk_id.as_bytes());
+    out
+}
+
+/// Prefix bytes for "every BM25 chunk entry in this file" — used for the per-file delete on re-scan.
+pub fn code_bm25_by_path_prefix(rel: &RelPath) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + rel.as_bytes().len());
+    let _ = write_len_prefixed(&mut out, rel.as_bytes());
+    out
+}
+
+pub fn parse_code_bm25_by_path(key: &[u8]) -> Option<(RelPath, String)> {
+    let mut c = 0;
+    let rel = read_len_prefixed_ref(key, &mut c)?;
+    let chunk_id = String::from_utf8(read_len_prefixed(key, &mut c)?).ok()?;
+    Some((RelPath::from(rel), chunk_id))
+}
+
 // ─── memory_by_key ───────────────────────────────────────────────────────────
 
 /// Visibility ordinal for the **group** (shared) memory tier. Stable, append-only.
@@ -949,6 +1042,57 @@ mod tests {
         assert!(
             !indiv_key.starts_with(&group_prefix),
             "an individual key must NOT fall within the group namespace prefix"
+        );
+    }
+
+    #[test]
+    fn code_bm25_posting_roundtrips() {
+        let key = code_bm25_posting("spawn", "abcd1234:3").unwrap();
+        let (term, chunk_id) = parse_code_bm25_posting(&key).unwrap();
+        assert_eq!(term, "spawn");
+        assert_eq!(chunk_id, "abcd1234:3");
+        assert_eq!(parse_code_bm25_posting_chunk_id(&key), Some("abcd1234:3"));
+    }
+
+    #[test]
+    fn code_bm25_posting_value_roundtrips() {
+        let value = code_bm25_posting_value(7, 142);
+        assert_eq!(parse_code_bm25_posting_value(&value), Some((7, 142)));
+        assert_eq!(parse_code_bm25_posting_value(&value[..7]), None);
+    }
+
+    /// A `spawn` posting prefix must not bleed into `spawn_blocking` — the whole point of
+    /// length-prefixing the term component.
+    #[test]
+    fn code_bm25_posting_prefix_isolates_terms() {
+        let key_spawn = code_bm25_posting("spawn", "h:1").unwrap();
+        let key_spawn_blocking = code_bm25_posting("spawnblocking", "h:1").unwrap();
+        let prefix = code_bm25_postings_prefix("spawn");
+        assert!(
+            key_spawn.starts_with(&prefix),
+            "spawn's key must extend the spawn prefix"
+        );
+        assert!(
+            !key_spawn_blocking.starts_with(&prefix),
+            "spawnblocking's key must NOT match the spawn prefix"
+        );
+    }
+
+    #[test]
+    fn code_bm25_by_path_roundtrips_and_isolates() {
+        let rel_a = RelPath::from("src/foo.rs");
+        let rel_b = RelPath::from("src/foo.rs.bak");
+        let key = code_bm25_by_path(&rel_a, "hash:0");
+        let (back, chunk_id) = parse_code_bm25_by_path(&key).unwrap();
+        assert_eq!(back, rel_a);
+        assert_eq!(chunk_id, "hash:0");
+
+        let key_b = code_bm25_by_path(&rel_b, "hash:0");
+        let prefix_a = code_bm25_by_path_prefix(&rel_a);
+        assert!(key.starts_with(&prefix_a), "rel_a's key must extend rel_a's prefix");
+        assert!(
+            !key_b.starts_with(&prefix_a),
+            "rel_b's key must NOT match rel_a's prefix"
         );
     }
 

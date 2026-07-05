@@ -129,12 +129,15 @@ pub enum QueryCmd {
     RepoInfo,
     /// Files whose imports mention the given module (heuristic).
     Dependents { module: String },
-    /// Semantic (vector) search over indexed code chunks. Returns pointers; fetch bodies with
-    /// `get-chunk`. Needs `--features code-search`.
+    /// Search indexed code chunks — `semantic` (vector, default) or `keyword` (BM25). Returns
+    /// pointers; fetch bodies with `get-chunk`. Needs `--features code-search`.
     SearchCode {
         query: String,
         #[arg(long)]
         limit: Option<u32>,
+        /// Retrieval lane: `semantic` (default) or `keyword`.
+        #[arg(long)]
+        mode: Option<String>,
         #[arg(long)]
         format: Option<String>,
     },
@@ -305,11 +308,17 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             let r = run_tool("dependents", server.dependents(Parameters(Lenient(p))).await)?;
             emit("dependents", &r, json, out)
         }
-        QueryCmd::SearchCode { query, limit, format } => {
+        QueryCmd::SearchCode {
+            query,
+            limit,
+            mode,
+            format,
+        } => {
             let p = SearchCodeParams {
                 query,
                 limit,
                 max_tokens: None,
+                mode,
                 format,
             };
             let r = run_tool("search_code", server.search_code(Parameters(Lenient(p))).await)?;
