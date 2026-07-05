@@ -117,6 +117,31 @@ impl<'a> WorkerIndexBatch<'a> {
 /// per worker. Order of the returned `FileResult`s is unspecified (the parallel fold
 /// concatenates per-worker slices) — every consumer keys by `path`, never by position.
 #[allow(clippy::too_many_arguments)]
+/// Per-worker stack size for the scanner's rayon pool. Tree-sitter parse trees and the recursive
+/// msgpack (de)serialization of large extraction blobs can recurse deeper than rayon's small default
+/// worker stack (~2 MiB), overflowing it on pathological inputs (deeply-nested or machine-generated
+/// files) — observed as a hard `stack overflow` abort on a full fresh scan of a large real repo. The
+/// stack is reserved lazily (not committed until touched), so this large ceiling costs nothing on the
+/// common shallow path.
+const SCANNER_STACK_SIZE: usize = 64 * 1024 * 1024;
+
+/// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
+/// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
+fn scanner_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .stack_size(SCANNER_STACK_SIZE)
+            .thread_name(|i| format!("bm-scan-{i}"))
+            .build()
+            .expect("build scanner rayon pool")
+    })
+}
+
+// Eight tightly-coupled pieces of per-file scan context (root / filters / store / source / config /
+// scope / embed-mode); bundling them into a struct would just relocate the arguments without
+// clarifying anything, so the threshold is waived here as it is on `process_file`.
+#[allow(clippy::too_many_arguments)]
 fn run_candidates(
     candidates: &[String],
     root: &Path,
@@ -127,21 +152,25 @@ fn run_candidates(
     scope: &str,
     embed: EmbedMode,
 ) -> Vec<FileResult> {
-    candidates
-        .par_iter()
-        .fold(
-            || WorkerIndexBatch::new(store),
-            |mut batch, rel| {
-                let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
-                batch.results.push(result);
-                batch
-            },
-        )
-        .map(WorkerIndexBatch::finish)
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
-            a
-        })
+    // Run on the deep-stack scanner pool so a pathological file's extraction can't overflow a small
+    // default worker stack and abort the whole process.
+    scanner_pool().install(|| {
+        candidates
+            .par_iter()
+            .fold(
+                || WorkerIndexBatch::new(store),
+                |mut batch, rel| {
+                    let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
+                    batch.results.push(result);
+                    batch
+                },
+            )
+            .map(WorkerIndexBatch::finish)
+            .reduce(Vec::new, |mut a, mut b| {
+                a.append(&mut b);
+                a
+            })
+    })
 }
 
 /// What state of the repository the scanner indexes from.
@@ -413,7 +442,9 @@ pub fn scan(
     // working view; other sources skip it rather than persist wrongly-keyed facts. The pass itself
     // (parallel compute + serial staging + the cross-file join) lives in `crate::intel::resolve_pass`.
     if matches!(source, ScanSource::WorkingTree) {
-        crate::intel::resolve_pass::resolve_pass(root, store);
+        // Deep-stack pool: the resolve pass parallelizes + recurses through import chains, same
+        // overflow risk as extraction.
+        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store));
     }
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
@@ -517,7 +548,7 @@ pub fn scan_paths(
     // changed files' intra facts are restaged, and only the affected importer set (changed files
     // plus every file that imports one — the reverse-import invariant) is re-stitched; every other
     // file's resolved edges are left untouched. See `crate::intel::resolve_pass`.
-    crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels);
+    scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels));
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
