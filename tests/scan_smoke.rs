@@ -816,3 +816,70 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
         assert!(callees.contains(&tag), "tag {tag} indexed: {callees:?}");
     }
 }
+
+/// WS2: an unchanged document is skipped (not re-extracted / re-embedded) on rescan, its tracking
+/// entry survives, and a deleted document is pruned from `doc_files`. Uses `embed = false` so the
+/// test runs offline (no ONNX model download). SVG is chosen because it is xberg-extractable yet is
+/// not a tree-sitter language (so it routes to the document tier, not the code tier).
+#[cfg(feature = "documents")]
+#[test]
+fn documents_are_cached_unchanged_and_pruned() {
+    let (dir, mut cfg) = fresh_repo();
+    cfg.documents.embed = false;
+    let root = dir.path();
+    let svg = br#"<svg xmlns="http://www.w3.org/2000/svg"><text>the quick brown fox jumps</text></svg>"#;
+
+    fs::write(root.join("notes.svg"), svg).unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    assert_eq!(report.stats.docs_indexed, 1, "doc extracted on first scan");
+    assert!(store.lookup_doc("notes.svg").is_some(), "doc tracked in doc_files");
+    drop(store);
+
+    // Rescan, same content: skipped as Unchanged, NOT re-indexed. The entry is retained.
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    assert_eq!(report.stats.docs_indexed, 0, "unchanged doc not re-indexed");
+    assert!(report.stats.skipped_unchanged >= 1, "unchanged doc counted as skipped");
+    assert!(
+        store.lookup_doc("notes.svg").is_some(),
+        "doc entry retained across rescan"
+    );
+    drop(store);
+
+    // Delete the doc: the tracking entry is pruned.
+    fs::remove_file(root.join("notes.svg")).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    assert!(
+        store.lookup_doc("notes.svg").is_none(),
+        "deleted doc pruned from doc_files"
+    );
+}
+
+/// WS2: two byte-identical documents at different paths share one content-addressed blob (same
+/// hash), so the copy reuses the cached extraction instead of recomputing it.
+#[cfg(feature = "documents")]
+#[test]
+fn identical_documents_share_the_content_addressed_cache() {
+    let (dir, mut cfg) = fresh_repo();
+    cfg.documents.embed = false;
+    let root = dir.path();
+    let body = br#"<svg xmlns="http://www.w3.org/2000/svg"><text>identical dedup content</text></svg>"#;
+
+    fs::write(root.join("a.svg"), body).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let hash_a = store.lookup_doc("a.svg").expect("a.svg tracked").hash_hex.clone();
+    drop(store);
+
+    fs::write(root.join("b.svg"), body).unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let hash_b = &store.lookup_doc("b.svg").expect("b.svg tracked").hash_hex;
+    assert_eq!(
+        &hash_a, hash_b,
+        "identical docs share one content hash -> one blob, cache reused"
+    );
+}

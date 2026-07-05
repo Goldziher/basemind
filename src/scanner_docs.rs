@@ -189,26 +189,67 @@ pub(crate) fn extract_and_persist_doc(
     store: &Store,
     rel: &str,
     abs: &Path,
-    bytes: &[u8],
+    hash: &Hash,
     mime_type: &str,
     cfg: &DocumentsConfig,
     llm: &LlmConfig,
     scope: &str,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
+    let hex_buf = hashing::hex_buf(hash);
+    let hash_hex = hashing::hex_str(&hex_buf);
+
+    // Content-addressed cache reuse (mirrors `scanner_code::chunk_and_embed`): identical source
+    // bytes at any path already extracted (and, when embedding, already embedded at the current
+    // preset) → rebuild the LanceDB rows from the cached `.doc.msgpack` blob and skip xberg extract
+    // + ONNX embed entirely. This dedups identical files within a store and, once blobs are shared,
+    // across worktrees. `read_doc_by_hex` surfaces a schema-mismatched blob as an error → treated as
+    // a miss (`.ok().flatten()`).
+    if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
+        && cached_doc_is_reusable(&cached, cfg)
+    {
+        return Ok(Some(pending_from_doc(&cached, rel, scope, cfg)));
+    }
+
+    // Cache miss: extract (xberg embeds inline when `cfg.embed`), then persist the content-addressed
+    // blob so the next scan / a sibling path / a sibling worktree can reuse it.
     let doc_config = doc_config_from(cfg, llm);
     let doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
-
-    // Content-address the blob on the source bytes — same flow as L1/L2 so the
-    // blob is shared across views that hash the same content.
-    let hash: Hash = hashing::hash_bytes(bytes);
     store
-        .write_doc(&hash, &doc)
+        .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    // Guard against a pathological input exploding into tens of thousands of vector rows. The blob
-    // is still cached (so it round-trips), but we emit no LanceDB rows. NOTE: xberg embeds during
-    // `extract_doc`, so this bounds the LanceDB write, not the embed compute — WS4 gates compute.
+    Ok(Some(pending_from_doc(&doc, rel, scope, cfg)))
+}
+
+/// True when a cached document blob can be reused without re-extraction. When embedding is on the
+/// cached blob must carry embeddings at the current preset's dimension (a preset change forces
+/// recompute — same gate as `chunk_and_embed`); an empty-of-chunks doc is always reusable (recompute
+/// would yield nothing anyway). When embedding is off, any cached doc is reusable (chunks only).
+fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig) -> bool {
+    if !cfg.embed || cached.chunks.is_empty() {
+        return true;
+    }
+    let want_dim = preset_dim(&cfg.embedding_preset).ok();
+    cached.embedding_dim > 0
+        && Some(cached.embedding_dim) == want_dim
+        && cached
+            .chunks
+            .iter()
+            .all(|c| c.embedding.len() == cached.embedding_dim as usize)
+}
+
+/// Assemble the deferred LanceDB batch from an extracted-or-cached document. Emits vector rows only
+/// when embedding is on, the doc has embeddings, and it is under the per-doc chunk cap; otherwise the
+/// blob is still tracked but no rows are written (the pathological / no-embed / empty cases).
+fn pending_from_doc(doc: &FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig) -> PendingDocBatch {
+    let no_rows = PendingDocBatch {
+        rel_path: rel.to_string(),
+        chunk_count: doc.chunks.len(),
+        embedding_dim: doc.embedding_dim,
+        rows: Vec::new(),
+    };
+    // Guard against a pathological input exploding into tens of thousands of vector rows.
     if doc.chunks.len() > cfg.max_chunks_per_document {
         tracing::warn!(
             rel,
@@ -216,30 +257,27 @@ pub(crate) fn extract_and_persist_doc(
             cap = cfg.max_chunks_per_document,
             "document exceeds max_chunks_per_document; caching blob but skipping vector rows"
         );
-        return Ok(Some(PendingDocBatch {
-            rel_path: rel.to_string(),
-            chunk_count: doc.chunks.len(),
-            embedding_dim: doc.embedding_dim,
-            rows: Vec::new(),
-        }));
+        return no_rows;
     }
-
-    if doc.embedding_dim == 0 || doc.chunks.is_empty() {
-        return Ok(Some(PendingDocBatch {
-            rel_path: rel.to_string(),
-            chunk_count: doc.chunks.len(),
-            embedding_dim: doc.embedding_dim,
-            rows: Vec::new(),
-        }));
+    if !cfg.embed || doc.embedding_dim == 0 || doc.chunks.is_empty() {
+        return no_rows;
     }
+    let rows = build_doc_rows(doc, rel, scope);
+    PendingDocBatch {
+        rel_path: rel.to_string(),
+        chunk_count: rows.len(),
+        embedding_dim: doc.embedding_dim,
+        rows,
+    }
+}
 
-    // Hoist the per-row constant strings out of the map so we allocate them
-    // once instead of once per chunk (a doc can have hundreds of chunks).
+/// Turn a document's chunks into LanceDB rows. Hoists the per-row constant strings out of the map so
+/// they allocate once instead of once per chunk (a doc can have hundreds of chunks).
+fn build_doc_rows(doc: &FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
     let scope_owned = scope.to_string();
     let rel_owned = rel.to_string();
     let mime_owned = doc.mime_type.clone();
-    let rows: Vec<DocumentRow> = doc
-        .chunks
+    doc.chunks
         .iter()
         .enumerate()
         .map(|(idx, chunk)| DocumentRow {
@@ -252,14 +290,51 @@ pub(crate) fn extract_and_persist_doc(
             byte_end: chunk.byte_end,
             embedding: chunk.embedding.clone(),
         })
-        .collect();
+        .collect()
+}
 
-    Ok(Some(PendingDocBatch {
-        rel_path: rel.to_string(),
-        chunk_count: rows.len(),
-        embedding_dim: doc.embedding_dim,
-        rows,
-    }))
+/// Purge the LanceDB `documents` rows AND the `index.doc_files` entries of docs that no longer
+/// exist (or are no longer routed to the doc tier). Serial apply pass; mirrors
+/// `scanner_code::delete_stale_code_chunks`. The tracking entry is dropped unconditionally (the doc
+/// cache metadata must not leak for a removed file); the LanceDB delete is best-effort and never
+/// *creates* the store. External-root docs were written under a per-root scope, so the delete uses
+/// [`doc_scope_for`] to match it.
+pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::Config, scope: &str, stale: &[String]) {
+    if stale.is_empty() {
+        return;
+    }
+    for path in stale {
+        store.remove_doc(path);
+    }
+    // Nothing to purge from vectors if the store was never built — do not create it here.
+    if store.lance.is_none() && !store.lance_dir_exists() {
+        return;
+    }
+    let model = &config.documents.embedding_preset;
+    let dim = match preset_dim(model) {
+        Ok(dim) => dim,
+        Err(error) => {
+            tracing::warn!(?error, preset = %model, "doc stale purge: unknown preset; skipping lance delete");
+            return;
+        }
+    };
+    let lance = match store.lance_or_open(dim, model) {
+        Ok(lance) => lance.clone(),
+        Err(error) => {
+            tracing::warn!(?error, "doc stale purge: open LanceStore failed; skipping");
+            return;
+        }
+    };
+    for path in stale {
+        let doc_scope = doc_scope_for(path, scope, config);
+        if let Err(error) = lance.replace_document(doc_scope.as_ref(), path, Vec::new()) {
+            tracing::warn!(
+                rel = %path,
+                ?error,
+                "doc stale purge failed; search_documents may return a removed path"
+            );
+        }
+    }
 }
 
 /// Push every pending document batch into LanceDB. Opens the store lazily — if

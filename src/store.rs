@@ -176,6 +176,14 @@ pub struct Index {
     /// round-trip losslessly through the msgpack store; valid UTF-8 paths serialize as
     /// plain strings (zero wire-format churn for the common case).
     pub files: AHashMap<RelPath, FileEntry>,
+    /// Relative path → [`DocEntry`] for document-tier files (the xberg/LanceDB path — NOT code).
+    /// Kept separate from `files` so code-only consumers (`list_files`, MapCache, corpus stats)
+    /// stay unchanged. Populated only under the `documents` feature; `#[serde(default)]` so older
+    /// `index.msgpack` blobs (no `doc_files` key) still deserialize — additive, no schema bump.
+    /// Purpose: (1) skip re-extracting + re-embedding unchanged docs on rescan, and (2) mark
+    /// `.doc.msgpack` blobs as GC-referenced so the blob GC stops reaping the doc cache.
+    #[serde(default)]
+    pub doc_files: AHashMap<RelPath, DocEntry>,
 }
 
 impl Index {
@@ -183,6 +191,7 @@ impl Index {
         Self {
             schema_ver: SCHEMA_VER,
             files: AHashMap::new(),
+            doc_files: AHashMap::new(),
         }
     }
 }
@@ -193,6 +202,19 @@ pub struct FileEntry {
     pub language: String,
     pub size_bytes: u64,
     /// File mtime in seconds since the epoch. Cheap pre-filter before hashing.
+    pub mtime: i64,
+}
+
+/// Per-document index entry — the doc-tier analogue of [`FileEntry`]. Records the content hash of
+/// the source bytes (the key into the `.doc.msgpack` blob that already carries chunks + embeddings)
+/// and the embedding preset the vectors were produced under, so a rescan can (a) skip re-extraction
+/// when the content hash is unchanged and (b) recompute when the preset changed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocEntry {
+    pub hash_hex: String,
+    pub embedding_preset: String,
+    pub size_bytes: u64,
+    /// File mtime in seconds since the epoch.
     pub mtime: i64,
 }
 
@@ -550,6 +572,22 @@ impl Store {
     /// working without an explicit conversion.
     pub fn lookup(&self, rel: impl AsRef<[u8]>) -> Option<&FileEntry> {
         self.index.files.get(bstr::BStr::new(rel.as_ref()))
+    }
+
+    /// Insert / replace the document-tier index entry for `rel`. The doc-tier analogue of
+    /// [`Store::upsert`].
+    pub fn upsert_doc(&mut self, rel: impl Into<RelPath>, entry: DocEntry) {
+        self.index.doc_files.insert(rel.into(), entry);
+    }
+
+    /// Drop the document-tier index entry for `rel`.
+    pub fn remove_doc(&mut self, rel: impl AsRef<[u8]>) {
+        self.index.doc_files.remove(bstr::BStr::new(rel.as_ref()));
+    }
+
+    /// Look up a document-tier entry by repository-relative path.
+    pub fn lookup_doc(&self, rel: impl AsRef<[u8]>) -> Option<&DocEntry> {
+        self.index.doc_files.get(bstr::BStr::new(rel.as_ref()))
     }
 
     /// Atomically rewrite the index file (tmp + rename).

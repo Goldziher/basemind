@@ -210,6 +210,11 @@ pub struct FileResult {
     /// Drained by the single-threaded `flush_document_batches` pass into LanceDB.
     #[cfg(feature = "documents")]
     pub(crate) doc_batch: Option<PendingDocBatch>,
+    /// Internal: buffered [`DocEntry`] for the document tier (the doc analogue of `upsert`). The
+    /// parallel `process_doc` stashes it; the apply loop drains it into `index.doc_files` so the
+    /// next scan can skip unchanged docs and the blob GC keeps the `.doc.msgpack` cache alive.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_upsert: Option<crate::store::DocEntry>,
     /// Internal: buffered code-chunk batch when this source file went through the code-search
     /// branch. Drained by the single-threaded `flush_code_batches` pass into LanceDB.
     #[cfg(feature = "code-search")]
@@ -226,6 +231,8 @@ impl FileResult {
             upsert: None,
             #[cfg(feature = "documents")]
             doc_batch: None,
+            #[cfg(feature = "documents")]
+            doc_upsert: None,
             #[cfg(feature = "code-search")]
             code_batch: None,
         }
@@ -330,6 +337,26 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     // `seen` is no longer needed — drop it explicitly to release the borrows into `outcomes`.
     drop(seen);
 
+    // Doc-tier stale set: a doc is "seen" if it was re-indexed (produced a batch) or skipped
+    // unchanged. Any `doc_files` key not seen this scan was deleted or is no longer a doc → its
+    // LanceDB rows + tracking entry must be purged. Code-file rels that leak into `doc_seen` are
+    // inert (they never match a `doc_files` key). Computed before `apply_outcomes` mutates the store.
+    #[cfg(feature = "documents")]
+    let doc_stale: Vec<String> = {
+        let doc_seen: ahash::AHashSet<&str> = outcomes
+            .iter()
+            .filter(|r| r.doc_batch.is_some() || matches!(r.status, FileStatus::Unchanged | FileStatus::Updated { .. }))
+            .map(|r| r.path.as_str())
+            .collect();
+        store
+            .index
+            .doc_files
+            .keys()
+            .filter(|k| !doc_seen.contains(k.to_str_lossy().as_ref()))
+            .map(|k| k.to_str_lossy().into_owned())
+            .collect()
+    };
+
     let mut report = ScanReport::default();
     let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
 
@@ -361,6 +388,8 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
     flush_code_removals_if_any(store, config, &scope, &stale);
+    #[cfg(feature = "documents")]
+    flush_doc_removals_if_any(store, config, &scope, &doc_stale);
     finalize_bm25_stats_if_any(store, config);
     store.flush()?;
     Ok(report)
@@ -378,6 +407,9 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
+    // Removed docs live in `doc_files` (not `files`), so the code `store.lookup` check misses them.
+    #[cfg(feature = "documents")]
+    let mut doc_removed: Vec<String> = Vec::new();
     for abs in paths {
         let rel = match abs.strip_prefix(root) {
             Ok(p) => p.to_string_lossy().replace('\\', "/"),
@@ -389,6 +421,11 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
         if !abs.exists() {
             if store.lookup(&rel).is_some() {
                 removed.push(rel);
+                continue;
+            }
+            #[cfg(feature = "documents")]
+            if store.lookup_doc(&rel).is_some() {
+                doc_removed.push(rel);
             }
             continue;
         }
@@ -407,7 +444,11 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     // gitignored. Skip `run_candidates`, the doc-batch flush, and the unconditional `store.flush()`
     // (a full index re-serialize + fsync). This is the hot no-op path the serve watcher hits on
     // gitignored / nested-`.basemind` churn (issue #33); doing real work here pegged multi-core CPU.
-    if rels.is_empty() && removed.is_empty() {
+    #[cfg(feature = "documents")]
+    let nothing_removed = removed.is_empty() && doc_removed.is_empty();
+    #[cfg(not(feature = "documents"))]
+    let nothing_removed = removed.is_empty();
+    if rels.is_empty() && nothing_removed {
         return Ok(ScanReport::default());
     }
 
@@ -443,6 +484,8 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
     flush_code_removals_if_any(store, config, &scope, &removed);
+    #[cfg(feature = "documents")]
+    flush_doc_removals_if_any(store, config, &scope, &doc_removed);
     finalize_bm25_stats_if_any(store, config);
     store.flush()?;
     Ok(report)
@@ -499,6 +542,10 @@ fn apply_outcomes(
         // do — runs once per scanned file, so trimming the alloc adds up across 39 k files.
         if let Some(entry) = o.upsert.take() {
             store.upsert(&o.path, entry);
+        }
+        #[cfg(feature = "documents")]
+        if let Some(entry) = o.doc_upsert.take() {
+            store.upsert_doc(&o.path, entry);
         }
         #[cfg(feature = "documents")]
         if let Some(batch) = o.doc_batch.take() {
@@ -761,6 +808,8 @@ fn process_file(
         upsert: Some(entry),
         #[cfg(feature = "documents")]
         doc_batch: None,
+        #[cfg(feature = "documents")]
+        doc_upsert: None,
         #[cfg(feature = "code-search")]
         code_batch,
     }
@@ -780,15 +829,38 @@ fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config:
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
     };
-    let (bytes, _size_bytes, _mtime) = match read_working_tree(root, rel, filters) {
+    let (bytes, size_bytes, mtime) = match read_working_tree(root, rel, filters) {
         Ok(triple) => triple,
         Err(status) => return FileResult::bare(rel.to_string(), status),
+    };
+    let hash = hashing::hash_bytes(&bytes);
+    let hex_buf = hashing::hex_buf(&hash);
+    let hash_hex = hashing::hex_str(&hex_buf);
+
+    // Unchanged-skip: identical content, same embedding preset, and the `.doc.msgpack` blob still on
+    // disk → nothing to do. Mirrors the code tier's early-return (this function's `store` is an
+    // immutable borrow, so the lookup is a cheap read on the parallel worker). Note we DON'T re-stamp
+    // `doc_files` here — the prior entry already holds; the doc-seen set (computed in `scan`) keeps it
+    // from being pruned.
+    if let Some(existing) = store.lookup_doc(rel)
+        && existing.hash_hex == hash_hex
+        && existing.embedding_preset == config.documents.embedding_preset
+        && store.blob_path_doc_hex(hash_hex).exists()
+    {
+        return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
+    }
+
+    let doc_entry = crate::store::DocEntry {
+        hash_hex: hash_hex.to_string(),
+        embedding_preset: config.documents.embedding_preset.clone(),
+        size_bytes,
+        mtime,
     };
     match extract_and_persist_doc(
         store,
         rel,
         &abs,
-        &bytes,
+        &hash,
         &mime_type,
         &config.documents,
         &config.llm,
@@ -804,6 +876,7 @@ fn process_doc(root: &Path, rel: &str, filters: &Filters, store: &Store, config:
                 status,
                 upsert: None,
                 doc_batch: Some(batch),
+                doc_upsert: Some(doc_entry),
                 #[cfg(feature = "code-search")]
                 code_batch: None,
             }
@@ -916,6 +989,13 @@ fn flush_doc_batches_if_any(store: &mut Store, config: &Config, scope: &str, bat
 
 #[cfg(not(feature = "documents"))]
 fn flush_doc_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingDocBatchOpt>) {}
+
+/// Purge `documents` LanceDB rows + `doc_files` entries for docs removed since the last scan. Called
+/// after the batch flush so it reuses an already-open LanceStore. Only referenced under `documents`.
+#[cfg(feature = "documents")]
+fn flush_doc_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
+    crate::scanner_docs::delete_stale_documents(store, config, scope, stale);
+}
 
 /// Push the buffered code-chunk batches into LanceDB. No-op without the `code-search` feature.
 #[cfg(feature = "code-search")]
