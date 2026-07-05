@@ -201,7 +201,10 @@ pub struct FileEntry {
     pub hash_hex: String,
     pub language: String,
     pub size_bytes: u64,
-    /// File mtime in seconds since the epoch. Cheap pre-filter before hashing.
+    /// File mtime in NANOSECONDS since the epoch (0 = unknown / git source). Compared with
+    /// `size_bytes` as the mtime+size fast-path in `process_file` — an unchanged file skips the
+    /// read + blake3 hash. Nanosecond resolution keeps that fast-path effectively race-free. Only
+    /// ever compared against a stored value, never displayed, so the unit is internal.
     pub mtime: i64,
 }
 
@@ -214,7 +217,8 @@ pub struct DocEntry {
     pub hash_hex: String,
     pub embedding_preset: String,
     pub size_bytes: u64,
-    /// File mtime in seconds since the epoch.
+    /// File mtime in nanoseconds since the epoch (0 = unknown). Recorded for symmetry with
+    /// [`FileEntry`]; the doc unchanged-skip currently keys on the content hash, not mtime.
     pub mtime: i64,
 }
 

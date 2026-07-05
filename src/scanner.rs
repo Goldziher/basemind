@@ -649,6 +649,22 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
     out
 }
 
+/// True when the extraction blobs required to classify a file as `Unchanged` are present on disk for
+/// `hash_hex`: the combined-filemap blob always, plus the code-chunk sidecar when code-search
+/// chunking is enabled (so toggling the feature on re-chunks rather than being skipped as unchanged).
+fn extraction_sidecars_present(store: &Store, config: &Config, hash_hex: &str) -> bool {
+    #[cfg(not(feature = "code-search"))]
+    let _ = config;
+    if !store.blob_path_fm_hex(hash_hex).exists() {
+        return false;
+    }
+    #[cfg(feature = "code-search")]
+    if crate::scanner_code::should_chunk(config) && !store.blob_path_chunk_hex(hash_hex).exists() {
+        return false;
+    }
+    true
+}
+
 /// Process a single relative path. Returns a `FileResult`; if the file is being
 /// updated, the new `FileEntry` is attached via `FileResult::upsert` so the caller
 /// can apply it to the store from the single-threaded apply loop.
@@ -680,6 +696,29 @@ fn process_file(
             return FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang);
         }
     };
+
+    // mtime+size fast-path (WorkingTree only): when the stored entry's size AND mtime both still
+    // match the file on disk and its extraction sidecars are present, the content is unchanged —
+    // return without reading the bytes or computing the blake3 hash. On a large monorepo this turns a
+    // warm rescan of an unchanged file into a single `stat()` instead of a full read + hash.
+    //
+    // Racy tradeoff: mtime has 1-second resolution, so a same-second edit that keeps the byte size
+    // identical is missed until the next content change. The live serve watcher re-indexes real edits
+    // from filesystem events (not mtime polling), so this only narrows a full `scan`; git and most
+    // build tools accept the same window. Guarded on `mtime != 0` (git sources record 0 = unknown).
+    if matches!(source, ScanSource::WorkingTree)
+        && let Some(existing) = store.lookup(rel)
+        && existing.mtime != 0
+        && let Ok(meta) = std::fs::metadata(root.join(rel))
+    {
+        let mtime = mtime_nanos(&meta);
+        if meta.len() == existing.size_bytes
+            && mtime == existing.mtime
+            && extraction_sidecars_present(store, config, &existing.hash_hex)
+        {
+            return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
+        }
+    }
 
     // Source-aware byte read + size check + mtime.
     let (bytes, size_bytes, mtime) = match source {
@@ -722,21 +761,13 @@ fn process_file(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex_str = hashing::hex_str(&hex_buf);
 
-    // When code-search is active, an unchanged file must ALSO have its `.chunk.msgpack` sidecar on
-    // disk to qualify as `Unchanged`. Without this, enabling the feature after a prior scan (the
-    // default→full upgrade path, or toggling `code_search.enabled` on) would classify every file
-    // `Unchanged`, skip `chunk_and_embed`, and leave the `code_chunks` table empty — `search_code`
-    // would silently return nothing.
-    #[cfg(feature = "code-search")]
-    let chunk_sidecar_ok =
-        !crate::scanner_code::should_chunk(config) || store.blob_path_chunk_hex(hash_hex_str).exists();
-    #[cfg(not(feature = "code-search"))]
-    let chunk_sidecar_ok = true;
-
+    // Content-hash unchanged check (the fallback when the mtime+size fast-path above missed — e.g. a
+    // touched-but-unchanged file, or mtime unavailable). `extraction_sidecars_present` also enforces
+    // that toggling code-search on re-chunks a file rather than skipping it as unchanged with an empty
+    // `code_chunks` table.
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
-        && store.blob_path_fm_hex(hash_hex_str).exists()
-        && chunk_sidecar_ok
+        && extraction_sidecars_present(store, config, hash_hex_str)
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -921,6 +952,20 @@ fn is_unsupported_format_error(msg: &str) -> bool {
     msg.to_ascii_lowercase().contains("unsupported format")
 }
 
+/// File mtime as nanoseconds since the Unix epoch (0 when unavailable). Nanosecond resolution — not
+/// seconds — so the mtime+size fast-path in `process_file` is effectively race-free: a same-size edit
+/// would have to reproduce the exact nanosecond mtime to be missed. The value is only ever compared
+/// against a previously-stored one (never displayed), so the unit is a pure internal detail. `i64`
+/// nanos overflow in year 2262; saturate rather than wrap.
+fn mtime_nanos(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 fn read_working_tree(root: &Path, rel: &str, filters: &Filters) -> Result<(Vec<u8>, u64, i64), FileStatus> {
     let abs = root.join(rel);
     let metadata = std::fs::metadata(&abs).map_err(|e| FileStatus::ReadFailed {
@@ -934,12 +979,7 @@ fn read_working_tree(root: &Path, rel: &str, filters: &Filters) -> Result<(Vec<u
         kind: e.kind(),
         msg: e.to_string(),
     })?;
-    let mtime = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let mtime = mtime_nanos(&metadata);
     let size = metadata.len();
     Ok((bytes, size, mtime))
 }
