@@ -72,7 +72,16 @@ fn build_repo() -> TempDir {
 }
 
 fn run_scan(root: &Path) {
-    let cfg = basemind::config::default_for_root(root);
+    // These tests call `scan` synchronously from inside a `#[tokio::test]` multi-thread runtime.
+    // With embeddings ON *and the ONNX model present on disk*, the scan opens LanceDB, whose
+    // `LanceStore::open` does `block_on` on its own runtime — which panics ("cannot start a runtime
+    // from within a runtime") when a tokio runtime is already active on this thread. Production is
+    // unaffected (serve wraps `scan` in `spawn_blocking`; the CLI is sync). These tests exercise
+    // concurrency / blob reads, not embedding, so embed off keeps them runtime-agnostic and green
+    // whether or not the model is cached.
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.embed = false;
+    cfg.code_search.embed = false;
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
     let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
     basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
