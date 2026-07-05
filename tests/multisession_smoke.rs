@@ -20,8 +20,15 @@ fn scanned_repo() -> TempDir {
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write a.rs");
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("write b.rs");
     {
+        // Embeddings off: these tests resolve references/impls from blobs, not vectors, and run the
+        // scan on a `#[tokio::test]` thread. With the ONNX model cached, an embedding scan would open
+        // LanceDB (`block_on` inside the live runtime) and panic — a test-harness fragility unrelated
+        // to what's under test. Production wraps `scan` in `spawn_blocking`, so it's unaffected.
+        let mut cfg = ConfigV1::with_defaults();
+        cfg.documents.embed = false;
+        cfg.code_search.embed = false;
         let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+        scan(root, &mut store, &cfg, ScanSource::WorkingTree).expect("scan");
     } // drop → release the fs2 advisory lock AND Fjall's directory lock
     dir
 }

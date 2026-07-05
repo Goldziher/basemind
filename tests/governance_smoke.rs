@@ -87,8 +87,16 @@ fn build_governance_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+    // Run the scan on a dedicated std thread, OFF this `#[tokio::test]` runtime: the scanner's
+    // deferred vector flush opens `LanceStore`, which `block_on`s its own current-thread runtime and
+    // panics if driven from a tokio worker thread once the ONNX model is cached. Mirrors the
+    // production context (CLI thread / `spawn_blocking`) — the pattern `mcp_smoke::run_scan` uses.
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+        });
+    });
 }
 
 /// Decode the first JSON text payload from an MCP `CallToolResult`.
