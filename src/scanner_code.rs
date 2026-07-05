@@ -116,7 +116,7 @@ pub(crate) fn chunk_and_embed(
     // keyword lane populated, so every embed-failure path below degrades to a rows-empty BM25 batch
     // (via [`bm25_batch_from_chunks`]) rather than propagating an error that would drop the file's
     // postings. No embedded sidecar is written on failure, so the next scan retries embedding.
-    let embedder = match SharedEmbedder::load(&config.documents.embedding_preset) {
+    let embedder = match SharedEmbedder::load(&config.documents.embedding_preset, config.documents.embed_max_threads) {
         Ok(embedder) => embedder,
         Err(error) => {
             tracing::warn!(
@@ -242,7 +242,7 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
     // The store's `(dim, model)` are fixed at creation; `lance_or_open` validates the pair. Deriving
     // the dim from the preset lets us open the existing store even on a delete-only rescan (no
     // batches to read a dim from).
-    let dim = match SharedEmbedder::load(model) {
+    let dim = match SharedEmbedder::load(model, 0) {
         Ok(embedder) => embedder.dim(),
         Err(error) => {
             tracing::warn!(?error, preset = %model, "code-chunk stale purge: unknown embedding preset; skipping");
@@ -282,7 +282,7 @@ pub(crate) fn flush_code_batches(
     };
     // Validate the configured preset against the runtime dim before writing (mirrors the
     // document tier's guard) — a mismatch means an unknown preset or a swapped backend.
-    match SharedEmbedder::load(embedding_model) {
+    match SharedEmbedder::load(embedding_model, 0) {
         Ok(embedder) if embedder.dim() != dim => {
             tracing::error!(
                 preset = %embedding_model,

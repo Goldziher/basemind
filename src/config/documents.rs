@@ -66,6 +66,14 @@ pub struct DocumentsConfig {
     /// Response wire format for the document MCP tools.
     #[serde(default)]
     pub output: OutputConfig,
+    /// Maximum number of threads dedicated to ONNX embedding. `0` means
+    /// "auto = max(2, logical_cpus / 4)" — a bounded fraction of available
+    /// cores so the embedder never pins the machine. Both the document and
+    /// code-search tiers route their `embed_texts` calls through a single
+    /// process-wide rayon `ThreadPool` of this size; code-map extraction
+    /// keeps the full global pool.
+    #[serde(default)]
+    pub embed_max_threads: usize,
 }
 
 impl DocumentsConfig {
@@ -87,6 +95,9 @@ impl DocumentsConfig {
     fn default_max_chunks_per_document() -> usize {
         2000
     }
+    // embed_max_threads has no helper because its sentinel value is 0, which
+    // is the natural Default for usize. The resolution from 0 → auto happens
+    // at the use site via `crate::embeddings::resolve_embed_threads`.
 }
 
 impl Default for DocumentsConfig {
@@ -107,6 +118,7 @@ impl Default for DocumentsConfig {
             summarization: SummarizationConfig::default(),
             ocr: OcrConfig::default(),
             output: OutputConfig::default(),
+            embed_max_threads: 0,
         }
     }
 }

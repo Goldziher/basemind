@@ -163,6 +163,9 @@ pub struct DocConfig {
     /// Shared LLM credentials reached for when `summarization.strategy = Abstractive`
     /// (and, in future iters, by `ner.backend = Llm`, VLM OCR, etc.).
     pub llm: LlmConfig,
+    /// Bounded thread cap for xberg's internal ONNX embedding fan-out.
+    /// `0` resolves to `max(2, cores / 4)` via `crate::embeddings::resolve_embed_threads`.
+    pub embed_max_threads: usize,
 }
 
 impl Default for DocConfig {
@@ -177,6 +180,7 @@ impl Default for DocConfig {
             ner: NerConfig::default(),
             summarization: SummarizationConfig::default(),
             llm: LlmConfig::default(),
+            embed_max_threads: 0,
         }
     }
 }
@@ -214,17 +218,16 @@ impl DocConfig {
         let keywords = self.xberg_keywords();
         let ner = self.xberg_ner();
         let summarization = self.xberg_summarization();
-        // Tell xberg to use whatever rayon pool is already live — basemind's
-        // scanner owns the global pool (initialized lazily by par_iter). Without
-        // this, xberg calls `rayon::ThreadPoolBuilder::build_global` with
-        // `num_cpus.min(8)` on its first use, which caps the pool to 8 threads
-        // on machines with more cores (e.g. M-chip Macs have 10–14 logical CPUs).
-        // Passing `rayon::current_num_threads()` here either uses the already-
-        // initialized pool size (no-op inside `call_once`) or, if xberg is
-        // first, sets the pool to the rayon default rather than xberg's min(8)
-        // cap.
+        // Cap xberg's internal fan-out to the configured embed-thread budget.
+        // `ConcurrencyConfig.max_threads` is the single highest-leverage knob:
+        // it bounds how many concurrent ONNX sessions / tensors xberg holds at
+        // once, which is the primary driver of the 15 GB RSS spike on a monorepo.
+        // `resolve_embed_threads` maps the sentinel `0` to `max(2, cores / 4)`
+        // so the default never pins all cores, while still leaving the full
+        // global rayon pool free for code-map extraction.
+        let bounded = crate::embeddings::resolve_embed_threads(self.embed_max_threads);
         let concurrency = Some(ConcurrencyConfig {
-            max_threads: Some(rayon::current_num_threads()),
+            max_threads: Some(bounded),
         });
         ExtractionConfig {
             chunking: Some(chunking),
