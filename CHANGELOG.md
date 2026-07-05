@@ -58,6 +58,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stitching. New `goto_definition` MCP tool + `query goto-definition` CLI resolve a `path:line:column`
   to its definition, following cross-file import bindings. Behind the `code-intel-js` feature (folded
   into `full`) for the JS/TS engine; the `locals` tier is always on.
+- **Document tier reuses the content-addressed cache instead of re-embedding every scan.** The
+  documents pipeline now tracks each file in a new `Index.doc_files` map and, before extracting,
+  reads back the cached `<hash>.doc.msgpack` blob (which already carries chunks + embeddings): an
+  unchanged doc is skipped, and byte-identical content at any other path — or, with the shared cache
+  below, any other worktree — reuses the extraction instead of re-running xberg + ONNX. Removed docs
+  now have their LanceDB rows and tracking entry pruned. `doc_files` is `#[serde(default)]` — additive,
+  no schema bump.
+- **Shared blob cache across git worktrees.** Linked worktrees now resolve their content-addressed
+  blob directory to the main worktree's `.basemind/blobs` (via gix `common_dir`), so a file's
+  extraction + embedding is computed once and shared across every worktree of the clone; views +
+  LanceDB stay per-worktree. Auto-GC is disabled while a shared cache exists (a single-worktree sweep
+  could reap a sibling's blobs).
+- **Bounded embedding threads.** All ONNX embedding now runs on a dedicated rayon pool capped at
+  `documents.embed_max_threads` (default `0` = auto `max(2, cores/4)`), and xberg's internal fan-out
+  is capped to match. Code-map extraction keeps the full pool; embedding can no longer pin every core
+  or balloon RSS on a large monorepo.
+- **New config:** `documents.max_chunks_per_document` (default 2000) caps vector rows per document;
+  `documents.extension_denylist` extends the built-in archive/binary skip list; `documents.embed_max_threads`
+  bounds the embedding pool. `[scan] exclude` gains Bazel defaults (`bazel-out/`, `bazel-bin/`,
+  `bazel-testlogs/`, `bazel-*/`), and a large-candidate-count scan logs a warning.
 
 ### Changed
 
@@ -90,6 +110,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retrievable via `workspace_grep`. Request paths now pass through the same `normalize_query_path`
   root-boundary guard as `shell_spawn`; an escaping path is rejected with `invalid_params` instead of
   being scanned. Default `respect_gitignore = true` already blocked it structurally.
+- **Archives and binaries are no longer unpacked + embedded during a scan.** `should_extract_document`
+  rejected nothing by default, so xberg recursively unpacked `.zip/.tar/.jar/.whl/...` and embedded
+  every entry, and binary blobs (`.so/.wasm/.class/...`) were embedded to no purpose — a large,
+  pointless cost that pinned ~11 cores and grew `.basemind` to gigabytes on a monorepo. A built-in
+  extension + MIME denylist now skips them before any xberg work (images stay allowed for OCR).
+- **Document blobs are no longer reaped by the blob GC.** Because docs weren't tracked in the index,
+  `collect_referenced_hashes` never marked their `.doc.msgpack` blobs live, so the boot/background GC
+  deleted the entire doc cache after every scan. Doc-tier hashes are now unioned into the live set.
 
 ## [0.16.0] — 2026-07-02
 
