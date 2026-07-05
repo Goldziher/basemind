@@ -45,7 +45,14 @@ fn linked_worktrees_share_the_blob_cache() {
     {
         let mut store = Store::open(&main, basemind::store::VIEW_WORKING).unwrap();
         assert!(!store.blobs_shared, "no linked worktrees yet → not shared");
-        scan(&main, &mut store, &cfg, ScanSource::WorkingTree, basemind::scanner::EmbedMode::Inline).unwrap();
+        scan(
+            &main,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
     }
     let main_blobs = main.join(".basemind").join("blobs");
     assert!(main_blobs.is_dir(), "main scan wrote blobs locally");
@@ -82,7 +89,14 @@ fn linked_worktrees_share_the_blob_cache() {
     // reuses the blob already in the shared cache.
     {
         let mut store2 = Store::open(&wt2, basemind::store::VIEW_WORKING).unwrap();
-        scan(&wt2, &mut store2, &cfg, ScanSource::WorkingTree, basemind::scanner::EmbedMode::Inline).unwrap();
+        scan(
+            &wt2,
+            &mut store2,
+            &cfg,
+            ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
     }
     let wt2_local_blobs = wt2.join(".basemind").join("blobs");
     let wt2_local_count = fs::read_dir(&wt2_local_blobs).map(|d| d.count()).unwrap_or(0);
