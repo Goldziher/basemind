@@ -28,7 +28,14 @@ fn scanned_repo() -> TempDir {
         cfg.documents.embed = false;
         cfg.code_search.embed = false;
         let mut store = Store::open(root, VIEW_WORKING).expect("open store");
-        scan(root, &mut store, &cfg, ScanSource::WorkingTree, basemind::scanner::EmbedMode::Inline).expect("scan");
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
     } // drop → release the fs2 advisory lock AND Fjall's directory lock
     dir
 }
