@@ -883,3 +883,28 @@ fn identical_documents_share_the_content_addressed_cache() {
         "identical docs share one content hash -> one blob, cache reused"
     );
 }
+
+/// WS6: the mtime+size fast-path must NOT skip a real change even when the edit keeps the byte size
+/// identical (`alpha` → `gamma`). Nanosecond mtime resolution makes this safe: the rewrite advances
+/// the mtime, so the fast-path falls through to the content hash and re-extracts.
+#[test]
+fn same_size_content_change_is_reextracted() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+    {
+        let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+        scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    }
+    // Identical byte length, different content — the racy window the nanosecond mtime closes.
+    fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    assert_eq!(
+        report.stats.updated, 1,
+        "same-size content change re-extracted, not skipped"
+    );
+    assert_eq!(report.stats.skipped_unchanged, 0);
+    let hits = basemind::query::search_symbols(&store, "gamma", None).unwrap();
+    assert_eq!(hits.len(), 1, "the new symbol is indexed");
+}
