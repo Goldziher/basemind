@@ -345,6 +345,7 @@ pub fn scan(root: &Path, store: &mut Store, config: &Config, source: ScanSource<
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
+    flush_code_removals_if_any(store, config, &scope, &stale);
     store.flush()?;
     Ok(report)
 }
@@ -400,8 +401,8 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
     let mut report = ScanReport::default();
     let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
 
-    for rel in removed {
-        store.remove(&rel);
+    for rel in &removed {
+        store.remove(rel);
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
             let rel = RelPath::from(rel.as_str());
@@ -413,7 +414,7 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
                 .and_then(|()| w.remove_resolved_file(&rel))
                 .and_then(|()| w.commit());
         }
-        report.results.push(FileResult::bare(rel, FileStatus::Removed));
+        report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));
         report.stats.removed += 1;
     }
 
@@ -425,6 +426,7 @@ pub fn scan_paths(root: &Path, store: &mut Store, config: &Config, paths: &[Path
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);
+    flush_code_removals_if_any(store, config, &scope, &removed);
     store.flush()?;
     Ok(report)
 }
@@ -644,9 +646,21 @@ fn process_file(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex_str = hashing::hex_str(&hex_buf);
 
+    // When code-search is active, an unchanged file must ALSO have its `.chunk.msgpack` sidecar on
+    // disk to qualify as `Unchanged`. Without this, enabling the feature after a prior scan (the
+    // default→full upgrade path, or toggling `code_search.enabled` on) would classify every file
+    // `Unchanged`, skip `chunk_and_embed`, and leave the `code_chunks` table empty — `search_code`
+    // would silently return nothing.
+    #[cfg(feature = "code-search")]
+    let chunk_sidecar_ok =
+        !crate::scanner_code::should_chunk(config) || store.blob_path_chunk_hex(hash_hex_str).exists();
+    #[cfg(not(feature = "code-search"))]
+    let chunk_sidecar_ok = true;
+
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
         && store.blob_path_fm_hex(hash_hex_str).exists()
+        && chunk_sidecar_ok
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -889,6 +903,16 @@ fn flush_code_batches_if_any(store: &mut Store, config: &Config, scope: &str, ba
 
 #[cfg(not(feature = "code-search"))]
 fn flush_code_batches_if_any(_store: &mut Store, _config: &Config, _scope: &str, _batches: Vec<PendingCodeBatchOpt>) {}
+
+/// Purge `code_chunks` rows for files removed since the last scan. No-op without `code-search`.
+/// Called after the batch flush so it reuses an already-open LanceStore.
+#[cfg(feature = "code-search")]
+fn flush_code_removals_if_any(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
+    crate::scanner_code::delete_stale_code_chunks(store, config, scope, stale);
+}
+
+#[cfg(not(feature = "code-search"))]
+fn flush_code_removals_if_any(_store: &mut Store, _config: &Config, _scope: &str, _stale: &[String]) {}
 
 #[cfg(test)]
 mod tests {

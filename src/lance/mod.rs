@@ -432,6 +432,32 @@ impl LanceStore {
         })
     }
 
+    /// Delete every `code_chunks` row for a `(scope, path)` pair without inserting replacements.
+    /// The scanner's stale-file pass calls this when a file is removed, so a deleted path leaves no
+    /// dangling `search_code` hits. Idempotent — deleting a path with no rows is a no-op.
+    #[cfg(feature = "code-search")]
+    pub fn delete_code_chunks(&self, scope: &str, path: &str) -> Result<()> {
+        self.inner.rt().block_on(async {
+            let table = self
+                .inner
+                .connection
+                .open_table(schema::CODE_CHUNKS_TABLE)
+                .execute()
+                .await
+                .with_context(|| format!("open {} table", schema::CODE_CHUNKS_TABLE))?;
+            let predicate = format!(
+                "scope = '{}' AND path = '{}'",
+                escape_sql_literal(scope),
+                escape_sql_literal(path)
+            );
+            table
+                .delete(&predicate)
+                .await
+                .with_context(|| format!("delete code chunks for {scope}/{path}"))?;
+            anyhow::Ok(())
+        })
+    }
+
     /// KNN over the `code_chunks` table for one scope. Returns pointer hits (path + span +
     /// symbol + distance), best-first.
     #[cfg(feature = "code-search")]

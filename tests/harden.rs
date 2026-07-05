@@ -530,6 +530,16 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    // get_chunk: fetch chunks for an indexed file path. An MCP-level error (feature-off,
+    // file-not-indexed, or needs-disambiguation) is a valid sweep outcome — tolerated in
+    // assert_passing. Uses the sample path when available so we hit a real indexed file.
+    let chunk_path_arg = if let Some(s) = sample {
+        json!({ "path": &s.path })
+    } else {
+        json!({ "path": "src/lib.rs" })
+    };
+    call(svc, &mut records, "get_chunk", chunk_path_arg).await;
+
     // proposals_mine: co-change mining over recent history. MCP error when memory feature is
     // off is ok (same gate as memory_audit). On success we just verify the call completes
     // without error — candidate count varies wildly per repo and mining threshold.
@@ -609,7 +619,11 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
         let tolerated = !r.ok
             && (r.detail.contains("requires the")
                 || r.detail.contains("tool not found")
-                || r.detail.contains("disambiguate"));
+                || r.detail.contains("disambiguate")
+                // get_chunk called with just a path (no chunk_id) may return is_error when the
+                // file has no indexed chunks or when the repo was scanned without code-search
+                // embedding — file-not-indexed is a valid sweep outcome.
+                || (r.tool == "get_chunk" && r.detail == "is_error=true"));
         if !r.ok && !tolerated {
             failures.push(format!("{} failed: {}", r.tool, r.detail));
         }
@@ -743,6 +757,20 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             if cg_nodes < 5 {
                 failures.push(format!(
                     "tokio canary: call_graph(\"spawn\", callers, depth=2) returned {cg_nodes} nodes (expected ≥ 5)"
+                ));
+            }
+            // search_code canary: only asserted when the embedder was available (canary present
+            // and non-empty). Skipped when offline or no model — do not fail the harness solely
+            // on embedder absence. "spawn a task" should semantically match tokio spawn code.
+            if cfg!(feature = "code-search")
+                && let Some(hits) = repo_record
+                    .canaries
+                    .get("search_code_spawn_hits")
+                    .and_then(Value::as_u64)
+                && hits < 1
+            {
+                failures.push(format!(
+                    "tokio canary: search_code(\"spawn a task\") returned {hits} hits (expected ≥ 1)"
                 ));
             }
         }
@@ -972,6 +1000,26 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 let body = decode_text(&out);
                 let hits = body.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
+            }
+            // search_code canary: only populated when the code-search feature is compiled and the
+            // embedder returned non-empty hits. Absent when offline or no model available — the
+            // assertion in assert_passing skips rather than failing when the canary is absent.
+            #[cfg(feature = "code-search")]
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "search_code",
+                    &json!({ "query": "spawn a task", "limit": 10 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                if let Some(hits) = body.get("hits").and_then(Value::as_array)
+                    && !hits.is_empty()
+                {
+                    record
+                        .canaries
+                        .insert("search_code_spawn_hits".into(), json!(hits.len() as u64));
+                }
             }
         }
         "django" => {

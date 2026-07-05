@@ -26,9 +26,13 @@ use thiserror::Error;
 
 use crate::store::{BLOBS_DIR, INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index, wipe_blobs};
 
-/// The blob filename suffixes the scanner emits today, both keyed by one content hash.
-/// Used to strip the suffix off a blob filename to recover its hex stem.
-const BLOB_SUFFIXES: [&str; 2] = [".fm.msgpack", ".doc.msgpack"];
+/// The blob filename suffixes the scanner emits today, all keyed by one content hash.
+/// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
+/// `.fm.msgpack` (combined L1 + L2 filemap), `.doc.msgpack` (documents tier), `.chunk.msgpack`
+/// (code-search tier), and `.rref.msgpack` (code-intel resolved-references tier). All share the
+/// same source-hash stem as the `.fm` blob, so they are reclaimed together when the source file
+/// changes or is deleted (its stem drops out of the live set).
+const BLOB_SUFFIXES: [&str; 4] = [".fm.msgpack", ".doc.msgpack", ".chunk.msgpack", ".rref.msgpack"];
 
 /// Pre-0.9 split-tier blob suffixes (`<hash>.l1.msgpack` / `<hash>.l2.msgpack`), superseded by
 /// the combined `.fm.msgpack` frame. No current code writes or reads these, so any left on disk
@@ -886,6 +890,59 @@ mod tests {
         }
         // The legitimate views are untouched by the rejected calls.
         assert!(basemind_dir.join(VIEWS_DIR).join("working").exists());
+    }
+
+    #[test]
+    fn blob_stem_recovers_stem_for_every_known_suffix() {
+        // Every suffix in BLOB_SUFFIXES must strip back to the bare hex stem — a suffix missing
+        // from the list makes gc_blobs take the "never delete" branch and leak that tier forever
+        // (the .chunk / .rref regression this covers).
+        assert_eq!(blob_stem("deadbeef.fm.msgpack"), Some("deadbeef"));
+        assert_eq!(blob_stem("deadbeef.doc.msgpack"), Some("deadbeef"));
+        assert_eq!(blob_stem("deadbeef.chunk.msgpack"), Some("deadbeef"));
+        assert_eq!(blob_stem("deadbeef.rref.msgpack"), Some("deadbeef"));
+        // A stray file that matches no known suffix is not a reclaimable blob.
+        assert_eq!(blob_stem("deadbeef.tmp"), None);
+    }
+
+    #[test]
+    fn should_reclaim_unreferenced_chunk_and_rref_but_keep_referenced() {
+        // Regression: `.chunk.msgpack` (code-search) and `.rref.msgpack` (code-intel) blobs share
+        // the source-hash stem with `.fm`. An orphan-stem chunk/rref must be reaped, while a
+        // referenced-stem chunk/rref (still pointed at by the live index) must survive.
+        let fx = build_fixture();
+        let blobs = fx.basemind_dir.join(BLOBS_DIR);
+
+        // Referenced-stem sidecar tiers: kept because the live index references the stem.
+        fs::write(
+            blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)),
+            b"ref-chunk",
+        )
+        .expect("ref chunk");
+        fs::write(blobs.join(format!("{}.rref.msgpack", fx.referenced_stem)), b"ref-rref").expect("ref rref");
+        // Orphan-stem sidecar tiers: reclaimed because no view references the stem.
+        fs::write(blobs.join(format!("{}.chunk.msgpack", fx.orphan_stem)), b"orphan-chunk").expect("orphan chunk");
+        fs::write(blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)), b"orphan-rref").expect("orphan rref");
+
+        let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+        gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
+
+        assert!(
+            blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)).exists(),
+            "referenced chunk survives"
+        );
+        assert!(
+            blobs.join(format!("{}.rref.msgpack", fx.referenced_stem)).exists(),
+            "referenced rref survives"
+        );
+        assert!(
+            !blobs.join(format!("{}.chunk.msgpack", fx.orphan_stem)).exists(),
+            "orphan chunk reclaimed"
+        );
+        assert!(
+            !blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)).exists(),
+            "orphan rref reclaimed"
+        );
     }
 
     #[test]

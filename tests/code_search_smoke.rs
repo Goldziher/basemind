@@ -118,3 +118,100 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         "get_chunk echoes the requested chunk_id"
     );
 }
+
+/// Regression test for the stale-sidecar / re-chunk guard.
+///
+/// Before the fix, an `Unchanged` early-return in the scanner skipped chunking when the
+/// `.chunk.msgpack` sidecar was absent but the content hash was unchanged (e.g. code-search was
+/// enabled after a prior scan). The fix forces a re-chunk when `should_chunk` is on and the
+/// sidecar is missing, even when the file content is identical to the stored blob.
+#[test]
+fn stale_sidecar_rechunked_when_content_unchanged() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+
+    // First scan: generates .chunk.msgpack sidecar(s) alongside the L1/L2 blobs.
+    let scan1 = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn first scan");
+    assert!(
+        scan1.status.success(),
+        "first scan failed: {}",
+        String::from_utf8_lossy(&scan1.stderr)
+    );
+
+    // Locate the chunk sidecar written by the first scan. If none exists (chunker disabled or
+    // an early fatal error), skip gracefully rather than failing — this test is only meaningful
+    // when chunking actually ran.
+    let sidecar = find_chunk_sidecar(root);
+    let Some(sidecar) = sidecar else {
+        eprintln!(
+            "SKIP: no .chunk.msgpack sidecar found after first scan \
+             (chunker may be disabled or model unavailable)"
+        );
+        return;
+    };
+    assert!(
+        sidecar.exists(),
+        "sidecar must exist after first scan: {}",
+        sidecar.display()
+    );
+
+    // Delete the sidecar WITHOUT modifying the source file. The content hash is therefore
+    // unchanged — a naive scanner would treat the file as `Unchanged` and skip chunking,
+    // leaving the sidecar absent and the code-search index empty.
+    std::fs::remove_file(&sidecar).expect("remove sidecar");
+    assert!(!sidecar.exists(), "sidecar must be gone after manual deletion");
+
+    // Second scan: the stale-sidecar guard must detect the missing sidecar and re-chunk,
+    // even though the file content hash is identical. Chunk writing is deterministic and does
+    // not depend on embedding model availability (the sidecar stores the textual chunks; the
+    // embedding is a separate step that may fail silently without affecting sidecar creation).
+    let scan2 = Command::new(bin())
+        .current_dir(root)
+        .arg("scan")
+        .output()
+        .expect("spawn second scan");
+    assert!(
+        scan2.status.success(),
+        "second scan failed: {}",
+        String::from_utf8_lossy(&scan2.stderr)
+    );
+
+    // The sidecar must have been regenerated. This is deterministic regardless of the
+    // embedding model — chunk-only writes happen before the optional embed step.
+    assert!(
+        sidecar.exists(),
+        "re-scan must regenerate the .chunk.msgpack sidecar after it was deleted \
+         (the stale-sidecar guard should force re-chunking despite unchanged content hash): \
+         sidecar={}",
+        sidecar.display()
+    );
+}
+
+/// Recursively search `root/.basemind/` for the first file whose name ends with
+/// `.chunk.msgpack`. Returns `None` when no sidecar exists (clean scan or chunker disabled).
+fn find_chunk_sidecar(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = walk(&path) {
+                    return Some(found);
+                }
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".chunk.msgpack"))
+            {
+                return Some(path);
+            }
+        }
+        None
+    }
+    walk(&root.join(".basemind"))
+}

@@ -926,9 +926,10 @@ async fn mcp_server_exercises_representative_tools() {
         .await;
 
     // search_code / get_chunk: the shims are always registered. Without `--features code-search`
-    // they return a graceful MCP-level "feature not compiled" error; with it they dispatch (and
-    // may error on the fixture, which has no embedder/LanceDB). Either way: no crash, no
-    // protocol-level param-rejection.
+    // they return a graceful MCP-level "feature not compiled" error. With the feature on they
+    // dispatch and return a stable response shape: search_code echoes the query field and carries
+    // a hits array; get_chunk returns Ok at the protocol level with either a decodable body or
+    // an is_error response (no chunks indexed / disambiguation needed in CI without a model).
     #[cfg(not(feature = "code-search"))]
     {
         let sc = service
@@ -948,14 +949,39 @@ async fn mcp_server_exercises_representative_tools() {
     }
     #[cfg(feature = "code-search")]
     {
-        // Feature on: dispatch must not panic. The synthetic fixture may lack an embedder, so an
-        // is_error result or a protocol error is acceptable — the assertion is "no crash".
-        let _ = service
+        // Feature on: the shims dispatch to the real helpers. A tool that returns an `McpError`
+        // surfaces here as `Err` (exactly like the not-enabled path above), so we assert the
+        // response SHAPE only on success and tolerate the error path — the synthetic fixture may
+        // lack an embedding model (search_code) or have no indexed chunks (get_chunk) in CI.
+        let sc = service
             .call_tool(call_params("search_code", json!({ "query": "hello" })))
             .await;
-        let _ = service
-            .call_tool(call_params("get_chunk", json!({ "path": "src/lib.rs" })))
+        if let Ok(result) = &sc {
+            let body = decode_text(result);
+            assert_eq!(
+                body.get("query").and_then(Value::as_str),
+                Some("hello"),
+                "search_code must echo the input query field: {body}"
+            );
+            assert!(
+                body.get("hits").and_then(Value::as_array).is_some(),
+                "search_code response must carry a hits array (may be empty): {body}"
+            );
+        }
+
+        // get_chunk reads the content-addressed sidecar (no embedder). It succeeds with a body
+        // when the file has chunks and errors otherwise (file not indexed / no chunks / needs
+        // disambiguation). Assert the pointer+body shape only on success.
+        let gc = service
+            .call_tool(call_params("get_chunk", json!({ "path": "a.rs" })))
             .await;
+        if let Ok(result) = &gc {
+            let body = decode_text(result);
+            assert!(
+                body.get("path").is_some() && body.get("text").is_some(),
+                "get_chunk success response must carry path + text: {body}"
+            );
+        }
     }
 
     // Per-query override round-trip: pass `reranker_preset` as a flattened override

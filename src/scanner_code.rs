@@ -72,7 +72,9 @@ pub(crate) fn chunk_and_embed(
                     chunks: chunks.clone(),
                     embeddings: Vec::new(),
                 };
-                let _ = store.write_chunks_hex(hash_hex, &blob);
+                if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
+                    tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
+                }
                 chunks
             }
         };
@@ -115,7 +117,9 @@ pub(crate) fn chunk_and_embed(
             chunks: Vec::new(),
             embeddings: Vec::new(),
         };
-        let _ = store.write_chunks_hex(hash_hex, &blob);
+        if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
+            tracing::warn!(rel, ?error, "write empty code-chunk sidecar failed");
+        }
         return Ok(None);
     }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
@@ -129,17 +133,19 @@ pub(crate) fn chunk_and_embed(
             chunks.len()
         );
     }
+    // Build the deferred LanceDB rows while borrowing `chunks` + `embeddings`, then MOVE both into
+    // the sidecar blob — no clone of the per-chunk `String` fields on the scanner hot path.
+    let rows = build_rows(rel, &chunks, &embeddings);
     let blob = CodeChunkBlob {
         schema_ver: SCHEMA_VER,
         embedding_dim: dim,
-        chunks: chunks.clone(),
-        embeddings: embeddings.clone(),
+        chunks,
+        embeddings,
     };
     // Best-effort: a blob-write failure only forfeits the embedding cache, not the scan.
     if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
         tracing::warn!(rel, ?error, "write code-chunk sidecar failed; embedding cache skipped");
     }
-    let rows = build_rows(rel, &chunks, &embeddings);
     Ok(Some(PendingCodeBatch {
         rel_path: rel.to_string(),
         embedding_dim: dim,
@@ -168,6 +174,47 @@ fn build_rows(rel: &str, chunks: &[crate::chunk::CodeChunk], embeddings: &[Vec<f
             embedding: emb.clone(),
         })
         .collect()
+}
+
+/// Delete the `code_chunks` rows of files that no longer exist (or are no longer allowed). Runs in
+/// the serial apply pass after the batch flush, so it reuses an already-open LanceStore when the
+/// same scan wrote chunks. Best-effort: never opens (i.e. never *creates*) the vector store when it
+/// does not already exist, and logs — never propagates — a delete failure.
+pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope: &str, stale: &[String]) {
+    if stale.is_empty() || !should_chunk(config) {
+        return;
+    }
+    // Nothing to purge if the vector store was never built for this repo — do not create it here.
+    if store.lance.is_none() && !store.lance_dir_exists() {
+        return;
+    }
+    let model = &config.documents.embedding_preset;
+    // The store's `(dim, model)` are fixed at creation; `lance_or_open` validates the pair. Deriving
+    // the dim from the preset lets us open the existing store even on a delete-only rescan (no
+    // batches to read a dim from).
+    let dim = match SharedEmbedder::load(model) {
+        Ok(embedder) => embedder.dim(),
+        Err(error) => {
+            tracing::warn!(?error, preset = %model, "code-chunk stale purge: unknown embedding preset; skipping");
+            return;
+        }
+    };
+    let lance = match store.lance_or_open(dim, model) {
+        Ok(lance) => lance.clone(),
+        Err(error) => {
+            tracing::warn!(?error, "code-chunk stale purge: open LanceStore failed; skipping");
+            return;
+        }
+    };
+    for path in stale {
+        if let Err(error) = lance.delete_code_chunks(scope, path) {
+            tracing::warn!(
+                rel = %path,
+                ?error,
+                "code-chunk stale purge failed; search_code may return a removed path"
+            );
+        }
+    }
 }
 
 /// Push every pending code batch into the `code_chunks` LanceDB table. Opens the store lazily —
