@@ -87,33 +87,35 @@ fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<
     let mut imports = Vec::new();
     let mut implementations = Vec::new();
     while let Some(m) = iter.next() {
-        // Dispatch by the pre-classified integer index — one array load, zero string ops.
-        let Some(first_cap) = m.captures.first() else {
-            continue;
-        };
-        match classes[first_cap.index as usize] {
-            CaptureClass::Symbol => {
+        // Dispatch by the pre-classified integer index — one array load, zero string ops. Scan to
+        // the first capture that classifies to a known L1 class rather than blindly taking
+        // `captures[0]`: adapted TSLP `tags.scm` patterns commonly lead a `@definition.*` match
+        // with auxiliary captures (e.g. `@doc` for a preceding comment, `@local.scope`), so the
+        // root symbol/import/impl capture is not always first. The builders below re-scan every
+        // capture by name, so this only selects which builder to run. A match with no known
+        // capture (e.g. a stray `@doc`-only match) is skipped.
+        let class = m
+            .captures
+            .iter()
+            .map(|cap| classes[cap.index as usize])
+            .find(|class| !matches!(class, CaptureClass::Other));
+        match class {
+            Some(CaptureClass::Symbol) => {
                 if let Some(sym) = build_symbol(q, m, source) {
                     symbols.push(sym);
                 }
             }
-            CaptureClass::Import => {
+            Some(CaptureClass::Import) => {
                 if let Some(imp) = build_import(q, m, source) {
                     imports.push(imp);
                 }
             }
-            CaptureClass::Impl => {
+            Some(CaptureClass::Impl) => {
                 if let Some(imp) = build_implementation(q, m, source) {
                     implementations.push(imp);
                 }
             }
-            CaptureClass::Other => {
-                debug_assert!(
-                    false,
-                    "unexpected capture class in combined L1 query: {}",
-                    capture_name(q, first_cap.index)
-                );
-            }
+            Some(CaptureClass::Other) | None => {}
         }
     }
     Ok((dedupe_symbols(symbols), imports, implementations))
@@ -505,6 +507,28 @@ pub fn good_two() {}
         assert!(
             names.contains(&"good_one") || names.contains(&"good_two"),
             "at least one well-formed sibling symbol should be recovered; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_symbol_when_tslp_pattern_leads_with_doc_capture() {
+        // Regression: Ruby uses the TSLP `tags.scm` fallback, whose method-definition pattern
+        // leads with a `@doc` capture for the preceding comment. The old dispatch keyed on
+        // `captures[0]`, so the match classified as `Other` — panicking in debug builds
+        // (`debug_assert!`) and silently dropping the symbol in release. `run_combined` must scan
+        // past the leading `@doc` to the `@definition.method` capture and still extract the method.
+        let src = b"# adds two numbers\ndef add(a, b)\n  a + b\nend\n";
+        // The fix lives in `run_combined`, which the old code reached *before* failing — so a
+        // regressed build panics here (debug) regardless of grammar availability. When the Ruby
+        // grammar is simply absent (offline CI), extraction returns `Err`; skip rather than assert,
+        // so this never flakes on the environment instead of the behavior under test.
+        let Ok(map) = extract_l1("ruby", src) else {
+            return;
+        };
+        let names: Vec<&str> = map.symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"add"),
+            "the commented Ruby method `add` must be extracted despite the leading @doc capture; got {names:?}"
         );
     }
 }
