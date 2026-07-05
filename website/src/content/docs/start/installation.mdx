@@ -1,0 +1,208 @@
+---
+title: Installation
+description: >-
+  Three ways to run basemind — as a plugin (recommended), as an MCP server, or as
+  a standalone CLI.
+---
+
+import { Aside, Tabs, TabItem, Code, LinkCard, CardGrid } from '@astrojs/starlight/components';
+
+Three ways to run basemind, easiest first. All three share the same local index
+and are safe to run side by side.
+
+<Aside type="tip">
+The plugin downloads the basemind program for you on first use. The MCP server
+and CLI paths need it installed yourself — see [Install the program](#install-the-program).
+</Aside>
+
+## 1. As a plugin (recommended)
+
+The plugin sets up everything for you — the server, the helper skills, the
+agent-comms features, and the slash commands. Pick your coding tool.
+
+<Tabs syncKey="plugin">
+  <TabItem label="Claude Code">
+    In the session (not your shell), run in order:
+
+    <Code code={`/plugin marketplace add Goldziher/basemind\n/plugin install basemind@basemind`} lang="text" />
+
+    Restart, then run `/bm-statusline` once to turn on the live statusline (a
+    one-time step — see [Statusline](#statusline-claude-code)).
+  </TabItem>
+
+  <TabItem label="Codex">
+    <Code code={`codex plugin marketplace add Goldziher/basemind\ncodex plugin add basemind@basemind`} lang="bash" />
+
+    In the app: open the **Plugins** sidebar and add basemind. The CLI and IDE
+    share one config file.
+  </TabItem>
+
+  <TabItem label="Cursor">
+    In Agent chat: `/add-plugin basemind` (once listed), or go to **Dashboard →
+    Settings → Plugins → Team Marketplaces → Import from Repo** and point it at
+    `https://github.com/Goldziher/basemind`.
+  </TabItem>
+
+  <TabItem label="Gemini CLI">
+    <Code code={`gemini extensions install https://github.com/Goldziher/basemind`} lang="bash" />
+
+    Update later with `gemini extensions update basemind`.
+  </TabItem>
+
+  <TabItem label="Factory Droid">
+    <Code code={`droid plugin marketplace add https://github.com/Goldziher/basemind\ndroid plugin install basemind@basemind`} lang="bash" />
+  </TabItem>
+
+  <TabItem label="GitHub Copilot CLI">
+    <Code code={`copilot plugin marketplace add Goldziher/basemind\ncopilot plugin install basemind@basemind`} lang="bash" />
+  </TabItem>
+
+  <TabItem label="OpenCode">
+    Add to `opencode.json` (project) or `~/.config/opencode/opencode.json`
+    (global):
+
+    <Code code={`{ "plugin": ["basemind-opencode@latest"] }`} lang="json" />
+  </TabItem>
+
+  <TabItem label="Kimi Code">
+    <Code code={`/plugins install https://github.com/Goldziher/basemind`} lang="text" />
+
+    Kimi doesn't support the comms auto-notifications, but the chat tools still
+    work.
+  </TabItem>
+
+  <TabItem label="Antigravity & pi">
+    **Antigravity** uses a shared MCP config — [install the program](#install-the-program),
+    then add the [generic MCP block](#2-as-an-mcp-server). If you already use the
+    Gemini extension, `agy plugin import gemini` brings it across.
+
+    **pi**: `pi install git:github.com/Goldziher/basemind`. pi has no MCP support,
+    so basemind runs through its [CLI](#3-as-a-cli) here.
+  </TabItem>
+</Tabs>
+
+## 2. As an MCP server
+
+If your tool speaks MCP but you're not using the plugin,
+[install the program](#install-the-program), then register it:
+
+<Code code={`{
+  "mcpServers": {
+    "basemind": { "command": "basemind", "args": ["serve"] }
+  }
+}`} lang="json" />
+
+Each tool says whether it only reads or can change things, so your client can
+auto-approve the safe ones and ask before the rest. If `basemind` isn't found,
+use the full path from `which basemind`.
+
+### Per-tool specifics
+
+<Tabs syncKey="mcp">
+  <TabItem label="Claude Code">
+    <Code code={`claude mcp add basemind -- basemind serve`} lang="bash" />
+
+    Add `--scope user` for all projects; the `--` is required. Or commit a
+    `.mcp.json` at the repo root with the block above.
+  </TabItem>
+
+  <TabItem label="Cursor">
+    Put the block above in `.cursor/mcp.json` (project) or `~/.cursor/mcp.json`
+    (global).
+  </TabItem>
+
+  <TabItem label="Windsurf">
+    `~/.codeium/windsurf/mcp_config.json` (or Cascade → MCP servers → manage),
+    then **Refresh**.
+  </TabItem>
+
+  <TabItem label="Codex">
+    <Code code={`codex mcp add basemind -- basemind serve`} lang="bash" />
+
+    Shared by the CLI and IDE.
+  </TabItem>
+
+  <TabItem label="Gemini CLI">
+    <Code code={`gemini mcp add basemind basemind serve`} lang="bash" />
+
+    Or the block above in `~/.gemini/settings.json`.
+  </TabItem>
+
+  <TabItem label="GitHub Copilot CLI">
+    `/mcp add` in-session, or `~/.copilot/mcp-config.json` with
+    `"type": "local"` and `"tools": ["*"]`.
+  </TabItem>
+
+  <TabItem label="Factory Droid">
+    <Code code={`droid mcp add basemind "basemind serve"`} lang="bash" />
+
+    Or `~/.factory/mcp.json`.
+  </TabItem>
+
+  <TabItem label="Cline">
+    MCP Servers icon → Configure → add the block above.
+  </TabItem>
+
+  <TabItem label="Continue">
+    `.continue/mcpServers/basemind.yaml` with `command: basemind`, `args: [serve]`.
+  </TabItem>
+
+  <TabItem label="OpenCode (without plugin)">
+    `opencode.json` under key `mcp`, with `command` as an array
+    `["basemind", "serve"]`.
+  </TabItem>
+
+  <TabItem label="Other tools">
+    Point it at the command `basemind` with the argument `serve`.
+  </TabItem>
+</Tabs>
+
+## 3. As a CLI
+
+The standalone program, for scripts, headless runs, and CI.
+[Install it](#install-the-program), then:
+
+<Code code={`basemind scan                          # index the project once
+basemind query symbol "parseQuery"     # find a symbol by name
+basemind query references "processFile" # find everywhere it's called
+basemind git blame-file src/main.rs    # who last changed each line
+basemind watch                         # keep the index fresh as files change`} lang="bash" />
+
+Full command list in the [CLI reference](/reference/cli/).
+
+## Install the program
+
+The MCP and CLI paths need `basemind` available on your system. (The plugin does
+this for you.)
+
+| Channel | Command | Includes |
+|---|---|---|
+| Homebrew | `brew install Goldziher/tap/basemind` | everything |
+| npm | `npm install -g basemind` | everything |
+| pip | `pip install basemind` | everything |
+| cargo | `cargo install basemind --locked` | code + git only |
+| cargo (full) | `cargo install basemind --features full --locked` | everything |
+| GitHub releases | [Download a binary](https://github.com/Goldziher/basemind/releases) | everything |
+
+The Homebrew / npm / pip / GitHub downloads include the full feature set —
+documents, OCR, search, web crawl, shared memory, agent comms, and agent shells
+— so the first run downloads the models it needs. The plain `cargo install`
+builds the code-map and git tools only.
+
+### Statusline (Claude Code)
+
+Run `/bm-statusline` once. This is a one-time step because Claude Code doesn't
+let plugins set the main statusline themselves — so basemind asks the assistant
+to make the one-line settings change on your behalf, and it sticks from then on.
+
+It shows two lines:
+
+```text
+Opus · basemind · ⎇ main · 12% ctx
+◆ basemind  ●  1,247 files · 23m ago  │  312 calls · 180 srch · 44 git · 12 docs  │  1.4M saved  │  ✉ 3 @reviewer
+```
+
+The dot is green when basemind is live and fresh, amber when idle, red when
+stale. The middle shows activity by type, then tokens saved, then unread
+messages. Adjust with `BASEMIND_STATUSLINE=full|compact|minimal`, or hide the
+top line with `BASEMIND_STATUSLINE_CONTEXT=0`.

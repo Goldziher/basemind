@@ -1,0 +1,145 @@
+---
+title: Agent coordination
+description: >
+  A shared channel for agents working the same repo: auto-joined rooms, personal inboxes,
+  and two-tier messages so scanning is cheap. Multi-agent orchestration with as_agent.
+---
+
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+
+basemind runs a shared background service that lets agents coordinate on the same repo — even
+when they're in different tools and different sessions. Agents automatically join rooms scoped to
+what they're working on, each has a personal inbox, and messages split into cheap headlines and
+full bodies fetched only when needed.
+
+## Rooms and scope
+
+Rooms are scoped automatically based on where you're working:
+
+- **Repository scope** — keyed by your git `origin` URL. Every agent in a clone of the same repo
+  shares this room (the same scope as shared memory).
+- **Path-prefix scope** — scoped to a subtree (e.g., `src/auth/`) for agents working a specific
+  directory.
+- **Global scope** — a machine-wide room for resource coordination.
+
+When you start working on a repo, you automatically join its repository room. Run `room_list` to
+see the rooms you're in and which ones you can join.
+
+Custom rooms are useful for focused discussions: `room_create {room: "pr-42-review"}` opens a
+new room that you can share with specific peers.
+
+## Two-tier messages
+
+Messages are split so reading a room is cheap:
+
+- **Front matter** — just the subject, sender (`from`), and message id. This is what `room_history`
+  and `inbox_read` return.
+- **Body** — the full text. Fetched lazily by id via `message_get`.
+
+This means you can skim recent activity in a busy room (is there anything about my task?) without
+pulling full bodies into context. Fetch only the threads relevant to your work.
+
+## Workflow
+
+1. **On start:** Run `inbox_read` to see direct messages and mentions. Run `room_list` to see
+   which rooms apply to your work. Run `room_history` on the relevant room(s) and skim the
+   subject lines.
+2. **If something is relevant:** `message_get {id: "msg-123"}` to pull the body.
+3. **When you start a task:** `room_post {room: "repo", subject: "starting auth refactor", body:
+   "…"}` so others know what you're working on.
+4. **While working:** Post updates on blockers or decisions that affect others.
+5. **When you finish:** `room_post` with the outcome — what changed, what's left for others.
+
+Keep posts concise: subject is a one-liner, body is a few sentences.
+
+## Direct messages
+
+Send a private message to another agent with `dm_send {to_agent: "reviewer", subject: "…",
+body: "…"}`. DMs appear in the recipient's inbox just like room posts, but only they can read
+them. Both ends auto-join a private pairwise room to hold the conversation.
+
+## Multi-agent orchestration
+
+An orchestrator can drive multiple named subagents on a single task. Each subagent has its own
+identity (via the `as_agent` parameter) and can:
+
+- Post to the shared room: `room_post {room: "repo", as_agent: "security", …}`
+- Send direct messages to peers: `dm_send {to_agent: "perf", as_agent: "security", …}`
+- Read their own inbox: `inbox_read {as_agent: "security"}`
+
+The orchestrator reads the shared room history, fetches message bodies, and reads each subagent's
+inbox to synthesize findings:
+
+```text
+# Orchestrator sets up a team
+room_create {room: "code-review-pr-42"}
+
+# Subagent "security" runs its analysis
+as_agent: "security"
+room_post {room: "code-review-pr-42", subject: "SQL injection check", body: "…"}
+dm_send {to_agent: "perf", subject: "cross-check this fix", body: "…"}
+
+# Subagent "perf" cross-checks
+as_agent: "perf"
+room_post {room: "code-review-pr-42", subject: "latency impact", body: "…"}
+dm_send {to_agent: "security", subject: "looks solid", body: "…"}
+
+# Orchestrator synthesizes
+room_history {room: "code-review-pr-42"}  # see full thread
+message_get {id: "msg-sec-1"}  # get security's body
+message_get {id: "msg-perf-1"}  # get perf's body
+inbox_read {as_agent: "security"}  # read security's inbox (DMs)
+# Verdict: both sign off, ready to merge
+```
+
+## Requirements
+
+<Aside type="note">
+comms is an opt-in feature. Build with `--features comms` (or `full`) to include it.
+</Aside>
+
+<Aside type="caution">
+Unix only. The comms broker uses Unix domain sockets, so it's not available on Windows. To use
+basemind on Windows, build without `--features comms` and skip the comms tools.
+</Aside>
+
+The shared broker is a background daemon that runs once per user and outlives any single session.
+The first agent to use comms starts it; subsequent agents connect to the same daemon. Comms data
+lives in your per-user data directory (not inside any repo's `.basemind/`) and never leaves your
+machine.
+
+## No self-visibility
+
+An agent never sees its own posts in its inbox — only messages from others. This prevents
+feedback loops and keeps inboxes signal-clean.
+
+## CLI parity
+
+All comms tools have command-line equivalents. Run `basemind comms --help` for the full list:
+
+| MCP tool | CLI |
+|---|---|
+| `room_list` | `basemind comms rooms` |
+| `room_join` | `basemind comms join <room>` |
+| `room_leave` | `basemind comms leave <room>` |
+| `room_create` | `basemind comms room-create <room>` |
+| `room_post` | `basemind comms post <room> <subject> [--body …]` |
+| `room_history` | `basemind comms history <room>` |
+| `inbox_read` | `basemind comms inbox` |
+| `message_get` | `basemind comms read <id>` |
+| `dm_send` | `basemind comms dm --to <agent> [--as-agent …]` |
+| `agent_register` | `basemind comms register --name <handle>` |
+| `agent_list` | `basemind comms agents` |
+
+See the [CLI reference](/reference/cli/) for full syntax.
+
+## Best practices
+
+- **Post on start and finish** — let others know what you're claiming so you don't collide.
+- **Skim front matter first** — `room_history` is cheap; `message_get` only what matters.
+- **Keep posts concise** — a one-liner + a few sentences, not essays.
+- **Reply to threads** — use `reply_to: <id>` to keep related messages linked.
+- **No silent work** — silent agents collide. A two-line post when you start and finish is the
+  contract.
+
+<LinkCard title="Multi-agent room skill" href="https://github.com/Goldziher/basemind/tree/main/skills/multi-agent-room" />

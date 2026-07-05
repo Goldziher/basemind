@@ -35,6 +35,8 @@ tokens of reading source. The operating rule for agents: **basemind first, shell
 
 ## Documentation
 
+- [Documentation site](https://basemind.ai): Guides, capability deep-dives, MCP tool + CLI reference, architecture, and performance.
+- [llms-full.txt](https://basemind.ai/llms-full.txt): The complete documentation as a single file, for LLM ingestion.
 - [README](README.md): Installation, feature overview, how it works, performance, and CLI reference.
 - [CHANGELOG](CHANGELOG.md): Release history and schema-version bump notes.
 - [CLAUDE.md](CLAUDE.md): Project rules, crate layout, and conventions for agents working in the repo.
