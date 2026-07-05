@@ -134,7 +134,7 @@ pub(super) async fn run_cache_clear(
             }
             clear_live_component(Arc::clone(&state), component).await?;
             // Rebuild from source so subsequent queries don't hit missing blobs.
-            scan_and_refresh(state, None).await?;
+            scan_and_refresh(state, None, crate::scanner::EmbedMode::Inline).await?;
             json_result(&CacheClearResponse {
                 component: component.as_str().to_string(),
                 cleared: true,
@@ -202,7 +202,8 @@ pub(super) async fn run_rescan(
         super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
     }
 
-    let report = scan_and_refresh(Arc::clone(&state), scoped_paths).await?;
+    // Manual `rescan` embeds inline so the tool's return means the index is fully current.
+    let report = scan_and_refresh(Arc::clone(&state), scoped_paths, crate::scanner::EmbedMode::Inline).await?;
 
     // Surface the outcome as a logging notification (gated on the client's level) and close out
     // progress with the discovered file count as both value and total.

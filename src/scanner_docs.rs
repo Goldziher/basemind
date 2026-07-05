@@ -27,6 +27,7 @@ use crate::config::{DocumentsConfig, LlmConfig};
 use crate::extract::doc::{DocConfig, FileMapDoc, extract_doc};
 use crate::hashing::{self, Hash};
 use crate::lance::DocumentRow;
+use crate::scanner::EmbedMode;
 use crate::store::Store;
 
 /// Per-file deferred LanceDB write. Constructed inside `process_file`'s parallel
@@ -66,12 +67,12 @@ pub(crate) fn preset_dim(name: &str) -> anyhow::Result<u16> {
 /// Translate the project-level `[documents]` config into the xberg-facing
 /// [`DocConfig`] the extractor expects. Pulled out so the wiring in
 /// `process_file` stays a single call.
-pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConfig {
+pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig, embed: bool) -> DocConfig {
     DocConfig {
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
         embedding_preset: Some(cfg.embedding_preset.clone()),
-        embed: cfg.embed,
+        embed,
         language: cfg.language.clone(),
         keywords: cfg.keywords.clone(),
         ner: cfg.ner.clone(),
@@ -195,7 +196,12 @@ pub(crate) fn extract_and_persist_doc(
     cfg: &DocumentsConfig,
     llm: &LlmConfig,
     scope: &str,
+    mode: EmbedMode,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
+    // `Deferred` forces the no-embed path regardless of the configured `documents.embed`, so serve
+    // boot extracts + caches the blob without paying the ONNX cost and emits no vector rows; the
+    // background `Inline` pass fills embeddings in later.
+    let embed = matches!(mode, EmbedMode::Inline) && cfg.embed;
     let hex_buf = hashing::hex_buf(hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
@@ -206,29 +212,29 @@ pub(crate) fn extract_and_persist_doc(
     // across worktrees. `read_doc_by_hex` surfaces a schema-mismatched blob as an error → treated as
     // a miss (`.ok().flatten()`).
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
-        && cached_doc_is_reusable(&cached, cfg)
+        && cached_doc_is_reusable(&cached, cfg, embed)
     {
-        return Ok(Some(pending_from_doc(&cached, rel, scope, cfg)));
+        return Ok(Some(pending_from_doc(&cached, rel, scope, cfg, embed)));
     }
 
-    // Cache miss: extract (xberg embeds inline when `cfg.embed`), then persist the content-addressed
+    // Cache miss: extract (xberg embeds inline when `embed`), then persist the content-addressed
     // blob so the next scan / a sibling path / a sibling worktree can reuse it.
-    let doc_config = doc_config_from(cfg, llm);
+    let doc_config = doc_config_from(cfg, llm, embed);
     let doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
     store
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    Ok(Some(pending_from_doc(&doc, rel, scope, cfg)))
+    Ok(Some(pending_from_doc(&doc, rel, scope, cfg, embed)))
 }
 
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
 /// cached blob must carry embeddings at the current preset's dimension (a preset change forces
 /// recompute — same gate as `chunk_and_embed`); an empty-of-chunks doc is always reusable (recompute
 /// would yield nothing anyway). When embedding is off, any cached doc is reusable (chunks only).
-fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig) -> bool {
-    if !cfg.embed || cached.chunks.is_empty() {
+fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: bool) -> bool {
+    if !embed || cached.chunks.is_empty() {
         return true;
     }
     let want_dim = preset_dim(&cfg.embedding_preset).ok();
@@ -243,7 +249,7 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig) -> bool {
 /// Assemble the deferred LanceDB batch from an extracted-or-cached document. Emits vector rows only
 /// when embedding is on, the doc has embeddings, and it is under the per-doc chunk cap; otherwise the
 /// blob is still tracked but no rows are written (the pathological / no-embed / empty cases).
-fn pending_from_doc(doc: &FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig) -> PendingDocBatch {
+fn pending_from_doc(doc: &FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig, embed: bool) -> PendingDocBatch {
     let no_rows = PendingDocBatch {
         rel_path: rel.to_string(),
         chunk_count: doc.chunks.len(),
@@ -260,7 +266,7 @@ fn pending_from_doc(doc: &FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsCon
         );
         return no_rows;
     }
-    if !cfg.embed || doc.embedding_dim == 0 || doc.chunks.is_empty() {
+    if !embed || doc.embedding_dim == 0 || doc.chunks.is_empty() {
         return no_rows;
     }
     let rows = build_doc_rows(doc, rel, scope);
@@ -478,7 +484,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default());
+        let doc_cfg = doc_config_from(&cfg, &LlmConfig::default(), cfg.embed);
         assert!(doc_cfg.language.auto_detect);
         assert_eq!(doc_cfg.language.min_confidence, 0.5);
         assert!(doc_cfg.language.detect_multiple);
@@ -499,7 +505,7 @@ mod tests {
             model: "openai/gpt-4o".to_string(),
             ..Default::default()
         };
-        let doc_cfg = doc_config_from(&cfg, &llm);
+        let doc_cfg = doc_config_from(&cfg, &llm, cfg.embed);
         assert!(doc_cfg.summarization.enabled);
         assert_eq!(doc_cfg.summarization.max_tokens, Some(150));
         assert_eq!(doc_cfg.llm.model, "openai/gpt-4o");

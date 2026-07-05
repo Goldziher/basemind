@@ -107,7 +107,14 @@ fn run_scan(root: &Path) {
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-            basemind::scanner::scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+            basemind::scanner::scan(
+                root,
+                &mut store,
+                &cfg,
+                basemind::scanner::ScanSource::WorkingTree,
+                basemind::scanner::EmbedMode::Inline,
+            )
+            .expect("scan");
         });
     });
 }

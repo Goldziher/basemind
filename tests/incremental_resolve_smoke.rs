@@ -36,7 +36,14 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     if store.lookup("app.js").is_none() {
         eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
@@ -53,7 +60,7 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
     // Edit: add a third use of `count`, then re-scan ONLY this path via the incremental entry point.
     let after = "const count = 1;\nfunction f() {\n  return count + count + count;\n}\n";
     fs::write(&app_abs, after).unwrap();
-    scan_paths(root, &mut store, &cfg, &[app_abs]).unwrap();
+    scan_paths(root, &mut store, &cfg, &[app_abs], basemind::scanner::EmbedMode::Inline).unwrap();
 
     // The incremental resolve pass must have refreshed the edges — three uses now, all in app.js.
     let mut uses = basemind::query::resolved_references(&store, &app, def_start);
@@ -89,7 +96,14 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     if store.lookup("gone.js").is_none() || store.lookup("keep.js").is_none() {
         eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
@@ -107,7 +121,14 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
     // Delete gone.js and re-scan only that path. The deletion-mirror loop must purge its resolved
     // edges; the wholesale resolve pass alone would never revisit them.
     fs::remove_file(&gone_abs).unwrap();
-    scan_paths(root, &mut store, &cfg, &[gone_abs]).unwrap();
+    scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[gone_abs],
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     assert!(
         basemind::query::resolved_references(&store, &gone, def_start).is_empty(),

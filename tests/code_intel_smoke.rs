@@ -26,7 +26,14 @@ fn scan_resolves_intra_file_references_for_javascript() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     if store.lookup("app.js").is_none() {
         eprintln!("javascript grammar unavailable in this environment — skipping resolution assertions");
@@ -72,7 +79,14 @@ fn scan_resolves_cross_file_references_for_typescript() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     // Both files must be indexed: the resolve pass only sees indexed files, and the join's
     // `store.lookup` gate drops unindexed targets. The TS grammar may be cold in a sandbox, so
@@ -121,7 +135,14 @@ fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     if store.lookup("a.js").is_none() || store.lookup("b.js").is_none() {
         eprintln!("javascript grammar unavailable in this environment — skipping no-conflation assertions");

@@ -552,7 +552,14 @@ mod tests {
         std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("a.rs");
         std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("b.rs");
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
-        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+        scan(
+            root,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
 
         let index = InRamCallIndex::build(&store);
         let page = scan_calls_in_ram(&index, "alpha", 100, None);
@@ -587,7 +594,14 @@ mod tests {
         // other.ts: a same-named function whose caller must NOT be conflated with util.ts's.
         std::fs::write(root.join("other.ts"), b"function target() { return 3; }\ntarget();\n").expect("other.ts");
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
-        scan(root, &mut store, &ConfigV1::with_defaults(), ScanSource::WorkingTree).expect("scan");
+        scan(
+            root,
+            &mut store,
+            &ConfigV1::with_defaults(),
+            ScanSource::WorkingTree,
+            crate::scanner::EmbedMode::Inline,
+        )
+        .expect("scan");
 
         let def_path = RelPath::from("util.ts".as_bytes());
         let l1 = crate::query::file_outline(&store, &def_path).expect("outline");

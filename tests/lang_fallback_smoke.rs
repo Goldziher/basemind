@@ -23,7 +23,14 @@ fn scan_fixture(name: &str) -> (TempDir, Store) {
     fs::write(root.join(name), bytes).expect("write fixture");
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).expect("scan");
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .expect("scan");
     assert_eq!(report.stats.updated, 1, "fixture should be processed");
     assert_eq!(report.stats.skipped_no_lang, 0, "fixture lang must resolve");
     (dir, store)

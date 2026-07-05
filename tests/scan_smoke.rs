@@ -20,7 +20,14 @@ fn scan_extracts_rust_symbols() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 1);
     assert_eq!(report.stats.skipped_unchanged, 0);
 
@@ -82,7 +89,14 @@ fn scan_indexes_dynamic_language_without_override_queries() {
     fs::write(root.join("data.json"), b"{ \"alpha\": 1 }\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 1, "json file should be processed");
     assert_eq!(report.stats.skipped_no_lang, 0, "json must not be skipped");
 
@@ -103,12 +117,26 @@ fn rescan_is_idempotent_and_uses_cache() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let first = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let first = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(first.stats.updated, 1);
     drop(store);
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let second = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let second = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(second.stats.updated, 0);
     assert_eq!(second.stats.skipped_unchanged, 1);
 }
@@ -121,12 +149,26 @@ fn modifying_a_file_triggers_reextract() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     {
         let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
     }
     fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
     {
         let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        let s = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+        let s = scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
         assert_eq!(s.stats.updated, 1);
         let hits = basemind::query::search_symbols(&store, "gamma", None).unwrap();
         assert_eq!(hits.len(), 1);
@@ -144,12 +186,26 @@ fn removed_files_get_purged_from_index() {
     fs::write(root.join("b.rs"), b"pub fn beta() {}\n").unwrap();
     {
         let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
     }
     fs::remove_file(root.join("b.rs")).unwrap();
     {
         let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        let s = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+        let s = scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
         assert_eq!(s.stats.removed, 1);
         assert!(store.lookup("b.rs").is_none());
         assert!(store.lookup("a.rs").is_some());
@@ -166,7 +222,14 @@ fn skips_large_files() {
     fs::write(root.join("big.rs"), &big).unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let s = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let s = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(s.stats.skipped_too_large, 1);
     assert!(store.lookup("big.rs").is_none());
 }
@@ -178,7 +241,14 @@ fn ignores_unknown_languages() {
     fs::write(root.join("weird.xyz"), b"data").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let _report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let _report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     // `.xyz` is not in the tree-sitter-language-pack registry. Without the documents
     // feature it's counted as `skipped_no_lang`; with documents enabled the scanner
     // hands it to the doc tier where mime sniffing + chunking decide its fate (typically
@@ -200,7 +270,14 @@ fn extracts_python() {
     .unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let outline = basemind::query::file_outline(&store, "m.py").unwrap();
     assert_eq!(outline.language, "python");
@@ -236,7 +313,14 @@ fn scan_flags_files_with_syntax_errors() {
     .unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 1);
     assert_eq!(
         report.stats.updated_with_warnings, 1,
@@ -278,7 +362,14 @@ fn scan_paths_only_touches_listed_files() {
     fs::write(root.join("c.rs"), b"pub fn c() {}\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hash_b_before = store.lookup("b.rs").unwrap().hash_hex.clone();
     let hash_c_before = store.lookup("c.rs").unwrap().hash_hex.clone();
@@ -286,7 +377,14 @@ fn scan_paths_only_touches_listed_files() {
     // Mutate a.rs only.
     fs::write(root.join("a.rs"), b"pub fn a_changed() {}\n").unwrap();
 
-    let report = scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+    let report = scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("a.rs")],
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.scanned, 1, "scan_paths visited only one file");
     assert_eq!(report.stats.updated, 1);
 
@@ -314,7 +412,14 @@ fn ts_arrow_function_const_is_function_kind() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "Greet", None).unwrap();
     assert_eq!(hits.len(), 1, "arrow-fn const should produce one symbol");
@@ -339,7 +444,14 @@ fn js_function_expression_const_is_function_kind() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "Greet", None).unwrap();
     assert_eq!(hits.len(), 1);
@@ -356,7 +468,14 @@ fn rust_impl_block_is_impl_kind() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let impls = basemind::query::search_symbols(&store, "Foo", Some(SymbolKind::Impl)).unwrap();
     assert_eq!(impls.len(), 1, "expected an impl block for Foo");
@@ -381,7 +500,14 @@ fn binary_file_with_source_extension_is_skipped() {
     fs::write(root.join("not_really.ts"), &payload).unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     assert_eq!(
         report.stats.skipped_binary, 1,
@@ -398,7 +524,14 @@ fn tsx_file_uses_tsx_query() {
     let root = dir.path();
     fs::write(root.join("App.tsx"), b"export const App = () => (<div>hello</div>);\n").unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let entry = store.lookup("App.tsx").expect("App.tsx indexed");
     assert_eq!(entry.language, "tsx");
@@ -414,11 +547,25 @@ fn scan_paths_purges_removed_files() {
     fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert!(store.lookup("a.rs").is_some());
 
     fs::remove_file(root.join("a.rs")).unwrap();
-    let report = scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+    let report = scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("a.rs")],
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.removed, 1);
     assert!(store.lookup("a.rs").is_none());
 }
@@ -433,7 +580,14 @@ fn ts_namespace_is_namespace_kind() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "Outer", None).unwrap();
     assert_eq!(hits.len(), 1, "expected one Outer namespace hit");
@@ -454,7 +608,14 @@ fn ts_getter_and_setter_kinds() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "x", None).unwrap();
     let getter = hits
@@ -479,7 +640,14 @@ fn python_decorators_attach_to_symbol() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "Point", None).unwrap();
     let point = hits
@@ -529,7 +697,14 @@ fn scanner_preserves_non_utf8_filename_bytes() {
     fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert!(
         report.stats.updated >= 1,
         "scanner should index files with non-UTF-8 names; updated={}",
@@ -694,7 +869,14 @@ fn ts_multiline_generic_signature_is_collapsed() {
     )
     .unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "foo", None).unwrap();
     assert_eq!(hits.len(), 1);
@@ -734,14 +916,21 @@ fn scan_paths_noop_batch_does_no_work() {
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     // Seed the index with one real file so the store is non-empty.
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let touched = vec![
         root.join("build/out.o"),
         root.join("node_modules/pkg/index.js"),
         root.join("child/.basemind/index.msgpack"),
     ];
-    let report = scan_paths(root, &mut store, &cfg, &touched).unwrap();
+    let report = scan_paths(root, &mut store, &cfg, &touched, basemind::scanner::EmbedMode::Inline).unwrap();
     assert_eq!(report.stats.updated, 0, "no indexable file changed");
     assert_eq!(report.stats.removed, 0, "nothing removed");
     assert_eq!(report.results.len(), 0, "short-circuit: no per-file work recorded");
@@ -759,11 +948,25 @@ fn scan_paths_prunes_deleted_indexed_file() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert!(store.lookup("a.rs").is_some());
 
     fs::remove_file(root.join("a.rs")).unwrap();
-    let report = scan_paths(root, &mut store, &cfg, &[root.join("a.rs")]).unwrap();
+    let report = scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("a.rs")],
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.removed, 1, "deleted indexed file pruned");
     assert_eq!(report.stats.updated, 0);
     assert!(store.lookup("a.rs").is_none());
@@ -784,7 +987,14 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
     fs::write(root.join("Other Note.md"), b"# Other Note\n").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.updated, 2);
 
     // Headings → `Heading` symbols, searchable like source symbols.
@@ -832,14 +1042,28 @@ fn documents_are_cached_unchanged_and_pruned() {
     fs::write(root.join("notes.svg"), svg).unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.docs_indexed, 1, "doc extracted on first scan");
     assert!(store.lookup_doc("notes.svg").is_some(), "doc tracked in doc_files");
     drop(store);
 
     // Rescan, same content: skipped as Unchanged, NOT re-indexed. The entry is retained.
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(report.stats.docs_indexed, 0, "unchanged doc not re-indexed");
     assert!(report.stats.skipped_unchanged >= 1, "unchanged doc counted as skipped");
     assert!(
@@ -851,7 +1075,14 @@ fn documents_are_cached_unchanged_and_pruned() {
     // Delete the doc: the tracking entry is pruned.
     fs::remove_file(root.join("notes.svg")).unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert!(
         store.lookup_doc("notes.svg").is_none(),
         "deleted doc pruned from doc_files"
@@ -870,13 +1101,27 @@ fn identical_documents_share_the_content_addressed_cache() {
 
     fs::write(root.join("a.svg"), body).unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     let hash_a = store.lookup_doc("a.svg").expect("a.svg tracked").hash_hex.clone();
     drop(store);
 
     fs::write(root.join("b.svg"), body).unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     let hash_b = &store.lookup_doc("b.svg").expect("b.svg tracked").hash_hex;
     assert_eq!(
         &hash_a, hash_b,
@@ -894,12 +1139,26 @@ fn same_size_content_change_is_reextracted() {
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     {
         let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-        scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+        scan(
+            root,
+            &mut store,
+            &cfg,
+            basemind::scanner::ScanSource::WorkingTree,
+            basemind::scanner::EmbedMode::Inline,
+        )
+        .unwrap();
     }
     // Identical byte length, different content — the racy window the nanosecond mtime closes.
     fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    let report = scan(root, &mut store, &cfg, basemind::scanner::ScanSource::WorkingTree).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert_eq!(
         report.stats.updated, 1,
         "same-size content change re-extracted, not skipped"
@@ -907,4 +1166,50 @@ fn same_size_content_change_is_reextracted() {
     assert_eq!(report.stats.skipped_unchanged, 0);
     let hits = basemind::query::search_symbols(&store, "gamma", None).unwrap();
     assert_eq!(hits.len(), 1, "the new symbol is indexed");
+}
+
+/// A `Deferred` scan must produce a queryable code-map + BM25 keyword lane, but write NO semantic
+/// vectors: serve boot uses it for a fast first pass, then fills embeddings in a background `Inline`
+/// pass. `code_search.embed` is left at its default (`true`) so this proves `Deferred` overrides it.
+/// Runs fully offline — no embedding means no model download.
+#[cfg(feature = "code-search")]
+#[test]
+fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() {
+    use basemind::scanner::EmbedMode;
+
+    let (dir, cfg) = fresh_repo();
+    assert!(cfg.code_search.enabled, "fixture must chunk source");
+    let root = dir.path();
+    fs::write(
+        root.join("lib.rs"),
+        b"/// Parse a configuration file's text into a typed value.\n\
+          pub fn parse_config(text: &str) -> u32 { text.len() as u32 }\n",
+    )
+    .unwrap();
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        EmbedMode::Deferred,
+    )
+    .unwrap();
+    assert_eq!(report.stats.updated, 1);
+
+    // Code-map is queryable: the symbol resolves from the deferred pass.
+    let hits = basemind::query::search_symbols(&store, "parse_config", None).unwrap();
+    assert_eq!(hits.len(), 1, "deferred scan must still index symbols");
+
+    // The BM25 keyword lane is populated even though embeddings were deferred.
+    let db = store.index_db.as_ref().expect("index db present");
+    let keyword = basemind::search::bm25::bm25_search(db, "parse", 10);
+    assert!(!keyword.is_empty(), "deferred scan must populate the BM25 keyword lane");
+
+    // No semantic vectors: the LanceDB code_chunks store was never created (no embedding rows).
+    assert!(
+        !store.lance_dir_exists(),
+        "deferred scan must not write LanceDB vector rows"
+    );
 }

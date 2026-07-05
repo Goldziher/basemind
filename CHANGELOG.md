@@ -85,6 +85,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Serve boot defers embedding to a background pass.** On `serve` auto-scan of an empty index, the
+  first pass now runs in a new `EmbedMode::Deferred` mode: it writes the code-map, the BM25 keyword
+  lane, and the content-addressed blobs but **skips** the ONNX embedding, so `outline` /
+  `search_symbols` / keyword `search_code` are queryable almost immediately instead of waiting on the
+  embed of every file. A detached second pass then re-scans in `EmbedMode::Inline` to fill the vectors
+  in (reusing the fast pass' content-addressed caches so only not-yet-embedded content is embedded,
+  bounded by `embed.max_threads`), followed by GC. The CLI `basemind scan`, the watcher, and manual
+  `rescan` stay `Inline` so scripted/CI use remains deterministic. No schema or config change.
 - **Index schema revision — new `refs_by_def` / `refs_by_path` Fjall partitions** back the resolved
   edges; per-file resolution facts persist as content-addressed `<hash>.rref.msgpack` blobs. This
   ships as a minor-release cut: `RELEASE_MINOR` bumps at release time, wiping and rebuilding every

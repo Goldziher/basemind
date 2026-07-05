@@ -47,7 +47,14 @@ fn abs_key(dir: &TempDir, rel: &str) -> String {
 fn extra_root_files_indexed_under_absolute_keys() {
     let (repo, ext, cfg) = repo_with_external();
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
-    scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     // Repo file: relative key.
     assert!(store.lookup("main.rs").is_some(), "repo file keyed relative");
@@ -69,7 +76,14 @@ fn extra_root_files_indexed_under_absolute_keys() {
 fn search_symbols_returns_external_symbol_with_absolute_path() {
     let (repo, ext, cfg) = repo_with_external();
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
-    scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let hits = basemind::query::search_symbols(&store, "external_greet", None).unwrap();
     assert_eq!(hits.len(), 1, "external_greet found exactly once");
@@ -84,7 +98,14 @@ fn search_symbols_returns_external_symbol_with_absolute_path() {
 fn outline_and_calls_resolve_for_external_file() {
     let (repo, ext, cfg) = repo_with_external();
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
-    scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     let ext_key = abs_key(&ext, "pkg/lib.rs");
 
@@ -106,7 +127,14 @@ fn outline_and_calls_resolve_for_external_file() {
 fn removing_extra_root_prunes_external_files() {
     let (repo, ext, cfg) = repo_with_external();
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
-    scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     let ext_key = abs_key(&ext, "pkg/lib.rs");
     assert!(store.lookup(ext_key.as_bytes()).is_some());
 
@@ -114,7 +142,14 @@ fn removing_extra_root_prunes_external_files() {
     // while the repo file survives.
     let mut cfg2 = ConfigV1::with_defaults();
     cfg2.scan.extra_roots = Vec::new();
-    scan(repo.path(), &mut store, &cfg2, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg2,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
     assert!(
         store.lookup(ext_key.as_bytes()).is_none(),
         "external key pruned after its root was removed from config"
@@ -137,7 +172,14 @@ fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
 
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
     // Scan must succeed despite the bogus roots.
-    scan(repo.path(), &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        repo.path(),
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     // The valid external root still indexed.
     assert!(store.lookup(abs_key(&ext, "pkg/lib.rs").as_bytes()).is_some());

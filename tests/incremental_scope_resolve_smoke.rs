@@ -38,7 +38,14 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
 
     let mut store = Store::open(root, VIEW_WORKING).unwrap();
     let cfg = ConfigV1::with_defaults();
-    scan(root, &mut store, &cfg, ScanSource::WorkingTree).unwrap();
+    scan(
+        root,
+        &mut store,
+        &cfg,
+        ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
 
     if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
         eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
@@ -63,7 +70,7 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
     // touched. Re-scan ONLY a.ts via the incremental watcher entry point.
     let a_after = "const pad = 0;\nexport function helper() {\n  return pad + 2;\n}\n";
     fs::write(&a_abs, a_after).unwrap();
-    scan_paths(root, &mut store, &cfg, &[a_abs]).unwrap();
+    scan_paths(root, &mut store, &cfg, &[a_abs], basemind::scanner::EmbedMode::Inline).unwrap();
 
     let export_after = helper_export_start(a_after);
     assert_ne!(
@@ -78,7 +85,7 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
         after
             .iter()
             .any(|(p, s)| p.as_str() == Some("b.ts") && *s == import_local_start),
-        "scan_paths(a.ts) must re-stitch b.ts's edge to the new a.ts export at {export_after}; got {after:?}"
+        "scan_paths(a.ts, basemind::scanner::EmbedMode::Inline) must re-stitch b.ts's edge to the new a.ts export at {export_after}; got {after:?}"
     );
 
     // The stale edge at the OLD export site must be gone — the re-stitch replaces, never duplicates.

@@ -251,6 +251,7 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
         &mut store,
         &config,
         basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
     )
     .expect("scan");
     let elapsed = t0.elapsed();

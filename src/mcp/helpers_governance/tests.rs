@@ -21,7 +21,14 @@ fn scanned_fixture(rel_path: &str, src: &[u8]) -> (tempfile::TempDir, crate::sto
     let _ = crate::lang::ensure_grammars().expect("grammars");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open store");
-    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &cfg,
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+    )
+    .expect("scan");
     let cache = MapCache::build(&store);
     (dir, store, cache)
 }
@@ -180,7 +187,14 @@ fn should_return_stale_when_symbol_body_changed() {
     std::fs::write(root.join("a.rs"), edited_src).expect("write edited");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open");
-    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &cfg,
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+    )
+    .expect("scan");
     let cache = MapCache::build(&store);
     // Stored hash was for original body; disk now has edited body.
     let record = MemoryRecord {
@@ -222,7 +236,14 @@ fn should_remain_verified_after_formatting_only_edit() {
     std::fs::write(root.join("a.rs"), formatted_src).expect("write formatted");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open");
-    crate::scanner::scan(root, &mut store, &cfg, crate::scanner::ScanSource::WorkingTree).expect("scan");
+    crate::scanner::scan(
+        root,
+        &mut store,
+        &cfg,
+        crate::scanner::ScanSource::WorkingTree,
+        crate::scanner::EmbedMode::Inline,
+    )
+    .expect("scan");
     let cache = MapCache::build(&store);
 
     let record = MemoryRecord {
