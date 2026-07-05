@@ -370,6 +370,15 @@ impl Store {
         Ok(self.lance.as_ref().expect("lance store just populated"))
     }
 
+    /// Whether the LanceDB vector-store directory already exists on disk. Lets callers avoid
+    /// lazily *creating* the store (via [`Self::lance_or_open`]) just to issue a delete that would
+    /// target a table that was never built (e.g. a stale-file purge on a repo that never enabled
+    /// code-search embeddings).
+    #[cfg(feature = "intelligence")]
+    pub fn lance_dir_exists(&self) -> bool {
+        self.basemind_dir.join(LANCE_DIR).exists()
+    }
+
     pub fn blob_path_fm(&self, hash: &Hash) -> PathBuf {
         let buf = hashing::hex_buf(hash);
         self.blob_path_fm_hex(hashing::hex_str(&buf))
