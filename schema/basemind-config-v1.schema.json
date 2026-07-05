@@ -18,7 +18,11 @@
           "**/dist/**",
           "**/.venv/**",
           "**/.basemind/**",
-          "**/.git/**"
+          "**/.git/**",
+          "**/bazel-out/**",
+          "**/bazel-bin/**",
+          "**/bazel-testlogs/**",
+          "**/bazel-*/**"
         ],
         "respect_gitignore": true,
         "max_file_bytes": 2097152,
@@ -211,7 +215,11 @@
             "**/dist/**",
             "**/.venv/**",
             "**/.basemind/**",
-            "**/.git/**"
+            "**/.git/**",
+            "**/bazel-out/**",
+            "**/bazel-bin/**",
+            "**/bazel-testlogs/**",
+            "**/bazel-*/**"
           ]
         },
         "respect_gitignore": {

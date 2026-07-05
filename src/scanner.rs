@@ -28,6 +28,12 @@ use crate::store::{FileEntry, Store, StoreError};
 /// every file still stages its own deletes+inserts; only the *flush boundary* moved.
 const INDEX_COMMIT_BATCH: usize = 256;
 
+/// Candidate-count threshold above which `walk_candidates` emits a visibility warning. This is
+/// pure observability — not a hard cap — so a runaway monorepo scan (e.g. a Bazel tree whose
+/// generated / vendored dirs slipped past `.gitignore` and the `[scan] exclude` globs) is visible
+/// in the logs instead of silently ballooning `.basemind/`.
+const LARGE_SCAN_CANDIDATE_WARN: usize = 50_000;
+
 /// Per-rayon-worker accumulator: buffers each file's index upsert into a shared Fjall write
 /// batch and commits once `INDEX_COMMIT_BATCH` files have been staged (and once more at the
 /// end of the worker's slice). Also carries the worker's `FileResult`s so the parallel fold
@@ -634,6 +640,12 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
         out.push(rel_str.to_string());
     }
     crate::scanner_filter::walk_extra_roots(root, config, filters, &mut out);
+    if out.len() > LARGE_SCAN_CANDIDATE_WARN {
+        tracing::warn!(
+            candidates = out.len(),
+            "scan candidate set is very large; check .gitignore / [scan] exclude globs for generated or vendored trees"
+        );
+    }
     out
 }
 

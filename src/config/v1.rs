@@ -103,6 +103,10 @@ impl ScanConfig {
             "**/.venv/**",
             "**/.basemind/**",
             "**/.git/**",
+            "**/bazel-out/**",
+            "**/bazel-bin/**",
+            "**/bazel-testlogs/**",
+            "**/bazel-*/**",
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -370,6 +374,27 @@ impl ConfigV1 {
             crawl: CrawlConfig::default(),
             shells: ShellsConfig::default(),
             llm: LlmConfig::default(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_exclude_includes_bazel_generated_trees() {
+        let exclude = ScanConfig::default().exclude;
+        for glob in [
+            "**/bazel-out/**",
+            "**/bazel-bin/**",
+            "**/bazel-testlogs/**",
+            "**/bazel-*/**",
+        ] {
+            assert!(
+                exclude.iter().any(|e| e == glob),
+                "default exclude is missing {glob}: {exclude:?}"
+            );
         }
     }
 }
