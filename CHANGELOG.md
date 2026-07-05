@@ -46,6 +46,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus the 1-based `exact_rank` / `vector_rank` / `keyword_rank` the chunk held in each contributing
   lane. Lets an agent tell an exact-symbol match from a semantic neighbor or a cross-lane agreement
   without a second call. Additive, non-breaking response fields (absent outside hybrid mode).
+- **`status` reports boot-scan indexing state.** When `serve` auto-scans an empty index on startup,
+  that build cost was invisible and could fold into the first query's latency. `status` now carries
+  `indexing: true` while the boot scan runs and `index_build_ms` once it completes — so a client can
+  tell "index not ready yet, poll again" from "no matches", separating index-build time from query
+  time. Additive fields, absent on the common ready path.
 - **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
   each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
   across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX

@@ -3294,6 +3294,41 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
     let _ = service.cancel().await;
 }
 
+/// `serve` auto-scans an empty index on boot; `status` must report that indexing state separately
+/// from query latency. Starting serve on a FRESH (unscanned) repo triggers the boot scan; polling
+/// `status` must converge to `indexing: false` with an `index_build_ms` recording the build cost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serve_auto_scan_reports_index_build_ms_on_status() {
+    // Intentionally NO run_scan(root): the empty index makes serve auto-scan on startup.
+    let dir = build_repo();
+    let root = dir.path();
+    let service = spawn_serve(root, None).await;
+
+    // Poll status until the boot scan settles (index populated + no longer indexing).
+    let mut settled: Option<Value> = None;
+    for _ in 0..200 {
+        let result = service
+            .call_tool(call_params("status", json!({})))
+            .await
+            .expect("status");
+        let v = decode_text(&result);
+        let done = v.get("file_count").and_then(Value::as_u64).unwrap_or(0) > 0
+            && !v.get("indexing").and_then(Value::as_bool).unwrap_or(false);
+        if done {
+            settled = Some(v);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let v = settled.expect("boot auto-scan must complete and populate the index");
+    assert!(
+        v.get("index_build_ms").and_then(Value::as_u64).is_some(),
+        "status must report index_build_ms after the boot auto-scan: {v}"
+    );
+
+    let _ = service.cancel().await;
+}
+
 /// W5 slice 3: the lean MCP surface is STRICTLY opt-in.
 ///
 /// * `BASEMIND_MCP_LEAN=1` → exactly the three wrapper tools are advertised, and

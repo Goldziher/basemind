@@ -252,6 +252,14 @@ pub(crate) struct ServerState {
     /// (see [`notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
     /// the server honors the client's verbosity preference.
     pub(crate) log_level: std::sync::atomic::AtomicU8,
+    /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
+    /// client polling `status` distinguish "index still building" from "index empty / no matches"
+    /// so the build cost is not silently folded into the first query's latency.
+    pub(crate) initial_scan_active: std::sync::atomic::AtomicBool,
+    /// Wall-clock duration of the boot-time initial scan, in milliseconds, once it completes
+    /// (`0` = no initial scan happened this session, or it is still running). Surfaced on `status`
+    /// as `index_build_ms` to report indexing time separately from query time.
+    pub(crate) initial_scan_ms: std::sync::atomic::AtomicU64,
     /// True when this serve fell back to a read-only store because another serve owns the
     /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
@@ -569,6 +577,8 @@ impl BasemindServer {
             #[cfg(all(feature = "shells", any(unix, windows)))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
+            initial_scan_active: std::sync::atomic::AtomicBool::new(false),
+            initial_scan_ms: std::sync::atomic::AtomicU64::new(0),
             read_only: options.read_only,
         });
         // One-shot CLI queries skip ALL background facilities: no view watcher,
@@ -624,16 +634,28 @@ impl BasemindServer {
                 let scan_state = Arc::clone(&state);
                 tracing::info!("empty index on startup; running initial scan in background");
                 tokio::spawn(async move {
+                    use std::sync::atomic::Ordering;
+                    // Mark the index as building so a concurrent `status` poll reports `indexing:
+                    // true` instead of an empty index — separating build time from query time.
+                    scan_state.initial_scan_active.store(true, Ordering::Relaxed);
+                    let started = std::time::Instant::now();
                     match helpers::scan_and_refresh(Arc::clone(&scan_state), None).await {
                         Ok(report) => tracing::info!(
                             scanned = report.stats.scanned,
                             updated = report.stats.updated,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
                             "initial background scan complete"
                         ),
                         Err(error) => {
                             tracing::warn!(%error, "initial background scan failed");
                         }
                     }
+                    // Record the build duration and clear the building flag (even on failure, so a
+                    // client never sees a permanently-"indexing" server).
+                    scan_state
+                        .initial_scan_ms
+                        .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                    scan_state.initial_scan_active.store(false, Ordering::Relaxed);
                     // Run GC after the scan settles, regardless of scan outcome.
                     background::run_background_gc(scan_state).await;
                 });

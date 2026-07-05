@@ -315,6 +315,16 @@ pub(super) struct StatusResponse {
     /// path — status then reflects the fully-committed index.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rebuild_in_progress: bool,
+    /// `true` while this serve's boot-time initial scan (auto-scan of an empty index) is still
+    /// running. A client seeing this should treat empty query results as "index not ready yet"
+    /// and poll again, rather than "no matches". Absent (false) once the index is built.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub indexing: bool,
+    /// Wall-clock duration of this serve's boot-time initial scan, in milliseconds, once complete.
+    /// Reports index-build time separately from query time so the first query's latency is not
+    /// conflated with the one-time indexing cost. Absent when no initial scan ran this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_build_ms: Option<u64>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     pub cache_dir: String,
