@@ -221,6 +221,19 @@ pub struct DocEntry {
 pub struct Store {
     pub root: PathBuf,
     pub basemind_dir: PathBuf,
+    /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`).
+    /// Normally `basemind_dir/blobs`, but for a *linked git worktree* it resolves to the MAIN
+    /// worktree's `.basemind/blobs` so byte-identical files across worktrees are extracted +
+    /// embedded once (shared cache). Views + LanceDB stay per-worktree. See
+    /// [`resolve_blobs_dir`]. When this points outside `basemind_dir`, auto-GC is skipped
+    /// ([`Store::blobs_are_shared`]) so one worktree's GC never reaps another's referenced blobs.
+    pub blobs_dir: PathBuf,
+    /// True when this clone has linked git worktrees, so [`Store::blobs_dir`] is (potentially)
+    /// shared across them. Auto-GC (boot + background) is skipped in this case: a sweep sees only
+    /// one worktree's references and could reap blobs a sibling still needs. Set from EITHER side
+    /// (the main worktree also skips). Explicit worktree-spanning GC is a follow-up; the dedup win
+    /// (shared cache, no re-embed) does not depend on it.
+    pub blobs_shared: bool,
     pub view_dir: PathBuf,
     pub view: String,
     pub index: Index,
@@ -250,7 +263,15 @@ impl Store {
         let basemind_dir = root.join(crate::config::BASEMIND_DIR);
         ensure_dir(&basemind_dir)?;
         ensure_gitignore(&basemind_dir)?;
-        ensure_dir(&basemind_dir.join(BLOBS_DIR))?;
+        let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
+        ensure_dir(&blobs_dir)?;
+        if blobs_shared {
+            // The shared blob dir lives under the main worktree's `.basemind`, which may not exist
+            // yet if only this linked worktree has been scanned — make sure it's git-ignored too.
+            if let Some(shared_basemind) = blobs_dir.parent() {
+                ensure_gitignore(shared_basemind)?;
+            }
+        }
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
         migrate_legacy_index_into_views(&basemind_dir)?;
 
@@ -295,6 +316,8 @@ impl Store {
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
+            blobs_dir,
+            blobs_shared,
             view_dir,
             view: view.to_string(),
             index,
@@ -312,6 +335,7 @@ impl Store {
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
         }
+        let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         // An explicitly-named view (e.g. `rev-<sha>`, `staged`) that has never been scanned
         // has no `index.msgpack`. Reading it would silently return an empty, working-like
@@ -365,6 +389,8 @@ impl Store {
         Ok(Self {
             root: root.to_path_buf(),
             basemind_dir,
+            blobs_dir,
+            blobs_shared,
             view_dir,
             view: view.to_string(),
             index,
@@ -411,7 +437,7 @@ impl Store {
     /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
     /// the caller starts from a `FileEntry::hash_hex`.
     pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir.join(BLOBS_DIR).join(format!("{hash_hex}.fm.msgpack"))
+        self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"))
     }
 
     #[cfg(feature = "documents")]
@@ -422,9 +448,7 @@ impl Store {
 
     #[cfg(feature = "documents")]
     pub fn blob_path_doc_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.doc.msgpack"))
+        self.blobs_dir.join(format!("{hash_hex}.doc.msgpack"))
     }
 
     /// Read the L1 outline from the combined-filemap blob. Deserializes only the L1 slice of
@@ -496,9 +520,7 @@ impl Store {
     /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
     /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
     pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.rref.msgpack"))
+        self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
     }
 
     /// Write a file's resolution facts. Content-addressed skip on matching schema (identical
@@ -532,9 +554,7 @@ impl Store {
     /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
     #[cfg(feature = "code-search")]
     pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
-        self.basemind_dir
-            .join(BLOBS_DIR)
-            .join(format!("{hash_hex}.chunk.msgpack"))
+        self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
     }
 
     /// Write a file's code-chunk sidecar. Content-addressed skip on matching schema (identical
@@ -646,6 +666,35 @@ fn ensure_gitignore(basemind_dir: &Path) -> Result<(), StoreError> {
         path: gitignore,
         source,
     })
+}
+
+/// Resolve the blob-cache directory for `root`, and whether it is shared across worktrees.
+///
+/// - **Linked git worktree** (`git worktree add`): returns the MAIN worktree's `.basemind/blobs`
+///   with `shared = true`, so byte-identical files across worktrees are extracted + embedded once.
+/// - **Main worktree, plain checkout, or non-git dir**: returns `basemind_dir/blobs` with
+///   `shared = false` — byte-for-byte the pre-sharing behavior.
+///
+/// Detection keys off `Repo::is_linked_worktree` (git-dir ≠ common-dir), NOT a path comparison, so
+/// the macOS `/tmp`→`/private/tmp` symlink can't misclassify a main worktree as shared.
+///
+/// The returned bool is the **GC-skip** flag = `Repo::has_linked_worktrees`: true whenever the clone
+/// has any linked worktree (observed identically from the main or a linked worktree). It is broader
+/// than "am I a linked worktree" on purpose — the MAIN worktree must also skip auto-GC, or its sweep
+/// (seeing only its own references) would reap blobs a linked worktree still needs.
+fn resolve_blobs_dir(root: &Path, basemind_dir: &Path) -> (PathBuf, bool) {
+    if let Ok(repo) = crate::git::Repo::discover(root) {
+        let gc_unsafe = repo.has_linked_worktrees();
+        let dir = if repo.is_linked_worktree() {
+            repo.main_worktree_root()
+                .join(crate::config::BASEMIND_DIR)
+                .join(BLOBS_DIR)
+        } else {
+            basemind_dir.join(BLOBS_DIR)
+        };
+        return (dir, gc_unsafe);
+    }
+    (basemind_dir.join(BLOBS_DIR), false)
 }
 
 /// Delete the index file in a single view's directory.

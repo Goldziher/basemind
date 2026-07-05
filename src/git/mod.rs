@@ -166,6 +166,19 @@ pub struct RepoInfo {
     pub branch: Option<String>,
 }
 
+/// Resolve a (possibly relative) git plumbing path against `workdir` and canonicalize it, so
+/// comparisons (git-dir vs common-dir) are robust to relative storage and the macOS
+/// `/tmp`→`/private/tmp` symlink. Falls back to the un-canonicalized absolute path when the target
+/// does not exist on disk.
+fn anchor_git_path(workdir: &Path, path: &Path) -> PathBuf {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        workdir.join(path)
+    };
+    abs.canonicalize().unwrap_or(abs)
+}
+
 impl Repo {
     /// Walk up from `start` looking for `.git`. Returns `NotARepo` if discovery fails.
     pub fn discover(start: &Path) -> Result<Self, GitError> {
@@ -184,6 +197,48 @@ impl Repo {
 
     pub fn workdir(&self) -> &Path {
         &self.workdir
+    }
+
+    /// The working directory of the **main** worktree for this repository.
+    ///
+    /// For a normal checkout or the main worktree this is just [`Self::workdir`]. For a *linked*
+    /// worktree (`git worktree add`, where `.git` is a file pointing at
+    /// `<main>/.git/worktrees/<name>`) this resolves back to `<main>` — the directory that owns the
+    /// shared object store. basemind uses this to place the content-addressed blob cache in ONE
+    /// location shared by every worktree of the same clone, so byte-identical files are extracted +
+    /// embedded once rather than once per worktree.
+    ///
+    /// `gix`'s `common_dir()` returns the main `.git` directory even from a linked worktree; the
+    /// main worktree root is its parent. The path may be stored relative in git's plumbing, so it is
+    /// anchored on this worktree and canonicalized. Falls back to this worktree's own workdir if the
+    /// common dir has no parent (defensive — should not happen for a non-bare repo).
+    pub fn main_worktree_root(&self) -> PathBuf {
+        let common_abs = anchor_git_path(&self.workdir, self.local().common_dir());
+        common_abs
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.workdir.clone())
+    }
+
+    /// True when this repository is a **linked** worktree (created by `git worktree add`), i.e. its
+    /// per-worktree git dir (`<main>/.git/worktrees/<name>`) differs from the shared common dir
+    /// (`<main>/.git`). The main worktree and a plain checkout return `false`. Used to decide whether
+    /// to share the blob cache with the main worktree.
+    pub fn is_linked_worktree(&self) -> bool {
+        let local = self.local();
+        anchor_git_path(&self.workdir, local.git_dir()) != anchor_git_path(&self.workdir, local.common_dir())
+    }
+
+    /// True when this clone has ANY linked worktree registered (`<common_dir>/worktrees/` is
+    /// non-empty), observable identically from the main worktree or any linked one. basemind uses
+    /// this to disable auto-GC of the shared blob cache: a sweep from any single worktree only sees
+    /// its own references and could reap blobs a sibling still needs. The dedup win doesn't depend on
+    /// GC (it only reclaims orphaned disk); a worktree-spanning GC is a follow-up.
+    pub fn has_linked_worktrees(&self) -> bool {
+        let common = anchor_git_path(&self.workdir, self.local().common_dir());
+        std::fs::read_dir(common.join("worktrees"))
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false)
     }
 
     /// True when the underlying clone is shallow (`.git/shallow` exists). History walks may
