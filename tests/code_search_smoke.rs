@@ -350,6 +350,29 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
             .is_some_and(|s| s > 0.0),
         "hybrid hit must carry a positive fused RRF score: {top}"
     );
+    // Why-matched provenance: the top hit for an identifier query is produced by the exact lane,
+    // so `matched_lanes` includes "exact" and `exact_rank` is set (1-based). Keyword may also
+    // contribute; the vector lane is absent under embed=false.
+    let lanes: Vec<&str> = top
+        .get("matched_lanes")
+        .and_then(|v| v.as_array())
+        .expect("hybrid hit carries matched_lanes")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(
+        lanes.contains(&"exact"),
+        "the exact lane must be credited in matched_lanes for an identifier query: {top}"
+    );
+    assert_eq!(
+        top.get("exact_rank").and_then(serde_json::Value::as_u64),
+        Some(1),
+        "the defining chunk must be exact-lane rank #1: {top}"
+    );
+    assert!(
+        top.get("vector_rank").is_none(),
+        "no vector lane under embed=false, so vector_rank must be absent: {top}"
+    );
 }
 
 /// Recursively search `root/.basemind/` for the first file whose name ends with

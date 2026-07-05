@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (e.g. the vector lane without embeddings). An optional cross-encoder **rerank** pass (`rerank:true`
   / `[code_search.reranker]`, off by default) reuses the same xberg reranker as the documents tier.
   No index-schema change — reuses the existing keyspaces and the `code_chunks` table.
+- **`search_code` why-matched provenance.** Hybrid hits now carry per-lane provenance:
+  `matched_lanes` (which of `exact` / `vector` / `keyword` produced the hit, in fixed lane order)
+  plus the 1-based `exact_rank` / `vector_rank` / `keyword_rank` the chunk held in each contributing
+  lane. Lets an agent tell an exact-symbol match from a semantic neighbor or a cross-lane agreement
+  without a second call. Additive, non-breaking response fields (absent outside hybrid mode).
 - **Code-intelligence tier: scope- and import-resolved navigation.** A post-scan resolve pass links
   each reference to its actual definition — scope-aware, not a name match. Intra-file resolution runs
   across 80+ languages via tree-sitter `locals` (with vendored queries for Python / TypeScript / TSX

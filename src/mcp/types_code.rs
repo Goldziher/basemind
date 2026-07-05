@@ -85,6 +85,21 @@ pub(crate) struct CodeSearchHit {
     /// Cross-encoder rerank score (higher = better). Present only when the rerank pass ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rerank_score: Option<f32>,
+    /// Why-matched provenance (hybrid mode only): which lanes produced this hit, in fixed lane
+    /// order `exact` → `vector` → `keyword` (only lanes that ranked the chunk appear). Lets an agent
+    /// see whether a hit is an exact-symbol match, a semantic neighbor, a lexical match, or an
+    /// agreement across lanes. Not sorted by contribution — read the per-lane ranks below for that.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_lanes: Vec<String>,
+    /// 1-based rank this chunk held in the keyword (BM25) lane, when that lane ranked it (hybrid).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyword_rank: Option<u32>,
+    /// 1-based rank this chunk held in the vector (semantic) lane, when that lane ranked it (hybrid).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_rank: Option<u32>,
+    /// 1-based rank this chunk held in the exact (symbol) lane, when that lane ranked it (hybrid).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_rank: Option<u32>,
 }
 
 #[cfg(feature = "code-search")]
