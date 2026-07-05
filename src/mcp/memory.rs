@@ -25,10 +25,11 @@ use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
+    let max_embed_threads = state.config.documents.embed_max_threads;
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            crate::embeddings::SharedEmbedder::load(&preset)
+            crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })
@@ -45,13 +46,14 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
+    let max_embed_threads = state.config.documents.embed_max_threads;
     state
         .lance
         .get_or_try_init(|| async {
             let embedder = state
                 .embedder
                 .get_or_try_init(|| async {
-                    crate::embeddings::SharedEmbedder::load(&preset)
+                    crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads)
                         .map(Arc::new)
                         .map_err(|e| format!("load embedder: {e}"))
                 })

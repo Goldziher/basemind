@@ -81,6 +81,7 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig) -> DocConf
         // across capabilities (ner-llm, summarization-llm, …).
         summarization: cfg.summarization.clone(),
         llm: llm.clone(),
+        embed_max_threads: cfg.embed_max_threads,
     }
 }
 

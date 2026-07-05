@@ -126,10 +126,11 @@ async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> 
     // different model the LanceStore (dim, model) mismatch would wipe the table
     // on the next open, so serve and disk scans must agree on the preset.
     let preset = state.config.documents.embedding_preset.clone();
+    let max_embed_threads = state.config.documents.embed_max_threads;
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            SharedEmbedder::load(&preset)
+            SharedEmbedder::load(&preset, max_embed_threads)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })

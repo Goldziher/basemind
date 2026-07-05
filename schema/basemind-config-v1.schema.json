@@ -110,7 +110,8 @@
         },
         "output": {
           "format": "json"
-        }
+        },
+        "embed_max_threads": 0
       }
     },
     "code_search": {
@@ -439,6 +440,13 @@
           "default": {
             "format": "json"
           }
+        },
+        "embed_max_threads": {
+          "description": "Maximum number of threads dedicated to ONNX embedding. `0` means\n\"auto = max(2, logical_cpus / 4)\" — a bounded fraction of available\ncores so the embedder never pins the machine. Both the document and\ncode-search tiers route their `embed_texts` calls through a single\nprocess-wide rayon `ThreadPool` of this size; code-map extraction\nkeeps the full global pool.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
         }
       },
       "additionalProperties": false
