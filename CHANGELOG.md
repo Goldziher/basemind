@@ -78,6 +78,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `documents.extension_denylist` extends the built-in archive/binary skip list; `documents.embed_max_threads`
   bounds the embedding pool. `[scan] exclude` gains Bazel defaults (`bazel-out/`, `bazel-bin/`,
   `bazel-testlogs/`, `bazel-*/`), and a large-candidate-count scan logs a warning.
+- **mtime+size fast-path on rescan.** An unchanged working-tree file is now confirmed with a single
+  `stat()` (size + nanosecond mtime match + sidecars present) instead of a full read + blake3 hash —
+  the bulk of the per-file cost on a large-monorepo warm rescan. mtime moved to nanosecond resolution
+  so the fast-path is effectively race-free; it's an internal comparison value, so no schema bump.
 
 ### Changed
 
