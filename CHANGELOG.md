@@ -67,6 +67,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holes. The scan now degrades to a keyword-only batch (chunks + BM25, no LanceDB rows, no embedded
   sidecar) and retries embedding on the next scan. BM25 is independent of embeddings and is indexed
   as such.
+- **L1 extraction no longer drops (or crashes on) symbols in TSLP-fallback languages whose
+  `tags.scm` leads a definition with an auxiliary capture.** The combined-L1 dispatch keyed on the
+  match's _first_ capture, but adapted upstream tag queries (e.g. Ruby) prepend a `@doc` capture for
+  a preceding comment — so a commented `def` classified as `Other`, panicking debug builds
+  (`debug_assert!`) and silently dropping the symbol in release. A single such file could abort the
+  whole parallel scan, leaving the index empty. Dispatch now scans to the first capture that
+  classifies to a known L1 class, recovering those symbols across every fallback grammar.
 
 ## [0.16.0] — 2026-07-02
 
