@@ -467,6 +467,16 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
+            // Boot-scan state (cheap atomic loads) — reported on both the contended and
+            // uncontended paths so a client can tell "index building" from "index ready".
+            let indexing = self
+                .state
+                .initial_scan_active
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let index_build_ms = {
+                let ms = self.state.initial_scan_ms.load(std::sync::atomic::Ordering::Relaxed);
+                (ms > 0).then_some(ms)
+            };
             // Non-blocking read: a writer (`scan`/`rescan`/`watch`) can hold the store lock for
             // minutes during a rebuild. `read().await` would queue behind it and record the
             // whole lock-wait as this call's wall-clock (the misleading multi-minute `status`
@@ -485,6 +495,8 @@ impl BasemindServer {
                                 .to_string(),
                         ),
                         rebuild_in_progress: true,
+                        indexing,
+                        index_build_ms,
                         total_size_bytes: 0,
                         languages: BTreeMap::new(),
                         cache_dir: crate::lang::grammar_cache_dir()
@@ -531,6 +543,8 @@ impl BasemindServer {
                 blob_count,
                 note,
                 rebuild_in_progress: false,
+                indexing,
+                index_build_ms,
                 total_size_bytes: total_size,
                 languages: by_lang,
                 cache_dir,
