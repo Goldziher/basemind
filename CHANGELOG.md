@@ -10,6 +10,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+Wide hot-path allocation + algorithmic sweep across the scanner, extraction, git, and MCP query
+paths. All changes are internal — no behavior, response-shape, or on-disk-format change, and the
+determinism assertions are unchanged.
+
+- **`call_graph`** (`bfs_callees`) precomputes a name→sites map once instead of re-scanning every
+  indexed symbol for each discovered callee — O(max_nodes × symbols) → O(symbols + max_nodes).
+- **`architecture_map`**: `callee_counts` no longer allocates a `String` on every one of up to 4M
+  scanned call sites (allocates only on first sight of a name); the symbol-tier fan-out set skips the
+  allocation for duplicate callees; PageRank reuses a single accumulator buffer (20 allocations → 1).
+  Output stays byte-identical.
+- **Tree-sitter `QueryCursor`** is now pooled per thread alongside the parser pool — ~3 fewer
+  allocations per scanned file.
+- **git**: `diff_file` no longer clones the (potentially multi-MB) file buffers just to record
+  existence; the `blame` / `log` / `commit-files` disk-cache writers serialize from borrowed slices
+  instead of cloning the whole payload; `dependents` drops a `RelPath`↔`PathBuf` round-trip over the
+  entire file index.
+- **document tier**: `build_doc_rows` moves per-chunk text + embedding vectors instead of cloning
+  them; the archive-extension check is an `AHashSet` (O(1)) instead of a 40-element linear scan.
+- **paths**: the scanner (`scan_paths`) and watcher skip a `\`→`/` `String` allocation on Unix.
+- **BM25 index**: the posting value drops a `.to_vec()` (`lsm_tree::Slice: From<[u8; N]>`) and the
+  forward-map value is built in one sized allocation instead of an alloc-plus-realloc.
+
+### Internal
+
+- `for_each_call_in_file` (the dual-backend Fjall / in-RAM call-site scan) now lives once in
+  `mcp/helpers_calls.rs`, shared by `architecture_map` and the call-graph helpers; `capture_name` is
+  deduplicated into `extract/mod.rs`. Removed a dead `last_emitted_key` in `find_implementations`.
+
 ## [0.18.1] — 2026-07-06
 
 > **Patch release — blob + index format unchanged.** `RELEASE_MINOR` stays 18; no `.basemind/`

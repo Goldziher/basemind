@@ -22,8 +22,9 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::cursor::prefix_upper_bound;
 use super::helpers::{json_result, kind_to_str};
+use super::helpers_calls::for_each_call_in_file;
 use super::types_graph::{CallGraphNode, CallGraphParams, CallGraphResponse, CallGraphSite};
-use crate::extract::{Call, FileMapL1, Symbol, SymbolKind};
+use crate::extract::{FileMapL1, Symbol, SymbolKind};
 use crate::path::RelPath;
 
 const MAX_DEPTH_CEILING: u32 = 6;
@@ -344,6 +345,24 @@ fn bfs_callees(
     let mut hit_scan_cap = false;
     let mut depth_gated = false;
 
+    // Precompute function-like symbol sites per name once, O(n_all_symbols). The original
+    // code scanned all of cache.by_path for every newly-discovered callee (O(max_nodes ×
+    // n_all_symbols)). Iterates cache.by_path in the same BTreeMap ascending order so the
+    // sites Vec per name is byte-identical to what the old inline scan produced.
+    let mut name_to_sites: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
+    for (path, l1) in &cache.by_path {
+        for sym in &l1.symbols {
+            if is_function_like(sym.kind) {
+                name_to_sites.entry(sym.name.clone()).or_default().push(CallGraphSite {
+                    path: path.clone(),
+                    kind: kind_to_str(sym.kind).to_string(),
+                    start_row: sym.start_row,
+                    start_col: sym.start_col,
+                });
+            }
+        }
+    }
+
     while let Some((current_name, depth)) = frontier.pop_front() {
         if depth >= max_depth {
             depth_gated = true;
@@ -385,21 +404,10 @@ fn bfs_callees(
                         break;
                     }
                     let new_idx = nodes.len() as u32;
-                    // Build sites for the callee from the L1 cache (may be empty for
-                    // external library functions).
-                    let mut sites: Vec<CallGraphSite> = Vec::new();
-                    for (path, l1) in &cache.by_path {
-                        for sym in &l1.symbols {
-                            if sym.name == callee && is_function_like(sym.kind) {
-                                sites.push(CallGraphSite {
-                                    path: path.clone(),
-                                    kind: kind_to_str(sym.kind).to_string(),
-                                    start_row: sym.start_row,
-                                    start_col: sym.start_col,
-                                });
-                            }
-                        }
-                    }
+                    // Look up definition sites from the precomputed map (O(1) per callee)
+                    // instead of re-scanning all symbols on every newly-discovered callee.
+                    // May be empty for external library functions not in the index.
+                    let sites = name_to_sites.get(callee.as_str()).cloned().unwrap_or_default();
                     nodes.push(CallGraphNode {
                         name: callee.clone(),
                         depth: depth + 1,
@@ -467,52 +475,27 @@ fn collect_callees_for_name(
         if matching.is_empty() {
             continue;
         }
-        // For each call in this file, keep its callee if it falls inside a matching
-        // symbol's byte range. Fjall prefix-scans `calls_by_path`; the read-only path
-        // reads the same call sites from the in-RAM index. `in_range` is shared.
-        let in_range = |callee: &str, start_byte: u32, callees: &mut AHashSet<String>| {
+        // Delegate the dual-backend scan (Fjall prefix vs in-RAM call index) to the shared
+        // helper. Same cap semantics: `scanned` increments for every call site, `cap_hit`
+        // stops the current file, checked after each file to short-circuit further iteration.
+        let mut cap_hit = false;
+        for_each_call_in_file(idx, cache, path, |callee, start_byte| {
+            scanned += 1;
+            if scanned > scan_cap {
+                cap_hit = true;
+                return false;
+            }
             if matching
                 .iter()
                 .any(|s| s.start_byte <= start_byte && start_byte < s.end_byte)
             {
                 callees.insert(callee.to_string());
             }
-        };
-        match idx {
-            Some(idx) => {
-                let prefix = crate::index::keys::calls_by_path_prefix(path);
-                let upper_bound: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
-                    Some(b) => Bound::Excluded(b),
-                    None => Bound::Unbounded,
-                };
-                let lower = Bound::Included(prefix);
-                for guard in idx.calls_by_path.range::<Vec<u8>, _>((lower, upper_bound)) {
-                    scanned += 1;
-                    if scanned > scan_cap {
-                        return Err(CallerScanError::ScanCap);
-                    }
-                    let (_, v) = guard.into_inner().map_err(|e| {
-                        CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None))
-                    })?;
-                    let call: Call = match rmp_serde::from_slice(&v) {
-                        Ok(c) => c,
-                        Err(_) => continue,
-                    };
-                    in_range(&call.callee, call.start_byte, &mut callees);
-                }
-            }
-            None => {
-                let Some(calls) = cache.calls.as_ref() else {
-                    continue;
-                };
-                for call in calls.calls_in_file(path) {
-                    scanned += 1;
-                    if scanned > scan_cap {
-                        return Err(CallerScanError::ScanCap);
-                    }
-                    in_range(&call.callee, call.start_byte, &mut callees);
-                }
-            }
+            true
+        })
+        .map_err(CallerScanError::Other)?;
+        if cap_hit {
+            return Err(CallerScanError::ScanCap);
         }
     }
     Ok(callees)

@@ -15,20 +15,17 @@
 //! The graph is rebuilt per call (bounded by [`ARCHMAP_EDGE_SCAN_CAP`]); memoizing it
 //! against `cache_generation` is a future optimization, not needed for an occasional tool.
 
-use std::ops::Bound;
-
 use ahash::{AHashMap, AHashSet};
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::MapCache;
 use super::budget::apply_budget;
-use super::cursor::prefix_upper_bound;
 use super::helpers::{json_result, kind_to_str};
+use super::helpers_calls::for_each_call_in_file;
 use super::helpers_graph::is_function_like;
 use super::kneedle::knee_cutoff;
 use super::types_archmap::{ArchEdge, ArchNode, ArchitectureMapParams, ArchitectureMapResponse, CycleCluster};
-use crate::extract::Call;
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
@@ -89,8 +86,13 @@ impl Graph {
         let base = (1.0 - PAGERANK_DAMPING) / n as f64;
         let outdeg: Vec<usize> = (0..n).map(|i| self.out[i].len()).collect();
         let mut rank = vec![1.0 / n as f64; n];
+        // Pre-allocate the accumulator once and re-initialize each iteration instead of
+        // allocating a fresh Vec<f64> on every pass (20 allocs → 1 alloc total).
+        let mut next = vec![0.0f64; n];
         for _ in 0..PAGERANK_ITERS {
-            let mut next = vec![base; n];
+            for x in next.iter_mut() {
+                *x = base;
+            }
             for s in 0..n {
                 if outdeg[s] == 0 {
                     continue;
@@ -100,7 +102,7 @@ impl Graph {
                     next[dst as usize] += share;
                 }
             }
-            rank = next;
+            std::mem::swap(&mut rank, &mut next);
         }
         rank.into_iter().map(|r| r as f32).collect()
     }
@@ -224,7 +226,13 @@ impl RepoGraph {
                     cap_hit = true;
                     return false;
                 }
-                *callee_counts.entry(callee.to_string()).or_default() += 1;
+                // Zero-alloc increment on existing key (String key; &str lookup via Borrow).
+                // Only allocates a new String on the first occurrence of each callee name.
+                if let Some(count) = callee_counts.get_mut(callee) {
+                    *count += 1;
+                } else {
+                    callee_counts.insert(callee.to_string(), 1);
+                }
                 if let Some(defs) = def_files_by_name.get(callee) {
                     for &dst in defs {
                         if dst != src {
@@ -264,48 +272,6 @@ impl RepoGraph {
             truncation_reason,
         })
     }
-}
-
-/// Invoke `f(callee, start_byte)` for every call site in `path`, from whichever backend
-/// is live. Returning `false` from `f` stops early (used to enforce the scan cap).
-/// Mirrors the dual-backend scan in `helpers_graph::collect_callees_for_name`.
-fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
-    idx: Option<&IndexDb>,
-    cache: &MapCache,
-    path: &RelPath,
-    mut f: F,
-) -> Result<(), McpError> {
-    match idx {
-        Some(idx) => {
-            let prefix = crate::index::keys::calls_by_path_prefix(path);
-            let upper: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
-                Some(b) => Bound::Excluded(b),
-                None => Bound::Unbounded,
-            };
-            for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
-                let (_, v) = guard
-                    .into_inner()
-                    .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-                let call: Call = match rmp_serde::from_slice(&v) {
-                    Ok(c) => c,
-                    Err(_) => continue,
-                };
-                if !f(&call.callee, call.start_byte) {
-                    return Ok(());
-                }
-            }
-        }
-        None => {
-            if let Some(calls) = cache.calls.as_ref() {
-                for cref in calls.calls_in_file(path) {
-                    if !f(&cref.callee, cref.start_byte) {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +658,12 @@ fn run_tier_symbol(
             for &loc in locals {
                 let s = &survivors[loc as usize];
                 if s.start_byte <= start_byte && start_byte < s.end_byte {
-                    fan_out_sets[loc as usize].insert(callee.to_string());
+                    // Guard with contains (&str lookup via Borrow on AHashSet<String>)
+                    // to avoid allocating a String when the callee is already in the set.
+                    let fo = &mut fan_out_sets[loc as usize];
+                    if !fo.contains(callee) {
+                        fo.insert(callee.to_string());
+                    }
                     if let Some(targets) = name_to_locals.get(callee) {
                         for &t in targets {
                             if t != loc {

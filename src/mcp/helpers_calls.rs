@@ -9,9 +9,59 @@ use std::ops::Bound;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
-use super::cursor::Cursor;
+use super::MapCache;
+use super::cursor::{Cursor, prefix_upper_bound};
 use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result, kind_to_str, parse_kind};
 use super::types::ReferenceHit;
+use crate::extract::Call;
+use crate::index::IndexDb;
+use crate::path::RelPath;
+
+/// Invoke `f(callee, start_byte)` for every call site in `path`, from whichever backend
+/// is live (Fjall index when open, in-RAM call index for read-only sessions). Returning
+/// `false` from `f` stops iteration early — used to enforce per-file scan caps.
+///
+/// Shared by `helpers_archmap::RepoGraph::build`, `helpers_archmap::run_tier_symbol`,
+/// and `helpers_graph::collect_callees_for_name`. Keeping the dual-backend dispatch here
+/// removes the duplicate scan loops those callers previously maintained inline.
+pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    path: &RelPath,
+    mut f: F,
+) -> Result<(), McpError> {
+    match idx {
+        Some(idx) => {
+            let prefix = crate::index::keys::calls_by_path_prefix(path);
+            let upper: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
+                Some(b) => Bound::Excluded(b),
+                None => Bound::Unbounded,
+            };
+            for guard in idx.calls_by_path.range::<Vec<u8>, _>((Bound::Included(prefix), upper)) {
+                let (_, v) = guard
+                    .into_inner()
+                    .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
+                let call: Call = match rmp_serde::from_slice(&v) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if !f(&call.callee, call.start_byte) {
+                    return Ok(());
+                }
+            }
+        }
+        None => {
+            if let Some(calls) = cache.calls.as_ref() {
+                for cref in calls.calls_in_file(path) {
+                    if !f(&cref.callee, cref.start_byte) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Point-lookup a `Call` value in the index by `(path, start_byte)` and return its
 /// `(line, column)` as 1-based / 0-based respectively. Falls back to `(0, 0)` when the
@@ -200,15 +250,13 @@ fn resolved_callers_page(
     let mut source_cache: ahash::AHashMap<crate::path::RelPath, Vec<u8>> = ahash::AHashMap::new();
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(uses.len().min(limit));
     for (use_path, use_start) in uses.into_iter().take(limit) {
-        if !source_cache.contains_key(&use_path) {
-            let bytes = if use_path == *def_path {
+        let source = source_cache.entry(use_path.clone()).or_insert_with(|| {
+            if use_path == *def_path {
                 def_source.clone()
             } else {
                 std::fs::read(root.join(use_path.to_path_buf())).unwrap_or_default()
-            };
-            source_cache.insert(use_path.clone(), bytes);
-        }
-        let source = &source_cache[&use_path];
+            }
+        });
         let (line, column) = super::helpers_intel::offset_to_line_col(source, use_start);
         let callee = super::helpers_intel::identifier_at(source, use_start);
         hits.push(ReferenceHit {
