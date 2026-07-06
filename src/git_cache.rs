@@ -55,6 +55,7 @@ pub enum CacheError {
 
 // ─── disk payload wrappers ───────────────────────────────────────────────────
 
+// Read side: owned structs for deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CommitFilesPayload {
     schema_ver: u16,
@@ -71,6 +72,27 @@ struct LogPayload {
 struct BlamePayload {
     schema_ver: u16,
     result: BlameResult,
+}
+
+// Write side: borrow-only structs so the write helpers serialize directly from the
+// caller's slice/reference without cloning the payload. The field names match the
+// read-side structs above so msgpack round-trips via `rmp_serde::to_vec_named`.
+#[derive(Serialize)]
+struct CommitFilesOut<'a> {
+    schema_ver: u16,
+    files: &'a [(crate::path::RelPath, ChangeKind)],
+}
+
+#[derive(Serialize)]
+struct LogOut<'a> {
+    schema_ver: u16,
+    commits: &'a [CommitInfo],
+}
+
+#[derive(Serialize)]
+struct BlameOut<'a> {
+    schema_ver: u16,
+    result: &'a BlameResult,
 }
 
 // ─── cache keys ──────────────────────────────────────────────────────────────
@@ -260,9 +282,9 @@ impl GitCache {
         let Some(path) = self.commit_files_path(sha) else {
             return;
         };
-        let payload = CommitFilesPayload {
+        let payload = CommitFilesOut {
             schema_ver: GIT_CACHE_SCHEMA,
-            files: files.to_vec(),
+            files,
         };
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;
@@ -287,9 +309,9 @@ impl GitCache {
         let Some(path) = self.log_path(key) else {
             return;
         };
-        let payload = LogPayload {
+        let payload = LogOut {
             schema_ver: GIT_CACHE_SCHEMA,
-            commits: commits.to_vec(),
+            commits,
         };
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;
@@ -314,9 +336,9 @@ impl GitCache {
         let Some(path) = self.blame_path(key) else {
             return;
         };
-        let payload = BlamePayload {
+        let payload = BlameOut {
             schema_ver: GIT_CACHE_SCHEMA,
-            result: result.clone(),
+            result,
         };
         let Ok(bytes) = rmp_serde::to_vec_named(&payload) else {
             return;

@@ -620,10 +620,12 @@ impl Repo {
         if old_bytes.is_none() && new_bytes.is_none() {
             return Ok(None);
         }
-        let old_buf = old_bytes.clone().unwrap_or_default();
-        let new_buf = new_bytes.clone().unwrap_or_default();
+        let old_exists = old_bytes.is_some();
+        let new_exists = new_bytes.is_some();
+        let old_buf = old_bytes.unwrap_or_default();
+        let new_buf = new_bytes.unwrap_or_default();
         let hunks = compute_hunks(&old_buf, &new_buf);
-        Ok(Some((hunks, old_bytes.is_some(), new_bytes.is_some())))
+        Ok(Some((hunks, old_exists, new_exists)))
     }
 
     /// Diff the commit at `commit_sha` against its first parent. Returns the per-file
