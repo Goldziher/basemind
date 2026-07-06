@@ -481,7 +481,21 @@ pub fn scan_paths(
     let mut doc_removed: Vec<String> = Vec::new();
     for abs in paths {
         let rel = match abs.strip_prefix(root) {
-            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Ok(p) => {
+                let lossy = p.to_string_lossy();
+                // Mirror the `walk_candidates` pattern: only pay for the replace scan on
+                // Windows where backslash separators actually appear. On macOS / Linux
+                // `lossy` is always a `Cow::Borrowed` — `.into_owned()` is a straight copy
+                // with no search pass, shaving one scan per path on the watcher hot path.
+                #[cfg(windows)]
+                {
+                    lossy.replace('\\', "/")
+                }
+                #[cfg(not(windows))]
+                {
+                    lossy.into_owned()
+                }
+            }
             Err(_) => continue,
         };
         if rel.is_empty() || rel.starts_with(crate::config::BASEMIND_DIR) {

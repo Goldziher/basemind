@@ -18,7 +18,9 @@
 #![cfg(feature = "documents")]
 
 use std::path::Path;
+use std::sync::OnceLock;
 
+use ahash::AHashSet;
 use anyhow::Context as _;
 use xberg::core::mime;
 use xberg::embeddings::{EMBEDDING_PRESETS, EmbeddingPreset};
@@ -125,13 +127,23 @@ const DENY_MIME: &[&str] = &[
     "font/",
 ];
 
+/// Lazily-initialized `AHashSet` view of [`ARCHIVE_BINARY_EXTENSIONS`].
+///
+/// Replaces the O(n) `slice::contains` call in [`is_denied_binary_or_archive`] with an O(1)
+/// hash lookup. Built once on first call (the `OnceLock` ensures thread-safe initialisation),
+/// then reused across all scanner threads for the lifetime of the process.
+fn archive_binary_ext_set() -> &'static AHashSet<&'static str> {
+    static SET: OnceLock<AHashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| ARCHIVE_BINARY_EXTENSIONS.iter().copied().collect())
+}
+
 /// True when a file must be skipped by the document tier because it is an archive, a compressed
 /// container, or a binary blob. Checks the extension denylist (the const floor plus any
 /// user-configured `extension_denylist`) first, then the MIME denylist.
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
-        if ARCHIVE_BINARY_EXTENSIONS.contains(&ext_lower.as_str())
+        if archive_binary_ext_set().contains(ext_lower.as_str())
             || cfg
                 .extension_denylist
                 .iter()
@@ -214,7 +226,7 @@ pub(crate) fn extract_and_persist_doc(
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
         && cached_doc_is_reusable(&cached, cfg, embed)
     {
-        return Ok(Some(pending_from_doc(&cached, rel, scope, cfg, embed)));
+        return Ok(Some(pending_from_doc(cached, rel, scope, cfg, embed)));
     }
 
     // Cache miss: extract (xberg embeds inline when `embed`), then persist the content-addressed
@@ -226,7 +238,7 @@ pub(crate) fn extract_and_persist_doc(
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    Ok(Some(pending_from_doc(&doc, rel, scope, cfg, embed)))
+    Ok(Some(pending_from_doc(doc, rel, scope, cfg, embed)))
 }
 
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
@@ -249,53 +261,68 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
 /// Assemble the deferred LanceDB batch from an extracted-or-cached document. Emits vector rows only
 /// when embedding is on, the doc has embeddings, and it is under the per-doc chunk cap; otherwise the
 /// blob is still tracked but no rows are written (the pathological / no-embed / empty cases).
-fn pending_from_doc(doc: &FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig, embed: bool) -> PendingDocBatch {
+///
+/// Takes `doc` by value so that [`build_doc_rows`] can move chunk text and embedding vectors
+/// directly into the [`DocumentRow`]s instead of cloning them (the embedding `Vec<f32>` can be
+/// hundreds of kilobytes per chunk). Callers extract any fields they need before this call.
+fn pending_from_doc(doc: FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig, embed: bool) -> PendingDocBatch {
+    // Hoist these before any potential early return that would otherwise need
+    // to re-read from an already-moved value.
+    let chunk_count = doc.chunks.len();
+    let embedding_dim = doc.embedding_dim;
     let no_rows = PendingDocBatch {
         rel_path: rel.to_string(),
-        chunk_count: doc.chunks.len(),
-        embedding_dim: doc.embedding_dim,
+        chunk_count,
+        embedding_dim,
         rows: Vec::new(),
     };
     // Guard against a pathological input exploding into tens of thousands of vector rows.
-    if doc.chunks.len() > cfg.max_chunks_per_document {
+    if chunk_count > cfg.max_chunks_per_document {
         tracing::warn!(
             rel,
-            chunks = doc.chunks.len(),
+            chunks = chunk_count,
             cap = cfg.max_chunks_per_document,
             "document exceeds max_chunks_per_document; caching blob but skipping vector rows"
         );
         return no_rows;
     }
-    if !embed || doc.embedding_dim == 0 || doc.chunks.is_empty() {
+    if !embed || embedding_dim == 0 || chunk_count == 0 {
         return no_rows;
     }
     let rows = build_doc_rows(doc, rel, scope);
     PendingDocBatch {
         rel_path: rel.to_string(),
         chunk_count: rows.len(),
-        embedding_dim: doc.embedding_dim,
+        embedding_dim,
         rows,
     }
 }
 
 /// Turn a document's chunks into LanceDB rows. Hoists the per-row constant strings out of the map so
 /// they allocate once instead of once per chunk (a doc can have hundreds of chunks).
-fn build_doc_rows(doc: &FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
+///
+/// Takes `doc` by value to move `chunk.text` and `chunk.embedding` directly into each row —
+/// avoids cloning the chunk text (potentially large) and the embedding vector (`Vec<f32>`,
+/// hundreds of kilobytes per chunk at typical preset dimensions).
+fn build_doc_rows(doc: FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
     let scope_owned = scope.to_string();
     let rel_owned = rel.to_string();
-    let mime_owned = doc.mime_type.clone();
+    // `doc.mime_type` is moved out of the struct — no extra clone compared to the previous
+    // `doc.mime_type.clone()`. It is still cloned once per row below (short string, unavoidable
+    // because each DocumentRow owns its mime_type).
+    let mime_owned = doc.mime_type;
     doc.chunks
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(idx, chunk)| DocumentRow {
             scope: scope_owned.clone(),
             path: rel_owned.clone(),
             chunk_idx: u32::try_from(idx).unwrap_or(u32::MAX),
             mime_type: mime_owned.clone(),
-            text: chunk.text.clone(),
+            text: chunk.text, // moved — no String clone per chunk
             byte_start: chunk.byte_start,
             byte_end: chunk.byte_end,
-            embedding: chunk.embedding.clone(),
+            embedding: chunk.embedding, // moved — no Vec<f32> clone per chunk
         })
         .collect()
 }
