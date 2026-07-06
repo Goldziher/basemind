@@ -5,8 +5,11 @@ web crawl, git history, and agent-to-agent comms so multiple agents coordinate w
 300+ languages, one MCP server.
 
 <!-- markdownlint-disable-next-line MD013 -->
+[![Docs](https://img.shields.io/badge/docs-basemind.ai-965aff)](https://basemind.ai)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/Goldziher/basemind/blob/main/LICENSE)
 [![npm](https://img.shields.io/npm/v/basemind.svg)](https://www.npmjs.com/package/basemind)
+
+Full documentation: **[basemind.ai](https://basemind.ai)**
 
 ## Install
 
