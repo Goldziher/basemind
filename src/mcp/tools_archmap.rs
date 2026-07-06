@@ -18,13 +18,15 @@ impl BasemindServer {
     #[tool(
         description = "Architecture map of the repo (or a `focus` subtree), ranked by graph \
                        centrality + git churn. `granularity`: \"module\" (default, directory-level \
-                       dependency graph), \"file\", or \"symbol\" (top hub functions by fan-in). \
-                       Module/file tiers return PageRank, fan-in/out, and circular-dependency \
-                       clusters (SCCs); the symbol tier returns hub functions with signatures + \
-                       their edges. Edges are name-based (like call_graph): overloaded names may \
-                       produce a few spurious edges — discount by `weight`. Deterministic, no LLM. \
-                       Results are knee-cut to the significant head and capped (`max_nodes`, \
-                       `max_edges`, `max_tokens`).",
+                       dependency graph), \"file\", or \"symbol\" (hub functions ranked by \
+                       specificity-weighted fan-in — name-based call count divided by the number \
+                       of definitions of that name, so ubiquitous names like `new`/`from` don't \
+                       dominate; the raw `fan_in` is still reported). Module/file tiers return \
+                       PageRank, fan-in/out, and circular-dependency clusters (SCCs); the symbol \
+                       tier returns hub functions with signatures + their edges. Edges are \
+                       name-based (like call_graph): overloaded names may produce a few spurious \
+                       edges — discount by `weight`. Deterministic, no LLM. Results are knee-cut \
+                       to the significant head and capped (`max_nodes`, `max_edges`, `max_tokens`).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn architecture_map(

@@ -10,6 +10,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-07-06
+
+> **Patch release — blob + index format unchanged.** `RELEASE_MINOR` stays 18; no `.basemind/`
+> rebuild. Query-side only.
+
+### Changed
+
+- **`architecture_map` symbol tier now ranks by specificity-weighted fan-in.** The repo-wide
+  symbol tier previously ranked by raw name-based call count, so ubiquitous names (`new`, `from`,
+  `default`) dominated — on a real repo the top ~60 hubs were all `new`, which misleads an agent
+  routing on the result. Fan-in is now divided by the number of files defining that name
+  (`RepoGraph::def_counts`), so a genuine single-definition hub outranks a name that is merely
+  everywhere. The raw `fan_in` count is still reported verbatim on each node.
+
+### Fixed
+
+- **`architecture_map` symbol-tier `score` is now monotonic with node order.** `fan_out` was
+  computed _after_ the knee-cut, so the blended `score` never actually influenced selection or
+  ordering and the emitted nodes were not sorted by their own `score`. Selection, knee-cut, and
+  `score` now all key off the single specificity-weighted signal, matching the module/file tiers;
+  `fan_out` and per-file churn remain reported but no longer pretend to affect the ranking.
+
 ## [0.18.0] — 2026-07-06
 
 > **Minor release — cache rebuild.** `RELEASE_MINOR` bumps to 18, so both the Fjall index and the

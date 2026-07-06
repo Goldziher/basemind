@@ -64,9 +64,14 @@ fn build_repo() -> TempDir {
     )
     .unwrap();
     // c.rs calls alpha() three times so the reference index has something to chew on.
+    // `zed` is a deliberate ubiquitous-name decoy: defined in BOTH c.rs and e.rs (def_count=2)
+    // and called four times — so raw name-based fan-in (4) exceeds alpha's (3), but its
+    // specificity-weighted hub score (4/2=2) is below alpha's (3/1=3). It proves the symbol
+    // tier ranks by hub-ness, not raw fan-in (else zed would top the repo-wide ranking).
     std::fs::write(
         root.join("c.rs"),
-        b"pub fn caller() { alpha(); alpha(); other(); alpha(); }\n",
+        b"pub fn zed() {}\n\
+          pub fn caller() { alpha(); alpha(); other(); alpha(); zed(); zed(); zed(); zed(); }\n",
     )
     .unwrap();
     // d.py: Python subclass so find_implementations has a Python hit.
@@ -77,7 +82,8 @@ fn build_repo() -> TempDir {
         root.join("e.rs"),
         b"pub fn inner() {}\n\
           pub fn middle() { inner(); }\n\
-          pub fn outer() { middle(); }\n",
+          pub fn outer() { middle(); }\n\
+          pub fn zed() {}\n",
     )
     .unwrap();
     // cyc1.rs <-> cyc2.rs form a cross-file call cycle so architecture_map's Tarjan SCC
@@ -653,8 +659,9 @@ async fn mcp_server_exercises_representative_tools() {
         "outer.edges_to should reference middle (index {middle_idx}): got {outer_edges:?}"
     );
 
-    // architecture_map (symbol tier): `alpha` has 3 call sites (c.rs) — the most-called
-    // function — so it must rank as the top hub.
+    // architecture_map (symbol tier): `alpha` (3 calls, 1 definition → hub 3) must top the
+    // ranking over the `zed` decoy (4 calls but 2 definitions → hub 2). This pins the
+    // specificity weighting: a raw-fan-in ranking would wrongly surface `zed` first.
     let sym = decode_text(
         &service
             .call_tool(call_params(
@@ -669,7 +676,33 @@ async fn mcp_server_exercises_representative_tools() {
     assert_eq!(
         sym_nodes[0].get("name").and_then(Value::as_str),
         Some("alpha"),
-        "alpha (3 call sites) must be the top hub: {sym:?}"
+        "alpha (hub 3) must outrank the higher-fan-in but multiply-defined `zed` (hub 2): {sym:?}"
+    );
+    assert_eq!(
+        sym_nodes[0].get("fan_in").and_then(Value::as_u64),
+        Some(3),
+        "the raw fan_in count is still reported verbatim on the node: {sym:?}"
+    );
+    assert!(
+        sym_nodes
+            .iter()
+            .any(|n| n.get("name").and_then(Value::as_str) == Some("zed"))
+            && sym_nodes
+                .iter()
+                .find(|n| n.get("name").and_then(Value::as_str) == Some("zed"))
+                .and_then(|n| n.get("fan_in").and_then(Value::as_u64))
+                == Some(4),
+        "the `zed` decoy is present with its honest raw fan_in=4, just not ranked first: {sym:?}"
+    );
+    // Score must be non-increasing across nodes — the symbol tier ranks, knee-cuts, and
+    // scores off one signal, so emitted order matches score (guards the fan_out-after-cut bug).
+    let sym_scores: Vec<f64> = sym_nodes
+        .iter()
+        .filter_map(|n| n.get("score").and_then(Value::as_f64))
+        .collect();
+    assert!(
+        sym_scores.windows(2).all(|w| w[0] >= w[1]),
+        "symbol-tier nodes must be emitted in non-increasing score order: {sym_scores:?}"
     );
 
     // architecture_map (file tier): cyc1.rs <-> cyc2.rs is a known SCC — Tarjan must
