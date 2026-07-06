@@ -14,6 +14,7 @@ mod completions;
 pub(crate) mod cursor;
 mod helpers;
 mod helpers_admin;
+mod helpers_archmap;
 mod helpers_calls;
 #[cfg(feature = "code-search")]
 mod helpers_code;
@@ -37,6 +38,7 @@ mod helpers_telemetry;
 #[cfg(feature = "crawl")]
 mod helpers_web;
 mod identity;
+mod kneedle;
 mod lean;
 mod lenient;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -48,6 +50,7 @@ mod telemetry;
 mod tokens;
 mod tools;
 mod tools_admin;
+mod tools_archmap;
 mod tools_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
@@ -62,6 +65,7 @@ mod tools_web;
 mod toon;
 mod types;
 mod types_admin;
+mod types_archmap;
 mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod types_comms;
@@ -115,6 +119,7 @@ pub mod params {
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_archmap::ArchitectureMapParams;
     pub use super::types_code::{GetChunkParams, SearchCodeParams};
     pub use super::types_compress::ExpandParams;
     pub use super::types_governance::{
@@ -645,6 +650,7 @@ impl BasemindServer {
         }
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
+            + Self::tool_router_archmap()
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()

@@ -130,6 +130,11 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         // step to the agent. Record the call, claim zero savings.
         "call_graph" => (actual, "no_baseline"),
 
+        // architecture_map: the alternative is many manual find_references / call_graph
+        // calls plus building the dependency picture by hand. No clean grep baseline —
+        // record the call, claim zero savings.
+        "architecture_map" => (actual, "no_baseline"),
+
         // search_documents: the agent's alternative is reading whole documents
         // to locate the relevant passages. The response is just the matching
         // chunks, so model the saving like outline (~5× the snippet).
