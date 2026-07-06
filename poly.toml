@@ -51,7 +51,7 @@ extend_exclude = ["tests/fixtures/**"]
 stages = ["pre-commit"]
 
 [hooks.builtin]
-polylint = { exclude = [
+lint = { exclude = [
     "**/*.lock",
     "**/Cargo.lock",
     "**/go.sum",
@@ -64,7 +64,7 @@ polylint = { exclude = [
     "target/**",
     "vendor/**",
 ] }
-polyfmt = { exclude = [
+fmt = { exclude = [
     "**/*.lock",
     "**/Cargo.lock",
     "**/go.sum",
