@@ -7,11 +7,20 @@ pub mod locals;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tree_sitter::Query;
 
 use crate::lang::{LangError, LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
 use l1::extract_l1_from_tree;
 use l2::extract_l2_from_tree;
+
+/// Look up the capture name for a given capture index in a compiled query.
+///
+/// Shared by L1 (combined pass in `l1.rs`) and L2 (calls/docs in `l2.rs`) so
+/// the identical one-liner is not repeated in two files.
+pub(crate) fn capture_name(q: &Query, index: u32) -> &str {
+    q.capture_names()[index as usize]
+}
 
 /// Parse once with the default timeout and run both L1 and (optionally) L2 extraction against
 /// the shared tree. Eliminates the duplicate parse that the scanner previously paid when

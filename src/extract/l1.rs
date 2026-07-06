@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Node, Query, QueryCursor, QueryMatch};
+use tree_sitter::{Node, Query, QueryMatch};
 
-use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind};
+use super::{ExtractError, FileMapL1, Implementation, Import, SCHEMA_VER, Symbol, SymbolKind, capture_name};
 use crate::lang::{
     CaptureClass, LangId, ParseOutcome, parse_with_default_timeout, try_get_classified_combined_l1_query, with_parser,
 };
@@ -81,43 +81,47 @@ fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<
     };
     let q = &cq.query;
     let classes = &cq.classes;
-    let mut cursor = QueryCursor::new();
-    let mut iter = cursor.matches(q, root, source);
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut implementations = Vec::new();
-    while let Some(m) = iter.next() {
-        // Dispatch by the pre-classified integer index — one array load, zero string ops. Scan to
-        // the first capture that classifies to a known L1 class rather than blindly taking
-        // `captures[0]`: adapted TSLP `tags.scm` patterns commonly lead a `@definition.*` match
-        // with auxiliary captures (e.g. `@doc` for a preceding comment, `@local.scope`), so the
-        // root symbol/import/impl capture is not always first. The builders below re-scan every
-        // capture by name, so this only selects which builder to run. A match with no known
-        // capture (e.g. a stray `@doc`-only match) is skipped.
-        let class = m
-            .captures
-            .iter()
-            .map(|cap| classes[cap.index as usize])
-            .find(|class| !matches!(class, CaptureClass::Other));
-        match class {
-            Some(CaptureClass::Symbol) => {
-                if let Some(sym) = build_symbol(q, m, source) {
-                    symbols.push(sym);
+    // Reuse the per-thread QueryCursor — avoids a heap allocation per file.
+    // Safety: `with_query_cursor` is not called recursively from this site;
+    // the iterator is fully drained before `with_query_cursor` returns.
+    crate::lang::with_query_cursor(|cursor| {
+        let mut iter = cursor.matches(q, root, source);
+        while let Some(m) = iter.next() {
+            // Dispatch by the pre-classified integer index — one array load, zero string ops. Scan to
+            // the first capture that classifies to a known L1 class rather than blindly taking
+            // `captures[0]`: adapted TSLP `tags.scm` patterns commonly lead a `@definition.*` match
+            // with auxiliary captures (e.g. `@doc` for a preceding comment, `@local.scope`), so the
+            // root symbol/import/impl capture is not always first. The builders below re-scan every
+            // capture by name, so this only selects which builder to run. A match with no known
+            // capture (e.g. a stray `@doc`-only match) is skipped.
+            let class = m
+                .captures
+                .iter()
+                .map(|cap| classes[cap.index as usize])
+                .find(|class| !matches!(class, CaptureClass::Other));
+            match class {
+                Some(CaptureClass::Symbol) => {
+                    if let Some(sym) = build_symbol(q, m, source) {
+                        symbols.push(sym);
+                    }
                 }
-            }
-            Some(CaptureClass::Import) => {
-                if let Some(imp) = build_import(q, m, source) {
-                    imports.push(imp);
+                Some(CaptureClass::Import) => {
+                    if let Some(imp) = build_import(q, m, source) {
+                        imports.push(imp);
+                    }
                 }
-            }
-            Some(CaptureClass::Impl) => {
-                if let Some(imp) = build_implementation(q, m, source) {
-                    implementations.push(imp);
+                Some(CaptureClass::Impl) => {
+                    if let Some(imp) = build_implementation(q, m, source) {
+                        implementations.push(imp);
+                    }
                 }
+                Some(CaptureClass::Other) | None => {}
             }
-            Some(CaptureClass::Other) | None => {}
         }
-    }
+    });
     Ok((dedupe_symbols(symbols), imports, implementations))
 }
 
@@ -165,10 +169,6 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
         }
     }
     keep
-}
-
-fn capture_name(q: &Query, index: u32) -> &str {
-    q.capture_names()[index as usize]
 }
 
 fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {

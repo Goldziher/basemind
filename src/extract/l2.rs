@@ -1,7 +1,7 @@
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor, QueryMatch};
+use tree_sitter::{Query, QueryMatch};
 
-use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER};
+use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER, capture_name};
 use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
 
 pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
@@ -51,14 +51,18 @@ fn run_calls(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec
     let Some(q) = try_get_query(lang, QueryKind::Calls)? else {
         return Ok(Vec::new());
     };
-    let mut cursor = QueryCursor::new();
-    let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();
-    while let Some(m) = iter.next() {
-        if let Some(call) = build_call(&q, m, source) {
-            out.push(call);
+    // Reuse the per-thread QueryCursor — avoids a heap allocation per file.
+    // `run_calls` and `run_docs` are called sequentially; the iterator is fully
+    // drained before `with_query_cursor` returns, so the TLS slot is free for `run_docs`.
+    crate::lang::with_query_cursor(|cursor| {
+        let mut iter = cursor.matches(&q, root, source);
+        while let Some(m) = iter.next() {
+            if let Some(call) = build_call(&q, m, source) {
+                out.push(call);
+            }
         }
-    }
+    });
     Ok(out)
 }
 
@@ -66,19 +70,18 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
     let Some(q) = try_get_query(lang, QueryKind::Docs)? else {
         return Ok(Vec::new());
     };
-    let mut cursor = QueryCursor::new();
-    let mut iter = cursor.matches(&q, root, source);
     let mut out = Vec::new();
-    while let Some(m) = iter.next() {
-        if let Some(doc) = build_doc(&q, m, source) {
-            out.push(doc);
+    // Reuse the per-thread QueryCursor — safe because `run_calls` has already returned
+    // and fully consumed its iterator, releasing the TLS borrow.
+    crate::lang::with_query_cursor(|cursor| {
+        let mut iter = cursor.matches(&q, root, source);
+        while let Some(m) = iter.next() {
+            if let Some(doc) = build_doc(&q, m, source) {
+                out.push(doc);
+            }
         }
-    }
+    });
     Ok(out)
-}
-
-fn capture_name(q: &Query, index: u32) -> &str {
-    q.capture_names()[index as usize]
 }
 
 fn build_call(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Call> {
