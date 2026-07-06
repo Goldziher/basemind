@@ -17,6 +17,8 @@ first, shell/grep/git fallback.**
 ## Documentation
 
 - [Documentation site](https://basemind.ai): Guides, capability deep-dives, MCP tool + CLI reference, architecture, and performance.
+- [How it works](https://basemind.ai/concepts/how-it-works/): One scan, then instant answers held in memory.
+- [Token economy](https://basemind.ai/concepts/token-economy/): Why structural answers cost a fraction of the tokens of reading files.
 - [MCP tool reference](https://basemind.ai/reference/mcp-tools/): Every tool, its parameters, and matching semantics.
 - [CLI reference](https://basemind.ai/reference/cli/): The scriptable CLI, at parity with the MCP tools.
 - [Installation](https://basemind.ai/start/installation/): Plugin, MCP server, and standalone CLI setup.
@@ -36,6 +38,7 @@ first, shell/grep/git fallback.**
 - [Web crawl](https://basemind.ai/capabilities/web-crawl/): Fetch, crawl, and map web pages into the document index (`web_scrape`, `web_crawl`, `web_map`).
 - [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (`memory_put`, `memory_get`, `memory_search`, `memory_list`, `memory_audit`).
 - [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents on the same repo via scoped rooms, a per-agent inbox, and two-tier messages (`room_post`, `room_history`, `inbox_read`, `message_get`, `dm_send`, `agent_list`).
+- [Agent shells](https://basemind.ai/capabilities/agent-shells/): Spawn headless terminal sessions agents can drive — send stdin, capture the screen, list, kill, and broadcast (`shell_spawn`, `shell_send`, `shell_capture`, `shell_list`, `shell_kill`, `shell_broadcast`; requires `--features shells`).
 
 ## Skills
 
@@ -57,4 +60,4 @@ first, shell/grep/git fallback.**
 - [PyPI](https://pypi.org/project/basemind/): Python wrapper that downloads the prebuilt binary.
 - [Config schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json): JSON Schema for `.basemind/basemind.toml`.
 - [CLAUDE.md](https://github.com/Goldziher/basemind/blob/main/CLAUDE.md): Project rules, crate layout, and conventions for agents working in the repo.
-- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `crawl`, `comms`, `full`).
+- [Cargo.toml](https://github.com/Goldziher/basemind/blob/main/Cargo.toml): Crate manifest and feature flags (`documents`, `memory`, `crawl`, `comms`, `shells`, `code-intel`, `code-search`, `full`).
