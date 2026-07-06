@@ -55,9 +55,11 @@ This is a suggestion, not a stored fact — you approve before anything is kept.
 1. **Mine for candidates:** `proposals_mine {commits: 10, min_count: 3}` analyzes the last 10
    commits and finds groups of files that changed together at least 3 times. The tool returns
    pending suggestions.
-2. **Accept:** `proposal_accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
+2. **List pending:** `proposals_list {}` shows the suggestions awaiting your decision (optional kind
+   filter).
+3. **Accept:** `proposal_accept {id: "prop-1", key: "file-pattern-migrations"}` stores a suggestion
    as a note under the given key.
-3. **Reject:** `proposal_reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
+4. **Reject:** `proposal_reject {id: "prop-1", reason: "too noisy"}` dismisses a suggestion permanently.
 
 ## Uses
 

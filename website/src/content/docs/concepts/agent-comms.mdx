@@ -98,9 +98,9 @@ inbox_read {as_agent: "security"}  # read security's inbox (DMs)
 comms is an opt-in feature. Build with `--features comms` (or `full`) to include it.
 </Aside>
 
-<Aside type="caution">
-Unix only. The comms broker uses Unix domain sockets, so it's not available on Windows. To use
-basemind on Windows, build without `--features comms` and skip the comms tools.
+<Aside type="note">
+Cross-platform. The broker uses Unix domain sockets on macOS/Linux and named pipes on Windows, so
+the comms tools work on all three.
 </Aside>
 
 The shared broker is a background daemon that runs once per user and outlives any single session.

@@ -11,43 +11,100 @@ default (`Mcp > Cli > Env > File > Default`).
 
 ## Config File
 
-Create `.basemind/basemind.toml` to customize behavior. `basemind init` generates a starter file (optional — all settings have sensible defaults).
+Create `.basemind/basemind.toml` to customize behavior. `basemind init` generates a starter file
+(optional — all settings have sensible defaults). The file is validated against a JSON Schema and
+**rejects unknown keys**, so a typo fails loudly rather than being silently ignored.
 
 ### Minimal Example
 
 ```toml
 # .basemind/basemind.toml
-file_watch_glob = "**/*.{rs,ts,tsx,py,go}"
-eager_l2 = true
+"$schema" = "v1"
 
 [scan]
+include = ["**/*.{rs,ts,tsx,py,go}"]
+eager_l2 = true
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 
 [documents]
 enabled = true
 ```
 
-### Top-Level Options
+The only required key is `$schema` (`"v1"`). Everything else is optional and falls back to defaults.
+All tunables live under a named section — there are no bare top-level options.
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `file_watch_glob` | string | `**/*` | Glob pattern for file watching and scanning. Speeds up cold scans. |
-| `eager_l2` | bool | `true` | Extract L2 (call sites) during scan. Set to `false` to trade call-graph queries for faster scans (reference search becomes unavailable). |
+### Sections
+
+| Section | Purpose |
+|---|---|
+| `[scan]` | What to index: globs, size caps, gitignore, submodules, L2, extra roots. |
+| `[watch]` | Live-watch debounce and whether the watcher extracts L2. |
+| `[cache]` | In-memory FileMap LRU size. |
+| `[mcp]` | MCP transport (`stdio`). |
+| `[documents]` | Document extraction + RAG (needs `--features documents`). |
+| `[code_search]` | Semantic/keyword code search chunking + embedding (needs `--features code-search`). |
+| `[memory]` | Shared-memory scope and default visibility (needs `--features memory`). |
+| `[crawl]` | Web crawl limits + SSRF policy (needs `--features crawl`). |
+| `[comms]` | Agent comms identity + retention (needs `--features comms`). |
+| `[shells]` | Agent-shell presentation (needs `--features shells`). |
+| `[llm]` | Shared LLM settings for reranking, NER, and summarization. |
+| `[languages]` | Per-language enable/disable toggles. |
 
 ### `[scan]` Section
 
 ```toml
 [scan]
+include = ["**/*"]
+exclude = ["**/target/**", "**/node_modules/**", "**/bazel-*/**"]
+respect_gitignore = true
+max_file_bytes = 2097152          # 2 MiB
+skip_submodules = true
+eager_l2 = true
 extra_roots = ["/path/to/external/repo"]
 ```
 
-| Key | Type | Notes |
-|---|---|---|
-| `extra_roots` | array of strings | Index directories outside the repo root (e.g., a Bazel external repo cache) so symbols resolve in search, references, and outlines. External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). |
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `include` | array of globs | `["**/*"]` | Files to index. Language detection still filters by tree-sitter support. |
+| `exclude` | array of globs | build/vendor dirs | Excludes `target/`, `node_modules/`, `dist/`, `.venv/`, `.git/`, `.basemind/`, and `bazel-*` trees. |
+| `respect_gitignore` | bool | `true` | Honor `.gitignore` during the walk. |
+| `max_file_bytes` | integer | `2097152` | Skip files larger than this (2 MiB). Prevents minified-bundle stalls. |
+| `skip_submodules` | bool | `true` | Skip paths under submodule roots listed in `.gitmodules`. |
+| `eager_l2` | bool | `true` | Extract L2 (call sites) inline with the scan. `false` trades reference search for a faster scan. |
+| `extra_roots` | array of paths | `[]` | Index directories outside the repo root (e.g., a Bazel external cache). External files are keyed by absolute path; (re-)indexed on full `basemind scan` only (not live-watched). |
+
+### `[watch]` Section
+
+```toml
+[watch]
+debounce_ms = 250
+live_l2 = false
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `debounce_ms` | integer | `250` | Coalesce filesystem events within this window (0–60000 ms). |
+| `live_l2` | bool | `false` | Extract L2 on live re-scans too (more work per change). |
+
+### `[cache]` and `[mcp]` Sections
+
+```toml
+[cache]
+file_map_lru = 256
+
+[mcp]
+transport = "stdio"
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `cache.file_map_lru` | integer | `256` | Max extracted FileMaps kept hot in memory. |
+| `mcp.transport` | string | `stdio` | MCP transport. `stdio` is the only option today. |
 
 ### `[documents]` Section
 
-Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search.
+Document indexing (PDFs, Office, HTML, etc.) and full-text + semantic search. Requires
+`--features documents`.
 
 ```toml
 [documents]
@@ -65,13 +122,94 @@ max_chunks_per_document = 2000
 | `mime_allowlist` | array of strings | Restrict extraction to specific MIME types (empty = accept all supported types). |
 | `extension_denylist` | array of strings | File extensions never routed to extraction (archives and binaries are denied by default). |
 
-The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR.
-See the [config schema](#config-file) for the full field set.
+The `[documents]` tree also carries sub-tables for reranking, keywords, NER, summarization, and OCR
+(`[documents.reranker]`, `[documents.keywords]`, and so on). See the
+[JSON Schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json)
+for the exhaustive field set.
+
+### `[code_search]` Section
+
+Semantic + keyword search over source chunks (`search_code` / `get_chunk`). Requires
+`--features code-search`.
+
+```toml
+[code_search]
+enabled = true
+embed = true
+
+[code_search.reranker]
+enabled = false
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | Chunk + index source on scan. |
+| `max_characters` | integer | — | Max chunk size; longer chunks split into overlapping windows. |
+| `overlap` | integer | — | Overlap between split windows, in characters. |
+| `embed` | bool | `true` | Emit vector rows for the semantic lane. With `false`, the BM25 keyword lane still works but the vector lane returns nothing. |
+| `[code_search.reranker] enabled` | bool | `false` | Optional cross-encoder rerank of fused hits (downloads an ONNX model on first use). |
+
+### `[memory]` Section
+
+Shared per-repo memory. Requires `--features memory`.
+
+```toml
+[memory]
+enabled = true
+scope_strategy = "git_remote_with_fallback"
+default_visibility = "group"
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | Master switch (only meaningful with the `memory` feature). |
+| `scope_strategy` | enum | `git_remote_with_fallback` | How the repo scope key is derived. `git_remote_with_fallback` shares memory across clones of the same remote; `workdir_only` keeps each clone separate. |
+| `default_visibility` | enum | `group` | Default tier when a `memory_*` call omits `visibility`. `group` is shared; `individual` is private to the calling agent. |
+
+### `[crawl]` Section
+
+Web crawl limits and SSRF policy. Requires `--features crawl`.
+
+```toml
+[crawl]
+respect_robots_txt = true
+max_pages = 32
+max_depth = 2
+allow_private_network = false
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `respect_robots_txt` | bool | `true` | Honor `robots.txt`. Turn off only for hosts you control. |
+| `max_pages` | integer | `32` | Hard cap on pages visited per `web_crawl`. |
+| `max_depth` | integer | `2` | Maximum link-following depth from the seed URL. |
+| `max_body_size` | integer | `4194304` | Truncate response bodies above this many bytes (4 MiB). |
+| `user_agent` | string | `basemind/<version>` | Identifies the crawler to site operators. |
+| `allow_private_network` | bool | `false` | Allow URLs resolving to private/loopback/link-local addresses. Off by default (SSRF guard). |
+
+### `[comms]` Section
+
+Agent communication. Requires `--features comms`.
+
+```toml
+[comms]
+enabled = true
+agent_id = "my-agent"
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | bool | `true` | Connect to the comms daemon (only meaningful with the `comms` feature). |
+| `agent_id` | string | auto | Stable identity presented to the broker. Falls back to `BASEMIND_AGENT_ID`, then a generated per-session id. |
+| `idle_timeout_secs` | integer | — | Idle window before the broker sheds caches. |
+| `max_messages_per_room` | integer | — | Per-room front-matter retention cap. |
+| `retention_secs` | integer | — | Message retention window; older messages become prune-eligible. |
+| `max_rooms` | integer | — | Hard cap on concurrently registered rooms. |
 
 ### `[llm]` Section
 
-Optional language-model settings for LLM-backed document summarization. The stack stays dormant
-unless both `model` and `api_key` are supplied, so it imposes no config burden by default.
+Optional language-model settings shared by reranking, NER, and summarization. The stack stays
+dormant unless both `model` and `api_key` are supplied, so it imposes no config burden by default.
 
 ```toml
 [llm]
@@ -82,7 +220,7 @@ base_url = "https://api.openai.com/v1"
 
 | Key | Type | Notes |
 |---|---|---|
-| `model` | string | Model ID. The summarization stack is a no-op until this and `api_key` are both set. |
+| `model` | string | Model ID. LLM-backed features are a no-op until this and `api_key` are both set. |
 | `api_key` | string | API key for the provider. Also read from `BASEMIND_LLM_API_KEY`. |
 | `base_url` | string | Override the provider endpoint URL. |
 | `temperature` | float | Sampling temperature. |
@@ -90,39 +228,29 @@ base_url = "https://api.openai.com/v1"
 | `max_retries` | integer | Retry budget on transient failures. |
 | `max_tokens` | integer | Cap on generated tokens. |
 
-### `[comms]` Section
-
-Agent communication settings.
-
-```toml
-[comms]
-agent_id = "my-agent"
-```
-
-| Key | Type | Notes |
-|---|---|---|
-| `agent_id` | string | Agent identifier. Auto-generated if not set. |
-
 ## Environment Variables
 
-Settings map to environment variables in the obvious way. Prefix with `BASEMIND_`, uppercase, replace dots with underscores.
+Settings map to environment variables by prefixing `BASEMIND_`, uppercasing, and joining the
+section and key with an underscore.
 
 ```bash
-BASEMIND_FILE_WATCH_GLOB="**/*.rs"
-BASEMIND_EAGER_L2=false
-BASEMIND_LLM_API_KEY="sk-..."
+BASEMIND_SCAN_EAGER_L2=false
 BASEMIND_SCAN_EXTRA_ROOTS="/path/to/external"
 BASEMIND_DOCUMENTS_ENABLED=true
 BASEMIND_COMMS_AGENT_ID="my-agent"
+BASEMIND_LLM_API_KEY="sk-..."
 ```
 
 <Aside type="tip">
-Environment variables take precedence over the config file (except for CLI flags, which override everything). This is useful for CI/CD environments where you don't want to commit secrets.
+Environment variables take precedence over the config file (but CLI flags and per-request MCP
+overrides still win over them). Useful for CI/CD where you don't want to commit secrets.
 </Aside>
 
 ## Per-Request Overrides
 
-MCP tools accept one-off overrides for that request only. These take highest precedence:
+MCP tools accept one-off overrides that apply to that request only and take the highest precedence.
+These cover the documents + LLM settings — for example an `llm_api_key` or `rerank_enabled` on a
+`search_documents` / `search_code` call:
 
 ```json
 {
@@ -133,8 +261,6 @@ MCP tools accept one-off overrides for that request only. These take highest pre
   }
 }
 ```
-
-Override any top-level config key: `llm_api_key`, `eager_l2`, `file_watch_glob`, etc.
 
 ## Cargo Features
 
@@ -149,7 +275,7 @@ ONNX Runtime). Opt into the rest:
 | `memory` | LanceDB-backed shared memory (`memory_*` tools). | yes |
 | `crawl` | Web scraping and crawling (`web_scrape`, `web_crawl`, `web_map`); implies `documents`. | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`search_code`, `get_chunk`). | yes |
-| `comms` | Agent-to-agent comms — rooms, per-agent inbox, DMs (Unix-only). | yes |
+| `comms` | Agent-to-agent comms — rooms, per-agent inbox, DMs (Unix domain sockets + Windows named pipes). | yes |
 | `shells` | Headless agent shells (`shell_spawn`, `shell_send`, …). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `find_references` / `goto_definition` (oxc). | yes |
 | `full` | `documents` + `memory` + `crawl` + `comms` + `shells` + `code-intel` + `code-search`. | — |
@@ -185,7 +311,7 @@ When either schema changes (typically on minor version bumps), the next `basemin
 
 ## Directory Layout
 
-All state lives under `.basemind/` in the repository root (or `--basemind-dir` override):
+All state lives under `.basemind/` in the repository root (`--root` selects a different repo):
 
 ```
 .basemind/
@@ -205,7 +331,7 @@ The `.basemind/` directory is safe to delete; `basemind scan` rebuilds it.
 
 ## Troubleshooting
 
-**Slow first scan?** The first scan indexes everything. Re-scans only touch what changed (`scan_paths`). For large projects, `eager_l2 = false` speeds initial indexing by skipping L2 (call-site) extraction, at the cost of disabling reference search.
+**Slow first scan?** The first scan indexes everything. Re-scans only touch what changed (`scan_paths`). For large projects, `eager_l2 = false` under `[scan]` speeds initial indexing by skipping L2 (call-site) extraction, at the cost of disabling reference search.
 
 **`basemind serve` not starting?** Check that `basemind` is on your PATH (`which basemind`). In `.mcp.json`, use the full path if needed: `"command": "/path/to/basemind"`.
 
