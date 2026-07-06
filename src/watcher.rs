@@ -186,14 +186,24 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
     if rel.components().any(|c| c.as_os_str() == crate::config::BASEMIND_DIR) {
         return false;
     }
-    let rel = rel.to_string_lossy().replace('\\', "/");
+    // `to_string_lossy` is zero-copy (Cow::Borrowed) on Unix for valid UTF-8 paths — the
+    // common case. Only allocate a new String when a backslash is actually present (Windows
+    // paths); on Unix `contains('\\')` is false for every well-formed path, so no alloc.
+    let rel_cow = rel.to_string_lossy();
+    let rel_normalized;
+    let rel: &str = if rel_cow.contains('\\') {
+        rel_normalized = rel_cow.replace('\\', "/");
+        &rel_normalized
+    } else {
+        &rel_cow
+    };
     if rel.is_empty() {
         return false;
     }
     if p.exists() {
         filter.is_indexable(p)
     } else {
-        filter.allows_glob(&rel)
+        filter.allows_glob(rel)
     }
 }
 

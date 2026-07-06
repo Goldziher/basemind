@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use thiserror::Error;
 
 use crate::extract::{FileMapL1, FileMapL2, Symbol, SymbolKind};
@@ -109,13 +107,16 @@ pub fn search_symbols(store: &Store, needle: &str, kind: Option<SymbolKind>) -> 
 
 /// Heuristic L3: read every L1, collect imports, return paths whose imports mention `module`.
 pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryError> {
-    let mut by_path: Vec<(PathBuf, Vec<crate::extract::Import>)> = Vec::with_capacity(store.index.files.len());
+    // `RelPath: AsRef<Path>` so `l3::dependents_of` accepts `Vec<(RelPath, Vec<Import>)>`
+    // without any `PathBuf` allocation per file. Only the matching results (typically small)
+    // are then converted from `PathBuf` back to `RelPath` on the output side.
+    let mut by_path: Vec<(RelPath, Vec<crate::extract::Import>)> = Vec::with_capacity(store.index.files.len());
     for (rel, entry) in &store.index.files {
         let l1 = match store.read_l1_by_hex(&entry.hash_hex)? {
             Some(m) => m,
             None => continue,
         };
-        by_path.push((rel.to_path_buf(), l1.imports));
+        by_path.push((rel.clone(), l1.imports));
     }
     let paths = crate::extract::l3::dependents_of(module, &by_path);
     Ok(paths.into_iter().map(|p| RelPath::from(p.as_path())).collect())
