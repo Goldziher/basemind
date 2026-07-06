@@ -283,14 +283,16 @@ impl IndexWriter {
                     self.batch.insert(
                         &self.db.code_bm25_postings,
                         posting_key,
-                        keys::code_bm25_posting_value(*tf, posting.doclen).to_vec(),
+                        keys::code_bm25_posting_value(*tf, posting.doclen),
                     );
                 }
             }
             // Forward entry: doclen prefix (read cheaply by the stats recompute) then the term list.
             let term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
-            let mut value = posting.doclen.to_be_bytes().to_vec();
-            value.extend_from_slice(&rmp_serde::to_vec(&term_names)?);
+            let terms_bytes = rmp_serde::to_vec(&term_names)?;
+            let mut value = Vec::with_capacity(4 + terms_bytes.len());
+            value.extend_from_slice(&posting.doclen.to_be_bytes());
+            value.extend_from_slice(&terms_bytes);
             self.batch.insert(
                 &self.db.code_bm25_by_path,
                 keys::code_bm25_by_path(rel, &posting.chunk_id),
