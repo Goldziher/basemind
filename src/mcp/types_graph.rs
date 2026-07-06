@@ -66,7 +66,7 @@ pub struct CallGraphNode {
     pub sites: Vec<CallGraphSite>,
 }
 
-#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct CallGraphSite {
     pub path: RelPath,
     /// `"function"`, `"method"`, `"constructor"`, `"getter"`, `"setter"`.

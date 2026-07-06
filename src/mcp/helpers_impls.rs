@@ -47,7 +47,6 @@ pub(super) fn run_find_implementations(
     let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
     let mut total_is_partial = false;
-    let mut last_emitted_key: Option<Vec<u8>> = None;
     let mut has_more = false;
     let mut matched: usize = 0;
 
@@ -91,7 +90,6 @@ pub(super) fn run_find_implementations(
                 start_col,
             });
             hit_keys.push(k.to_vec());
-            last_emitted_key = Some(k.to_vec());
         } else {
             has_more = true;
         }
@@ -103,7 +101,7 @@ pub(super) fn run_find_implementations(
     }
 
     let next_cursor = if has_more {
-        last_emitted_key.as_deref().map(Cursor::encode_fjall)
+        hit_keys.last().map(|k| Cursor::encode_fjall(k))
     } else {
         None
     };
