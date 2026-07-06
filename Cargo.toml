@@ -8,7 +8,7 @@ readme = "README.md"
 license = "MIT"
 repository = "https://github.com/Goldziher/basemind"
 documentation = "https://docs.rs/basemind"
-homepage = "https://github.com/Goldziher/basemind"
+homepage = "https://basemind.ai"
 keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
