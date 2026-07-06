@@ -47,7 +47,26 @@ export default defineConfig({
 					attrs: { name: 'twitter:image', content: 'https://basemind.ai/og.png' },
 				},
 			],
-			plugins: [starlightLlmsTxt()],
+			plugins: [
+				starlightLlmsTxt({
+					// llms-full.txt keeps the complete corpus. llms-small.txt drops the
+					// exhaustive reference pages (CLI flags, every config key, architecture
+					// internals, perf tables) so the abridged variant is genuinely smaller
+					// — mcp-tools stays, it's the agent-facing routing surface.
+					exclude: [
+						'reference/cli',
+						'reference/configuration',
+						'reference/architecture',
+						'reference/performance',
+					],
+					promote: ['index*', 'start/**', 'concepts/**'],
+					minify: { collapseCodeBlocks: true },
+					details:
+						'Operating rule: basemind first, shell/grep/git fallback — prefer its MCP tools ' +
+						'over reading files, over grep, and over naked git. Curated project map: ' +
+						'https://github.com/Goldziher/basemind/blob/main/llms.txt',
+				}),
+			],
 			sidebar: [
 				{
 					label: 'Start here',
