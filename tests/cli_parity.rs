@@ -41,6 +41,7 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("goto_definition", "query goto-definition"),
         ("find_implementations", "query implementations"),
         ("call_graph", "query call-graph"),
+        ("architecture_map", "query architecture-map"),
         ("workspace_grep", "query grep"),
         ("list_files", "query list-files"),
         ("dependents", "query dependents"),

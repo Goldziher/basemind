@@ -101,6 +101,27 @@ pub enum QueryCmd {
         #[arg(long)]
         max_nodes: Option<u32>,
     },
+    /// Architecture map ranked by graph centrality + git churn.
+    ArchitectureMap {
+        #[arg(long, default_value = "module")]
+        granularity: String,
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long)]
+        depth: Option<u32>,
+        #[arg(long, default_value = "calls")]
+        edges: String,
+        #[arg(long, default_value_t = true)]
+        include_churn: bool,
+        #[arg(long)]
+        churn_window: Option<u32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+        #[arg(long)]
+        max_edges: Option<u32>,
+        #[arg(long)]
+        max_tokens: Option<u32>,
+    },
     /// Regex content search across indexed files.
     Grep {
         pattern: String,
@@ -265,6 +286,31 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             };
             let r = run_tool("call_graph", server.call_graph(Parameters(p)).await)?;
             emit("call_graph", &r, json, out)
+        }
+        QueryCmd::ArchitectureMap {
+            granularity,
+            focus,
+            depth,
+            edges,
+            include_churn,
+            churn_window,
+            max_nodes,
+            max_edges,
+            max_tokens,
+        } => {
+            let p = ArchitectureMapParams {
+                granularity,
+                focus,
+                depth,
+                edges,
+                include_churn,
+                churn_window,
+                max_nodes,
+                max_edges,
+                max_tokens,
+            };
+            let r = run_tool("architecture_map", server.architecture_map(Parameters(p)).await)?;
+            emit("architecture_map", &r, json, out)
         }
         QueryCmd::Grep {
             pattern,

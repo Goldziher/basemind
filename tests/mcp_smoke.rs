@@ -80,7 +80,14 @@ fn build_repo() -> TempDir {
           pub fn outer() { middle(); }\n",
     )
     .unwrap();
-    git(root, &["add", "a.rs", "b.ts", "c.rs", "d.py", "e.rs"]);
+    // cyc1.rs <-> cyc2.rs form a cross-file call cycle so architecture_map's Tarjan SCC
+    // has a known circular-dependency cluster to surface.
+    std::fs::write(root.join("cyc1.rs"), b"pub fn ping() { pong(); }\n").unwrap();
+    std::fs::write(root.join("cyc2.rs"), b"pub fn pong() { ping(); }\n").unwrap();
+    git(
+        root,
+        &["add", "a.rs", "b.ts", "c.rs", "d.py", "e.rs", "cyc1.rs", "cyc2.rs"],
+    );
     git(root, &["commit", "-qm", "init"]);
     // Touch a.rs in a second commit so symbol_history has something to chew on.
     std::fs::write(
@@ -646,6 +653,77 @@ async fn mcp_server_exercises_representative_tools() {
         "outer.edges_to should reference middle (index {middle_idx}): got {outer_edges:?}"
     );
 
+    // architecture_map (symbol tier): `alpha` has 3 call sites (c.rs) — the most-called
+    // function — so it must rank as the top hub.
+    let sym = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({ "granularity": "symbol", "include_churn": false }),
+            ))
+            .await
+            .expect("architecture_map symbol"),
+    );
+    let sym_nodes = sym.get("nodes").and_then(Value::as_array).expect("symbol nodes");
+    assert!(!sym_nodes.is_empty(), "symbol tier returns hub functions: {sym:?}");
+    assert_eq!(
+        sym_nodes[0].get("name").and_then(Value::as_str),
+        Some("alpha"),
+        "alpha (3 call sites) must be the top hub: {sym:?}"
+    );
+
+    // architecture_map (file tier): cyc1.rs <-> cyc2.rs is a known SCC — Tarjan must
+    // surface exactly that circular-dependency cluster.
+    let filem = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({ "granularity": "file", "include_churn": false }),
+            ))
+            .await
+            .expect("architecture_map file"),
+    );
+    let file_nodes = filem.get("nodes").and_then(Value::as_array).expect("file nodes");
+    let cycles = filem.get("cycles").and_then(Value::as_array).expect("cycles");
+    assert!(
+        !cycles.is_empty(),
+        "file tier must surface the cyc1<->cyc2 cycle: {filem:?}"
+    );
+    let label_by_id = |id: u64| -> String {
+        file_nodes
+            .iter()
+            .find(|n| n.get("id").and_then(Value::as_u64) == Some(id))
+            .and_then(|n| n.get("label").and_then(Value::as_str))
+            .unwrap_or_default()
+            .to_string()
+    };
+    let cycle_labels: Vec<String> = cycles
+        .iter()
+        .flat_map(|c| c.get("members").and_then(Value::as_array).expect("members").iter())
+        .filter_map(Value::as_u64)
+        .map(label_by_id)
+        .collect();
+    assert!(
+        cycle_labels.contains(&"cyc1.rs".to_string()) && cycle_labels.contains(&"cyc2.rs".to_string()),
+        "cycle members must include cyc1.rs + cyc2.rs: {cycle_labels:?}"
+    );
+
+    // Determinism: PageRank + Tarjan + tiebreaks must produce a byte-identical node order.
+    let filem2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({ "granularity": "file", "include_churn": false }),
+            ))
+            .await
+            .expect("architecture_map file (repeat)"),
+    );
+    assert_eq!(
+        filem.get("nodes"),
+        filem2.get("nodes"),
+        "architecture_map file-tier node order must be deterministic across calls"
+    );
+
     // search_symbols pagination (Phase 5): "a" matches alpha, Beta, caller, plain — well
     // above the limit=1 page size, so we can validate the two-page round trip.
     let page1 = decode_text(
@@ -735,7 +813,7 @@ async fn mcp_server_exercises_representative_tools() {
         "budgeted response must carry a non-null next_cursor: {budgeted}"
     );
 
-    // list_files pagination (Phase 5): fixture has 5 files; limit=4 paginates (4+1).
+    // list_files pagination (Phase 5): fixture has 7 files; limit=4 paginates (4+3).
     let page1 = decode_text(
         &service
             .call_tool(call_params("list_files", json!({ "limit": 4 })))
@@ -756,7 +834,7 @@ async fn mcp_server_exercises_representative_tools() {
             .expect("list_files page2"),
     );
     let page2_files = page2.get("files").and_then(Value::as_array).expect("page2 files");
-    assert_eq!(page2_files.len(), 1, "list_files page2 → 1 remaining file: {page2}");
+    assert_eq!(page2_files.len(), 3, "list_files page2 → 3 remaining files: {page2}");
     assert!(
         page2.get("next_cursor").is_none(),
         "list_files page2 must NOT carry next_cursor"

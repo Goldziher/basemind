@@ -35,7 +35,7 @@ const DEFAULT_MAX_NODES: u32 = 100;
 /// enclosing symbol is not one of these (e.g. a top-level expression in a Python
 /// module body) is treated as file-scope and dropped — there's no parent function
 /// to attribute the call to.
-fn is_function_like(kind: SymbolKind) -> bool {
+pub(super) fn is_function_like(kind: SymbolKind) -> bool {
     matches!(
         kind,
         SymbolKind::Function | SymbolKind::Method | SymbolKind::Constructor | SymbolKind::Getter | SymbolKind::Setter

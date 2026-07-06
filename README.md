@@ -44,7 +44,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Find where things are defined, what calls what, who implements what, and how calls chain — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `find_implementations` · `workspace_grep` |
+| **Code intelligence** | Find where things are defined, what calls what, who implements what, how calls chain, and the overall architecture (hub modules + dependency cycles) — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `architecture_map` · `find_implementations` · `workspace_grep` |
 | **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and full-text search commit authors + messages. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` · `search_git_history` |
 | **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. | `search_documents` |
 | **Code search** | Find source code by meaning, term, or symbol — `mode` picks the strategy: `hybrid` (default, RRF fusion of vector + BM25 + exact-symbol lanes), `semantic` (vector KNN), or `keyword` (native BM25); optional `rerank` cross-encoder pass. Returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
@@ -501,6 +501,7 @@ machine-readable output.
 | `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
 | `implementations <trait>` | Types that implement or inherit from a name. |
 | `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
+| `architecture-map [--granularity --focus --depth --edges --include-churn]` | Deterministic architecture overview: hub modules/symbols ranked by graph centrality + churn, plus dependency cycles (SCCs). |
 | `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
 | `list-files [--path-contains --language]` | List indexed files. |
 | `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |

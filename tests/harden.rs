@@ -779,6 +779,18 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: call_graph(\"spawn\", callers, depth=2) returned {cg_nodes} nodes (expected ≥ 5)"
                 ));
             }
+            // architecture_map canary: the module tier must surface at least a handful of
+            // ranked modules. Conservative lower bound — tokio has many source directories.
+            let archmap_nodes = repo_record
+                .canaries
+                .get("archmap_module_nodes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if archmap_nodes < 5 {
+                failures.push(format!(
+                    "tokio canary: architecture_map(module) returned {archmap_nodes} nodes (expected ≥ 5)"
+                ));
+            }
             // search_code canary: only asserted when the embedder was available (canary present
             // and non-empty). Skipped when offline or no model — do not fail the harness solely
             // on embedder absence. "spawn a task" should semantically match tokio spawn code.
@@ -1008,6 +1020,23 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("spawn_call_graph_nodes".into(), json!(nodes));
+            }
+            // architecture_map canary: module tier over tokio. Its many source directories
+            // with dense inter-module calls should yield a ranked module graph of several nodes.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "architecture_map",
+                    &json!({ "granularity": "module", "depth": 2, "max_nodes": 100, "include_churn": false }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let nodes = body
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record.canaries.insert("archmap_module_nodes".into(), json!(nodes));
             }
             // workspace_grep canary for tokio: count "fn spawn" across source files.
             if let Ok(out) = svc

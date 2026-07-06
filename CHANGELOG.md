@@ -10,6 +10,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-06
+
+> **Minor release — cache rebuild.** `RELEASE_MINOR` bumps to 18, so both the Fjall index and the
+> content-addressed blob store are wiped and rebuilt from source on the next `basemind scan` (the
+> standard minor-release migration). No config or on-wire tool-response change.
+
+### Added
+
+- **`architecture_map` MCP tool — deterministic, LLM-free architecture overview.** Ranks modules
+  and symbols by graph centrality + churn and surfaces circular-dependency clusters, all derived
+  from real call edges (never hallucinated). A whole-repo adjacency graph is built in memory at
+  query time from the cached call sites (Fjall `calls_by_path`, or the in-RAM call cache in
+  read-only multi-session mode) — no new Fjall partition, no blob I/O. Metrics are cheap and
+  deterministic: fan-in/fan-out degree, fixed-iteration PageRank (damping 0.85, 20 iterations,
+  id-ordered accumulation — call-twice byte-identical), and iterative Tarjan SCC for cycle
+  clusters. Three tiers via `granularity`: `module` (default; files collapsed to a directory
+  prefix at `depth`), `file` (the base graph), and `symbol` (function→function drill-down under a
+  `focus`). Results are ranked, Kneedle knee-cut, then bounded by the shared `apply_budget` token
+  budgeter; edges are emitted only between surviving nodes. Optional `include_churn` overlay
+  reuses the `hot_files` aggregation. Node/edge caps set `truncated` + `truncation_reason` on
+  overflow. CLI: `query architecture-map`. New internal `kneedle` knee-detection helper
+  (Satopaa 2011, dependency-free).
+
 ## [0.17.0] — 2026-07-05
 
 > **Minor release — cache rebuild.** `RELEASE_MINOR` bumps to 17, so both the Fjall index and the
