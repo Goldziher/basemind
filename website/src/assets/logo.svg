@@ -1,13 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-label="basemind">
-  <defs>
-    <linearGradient id="bm" x1="10" y1="8" x2="38" y2="40" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#ff5d7c"/>
-      <stop offset="0.55" stop-color="#965aff"/>
-      <stop offset="1" stop-color="#5b9bff"/>
-    </linearGradient>
-  </defs>
-  <rect x="1.5" y="1.5" width="45" height="45" rx="11" fill="#080b13" stroke="url(#bm)" stroke-width="2"/>
-  <g transform="translate(7.4 45.4) scale(0.038 -0.038)">
-    <path d="M125 125V250H0V1000H250V750H750V625H875V250H750V125ZM250 250H625V625H250Z" fill="url(#bm)"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8287 875" fill="none" role="img" aria-label="basemind">
+  <g transform="translate(0 875) scale(1 -1)">
+    <path transform="translate(0.00 0)" d="M125 125V250H0V1000H250V750H750V625H875V250H750V125ZM250 250H625V625H250Z" fill="#ff5d7c"/>
+    <path transform="translate(1058.82 0)" d="M125 125V250H0V375H125V500H625V625H125V750H750V625H875V125ZM250 250H625V375H250Z" fill="#ff5d7c"/>
+    <path transform="translate(2117.65 0)" d="M0 125V250H625V375H125V500H0V625H125V750H750V625H250V500H750V375H875V250H750V125Z" fill="#ff5d7c"/>
+    <path transform="translate(3176.47 0)" d="M125 125V250H0V625H125V750H750V625H875V375H250V250H750V125ZM250 500H625V625H250Z" fill="#ff5d7c"/>
+    <path transform="translate(4235.29 0)" d="M0 125V750H750V625H875V125H625V625H500V125H250V625H125V125Z" fill="#5b9bff"/>
+    <path transform="translate(5294.12 0)" d="M375 875V1000H625V875ZM125 125V250H375V625H250V750H625V250H875V125Z" fill="#5b9bff"/>
+    <path transform="translate(6352.94 0)" d="M0 125V750H750V625H875V125H625V625H250V125Z" fill="#5b9bff"/>
+    <path transform="translate(7411.76 0)" d="M125 125V250H0V625H125V750H625V1000H875V125ZM250 250H625V625H250Z" fill="#5b9bff"/>
   </g>
 </svg>

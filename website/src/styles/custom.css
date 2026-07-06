@@ -89,6 +89,19 @@
 	background: color-mix(in oklch, var(--bm-purple) 12%, transparent);
 }
 
+/* Pixel-art wordmark logo — cap its height so it sits balanced in the nav bar. */
+.site-title img {
+	height: 1.75rem;
+	width: auto;
+}
+
+/* Splash hero: keep the "core" mark a tidy logo size, not a giant block. */
+.hero > img,
+.hero .hero-html {
+	max-width: 200px;
+	margin-inline: auto;
+}
+
 /* Tighter, denser tables — the reference pages are table-heavy. */
 .sl-markdown-content table {
 	font-size: var(--sl-text-sm);

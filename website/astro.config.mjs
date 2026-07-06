@@ -15,13 +15,12 @@ export default defineConfig({
 			logo: {
 				src: './src/assets/logo.svg',
 				alt: 'basemind',
+				replacesTitle: true,
 			},
 			favicon: '/favicon.svg',
 			customCss: ['./src/styles/custom.css'],
 			social: [
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/Goldziher/basemind' },
-				{ icon: 'seti:rust', label: 'crates.io', href: 'https://crates.io/crates/basemind' },
-				{ icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/basemind' },
 			],
 			editLink: {
 				baseUrl: 'https://github.com/Goldziher/basemind/edit/main/website/',
