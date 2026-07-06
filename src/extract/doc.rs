@@ -10,6 +10,7 @@
 //! vector inline so the scanner can stage it for LanceDB insert without a second
 //! pass through the embedding engine.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -459,7 +460,11 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         .unwrap_or_default()
         .into_iter()
         .map(|e| DocEntity {
-            category: entity_category_str(&e.category),
+            // `entity_category_str` takes `EntityCategory` by value: standard variants
+            // return a static borrow (no alloc in the common case); `Custom(s)` moves `s`.
+            // `.into_owned()` converts `Cow::Borrowed` → `String` (one alloc for statics)
+            // and unwraps `Cow::Owned` for custom labels (zero extra alloc).
+            category: entity_category_str(e.category).into_owned(),
             text: e.text,
             start: e.start,
             end: e.end,
@@ -502,22 +507,23 @@ fn keyword_algorithm_str(alg: &xberg::KeywordAlgorithm) -> &'static str {
 }
 
 /// Flatten xberg's `EntityCategory` (a closed enum with a `Custom(String)`
-/// tail variant) to a lowercase string. Standard variants use the lowercase
-/// canonical name; `Custom(s)` passes the user-supplied label through verbatim.
-fn entity_category_str(category: &xberg::types::entity::EntityCategory) -> String {
+/// tail variant) to a lowercase string. Standard variants return a `'static`
+/// borrow — zero allocation. `Custom(s)` moves `s` into a `Cow::Owned` so
+/// callers can call `.into_owned()` without an extra clone for the common case.
+fn entity_category_str(category: xberg::types::entity::EntityCategory) -> Cow<'static, str> {
     use xberg::types::entity::EntityCategory::*;
     match category {
-        Person => "person".to_string(),
-        Organization => "organization".to_string(),
-        Location => "location".to_string(),
-        Date => "date".to_string(),
-        Time => "time".to_string(),
-        Money => "money".to_string(),
-        Percent => "percent".to_string(),
-        Email => "email".to_string(),
-        Phone => "phone".to_string(),
-        Url => "url".to_string(),
-        Custom(s) => s.clone(),
+        Person => Cow::Borrowed("person"),
+        Organization => Cow::Borrowed("organization"),
+        Location => Cow::Borrowed("location"),
+        Date => Cow::Borrowed("date"),
+        Time => Cow::Borrowed("time"),
+        Money => Cow::Borrowed("money"),
+        Percent => Cow::Borrowed("percent"),
+        Email => Cow::Borrowed("email"),
+        Phone => Cow::Borrowed("phone"),
+        Url => Cow::Borrowed("url"),
+        Custom(s) => Cow::Owned(s),
     }
 }
 
