@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use ahash::{AHashMap, AHashSet};
 use thiserror::Error;
-use tree_sitter::{Language, ParseOptions, Parser, Query, Tree};
+use tree_sitter::{Language, ParseOptions, Parser, Query, QueryCursor, Tree};
 
 /// Hard ceiling on a single tree-sitter parse. Defends against pathological inputs that
 /// hang the recovery loop (e.g. multi-megabyte minified bundles with deep arrow chains).
@@ -250,6 +250,34 @@ where
         }
         Ok(f(map.get_mut(&lang).expect("just inserted")))
     })
+}
+
+// ─── Query cursor pool ────────────────────────────────────────────────────────
+//
+// QueryCursor is !Sync and stateful — one per thread, reused across all queries
+// on that thread. tree-sitter explicitly supports reuse: a new `cursor.matches()`
+// call starts a fresh execution; no explicit reset is required.
+
+thread_local! {
+    static QUERY_CURSOR: RefCell<QueryCursor> = RefCell::new(QueryCursor::new());
+}
+
+/// Run a closure with the per-thread reusable [`QueryCursor`].
+///
+/// Eliminates the `QueryCursor::new()` heap allocation that previously occurred
+/// on every file processed — three times per file when eager L2 is enabled
+/// (`run_combined`, `run_calls`, `run_docs`). The cursor is safe to reuse once
+/// the previous streaming iterator has been fully consumed or dropped, which is
+/// always the case here: each extraction function drains the iterator before
+/// returning.
+///
+/// Callers must not invoke `with_query_cursor` recursively on the same thread —
+/// the inner `RefCell::borrow_mut` would panic at runtime.
+pub fn with_query_cursor<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut QueryCursor) -> R,
+{
+    QUERY_CURSOR.with(|cell| f(&mut cell.borrow_mut()))
 }
 
 /// Outcome of a single bounded parse.
