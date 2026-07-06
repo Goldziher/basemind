@@ -178,6 +178,11 @@ pub(crate) struct RepoGraph {
     graph: Graph,
     /// Callee name → total call-site count across the repo (name-based fan-in).
     callee_counts: AHashMap<String, u32>,
+    /// Callee name → number of files that define a function-like symbol with that name.
+    /// The specificity denominator for the symbol tier: a name defined in 200 files is not
+    /// one hub, so raw name-based fan-in is divided by this to demote ubiquitous names
+    /// (`new` / `from` / `default`) that would otherwise dominate a repo-wide ranking.
+    def_counts: AHashMap<String, u32>,
     truncated: bool,
     truncation_reason: Option<&'static str>,
 }
@@ -236,6 +241,13 @@ impl RepoGraph {
             }
         }
 
+        // Consume the join table into per-name definition counts (the symbol-tier
+        // specificity denominator). Done after the scan loop so it stays out of the hot path.
+        let def_counts: AHashMap<String, u32> = def_files_by_name
+            .into_iter()
+            .map(|(name, files)| (name, files.len() as u32))
+            .collect();
+
         let mut graph = Graph::empty(files.len());
         for (&(s, d), &w) in &edges {
             graph.out[s as usize].push((d, w));
@@ -247,6 +259,7 @@ impl RepoGraph {
             files,
             graph,
             callee_counts,
+            def_counts,
             truncated,
             truncation_reason,
         })
@@ -596,7 +609,11 @@ struct SymCand {
     start_byte: u32,
     end_byte: u32,
     signature: Option<String>,
+    /// Raw name-based call count (reported verbatim — the honest count).
     fan_in: u32,
+    /// Specificity-weighted hub-ness = `fan_in / def_count`. The ranking signal: it demotes
+    /// ubiquitous names whose fan-in is spread across many definitions.
+    hub: f64,
     churn: u32,
 }
 
@@ -611,7 +628,7 @@ fn run_tier_symbol(
     max_nodes: usize,
     max_edges: usize,
 ) -> Result<CallToolResult, McpError> {
-    // 1. Candidate function-like symbols in scope, with name-based fan-in.
+    // 1. Candidate function-like symbols in scope, with specificity-weighted hub-ness.
     let mut cands: Vec<SymCand> = Vec::new();
     for (path, l1) in &cache.by_path {
         let ps = path.as_str().unwrap_or("");
@@ -625,6 +642,10 @@ fn run_tier_symbol(
             if !is_function_like(sym.kind) {
                 continue;
             }
+            let fan_in = rg.callee_counts.get(&sym.name).copied().unwrap_or(0);
+            // Divide by the number of files defining this name. `def_count >= 1` always: a
+            // function-like candidate is itself a definition, so its name is in the table.
+            let def_count = rg.def_counts.get(&sym.name).copied().unwrap_or(1).max(1);
             cands.push(SymCand {
                 path: path.clone(),
                 name: sym.name.clone(),
@@ -633,23 +654,26 @@ fn run_tier_symbol(
                 start_byte: sym.start_byte,
                 end_byte: sym.end_byte,
                 signature: sym.signature.clone(),
-                fan_in: rg.callee_counts.get(&sym.name).copied().unwrap_or(0),
+                fan_in,
+                hub: fan_in as f64 / def_count as f64,
                 churn: c,
             });
         }
     }
     let node_count_total = cands.len() as u32;
 
-    // 2. Rank by fan-in (the hub signal), knee-cut, cap.
+    // 2. Rank by specificity-weighted hub-ness, knee-cut, cap. Raw fan-in loses to `hub`:
+    //    `new` (huge fan-in, hundreds of definitions) ranks below a genuine single-def hub.
     cands.sort_by(|a, b| {
-        b.fan_in
-            .cmp(&a.fan_in)
+        b.hub
+            .partial_cmp(&a.hub)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.path.cmp(&b.path))
             .then(a.name.cmp(&b.name))
             .then(a.start_row.cmp(&b.start_row))
     });
-    let fan_in_curve: Vec<f64> = cands.iter().map(|c| c.fan_in as f64).collect();
-    let cut = knee_cutoff(&fan_in_curve).min(max_nodes).min(cands.len());
+    let hub_curve: Vec<f64> = cands.iter().map(|c| c.hub).collect();
+    let cut = knee_cutoff(&hub_curve).min(max_nodes).min(cands.len());
     cands.truncate(cut);
     let survivors = cands;
 
@@ -683,18 +707,13 @@ fn run_tier_symbol(
     }
     let fan_out: Vec<u32> = fan_out_sets.iter().map(|s| s.len() as u32).collect();
 
-    // 4. Blend (fan-in dominant), build nodes, budget.
-    let fin: Vec<f64> = survivors.iter().map(|c| c.fan_in as f64).collect();
-    let fout: Vec<f64> = fan_out.iter().map(|&f| f as f64).collect();
-    let chv: Vec<f64> = survivors.iter().map(|c| c.churn as f64).collect();
-    let finn = minmax_norm(&fin);
-    let foutn = minmax_norm(&fout);
-    let chn = minmax_norm(&chv);
-    let (w_in, w_out, w_churn) = if churn.is_some() {
-        (0.6, 0.2, 0.2)
-    } else {
-        (0.75, 0.25, 0.0)
-    };
+    // 4. Score = normalized hub-ness. Selection (step 2), knee-cut, and this score all key
+    //    off the same `hub` signal, so emitted nodes stay in non-increasing score order.
+    //    `fan_out` is only known post-truncation, so it cannot gate selection — it (and
+    //    per-file churn) are reported per node but deliberately kept out of the ranking
+    //    rather than folded into a blend that would silently fail to re-order anything.
+    let hubv: Vec<f64> = survivors.iter().map(|c| c.hub).collect();
+    let hubn = minmax_norm(&hubv);
 
     let prelim: Vec<ArchNode> = survivors
         .iter()
@@ -711,7 +730,7 @@ fn run_tier_symbol(
             fan_out: fan_out[loc],
             pagerank: None,
             commits_touching: churn.map(|_| s.churn),
-            score: (w_in * finn[loc] + w_out * foutn[loc] + w_churn * chn[loc]) as f32,
+            score: hubn[loc] as f32,
             scc_id: None,
         })
         .collect();
