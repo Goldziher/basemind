@@ -1,13 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" role="img" aria-label="basemind">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-label="basemind">
   <defs>
-    <linearGradient id="bm" x1="4" y1="4" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bm" x1="10" y1="8" x2="38" y2="40" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ff5d7c"/>
-      <stop offset="0.5" stop-color="#965aff"/>
+      <stop offset="0.55" stop-color="#965aff"/>
       <stop offset="1" stop-color="#5b9bff"/>
     </linearGradient>
   </defs>
-  <rect width="40" height="40" rx="9" fill="#080b13"/>
-  <path d="M20 9 L31 20 L20 31 L9 20 Z" fill="url(#bm)" fill-opacity="0.18"/>
-  <path d="M20 9 L31 20 L20 31 L9 20 Z" stroke="url(#bm)" stroke-width="2" stroke-linejoin="round"/>
-  <circle cx="20" cy="20" r="3.4" fill="url(#bm)"/>
+  <rect width="48" height="48" rx="11" fill="#080b13"/>
+  <g transform="translate(7.4 45.4) scale(0.038 -0.038)">
+    <path d="M125 125V250H0V1000H250V750H750V625H875V250H750V125ZM250 250H625V625H250Z" fill="url(#bm)"/>
+  </g>
 </svg>

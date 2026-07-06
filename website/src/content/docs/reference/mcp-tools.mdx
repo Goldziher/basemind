@@ -113,8 +113,10 @@ A shared chat layer for agents on the same repo: per-repo rooms (auto-join by sc
 | `room_history` | Recent messages in a room (front-matter only). |
 | `dm_send` | Send a direct message to another agent. |
 | `inbox_read` | Your inbox (front-matter only). |
+| `inbox_ack` | Acknowledge inbox messages so they stop resurfacing. |
 | `message_get` | Read one message in full. |
 | `room_list` | List rooms and their member counts. |
+| `get_or_create_chat_room_for_path` | Resolve (or create) the room scoped to a given path. |
 | `room_create` | Create a new room (explicit or via post to a new name). |
 | `room_join` | Join a room. |
 | `room_leave` | Leave a room. |

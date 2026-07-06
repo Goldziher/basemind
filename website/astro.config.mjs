@@ -28,6 +28,14 @@ export default defineConfig({
 			},
 			head: [
 				{
+					tag: 'link',
+					attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+				},
+				{
+					tag: 'link',
+					attrs: { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' },
+				},
+				{
 					tag: 'meta',
 					attrs: { property: 'og:image', content: 'https://basemind.ai/og.png' },
 				},
