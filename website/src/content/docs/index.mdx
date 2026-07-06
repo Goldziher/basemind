@@ -53,7 +53,7 @@ question about your code costs a small fraction of the tokens it takes to read t
 ## Install in one step
 
 The plugin sets up the server, helper skills, comms, and slash commands — and downloads the
-`basemind` program for you on first use.
+`basemind` program for you on first use. Or install the program directly with a package manager.
 
 <Tabs syncKey="installer">
 	<TabItem label="Claude Code">
@@ -68,16 +68,32 @@ The plugin sets up the server, helper skills, comms, and slash commands — and 
 			lang="bash"
 		/>
 	</TabItem>
+	<TabItem label="Cursor">
+		<Code code={`/add-plugin basemind`} lang="text" />
+	</TabItem>
 	<TabItem label="Gemini CLI">
 		<Code code={`gemini extensions install https://github.com/Goldziher/basemind`} lang="bash" />
+	</TabItem>
+	<TabItem label="Copilot CLI">
+		<Code
+			code={`copilot plugin marketplace add Goldziher/basemind\ncopilot plugin install basemind@basemind`}
+			lang="bash"
+		/>
 	</TabItem>
 	<TabItem label="Homebrew">
 		<Code code={`brew install Goldziher/tap/basemind`} lang="bash" />
 	</TabItem>
+	<TabItem label="npm">
+		<Code code={`npm install -g basemind`} lang="bash" />
+	</TabItem>
+	<TabItem label="pip">
+		<Code code={`pip install basemind`} lang="bash" />
+	</TabItem>
 </Tabs>
 
-Not using a plugin host? basemind also runs as a plain [MCP server](/start/installation/#2-as-an-mcp-server)
-or a [standalone CLI](/reference/cli/). See the full [installation guide](/start/installation/).
+More hosts — Windsurf, Factory Droid, OpenCode, Kimi, Cline, Continue, and others — plus the plain
+[MCP server](/start/installation/#2-as-an-mcp-server) and [standalone CLI](/reference/cli/) paths are
+in the full [installation guide](/start/installation/).
 
 ## Explore
 
