@@ -2,110 +2,110 @@
    purple #965aff (primary) · pink #ff5d7c ("base") · blue #5b9bff ("mind") · base #080b13 */
 
 :root {
-	/* purple accent ramp (dark theme is the default) */
-	--sl-color-accent-low: #2b1a54;
-	--sl-color-accent: #7d4dff;
-	--sl-color-accent-high: #d3c1ff;
+  /* purple accent ramp (dark theme is the default) */
+  --sl-color-accent-low: #2b1a54;
+  --sl-color-accent: #7d4dff;
+  --sl-color-accent-high: #d3c1ff;
 
-	/* cool-tinted grays so surfaces read as deep indigo, not neutral black */
-	--sl-color-white: #f4f2fb;
-	--sl-color-gray-1: #e3e0f0;
-	--sl-color-gray-2: #b6b2ca;
-	--sl-color-gray-3: #838099;
-	--sl-color-gray-4: #545067;
-	--sl-color-gray-5: #35324a;
-	--sl-color-gray-6: #211f33;
-	--sl-color-black: #0a0912;
+  /* cool-tinted grays so surfaces read as deep indigo, not neutral black */
+  --sl-color-white: #f4f2fb;
+  --sl-color-gray-1: #e3e0f0;
+  --sl-color-gray-2: #b6b2ca;
+  --sl-color-gray-3: #838099;
+  --sl-color-gray-4: #545067;
+  --sl-color-gray-5: #35324a;
+  --sl-color-gray-6: #211f33;
+  --sl-color-black: #0a0912;
 
-	--bm-pink: #ff5d7c;
-	--bm-blue: #5b9bff;
-	--bm-purple: #965aff;
+  --bm-pink: #ff5d7c;
+  --bm-blue: #5b9bff;
+  --bm-purple: #965aff;
 }
 
-:root[data-theme='light'] {
-	--sl-color-accent-low: #e7ddff;
-	--sl-color-accent: #6a3fe0;
-	--sl-color-accent-high: #2a1a54;
+:root[data-theme="light"] {
+  --sl-color-accent-low: #e7ddff;
+  --sl-color-accent: #6a3fe0;
+  --sl-color-accent-high: #2a1a54;
 
-	--sl-color-white: #14121f;
-	--sl-color-gray-1: #24222f;
-	--sl-color-gray-2: #3b3849;
-	--sl-color-gray-3: #605c72;
-	--sl-color-gray-4: #8f8ba0;
-	--sl-color-gray-5: #c9c6d6;
-	--sl-color-gray-6: #ece9f4;
-	--sl-color-gray-7: #f6f4fb;
-	--sl-color-black: #ffffff;
+  --sl-color-white: #14121f;
+  --sl-color-gray-1: #24222f;
+  --sl-color-gray-2: #3b3849;
+  --sl-color-gray-3: #605c72;
+  --sl-color-gray-4: #8f8ba0;
+  --sl-color-gray-5: #c9c6d6;
+  --sl-color-gray-6: #ece9f4;
+  --sl-color-gray-7: #f6f4fb;
+  --sl-color-black: #ffffff;
 }
 
 /* Ambient brand glow behind the header, echoing the banner's radial gradients. */
 [data-has-hero] .page {
-	background:
-		radial-gradient(60ch 40ch at 15% -10%, color-mix(in oklch, var(--bm-purple) 16%, transparent), transparent 70%),
-		radial-gradient(50ch 32ch at 88% -6%, color-mix(in oklch, var(--bm-blue) 14%, transparent), transparent 70%);
+  background:
+    radial-gradient(60ch 40ch at 15% -10%, color-mix(in oklch, var(--bm-purple) 16%, transparent), transparent 70%),
+    radial-gradient(50ch 32ch at 88% -6%, color-mix(in oklch, var(--bm-blue) 14%, transparent), transparent 70%);
 }
 
 /* Hero: gradient wordmark + brand accent on the primary CTA. */
 .hero h1,
 .hero .tagline {
-	font-feature-settings: 'ss01';
+  font-feature-settings: "ss01";
 }
 
-.hero .stack a[data-variant='primary'] {
-	background: linear-gradient(120deg, var(--bm-pink), var(--bm-purple) 55%, var(--bm-blue));
-	border: none;
-	color: #fff;
-	box-shadow: 0 8px 30px -12px color-mix(in oklch, var(--bm-purple) 80%, transparent);
+.hero .stack a[data-variant="primary"] {
+  background: linear-gradient(120deg, var(--bm-pink), var(--bm-purple) 55%, var(--bm-blue));
+  border: none;
+  color: #fff;
+  box-shadow: 0 8px 30px -12px color-mix(in oklch, var(--bm-purple) 80%, transparent);
 }
 
-.hero .stack a[data-variant='primary']:hover {
-	filter: brightness(1.08);
+.hero .stack a[data-variant="primary"]:hover {
+  filter: brightness(1.08);
 }
 
 /* Brandable inline mark used on the home page: "base" pink, "mind" blue. */
 .bm-wordmark {
-	font-weight: 700;
-	letter-spacing: -0.02em;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 .bm-wordmark .b {
-	color: var(--bm-pink);
+  color: var(--bm-pink);
 }
 .bm-wordmark .m {
-	color: var(--bm-blue);
+  color: var(--bm-blue);
 }
 
 /* Card grid: lift the surface, add a hairline brand edge on hover. */
 .card {
-	background: color-mix(in oklch, var(--sl-color-gray-6) 60%, transparent);
-	border: 1px solid var(--sl-color-gray-5);
-	transition: border-color 0.2s ease, transform 0.2s ease;
+  background: color-mix(in oklch, var(--sl-color-gray-6) 60%, transparent);
+  border: 1px solid var(--sl-color-gray-5);
+  transition: border-color 0.2s ease, transform 0.2s ease;
 }
 .card:hover {
-	border-color: color-mix(in oklch, var(--bm-purple) 60%, var(--sl-color-gray-5));
-	transform: translateY(-2px);
+  border-color: color-mix(in oklch, var(--bm-purple) 60%, var(--sl-color-gray-5));
+  transform: translateY(-2px);
 }
 .card .icon {
-	color: var(--bm-purple);
-	background: color-mix(in oklch, var(--bm-purple) 12%, transparent);
+  color: var(--bm-purple);
+  background: color-mix(in oklch, var(--bm-purple) 12%, transparent);
 }
 
 /* Pixel-art wordmark logo — cap its height so it sits balanced in the nav bar. */
 .site-title img {
-	height: 1.75rem;
-	width: auto;
+  height: 1.75rem;
+  width: auto;
 }
 
 /* Splash hero: keep the "core" mark a tidy logo size, not a giant block. */
 .hero > img,
 .hero .hero-html {
-	max-width: 200px;
-	margin-inline: auto;
+  max-width: 200px;
+  margin-inline: auto;
 }
 
 /* Tighter, denser tables — the reference pages are table-heavy. */
 .sl-markdown-content table {
-	font-size: var(--sl-text-sm);
+  font-size: var(--sl-text-sm);
 }
 .sl-markdown-content th {
-	color: var(--sl-color-white);
+  color: var(--sl-color-white);
 }
