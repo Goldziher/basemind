@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-07-07
+
+> Minor release — the index + blob schema version bumps (`RELEASE_MINOR` 18 → 19), so `.basemind/`
+> is wiped and rebuilt on the next scan.
+
+### Added
+
+- **Hermes Agent plugin.** basemind now integrates with [Hermes Agent](https://hermes-agent.nousresearch.com):
+  `pip install basemind` exposes a Hermes plugin (discovered via the `hermes_agent.plugins` entry
+  point) that bundles the helper skills, slash commands, and agent-comms notifications. Tools are
+  wired through Hermes's MCP config (`mcp_servers.basemind` in `~/.hermes/config.yaml`) — a Hermes
+  plugin cannot declare an MCP server. See the README "Hermes" install section. Closes #36.
+
+### Changed
+
+- **Claude status line survives version bumps.** `/bm-statusline` now writes a version-independent
+  resolver as the `statusLine` command (re-resolving the newest installed `statusline.sh` at each
+  render) instead of a version-pinned path that broke on update. The bar also shows the running
+  basemind version (`v<version>`, full/compact tiers; opt out with `BASEMIND_STATUSLINE_VERSION=0`).
+
 ### Performance
 
 Wide hot-path allocation + algorithmic sweep across the scanner, extraction, git, and MCP query

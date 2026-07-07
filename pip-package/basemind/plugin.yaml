@@ -12,7 +12,7 @@
 # Version is kept in lock-step with every other basemind surface by
 # scripts/release-bump.sh — do not hand-edit.
 name: basemind
-version: "0.18.1"
+version: "0.19.0"
 description: Tree-sitter code-map + git history/blame + document RAG + shared agent memory, over MCP.
 provides_hooks:
   - on_session_start
