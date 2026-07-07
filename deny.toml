@@ -89,6 +89,13 @@ allow = ["MPL-2.0"]
 name = "libbz2-rs-sys"
 allow = ["bzip2-1.0.6"]
 
+# inferno (transitive, all-features/all-targets only — the flamegraph rendering
+# stack) is CDDL-1.0, inherited from Brendan Gregg's FlameGraph it ports. Accept
+# the same file-level weak-copyleft scope as the MPL-2.0 exceptions above.
+[[licenses.exceptions]]
+name = "inferno"
+allow = ["CDDL-1.0"]
+
 [licenses.private]
 ignore = false
 registries = []
