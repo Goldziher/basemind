@@ -4,11 +4,8 @@
 //! two namespaces never collide, and the code map (symbols, outlines, references) resolves across
 //! the boundary. These tests mirror the end-to-end CLI behavior against the public query API.
 //!
-//! POSIX-only: the external key is a leading-`/` absolute path. On Windows a drive-prefixed
-//! absolute path is rejected by `path::normalize_absolute_components` (it can't form that key),
-//! so the extra-roots namespace is a Unix feature today — gate the suite to `cfg(unix)` rather
-//! than assert a platform it doesn't model. See the sibling unit test in `src/path.rs`.
-#![cfg(unix)]
+//! The external key is the file's absolute path in forward-slash form — a leading `/` on POSIX,
+//! a drive prefix (`C:/…`) on Windows — so the suite runs on both.
 
 use std::fs;
 use std::path::PathBuf;
@@ -44,9 +41,12 @@ fn repo_with_external() -> (TempDir, TempDir, ConfigV1) {
 }
 
 fn abs_key(dir: &TempDir, rel: &str) -> String {
-    // The scanner canonicalizes extra roots, so keys are built from the canonical path.
+    // The scanner canonicalizes extra roots and stores forward-slash keys, so mirror both here.
     let canonical = fs::canonicalize(dir.path()).unwrap();
-    canonical.join(rel).to_str().unwrap().to_string()
+    let key = canonical.join(rel).to_str().unwrap().to_string();
+    #[cfg(windows)]
+    let key = key.replace('\\', "/");
+    key
 }
 
 #[test]
@@ -67,7 +67,10 @@ fn extra_root_files_indexed_under_absolute_keys() {
 
     // External file: absolute key; the relative form must NOT be indexed (no collision).
     let ext_key = abs_key(&ext, "pkg/lib.rs");
-    assert!(ext_key.starts_with('/'), "external key must be absolute, got {ext_key}");
+    assert!(
+        std::path::Path::new(&ext_key).is_absolute(),
+        "external key must be absolute, got {ext_key}"
+    );
     let entry = store
         .lookup(ext_key.as_bytes())
         .unwrap_or_else(|| panic!("external file indexed under absolute key {ext_key}"));
