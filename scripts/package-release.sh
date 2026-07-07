@@ -10,7 +10,8 @@ set -euo pipefail
 #
 # Usage: package-release.sh <target-triple>
 #   x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu
-#   aarch64-apple-darwin     (Apple Silicon only — Intel macOS is unsupported)
+#   aarch64-apple-darwin     (Apple Silicon)
+#   x86_64-apple-darwin      (Intel; ONNX Runtime via ort-dynamic, vendored below)
 #   x86_64-pc-windows-msvc
 #
 # Output: basemind-<triple>.tar.gz   (Linux/macOS: binary + lib/ at archive root)
@@ -30,7 +31,7 @@ x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu)
 	SYSTEM="linux"
 	BINEXT=""
 	;;
-aarch64-apple-darwin)
+aarch64-apple-darwin | x86_64-apple-darwin)
 	SYSTEM="macos"
 	BINEXT=""
 	;;
@@ -180,6 +181,64 @@ macos)
 	codesign --force --sign - "$BIN_IN_STAGING"
 	# Verify the binary's signature is valid on disk before packaging.
 	codesign --verify --strict "$BIN_IN_STAGING"
+
+	# Intel macOS only: the ML surface is built with `xberg/ort-dynamic`
+	# (ort/load-dynamic) because ort ships no static x86_64-apple-darwin ONNX Runtime.
+	# The binary therefore does NOT link libonnxruntime at build time — it dlopens it
+	# AT RUNTIME, resolving the plain name `libonnxruntime.dylib` relative to the
+	# executable's directory. So (unlike the load-command deps handled above) otool
+	# can't discover it. Vendor Homebrew's libonnxruntime.dylib + its full non-system
+	# closure FLAT next to the binary (archive root), repoint every install name at
+	# @loader_path, and ad-hoc re-sign — so ONNX loads with zero end-user env setup.
+	if [ "$TRIPLE" = "x86_64-apple-darwin" ]; then
+		echo "Vendoring ONNX Runtime (ort-dynamic) for Intel macOS..."
+		export HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1
+		# The macos runner may lack a bottle for its own OS version; the Sonoma
+		# x86_64 bottle (onnxruntime >= 1.24, satisfies ort) pours explicitly, with a
+		# from-source build as the fallback.
+		brew install --bottle-tag=sonoma onnxruntime || brew install onnxruntime
+		ORT_PREFIX="$(brew --prefix onnxruntime)/lib"
+		ort_lib="$ORT_PREFIX/libonnxruntime.dylib"
+		[ -f "$ort_lib" ] || {
+			echo "ONNX Runtime dylib not found at $ort_lib" >&2
+			exit 1
+		}
+		cp "$ort_lib" "$STAGING_DIR/libonnxruntime.dylib"
+		chmod u+w "$STAGING_DIR/libonnxruntime.dylib"
+		install_name_tool -id "@loader_path/libonnxruntime.dylib" "$STAGING_DIR/libonnxruntime.dylib"
+		# Fixpoint: vendor each staged dylib's non-system deps flat, repoint every
+		# reference to @loader_path, and repeat until no new dylib is pulled in.
+		changed=1
+		while [ "$changed" = 1 ]; do
+			changed=0
+			for lib in "$STAGING_DIR"/*.dylib; do
+				[ -f "$lib" ] || continue
+				while IFS= read -r dep; do
+					[ -n "$dep" ] || continue
+					base=$(basename "$dep")
+					src="$dep"
+					case "$dep" in
+					@rpath/*) src="$ORT_PREFIX/$base" ;;
+					esac
+					if [ ! -f "$STAGING_DIR/$base" ]; then
+						[ -f "$src" ] || continue
+						cp "$src" "$STAGING_DIR/$base"
+						chmod u+w "$STAGING_DIR/$base"
+						install_name_tool -id "@loader_path/$base" "$STAGING_DIR/$base"
+						changed=1
+					fi
+					install_name_tool -change "$dep" "@loader_path/$base" "$lib" 2>/dev/null || true
+				done < <(otool -L "$lib" | tail -n +2 | awk '{print $1}' |
+					grep -E '^(/opt/homebrew|/usr/local|@rpath)/' || true)
+			done
+		done
+		# install_name_tool invalidated each dylib's ad-hoc signature — re-sign all.
+		for dylib in "$STAGING_DIR"/*.dylib; do
+			[ -f "$dylib" ] || continue
+			codesign --force --sign - "$dylib"
+		done
+		echo "✓ Vendored ONNX Runtime + closure next to the binary"
+	fi
 
 	tar czf "basemind-${TRIPLE}.tar.gz" -C "$STAGING_DIR" .
 	echo "✓ Created basemind-${TRIPLE}.tar.gz"

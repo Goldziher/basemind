@@ -1,6 +1,6 @@
 [package]
 name = "basemind"
-version = "0.19.1"
+version = "0.19.2"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
@@ -143,6 +143,16 @@ code-intel = ["code-intel-js"]
 # that always pulls in the full intelligence surface as we add tiers in the future.
 full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
+# ONNX Runtime linking strategy. The ML surface (embeddings/reranker/NER) arrives via
+# `xberg/embeddings`, which defaults to `ort-bundled` (ort/download-binaries, static).
+# `ort` has NO prebuilt static x86_64-apple-darwin artifact (Microsoft dropped
+# onnxruntime-osx-x86_64 after 1.23), so the Intel macOS release build adds `ort-dynamic`
+# alongside `full`: ort loads libonnxruntime.dylib at runtime (co-located next to the
+# binary). `load-dynamic` pulls ort-sys `disable-linking`, which short-circuits the static
+# download path — so enabling both is safe, dynamic wins workspace-wide. `xberg?/…` keeps
+# this a no-op when xberg isn't enabled. Build: `--features full,ort-dynamic`.
+ort-dynamic = ["xberg?/ort-dynamic"]
+
 [dependencies]
 ahash = "0.8"
 anstream = "1.0"
@@ -164,7 +174,7 @@ clap = { version = "4", features = ["derive", "env"] }
 crawlberg = { version = "1.0.3", default-features = false, features = ["native-runtime"], optional = true }
 # User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
-fjall = "3.1.5"
+fjall = "3.1.6"
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
 gix = { version = "0.85.0", features = ["status", "blob-diff", "revision", "max-performance-safe"] }
@@ -235,7 +245,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "1.12.4"
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.7", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.0.0-rc.11", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 
 # macOS current-RSS reader (src/sysres.rs) via mach `task_info`. `mach2` is the maintained
 # replacement for libc's deprecated mach bindings; scoped to macOS so no other target pulls it.
