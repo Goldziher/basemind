@@ -162,6 +162,30 @@ Kimi doesn't support the comms auto-notifications, but the chat tools still work
 </details>
 
 <details>
+<summary><strong>Hermes</strong></summary>
+
+Hermes exposes MCP servers through config, so basemind's tools are wired there while the pip
+package ships the helper skills, slash commands, and comms notifications:
+
+```bash
+pip install basemind   # binary + Hermes plugin (auto-discovered via entry point)
+```
+
+Add the server to `~/.hermes/config.yaml` (this is what gives you the 60+ tools):
+
+```yaml
+mcp_servers:
+  basemind:
+    command: basemind
+    args: [serve]
+```
+
+Then enable the plugin (general plugins are opt-in): `hermes plugins enable basemind`. Comms
+auto-notifications are best-effort; the chat tools work regardless.
+
+</details>
+
+<details>
 <summary><strong>Antigravity &amp; pi</strong></summary>
 
 **Antigravity** uses a shared MCP config — [install the program](#install-the-program), then add the
@@ -190,7 +214,7 @@ Each tool says whether it only reads or can change things, so your client can au
 ones and ask before the rest. If `basemind` isn't found, use the full path from `which basemind`.
 
 <details>
-<summary><strong>Per-tool specifics</strong> (Claude Code · Cursor · Windsurf · Codex · Gemini · Copilot · Droid · Cline · Continue · OpenCode)</summary>
+<summary><strong>Per-tool specifics</strong> (Claude Code · Cursor · Windsurf · Codex · Gemini · Copilot · Droid · Cline · Continue · OpenCode · Hermes)</summary>
 
 - **Claude Code** — `claude mcp add basemind -- basemind serve` (add `--scope user` for all
   projects; the `--` is required). Or commit a `.mcp.json` at the repo root with the block above.
@@ -207,6 +231,9 @@ ones and ask before the rest. If `basemind` isn't found, use the full path from 
 - **Continue** — `.continue/mcpServers/basemind.yaml` with `command: basemind`, `args: [serve]`.
 - **OpenCode (without the plugin)** — `opencode.json` under key `mcp`, with `command` as an array
   `["basemind", "serve"]`.
+- **Hermes** — `mcp_servers.basemind` in `~/.hermes/config.yaml` (YAML: `command: basemind`,
+  `args: [serve]`), then `hermes plugins enable basemind`. `pip install basemind` also ships a native
+  Hermes plugin (helper skills + comms notifications) — see the Hermes plugin section above.
 - **Any other tool** — point it at the command `basemind` with the argument `serve`.
 
 </details>

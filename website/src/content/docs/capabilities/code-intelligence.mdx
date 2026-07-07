@@ -100,6 +100,23 @@ BFS traversal over the indexed call edges.
 }
 ```
 
+### `architecture_map`
+
+A deterministic, whole-repo overview built from the real call graph — no LLM. Ranks hub
+modules, files, or symbols by centrality (fixed-iteration PageRank + fan-in/out) blended with
+git churn, and surfaces circular-dependency clusters (strongly-connected components). Pick the
+altitude with `granularity` (`module` default → `file` → `symbol`); pass a `focus` path-prefix
+to scope the map to a subtree. Returns nodes (paths, lines, signatures, scores) and edges — never
+prose.
+
+```json
+{
+  "granularity": "module",
+  "focus": "src/mcp",
+  "include_churn": true
+}
+```
+
 ### `find_implementations`
 
 Types that implement or inherit from a given name. Rust `impl` blocks, Python `class`
