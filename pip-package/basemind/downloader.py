@@ -18,26 +18,35 @@ from urllib.request import Request, urlopen
 import certifi
 
 
-def _is_apple_silicon(machine: str) -> bool:
-    """Detect Apple Silicon hardware, even from an x86_64 process under Rosetta.
-
-    ``platform.machine()`` reflects the *process* arch, so an x86_64 Python under
-    Rosetta reports ``x86_64`` on Apple Silicon hardware. Probe a hardware-level
-    signal the translation layer cannot spoof: ``sysctl -n hw.optional.arm64`` is
-    ``1`` on Apple Silicon.
-    """
-    if machine in {"aarch64", "arm64"}:
-        return True
+def _sysctl(name: str) -> str:
+    """Return the trimmed value of a sysctl, or "" if it can't be read."""
     try:
         result = subprocess.run(
-            ["sysctl", "-n", "hw.optional.arm64"],
+            ["sysctl", "-n", name],
             capture_output=True,
             text=True,
             check=False,
         )
     except (OSError, ValueError):
-        return False
-    return result.stdout.strip() == "1"
+        return ""
+    return result.stdout.strip()
+
+
+def _is_apple_silicon(machine: str) -> bool:
+    """Detect Apple Silicon hardware, even from an x86_64 process under Rosetta.
+
+    ``platform.machine()`` reflects the *process* arch, so an x86_64 Python under
+    Rosetta reports ``x86_64`` on Apple Silicon hardware. Two hardware signals
+    resolve it, either of which is conclusive:
+
+    * ``sysctl.proc_translated`` = 1 → running under Rosetta, which exists ONLY on
+      Apple Silicon. Rosetta MASKS ``hw.optional.arm64``, so that check alone misses
+      the Rosetta case — probe ``proc_translated`` too.
+    * ``hw.optional.arm64`` = 1 → native arm64 process.
+    """
+    if machine in {"aarch64", "arm64"}:
+        return True
+    return _sysctl("sysctl.proc_translated") == "1" or _sysctl("hw.optional.arm64") == "1"
 
 
 def _platform_triple() -> str:
@@ -55,11 +64,8 @@ def _platform_triple() -> str:
         if machine in {"aarch64", "arm64"}:
             return "aarch64-unknown-linux-gnu"
     elif system == "darwin":
-        if _is_apple_silicon(machine):
-            return "aarch64-apple-darwin"
-        raise RuntimeError(
-            "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
-        )
+        # Apple Silicon (incl. under Rosetta) → native arm64; genuine Intel → x86_64.
+        return "aarch64-apple-darwin" if _is_apple_silicon(machine) else "x86_64-apple-darwin"
 
     raise RuntimeError(f"Unsupported platform: {system} {machine}")
 
@@ -229,6 +235,26 @@ def _cache_dir(version: str) -> Path:
     return cache_dir
 
 
+def _prune_stale_versions(keep_version: str) -> None:
+    """Remove old per-version cache dirs so binaries don't accrue across upgrades.
+
+    Only ever runs once the ``keep_version`` binary is confirmed present, so a
+    user's only working copy is never deleted before a replacement exists. Any dir
+    whose name isn't ``keep_version`` is dead weight (this wrapper only runs its own
+    version). Best-effort: a dir in use by another process is skipped on error.
+    """
+    root = Path.home() / ".cache" / "basemind"
+    if not root.is_dir():
+        return
+    for entry in root.iterdir():
+        if entry.name == keep_version or not entry.is_dir():
+            continue
+        # Only touch version-shaped dirs (leading digit) — never lock/temp siblings.
+        if not entry.name[:1].isdigit():
+            continue
+        shutil.rmtree(entry, ignore_errors=True)
+
+
 def ensure_binary():
     """Ensure the binary is available, downloading if necessary.
 
@@ -245,6 +271,7 @@ def ensure_binary():
     cache_dir = _cache_dir(__version__)
     binary_path = cache_dir / _binary_name()
     if binary_path.exists() and os.access(binary_path, os.X_OK):
+        _prune_stale_versions(__version__)
         return str(binary_path)
 
     archive_url, ext, asset_name, checksums_url = _asset(__version__)
@@ -311,6 +338,9 @@ def ensure_binary():
 
         if platform.system().lower() != "windows":
             binary_path.chmod(0o755)
+
+        # New version is installed — reclaim old per-version cache dirs.
+        _prune_stale_versions(__version__)
 
         print("Binary downloaded successfully!", file=sys.stderr)
         return str(binary_path)

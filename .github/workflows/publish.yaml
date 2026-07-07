@@ -260,7 +260,7 @@ jobs:
             # Create as a DRAFT. The build matrix uploads binaries to it, but it
             # stays invisible (assets not publicly downloadable) until the
             # finalize_release job promotes it — and that job only runs once
-            # checksums (which requires all 4 platform binaries) succeeds. A failed
+            # checksums (which requires all 5 platform binaries) succeeds. A failed
             # platform build therefore leaves a hidden draft, not a live release
             # with missing binaries and no checksums (the v0.10.0 failure mode that
             # broke the plugin launcher's checksum-verified download).
@@ -280,6 +280,13 @@ jobs:
         include:
           - triple: aarch64-apple-darwin
             os: macos-latest
+          # Intel macOS: native x86_64 build on the macos-15-intel runner. ort has no
+          # static x86_64-apple-darwin ONNX Runtime, so this leg swaps in ort-dynamic
+          # (ort/load-dynamic) and package-release.sh vendors libonnxruntime.dylib next
+          # to the binary. `full` still names ort-bundled but disable-linking wins.
+          - triple: x86_64-apple-darwin
+            os: macos-15-intel
+            features: full,ort-dynamic
           - triple: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
@@ -306,12 +313,35 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          cargo build --release --features full --bin basemind \
+          cargo build --release --features "${{ matrix.features || 'full' }}" --bin basemind \
             --target "${{ matrix.triple }}"
 
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
+
+      # Intel macOS ships ONNX Runtime dynamically (ort/load-dynamic) with the dylib
+      # vendored next to the binary. That packaging can't be exercised on the arm64
+      # dev machines, so validate the shipped archive here — before it's uploaded — so
+      # a broken bundle fails the release instead of a user's first embedding call.
+      - name: Smoke-test packaged Intel binary (ONNX Runtime loads)
+        if: matrix.triple == 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir="$(mktemp -d)"
+          tar xzf "basemind-x86_64-apple-darwin.tar.gz" -C "$dir"
+          # Binary + its otool-discovered lib/ closure load, and the ad-hoc signature is
+          # valid (a bad install_name_tool rewrite would get the process SIGKILLed).
+          "$dir/basemind" --version
+          # ONNX Runtime is vendored next to the binary; ort/load-dynamic resolves it
+          # relative to the executable. dlopen the vendored dylib + its full @loader_path
+          # closure — the exact load ort performs at runtime — so a missing closure
+          # member, broken install name, or invalid signature fails here. @loader_path
+          # never falls back to the runner's Homebrew copy, so this proves the bundle is
+          # self-contained even though onnxruntime is brew-installed on this runner.
+          test -f "$dir/libonnxruntime.dylib"
+          ( cd "$dir" && python3 -c "import ctypes; ctypes.CDLL('./libonnxruntime.dylib'); print('libonnxruntime.dylib + closure load OK')" )
 
       - name: Upload to GitHub release
         shell: bash
@@ -513,18 +543,19 @@ jobs:
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
-      - name: Verify all 4 expected archives are present
+      - name: Verify all 5 expected archives are present
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="${{ needs.meta.outputs.tag }}"
 
-          # Expected archives for the 4 build targets
+          # Expected archives for the 5 build targets
           expected=(
             "basemind-x86_64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-apple-darwin.tar.gz"
+            "basemind-x86_64-apple-darwin.tar.gz"
             "basemind-x86_64-pc-windows-msvc.zip"
           )
 
@@ -540,11 +571,11 @@ jobs:
           done
 
           if [ $missing_count -gt 0 ]; then
-            echo "::error::Release is incomplete: $missing_count of 4 platform archives missing. The release must have all 4 binaries before checksums can be generated."
+            echo "::error::Release is incomplete: $missing_count of 5 platform archives missing. The release must have all 5 binaries before checksums can be generated."
             exit 1
           fi
 
-          echo "✓ All 4 expected archives present"
+          echo "✓ All 5 expected archives present"
 
       - name: Download archives and generate checksums
         env:
@@ -579,7 +610,7 @@ jobs:
     # Run after the build/checksums jobs settle, regardless of their result, so a
     # draft left complete by a cancelled/partial earlier run can still be promoted.
     # The step re-verifies completeness itself, so it never publishes an incomplete
-    # release — it only flips the draft to live once ALL 4 platform archives AND the
+    # release — it only flips the draft to live once ALL 5 platform archives AND the
     # checksums file are present. This is the gate that makes a partial publish a
     # hidden draft instead of a live, half-populated release.
     if: always() && needs.meta.result == 'success'
@@ -599,6 +630,7 @@ jobs:
             "basemind-x86_64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-unknown-linux-gnu.tar.gz"
             "basemind-aarch64-apple-darwin.tar.gz"
+            "basemind-x86_64-apple-darwin.tar.gz"
             "basemind-x86_64-pc-windows-msvc.zip"
             "basemind_${version}_checksums.txt"
           )
@@ -766,7 +798,7 @@ jobs:
   publish_homebrew:
     name: Update Homebrew formula
     # Stable releases only — rc/beta/alpha pre-releases do not update the tap.
-    # Requires the release to be finalized (all 4 binaries + checksums present and
+    # Requires the release to be finalized (all 5 binaries + checksums present and
     # the release published), since the formula points at the release assets.
     needs: [meta, finalize_release]
     if: needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')

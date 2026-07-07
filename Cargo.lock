@@ -709,7 +709,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "basemind"
-version = "0.19.1"
+version = "0.19.2"
 dependencies = [
  "ahash 0.8.12",
  "anstream",
@@ -1228,9 +1228,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.65"
+version = "1.2.66"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e228eec9be7c17ccb640b59b36a5cd805ea2a564a4c5e162c2f659fea30d3b96"
+checksum = "f5d6cac793997bd970000024b2934968efe83b382de4fdcf4fcb46b6ee4ad996"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1866,9 +1866,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-deque"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dd111b7b7f7d55b72c0a6ae361660ee5853c9af73f70c3c2ef6858b950e2e51"
+checksum = "5181e0de7b61eb03a81e347d6dd8797bae9da5146707b51077e2d71a54ec0ceb"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
@@ -1904,9 +1904,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.8.21"
+version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "crunchy"
@@ -3260,9 +3260,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fjall"
-version = "3.1.5"
+version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "038acd422d607e0eca09e093f299f9eccf9bd097554343d93746afff81a45113"
+checksum = "9fcdc69609906151dff9b534e30eaf8515082055d36f628e382bd0b5d6a1d362"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -5641,9 +5641,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c900ef84826f1338a557697dc8fc601df9ca9af4ac137c7fb61d4c6f2dfd3076"
+checksum = "6142247df1a93c2b3587402a19710be3e6e942f1581a1702e76408f2c21d6590"
 
 [[package]]
 name = "jiff-tzdb-platform"
@@ -5730,11 +5730,11 @@ dependencies = [
 
 [[package]]
 name = "jobserver"
-version = "0.1.34"
+version = "0.1.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
+checksum = "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
 dependencies = [
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "libc",
 ]
 
@@ -6841,9 +6841,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lsm-tree"
-version = "3.1.5"
+version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ef86c3c797c10eefcc73407c43ae48c19d4df686131a8334b2895a513e91df4"
+checksum = "39ca67401338b98d58447387dd5230552d2241bc388206e491d137b18dfea9d6"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -7681,6 +7681,7 @@ version = "2.0.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
 dependencies = [
+ "libloading",
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",
@@ -8070,9 +8071,9 @@ dependencies = [
 
 [[package]]
 name = "pdf_oxide"
-version = "0.3.72"
+version = "0.3.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b7fe525ccb850888a423bd211c1efd1af704761a7084e83edae1b99d0c7d2b4"
+checksum = "cf6730b3cabd41b9e813c9ab1e536c99e685adc8c06d6755b82b66dcedd49a95"
 dependencies = [
  "aes 0.9.1",
  "base64 0.22.1",
@@ -8646,9 +8647,9 @@ dependencies = [
 
 [[package]]
 name = "pxfm"
-version = "0.1.29"
+version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0c5ccf5294c6ccd63a74f1565028353830a9c2f5eb0c682c355c471726a6e3f"
+checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
 name = "quick-error"
@@ -9726,9 +9727,9 @@ dependencies = [
 
 [[package]]
 name = "rustversion"
-version = "1.0.22"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-fork"
@@ -12404,9 +12405,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae067a49ec38ff99d501d0e4bc745f5a1332dd22a86b3085083e219531249191"
+checksum = "48027a596691044dbb108ce96099138b5f2723983975c35c773f933e4e7a6ef5"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -12505,9 +12506,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2d29a5fcf85c2cc09f22be902f04c7e57e80d8902b044750293c7974c54c8cc"
+checksum = "4e0efdb1378539dc7337854eeba22f48cc162c057e554f1daf23157cfeb723a6"
 dependencies = [
  "ndarray 0.17.2",
  "ort",
@@ -12519,9 +12520,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2913e23c08a64d6ecb3a3318fbc615f1f046a8b33f40a849a42a484862c594b8"
+checksum = "9b51c5dd552e0adfb76f0f8b64f4d9442b95ac9a9737bb29f08961d5a1996035"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -12532,9 +12533,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "797b2d23626c27d87aaa2831d23066f3260940c2ec740d540014299d07537c1c"
+checksum = "e795e9f7b70d212dc06d4775f2283287916ec4e8b133672dd0e5e2ccd0a233ab"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -12549,9 +12550,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.0-rc.7"
+version = "1.0.0-rc.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e290213d7492421f7e0e83bb43e747aeb13c05df3a113328e0496cb3c248607"
+checksum = "bd810c90a03d6ca2f6536f327e35b96acf1938d49063d8bd0de3199f23d87db1"
 dependencies = [
  "cc",
  "cmake",
@@ -12612,18 +12613,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.52"
+version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce1022995ff5ff5d841ad7d994facc23098cd40152f2c1d11cd607c6f530653f"
+checksum = "75726053136156d419e285b9b7eddaaea9e3fea6ce32eed44a89901f0bd98de1"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.52"
+version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ae7f38b72ec2a254e2b87ef277cf2cd4fb97cbebf944faa6f33354da0867930"
+checksum = "4714fd92cf900833d49538023a9b3915155210801d1c1169eba513b2addefd71"
 dependencies = [
  "proc-macro2",
  "quote",
