@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-07-07
+
+### Fixed
+
+- **`scan.extra_roots` now works on Windows.** Files outside the repo root are keyed by their
+  absolute path; the Windows drive-prefixed form (`C:/…`) is now recognized on the consuming side —
+  previously only POSIX `/…` keys resolved, so external files were unqueryable there. Unix keys are
+  unchanged (index format untouched).
+
+### Security
+
+- Bump `crossbeam-epoch` to 0.9.20 for RUSTSEC-2026-0204 (invalid pointer dereference in the
+  `fmt::Pointer` impl for `Atomic`/`Shared`), pulled transitively via rayon.
+
 ## [0.19.0] — 2026-07-07
 
 > Minor release — the index + blob schema version bumps (`RELEASE_MINOR` 18 → 19), so `.basemind/`
