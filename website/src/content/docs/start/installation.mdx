@@ -71,6 +71,20 @@ agent-comms features, and the slash commands. Pick your coding tool.
     work.
   </TabItem>
 
+  <TabItem label="Hermes">
+    <Code code={`pip install basemind`} lang="bash" />
+
+    That ships a native Hermes plugin (the helper skills, slash commands, and
+    comms notifications), auto-discovered via the `hermes_agent.plugins` entry
+    point. Hermes wires tools through config, so add basemind's tools with the
+    [MCP block](#2-as-an-mcp-server) (`mcp_servers.basemind` in
+    `~/.hermes/config.yaml`), then enable the plugin:
+
+    <Code code={`hermes plugins enable basemind`} lang="bash" />
+
+    Comms auto-notifications are best-effort; the chat tools work regardless.
+  </TabItem>
+
   <TabItem label="Antigravity & pi">
     **Antigravity** uses a shared MCP config — [install the program](#install-the-program),
     then add the [generic MCP block](#2-as-an-mcp-server). If you already use the
@@ -145,6 +159,15 @@ use the full path from `which basemind`.
 
   <TabItem label="Continue">
     `.continue/mcpServers/basemind.yaml` with `command: basemind`, `args: [serve]`.
+  </TabItem>
+
+  <TabItem label="Hermes">
+    `mcp_servers.basemind` in `~/.hermes/config.yaml` (YAML, not JSON):
+
+    <Code code={`mcp_servers:\n  basemind:\n    command: basemind\n    args: [serve]`} lang="yaml" />
+
+    Then `hermes plugins enable basemind`. `pip install basemind` also ships a
+    native Hermes plugin with the helper skills and comms notifications.
   </TabItem>
 
   <TabItem label="OpenCode (without plugin)">

@@ -19,6 +19,7 @@ Query your project's structure: symbols, references, calls, and definitions acro
 | `find_callers` | Who calls one specific definition (path + name + optional kind). Resolves the definition first, then runs a name-only scan. | resolves def, then name-only |
 | `goto_definition` | Resolve a reference at a source position to its definition. | scope-aware |
 | `call_graph` | Walk the call chain up or down from a symbol. `--direction` (up/down), `--max-depth`. | exact name |
+| `architecture_map` | Whole-repo overview: hub modules/files/symbols ranked by centrality (PageRank + fan-in/out) and churn, plus dependency cycles (SCCs). `granularity` (module/file/symbol), optional `focus` path-prefix. | graph-derived |
 | `find_implementations` | Types that implement or inherit from a trait/interface. | substring |
 | `dependents` | Heuristic reverse lookup: what imports a given module. | import-based |
 | `workspace_grep` | Pattern search with optional language and path filters. | regex |
