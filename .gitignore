@@ -35,6 +35,7 @@ __pycache__/
 !.agents/plugins/marketplace.json
 
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
+.ai-rulez/.generated-manifest.json
 .claude/
 .cline/
 .clinerules/

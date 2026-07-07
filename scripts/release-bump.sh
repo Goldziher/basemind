@@ -10,6 +10,7 @@
 #   npm-package/package.json              "version"
 #   pip-package/pyproject.toml            version (PyPI form: 0.1.0-rc.1 → 0.1.0rc1)
 #   pip-package/basemind/__init__.py       __version__
+#   pip-package/basemind/plugin.yaml      version (Hermes plugin manifest; Cargo form)
 #   src/version.rs                        RELEASE_MINOR (if minor changed)
 #   package.json                          "version" (root, workspace marker)
 #   opencode-plugin/package.json          "version" (basemind-opencode npm pkg)
@@ -71,6 +72,14 @@ fi
 if [[ -f pip-package/basemind/__init__.py ]]; then
 	sed -i.bak -E "s/^__version__ = \"[^\"]+\"$/__version__ = \"$PY_VERSION\"/" pip-package/basemind/__init__.py
 	rm pip-package/basemind/__init__.py.bak
+fi
+
+# Hermes plugin manifest carries the Cargo-form version (like every other plugin manifest),
+# NOT the PyPI-normalised form — Hermes reads it as a plain semver string.
+if [[ -f pip-package/basemind/plugin.yaml ]]; then
+	echo "→ pip-package/basemind/plugin.yaml → $VERSION"
+	sed -i.bak -E "s/^version: .*/version: \"$VERSION\"/" pip-package/basemind/plugin.yaml
+	rm pip-package/basemind/plugin.yaml.bak
 fi
 
 # Plugin manifests (per-harness) — every shipped manifest carries the same Cargo version (no PyPI
@@ -139,6 +148,14 @@ if [ -f pip-package/basemind/__init__.py ]; then
 	init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
 	if [ "$init_version" != "$PY_VERSION" ]; then
 		echo "✗ pip-package/basemind/__init__.py: expected $PY_VERSION, got $init_version"
+		validation_failed=1
+	fi
+fi
+
+if [ -f pip-package/basemind/plugin.yaml ]; then
+	hermes_version="$(grep -E '^version: ' pip-package/basemind/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
+	if [ "$hermes_version" != "$VERSION" ]; then
+		echo "✗ pip-package/basemind/plugin.yaml: expected $VERSION, got $hermes_version"
 		validation_failed=1
 	fi
 fi
