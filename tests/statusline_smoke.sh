@@ -61,6 +61,34 @@ assert_contains 'basemind' 'name present'
 assert_contains '●' 'liveness dot present'
 assert_contains '7' 'file count 7 from blob fixture'
 
+# Version display: the running version is read from the sibling plugin.json (same
+# `.claude-plugin/` dir as statusline.sh) and shown as `v<version>` in the full tier.
+plugin_version=""
+if command -v jq >/dev/null 2>&1; then
+	plugin_version="$(jq -r '.version // empty' "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)"
+fi
+if [[ -n "$plugin_version" ]]; then
+	assert_contains "v$plugin_version" "version v$plugin_version shown (full tier)"
+	# Minimal tier is width-starved and must OMIT the version.
+	min_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE=minimal "$STATUSLINE")"
+	if [[ "$min_output" != *"v$plugin_version"* ]]; then
+		printf '  ok  version omitted in minimal tier\n'
+	else
+		printf '  FAIL minimal tier should omit version v%s; got: %q\n' "$plugin_version" "$min_output" >&2
+		fail=1
+	fi
+	# Opt-out env hides it even in the full tier.
+	nover_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION=0 "$STATUSLINE")"
+	if [[ "$nover_output" != *"v$plugin_version"* ]]; then
+		printf '  ok  BASEMIND_STATUSLINE_VERSION=0 hides version\n'
+	else
+		printf '  FAIL BASEMIND_STATUSLINE_VERSION=0 should hide version; got: %q\n' "$nover_output" >&2
+		fail=1
+	fi
+else
+	printf '  skip version assertions (jq or plugin.json unavailable)\n'
+fi
+
 # Legacy split-layout index (pre-0.9 `.l1`/`.l2` blobs, still written by an older serve)
 # must read as ready — NOT stuck on "scanning…" — and count one per source file (the
 # `.l2` secondary layer is never counted). Regression guard for the `.fm`-only check that

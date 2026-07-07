@@ -8,11 +8,12 @@
 # Line 2 (basemind): index health + per-capability activity (calls, searches, git,
 #   docs, memory, web) + estimated tokens saved.
 #
-# Wire it into Claude Code by running `/bm-statusline` once, or manually in
-# ~/.claude/settings.json:
+# Wire it into Claude Code by running `/bm-statusline` once. That writes a
+# VERSION-INDEPENDENT resolver as the statusLine command so a basemind update never
+# blanks the bar and the newest installed script always runs:
 #
 #   { "statusLine": { "type": "command",
-#       "command": "$HOME/.claude/plugins/basemind/.claude-plugin/statusline.sh",
+#       "command": "bash -c 'p=$(ls -dt \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | head -1); [ -n \"$p\" ] && exec bash \"$p\"'",
 #       "refreshInterval": 5 } }
 #
 # Layout adapts to terminal width via $COLUMNS (Claude Code sets it; needs CC
@@ -180,6 +181,24 @@ build_context_line() {
 # ─── Line 2: basemind ──────────────────────────────────────────────────────────
 mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$brand" "$reset"; }
 
+# Running basemind version, for display in the bar. Resolved WITHOUT spawning the binary:
+# read the sibling plugin manifest (statusline.sh and plugin.json share `.claude-plugin/`),
+# falling back to the version-named plugin cache dir (…/basemind/<version>/.claude-plugin).
+# Empty when neither is available, or when disabled with BASEMIND_STATUSLINE_VERSION=0.
+bm_version() {
+	[[ "${BASEMIND_STATUSLINE_VERSION:-1}" == "0" ]] && return 0
+	local dir ver="" parent
+	dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || return 0
+	if [[ $have_jq -eq 1 && -f "$dir/plugin.json" ]]; then
+		ver="$(jq -r '.version // empty' "$dir/plugin.json" 2>/dev/null || true)"
+	fi
+	if [[ -z "$ver" ]]; then
+		parent="$(basename "$(dirname "$dir")")"
+		[[ "$parent" =~ ^[0-9]+\.[0-9]+ ]] && ver="$parent"
+	fi
+	[[ -n "$ver" ]] && printf 'v%s' "$ver"
+}
+
 build_basemind_line() {
 	# No index → actionable hint.
 	if [[ ! -d "$bm_dir" ]]; then
@@ -278,8 +297,13 @@ build_basemind_line() {
 
 	# Compose by tier.
 	local searches=$((code))
-	local out
+	local out ver
 	out="$(mark)  ${dot}  "
+	# Running version (full/compact only — the minimal tier is width-starved).
+	if [[ "$tier" != "minimal" ]]; then
+		ver="$(bm_version)"
+		[[ -n "$ver" ]] && out+="${bold}${muted}${ver}${reset}  ${sep}│${reset}  "
+	fi
 	if [[ "$tier" == "minimal" ]]; then
 		out+="${bold}${cyan}$(fmt_count "$file_count")${reset} ${sep}·${reset} "
 		out+="${bold}${cyan}${scan_age% ago}${reset} ${sep}│${reset} "
