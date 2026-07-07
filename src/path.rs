@@ -440,6 +440,11 @@ mod tests {
         assert_eq!(normalize_query_path("src/foo.rs", root), Some("src/foo.rs".to_string()));
     }
 
+    // The external-key form is a leading-`/` POSIX absolute path. On Windows an absolute
+    // path carries a drive `Prefix` (rejected by `normalize_absolute_components`) and a
+    // bare `/other/...` input isn't absolute at all, so this Unix-shaped round-trip is
+    // gated to `cfg(unix)` rather than asserting a platform it doesn't model.
+    #[cfg(unix)]
     #[test]
     fn normalize_absolute_outside_repo_passes_through_as_external_key() {
         // An absolute path outside the repo is an `scan.extra_roots` file — keyed by its
