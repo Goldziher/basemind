@@ -2,7 +2,7 @@
 basemind: Code-map MCP server + scanner — content-addressed, Fjall-backed inverted index over tree-sitter outlines.
 """
 
-__version__ = "0.19.0"
+__version__ = "0.19.1"
 
 # Hermes Agent plugin entry point (group `hermes_agent.plugins`, target = this package).
 # Hermes imports the package and calls `basemind.register(ctx)`. Guarded so a plugin-load
