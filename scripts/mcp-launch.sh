@@ -66,10 +66,32 @@ VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$M
 # other repos). Lives outside any git working tree and survives plugin updates.
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/bin/$VERSION"
 MANAGED_BIN="$CACHE_ROOT/$BINARY_NAME"
+PARENT="$(dirname "$CACHE_ROOT")"
 
 # Return the X.Y.Z reported by a basemind binary, or empty if it can't run.
 binary_version() { "$1" --version 2>/dev/null | awk '{print $2}'; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Remove stale per-version install dirs so old binaries don't accrue in the cache
+# (users otherwise pile up a dir per release under .cache/basemind/bin). The
+# launcher only ever execs the version-matched binary, so any X.Y.Z-named sibling
+# that isn't $VERSION is dead weight. Best-effort, and invoked ONLY once a $VERSION
+# binary is confirmed present (fast-path match or fresh install) so we never delete
+# a user's only working copy before a replacement exists. A dir held open by a
+# concurrent session of a different plugin version just fails to remove (harmless
+# on Unix — the running process keeps its mapping) and is retried on a later launch.
+prune_stale_versions() {
+	[ -d "$PARENT" ] || return 0
+	local entry base
+	for entry in "$PARENT"/*/; do
+		[ -d "$entry" ] || continue
+		base="$(basename "$entry")"
+		[ "$base" = "$VERSION" ] && continue
+		case "$base" in
+		[0-9]*) rm -rf "$entry" 2>/dev/null || true ;;
+		esac
+	done
+}
 
 # Exec the candidate (first arg) with the forwarded launcher args if it exists and
 # its version matches the manifest. The candidate is shifted off before exec so it
@@ -86,7 +108,12 @@ try_exec() {
 # Explicit override first (dev builds), then the managed cache, a pre-seeded
 # plugin bin/, and finally a matching binary already on PATH (brew/cargo/npm).
 try_exec "${BASEMIND_BIN:-}" "$@"
-try_exec "$MANAGED_BIN" "$@"
+# Managed-cache fast path: prune stale versions before exec so an already-current
+# user still gets accrued old dirs cleaned (no download needed to trigger cleanup).
+if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
+	prune_stale_versions
+	exec "$MANAGED_BIN" "$@"
+fi
 try_exec "$PLUGIN_ROOT/bin/$BINARY_NAME" "$@"
 if have "$BINARY_NAME"; then
 	try_exec "$(command -v "$BINARY_NAME")" "$@"
@@ -97,15 +124,21 @@ fi
 arch="$(uname -m)"
 case "$(uname -s)" in
 Darwin)
-	# Only Apple Silicon (arm64) macOS binaries are shipped; Intel macOS is unsupported.
-	# `uname -m` reflects the *process* arch, so under Rosetta it reports x86_64 even
-	# on Apple Silicon hardware. Gate on a hardware-level signal that the translation
-	# layer cannot spoof: `sysctl -n hw.optional.arm64` is `1` on Apple Silicon.
+	# Apple Silicon — including an x86_64 process under Rosetta, where `uname -m`
+	# reports x86_64 on arm64 hardware — takes the NATIVE arm64 binary (it runs
+	# natively even when exec'd from a translated parent). Either hardware signal is
+	# conclusive for Apple Silicon:
+	#   * `sysctl.proc_translated` = 1 → running under Rosetta, which exists ONLY on
+	#     Apple Silicon. Rosetta MASKS `hw.optional.arm64`, so that check alone misses
+	#     the Rosetta-shell case (the bug this line fixes).
+	#   * `hw.optional.arm64` = 1 → native arm64 process.
+	# A genuine Intel Mac matches neither and gets the x86_64 binary.
 	if [ "$arch" = "arm64" ] || [ "$arch" = "aarch64" ] ||
+		[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ] ||
 		[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = "1" ]; then
 		TRIPLE="aarch64-apple-darwin"
 	else
-		die "Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries"
+		TRIPLE="x86_64-apple-darwin"
 	fi
 	;;
 Linux)
@@ -148,7 +181,6 @@ fi
 # comms-monitor poll loop). Serialize with an atomic mkdir lock — portable, since
 # flock is absent on macOS. The winner downloads; losers wait for the managed
 # binary to appear, then exec it.
-PARENT="$(dirname "$CACHE_ROOT")"
 mkdir -p "$PARENT"
 LOCK="$PARENT/.lock-$VERSION"
 STAGING=""
@@ -237,5 +269,8 @@ rm -rf "$TMP"
 TMP=""
 release_lock
 LOCK_HELD=""
+
+# The new version is now installed at $CACHE_ROOT — safe to reclaim old versions.
+prune_stale_versions
 
 exec "$MANAGED_BIN" "$@"
