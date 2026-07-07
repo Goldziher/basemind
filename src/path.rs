@@ -53,11 +53,11 @@ impl RelPath {
     }
 
     /// True when this key refers to a file outside the repository root — i.e. one indexed
-    /// via `scan.extra_roots`. Repo-relative keys never start with `/`; external files are
-    /// keyed by their absolute (forward-slash) path, so a leading `/` is the discriminator.
+    /// via `scan.extra_roots`. External files are keyed by their absolute (forward-slash) path,
+    /// so an absolute-path key is the discriminator (see [`is_external_key`]).
     /// Git-history / blame tools use this to short-circuit paths that git cannot resolve.
     pub fn is_external(&self) -> bool {
-        self.0.first() == Some(&b'/')
+        is_external_key(self.0.as_slice())
     }
 
     /// True when the path encodes as valid UTF-8. The common case in practice; we treat
@@ -265,11 +265,16 @@ fn normalize_relative_components(relative: &std::path::Path) -> Option<String> {
 fn normalize_absolute_components(path: &std::path::Path) -> Option<String> {
     use std::path::Component;
 
+    // Windows absolute paths carry a drive/UNC `Prefix` component (never emitted on Unix). Keep it
+    // as the leading key segment so the external key is the file's absolute path in forward-slash
+    // form (`C:/…`) — the same shape the scanner stores, so `root.join(key)` round-trips back to the
+    // real path. On Unix (no prefix) the key stays a leading-`/` path, byte-identical to before.
+    let mut prefix: Option<&str> = None;
     let mut parts: Vec<&str> = Vec::new();
     for component in path.components() {
         match component {
             Component::RootDir | Component::CurDir => {}
-            Component::Prefix(_) => return None,
+            Component::Prefix(p) => prefix = Some(p.as_os_str().to_str()?),
             Component::Normal(os) => parts.push(os.to_str()?),
             Component::ParentDir => {
                 parts.pop();
@@ -280,7 +285,24 @@ fn normalize_absolute_components(path: &std::path::Path) -> Option<String> {
     if parts.is_empty() {
         return None;
     }
-    Some(format!("/{}", parts.join("/")))
+    Some(match prefix {
+        Some(drive) => format!("{drive}/{}", parts.join("/")),
+        None => format!("/{}", parts.join("/")),
+    })
+}
+
+/// Whether a stored key names a file outside the repository root (a `scan.extra_roots` file).
+/// External files are keyed by their absolute path in forward-slash form, so the key is absolute:
+/// a leading `/` on POSIX, or a Windows drive prefix (`C:/…`). Repo-relative keys are always
+/// relative, so this never matches them — the drive form is Windows-gated so a POSIX filename that
+/// legitimately contains `:` can't be mistaken for a drive.
+pub(crate) fn is_external_key(key: &[u8]) -> bool {
+    match key.first() {
+        Some(b'/') => true,
+        #[cfg(windows)]
+        Some(&c) if c.is_ascii_alphabetic() => key.get(1) == Some(&b':'),
+        _ => false,
+    }
 }
 
 // ─── serde — discriminated wire format ──────────────────────────────────────
@@ -440,26 +462,38 @@ mod tests {
         assert_eq!(normalize_query_path("src/foo.rs", root), Some("src/foo.rs".to_string()));
     }
 
-    // The external-key form is a leading-`/` POSIX absolute path. On Windows an absolute
-    // path carries a drive `Prefix` (rejected by `normalize_absolute_components`) and a
-    // bare `/other/...` input isn't absolute at all, so this Unix-shaped round-trip is
-    // gated to `cfg(unix)` rather than asserting a platform it doesn't model.
-    #[cfg(unix)]
     #[test]
     fn normalize_absolute_outside_repo_passes_through_as_external_key() {
         // An absolute path outside the repo is an `scan.extra_roots` file — keyed by its
-        // absolute path so the CLI can query it verbatim.
-        let root = std::path::Path::new("/abs/repo");
-        assert_eq!(
-            normalize_query_path("/other/place/foo.rs", root),
-            Some("/other/place/foo.rs".to_string())
-        );
-        // Lexical `..` is resolved; a bare `/` has no file key.
-        assert_eq!(
-            normalize_query_path("/other/sub/../place/foo.rs", root),
-            Some("/other/place/foo.rs".to_string())
-        );
-        assert_eq!(normalize_query_path("/", root), None);
+        // absolute path (forward-slash form) so the CLI can query it verbatim: a leading `/`
+        // on POSIX, a drive prefix (`C:/…`) on Windows. Lexical `..` is resolved; a bare
+        // root has no file key.
+        #[cfg(unix)]
+        {
+            let root = std::path::Path::new("/abs/repo");
+            assert_eq!(
+                normalize_query_path("/other/place/foo.rs", root),
+                Some("/other/place/foo.rs".to_string())
+            );
+            assert_eq!(
+                normalize_query_path("/other/sub/../place/foo.rs", root),
+                Some("/other/place/foo.rs".to_string())
+            );
+            assert_eq!(normalize_query_path("/", root), None);
+        }
+        #[cfg(windows)]
+        {
+            let root = std::path::Path::new(r"C:\abs\repo");
+            assert_eq!(
+                normalize_query_path(r"C:\other\place\foo.rs", root),
+                Some("C:/other/place/foo.rs".to_string())
+            );
+            assert_eq!(
+                normalize_query_path(r"C:\other\sub\..\place\foo.rs", root),
+                Some("C:/other/place/foo.rs".to_string())
+            );
+            assert_eq!(normalize_query_path(r"C:\", root), None);
+        }
     }
 
     #[test]
@@ -467,6 +501,9 @@ mod tests {
         assert!(RelPath::from("/abs/ext/foo.rs").is_external());
         assert!(!RelPath::from("src/foo.rs").is_external());
         assert!(!RelPath::from("").is_external());
+        // A Windows drive-prefixed key is external too (drive detection is Windows-gated).
+        #[cfg(windows)]
+        assert!(RelPath::from("C:/ext/foo.rs").is_external());
     }
 
     #[test]
