@@ -10,6 +10,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] — 2026-07-07
+
+### Added
+
+- **Intel macOS (`x86_64-apple-darwin`) prebuilt binary.** macOS is no longer Apple-Silicon-only —
+  the release now ships a native Intel binary with full feature parity. `ort` has no static
+  x86_64-apple-darwin ONNX Runtime (Microsoft dropped `onnxruntime-osx-x86_64` after 1.23), so the
+  Intel leg builds `--features full,ort-dynamic` (`ort/load-dynamic`) and `package-release.sh`
+  vendors `libonnxruntime.dylib` + its closure next to the binary with `@loader_path` install-names;
+  ort resolves it relative to the executable, so ONNX loads with zero end-user setup. `brew install`
+  now works on Intel Macs too. The release completeness gate expects five archives.
+
+### Fixed
+
+- **Apple Silicon under a Rosetta x86_64 shell now installs.** Rosetta masks `hw.optional.arm64`, so
+  the previous probe fell through to the Intel branch and aborted with "Intel macOS not supported" —
+  even though the machine is Apple Silicon. All three installers (shell launcher, npm `install.js`,
+  pip `downloader.py`) now also probe `sysctl.proc_translated` (set only under Rosetta, which exists
+  only on Apple Silicon) and hand such shells the native arm64 binary. A genuine Intel Mac gets the
+  new x86_64 binary.
+- **`/bm-statusline` now selects the correct (highest) version.** The persisted resolver ranked
+  cached `statusline.sh` copies by mtime (`ls -dt`), so an older version dir touched more recently
+  won — showing a stale bar. It now resolves the marketplace clone first, else the highest-versioned
+  cache copy via `sort -V`, and never renders blank (a one-line hint replaces an empty bar).
+
+### Changed
+
+- **Installers prune stale cached binaries.** The launcher and pip downloader accrued a directory per
+  release under `~/.cache/basemind/(bin/)<version>` (users saw six). Each now removes old per-version
+  dirs once the current version is confirmed present, so only the running version is kept.
+- **Dependencies refreshed** to latest (`cargo upgrade --incompatible`): `xberg` → `1.0.0-rc.11`,
+  `fjall` → `3.1.6`, plus transitive lockfile updates. `arrow-array`/`arrow-schema` are intentionally
+  held at `58` until lancedb's transitive arrow moves (they must stay in lockstep).
+
 ## [0.19.1] — 2026-07-07
 
 ### Fixed
