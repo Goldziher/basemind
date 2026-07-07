@@ -63,10 +63,14 @@ done
 
 # Plugin trees whose root is their own directory (NOT the repo root). Claude is
 # excluded on purpose — it consumes the repo-root skills/ + commands/ directly.
+# `pip-package/basemind` is the Hermes plugin tree: the skills/commands are bundled into
+# the wheel (see pyproject package-data) and surfaced by basemind/hermes.py; like opencode
+# it drives comms from code, so it gets NO hook-script copies.
 TREES=(
 	".codex-plugin"
 	".cursor-plugin"
 	"opencode-plugin"
+	"pip-package/basemind"
 )
 # Subset of TREES that consume the shared `hooks/` scripts (Codex + Cursor). opencode drives
 # comms from `basemind.js`, so it gets no hook-script copies.

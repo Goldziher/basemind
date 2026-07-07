@@ -18,6 +18,7 @@ the workflow's per-registry skip detection breaks on a partial bump.
 | `npm-package/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Same shape as Cargo. |
 | `pip-package/pyproject.toml` `version` | `X.Y.Z` or `X.Y.ZrcN` | PyPI canonical form. |
 | `pip-package/basemind/__init__.py` `__version__` | matches `pyproject.toml` | Used by `downloader.py` to compute the GH release URL. |
+| `pip-package/basemind/plugin.yaml` `version` | `X.Y.Z` or `X.Y.Z-rc.N` | Hermes Agent plugin manifest (Cargo form, bundled in the pip wheel). |
 | `src/version.rs` `RELEASE_MINOR` | `u16` | Bumped only when the MINOR component changes (or major-100 carry for `1.X` and beyond). |
 | `package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | Workspace root marker (private). |
 | `opencode-plugin/package.json` `"version"` | `X.Y.Z` or `X.Y.Z-rc.N` | `basemind-opencode` npm package. |
