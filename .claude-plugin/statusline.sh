@@ -10,10 +10,13 @@
 #
 # Wire it into Claude Code by running `/bm-statusline` once. That writes a
 # VERSION-INDEPENDENT resolver as the statusLine command so a basemind update never
-# blanks the bar and the newest installed script always runs:
+# blanks the bar and the newest installed script always runs — it resolves the
+# highest-versioned cache copy (`sort -V`, never mtime, so it tracks the newest
+# version the moment /plugin update installs it), else the marketplace clone, else a
+# one-line hint:
 #
 #   { "statusLine": { "type": "command",
-#       "command": "bash -c 'p=$(ls -dt \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | head -1); [ -n \"$p\" ] && exec bash \"$p\"'",
+#       "command": "bash -c 's=$(ls -d \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f \"$s\" ] || s=\"$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh\"; [ -f \"$s\" ] && exec bash \"$s\" || printf \"%s\" \"◆ basemind: run /bm-statusline\"'",
 #       "refreshInterval": 5 } }
 #
 # Layout adapts to terminal width via $COLUMNS (Claude Code sets it; needs CC

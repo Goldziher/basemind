@@ -136,6 +136,40 @@ else
 	fail=1
 fi
 
+# Resolver version selection: /bm-statusline persists a version-independent resolver
+# that must pick the HIGHEST-versioned cached statusline.sh via `sort -V` — NOT the
+# most recently modified (mtime), which would pick an older dir touched later. This
+# guards the "selects 0.19.0 instead of 0.19.1" bug: synthesize three fake version
+# dirs where the OLDEST version has the NEWEST mtime, and assert sort -V still wins.
+resolver_dir="$(mktemp -d)"
+mkdir -p \
+	"$resolver_dir/0.9.0/.claude-plugin" \
+	"$resolver_dir/0.14.0/.claude-plugin" \
+	"$resolver_dir/0.19.0/.claude-plugin"
+: >"$resolver_dir/0.19.0/.claude-plugin/statusline.sh"
+: >"$resolver_dir/0.14.0/.claude-plugin/statusline.sh"
+: >"$resolver_dir/0.9.0/.claude-plugin/statusline.sh"
+# Make the OLDEST version the most-recently-modified so mtime ordering would mislead.
+touch "$resolver_dir/0.19.0/.claude-plugin/statusline.sh"
+touch "$resolver_dir/0.14.0/.claude-plugin/statusline.sh"
+touch "$resolver_dir/0.9.0/.claude-plugin/statusline.sh"
+# shellcheck disable=SC2012  # must mirror the resolver, which uses `ls` verbatim
+picked_v="$(ls -d "$resolver_dir"/*/.claude-plugin/statusline.sh 2>/dev/null | sort -V | tail -1)"
+# shellcheck disable=SC2012  # mirrors the (buggy) mtime path we assert against
+picked_mtime="$(ls -dt "$resolver_dir"/*/.claude-plugin/statusline.sh 2>/dev/null | head -1)"
+rm -rf "$resolver_dir"
+if [[ "$picked_v" == *"/0.19.0/"* ]]; then
+	printf '  ok  resolver sort -V selects highest version (0.19.0)\n'
+else
+	printf '  FAIL resolver sort -V should pick 0.19.0; got: %q\n' "$picked_v" >&2
+	fail=1
+fi
+if [[ "$picked_mtime" == *"/0.9.0/"* ]]; then
+	printf '  ok  mtime ordering (ls -dt) demonstrably picks the WRONG version (0.9.0)\n'
+else
+	printf '  note mtime ordering picked %q (fixture timing); sort -V guard still holds\n' "$picked_mtime"
+fi
+
 if [[ $fail -eq 0 ]]; then
 	printf 'statusline_smoke: all checks passed\n'
 	exit 0
