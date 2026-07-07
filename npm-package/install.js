@@ -13,20 +13,23 @@ const AdmZip = require("adm-zip");
 const { version } = require("./package.json");
 
 // `os.arch()` reflects the Node process arch, so an x64 Node under Rosetta reports
-// "x64" even on Apple Silicon hardware. Probe a hardware-level signal the translation
-// layer cannot spoof: `sysctl -n hw.optional.arm64` is "1" on Apple Silicon.
+// "x64" even on Apple Silicon hardware. Two hardware signals resolve it, either of
+// which is conclusive for Apple Silicon:
+//   * `sysctl.proc_translated` = 1 → this process runs under Rosetta, which exists
+//     ONLY on Apple Silicon. Rosetta MASKS `hw.optional.arm64`, so that check alone
+//     misses the Rosetta case — probe proc_translated first.
+//   * `hw.optional.arm64` = 1 → native arm64 process.
 function isAppleSilicon() {
   if (os.type() !== "Darwin") return false;
   if (os.arch() === "arm64") return true;
-  try {
-    return (
-      execFileSync("sysctl", ["-n", "hw.optional.arm64"], {
-        encoding: "utf8",
-      }).trim() === "1"
-    );
-  } catch {
-    return false;
-  }
+  const sysctl = (name) => {
+    try {
+      return execFileSync("sysctl", ["-n", name], { encoding: "utf8" }).trim();
+    } catch {
+      return "";
+    }
+  };
+  return sysctl("sysctl.proc_translated") === "1" || sysctl("hw.optional.arm64") === "1";
 }
 
 function getPlatformTriple() {
@@ -45,8 +48,8 @@ function getPlatformTriple() {
   }
 
   if (type === "Darwin") {
-    if (isAppleSilicon()) return "aarch64-apple-darwin";
-    throw new Error("Intel macOS (x86_64) is not supported; basemind ships only Apple Silicon (arm64) macOS binaries");
+    // Apple Silicon (incl. under Rosetta) → native arm64; genuine Intel → x86_64.
+    return isAppleSilicon() ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
   }
 
   throw new Error(`Unsupported platform: ${type} ${arch}`);
