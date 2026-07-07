@@ -3,6 +3,12 @@
 //! Extra-root files are keyed by their **absolute** path (repo files stay repo-relative), so the
 //! two namespaces never collide, and the code map (symbols, outlines, references) resolves across
 //! the boundary. These tests mirror the end-to-end CLI behavior against the public query API.
+//!
+//! POSIX-only: the external key is a leading-`/` absolute path. On Windows a drive-prefixed
+//! absolute path is rejected by `path::normalize_absolute_components` (it can't form that key),
+//! so the extra-roots namespace is a Unix feature today — gate the suite to `cfg(unix)` rather
+//! than assert a platform it doesn't model. See the sibling unit test in `src/path.rs`.
+#![cfg(unix)]
 
 use std::fs;
 use std::path::PathBuf;
