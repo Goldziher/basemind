@@ -452,15 +452,22 @@ pub(crate) fn doc_scope_for<'a>(
     default_scope: &'a str,
     config: &crate::config::Config,
 ) -> std::borrow::Cow<'a, str> {
-    if !rel.starts_with('/') {
+    if !crate::path::is_external_key(rel.as_bytes()) {
         return std::borrow::Cow::Borrowed(default_scope);
     }
     for raw_root in &config.scan.extra_roots {
         if let Ok(canonical) = raw_root.canonicalize()
             && let Some(prefix) = canonical.to_str()
-            && rel.starts_with(prefix)
         {
-            return std::borrow::Cow::Owned(format!("path:{prefix}"));
+            // External keys are forward-slash normalized; match the extra-root prefix the same
+            // way so a Windows drive path (`C:\root` vs the `C:/root/…` key) still compares equal.
+            #[cfg(windows)]
+            let prefix = prefix.replace('\\', "/");
+            #[cfg(windows)]
+            let prefix = prefix.as_str();
+            if rel.starts_with(prefix) {
+                return std::borrow::Cow::Owned(format!("path:{prefix}"));
+            }
         }
     }
     std::borrow::Cow::Owned(format!("path:{rel}"))
