@@ -76,7 +76,11 @@ pub(crate) fn chunk_and_embed(
     let cfg = &config.code_search;
     // `Deferred` forces the chunk-only path regardless of the configured `code_search.embed`, so
     // serve boot writes symbols + BM25 fast and leaves embeddings to the background `Inline` pass.
-    let embed = matches!(mode, EmbedMode::Inline) && cfg.embed;
+    // A file matching `code_search.embed_exclude` is still chunked + BM25-indexed below, only its
+    // embedding is skipped (the `!embed` branch persists the vector-less sidecar).
+    let embed = matches!(mode, EmbedMode::Inline)
+        && cfg.embed
+        && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude);
     let opts = ChunkOptions {
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,

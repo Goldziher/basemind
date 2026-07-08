@@ -462,33 +462,126 @@ fn bootstrap_grammars(verbosity: Verbosity, no_color: bool) -> Result<()> {
     Ok(())
 }
 
+/// Fully-commented `basemind.toml` scaffold. Doubles as living documentation: every value shown is
+/// the built-in default, so an unedited file is a no-op. Written to the repo ROOT (committed);
+/// the `.basemind/` cache it drives is gitignored.
+const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — https://github.com/Goldziher/basemind
+# Lives at the repo root and is meant to be committed. The `.basemind/` cache (index + blobs) is
+# derived state, gitignored, and wiped on schema bumps — never put durable config there.
+# Every value below is the built-in default; uncomment and edit only what you want to change.
+"$schema" = "v1"
+
+[scan]
+# Files to index. Default is "everything"; the tree-sitter language registry + a binary/size check
+# filter the long tail. Narrow it if you only care about specific languages.
+# include = ["**/*"]
+# Extra exclude globs, ADDED ON TOP of the always-on floor (node_modules, target, dist, .venv,
+# __pycache__, .git, .basemind, bazel-*, .idea, .DS_Store, …). You cannot remove a floor entry.
+# exclude = []
+# Honor .gitignore / .git/info/exclude while walking. Leave on unless you deliberately want
+# ignored files indexed.
+# respect_gitignore = true
+# Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
+# bazel-* convenience symlinks). Turn on for repos that symlink real source into place.
+# follow_symlinks = false
+# Skip files larger than this many bytes (prevents minified-bundle stalls).
+# max_file_bytes = 2097152
+# Skip paths under any submodule root listed in .gitmodules.
+# skip_submodules = true
+# Run L2 extraction (calls + docs) inline with L1. Powers find_references / find_callers. Turning
+# off roughly halves scan time on large repos but leaves reference search empty until an L2 pass.
+# eager_l2 = true
+# Absolute paths OUTSIDE the repo to also index (e.g. a Bazel external cache). Symlinks are always
+# followed for these regardless of scan.follow_symlinks.
+# extra_roots = []
+
+[watch]
+# Coalesce filesystem events within this window (milliseconds).
+# debounce_ms = 250
+# Run L2 extraction on live watch edits (extra CPU per edit).
+# live_l2 = false
+
+[cache]
+# Max extracted file-maps kept hot in memory.
+# file_map_lru = 256
+
+[mcp]
+# MCP transport. Only "stdio" is supported today.
+# transport = "stdio"
+
+[documents]
+# Document RAG tier (PDF / Office / HTML / email / images). Requires a `documents` build.
+# enabled = true
+# Embed documents for semantic search. ON by default — embeddings pay off on real prose / OCR.
+# embed = true
+# Embedding model preset. Changing it forces a FULL RE-EMBED of the corpus (time + CPU): every
+# document is re-encoded at the new model's dimension.
+#   fast        — smallest / fastest, lowest quality
+#   balanced    — default; 768-dim, good quality/cost tradeoff
+#   quality     — larger model, best English quality, slower
+#   multilingual— multilingual model for non-English corpora
+# embedding_preset = "balanced"
+# Globs for documents that are still extracted + indexed but NOT embedded (keyword-only).
+# embed_exclude = []
+# Route archives (.zip/.tar/.jar/…) into the recursive archive extractor. Off by default so one
+# archive can't explode into thousands of embeds. True binaries are always skipped.
+# extract_archives = false
+
+[code_search]
+# Semantic code-search tier. Requires a `code-search` build.
+# enabled = true
+# Embed source code for VECTOR search. OFF by default — local embeddings on code aren't worth the
+# cost (code is embedded with a general English model, and NL→symbol is already served by the BM25
+# keyword lane over the same text). Chunking + BM25 keyword search work regardless. Turn on only if
+# you specifically want vector search over code (downloads an ONNX model, re-embeds on preset change).
+# embed = false
+# Globs for source files that are still chunked + BM25-indexed but NOT embedded (only used when
+# embed = true).
+# embed_exclude = []
+"##;
+
 fn cmd_init(root: &std::path::Path) -> Result<()> {
-    let dir = root.join(config::BASEMIND_DIR);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    // Fix `.gitignore` regardless of whether a config already exists — the `.basemind/` cache must
+    // never be committed, and an existing config doesn't imply the ignore entry was ever added.
+    ensure_basemind_gitignored(root)?;
+
     let path = config::config_path(root);
     if path.exists() {
         anyhow::bail!("config already exists at {}", path.display());
     }
-    let default_toml = r##""$schema" = "v1"
-
-[scan]
-include = ["**/*.rs", "**/*.py", "**/*.ts", "**/*.tsx", "**/*.js", "**/*.go"]
-exclude = ["**/target/**", "**/node_modules/**", "**/dist/**", "**/.venv/**", "**/.basemind/**", "**/.git/**"]
-respect_gitignore = true
-max_file_bytes = 2097152
-
-[watch]
-debounce_ms = 250
-
-[cache]
-file_map_lru = 256
-
-[mcp]
-transport = "stdio"
-"##;
-    std::fs::write(&path, default_toml).with_context(|| format!("write {}", path.display()))?;
+    std::fs::write(&path, INIT_SCAFFOLD_TOML).with_context(|| format!("write {}", path.display()))?;
     println!("wrote {}", path.display());
     Ok(())
+}
+
+/// Ensure the repo `.gitignore` ignores the `.basemind/` cache directory. Appends the entry when
+/// missing, creates the file when absent, and is a no-op when the entry is already present (matched
+/// against `.basemind` / `.basemind/` with or without a leading slash). Returns whether the file was
+/// modified so callers / tests can assert the behavior.
+fn ensure_basemind_gitignored(root: &std::path::Path) -> Result<bool> {
+    let path = root.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(contents) => Some(contents),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(anyhow::Error::new(e).context(format!("read {}", path.display()))),
+    };
+    let already = existing.as_deref().is_some_and(|contents| {
+        contents.lines().any(|line| {
+            let entry = line.trim().trim_start_matches('/').trim_end_matches('/');
+            entry == ".basemind"
+        })
+    });
+    if already {
+        return Ok(false);
+    }
+    let mut contents = existing.unwrap_or_default();
+    if !contents.is_empty() && !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    contents.push_str(".basemind/\n");
+    std::fs::write(&path, contents).with_context(|| format!("write {}", path.display()))?;
+    println!("updated {}", path.display());
+    Ok(true)
 }
 
 fn load_or_default(root: &std::path::Path) -> Result<Config> {
@@ -504,7 +597,7 @@ fn load_or_default_with(root: &std::path::Path, cli: Option<DocumentsCliOverride
         Err(config::ConfigError::NotFound(_)) => {
             // load_with_overrides already treats NotFound as "no toml file" via load(),
             // so this branch is reached only if a downstream call surfaces it again.
-            tracing::info!("no .basemind/basemind.toml; using defaults");
+            tracing::info!("no basemind.toml; using defaults");
             Ok(config::default_for_root(root))
         }
         Err(e) => Err(anyhow::anyhow!(e)),

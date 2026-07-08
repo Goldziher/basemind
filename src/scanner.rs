@@ -701,7 +701,7 @@ fn candidates_for_source(
 
 fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<String> {
     let mut out = Vec::new();
-    let walker = ignore_walk_builder(root, config.scan.respect_gitignore, false).build();
+    let walker = ignore_walk_builder(root, config.scan.respect_gitignore, config.scan.follow_symlinks).build();
     for dent in walker.flatten() {
         if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;

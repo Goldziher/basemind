@@ -60,7 +60,7 @@ pub enum ConfigError {
 /// layered merger is reached via [`load_with_overrides`] when CLI flags or
 /// env vars are involved.
 pub fn load(root: &Path) -> Result<Config, ConfigError> {
-    let path = config_path(root);
+    let path = resolve_config_path(root);
     if !path.exists() {
         return Err(ConfigError::NotFound(path));
     }
@@ -99,8 +99,36 @@ pub fn load_with_overrides(
     ))
 }
 
+/// Canonical (write) location of the config: `<root>/basemind.toml`.
+///
+/// The config moved from inside `.basemind/` to the repo root so it can be committed — the
+/// `.basemind/` cache is wiped on every schema-version bump and is gitignored, which made an
+/// in-cache config non-durable. `basemind init` writes here; [`resolve_config_path`] still reads
+/// the legacy in-cache location for back-compat.
 pub fn config_path(root: &Path) -> PathBuf {
+    root.join(CONFIG_FILE_NAME)
+}
+
+/// Legacy config location: `<root>/.basemind/basemind.toml`. Read-only fallback kept so existing
+/// checkouts that still carry an in-cache config keep loading it until the user re-runs
+/// `basemind init` (which writes the root location).
+pub fn legacy_config_path(root: &Path) -> PathBuf {
     root.join(BASEMIND_DIR).join(CONFIG_FILE_NAME)
+}
+
+/// Resolve which config file to read: prefer the canonical root `basemind.toml`, else the legacy
+/// in-cache path, else the root path (so a not-found error names the location we tell users to
+/// create). The root file always wins when both exist.
+pub fn resolve_config_path(root: &Path) -> PathBuf {
+    let root_path = config_path(root);
+    if root_path.exists() {
+        return root_path;
+    }
+    let legacy = legacy_config_path(root);
+    if legacy.exists() {
+        return legacy;
+    }
+    root_path
 }
 
 pub fn parse_str(raw: &str) -> Result<Config, ConfigError> {

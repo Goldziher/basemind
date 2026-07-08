@@ -14,7 +14,8 @@ use super::RerankerConfig;
 #[serde(deny_unknown_fields)]
 pub struct CodeSearchConfig {
     /// Master switch. Only meaningful when the `code-search` cargo feature is compiled in.
-    /// Default `true` — a `code-search` build chunks + embeds source on scan unless disabled.
+    /// Default `true` — a `code-search` build chunks source + builds the BM25 keyword lane on scan
+    /// unless disabled. Embedding is a separate opt-in gated by `embed` (off by default).
     #[serde(default = "CodeSearchConfig::default_enabled")]
     pub enabled: bool,
     /// Maximum chunk size in characters. Chunks longer than this are split into overlapping
@@ -26,11 +27,22 @@ pub struct CodeSearchConfig {
     #[serde(default = "CodeSearchConfig::default_overlap")]
     #[schemars(range(min = 0))]
     pub overlap: usize,
-    /// Generate embeddings (`true`) or chunk-only without vector storage (`false`). With
-    /// embeddings off the `.chunk.msgpack` cache is still written and the BM25 keyword lane still
-    /// works, but no LanceDB rows land so the semantic (vector) lane returns nothing.
+    /// Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default
+    /// `false`**: local embeddings on *code* aren't worth their cost — code is embedded with a
+    /// general English model and the one real win (NL→symbol) is already served by the BM25 keyword
+    /// lane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and
+    /// the BM25 keyword lane still works (so `search_code` keyword search functions), but no LanceDB
+    /// rows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip
+    /// to `true` only if you specifically want vector search over code.
     #[serde(default = "CodeSearchConfig::default_embed")]
     pub embed: bool,
+    /// Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed
+    /// (BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or
+    /// vendored files while leaving them searchable by keyword. Empty by default. Only consulted
+    /// when `embed = true` — with embedding already off it is a no-op.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub embed_exclude: Vec<String>,
     /// Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker
     /// as the documents tier. Off by default — the first call downloads an ONNX model. Enable via
     /// `[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.
@@ -65,7 +77,7 @@ impl CodeSearchConfig {
         200
     }
     fn default_embed() -> bool {
-        true
+        false
     }
 }
 
@@ -76,6 +88,7 @@ impl Default for CodeSearchConfig {
             max_characters: Self::default_max_characters(),
             overlap: Self::default_overlap(),
             embed: Self::default_embed(),
+            embed_exclude: Vec::new(),
             reranker: RerankerConfig::default(),
         }
     }

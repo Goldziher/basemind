@@ -45,6 +45,20 @@ pub struct DocumentsConfig {
     /// Generate embeddings (`true`) or skip vector storage entirely (`false`).
     #[serde(default = "DocumentsConfig::default_embed")]
     pub embed: bool,
+    /// Glob patterns (repo-relative, forward-slash) for documents that are still extracted +
+    /// indexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents
+    /// while leaving their text searchable by keyword. Empty by default; only consulted when
+    /// `embed = true`.
+    #[serde(default)]
+    #[schemars(inner(length(min = 1)))]
+    pub embed_exclude: Vec<String>,
+    /// Route archives (`.zip/.tar/.jar/...`) into xberg's recursive archive extractor. Default
+    /// `false`: archives and compressed containers are rejected by the built-in floor before any
+    /// extraction, so a single archive can't explode into thousands of embeds. Flip to `true` to opt
+    /// into extracting the files *inside* archives — at the cost of the extra recursion + embedding
+    /// work. True binaries (`.so/.wasm/.exe/...`) are always rejected regardless of this flag.
+    #[serde(default = "DocumentsConfig::default_extract_archives")]
+    pub extract_archives: bool,
     /// Language detection + preferred languages for chunking / extraction.
     #[serde(default)]
     pub language: DocLanguageConfig,
@@ -92,6 +106,9 @@ impl DocumentsConfig {
     fn default_embed() -> bool {
         true
     }
+    fn default_extract_archives() -> bool {
+        false
+    }
     fn default_max_chunks_per_document() -> usize {
         2000
     }
@@ -111,6 +128,8 @@ impl Default for DocumentsConfig {
             overlap: Self::default_overlap(),
             embedding_preset: Self::default_embedding_preset(),
             embed: Self::default_embed(),
+            embed_exclude: Vec::new(),
+            extract_archives: Self::default_extract_archives(),
             language: DocLanguageConfig::default(),
             reranker: RerankerConfig::default(),
             keywords: KeywordsConfig::default(),
