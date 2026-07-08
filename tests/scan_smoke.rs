@@ -44,6 +44,63 @@ fn scan_extracts_rust_symbols() {
 }
 
 #[test]
+fn scan_reuses_extraction_across_views_sharing_blobs() {
+    // Gap A regression. A second view over the same root shares the content-addressed blob store, so
+    // its (empty) index misses the mtime/content "unchanged" fast-paths — yet the extraction must be
+    // reused from the existing blob rather than re-parsed with tree-sitter. This is the fresh-worktree
+    // case in miniature: a linked worktree shares the main worktree's blobs exactly this way.
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
+
+    // First scan into the working view: real parse, blob written.
+    let mut working = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let first = scan(
+        root,
+        &mut working,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert_eq!(first.stats.updated, 1);
+    assert_eq!(
+        first.stats.reused_extraction, 0,
+        "first scan parses; nothing to reuse yet"
+    );
+    // Release the repo-wide `.basemind/.lock` before opening the sibling view. On real worktrees the
+    // two stores live under separate `.basemind` dirs (separate locks) but share the same blob store;
+    // here a single root with two views models the same code path — empty index + blobs already on
+    // disk — without a second git worktree.
+    drop(working);
+
+    // Second scan into a DIFFERENT view — empty index, shared blobs. Must reuse, not re-parse.
+    let mut sibling = Store::open(root, "sibling").unwrap();
+    let second = scan(
+        root,
+        &mut sibling,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert_eq!(second.stats.updated, 1, "file is new to this view's index");
+    assert_eq!(
+        second.stats.skipped_unchanged, 0,
+        "empty index → cannot be classified unchanged"
+    );
+    assert_eq!(
+        second.stats.reused_extraction, 1,
+        "extraction reused from the shared content-addressed blob instead of re-parsed"
+    );
+
+    // The reused index is correct — symbols resolve in the sibling view just like a fresh parse.
+    let hits = basemind::query::search_symbols(&sibling, "alpha", Some(SymbolKind::Function)).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path.as_str(), Some("a.rs"));
+}
+
+#[test]
 fn store_open_writes_self_ignoring_gitignore() {
     // Opening the store must drop a `.basemind/.gitignore` containing `*` so a
     // user's repo never accidentally commits the machine-local index.
@@ -336,6 +393,7 @@ fn scan_flags_files_with_syntax_errors() {
         FileStatus::Updated {
             had_errors,
             error_count,
+            ..
         } => {
             assert!(had_errors, "had_errors should be true");
             assert!(*error_count > 0, "error_count should be > 0");

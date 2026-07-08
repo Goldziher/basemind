@@ -563,7 +563,10 @@ fn sync_git_history_after_scan(
     let Ok(repo) = basemind::git::Repo::discover(root) else {
         return; // not a git repo — nothing to index
     };
-    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    // Share the git-history index across worktrees: a linked worktree resolves it to the MAIN
+    // worktree's `.basemind` (the commit graph is identical for every worktree of a clone), so the
+    // rebuild is paid once rather than per worktree. Mirrors `store::resolve_blobs_dir`.
+    let basemind_dir = basemind::git_history::shared_history_basemind_dir(root);
     let index = match basemind::git_history::GitHistoryIndex::open(&basemind_dir) {
         Ok(index) => index,
         Err(error) => {

@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Worktrees reuse the shared cache instead of redoing work.** Scanning a fresh git worktree no
+  longer re-parses files whose extraction already lives in the shared (main-worktree) blob store —
+  the scanner deserializes the cached L1/L2 frame instead of re-running tree-sitter. The git-history
+  index is likewise shared: it is derived entirely from the shared `.git` object database, so a
+  linked worktree resolves it to the main worktree's `.basemind` (mirroring the blob store) rather
+  than rebuilding its own. On a large monorepo a cold worktree scan drops from ~181s to ~25s (~7×)
+  with ~2.6× less peak memory. The scan summary gains a `reused` counter reporting cache hits.
+
 ## [0.19.2] — 2026-07-07
 
 ### Added

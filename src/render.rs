@@ -94,9 +94,10 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
     };
 
     let line = format!(
-        "{scanned}  {updated}  {warn}  {unchanged}  {failed}  {skipped}  {removed}",
+        "{scanned}  {updated}  {reused}  {warn}  {unchanged}  {failed}  {skipped}  {removed}",
         scanned = pair("scanned", stats.scanned, Style::new()),
         updated = pair("updated", stats.updated, style_ok),
+        reused = pair("reused", stats.reused_extraction, Style::new()),
         warn = pair("warn", stats.updated_with_warnings, style_warn),
         unchanged = pair("unchanged", stats.skipped_unchanged, Style::new()),
         failed = pair("failed", stats.read_failed + stats.extract_failed, style_fail),
@@ -250,6 +251,7 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
         FileStatus::Updated {
             had_errors: true,
             error_count,
+            ..
         } => {
             if v == Verbosity::Quiet {
                 None

@@ -216,6 +216,10 @@ pub struct ScanStats {
     pub scanned: usize,
     pub updated: usize,
     pub updated_with_warnings: usize,
+    /// Subset of `updated` whose extraction was reused from an existing content-addressed blob
+    /// (shared across views / worktrees) instead of re-parsed. High on a fresh worktree scan whose
+    /// blobs are shared with the main worktree — that work is exactly what the reuse path saves.
+    pub reused_extraction: usize,
     pub skipped_unchanged: usize,
     pub skipped_too_large: usize,
     pub skipped_non_utf8: usize,
@@ -282,6 +286,11 @@ pub enum FileStatus {
     Updated {
         had_errors: bool,
         error_count: u32,
+        /// True when the extraction was reused from an existing content-addressed blob (shared
+        /// across views / worktrees) rather than re-parsed. The index entry is written either
+        /// way; this only distinguishes a cache hit from a real tree-sitter parse and drives the
+        /// `reused_extraction` scan counter.
+        reused: bool,
     },
     Unchanged,
     Removed,
@@ -594,10 +603,14 @@ fn apply_outcomes(
             FileStatus::Updated {
                 had_errors,
                 error_count: _,
+                reused,
             } => {
                 report.stats.updated += 1;
                 if *had_errors {
                     report.stats.updated_with_warnings += 1;
+                }
+                if *reused {
+                    report.stats.reused_extraction += 1;
                 }
                 // The entry update was already buffered by process_file via the side
                 // channel below. We can't safely mutate the store from inside the
@@ -859,29 +872,57 @@ fn process_file(
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
 
-    // Parse once and run both tiers against the shared tree. When eager_l2 is off only L1
-    // runs; when it's on L2 runs against the same Tree with no second parse. L2 failure is
-    // non-fatal (extract_l1_l2 returns None for the L2 slot rather than propagating).
-    let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match extract::extract_l1_l2(lang, &bytes, want_l2) {
-        Ok(pair) => pair,
-        Err(ExtractError::ParseTimeout(_)) => {
-            return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
-        }
-        Err(source) => {
-            return FileResult::bare(
-                rel.to_string(),
-                FileStatus::ExtractFailed {
-                    msg: format_extract_err(&source),
-                },
-            );
-        }
+    // Cross-view / cross-worktree reuse: when the content-addressed extraction blob already exists in
+    // the (possibly shared) store, deserialize it instead of re-parsing. A fresh worktree scan whose
+    // index is empty — so the unchanged fast-paths above all miss — still reuses the main worktree's
+    // extraction work here, skipping the tree-sitter parse entirely. Only taken when the cached frame
+    // can satisfy `want_l2`: an L1-only frame written by an `eager_l2 = false` scan falls through to a
+    // real parse so callers that want calls (L2) still get them.
+    let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> =
+        if extraction_sidecars_present(store, config, hash_hex_str) {
+            match store.read_l1_by_hex(hash_hex_str) {
+                Ok(Some(l1)) => {
+                    let l2 = if want_l2 {
+                        store.read_l2_by_hex(hash_hex_str).unwrap_or(None)
+                    } else {
+                        None
+                    };
+                    if want_l2 && l2.is_none() { None } else { Some((l1, l2)) }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+    let reused = reused_pair.is_some();
+
+    // Parse once and run both tiers against the shared tree (only when we couldn't reuse a cached
+    // frame). When eager_l2 is off only L1 runs; when it's on L2 runs against the same Tree with no
+    // second parse. L2 failure is non-fatal (extract_l1_l2 returns None for the L2 slot).
+    let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match reused_pair {
+        Some(pair) => pair,
+        None => match extract::extract_l1_l2(lang, &bytes, want_l2) {
+            Ok(pair) => pair,
+            Err(ExtractError::ParseTimeout(_)) => {
+                return FileResult::bare(rel.to_string(), FileStatus::ParseTimedOut);
+            }
+            Err(source) => {
+                return FileResult::bare(
+                    rel.to_string(),
+                    FileStatus::ExtractFailed {
+                        msg: format_extract_err(&source),
+                    },
+                );
+            }
+        },
     };
 
     // Persist both extraction tiers as one content-addressed frame — one `open` + `write` +
-    // atomic `rename` instead of a separate write per tier. L1 is essential, so a write
-    // failure is fatal for this file (the index stage below is skipped).
+    // atomic `rename` instead of a separate write per tier. Skipped when we reused an existing frame:
+    // it is already on disk, byte-identical. L1 is essential, so a write failure is fatal for this
+    // file (the index stage below is skipped).
     let l2: Option<FileMapL2> = l2_opt;
-    if let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
+    if !reused && let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
         return FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg: e.to_string() });
     }
 
@@ -932,6 +973,7 @@ fn process_file(
         status: FileStatus::Updated {
             had_errors: l1.had_errors,
             error_count: l1.error_count,
+            reused,
         },
         upsert: Some(entry),
         #[cfg(feature = "documents")]
