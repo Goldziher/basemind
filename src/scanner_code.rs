@@ -104,6 +104,7 @@ pub(crate) fn chunk_and_embed(
                     let blob = CodeChunkBlob {
                         schema_ver: SCHEMA_VER,
                         embedding_dim: 0,
+                        embedding_model: String::new(),
                         chunks: chunks.clone(),
                         embeddings: Vec::new(),
                     };
@@ -150,9 +151,12 @@ pub(crate) fn chunk_and_embed(
     };
     let dim = embedder.dim();
 
-    // Cache hit: identical content already chunked + embedded at the current dim.
+    // Cache hit: identical content already chunked + embedded under the current preset. Both the
+    // dim AND the model must match — `balanced` and `multilingual` share dim 768, so a dim-only
+    // check would falsely reuse stale-model vectors when switching between those presets.
     if let Some(blob) = &cached
         && blob.embedding_dim == dim
+        && blob.embedding_model == config.documents.embedding_preset
         && !blob.chunks.is_empty()
         && blob.embeddings.len() == blob.chunks.len()
     {
@@ -173,6 +177,7 @@ pub(crate) fn chunk_and_embed(
         let blob = CodeChunkBlob {
             schema_ver: SCHEMA_VER,
             embedding_dim: 0,
+            embedding_model: String::new(),
             chunks: Vec::new(),
             embeddings: Vec::new(),
         };
@@ -205,6 +210,7 @@ pub(crate) fn chunk_and_embed(
     let blob = CodeChunkBlob {
         schema_ver: SCHEMA_VER,
         embedding_dim: dim,
+        embedding_model: config.documents.embedding_preset.clone(),
         chunks,
         embeddings,
     };

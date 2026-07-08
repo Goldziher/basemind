@@ -85,6 +85,13 @@ pub struct CodeChunkBlob {
     /// bump wipes stale-schema chunk blobs on re-extract.
     pub schema_ver: u16,
     pub embedding_dim: u16,
+    /// The embedding preset/model the vectors were produced with. `#[serde(default)]` so a
+    /// pre-existing blob written before this field deserializes to "" and is treated as a cache
+    /// miss on the next scan (forcing a re-embed under the current preset). Empty when embeddings
+    /// were disabled (chunk-only blob). Load-bearing because `balanced` and `multilingual` share
+    /// dim 768 — a dim-only cache check would falsely reuse stale-model vectors across that switch.
+    #[serde(default)]
+    pub embedding_model: String,
     pub chunks: Vec<CodeChunk>,
     pub embeddings: Vec<Vec<f32>>,
 }
@@ -492,5 +499,59 @@ mod tests {
         let l1 = l1_with(Vec::new(), "   \n\n  ");
         let chunks = chunk_file("blank.rs", "00", &l1, None, b"   \n\n  ", ChunkOptions::default());
         assert!(chunks.is_empty(), "whitespace-only file has no chunks");
+    }
+
+    /// The additive `embedding_model` field must survive a msgpack round-trip so the cache-reuse
+    /// check in `scanner_code` can compare it against the configured preset.
+    #[test]
+    fn code_chunk_blob_round_trips_embedding_model() {
+        let blob = CodeChunkBlob {
+            schema_ver: 7,
+            embedding_dim: 768,
+            embedding_model: "balanced".to_string(),
+            chunks: Vec::new(),
+            embeddings: Vec::new(),
+        };
+        let bytes = rmp_serde::to_vec_named(&blob).expect("serialize blob");
+        let decoded: CodeChunkBlob = rmp_serde::from_slice(&bytes).expect("deserialize blob");
+        assert_eq!(decoded.embedding_model, "balanced");
+        assert_eq!(decoded, blob);
+    }
+
+    /// A pre-existing blob written before `embedding_model` existed must deserialize via
+    /// `#[serde(default)]` to an empty model. An empty model never equals a named preset, so the
+    /// next scan treats it as a cache miss and re-embeds — closing the same-dim-different-model hole
+    /// for cached blobs written before this field shipped.
+    #[test]
+    fn old_code_chunk_blob_without_model_deserializes_to_empty() {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct OldBlob {
+            schema_ver: u16,
+            embedding_dim: u16,
+            // NOTE: no `embedding_model` — pre-field layout.
+            chunks: Vec<CodeChunk>,
+            embeddings: Vec<Vec<f32>>,
+        }
+
+        let old = OldBlob {
+            schema_ver: 7,
+            embedding_dim: 768,
+            chunks: Vec::new(),
+            embeddings: Vec::new(),
+        };
+        let bytes = rmp_serde::to_vec_named(&old).expect("serialize old blob");
+        let decoded: CodeChunkBlob = rmp_serde::from_slice(&bytes).expect("old blob deserializes via serde(default)");
+        assert_eq!(
+            decoded.embedding_model, "",
+            "missing field defaults to empty model (a cache miss under any named preset)"
+        );
+        // The reuse predicate that `scanner_code` applies: same dim + same model is a hit; an empty
+        // model (or a different one) at the same dim is a miss.
+        assert_ne!(
+            decoded.embedding_model, "balanced",
+            "empty model must not match a named preset — forces re-embed"
+        );
     }
 }
