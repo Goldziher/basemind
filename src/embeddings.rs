@@ -80,8 +80,6 @@ impl SharedEmbedder {
             cache_dir: None,
             acceleration: None,
             max_embed_duration_secs: Some(60),
-            // `None` keeps xberg's model-default sequence length (rc.16 added this knob; leaving it
-            // unset preserves the pre-rc.16 no-explicit-truncation behavior).
             max_sequence_length: None,
         };
         Ok(Self {
