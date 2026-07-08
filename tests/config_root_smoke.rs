@@ -128,6 +128,47 @@ fn init_writes_root_config_and_gitignores_cache() {
 }
 
 #[test]
+fn init_refuses_to_shadow_a_legacy_in_cache_config() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    // A legacy in-cache config with a tuned setting that `resolve_config_path` still honors.
+    let legacy = config::legacy_config_path(root);
+    fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("mkdir .basemind");
+    fs::write(
+        &legacy,
+        "\"$schema\" = \"v1\"\n\n[scan]\nexclude = [\"**/secret/**\"]\n",
+    )
+    .expect("seed legacy");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .expect("run basemind init");
+    assert!(
+        !out.status.success(),
+        "init must fail rather than shadow a legacy config"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("legacy config"),
+        "error names the legacy config, got: {stderr:?}"
+    );
+
+    // No root scaffold was written, so the legacy config keeps taking effect.
+    assert!(
+        !config::config_path(root).exists(),
+        "no root config written when legacy exists"
+    );
+    let cfg = config::load(root).expect("legacy config still loads");
+    assert_eq!(
+        cfg.scan.exclude,
+        vec!["**/secret/**".to_string()],
+        "legacy setting preserved"
+    );
+}
+
+#[test]
 fn init_appends_to_existing_gitignore_without_duplicating() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();

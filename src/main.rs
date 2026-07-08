@@ -549,6 +549,19 @@ fn cmd_init(root: &std::path::Path) -> Result<()> {
     if path.exists() {
         anyhow::bail!("config already exists at {}", path.display());
     }
+    // Refuse to write a defaults scaffold that would silently shadow a legacy in-cache config: the
+    // root path always wins in `resolve_config_path`, so writing here would strand the user's tuned
+    // settings with no error. Tell them to migrate the file instead (it is still read as a fallback).
+    let legacy = config::legacy_config_path(root);
+    if legacy.exists() {
+        anyhow::bail!(
+            "a legacy config exists at {legacy} and is still read as a fallback; move it to {path} \
+             to migrate (the root path then takes precedence) — `init` will not write a defaults \
+             scaffold that would silently shadow it",
+            legacy = legacy.display(),
+            path = path.display(),
+        );
+    }
     std::fs::write(&path, INIT_SCAFFOLD_TOML).with_context(|| format!("write {}", path.display()))?;
     println!("wrote {}", path.display());
     Ok(())

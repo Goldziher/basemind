@@ -88,18 +88,15 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig, embed: boo
     }
 }
 
-/// Archive / compressed / binary-blob extensions that must NEVER reach xberg. xberg routes
-/// `.zip/.tar/.gz/...` into its `ZipExtractor`/`GzipExtractor`/`build_archive_doc` path, which
-/// recursively unpacks the archive and embeds every entry — an enormous, pointless cost during a
-/// code-map scan (the observed 1119%-CPU / 15 GB footgun). Binary blobs (`.so/.class/.wasm/...`)
-/// carry no extractable text and only waste an embed. This is the primary guard because
-/// `mime::detect_mime_type` is extension-based, and several of these (`.jar/.whl/.war/.so/...`)
-/// collapse to `application/octet-stream` via the `mime_guess` fallback, so a MIME-only denylist
-/// would miss them.
-/// Archive / compressed-container extensions. Rejected by default so a single archive can't explode
-/// into thousands of embeds; gated OFF (relaxed → routed to xberg's archive extractor) when
-/// `documents.extract_archives` is set. Kept separate from [`BINARY_EXTENSIONS`] so the toggle only
-/// affects archives, never true binaries.
+/// Archive / compressed-container extensions. xberg routes `.zip/.tar/.gz/...` into its
+/// `ZipExtractor`/`GzipExtractor`/`build_archive_doc` path, which recursively unpacks the archive and
+/// embeds every entry — an enormous, pointless cost during a code-map scan (the observed 1119%-CPU /
+/// 15 GB footgun). Rejected by default so a single archive can't explode into thousands of embeds;
+/// gated OFF (relaxed → routed to xberg's archive extractor) when `documents.extract_archives` is
+/// set. This extension floor is the primary guard because `mime::detect_mime_type` is extension-based
+/// and several of these (`.jar/.whl/.war/...`) collapse to `application/octet-stream` via the
+/// `mime_guess` fallback, so a MIME-only denylist would miss them. Kept separate from
+/// [`BINARY_EXTENSIONS`] so the toggle only affects archives, never true binaries.
 const ARCHIVE_EXTENSIONS: &[&str] = &[
     // archives / compressed
     "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br", "cab",

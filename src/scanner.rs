@@ -863,9 +863,12 @@ fn process_file(
     // touched-but-unchanged file, or mtime unavailable). `extraction_sidecars_present` also enforces
     // that toggling code-search on re-chunks a file rather than skipping it as unchanged with an empty
     // `code_chunks` table.
+    // Computed once and reused by the reuse path below: the two callers otherwise stat the same
+    // sidecar blobs twice on a hash-match-but-sidecar-missing file.
+    let sidecars_present = extraction_sidecars_present(store, config, hash_hex_str);
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
-        && extraction_sidecars_present(store, config, hash_hex_str)
+        && sidecars_present
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -878,22 +881,21 @@ fn process_file(
     // extraction work here, skipping the tree-sitter parse entirely. Only taken when the cached frame
     // can satisfy `want_l2`: an L1-only frame written by an `eager_l2 = false` scan falls through to a
     // real parse so callers that want calls (L2) still get them.
-    let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> =
-        if extraction_sidecars_present(store, config, hash_hex_str) {
-            match store.read_l1_by_hex(hash_hex_str) {
-                Ok(Some(l1)) => {
-                    let l2 = if want_l2 {
-                        store.read_l2_by_hex(hash_hex_str).unwrap_or(None)
-                    } else {
-                        None
-                    };
-                    if want_l2 && l2.is_none() { None } else { Some((l1, l2)) }
-                }
-                _ => None,
+    let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> = if sidecars_present {
+        match store.read_l1_by_hex(hash_hex_str) {
+            Ok(Some(l1)) => {
+                let l2 = if want_l2 {
+                    store.read_l2_by_hex(hash_hex_str).unwrap_or(None)
+                } else {
+                    None
+                };
+                if want_l2 && l2.is_none() { None } else { Some((l1, l2)) }
             }
-        } else {
-            None
-        };
+            _ => None,
+        }
+    } else {
+        None
+    };
     let reused = reused_pair.is_some();
 
     // Parse once and run both tiers against the shared tree (only when we couldn't reuse a cached

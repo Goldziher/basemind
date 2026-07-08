@@ -59,6 +59,18 @@ fn bm25_batch_from_chunks(rel: &str, chunks: &[crate::chunk::CodeChunk]) -> Opti
     })
 }
 
+/// True when a cached code-chunk blob can be reused as-is: identical content already chunked +
+/// embedded under the current preset. Both the embedding **dimension** AND the **model/preset** must
+/// match — `balanced` and `multilingual` share dim 768, so a dim-only check would falsely reuse
+/// stale-model vectors across that switch — and the blob must actually carry one embedding per chunk.
+/// Mirrors the documents tier's `scanner_docs::cached_doc_is_reusable`.
+fn code_cache_is_reusable(blob: &CodeChunkBlob, dim: u16, preset: &str) -> bool {
+    blob.embedding_dim == dim
+        && blob.embedding_model == preset
+        && !blob.chunks.is_empty()
+        && blob.embeddings.len() == blob.chunks.len()
+}
+
 /// Chunk + embed one source file. Reuses the `.chunk` sidecar when an identical-content blob
 /// already exists (the embedding cache); otherwise chunks, embeds in bulk, and writes the blob.
 /// Returns `Ok(None)` when the file yields no chunks. Never opens LanceDB — the write is deferred.
@@ -151,14 +163,9 @@ pub(crate) fn chunk_and_embed(
     };
     let dim = embedder.dim();
 
-    // Cache hit: identical content already chunked + embedded under the current preset. Both the
-    // dim AND the model must match — `balanced` and `multilingual` share dim 768, so a dim-only
-    // check would falsely reuse stale-model vectors when switching between those presets.
+    // Cache hit: identical content already chunked + embedded under the current preset.
     if let Some(blob) = &cached
-        && blob.embedding_dim == dim
-        && blob.embedding_model == config.documents.embedding_preset
-        && !blob.chunks.is_empty()
-        && blob.embeddings.len() == blob.chunks.len()
+        && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
     {
         let rows = build_rows(rel, &blob.chunks, &blob.embeddings);
         let bm25 = build_chunk_postings(&blob.chunks);
@@ -387,5 +394,50 @@ mod tests {
     #[test]
     fn bm25_batch_from_chunks_is_none_for_chunkless_file() {
         assert!(bm25_batch_from_chunks("src/empty.rs", &[]).is_none());
+    }
+
+    fn embedded_blob(model: &str, dim: u16) -> CodeChunkBlob {
+        CodeChunkBlob {
+            schema_ver: 0,
+            embedding_dim: dim,
+            embedding_model: model.to_string(),
+            chunks: vec![chunk("h:0", "alpha")],
+            embeddings: vec![vec![0.0_f32; dim as usize]],
+        }
+    }
+
+    #[test]
+    fn code_cache_reuse_requires_matching_dim_and_model() {
+        let blob = embedded_blob("balanced", 768);
+        // Same preset + dim: a hit.
+        assert!(code_cache_is_reusable(&blob, 768, "balanced"));
+        // `multilingual` shares dim 768 with `balanced`, so the dim gate alone would pass — the
+        // model check is what forces a re-embed on the preset swap.
+        assert!(
+            !code_cache_is_reusable(&blob, 768, "multilingual"),
+            "same-dim different-model must miss and force a re-embed"
+        );
+        // A different dim misses too.
+        assert!(!code_cache_is_reusable(&blob, 384, "balanced"));
+        // A pre-field blob (empty model) never matches a named preset.
+        assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, "balanced"));
+    }
+
+    #[test]
+    fn code_cache_reuse_rejects_chunkless_or_unembedded_blob() {
+        // No chunks: nothing to reuse.
+        let mut blob = embedded_blob("balanced", 768);
+        blob.chunks.clear();
+        blob.embeddings.clear();
+        assert!(!code_cache_is_reusable(&blob, 768, "balanced"));
+        // Chunk/embedding count mismatch (a chunk-only blob with no vectors): miss.
+        let chunk_only = CodeChunkBlob {
+            schema_ver: 0,
+            embedding_dim: 768,
+            embedding_model: "balanced".to_string(),
+            chunks: vec![chunk("h:0", "alpha")],
+            embeddings: Vec::new(),
+        };
+        assert!(!code_cache_is_reusable(&chunk_only, 768, "balanced"));
     }
 }
