@@ -3,20 +3,7 @@ name = "basemind"
 description = "Code-map MCP server + scanner — pure-Rust, content-addressed, Fjall-backed inverted index."
 gitignore = true
 
-presets = [
-    "claude",
-    "cursor",
-    "gemini",
-    "windsurf",
-    "copilot",
-    "continue-dev",
-    "amp",
-    "cline",
-    "codex",
-    "opencode",
-    "junie",
-    "antigravity",
-]
+presets = ["claude", "codex"]
 
 builtins = ["rust", "cicd", "documentation", "observability", "default-commands"]
 
