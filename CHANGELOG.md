@@ -10,6 +10,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-07-08
+
+Minor bump: `RELEASE_MINOR` advances 19 → 20, so the `.basemind/` index + blob cache is wiped and
+rebuilt from source on the next `basemind scan` (expected — the msgpack blob store is content-
+addressed and rebuilds losslessly).
+
+### Added
+
+- **Root config at `<root>/basemind.toml` (committable).** Config moved out of the wipe-on-schema-bump
+  `.basemind/` cache to the repo root so it survives cache wipes and can be committed. The legacy
+  `.basemind/basemind.toml` is still read as a fallback; the root file wins when both exist.
+  `basemind init` now scaffolds a fully-documented root config (every value is the built-in default)
+  and adds `.basemind/` to `.gitignore`. It refuses to overwrite an existing config and refuses to
+  shadow a legacy in-cache config rather than silently stranding your settings.
+- **`scan.follow_symlinks`** (default `false`). Symlinks often escape the repo (e.g. Bazel's
+  `bazel-*` convenience symlinks); the walker no longer follows them unless you opt in. `extra_roots`
+  always follow symlinks regardless.
+- **`embed_exclude` glob lists on `code_search` and `documents`.** Keep a file chunked + keyword-
+  indexed while skipping its embedding — useful for large generated or vendored files.
+- **`documents.extract_archives`** (default `false`). Opt into xberg's recursive archive extractor
+  for `.zip/.tar/.jar/…`; off by default so one archive can't explode into thousands of embeds. True
+  binaries (`.so/.wasm/.exe/…`) are always rejected regardless of this flag.
+
+### Changed
+
+- **Code embeddings are now OFF by default (`code_search.embed = false`).** A general-English model
+  embeds _code_ weakly, and the BM25 keyword lane already serves the NL→symbol query over the same
+  text, so code embedding isn't worth the ONNX download + ORT pass + vector store. Code is still
+  chunked and keyword-indexed; documents and images still embed. Existing code-search users who rely
+  on vector search over code must set `code_search.embed = true` to keep it.
+- **Always-on exclude floor.** A hard floor of near-universal build-artifact / dependency-cache / VCS
+  / editor directories (`node_modules`, `target`, `dist`, `build`, `out`, `.venv`, `__pycache__`,
+  `.pytest_cache`, `bazel-*`, `.git`, `.basemind`, `.idea`, `.DS_Store`, …) is applied on top of
+  `scan.exclude` — narrowing the user list can add to it but never drops a floor entry.
+
 ### Fixed
 
 - **Worktrees reuse the shared cache instead of redoing work.** Scanning a fresh git worktree no
@@ -19,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   linked worktree resolves it to the main worktree's `.basemind` (mirroring the blob store) rather
   than rebuilding its own. On a large monorepo a cold worktree scan drops from ~181s to ~25s (~7×)
   with ~2.6× less peak memory. The scan summary gains a `reused` counter reporting cache hits.
+- **Re-embed on same-dim preset model swaps.** The per-file embedding cache keyed on vector dimension
+  only, but `balanced` and `multilingual` both produce 768-dim vectors — so switching between them
+  reused the old model's cached vectors. Cache reuse now also requires the embedding model/preset to
+  match (both the code and document tiers), so a preset change cleanly drops the old vectors and
+  re-embeds. `CodeChunkBlob` gains a blob-compatible `embedding_model` field (no schema bump).
 
 ## [0.19.2] — 2026-07-07
 
