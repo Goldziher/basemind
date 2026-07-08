@@ -278,9 +278,12 @@ pub(crate) fn extract_and_persist_doc(
 }
 
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
-/// cached blob must carry embeddings at the current preset's dimension (a preset change forces
-/// recompute — same gate as `chunk_and_embed`); an empty-of-chunks doc is always reusable (recompute
-/// would yield nothing anyway). When embedding is off, any cached doc is reusable (chunks only).
+/// cached blob must carry embeddings produced by the current preset — matching both its **dimension**
+/// AND its **model**. The model check is load-bearing: `balanced` and `multilingual` share dim 768,
+/// so a dim-only gate would falsely reuse stale-model vectors when switching between them. A preset
+/// change (dim OR model) therefore forces recompute — same gate as `chunk_and_embed`. An
+/// empty-of-chunks doc is always reusable (recompute would yield nothing anyway). When embedding is
+/// off, any cached doc is reusable (chunks only).
 fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: bool) -> bool {
     if !embed || cached.chunks.is_empty() {
         return true;
@@ -288,6 +291,7 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
     let want_dim = preset_dim(&cfg.embedding_preset).ok();
     cached.embedding_dim > 0
         && Some(cached.embedding_dim) == want_dim
+        && cached.embedding_model == cfg.embedding_preset
         && cached
             .chunks
             .iter()
@@ -517,6 +521,58 @@ mod tests {
     fn preset_dim_for_balanced_returns_768() {
         let dim = preset_dim("balanced").expect("balanced preset");
         assert_eq!(dim, 768);
+    }
+
+    /// A cached doc embedded under `balanced` (dim 768) must NOT be reused when the configured
+    /// preset switches to `multilingual` (also dim 768, different model) — the dim matches, so only
+    /// the model check closes the stale-vector hole. It stays reusable when the preset is unchanged.
+    #[test]
+    fn cached_doc_not_reusable_when_preset_model_differs_at_same_dim() {
+        use crate::extract::doc::{DocChunk, FileMapDoc};
+        let doc = FileMapDoc {
+            schema_ver: 0,
+            mime_type: "application/pdf".to_string(),
+            content: "hello".to_string(),
+            metadata: Vec::new(),
+            detected_languages: Vec::new(),
+            chunks: vec![DocChunk {
+                byte_start: 0,
+                byte_end: 5,
+                text: "hello".to_string(),
+                embedding: vec![0.0_f32; 768],
+            }],
+            embedding_model: "balanced".to_string(),
+            embedding_dim: 768,
+            keywords: Vec::new(),
+            entities: Vec::new(),
+            summary: None,
+        };
+
+        let same = DocumentsConfig {
+            embedding_preset: "balanced".to_string(),
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            cached_doc_is_reusable(&doc, &same, true),
+            "same preset (balanced) must reuse the cached vectors"
+        );
+
+        // `multilingual` shares dim 768 with `balanced`, so the dim gate alone would pass —
+        // the model check is what forces a recompute here.
+        let switched = DocumentsConfig {
+            embedding_preset: "multilingual".to_string(),
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            !cached_doc_is_reusable(&doc, &switched, true),
+            "switching balanced -> multilingual (same dim, different model) must force recompute"
+        );
+
+        // With embedding off, any cached doc is reusable regardless of model.
+        assert!(
+            cached_doc_is_reusable(&doc, &switched, false),
+            "embedding off: cached doc is always reusable"
+        );
     }
 
     #[test]
