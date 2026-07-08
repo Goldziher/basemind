@@ -245,7 +245,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "1.12.4"
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.11", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.0.0-rc.16", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 
 # macOS current-RSS reader (src/sysres.rs) via mach `task_info`. `mach2` is the maintained
 # replacement for libc's deprecated mach bindings; scoped to macOS so no other target pulls it.

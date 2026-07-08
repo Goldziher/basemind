@@ -2687,9 +2687,9 @@ dependencies = [
 
 [[package]]
 name = "dbase"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15526d487321e5121f43efab7f9929f0f0581859b8d710fec545938b2d2d4489"
+checksum = "abde818b4b82df61e01348c2b4610c221bcecb97cb7f567da086edf295d8d126"
 dependencies = [
  "bufrw",
  "byteorder",
@@ -7029,9 +7029,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.8.2"
+version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
+checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "memmap2"
@@ -8516,7 +8516,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -8535,7 +8535,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -11352,9 +11352,9 @@ checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "unhwp"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9db2add52da5275c7e850c5b2da1d8e580b223cd18a97807afcbd1026ffe3525"
+checksum = "54ecdf25ce4d83badd909fca9eeaa121d57c342c500147ea19173122efcc39fb"
 dependencies = [
  "cfb 0.10.0",
  "flate2",
@@ -12405,9 +12405,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48027a596691044dbb108ce96099138b5f2723983975c35c773f933e4e7a6ef5"
+checksum = "3bc3262f96730f594bef672114a17424dccf8251fa747bb180f89a837f68193b"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -12506,9 +12506,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e0efdb1378539dc7337854eeba22f48cc162c057e554f1daf23157cfeb723a6"
+checksum = "541bda0d4309ab403a5897c3cbbe2e0e258b952ce631a71b5e6c669e4c6828f4"
 dependencies = [
  "ndarray 0.17.2",
  "ort",
@@ -12520,9 +12520,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b51c5dd552e0adfb76f0f8b64f4d9442b95ac9a9737bb29f08961d5a1996035"
+checksum = "f2365d886839cbada958f167611a5841f834b638b9f56c3be4d347e6b2275065"
 dependencies = [
  "cfg-if",
  "enumn",
@@ -12533,9 +12533,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e795e9f7b70d212dc06d4775f2283287916ec4e8b133672dd0e5e2ccd0a233ab"
+checksum = "54c1b149445f688dcabe29ca8a68d766027926c9e0506f7227fc07431d082dd7"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -12550,9 +12550,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.0-rc.11"
+version = "1.0.0-rc.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd810c90a03d6ca2f6536f327e35b96acf1938d49063d8bd0de3199f23d87db1"
+checksum = "3ebf3bd9bcea5be1256c0001413e7682528b169a9289175ac6df7ae10554c18b"
 dependencies = [
  "cc",
  "cmake",

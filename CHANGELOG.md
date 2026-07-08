@@ -59,6 +59,10 @@ addressed and rebuilds losslessly).
   reused the old model's cached vectors. Cache reuse now also requires the embedding model/preset to
   match (both the code and document tiers), so a preset change cleanly drops the old vectors and
   re-embeds. `CodeChunkBlob` gains a blob-compatible `embedding_model` field (no schema bump).
+- **Hugging Face model downloads no longer hang forever behind a firewall.** Bumped xberg to
+  `1.0.0-rc.16`, which adds connect/read timeouts to the HF model fetch so a blocked or silently
+  dropped connection (corporate firewall, offline host) fails fast instead of stalling the embedding
+  / OCR / NER model download indefinitely.
 
 ## [0.19.2] — 2026-07-07
 
