@@ -482,21 +482,54 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Config file &amp; overrides</strong></summary>
 
-A minimal config — the full schema is at `schema/basemind-config-v1.schema.json`:
+The config lives at the **repo root** as `basemind.toml` (committed). The `.basemind/` cache it
+drives is derived state — gitignored and wiped on schema bumps — so config never belongs there.
+Run `basemind init` to drop a fully-commented scaffold (documenting every option) at the root and
+add `.basemind/` to your `.gitignore`. The legacy in-cache path (`.basemind/basemind.toml`) is still
+read as a fallback for older checkouts. The full schema is at
+`schema/basemind-config-v1.schema.json`:
 
 ```toml
-# .basemind/basemind.toml
-file_watch_glob = "**/*.{rs,ts,tsx,py,go}"
-eager_l2 = true
+# basemind.toml  (repo root — commit this)
+"$schema" = "v1"
 
 [scan]
+respect_gitignore = true
+# Follow symlinks during the walk. Off by default — symlinks often escape the repo (e.g. Bazel's
+# bazel-* convenience symlinks). Turn on for repos that symlink real source into place.
+follow_symlinks = false
+# `exclude` is ADDED ON TOP of an always-on floor (node_modules, target, dist, build, out, .venv,
+# venv, __pycache__, *.pyc, .pytest_cache/.mypy_cache/.ruff_cache/.tox, .next/.nuxt/.svelte-kit,
+# vendor, .gradle, .terraform, coverage, bazel-*, .git, .basemind, .idea, .DS_Store). You can add to
+# it but not remove a floor entry.
+exclude = []
 # Index directories outside the repo root too — e.g. a Bazel external repo cache — so their
 # symbols resolve in search / references / outlines. External files are keyed by absolute path;
-# (re-)indexed on a full `basemind scan` only (not live-watched).
+# (re-)indexed on a full `basemind scan` only (not live-watched). extra_roots always follow symlinks.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 
 [documents]
 enabled = true
+# Embed documents for semantic search (ON — embeddings pay off on real prose / OCR).
+embed = true
+# Model preset: fast | balanced (default, 768-dim) | quality | multilingual.
+# Changing the preset forces a FULL RE-EMBED of the corpus (time + CPU): every document is
+# re-encoded at the new model's dimension.
+embedding_preset = "balanced"
+# Documents that are extracted + indexed but never embedded (keyword-only).
+embed_exclude = []
+# Route archives (.zip/.tar/.jar/…) into the recursive extractor. Off by default so one archive
+# can't explode into thousands of embeds; true binaries are always skipped.
+extract_archives = false
+
+[code_search]
+enabled = true
+# Vector embeddings for code are OFF by default — a general English model on code isn't worth the
+# cost, and NL→symbol is already served by the BM25 keyword lane. Chunking + keyword search work
+# regardless. Turn on only for vector search over code (downloads an ONNX model, re-embeds on
+# preset change).
+embed = false
+embed_exclude = []
 ```
 
 Any tool call can override these settings for that one request, and settings map to environment

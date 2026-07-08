@@ -96,27 +96,39 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig, embed: boo
 /// `mime::detect_mime_type` is extension-based, and several of these (`.jar/.whl/.war/.so/...`)
 /// collapse to `application/octet-stream` via the `mime_guess` fallback, so a MIME-only denylist
 /// would miss them.
-const ARCHIVE_BINARY_EXTENSIONS: &[&str] = &[
+/// Archive / compressed-container extensions. Rejected by default so a single archive can't explode
+/// into thousands of embeds; gated OFF (relaxed → routed to xberg's archive extractor) when
+/// `documents.extract_archives` is set. Kept separate from [`BINARY_EXTENSIONS`] so the toggle only
+/// affects archives, never true binaries.
+const ARCHIVE_EXTENSIONS: &[&str] = &[
     // archives / compressed
     "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br", "cab",
     "ar", "iso", "dmg", // packaged archives (zip/tar underneath)
     "jar", "war", "ear", "apk", "whl", "egg", "deb", "rpm", "nupkg", "pkg", "msi", "crate",
-    // native / compiled binaries
+];
+
+/// Native / compiled-binary extensions. ALWAYS rejected — these carry no extractable text, and
+/// `extract_archives` never relaxes them (they are not archives).
+const BINARY_EXTENSIONS: &[&str] = &[
     "so", "dylib", "dll", "a", "o", "obj", "bin", "exe", "wasm", "class", "pyc", "pyo", "pyd", "node", "pack", "idx",
 ];
 
-/// MIME denylist (belt-and-suspenders with [`ARCHIVE_BINARY_EXTENSIONS`]) — catches content-typed
-/// archives xberg maps to a real archive MIME (`.zip/.tar/.gz/.tgz/.7z`) plus the unambiguously
-/// non-extractable audio/video/font families. Entries ending in `/` are prefix matches (see
-/// [`matches_mime`]). `image/` is deliberately NOT denied: xberg OCR can extract text from images,
-/// so images retain their pre-existing allowlist behavior.
-const DENY_MIME: &[&str] = &[
+/// Archive MIME denylist (belt-and-suspenders with [`ARCHIVE_EXTENSIONS`]) — catches content-typed
+/// archives xberg maps to a real archive MIME. Gated OFF by `documents.extract_archives`, mirroring
+/// the extension floor. Entries ending in `/` are prefix matches (see [`matches_mime`]).
+const ARCHIVE_MIME: &[&str] = &[
     "application/zip",
     "application/x-tar",
     "application/gzip",
     "application/x-7z-compressed",
     "application/java-archive",
     "application/vnd.rar",
+];
+
+/// Binary MIME denylist — the unambiguously non-extractable native-binary + audio/video/font
+/// families. ALWAYS rejected (never relaxed by `extract_archives`). `image/` is deliberately NOT
+/// denied: xberg OCR can extract text from images, so images retain their allowlist behavior.
+const BINARY_MIME: &[&str] = &[
     "application/wasm",
     "application/x-executable",
     "application/x-sharedlib",
@@ -127,23 +139,36 @@ const DENY_MIME: &[&str] = &[
     "font/",
 ];
 
-/// Lazily-initialized `AHashSet` view of [`ARCHIVE_BINARY_EXTENSIONS`].
+/// Lazily-initialized `AHashSet` view of `exts`, built once and reused across all scanner threads.
 ///
-/// Replaces the O(n) `slice::contains` call in [`is_denied_binary_or_archive`] with an O(1)
-/// hash lookup. Built once on first call (the `OnceLock` ensures thread-safe initialisation),
-/// then reused across all scanner threads for the lifetime of the process.
-fn archive_binary_ext_set() -> &'static AHashSet<&'static str> {
-    static SET: OnceLock<AHashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| ARCHIVE_BINARY_EXTENSIONS.iter().copied().collect())
+/// Replaces the O(n) `slice::contains` call in [`is_denied_binary_or_archive`] with an O(1) hash
+/// lookup. The `OnceLock` ensures thread-safe initialisation.
+fn ext_set(
+    cell: &'static OnceLock<AHashSet<&'static str>>,
+    exts: &'static [&'static str],
+) -> &'static AHashSet<&'static str> {
+    cell.get_or_init(|| exts.iter().copied().collect())
 }
 
-/// True when a file must be skipped by the document tier because it is an archive, a compressed
-/// container, or a binary blob. Checks the extension denylist (the const floor plus any
-/// user-configured `extension_denylist`) first, then the MIME denylist.
+fn archive_ext_set() -> &'static AHashSet<&'static str> {
+    static SET: OnceLock<AHashSet<&'static str>> = OnceLock::new();
+    ext_set(&SET, ARCHIVE_EXTENSIONS)
+}
+
+fn binary_ext_set() -> &'static AHashSet<&'static str> {
+    static SET: OnceLock<AHashSet<&'static str>> = OnceLock::new();
+    ext_set(&SET, BINARY_EXTENSIONS)
+}
+
+/// True when a file must be skipped by the document tier because it is a binary blob, or (unless
+/// `documents.extract_archives` is set) an archive / compressed container. True binaries and the
+/// user-configured `extension_denylist` are always rejected; the archive floor is relaxed only when
+/// the caller opts into archive extraction.
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
-        if archive_binary_ext_set().contains(ext_lower.as_str())
+        // User-configured denials and true binaries are unconditional.
+        if binary_ext_set().contains(ext_lower.as_str())
             || cfg
                 .extension_denylist
                 .iter()
@@ -151,8 +176,15 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
         {
             return true;
         }
+        // The archive floor is skipped when the user opted into archive extraction.
+        if !cfg.extract_archives && archive_ext_set().contains(ext_lower.as_str()) {
+            return true;
+        }
     }
-    DENY_MIME.iter().any(|entry| matches_mime(entry, mime_type))
+    if BINARY_MIME.iter().any(|entry| matches_mime(entry, mime_type)) {
+        return true;
+    }
+    !cfg.extract_archives && ARCHIVE_MIME.iter().any(|entry| matches_mime(entry, mime_type))
 }
 
 /// Quick filter run before any xberg work happens. Returns the detected
@@ -213,7 +245,11 @@ pub(crate) fn extract_and_persist_doc(
     // `Deferred` forces the no-embed path regardless of the configured `documents.embed`, so serve
     // boot extracts + caches the blob without paying the ONNX cost and emits no vector rows; the
     // background `Inline` pass fills embeddings in later.
-    let embed = matches!(mode, EmbedMode::Inline) && cfg.embed;
+    // A document matching `documents.embed_exclude` is still extracted + indexed, only its
+    // embedding is skipped (the blob is persisted; the LanceDB side is a no-op for that file).
+    let embed = matches!(mode, EmbedMode::Inline)
+        && cfg.embed
+        && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude);
     let hex_buf = hashing::hex_buf(hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
@@ -490,6 +526,37 @@ mod tests {
         assert!(
             msg.contains("does-not-exist"),
             "error should name the preset; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extract_archives_toggle_gates_only_archives_not_binaries() {
+        let default_cfg = DocumentsConfig::default();
+        assert!(!default_cfg.extract_archives, "archives rejected by default");
+        // Default: an archive extension is denied.
+        assert!(is_denied_binary_or_archive(
+            Path::new("bundle.zip"),
+            "application/zip",
+            &default_cfg
+        ));
+
+        let extract_cfg = DocumentsConfig {
+            extract_archives: true,
+            ..DocumentsConfig::default()
+        };
+        // With the toggle on, the archive extension + archive MIME are relaxed.
+        assert!(
+            !is_denied_binary_or_archive(Path::new("bundle.zip"), "application/zip", &extract_cfg),
+            "extract_archives=true must route archives to the extractor"
+        );
+        // True binaries are ALWAYS denied — the toggle never relaxes them.
+        assert!(
+            is_denied_binary_or_archive(Path::new("libfoo.so"), "application/x-sharedlib", &extract_cfg),
+            "binaries stay denied even with extract_archives=true"
+        );
+        assert!(
+            is_denied_binary_or_archive(Path::new("mod.wasm"), "application/wasm", &extract_cfg),
+            "wasm binary stays denied"
         );
     }
 

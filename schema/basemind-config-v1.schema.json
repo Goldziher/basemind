@@ -25,6 +25,7 @@
           "**/bazel-*/**"
         ],
         "respect_gitignore": true,
+        "follow_symlinks": false,
         "max_file_bytes": 2097152,
         "skip_submodules": true,
         "eager_l2": true,
@@ -68,6 +69,8 @@
         "overlap": 200,
         "embedding_preset": "balanced",
         "embed": true,
+        "embed_exclude": [],
+        "extract_archives": false,
         "language": {
           "auto_detect": true,
           "min_confidence": 0.8,
@@ -121,7 +124,8 @@
         "enabled": true,
         "max_characters": 1500,
         "overlap": 200,
-        "embed": true,
+        "embed": false,
+        "embed_exclude": [],
         "reranker": {
           "enabled": false,
           "preset": "bge-reranker-base",
@@ -226,6 +230,11 @@
         "respect_gitignore": {
           "type": "boolean",
           "default": true
+        },
+        "follow_symlinks": {
+          "description": "Follow symlinks during the repository walk. Default `false` — symlinks are a common way to\nescape the repo (Bazel's `bazel-*` convenience symlinks point into an external output tree),\nand following them can balloon the scan or pull in unrelated files. Set `true` for repos that\ndeliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a\nsymlinked Bazel tree does not leak in. `extra_roots` always follow symlinks regardless of this\nflag (Bazel `external/` is symlink-heavy and is opted into explicitly).",
+          "type": "boolean",
+          "default": false
         },
         "max_file_bytes": {
           "description": "Skip files larger than this. Prevents minified-bundle stalls.",
@@ -369,6 +378,20 @@
           "description": "Generate embeddings (`true`) or skip vector storage entirely (`false`).",
           "type": "boolean",
           "default": true
+        },
+        "embed_exclude": {
+          "description": "Glob patterns (repo-relative, forward-slash) for documents that are still extracted +\nindexed but **never** embedded. Keeps ONNX vectors off selected large or low-value documents\nwhile leaving their text searchable by keyword. Empty by default; only consulted when\n`embed = true`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
+        },
+        "extract_archives": {
+          "description": "Route archives (`.zip/.tar/.jar/...`) into xberg's recursive archive extractor. Default\n`false`: archives and compressed containers are rejected by the built-in floor before any\nextraction, so a single archive can't explode into thousands of embeds. Flip to `true` to opt\ninto extracting the files *inside* archives — at the cost of the extra recursion + embedding\nwork. True binaries (`.so/.wasm/.exe/...`) are always rejected regardless of this flag.",
+          "type": "boolean",
+          "default": false
         },
         "language": {
           "description": "Language detection + preferred languages for chunking / extraction.",
@@ -698,7 +721,7 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Master switch. Only meaningful when the `code-search` cargo feature is compiled in.\nDefault `true` — a `code-search` build chunks + embeds source on scan unless disabled.",
+          "description": "Master switch. Only meaningful when the `code-search` cargo feature is compiled in.\nDefault `true` — a `code-search` build chunks source + builds the BM25 keyword lane on scan\nunless disabled. Embedding is a separate opt-in gated by `embed` (off by default).",
           "type": "boolean",
           "default": true
         },
@@ -717,9 +740,18 @@
           "default": 200
         },
         "embed": {
-          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). With\nembeddings off the `.chunk.msgpack` cache is still written and the BM25 keyword lane still\nworks, but no LanceDB rows land so the semantic (vector) lane returns nothing.",
+          "description": "Generate embeddings (`true`) or chunk-only without vector storage (`false`). **Default\n`false`**: local embeddings on *code* aren't worth their cost — code is embedded with a\ngeneral English model and the one real win (NL→symbol) is already served by the BM25 keyword\nlane over the same text. With embeddings off the `.chunk.msgpack` cache is still written and\nthe BM25 keyword lane still works (so `search_code` keyword search functions), but no LanceDB\nrows land — the semantic (vector) lane returns nothing and no ONNX model is downloaded. Flip\nto `true` only if you specifically want vector search over code.",
           "type": "boolean",
-          "default": true
+          "default": false
+        },
+        "embed_exclude": {
+          "description": "Glob patterns (repo-relative, forward-slash) for files that are still chunked + indexed\n(BM25 / code-map) but **never** embedded. Use it to keep vectors off large generated or\nvendored files while leaving them searchable by keyword. Empty by default. Only consulted\nwhen `embed = true` — with embedding already off it is a no-op.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": []
         },
         "reranker": {
           "description": "Optional cross-encoder rerank of the fused `search_code` hits. Reuses the same xberg reranker\nas the documents tier. Off by default — the first call downloads an ONNX model. Enable via\n`[code_search.reranker] enabled = true` or the per-query `rerank_enabled` override.",

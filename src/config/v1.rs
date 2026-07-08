@@ -55,6 +55,14 @@ pub struct ScanConfig {
     pub exclude: Vec<String>,
     #[serde(default = "ScanConfig::default_respect_gitignore")]
     pub respect_gitignore: bool,
+    /// Follow symlinks during the repository walk. Default `false` — symlinks are a common way to
+    /// escape the repo (Bazel's `bazel-*` convenience symlinks point into an external output tree),
+    /// and following them can balloon the scan or pull in unrelated files. Set `true` for repos that
+    /// deliberately symlink real source into place; the exclude floor still prunes `bazel-*` so a
+    /// symlinked Bazel tree does not leak in. `extra_roots` always follow symlinks regardless of this
+    /// flag (Bazel `external/` is symlink-heavy and is opted into explicitly).
+    #[serde(default = "ScanConfig::default_follow_symlinks")]
+    pub follow_symlinks: bool,
     /// Skip files larger than this. Prevents minified-bundle stalls.
     #[serde(default = "ScanConfig::default_max_file_bytes")]
     #[schemars(range(min = 1024))]
@@ -115,6 +123,9 @@ impl ScanConfig {
     fn default_respect_gitignore() -> bool {
         true
     }
+    fn default_follow_symlinks() -> bool {
+        false
+    }
     fn default_max_file_bytes() -> u64 {
         2_097_152
     }
@@ -135,6 +146,7 @@ impl Default for ScanConfig {
             include: Self::default_include(),
             exclude: Self::default_exclude(),
             respect_gitignore: Self::default_respect_gitignore(),
+            follow_symlinks: Self::default_follow_symlinks(),
             max_file_bytes: Self::default_max_file_bytes(),
             skip_submodules: Self::default_skip_submodules(),
             eager_l2: Self::default_eager_l2(),
