@@ -693,7 +693,10 @@ jobs:
     # Gated on finalize_release: the npm install.js downloads the platform binary
     # from the GitHub release, so it must not publish until that release is live.
     needs: [meta, finalize_release]
-    if: needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success'
+    # always() so a re-run whose build/checksums jobs skip (assets already
+    # present) does not skip-propagate into this publisher; the result guard
+    # keeps it from ever publishing when the release did not finalize.
+    if: always() && needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -731,7 +734,8 @@ jobs:
   publish_opencode:
     name: Publish npm (basemind-opencode)
     needs: [meta, finalize_release]
-    if: needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
+    # always(): see publish_npm — survive skip-propagation on a partial re-run.
+    if: always() && needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -771,7 +775,8 @@ jobs:
     # Gated on finalize_release: the pip downloader fetches the platform binary
     # from the GitHub release, so it must not publish until that release is live.
     needs: [meta, finalize_release]
-    if: needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success'
+    # always(): see publish_npm — survive skip-propagation on a partial re-run.
+    if: always() && needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
     steps:
@@ -805,7 +810,8 @@ jobs:
     # Requires the release to be finalized (all 5 binaries + checksums present and
     # the release published), since the formula points at the release assets.
     needs: [meta, finalize_release]
-    if: needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
+    # always(): see publish_npm — survive skip-propagation on a partial re-run.
+    if: always() && needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
