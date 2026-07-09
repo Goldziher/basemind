@@ -709,7 +709,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
-        run: npm install -g npm@latest
+        # Pin to npm@11: npm@latest is now v12, which requires Node 22+ and
+        # EBADENGINE-fails on this job's Node 20. npm@11 supports Node 20.17+.
+        run: npm install -g npm@11
 
       - name: Publish to npm
         env:
@@ -745,7 +747,9 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
-        run: npm install -g npm@latest
+        # Pin to npm@11: npm@latest is now v12, which requires Node 22+ and
+        # EBADENGINE-fails on this job's Node 20. npm@11 supports Node 20.17+.
+        run: npm install -g npm@11
 
       - name: Publish to npm
         env:
