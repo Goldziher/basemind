@@ -5,9 +5,18 @@ description: Enable the basemind status line in your Claude Code user settings (
 
 # bm-statusline — enable the basemind status line
 
-Wire the basemind status line into the user's global Claude Code settings, then
-confirm it renders. Use your tools to do this directly — do not ask the user to
-hand-edit any files.
+Wire the basemind status line into the user's global Claude Code settings, then confirm it
+renders.
+
+## When to use
+
+Run this once per machine to enable the basemind status line in Claude Code. Re-run only if the
+bar goes blank after an unusual settings edit.
+
+## How to use
+
+Invoke `/bm-statusline`. Use your tools to do this directly — do not ask the user to hand-edit
+any files.
 
 1. **Confirm the plugin is installed.** Check that at least one of these exists:
    - `${CLAUDE_PLUGIN_ROOT}/.claude-plugin/statusline.sh` (if that var is set)
