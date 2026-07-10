@@ -402,7 +402,8 @@ fn plan_rules(root: &Path, args: &InitArgs, caps: &[Capability], sections: Block
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
                 Err(e) => return Err(anyhow::Error::new(e).context(format!("read {}", path.display()))),
             };
-            let next = splice_block(existing.as_deref(), &block);
+            let next = splice_block(existing.as_deref(), &block)
+                .with_context(|| format!("update basemind rules block in {}", path.display()))?;
             if existing.as_deref() == Some(next.as_str()) {
                 return Ok(Some(Change::NoOp {
                     note: format!("rules: block already up to date ({})", path.display()),
@@ -419,34 +420,60 @@ fn plan_rules(root: &Path, args: &InitArgs, caps: &[Capability], sections: Block
 
 /// Splice the managed `block` into `existing` markdown idempotently: replace between the markers if
 /// present, else append at EOF. Content outside the markers is preserved verbatim.
-fn splice_block(existing: Option<&str>, block: &str) -> String {
+///
+/// Bails (rather than guessing) when the markers are malformed — one marker present without its pair,
+/// END before BEGIN, or a second BEGIN inside the block — because every such state makes the block
+/// bounds ambiguous, and guessing risks silently deleting the user's own content between a stray
+/// marker and the wrong pair. A hard stop asking the user to fix the markers is always safer.
+fn splice_block(existing: Option<&str>, block: &str) -> Result<String> {
     let Some(existing) = existing else {
-        return block.to_string();
+        return Ok(block.to_string());
     };
-    if let (Some(begin), Some(end_start)) = (existing.find(BEGIN_MARKER), existing.find(END_MARKER)) {
-        let end = end_start + END_MARKER.len();
-        // ~keep Absorb a single trailing newline after the END marker so replacement is byte-stable.
-        let tail_start = if existing[end..].starts_with('\n') {
-            end + 1
-        } else {
-            end
-        };
-        let mut out = String::with_capacity(existing.len() + block.len());
-        out.push_str(&existing[..begin]);
-        out.push_str(block);
-        out.push_str(&existing[tail_start..]);
-        return out;
+    match (existing.find(BEGIN_MARKER), existing.find(END_MARKER)) {
+        (Some(begin), Some(end_start)) => {
+            let begin_body = begin + BEGIN_MARKER.len();
+            if end_start < begin_body {
+                anyhow::bail!(
+                    "malformed basemind block: END marker precedes BEGIN marker — resolve the markers manually then re-run"
+                );
+            }
+            if existing[begin_body..end_start].contains(BEGIN_MARKER) {
+                anyhow::bail!(
+                    "malformed basemind block: a second BEGIN marker before the END marker — resolve the markers manually then re-run"
+                );
+            }
+            let end = end_start + END_MARKER.len();
+            // ~keep Absorb a single trailing newline (LF or CRLF) after the END marker so replacement is byte-stable.
+            let after = &existing[end..];
+            let tail_start = if after.starts_with("\r\n") {
+                end + 2
+            } else if after.starts_with('\n') {
+                end + 1
+            } else {
+                end
+            };
+            let mut out = String::with_capacity(existing.len() + block.len());
+            out.push_str(&existing[..begin]);
+            out.push_str(block);
+            out.push_str(&existing[tail_start..]);
+            Ok(out)
+        }
+        (Some(_), None) | (None, Some(_)) => anyhow::bail!(
+            "malformed basemind block: only one of the BEGIN/END markers is present — resolve the markers manually then re-run"
+        ),
+        (None, None) => {
+            // ~keep No markers: append at EOF with a blank-line separator.
+            let mut out = existing.to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(block);
+            Ok(out)
+        }
     }
-    // ~keep No markers: append at EOF with a blank-line separator.
-    let mut out = existing.to_string();
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(block);
-    out
 }
 
 /// Print a faithful dry-run of the planned changes and note that nothing was written.
@@ -477,7 +504,8 @@ mod tests {
         let out = splice_block(
             Some("# Title\n\nbody\n"),
             "<!-- BEGIN basemind (managed by `basemind init`) -->\nX\n<!-- END basemind -->\n",
-        );
+        )
+        .expect("well-formed input splices");
         assert!(out.starts_with("# Title\n\nbody\n"), "user content preserved");
         assert_eq!(out.matches(BEGIN_MARKER).count(), 1);
     }
@@ -486,7 +514,7 @@ mod tests {
     fn splice_replaces_in_place_and_is_idempotent() {
         let block = format!("{BEGIN_MARKER}\nv2\n{END_MARKER}\n");
         let before = format!("intro\n\n{BEGIN_MARKER}\nv1\n{END_MARKER}\n\noutro\n");
-        let after = splice_block(Some(&before), &block);
+        let after = splice_block(Some(&before), &block).expect("well-formed input splices");
         assert_eq!(after.matches(BEGIN_MARKER).count(), 1, "no duplicate block");
         assert!(after.contains("v2") && !after.contains("v1"), "content replaced");
         assert!(
@@ -494,7 +522,46 @@ mod tests {
             "surrounding content kept"
         );
         // ~keep Re-splicing the same block is a fixpoint.
-        assert_eq!(splice_block(Some(&after), &block), after);
+        assert_eq!(splice_block(Some(&after), &block).expect("fixpoint"), after);
+    }
+
+    #[test]
+    fn splice_bails_on_orphaned_begin_marker() {
+        // ~keep A lone BEGIN (END deleted by hand) must NOT append a second block — that would
+        // ~keep leave a two-BEGIN/one-END state a later run could collapse, eating user content.
+        let block = format!("{BEGIN_MARKER}\nv2\n{END_MARKER}\n");
+        let orphaned = format!("intro\n{BEGIN_MARKER}\nv1\nno end here\noutro\n");
+        assert!(
+            splice_block(Some(&orphaned), &block).is_err(),
+            "orphaned BEGIN must bail"
+        );
+    }
+
+    #[test]
+    fn splice_bails_on_reversed_and_doubled_markers() {
+        let block = format!("{BEGIN_MARKER}\nv2\n{END_MARKER}\n");
+        // ~keep END before BEGIN — bounds are inverted, refuse to guess.
+        let reversed = format!("{END_MARKER}\nstray\n{BEGIN_MARKER}\n");
+        assert!(
+            splice_block(Some(&reversed), &block).is_err(),
+            "reversed markers must bail"
+        );
+        // ~keep Two BEGINs before the END — ambiguous which block to replace.
+        let doubled = format!("{BEGIN_MARKER}\na\n{BEGIN_MARKER}\nb\n{END_MARKER}\n");
+        assert!(splice_block(Some(&doubled), &block).is_err(), "doubled BEGIN must bail");
+    }
+
+    #[test]
+    fn splice_converges_to_fixpoint_on_crlf_file() {
+        // ~keep A CRLF-authored rules file must reach a byte-stable fixpoint so `--print` stops
+        // ~keep reporting a pending change and re-runs are no-ops (idempotency contract).
+        let block = format!("{BEGIN_MARKER}\nv2\n{END_MARKER}\n");
+        let crlf = format!("intro\r\n{BEGIN_MARKER}\r\nv1\r\n{END_MARKER}\r\noutro\r\n");
+        let once = splice_block(Some(&crlf), &block).expect("first splice");
+        let twice = splice_block(Some(&once), &block).expect("second splice");
+        assert_eq!(once, twice, "CRLF file must converge to a fixpoint");
+        assert_eq!(once.matches(BEGIN_MARKER).count(), 1, "single block");
+        assert!(once.contains("outro"), "trailing user content kept");
     }
 
     #[test]

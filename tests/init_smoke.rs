@@ -152,6 +152,28 @@ fn no_rules_flag_touches_no_rules_file() {
 }
 
 #[test]
+fn init_refuses_to_corrupt_a_file_with_a_broken_marker() {
+    let dir = tmpdir();
+    let root = dir.path();
+    // ~keep A CLAUDE.md with a BEGIN marker but no END (e.g. a hand-edit or bad merge dropped the END line).
+    // ~keep init must bail rather than append a second block and later collapse the intervening user content.
+    let broken = format!("# My Project\n\nkeep me\n\n{BEGIN_MARKER}\nstale rules\n\ntrailing user content\n");
+    std::fs::write(root.join("CLAUDE.md"), &broken).expect("seed broken CLAUDE.md");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .arg("--root")
+        .arg(root)
+        .arg("init")
+        .arg("--yes")
+        .output()
+        .expect("spawn basemind init");
+    assert!(!output.status.success(), "init must fail on a malformed marker");
+
+    let after = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
+    assert_eq!(after, broken, "the file must be left byte-for-byte untouched on bail");
+}
+
+#[test]
 fn existing_config_is_kept_not_clobbered() {
     let dir = tmpdir();
     let root = dir.path();
