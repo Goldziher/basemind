@@ -13,7 +13,6 @@ function ensureBinaryExists() {
     return true;
   }
 
-  // Binary is missing. Attempt a one-time self-heal by running the postinstall script.
   console.error(`basemind: binary not found at ${binaryPath}. Running install...`);
 
   const installScriptPath = path.join(__dirname, "..", "install.js");
@@ -22,13 +21,11 @@ function ensureBinaryExists() {
     return false;
   }
 
-  // Run the install script with stdio inherit so the user sees progress/errors
   const installResult = spawnSync(process.execPath, [installScriptPath], {
     stdio: "inherit",
     cwd: path.dirname(packageJsonPath),
   });
 
-  // Check if the install succeeded and the binary now exists
   if (installResult.status === 0 && fs.existsSync(binaryPath)) {
     return true;
   }

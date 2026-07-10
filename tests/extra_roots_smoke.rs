@@ -20,14 +20,12 @@ fn repo_with_external() -> (TempDir, TempDir, ConfigV1) {
     let repo = tempfile::tempdir().expect("repo tempdir");
     let ext = tempfile::tempdir().expect("external tempdir");
 
-    // Repo file calls a symbol that lives only in the external root, plus a shared helper.
     fs::write(
         repo.path().join("main.rs"),
         b"fn main() {\n    let _ = external_greet();\n    shared_helper();\n}\n",
     )
     .unwrap();
 
-    // External file (outside the repo) defines the external symbol and also calls the helper.
     fs::create_dir_all(ext.path().join("pkg")).unwrap();
     fs::write(
         ext.path().join("pkg/lib.rs"),
@@ -41,7 +39,6 @@ fn repo_with_external() -> (TempDir, TempDir, ConfigV1) {
 }
 
 fn abs_key(dir: &TempDir, rel: &str) -> String {
-    // The scanner canonicalizes extra roots and stores forward-slash keys, so mirror both here.
     let canonical = fs::canonicalize(dir.path()).unwrap();
     let key = canonical.join(rel).to_str().unwrap().to_string();
     #[cfg(windows)]
@@ -62,10 +59,8 @@ fn extra_root_files_indexed_under_absolute_keys() {
     )
     .unwrap();
 
-    // Repo file: relative key.
     assert!(store.lookup("main.rs").is_some(), "repo file keyed relative");
 
-    // External file: absolute key; the relative form must NOT be indexed (no collision).
     let ext_key = abs_key(&ext, "pkg/lib.rs");
     assert!(
         std::path::Path::new(&ext_key).is_absolute(),
@@ -118,13 +113,10 @@ fn outline_and_calls_resolve_for_external_file() {
 
     let ext_key = abs_key(&ext, "pkg/lib.rs");
 
-    // Outline (L1) over the absolute key.
     let l1 = basemind::query::file_outline(&store, ext_key.as_bytes()).unwrap();
     let names: Vec<&str> = l1.symbols.iter().map(|s| s.name.as_str()).collect();
     assert!(names.contains(&"external_greet") && names.contains(&"shared_helper"));
 
-    // L2 calls (what `find_references` is built on) are extracted for external files too:
-    // the external file's body calls `shared_helper`.
     let l2 = basemind::query::file_outline_l2(&store, ext_key.as_bytes(), repo.path()).unwrap();
     assert!(
         l2.calls.iter().any(|c| c.callee == "shared_helper"),
@@ -147,8 +139,6 @@ fn removing_extra_root_prunes_external_files() {
     let ext_key = abs_key(&ext, "pkg/lib.rs");
     assert!(store.lookup(ext_key.as_bytes()).is_some());
 
-    // Re-scan with no extra roots: the external key is no longer "seen" and must be pruned,
-    // while the repo file survives.
     let mut cfg2 = ConfigV1::with_defaults();
     cfg2.scan.extra_roots = Vec::new();
     scan(
@@ -169,7 +159,6 @@ fn removing_extra_root_prunes_external_files() {
 #[test]
 fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
     let (repo, ext, mut cfg) = repo_with_external();
-    // Add a nonexistent root and a root *inside* the repo — both must be skipped, not fatal.
     let inside = repo.path().join("subdir");
     fs::create_dir_all(&inside).unwrap();
     fs::write(inside.join("in.rs"), b"pub fn inside() {}\n").unwrap();
@@ -180,7 +169,6 @@ fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
     ];
 
     let mut store = Store::open(repo.path(), VIEW_WORKING).unwrap();
-    // Scan must succeed despite the bogus roots.
     scan(
         repo.path(),
         &mut store,
@@ -190,10 +178,7 @@ fn missing_and_inside_repo_extra_roots_are_skipped_without_failing() {
     )
     .unwrap();
 
-    // The valid external root still indexed.
     assert!(store.lookup(abs_key(&ext, "pkg/lib.rs").as_bytes()).is_some());
-    // The inside-repo file is indexed once, under its RELATIVE key (via the primary walk), and
-    // NOT duplicated under an absolute key.
     assert!(store.lookup("subdir/in.rs").is_some());
     assert!(
         store.lookup(abs_key(&repo, "subdir/in.rs").as_bytes()).is_none(),

@@ -117,7 +117,6 @@ mod tests {
         assert!(!c.enabled);
         assert_eq!(c.agent_id.as_deref(), Some("claude-code"));
         assert_eq!(c.max_rooms, 8);
-        // Unspecified keys fall back to defaults.
         assert_eq!(c.retention_secs, 604_800);
     }
 

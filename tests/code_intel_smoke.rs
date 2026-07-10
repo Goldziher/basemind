@@ -19,8 +19,6 @@ use basemind::store::{Store, VIEW_WORKING};
 fn scan_resolves_intra_file_references_for_javascript() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    // `count` is a module-level const used twice inside `f`. Name-based matching would conflate
-    // it with any other `count`; the resolved edge must point at this exact definition.
     let src = "const count = 1;\nfunction f() {\n  return count + count;\n}\n";
     fs::write(root.join("app.js"), src).unwrap();
 
@@ -43,7 +41,6 @@ fn scan_resolves_intra_file_references_for_javascript() {
     let app = RelPath::from("app.js");
     let def_start = (src.find("const count").unwrap() + "const ".len()) as u32;
 
-    // find_references: both uses of `count` resolve to the const definition, in this file.
     let mut uses = basemind::query::resolved_references(&store, &app, def_start);
     uses.sort_by_key(|(_, s)| *s);
     assert_eq!(
@@ -56,7 +53,6 @@ fn scan_resolves_intra_file_references_for_javascript() {
         "resolved uses must be in app.js"
     );
 
-    // goto_definition: the first `count` use resolves back to the const definition.
     let first_use = (src.find("return count").unwrap() + "return ".len()) as u32;
     let def = basemind::query::definition_of(&store, &app, first_use);
     assert_eq!(
@@ -70,8 +66,6 @@ fn scan_resolves_intra_file_references_for_javascript() {
 fn scan_resolves_cross_file_references_for_typescript() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    // `a.ts` exports `helper`; `b.ts` imports and calls it. The cross-file stitch must link the
-    // import binding in `b.ts` back to the `helper` export site in `a.ts`.
     let a_src = "export function helper() {\n  return 1;\n}\n";
     let b_src = "import { helper } from './a';\nexport function run() {\n  return helper();\n}\n";
     fs::write(root.join("a.ts"), a_src).unwrap();
@@ -88,18 +82,13 @@ fn scan_resolves_cross_file_references_for_typescript() {
     )
     .unwrap();
 
-    // Both files must be indexed: the resolve pass only sees indexed files, and the join's
-    // `store.lookup` gate drops unindexed targets. The TS grammar may be cold in a sandbox, so
-    // skip (rather than fail) when either file didn't index — resolution itself is grammar-free.
     if store.lookup("a.ts").is_none() || store.lookup("b.ts").is_none() {
         eprintln!("typescript grammar unavailable in this environment — skipping cross-file assertions");
         return;
     }
 
     let a = RelPath::from("a.ts");
-    // The `helper` export name-site in a.ts (the identifier in `export function helper`).
     let export_name_start = (a_src.find("function helper").unwrap() + "function ".len()) as u32;
-    // The `helper` import binding site in b.ts (the local name in the import clause).
     let import_local_start = b_src.find("helper").unwrap() as u32;
 
     let uses = basemind::query::resolved_references(&store, &a, export_name_start);
@@ -109,8 +98,6 @@ fn scan_resolves_cross_file_references_for_typescript() {
         "the `helper` import in b.ts must resolve to the a.ts export at {export_name_start}; got {uses:?}"
     );
 
-    // The reverse direction is exactly `goto_definition`'s cross-file hop: from the import binding
-    // in b.ts to the `helper` export site in a.ts (the MCP tool formats this into line/column).
     let b = RelPath::from("b.ts");
     let def = basemind::query::definition_of(&store, &b, import_local_start);
     assert_eq!(
@@ -124,10 +111,6 @@ fn scan_resolves_cross_file_references_for_typescript() {
 fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    // Both files define AND use a `count`, but they are unrelated (no import between them). A
-    // name-based `find_references("count")` would return all four sites; the scope-resolved edge
-    // must keep each file's `count` bound only to its own definition. This is the core "no
-    // conflation" guarantee — without it the resolve tier would be no better than the name scan.
     let a_src = "const count = 1;\nfunction fa() {\n  return count;\n}\n";
     let b_src = "const count = 2;\nfunction fb() {\n  return count;\n}\n";
     fs::write(root.join("a.js"), a_src).unwrap();

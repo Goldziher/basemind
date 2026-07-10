@@ -60,8 +60,6 @@ fn list_paths_rev_skips_submodule_gitlinks() {
     run(sup.path(), &["add", "real.txt"]);
     run(sup.path(), &["commit", "-q", "-m", "base"]);
 
-    // The gitlink stores a commit oid; it does not need to be reachable in this repo.
-    // Use this repo's own HEAD commit oid as a valid 40-hex target.
     let gitlink_oid = git_out(sup.path(), &["rev-parse", "HEAD"]);
     let gitlink_oid = gitlink_oid.trim();
     run(
@@ -80,12 +78,10 @@ fn list_paths_rev_skips_submodule_gitlinks() {
         .list_paths_rev("HEAD")
         .expect("list_paths_rev must not error on a gitlink tree");
 
-    // The gitlink path "sub" (mode 160000) must NOT appear — it is not a blob.
     assert!(
         !paths.iter().any(|p| p == "sub"),
         "gitlink 'sub' leaked into blob list: {paths:?}"
     );
-    // The real blob must still be present.
     assert!(paths.iter().any(|p| p == "real.txt"), "real.txt missing: {paths:?}");
 }
 
@@ -104,7 +100,6 @@ fn list_paths_rev_returns_only_blobs_for_nested_trees() {
 
     assert!(paths.iter().any(|p| p == "a/b/deep.txt"), "{paths:?}");
     assert!(paths.iter().any(|p| p == "top.txt"), "{paths:?}");
-    // Tree entries "a" and "a/b" must not appear as paths.
     assert!(!paths.iter().any(|p| p == "a" || p == "a/b"), "{paths:?}");
 }
 
@@ -117,9 +112,7 @@ fn status_porcelain_detects_modified_and_untracked() {
     run(dir.path(), &["add", "tracked.txt"]);
     run(dir.path(), &["commit", "-q", "-m", "base"]);
 
-    // Modify the committed file in the working tree.
     fs::write(dir.path().join("tracked.txt"), b"modified content here\n").unwrap();
-    // Add an untracked file.
     fs::write(dir.path().join("untracked.txt"), b"new\n").unwrap();
 
     let repo = Repo::discover(dir.path()).expect("discover");
@@ -149,7 +142,6 @@ fn status_porcelain_detects_modified_and_untracked() {
         "wrong untracked path: {:?}",
         status.untracked
     );
-    // Nothing was staged, so all staged buckets stay empty.
     assert!(status.staged_added.is_empty());
     assert!(status.staged_modified.is_empty());
     assert!(status.staged_deleted.is_empty());

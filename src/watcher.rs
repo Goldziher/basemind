@@ -67,21 +67,11 @@ pub fn watch_paths(
     })?;
     debouncer.watch(root, RecursiveMode::Recursive)?;
 
-    // Drop, at the watcher, every event the scanner would never index — so churn under
-    // `node_modules`, `target`, `.git`, gitignored paths, and (crucially) *nested* child-repo
-    // `.basemind/` flushes never wake `scan_and_refresh`/`scan_paths`. This subsumes the old two
-    // `.basemind` `starts_with` guards: the default `**/.basemind/**` exclude drops the root AND
-    // every nested `.basemind/`, and the empty/ancestor rel that macOS FSEvents coalesces onto the
-    // watched root fails the glob gate too. On macOS FSEvents is kernel-recursive, so we cannot
-    // un-watch excluded subtrees — but filtering here means a coalesced churn batch costs a few
-    // microsecond path checks instead of a full-corpus MapCache rebuild (issue #33).
     let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(Ok(events)) => {
-                // Fresh directory listings per batch so a newly-added or edited `.gitignore` takes
-                // effect immediately.
                 filter.clear_cache();
                 let mut touched: Vec<PathBuf> = Vec::new();
                 for ev in events {
@@ -179,16 +169,9 @@ fn keep_event_path(filter: &crate::scanner_filter::IndexFilter, root: &Path, p: 
     let Ok(rel) = p.strip_prefix(root) else {
         return false;
     };
-    // Drop any `.basemind/` directory entry or its contents at ANY nesting level: a nested child
-    // repo's `.basemind/` flush (the issue #33 loop) AND the `.basemind` dir entry itself, which
-    // the exclude glob (`**/.basemind/**`, matching only the *contents*) does not cover — FSEvents
-    // reports the directory when its contents change, which would otherwise wake a rescan.
     if rel.components().any(|c| c.as_os_str() == crate::config::BASEMIND_DIR) {
         return false;
     }
-    // `to_string_lossy` is zero-copy (Cow::Borrowed) on Unix for valid UTF-8 paths — the
-    // common case. Only allocate a new String when a backslash is actually present (Windows
-    // paths); on Unix `contains('\\')` is false for every well-formed path, so no alloc.
     let rel_cow = rel.to_string_lossy();
     let rel_normalized;
     let rel: &str = if rel_cow.contains('\\') {
@@ -219,11 +202,7 @@ mod tests {
     #[test]
     fn should_emit_changed_path_when_file_is_modified() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        // Canonicalize so the watched root matches the canonical paths notify
-        // reports (on macOS /var is a symlink to /private/var), mirroring how
-        // `main.rs` canonicalizes the root before handing it to the watcher.
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        // Short debounce keeps the test fast.
         let mut config = crate::config::default_for_root(&root);
         config.watch.debounce_ms = 50;
 
@@ -238,15 +217,10 @@ mod tests {
             })
         });
 
-        // Give the debouncer a moment to arm before mutating the tree. The
-        // macOS FSEvents backend in particular needs the recursive watch fully
-        // established before it will report subsequent writes.
         std::thread::sleep(Duration::from_millis(500));
         let target = root.join("hello.rs");
         std::fs::write(&target, b"fn main() {}\n").expect("write file");
 
-        // Wait for the callback to surface the change. Generous window: the
-        // backend latency dominates, not the debounce.
         let received = path_rx
             .recv_timeout(Duration::from_secs(10))
             .expect("changed path within window");
@@ -283,7 +257,6 @@ mod tests {
         std::fs::write(root.join(crate::config::BASEMIND_DIR).join("noise.txt"), b"ignored\n")
             .expect("write basemind file");
 
-        // No callback should fire for a `.basemind/`-only change.
         let result = path_rx.recv_timeout(Duration::from_millis(800));
         assert!(result.is_err(), "expected no emission, got {result:?}");
 
@@ -294,19 +267,11 @@ mod tests {
     /// Writes under a *nested* child-repo `.basemind/` and under a gitignored path must not wake a
     /// rescan — this is the core of issue #33 (an umbrella repo's watcher must ignore a nested
     /// serve's index flushes, and gitignored churn generally).
-    // Ignored in CI: this drives the real async watcher and asserts a *negative* — that no
-    // emission arrives within a fixed 800 ms window. That's inherently timing-sensitive and flaky
-    // on loaded CI runners (a late/coalesced FS event, or `notify`'s directory-granular events on
-    // Windows surfacing a parent dir, trips the assertion), while it passes on a quiet local box.
-    // The filtering it means to exercise (`keep_event_path` + `IndexFilter`: nested-`.basemind` and
-    // gitignore exclusion) is covered deterministically by the `scanner_filter` unit tests. Run
-    // manually with `--ignored` when touching the watcher event path.
     #[ignore = "timing-sensitive negative assertion; flaky on CI. Filter covered by scanner_filter tests"]
     #[test]
     fn should_ignore_nested_basemind_and_gitignored_paths() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().canonicalize().expect("canonicalize tempdir");
-        // `.git` so the `ignore` crate honors `.gitignore` (it only applies git rules inside a repo).
         std::fs::create_dir_all(root.join(".git")).expect("mkdir .git");
         std::fs::create_dir_all(root.join("child").join(crate::config::BASEMIND_DIR)).expect("mkdir child/.basemind");
         std::fs::write(root.join(".gitignore"), b"build/\n").expect("write .gitignore");
@@ -325,7 +290,6 @@ mod tests {
         });
 
         std::thread::sleep(Duration::from_millis(500));
-        // A nested child serve's index flush + a gitignored build artifact — neither is indexable.
         std::fs::write(
             root.join("child")
                 .join(crate::config::BASEMIND_DIR)

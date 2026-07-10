@@ -3,7 +3,6 @@ import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 import starlightLlmsTxt from "starlight-llms-txt";
 
-// https://astro.build/config
 export default defineConfig({
   site: "https://basemind.ai",
   integrations: [
@@ -47,10 +46,6 @@ export default defineConfig({
       ],
       plugins: [
         starlightLlmsTxt({
-          // llms-full.txt keeps the complete corpus. llms-small.txt drops the
-          // exhaustive reference pages (CLI flags, every config key, architecture
-          // internals, perf tables) so the abridged variant is genuinely smaller
-          // — mcp-tools stays, it's the agent-facing routing surface.
           exclude: ["reference/cli", "reference/configuration", "reference/architecture", "reference/performance"],
           promote: ["index*", "start/**", "concepts/**"],
           minify: { collapseCodeBlocks: true },

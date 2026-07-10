@@ -1,5 +1,5 @@
 {
-  "_comment": "BEST-EFFORT: Cursor hook wiring. Cursor's hooks subsystem has a KNOWN sessionStart-injection BUG — additional_context emitted on SessionStart is not always surfaced to the model, so the UserPromptSubmit (inbox-notify) path is the reliable delta channel here. The shared session-start script already emits Cursor's `additional_context` shape, gated on CURSOR_PLUGIN_ROOT; we pass that env var via the command path so the Cursor branch of the tri-format emit fires. TODO: drop the workaround once Cursor fixes sessionStart injection.",
+  "_comment": "BEST-EFFORT: Cursor hook wiring. Cursor's hooks subsystem has a KNOWN sessionStart-injection BUG — additional_context emitted on SessionStart is not always surfaced to the model, so the UserPromptSubmit (inbox-notify) path is the reliable delta channel here. The shared session-start script already emits Cursor's `additional_context` shape, gated on CURSOR_PLUGIN_ROOT; we pass that env var via the command path so the Cursor branch of the tri-format emit fires. ~keep TODO: drop the workaround once Cursor fixes sessionStart injection.",
   "hooks": {
     "SessionStart": [
       {

@@ -96,8 +96,6 @@ async fn spin_up_site() -> MockServer {
     server
 }
 
-// ─── Url newtype boundary ───────────────────────────────────────────────────
-
 #[test]
 fn url_newtype_rejects_file_scheme_via_serde() {
     let res: Result<Url, _> = serde_json::from_str("\"file:///etc/passwd\"");
@@ -122,8 +120,6 @@ fn url_newtype_accepts_http_https() {
     assert!(Url::parse("http://example.com").is_ok());
     assert!(Url::parse("https://example.com/page?q=1#frag").is_ok());
 }
-
-// ─── crawlberg integration (against wiremock) ──────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scrape_returns_200_and_body() {
@@ -150,7 +146,7 @@ async fn scrape_returns_200_and_body() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn robots_txt_blocks_forbidden_path() {
     let server = spin_up_site().await;
-    let cfg = crawl_config(); // respect_robots_txt = true
+    let cfg = crawl_config();
     let engine = build_engine(&cfg).expect("build engine");
 
     let url = format!("{}/forbidden", server.uri());
@@ -170,16 +166,12 @@ async fn map_urls_discovers_sitemap_entries() {
     let url = format!("{}/", server.uri());
     let map = crawlberg::map_urls(&engine, &url).await.expect("map_urls succeeds");
 
-    // The sitemap lists 2 URLs; crawlberg may also discover links from the
-    // root page, so assert >= 1 (the bare minimum that signals discovery
-    // actually ran) and that at least one entry is our `/about` URL.
     assert!(!map.urls.is_empty(), "map_urls must surface at least one URL");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn crawl_visits_seed_and_returns_pages() {
     let server = spin_up_site().await;
-    // Tight bound so the test runs in <1 s.
     let cfg = CrawlConfig {
         max_pages: 4,
         max_depth: 1,
@@ -207,8 +199,6 @@ async fn crawl_visits_seed_and_returns_pages() {
     assert!(!body.is_empty(), "crawled page must have a non-empty body");
 }
 
-// ─── SSRF redirect bypass (C1) ──────────────────────────────────────────────
-
 /// crawlberg follows HTTP redirects itself, so a public seed can 302 to a
 /// private host (`http://169.254.169.254/` — the cloud metadata endpoint) that
 /// the seed-URL denylist never saw. The MCP web helpers re-validate the URL the
@@ -220,13 +210,11 @@ async fn crawl_visits_seed_and_returns_pages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redirect_to_private_host_is_rejected_post_fetch() {
     let server = MockServer::start().await;
-    // A 302 whose Location points at the AWS link-local metadata endpoint.
     Mock::given(method("GET"))
         .and(path("/redirect"))
         .respond_with(ResponseTemplate::new(302).insert_header("location", "http://169.254.169.254/latest/meta-data/"))
         .mount(&server)
         .await;
-    // robots must allow the seed so the fetch proceeds to the redirect.
     Mock::given(method("GET"))
         .and(path("/robots.txt"))
         .respond_with(ResponseTemplate::new(404))
@@ -237,17 +225,12 @@ async fn redirect_to_private_host_is_rejected_post_fetch() {
     let engine = build_engine(&cfg).expect("build engine");
     let url = format!("{}/redirect", server.uri());
 
-    // The seed itself parses (public wiremock host); the SSRF risk only appears
-    // after crawlberg follows the redirect. Whatever URL the crawler reports as
-    // final, the post-fetch denylist must reject any private landing host.
     let private_target = "http://169.254.169.254/latest/meta-data/";
     assert!(
         matches!(Url::parse(private_target), Err(UrlError::PrivateHost(_))),
         "post-fetch denylist must reject the link-local redirect target"
     );
 
-    // Best-effort: if the stack exposes the final URL and it is the private
-    // target, confirm it round-trips through the same rejection.
     if let Ok(result) = crawlberg::scrape(&engine, &url).await
         && result.final_url.contains("169.254.169.254")
     {
@@ -258,8 +241,6 @@ async fn redirect_to_private_host_is_rejected_post_fetch() {
         );
     }
 }
-
-// ─── HTTP error paths ───────────────────────────────────────────────────────
 
 /// 404 must surface to the caller (default config has `soft_http_errors=false`,
 /// but historically reqwest-style stacks surface non-success status codes via
@@ -284,7 +265,7 @@ async fn scrape_404_does_not_silently_succeed() {
             "404 must not appear as 2xx; got status {}",
             result.status_code
         ),
-        Err(_) => { /* CrawlError surface — also acceptable */ }
+        Err(_) => {}
     }
 }
 
@@ -307,7 +288,7 @@ async fn scrape_5xx_surfaces_status_or_error() {
             "5xx must round-trip exact status; got {}",
             result.status_code
         ),
-        Err(_) => { /* CrawlError surface — also acceptable */ }
+        Err(_) => {}
     }
 }
 
@@ -344,7 +325,7 @@ async fn scrape_follows_redirect_chain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scrape_truncates_oversized_body() {
-    let big_body = "x".repeat(64 * 1024); // 64 KiB
+    let big_body = "x".repeat(64 * 1024);
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/big"))
@@ -357,7 +338,7 @@ async fn scrape_truncates_oversized_body() {
         .await;
 
     let cfg = CrawlConfig {
-        max_body_size: 4096, // 4 KiB cap
+        max_body_size: 4096,
         ..crawl_config()
     };
     let engine = build_engine(&cfg).expect("engine");
@@ -391,8 +372,6 @@ async fn scrape_handles_empty_body() {
     assert_eq!(result.status_code, 200);
     assert_eq!(result.body_size, 0, "empty body must report 0 bytes");
 }
-
-// ─── Crawl bounds + dedup ───────────────────────────────────────────────────
 
 /// A crawl that hits its own seed via a self-referencing link must not visit
 /// the same page twice. Tests the dedupe contract on `normalized_urls`.
@@ -431,7 +410,6 @@ async fn crawl_dedupes_circular_links() {
     let url = format!("{origin}/");
     let result = crawlberg::crawl(&engine, &url).await.expect("crawl");
 
-    // Each unique URL should appear at most once in the visited set.
     let unique = result.unique_normalized_urls();
     assert!(
         result.pages.len() <= unique + 1,
@@ -565,8 +543,6 @@ async fn missing_robots_txt_defaults_to_allowed() {
     assert_eq!(result.status_code, 200);
 }
 
-// ─── Url newtype: extra boundary cases ──────────────────────────────────────
-
 #[test]
 fn url_newtype_strips_no_components() {
     let u = Url::parse("https://docs.rs/rmcp/latest/rmcp/?q=tool#anchor").unwrap();
@@ -607,8 +583,6 @@ fn url_from_str_rejects_bad_scheme() {
     assert!(Url::from_str("ftp://example.com").is_err());
 }
 
-// ─── build_engine error surface ─────────────────────────────────────────────
-
 #[test]
 fn build_engine_accepts_default_config() {
     let cfg = crawl_config();
@@ -629,8 +603,6 @@ fn build_engine_handles_tight_bounds() {
         "tight non-zero bounds must still build a valid engine"
     );
 }
-
-// ─── Per-call crawl override (mirrors helpers_web::per_call_engine) ──────────
 
 /// `web_crawl` honours per-call `max_pages` / `max_depth` by cloning the server
 /// `[crawl]` config, overriding those two fields, and building a one-shot
@@ -664,14 +636,11 @@ async fn per_call_override_caps_pages_below_server_default() {
         .mount(&server)
         .await;
 
-    // Server default is permissive (would visit many pages)…
     let server_default = CrawlConfig {
         max_pages: 50,
         max_depth: 5,
         ..crawl_config()
     };
-    // …but the per-call override clamps to 2 pages, exactly as
-    // `per_call_engine` does for an MCP/CLI `web_crawl { max_pages: 2 }`.
     let mut per_call = server_default.clone();
     per_call.max_pages = 2;
     let engine = build_engine(&per_call).expect("per-call engine");

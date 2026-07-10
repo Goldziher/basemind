@@ -149,15 +149,11 @@ pub fn bm25_search(db: &IndexDb, query: &str, limit: usize) -> Vec<Bm25Hit> {
 
     let mut scores: AHashMap<String, f32> = AHashMap::new();
     for term in &terms {
-        // First collect this term's postings so its document frequency (the list length) is known
-        // before scoring — BM25's idf needs df up front.
         let mut postings: Vec<(String, u32, u32)> = Vec::new();
         for guard in db.code_bm25_postings.prefix(keys::code_bm25_postings_prefix(term)) {
             let (k, v) = match guard.into_inner() {
                 Ok(kv) => kv,
                 Err(error) => {
-                    // A Fjall read error on one posting shouldn't silently truncate the term's df —
-                    // surface it so a degraded index is diagnosable, then skip just this entry.
                     tracing::warn!(%term, ?error, "bm25: posting read failed; skipping entry");
                     continue;
                 }
@@ -219,7 +215,7 @@ mod tests {
         let counts = tokenize_counts("fn find_references(Spawn) spawn spawn");
         assert_eq!(counts.get("find"), Some(&1));
         assert_eq!(counts.get("references"), Some(&1));
-        assert_eq!(counts.get("spawn"), Some(&3)); // "Spawn" lowercased + two "spawn"
+        assert_eq!(counts.get("spawn"), Some(&3));
         assert_eq!(counts.get("fn"), Some(&1));
     }
 
@@ -243,18 +239,14 @@ mod tests {
 
     #[test]
     fn idf_is_non_negative_even_for_ubiquitous_terms() {
-        // A term in every document (df == n) must not produce a negative idf.
         assert!(bm25_idf(100, 100) >= 0.0);
-        // Rarer terms score strictly higher than common ones.
         assert!(bm25_idf(100, 1) > bm25_idf(100, 50));
     }
 
     #[test]
     fn term_score_rewards_higher_tf_and_penalizes_length() {
         let idf = bm25_idf(100, 10);
-        // More occurrences of the term → higher score.
         assert!(bm25_term_score(5, 100, 100.0, idf) > bm25_term_score(1, 100, 100.0, idf));
-        // Same tf in a longer-than-average document → lower score.
         assert!(bm25_term_score(3, 400, 100.0, idf) < bm25_term_score(3, 50, 100.0, idf));
     }
 }

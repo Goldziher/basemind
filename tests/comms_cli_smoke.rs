@@ -47,11 +47,9 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     let scope = format!("path:{root}");
     const BODY: &str = "SECRET-BODY-must-never-appear-in-history-lookups";
 
-    // 1. Start the detached daemon. This is the path that panicked before the runtime fix.
     let (ok, _out, err) = comms(&comms_dir, "agent-alice", &["start"]);
     assert!(ok, "comms start failed: {err}");
 
-    // Always tear the daemon down, even if an assertion below panics.
     struct Stop<'a>(&'a Path);
     impl Drop for Stop<'_> {
         fn drop(&mut self) {
@@ -63,7 +61,6 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     }
     let _stop = Stop(&comms_dir);
 
-    // 2. Alice creates a path-scoped room and posts a message with a long body.
     let (ok, _o, e) = comms(
         &comms_dir,
         "agent-alice",
@@ -77,8 +74,6 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     );
     assert!(ok, "post failed: {e}");
 
-    // 3. A DIFFERENT agent reads the history as JSON. Bob auto-joins the path-scoped room
-    //    because his cwd-derived scope (the same `root`) covers it — no explicit join.
     let (ok, history, e) = comms(
         &comms_dir,
         "agent-bob",
@@ -86,7 +81,6 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
     );
     assert!(ok, "history failed: {e}");
 
-    // The front-matter (subject + sender) is present...
     assert!(
         history.contains("Hello team"),
         "history should carry the subject front-matter, got: {history}"
@@ -95,14 +89,11 @@ fn comms_daemon_round_trip_history_is_front_matter_only() {
         history.contains("agent-alice"),
         "history should carry the sender, got: {history}"
     );
-    // ...but the body bytes are NEVER loaded into a lookup.
     assert!(
         !history.contains(BODY),
         "history lookup must be front-matter only — the body leaked: {history}"
     );
 
-    // 4. The body is reachable only via the explicit body path.
-    // Pull the message id out of the history JSON (…"id":"devroom:agent-alice:<ts>:<seq>"…).
     let id = history
         .split("\"id\":\"")
         .nth(1)
@@ -140,7 +131,6 @@ fn room_for_path_resolves_and_joins_a_path_scoped_room() {
     }
     let _stop = Stop(&comms_dir);
 
-    // Resolve the temp dir (a non-repo path) to its canonical room.
     let (ok, out, e) = comms(
         &comms_dir,
         "agent-alice",
@@ -151,7 +141,6 @@ fn room_for_path_resolves_and_joins_a_path_scoped_room() {
         out.contains("\"scope\":\"path\""),
         "a non-repo path resolves to a path-scoped room, got: {out}"
     );
-    // Pull the resolved room id out of the JSON and assert it is non-empty.
     let room = out
         .split("\"room\":\"")
         .nth(1)
@@ -159,7 +148,6 @@ fn room_for_path_resolves_and_joins_a_path_scoped_room() {
         .expect("room id in room-for-path json");
     assert!(!room.is_empty(), "room id must be non-empty, got: {out}");
 
-    // A second agent resolving the SAME path lands on the IDENTICAL room id (idempotent).
     let (ok, out2, e) = comms(
         &comms_dir,
         "agent-bob",
@@ -197,8 +185,6 @@ fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
     }
     let _stop = Stop(&comms_dir);
 
-    // Send a DM AS alice TO bob in one one-shot process. The recipient connection is hosted
-    // sequentially inside that same process so the DM lands in bob's inbox.
     let (ok, send_out, e) = comms(
         &comms_dir,
         "agent-default",
@@ -218,7 +204,6 @@ fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
         ],
     );
     assert!(ok, "dm send failed: {e}");
-    // The pairwise room is the sorted-id canonical `dm:alice:bob`.
     assert!(
         send_out.contains("\"room\":\"dm:alice:bob\""),
         "dm output should name the pairwise room, got: {send_out}"
@@ -228,7 +213,6 @@ fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
         "dm output should carry the message_id, got: {send_out}"
     );
 
-    // Bob reads the DM from his inbox (selected via --as-agent).
     let (ok, inbox, e) = comms(
         &comms_dir,
         "agent-default",
@@ -240,7 +224,6 @@ fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
         "bob's inbox should carry the DM front-matter, got: {inbox}"
     );
 
-    // The sender's own inbox stays empty (self-exclusion keys on the requesting agent id).
     let (ok, alice_inbox, e) = comms(
         &comms_dir,
         "agent-default",
@@ -252,7 +235,6 @@ fn dm_verb_delivers_to_recipient_inbox_via_pairwise_room() {
         "the sender must not see its own DM in its inbox, got: {alice_inbox}"
     );
 
-    // Guard: dm'ing yourself is rejected before any connection.
     let (ok, _o, self_err) = comms(
         &comms_dir,
         "agent-default",

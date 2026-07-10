@@ -30,16 +30,8 @@ pub fn build_engine(cfg: &CrawlConfig) -> Result<CrawlEngineHandle> {
         respect_robots_txt: cfg.respect_robots_txt,
         user_agent: Some(cfg.user_agent.clone()),
         max_body_size: Some(max_body_size),
-        // Reasonable defaults for an in-process MCP server: cap concurrency low
-        // so a single agent call doesn't saturate a destination host, and keep
-        // the per-request timeout tight enough that a stuck fetch can't hang
-        // the MCP loop.
         max_concurrent: Some(4),
         request_timeout: Duration::from_secs(30),
-        // crawlberg blocks private/loopback/link-local targets by default (SSRF
-        // protection). basemind keeps that posture and gates the relaxation
-        // behind an explicit opt-in so internal-docs crawling is a deliberate
-        // choice, not an accident. `deny_private = !allow_private_network`.
         ssrf: SsrfPolicy {
             deny_private: !cfg.allow_private_network,
             ..Default::default()

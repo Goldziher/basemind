@@ -15,7 +15,9 @@
 //! on Unix, so the `extern "C"` declarations resolve at link time. Each call site carries a
 //! `// SAFETY:` note. On non-Unix targets the front-end is unavailable (see the `#[cfg]`
 //! stubs); the singleton path still resolves a Windows pipe name for a future named-pipe
-//! front-end (TODO), but this iteration ships the Unix path.
+//! front-end, but this iteration ships the Unix path.
+//!
+//! ~keep TODO: implement the Windows named-pipe front-end.
 
 #[cfg(unix)]
 mod imp {
@@ -65,16 +67,13 @@ mod imp {
     impl CommsLink for UdsLink {
         async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
             loop {
-                // Try to decode a complete frame from whatever is already buffered.
                 if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
                     let req = rmp_serde::from_slice(&frame)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
                 }
-                // Need more bytes from the socket.
                 let n = self.stream.read_buf(&mut self.read_buf).await?;
                 if n == 0 {
-                    // EOF: a clean close has an empty buffer; a partial frame is an error.
                     if self.read_buf.is_empty() {
                         return Ok(None);
                     }
@@ -152,7 +151,6 @@ mod imp {
                     }
                 }
             }
-            // Draining: unlink the socket so a future daemon can rebind cleanly.
             let _ = std::fs::remove_file(&self.socket_path);
             Ok(())
         }
@@ -169,19 +167,15 @@ mod imp {
 #[cfg(unix)]
 pub use imp::{UdsFrontend, UdsLink};
 
-// ─── peer-cred + uid via self-declared C entry points (no `libc` dep) ─────────────────────
-
 /// The daemon's own real user id. Used to reject cross-user socket connections.
 #[cfg(unix)]
 pub fn daemon_uid() -> u32 {
     // SAFETY: `getuid()` takes no arguments, reads no caller memory, never fails, and returns
-    // the calling process's real user id as a `uid_t` (32-bit on Linux/macOS). It is one of
-    // the always-safe POSIX calls.
     unsafe { getuid() }
 }
 
-/// On non-Unix targets there is no uid; report a fixed value so callers compile. The Windows
-/// named-pipe front-end (TODO) will use a different access-control mechanism.
+/// On non-Unix targets there is no uid; report a fixed value so callers compile.
+/// ~keep TODO: the Windows named-pipe front-end needs a different access-control mechanism.
 #[cfg(not(unix))]
 pub fn daemon_uid() -> u32 {
     0
@@ -205,7 +199,6 @@ unsafe extern "C" {
 pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
     #[cfg(target_os = "linux")]
     {
-        // struct ucred { pid_t pid; uid_t uid; gid_t gid; } — three 32-bit fields.
         const SOL_SOCKET: i32 = 1;
         const SO_PEERCRED: i32 = 17;
         #[repr(C)]
@@ -218,9 +211,6 @@ pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
         let mut cred = Ucred::default();
         let mut len = core::mem::size_of::<Ucred>() as u32;
         // SAFETY: `fd` is a live connected socket fd owned by the caller for the duration of
-        // this call. `optval`/`optlen` point at a correctly-sized, properly-aligned `Ucred`
-        // and `u32` on the stack; `getsockopt` writes at most `len` bytes into `cred`. The
-        // return code is checked before the out-params are read.
         let rc = unsafe { getsockopt(fd, SOL_SOCKET, SO_PEERCRED, (&mut cred as *mut Ucred).cast(), &mut len) };
         if rc == 0 {
             return crate::comms::transport::PeerCred {
@@ -231,7 +221,6 @@ pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
     }
     #[cfg(target_os = "macos")]
     {
-        // struct xucred { u_int cr_version; uid_t cr_uid; short cr_ngroups; uid_t cr_groups[16]; }
         const SOL_LOCAL: i32 = 0;
         const LOCAL_PEERCRED: i32 = 0x001;
         #[repr(C)]
@@ -249,7 +238,6 @@ pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
         };
         let mut len = core::mem::size_of::<Xucred>() as u32;
         // SAFETY: as in the Linux branch — `fd` is live for the call, the out-params point at a
-        // correctly-sized stack `Xucred`/`u32`, and the result is checked before reading.
         let rc = unsafe {
             getsockopt(
                 fd,

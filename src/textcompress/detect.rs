@@ -101,20 +101,17 @@ pub fn detect(text: &str) -> Family {
 
     let bytes = text.as_bytes();
 
-    // git status: "On branch X" header or the clean-tree sentinel.
     let branch = GIT_STATUS_BRANCH.get_or_init(|| finder("On branch "));
     let clean = GIT_STATUS_CLEAN.get_or_init(|| finder("nothing to commit"));
     if branch.find(bytes).is_some() || clean.find(bytes).is_some() {
         return Family::GitStatus;
     }
 
-    // git diff: the `diff --git` header.
     let diff = GIT_DIFF.get_or_init(|| finder("diff --git "));
     if diff.find(bytes).is_some() {
         return Family::GitDiff;
     }
 
-    // git log: lines starting with "commit <sha>".
     let commit = GIT_COMMIT.get_or_init(|| finder("commit "));
     if text
         .lines()
@@ -123,40 +120,33 @@ pub fn detect(text: &str) -> Family {
         return Family::GitLog;
     }
 
-    // cargo build: "Compiling " / "Finished " emitted by cargo.
     let cargo = CARGO.get_or_init(|| finder("Compiling "));
     if cargo.find(bytes).is_some() {
         return Family::CargoBuild;
     }
 
-    // npm install: "added N packages" / "audited" lines.
     let added = NPM_ADDED.get_or_init(|| finder("added "));
     let audit = NPM_AUDIT.get_or_init(|| finder("audited "));
     if audit.find(bytes).is_some() || added.find(bytes).is_some() {
         return Family::NpmInstall;
     }
-    // pip install: "Successfully installed".
     let pip = PIP_INSTALLED.get_or_init(|| finder("Successfully installed"));
     if pip.find(bytes).is_some() {
         return Family::NpmInstall;
     }
 
-    // pytest: the "passed" / "failed" summary tokens with the "=" rule lines.
     let pytest = PYTEST.get_or_init(|| finder(" passed"));
     if pytest.find(bytes).is_some() && text.contains("===") {
         return Family::Pytest;
     }
     if text.contains("test result:") {
-        // cargo test summary.
         return Family::Pytest;
     }
 
-    // grep/rg: a majority of lines match `file:line:`.
     if looks_like_grep(text) {
         return Family::Grep;
     }
 
-    // ls/find: many lines that look like bare paths/filenames.
     if looks_like_listing(text) {
         return Family::Ls;
     }
@@ -201,7 +191,6 @@ fn looks_like_listing(text: &str) -> bool {
             continue;
         }
         total += 1;
-        // Path-like: no whitespace, or `ls -l` long form (perms in col 0).
         let single_token = !t.contains(char::is_whitespace);
         let ls_long = t.len() > 10
             && (t.starts_with('-') || t.starts_with('d') || t.starts_with('l'))

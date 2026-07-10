@@ -15,8 +15,6 @@ use crate::comms::ids::RoomId;
 use crate::comms::model::{Room, RoomScope};
 use crate::comms::protocol::SeqMeta;
 
-// ─── agent_register ───────────────────────────────────────────────────────────────────────
-
 /// Params for `agent_register`: announce or update this agent's A2A card.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AgentRegisterParams {
@@ -46,8 +44,6 @@ pub(super) struct AgentRegisterResponse {
     /// Always true on success.
     pub registered: bool,
 }
-
-// ─── agent_list ───────────────────────────────────────────────────────────────────────────
 
 /// Params for `agent_list`: enumerate known agents, optionally restricted to one room.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -89,8 +85,6 @@ pub(super) struct AgentListResponse {
     pub agents: Vec<AgentSummary>,
 }
 
-// ─── room scope (shared input shape) ────────────────────────────────────────────────────────
-
 /// Room-scope selector for `room_create`. Mirrors [`RoomScope`] but is a flat, agent-friendly
 /// MCP input: pick exactly one of `remote` / `path_prefix` / `global`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -119,8 +113,6 @@ impl From<ScopeInput> for RoomScope {
         }
     }
 }
-
-// ─── room_create ────────────────────────────────────────────────────────────────────────────
 
 /// Params for `room_create`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -185,8 +177,6 @@ pub(super) struct RoomCreateResponse {
     pub room: RoomSummary,
 }
 
-// ─── room_list ──────────────────────────────────────────────────────────────────────────────
-
 /// Params for `room_list`: list rooms whose scope matches the calling agent's chain. No fields
 /// — scope context (remote + cwd) is injected by the server from its root.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -200,8 +190,6 @@ pub(super) struct RoomListResponse {
     /// The room rows.
     pub rooms: Vec<RoomSummary>,
 }
-
-// ─── room_join / room_leave ──────────────────────────────────────────────────────────────────
 
 /// Params for `room_join`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -238,8 +226,6 @@ pub(super) struct RoomMembershipResponse {
     pub left: bool,
 }
 
-// ─── room_post ───────────────────────────────────────────────────────────────────────────────
-
 /// Params for `room_post`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct RoomPostParams {
@@ -272,8 +258,6 @@ pub(super) struct RoomPostResponse {
     /// The id of the message just stored.
     pub message_id: String,
 }
-
-// ─── room_history ────────────────────────────────────────────────────────────────────────────
 
 /// Params for `room_history`: read a room's front-matter, oldest-first, paginated.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -363,8 +347,6 @@ pub(super) struct RoomHistoryResponse {
     pub next_cursor: Option<Cursor>,
 }
 
-// ─── message_get ─────────────────────────────────────────────────────────────────────────────
-
 /// Params for `message_get`: fetch a single message body by id.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MessageGetParams {
@@ -387,8 +369,6 @@ pub(super) struct MessageGetResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
 }
-
-// ─── inbox_read ──────────────────────────────────────────────────────────────────────────────
 
 /// Params for `inbox_read`: read new front-matter across subscribed rooms.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -424,8 +404,6 @@ pub(super) struct InboxReadResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
 }
-
-// ─── inbox_ack ───────────────────────────────────────────────────────────────────────────────
 
 /// Params for `inbox_ack`: advance this agent's per-room read cursors past acked messages.
 ///
@@ -472,8 +450,6 @@ pub(super) struct InboxAckResponse {
     pub cursors_advanced: Vec<CursorAdvance>,
 }
 
-// ─── get_or_create_chat_room_for_path ────────────────────────────────────────────────────────
-
 /// Params for `get_or_create_chat_room_for_path`: resolve the repo at `path` to its canonical room
 /// (by git remote, else repo path) and join it. Lets an agent coordinate in ANOTHER repo's room.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
@@ -499,8 +475,6 @@ pub(super) struct GetOrCreateRoomForPathResponse {
     /// True when this call created the room; false when it already existed.
     pub created: bool,
 }
-
-// ─── dm_send ───────────────────────────────────────────────────────────────────────────────────
 
 /// Params for `dm_send` — a direct message to one agent.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]

@@ -164,7 +164,6 @@ fn compress_npm_install(text: &str) -> String {
         "warn",
         "error",
         "fatal",
-        // `npm ERR!` failure lines carry no `error:` colon — match the bang form.
         "err!",
         "npm err",
     ];
@@ -259,11 +258,6 @@ fn compress_pytest(text: &str) -> String {
     if lines.len() < 15 {
         return text.to_string();
     }
-    // Scan the tail for genuine summary lines. A summary line either pairs a
-    // numeric count with a result word (`39 passed`, `1 skipped`, `2 failed`),
-    // or is an explicit runner summary marker. Per-test `PASSED`/`FAILED`
-    // status lines (no leading count) are intentionally NOT summary — counting
-    // them would keep the whole verbose log and defeat compression.
     let tail_window = 60.min(lines.len());
     let mut summary: Vec<String> = Vec::new();
     for line in lines[lines.len() - tail_window..].iter() {
@@ -276,7 +270,6 @@ fn compress_pytest(text: &str) -> String {
         }
     }
 
-    // Pytest-native FAILURES / ERRORS section.
     let mut failures: Vec<&str> = Vec::new();
     let mut in_failures = false;
     for line in &lines {
@@ -336,7 +329,6 @@ fn compress_grep(text: &str) -> String {
         return text.to_string();
     }
 
-    // Preserve first-seen file order while grouping.
     let mut order: Vec<String> = Vec::new();
     let mut groups: AHashMap<String, Vec<String>> = AHashMap::new();
     let mut no_file: Vec<String> = Vec::new();
@@ -397,13 +389,10 @@ fn compress_grep(text: &str) -> String {
 /// Extract the leading `file` from a `file:line:content` grep line, returning
 /// `None` when the line is not in that shape.
 fn parse_grep_file(line: &str) -> Option<String> {
-    // Find the first `:digits:` boundary using a non-greedy manual scan so a
-    // colon inside the filename does not split early.
     let bytes = line.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b':' {
-            // require at least one digit then another colon
             let mut j = i + 1;
             while j < bytes.len() && bytes[j].is_ascii_digit() {
                 j += 1;
@@ -442,7 +431,6 @@ fn compress_logs(text: &str) -> String {
         }
         i += run;
     }
-    // Require meaningful duplicate density before accepting the collapse.
     if dup_removed < (lines.len() / 3).max(LOGS_MIN_LINES) {
         return text.to_string();
     }

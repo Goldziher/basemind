@@ -142,7 +142,6 @@ mod tests {
     fn rejects_too_long() {
         let long = "a".repeat(MAX_ID_LEN + 1);
         assert_eq!(AgentId::parse(long), Err(IdError::TooLong));
-        // Exactly at the cap is allowed.
         assert!(AgentId::parse("a".repeat(MAX_ID_LEN)).is_ok());
     }
 
@@ -167,7 +166,6 @@ mod tests {
     fn deserialize_validates() {
         let ok: RoomId = serde_json::from_str("\"backend-team\"").unwrap();
         assert_eq!(ok.as_str(), "backend-team");
-        // An invalid id is rejected at the serde boundary, not silently accepted.
         assert!(serde_json::from_str::<RoomId>("\"bad id\"").is_err());
         assert!(serde_json::from_str::<RoomId>("\"\"").is_err());
     }

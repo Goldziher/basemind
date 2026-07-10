@@ -7,9 +7,6 @@ use crate::lang::{
 };
 
 pub fn extract_l1(lang: LangId, source: &[u8]) -> Result<FileMapL1, ExtractError> {
-    // tree-sitter recovers from syntax errors and returns a partial Tree; we expect
-    // `has_error()` may be true and still extract what we can. The timeout guards against
-    // inputs that hang the parser's error-recovery loop.
     let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
     let tree = match outcome {
         ParseOutcome::Ok(t) => t,
@@ -84,19 +81,9 @@ fn run_combined(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
     let mut implementations = Vec::new();
-    // Reuse the per-thread QueryCursor — avoids a heap allocation per file.
-    // Safety: `with_query_cursor` is not called recursively from this site;
-    // the iterator is fully drained before `with_query_cursor` returns.
     crate::lang::with_query_cursor(|cursor| {
         let mut iter = cursor.matches(q, root, source);
         while let Some(m) = iter.next() {
-            // Dispatch by the pre-classified integer index — one array load, zero string ops. Scan to
-            // the first capture that classifies to a known L1 class rather than blindly taking
-            // `captures[0]`: adapted TSLP `tags.scm` patterns commonly lead a `@definition.*` match
-            // with auxiliary captures (e.g. `@doc` for a preceding comment, `@local.scope`), so the
-            // root symbol/import/impl capture is not always first. The builders below re-scan every
-            // capture by name, so this only selects which builder to run. A match with no known
-            // capture (e.g. a stray `@doc`-only match) is skipped.
             let class = m
                 .captures
                 .iter()
@@ -142,28 +129,20 @@ fn dedupe_symbols(syms: Vec<Symbol>) -> Vec<Symbol> {
     let mut index: ahash::AHashMap<u32, Vec<(String, usize)>> = ahash::AHashMap::with_capacity(syms.len());
     for sym in syms {
         let slot = index.entry(sym.start_byte).or_default();
-        // Probe the inner Vec with a borrowed name — no clone on the lookup path.
         if let Some(&(_, idx)) = slot.iter().find(|(name, _)| name == &sym.name) {
             let existing = &mut keep[idx];
             if sym.kind.specificity() > existing.kind.specificity() {
                 existing.kind = sym.kind;
-                // Prefer the more specific match's signature too — e.g. an arrow-fn pattern
-                // captures the whole `const F = (x) => …` line, which is the useful signature.
                 if sym.signature.is_some() {
                     existing.signature = sym.signature;
                 }
             }
-            // Decorator captures travel one-per-match (tree-sitter fires the
-            // `(decorator) @symbol.decorator` pattern once per decorator child of a
-            // decorated_definition), so on collision we union the lists — deduplicated by
-            // string, preserving first-seen order.
             for d in sym.decorators {
                 if !existing.decorators.contains(&d) {
                     existing.decorators.push(d);
                 }
             }
         } else {
-            // First sighting of this (start_byte, name): clone the name into the index once.
             slot.push((sym.name.clone(), keep.len()));
             keep.push(sym);
         }
@@ -187,7 +166,6 @@ fn build_symbol(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Symbol> {
         if cname == "symbol.name" {
             name = node.utf8_text(source).ok().map(|s| s.to_string());
         } else if cname == "symbol.decorator" {
-            // Decorator captures travel alongside their owning symbol — collect them all.
             if let Ok(text) = node.utf8_text(source) {
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
@@ -260,9 +238,6 @@ fn signature_slice(text: &str) -> Option<String> {
     }
     let slice = &text[..end];
 
-    // Fast path: when the slice is already in its collapsed form — no leading/trailing
-    // whitespace, and every whitespace run is a single ASCII space — `split_whitespace`
-    // would reproduce it byte-for-byte. Detect that cheaply and skip the collapse loop.
     if is_already_collapsed(slice) {
         return if slice.is_empty() {
             None
@@ -271,8 +246,6 @@ fn signature_slice(text: &str) -> Option<String> {
         };
     }
 
-    // Slow path: collapse whitespace runs to single spaces. Pre-size to the slice length;
-    // the collapsed form is never longer than the input.
     let mut collapsed = String::with_capacity(slice.len());
     for word in slice.split_whitespace() {
         if !collapsed.is_empty() {
@@ -295,14 +268,12 @@ fn is_already_collapsed(slice: &str) -> bool {
     if !slice.is_ascii() {
         return false;
     }
-    // No leading or trailing ASCII whitespace.
     if bytes[0].is_ascii_whitespace() || bytes[bytes.len() - 1].is_ascii_whitespace() {
         return false;
     }
     let mut prev_ws = false;
     for &b in bytes {
         if b.is_ascii_whitespace() {
-            // Any whitespace byte must be a plain space, and never adjacent to another.
             if b != b' ' || prev_ws {
                 return false;
             }
@@ -346,15 +317,11 @@ fn build_implementation(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Impl
 
     let trait_name = trait_name?;
 
-    // If the query didn't provide an explicit @impl.implementor, walk up the
-    // @impl.range (or @impl.trait_name node's parent) to find the nearest named
-    // identifier that looks like a type name. This is the TSLP-adapted fallback.
     let impl_type = impl_type.or_else(|| {
         let anchor = range_node.or(trait_node)?;
         implementor_from_ancestor(anchor, source)
     })?;
 
-    // Position: prefer the range node, fall back to the trait_name node.
     let pos_node = range_node.or(trait_node)?;
     let p = pos_node.start_position();
 
@@ -379,18 +346,13 @@ fn implementor_from_ancestor(node: Node, source: &[u8]) -> Option<String> {
         if t.is_empty() { None } else { Some(t) }
     }
 
-    // Walk up at most 8 levels to bound work on pathological trees.
     let mut current = node;
     for _ in 0..8 {
         let parent = current.parent()?;
-        // Try `name:` field first — present on class_declaration, struct_item, etc.
         if let Some(text) = field_text(parent, "name", source) {
             return Some(text.to_string());
         }
-        // Try `type:` field — present on impl_item (Rust). Only use leaf-like nodes
-        // (type_identifier, identifier) to avoid capturing the full type expression.
         if let Some(type_node) = parent.child_by_field_name("type") {
-            // `child_count() == 0` guards against complex type expressions.
             let leaf_text = (type_node.child_count() == 0)
                 .then(|| type_node.utf8_text(source).ok())
                 .flatten()
@@ -435,7 +397,6 @@ mod tests {
 
     #[test]
     fn extract_implementation_rust_trait_impl() {
-        // `impl Drawable for Beta` must produce one Implementation record.
         let src = br#"
 trait Drawable {
     fn draw(&self);
@@ -486,7 +447,6 @@ const N: u32 = 42;
 
     #[test]
     fn extract_recovers_from_syntax_errors() {
-        // Broken `fn broken( {` plus well-formed neighbors.
         let src = br#"
 pub fn good_one() {}
 
@@ -512,16 +472,7 @@ pub fn good_two() {}
 
     #[test]
     fn extract_symbol_when_tslp_pattern_leads_with_doc_capture() {
-        // Regression: Ruby uses the TSLP `tags.scm` fallback, whose method-definition pattern
-        // leads with a `@doc` capture for the preceding comment. The old dispatch keyed on
-        // `captures[0]`, so the match classified as `Other` — panicking in debug builds
-        // (`debug_assert!`) and silently dropping the symbol in release. `run_combined` must scan
-        // past the leading `@doc` to the `@definition.method` capture and still extract the method.
         let src = b"# adds two numbers\ndef add(a, b)\n  a + b\nend\n";
-        // The fix lives in `run_combined`, which the old code reached *before* failing — so a
-        // regressed build panics here (debug) regardless of grammar availability. When the Ruby
-        // grammar is simply absent (offline CI), extraction returns `Err`; skip rather than assert,
-        // so this never flakes on the environment instead of the behavior under test.
         let Ok(map) = extract_l1("ruby", src) else {
             return;
         };

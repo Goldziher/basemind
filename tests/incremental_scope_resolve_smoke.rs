@@ -29,7 +29,6 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
-    // a.ts exports `helper`; b.ts imports and calls it.
     let a_before = "export function helper() {\n  return 1;\n}\n";
     let b_src = "import { helper } from './a';\nexport function run() {\n  return helper();\n}\n";
     let a_abs = root.join("a.ts");
@@ -57,7 +56,6 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
     let import_local_start = b_src.find("helper").unwrap() as u32;
     let export_before = helper_export_start(a_before);
 
-    // Baseline from the full scan: the cross-file edge links the b.ts import to the a.ts export.
     let baseline = basemind::query::resolved_references(&store, &a, export_before);
     assert!(
         baseline
@@ -66,8 +64,6 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
         "full scan must link b.ts's import to the a.ts export at {export_before}; got {baseline:?}"
     );
 
-    // Move the export site: prepend a statement so `helper`'s `name_start` shifts. b.ts is NOT
-    // touched. Re-scan ONLY a.ts via the incremental watcher entry point.
     let a_after = "const pad = 0;\nexport function helper() {\n  return pad + 2;\n}\n";
     fs::write(&a_abs, a_after).unwrap();
     scan_paths(root, &mut store, &cfg, &[a_abs], basemind::scanner::EmbedMode::Inline).unwrap();
@@ -78,8 +74,6 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
         "the edit must move the export name-site or the test proves nothing"
     );
 
-    // The unchanged importer b.ts must have been re-stitched to the NEW export site, even though it
-    // was not in the changed set handed to scan_paths.
     let after = basemind::query::resolved_references(&store, &a, export_after);
     assert!(
         after
@@ -88,14 +82,12 @@ fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
         "scan_paths(a.ts, basemind::scanner::EmbedMode::Inline) must re-stitch b.ts's edge to the new a.ts export at {export_after}; got {after:?}"
     );
 
-    // The stale edge at the OLD export site must be gone — the re-stitch replaces, never duplicates.
     let stale = basemind::query::resolved_references(&store, &a, export_before);
     assert!(
         !stale.iter().any(|(p, _)| p.as_str() == Some("b.ts")),
         "the stale edge at the old export site must be purged; got {stale:?}"
     );
 
-    // goto-definition from the b.ts import binding now lands on the new a.ts export site.
     assert_eq!(
         basemind::query::definition_of(&store, &b, import_local_start),
         Some((a.clone(), export_after)),

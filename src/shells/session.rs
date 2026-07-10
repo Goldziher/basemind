@@ -62,8 +62,6 @@ pub struct SpawnSpec {
 /// `spec.rows` (the configured `[shells]` defaults), falling back to
 /// `DEFAULT_COLS` × `DEFAULT_ROWS` at the config layer.
 pub async fn spawn_session(rmux: &Rmux, spec: SpawnSpec) -> Result<Session> {
-    // Apply the documented fallback for a degenerate zero-sized request, so the daemon never gets a
-    // 0×0 PTY even if a caller threads through an unset geometry.
     let cols = if spec.cols == 0 { DEFAULT_COLS } else { spec.cols };
     let rows = if spec.rows == 0 { DEFAULT_ROWS } else { spec.rows };
     let mut ensure = EnsureSession::named(spec.name)
@@ -106,8 +104,6 @@ pub async fn capture(session: &Session, lines: Option<usize>) -> Result<String> 
     let snapshot = pane.snapshot().await.context("snapshot rmux pane for capture")?;
     let mut rows: Vec<String> = snapshot.visible_lines();
 
-    // Drop trailing blank rows — a 50-row pane running a short command is mostly
-    // empty, and returning 45 blank lines is pure noise.
     while rows.last().is_some_and(|row| row.trim().is_empty()) {
         rows.pop();
     }

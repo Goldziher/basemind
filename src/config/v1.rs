@@ -97,10 +97,6 @@ pub struct ScanConfig {
 
 impl ScanConfig {
     fn default_include() -> Vec<String> {
-        // The language gate is `lang::detect()` (the tree-sitter-language-pack registry),
-        // not a hand-curated glob list. Default to "any file" and let the scanner's
-        // per-file detect + binary check + size cap filter the long tail. Users who want
-        // to narrow can still override `[scan.include]` in their `.basemind/basemind.toml`.
         vec!["**/*".to_string()]
     }
     fn default_exclude() -> Vec<String> {
@@ -298,8 +294,6 @@ pub enum MemoryScopeStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CrawlConfig {
-    // Field-level schema validation kept in sync with the hand-rolled bounds in
-    // the previous schema: bytes minima, depth minima, etc.
     /// Honour `robots.txt` when fetching pages. Default `true`. Override only
     /// for hosts you control — flipping this off violates `robots.txt`
     /// directives for every domain the crawler touches.

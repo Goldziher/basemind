@@ -8,13 +8,12 @@
 use crate::git::ChangeKind;
 use crate::path::RelPath;
 
-// ── fixed `gh_meta` rows ─────────────────────────────────────────────────────
 pub const META_SCHEMA_VER: &[u8] = b"schema_ver";
-pub const META_LAST_HEAD: &[u8] = b"last_indexed_head"; // 20 raw sha bytes
-pub const META_NEXT_ORD: &[u8] = b"next_commit_ord"; // u32 be
-pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id"; // u32 be
-pub const META_ROOT_SHA: &[u8] = b"root_sha"; // 20 raw sha bytes
-pub const META_COMMIT_COUNT: &[u8] = b"commit_count"; // u32 be
+pub const META_LAST_HEAD: &[u8] = b"last_indexed_head";
+pub const META_NEXT_ORD: &[u8] = b"next_commit_ord";
+pub const META_NEXT_PATH_ID: &[u8] = b"next_path_id";
+pub const META_ROOT_SHA: &[u8] = b"root_sha";
+pub const META_COMMIT_COUNT: &[u8] = b"commit_count";
 
 /// `u16:len ‖ bytes`. Returns `None` past the 64 KiB ceiling so a pathological path is skipped
 /// (and falls back to the live walk) rather than panicking inside a rayon worker.
@@ -76,7 +75,6 @@ pub fn change_kind_byte(kind: ChangeKind) -> u8 {
         ChangeKind::Modified => 1,
         ChangeKind::Deleted => 2,
         ChangeKind::Renamed => 3,
-        // Append-only past this line.
     }
 }
 
@@ -126,7 +124,6 @@ mod tests {
 
     #[test]
     fn path_id_key_prefix_isolation() {
-        // "Foo" must not be a prefix-collision of "Foobar": length prefix guarantees distinct keys.
         let foo = path_id_by_path_key(&RelPath::from("Foo".as_bytes())).unwrap();
         let foobar = path_id_by_path_key(&RelPath::from("Foobar".as_bytes())).unwrap();
         assert_ne!(foo, foobar);
@@ -135,11 +132,8 @@ mod tests {
 
     #[test]
     fn term_key_disjoint_by_field_and_term() {
-        // Same term under different fields → distinct keys (author vs message scope never collide).
         assert_ne!(term_key(0, b"fix"), term_key(1, b"fix"));
-        // Distinct terms under the same field → distinct keys.
         assert_ne!(term_key(1, b"fix"), term_key(1, b"fixture"));
-        // The field byte leads, so an author-field key never equals a message-field key.
         assert_eq!(term_key(0, b"jane")[0], 0);
         assert_eq!(term_key(1, b"jane")[0], 1);
     }

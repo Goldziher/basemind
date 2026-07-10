@@ -3,16 +3,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-// basemind pi extension.
-//
-// pi has no native MCP support, so this extension does NOT run the basemind MCP
-// server. It registers the basemind skills directory and injects a short
-// bootstrap at session start (and after compaction) that tells the model to
-// reach for the basemind tooling before grep/read. On pi the practical interface
-// is the `basemind` CLI driven through pi's `bash` tool (the `basemind-cli`
-// skill covers it); the MCP server can additionally be wired through a pi MCP
-// extension reading `<cwd>/.pi/mcp.json` if one is installed.
-
 const BOOTSTRAP_MARKER = "basemind:using-basemind bootstrap for pi";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));

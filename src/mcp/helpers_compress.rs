@@ -38,16 +38,12 @@ use super::types_compress::{
 };
 use crate::query;
 
-// ─── Constants ───────────────────────────────────────────────────────────────
-
 /// Maximum byte length returned by `expand`. Bodies larger than this are
 /// truncated and `truncated = true` is set in the response.
 ///
 /// 128 KiB is generous enough for any real function or class body while keeping
 /// MCP response sizes sane. Agents that need more can read the file directly.
 const EXPAND_BODY_CAP: usize = 128 * 1024;
-
-// ─── Token-note disclosure strings ───────────────────────────────────────────
 
 /// Disclosure note for the real-tokenizer path (`documents` feature).
 const TOKENS_NOTE_REAL: &str =
@@ -64,8 +60,6 @@ fn tokens_note() -> String {
         TOKENS_NOTE_HEURISTIC.to_string()
     }
 }
-
-// ─── Lexical-pass regexes (compiled once) ───────────────────────────────────
 
 /// Compiled regex for collapsing runs of horizontal whitespace (space + tab)
 /// to a single space within a line.
@@ -88,8 +82,6 @@ fn blank_lines_re() -> &'static Regex {
 
 fn fillers_re() -> &'static Regex {
     RE_FILLERS.get_or_init(|| {
-        // Case-insensitive; anchored to word boundaries so we don't clip identifiers.
-        // The list is intentionally conservative — prose signal words are never in here.
         Regex::new(
             r"(?i)\b(it is worth noting that|it should be noted that|it is important to note that|please note that|as you can see|as mentioned (?:above|earlier|before|previously)|in other words|to be honest|needless to say|for what it's worth|at the end of the day|as a matter of fact|the fact of the matter is|all things considered)\b[,.]?[ ]?"
         )
@@ -103,18 +95,12 @@ fn fillers_re() -> &'static Regex {
 /// 3. Remove common filler phrases.
 /// 4. Deduplicate repeated paragraphs (identical leading-trimmed paragraph text).
 fn lexical_pass(text: &str) -> String {
-    // Step 1: collapse horizontal whitespace runs within each line.
     let text = spaces_re().replace_all(text, " ");
 
-    // Step 2: collapse runs of blank lines.
     let text = blank_lines_re().replace_all(&text, "\n\n");
 
-    // Step 3: strip common filler phrases.
     let text = fillers_re().replace_all(&text, "");
 
-    // Step 4: dedup identical paragraphs (split on double-newline).
-    // Cold path: runs once per compress call over a single string, so the stdlib `split`
-    // is fine — a reusable `memmem::Finder` would add machinery for no measurable win here.
     let mut seen: ahash::AHashSet<String> = ahash::AHashSet::new();
     let mut out_paras: Vec<&str> = Vec::new();
     for para in text.split("\n\n") {
@@ -125,8 +111,6 @@ fn lexical_pass(text: &str) -> String {
     }
     out_paras.join("\n\n")
 }
-
-// ─── expand ──────────────────────────────────────────────────────────────────
 
 /// Resolve one symbol by `(path, name[, kind])` from the L1 outline, then read
 /// `file_bytes[start_byte..end_byte]` and return the raw source body.
@@ -140,7 +124,6 @@ pub(super) async fn run_expand(
     state: &ServerState,
     params: ExpandParams,
 ) -> Result<rmcp::model::CallToolResult, McpError> {
-    // Resolve the optional kind filter.
     let kind_filter = params
         .kind
         .as_deref()
@@ -148,14 +131,12 @@ pub(super) async fn run_expand(
         .transpose()
         .map_err(|e| McpError::invalid_params(format!("expand: invalid kind {:?}: {e}", params.kind), None))?;
 
-    // Load the L1 outline for the file.
     let l1 = {
         let store = state.store.read().await;
         query::file_outline(&store, &params.path)
             .map_err(|e| McpError::invalid_params(format!("expand: file_outline({}): {e}", params.path), None))?
     };
 
-    // Filter symbols by name (exact, case-sensitive) and optional kind.
     let candidates: Vec<&crate::extract::Symbol> = l1
         .symbols
         .iter()
@@ -165,7 +146,6 @@ pub(super) async fn run_expand(
 
     let symbol = match candidates.len() {
         0 => {
-            // Build a list of close names (same kind if filter given, else all symbols).
             let all_names: Vec<String> = l1
                 .symbols
                 .iter()
@@ -184,7 +164,6 @@ pub(super) async fn run_expand(
         }
         1 => candidates[0],
         _ => {
-            // Multiple matches — ask the caller to supply `kind`.
             let matches: Vec<String> = candidates
                 .iter()
                 .map(|s| format!("[{}] {}", kind_to_str(s.kind), s.name))
@@ -202,24 +181,19 @@ pub(super) async fn run_expand(
         }
     };
 
-    // Read the source file from disk.
     let abs = state.root.join(params.path.to_path_buf());
     let file_bytes = std::fs::read(&abs)
         .map_err(|e| McpError::invalid_params(format!("expand: read {}: {e}", params.path), None))?;
 
-    // Slice the symbol's byte range.
     let start = symbol.start_byte as usize;
     let end = (symbol.end_byte as usize).min(file_bytes.len());
     let raw = file_bytes.get(start..end).unwrap_or(&[]);
 
-    // Compute end_row by counting newlines in the slice up to `end`.
-    // `start_row` in the Symbol is zero-based; we report both as one-based.
     let end_row = {
         let slice_for_count = file_bytes.get(..end).unwrap_or(&[]);
         slice_for_count.iter().filter(|&&b| b == b'\n').count() as u32
     };
 
-    // Apply the body cap.
     let full_bytes = raw.len();
     let (body_bytes, truncated) = if full_bytes > EXPAND_BODY_CAP {
         (&raw[..EXPAND_BODY_CAP], true)
@@ -233,7 +207,6 @@ pub(super) async fn run_expand(
         path: params.path.to_string(),
         name: symbol.name.clone(),
         kind: kind_to_str(symbol.kind).to_string(),
-        // L1 rows are zero-based; report one-based for human/agent readability.
         start_row: symbol.start_row + 1,
         end_row: end_row + 1,
         body,
@@ -243,8 +216,6 @@ pub(super) async fn run_expand(
 
     json_result(&response)
 }
-
-// ─── Main entry point ────────────────────────────────────────────────────────
 
 pub(super) async fn run_compress(
     state: &ServerState,
@@ -266,13 +237,10 @@ pub(super) async fn run_compress(
     if let Some(path) = &params.path {
         run_structural(state, path).await
     } else {
-        // Safety: we've matched (Some(_), None) above.
         let text = params.text.as_deref().unwrap_or("");
         run_prose(text, &params)
     }
 }
-
-// ─── Structural (code file) path ─────────────────────────────────────────────
 
 async fn run_structural(
     state: &ServerState,
@@ -282,22 +250,14 @@ async fn run_structural(
     let l1 = query::file_outline(&store, path)
         .map_err(|e| McpError::invalid_params(format!("compress: file_outline({path}): {e}"), None))?;
 
-    // Read the original source bytes to compute the original size.
     let original_bytes = l1.size_bytes as usize;
 
-    // Count the original tokens from the source on disk (mirrors the `expand` read
-    // path). Fail-open: if the read fails, fall back to the `bytes/4` estimate over
-    // the recorded size rather than erroring the compress call.
     let abs = state.root.join(path.to_path_buf());
     let original_tokens = match std::fs::read(&abs) {
         Ok(source) => tokens::count_tokens(&String::from_utf8_lossy(&source)),
         Err(_) => (l1.size_bytes) / 4,
     };
 
-    // Build the structural output: imports then symbols (name, kind, signature).
-    // This mirrors what the `outline` tool returns but in a compact text form
-    // rather than the full structured JSON — the agent needs a navigable skeleton,
-    // not the original bodies.
     let mut lines: Vec<String> = Vec::new();
     if !l1.imports.is_empty() {
         lines.push("// imports".to_string());
@@ -344,8 +304,6 @@ async fn run_structural(
     json_result(&response)
 }
 
-// ─── Prose path ──────────────────────────────────────────────────────────────
-
 fn run_prose(text: &str, _params: &CompressParams) -> Result<rmcp::model::CallToolResult, McpError> {
     let original_bytes = text.len();
     let original_tokens = tokens::count_tokens(text);
@@ -375,8 +333,6 @@ fn run_prose(text: &str, _params: &CompressParams) -> Result<rmcp::model::CallTo
     json_result(&response)
 }
 
-// ─── delta ───────────────────────────────────────────────────────────────────
-
 /// Compute a compact line-diff from `params.old` to `params.new` via the stateless
 /// `textcompress::delta` primitive and return the [`crate::textcompress::delta::DeltaOutcome`]
 /// verbatim.
@@ -387,8 +343,6 @@ pub(super) async fn run_delta(
     let outcome = crate::textcompress::delta::delta(&params.old, &params.new);
     json_result(&outcome)
 }
-
-// ─── checkpoint ──────────────────────────────────────────────────────────────
 
 /// List the working-tree change set (staged + modified + untracked) for this server's repo,
 /// mirroring `textcompress::cli::changed_files`. Fail-open: no repo, or any git error, yields
@@ -423,8 +377,6 @@ pub(super) async fn run_checkpoint(
     json_result(&checkpoint)
 }
 
-// ─── detect_waste ────────────────────────────────────────────────────────────
-
 /// Parse `params.log` as JSON-Lines tool calls (leniently — malformed or `tool`-less lines are
 /// skipped) and run the pure `textcompress::waste::detect_waste` analysis, returning the
 /// [`crate::textcompress::waste::WasteReport`] verbatim.
@@ -436,8 +388,6 @@ pub(super) async fn run_detect_waste(
     let report = crate::textcompress::waste::detect_waste(&calls);
     json_result(&report)
 }
-
-// ─── Unit tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -469,7 +419,6 @@ mod tests {
     fn lexical_pass_deduplicates_paragraphs() {
         let repeated = "Hello world.\n\nHello world.\n\nDifferent paragraph.";
         let out = lexical_pass(repeated);
-        // The second "Hello world." paragraph should be dropped.
         let count = out.matches("Hello world.").count();
         assert_eq!(count, 1, "duplicate paragraph must appear only once: {out:?}");
         assert!(
@@ -482,8 +431,8 @@ mod tests {
     /// and, on the heuristic path, the counts must be exactly `bytes / 4`.
     #[test]
     fn compress_response_reports_consistent_reduced_tokens() {
-        let original = "word ".repeat(40); // 200 bytes
-        let compressed = "word"; // 4 bytes
+        let original = "word ".repeat(40);
+        let compressed = "word";
         let original_tokens = tokens::count_tokens(&original);
         let compressed_tokens = tokens::count_tokens(compressed);
         let response = CompressResponse {

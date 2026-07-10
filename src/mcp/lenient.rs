@@ -79,8 +79,6 @@ where
     {
         use serde::de::Error as _;
 
-        // Buffer the raw object first so we can both (a) attempt the real parse
-        // and (b) inspect the provided keys for near-miss suggestions on failure.
         let value = serde_json::Value::deserialize(deserializer)?;
         match serde_json::from_value::<T>(value.clone()) {
             Ok(inner) => Ok(Lenient(inner)),
@@ -162,7 +160,6 @@ fn did_you_mean(provided: &serde_json::Value, expected: &[String]) -> Option<Str
 
     let mut best: Option<(usize, &String)> = None;
     for key in provided_keys.keys() {
-        // A key that already matches an expected field is correct — skip it.
         if expected.iter().any(|field| field == key) {
             continue;
         }
@@ -183,7 +180,6 @@ fn did_you_mean(provided: &serde_json::Value, expected: &[String]) -> Option<Str
 fn levenshtein(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    // Single previous row; updated in place to keep allocation to one Vec.
     let mut previous: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {
         let mut diagonal = previous[0];
@@ -205,9 +201,6 @@ mod tests {
     use super::*;
     use crate::mcp::types::WorkspaceGrepParams;
 
-    // `super::types::WorkspaceGrepParams` is reachable here because `lenient` is a
-    // sibling module under `mcp`; the path goes through the crate root for clarity.
-
     #[test]
     fn levenshtein_matches_known_distances() {
         assert_eq!(levenshtein("pattern", "pattern"), 0);
@@ -222,16 +215,12 @@ mod tests {
         let lenient: Lenient<WorkspaceGrepParams> =
             serde_json::from_value(value).expect("valid params should deserialize");
         assert_eq!(lenient.0.pattern, "x");
-        // Defaults are preserved on the inner type.
         assert!(lenient.0.include_context);
         assert_eq!(lenient.0.limit, None);
     }
 
     #[test]
     fn missing_required_field_names_expected_and_suggests() {
-        // `patern` is a single-edit near-miss for the required `pattern`, and no
-        // other field is provided, so deserialization must fail with a message
-        // that (a) names the expected `pattern` field and (b) suggests it.
         let value = serde_json::json!({ "patern": "x" });
         let message = match serde_json::from_value::<Lenient<WorkspaceGrepParams>>(value) {
             Ok(_) => panic!("missing `pattern` must fail"),
@@ -249,8 +238,6 @@ mod tests {
 
     #[test]
     fn aliased_param_name_deserializes_through_lenient() {
-        // The serde alias on `pattern` (`query`/`regex`/`needle`/…) must survive the
-        // Lenient wrapper: a caller using the "wrong but aliased" key still succeeds.
         let value = serde_json::json!({ "query": "needle" });
         let lenient: Lenient<WorkspaceGrepParams> =
             serde_json::from_value(value).expect("aliased `query` should deserialize");
@@ -259,8 +246,6 @@ mod tests {
 
     #[test]
     fn missing_required_field_without_near_miss_still_lists_fields() {
-        // An unrelated key (no near-miss) still surfaces the expected-field list
-        // so the agent learns the contract, even without a suggestion.
         let value = serde_json::json!({ "completely_unrelated_key": "x" });
         let message = match serde_json::from_value::<Lenient<WorkspaceGrepParams>>(value) {
             Ok(_) => panic!("missing `pattern` must fail"),

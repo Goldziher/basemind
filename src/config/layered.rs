@@ -40,17 +40,10 @@ pub fn merge_layers(defaults: ConfigV1, layers: ConfigLayers) -> LoadedConfig {
     let mut config = defaults;
     let mut provenance: ProvenanceMap = ProvenanceMap::new();
 
-    // Seed every documents.* leaf with `Default` so absent keys still appear in
-    // the ledger. Keep this list in sync with the override surface.
     for path in DOCUMENT_LEAVES {
         provenance.insert(path, ConfigSource::Default);
     }
 
-    // 1. TOML file layer — wholesale replacement of the parsed sections that
-    //    appeared in the file. We can't tell which keys were *explicitly* set
-    //    vs. defaulted by serde without re-parsing the raw TOML, so we treat
-    //    every documents leaf as `File` whenever a file is present. Higher
-    //    layers will overwrite the provenance.
     if let Some(file) = layers.toml_file {
         config = file;
         for path in DOCUMENT_LEAVES {
@@ -58,12 +51,10 @@ pub fn merge_layers(defaults: ConfigV1, layers: ConfigLayers) -> LoadedConfig {
         }
     }
 
-    // 2. Env layer.
     if let Some(env) = layers.env.as_ref() {
         apply_documents_overrides(&mut config, env, ConfigSource::Env, Some(&mut provenance));
     }
 
-    // 3. CLI layer (highest in this iter; MCP is layered later inside the tool).
     if let Some(cli) = layers.cli.as_ref() {
         apply_documents_overrides(&mut config, cli, ConfigSource::Cli, Some(&mut provenance));
     }
@@ -216,10 +207,6 @@ pub(crate) fn apply_documents_overrides(
         }
     }
     if let Some(v) = overrides.summarization_strategy.as_deref() {
-        // Unknown values are dropped with a warning and DO NOT record
-        // provenance — the override was not applied, so claiming it was would
-        // make `--print-config` misleading. clap should reject these upstream
-        // once we tighten the type.
         let applied = match v.to_ascii_lowercase().as_str() {
             "extractive" => {
                 d.summarization.strategy = SummarizationStrategy::Extractive;
@@ -245,11 +232,6 @@ pub(crate) fn apply_documents_overrides(
         }
     }
     if let Some(v) = overrides.output_format.as_deref() {
-        // Unknown values skip just this field with a warning and DO NOT record
-        // provenance — mirroring the `summarization_strategy` block above. We must
-        // NOT `return` here: that would short-circuit `apply_llm_overrides` below
-        // and silently drop every llm.* override. clap should reject these upstream
-        // once we tighten the type.
         let applied = match v.to_ascii_lowercase().as_str() {
             "json" => {
                 d.output.format = OutputFormat::Json;
@@ -288,9 +270,6 @@ fn apply_llm_overrides(
         }
     }
     if let Some(v) = overrides.llm_api_key.clone() {
-        // Arrives as a literal (env value or `--llm-api-key` argument). Wrap as
-        // `ApiKey::Literal` so the boundary still routes through `resolve()` →
-        // `SecretString`; never log `v` here.
         llm.api_key = ApiKey::Literal(v);
         if let Some(p) = provenance.as_mut() {
             p.insert("llm.api_key", source);
@@ -348,10 +327,8 @@ mod tests {
         }
         apply_documents_overrides(&mut config, &overrides, ConfigSource::Cli, Some(&mut provenance));
 
-        // The llm override survived despite the invalid output_format.
         assert_eq!(config.llm.model, "gpt-test");
         assert_eq!(provenance.get("llm.model").copied(), Some(ConfigSource::Cli));
-        // The invalid output_format recorded no provenance (field was skipped).
         assert_eq!(
             provenance.get("documents.output.format").copied(),
             Some(ConfigSource::Default)

@@ -112,9 +112,6 @@ impl DocumentsConfig {
     fn default_max_chunks_per_document() -> usize {
         2000
     }
-    // embed_max_threads has no helper because its sentinel value is 0, which
-    // is the natural Default for usize. The resolution from 0 → auto happens
-    // at the use site via `crate::embeddings::resolve_embed_threads`.
 }
 
 impl Default for DocumentsConfig {
@@ -531,8 +528,6 @@ impl PartialEq for ApiKey {
 impl serde::Serialize for ApiKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            // Cleartext literals are NEVER emitted — only the redaction marker
-            // is written. See the type-level doc comment for rationale.
             Self::Literal(_) => serializer.serialize_str("<redacted>"),
             Self::Env { env } => {
                 use serde::ser::SerializeStruct;
@@ -627,7 +622,6 @@ mod tests {
     #[test]
     fn api_key_env_reads_environment() {
         // SAFETY: scoped to this single test; the env var name is uniquely
-        // namespaced so parallel tests can't observe each other.
         unsafe {
             std::env::set_var("BASEMIND_TEST_API_KEY_PRESENT", "value-123");
         }
@@ -644,7 +638,6 @@ mod tests {
     #[test]
     fn api_key_env_missing_resolves_to_none() {
         // SAFETY: the variable is removed before the test so the env lookup
-        // genuinely fails. Single-test scope avoids races.
         unsafe {
             std::env::remove_var("BASEMIND_TEST_API_KEY_MISSING");
         }
@@ -686,7 +679,6 @@ mod tests {
             env: "OPENAI_API_KEY".to_string(),
         };
         let json = serde_json::to_string(&key).expect("serialize");
-        // The env var NAME is not a secret; only its value would be.
         assert!(json.contains("OPENAI_API_KEY"), "env name missing: {json}");
         assert!(json.contains("\"env\""), "env field missing: {json}");
     }

@@ -33,7 +33,6 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
 
-    // Scan: chunks + embeds. Never fails on embedding trouble (chunk/embed errors are swallowed).
     let scan = Command::new(bin())
         .current_dir(root)
         .arg("scan")
@@ -45,7 +44,6 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         String::from_utf8_lossy(&scan.stderr)
     );
 
-    // search_code over the CLI mirror.
     let out = Command::new(bin())
         .current_dir(root)
         .args([
@@ -81,7 +79,6 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         return;
     }
 
-    // Every chunk in this fixture belongs to lib.rs — assert the top pointer points there.
     let top = &hits[0];
     assert_eq!(
         top.get("path").and_then(|p| p.as_str()),
@@ -97,7 +94,6 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
         "chunk_id is content-addressed `<hash>:<ordinal>`: {chunk_id}"
     );
 
-    // get_chunk fetches the body for that pointer.
     let gc = Command::new(bin())
         .current_dir(root)
         .args(["--json", "query", "get-chunk", "lib.rs", "--chunk-id", chunk_id])
@@ -131,7 +127,6 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
 
-    // First scan: generates .chunk.msgpack sidecar(s) alongside the L1/L2 blobs.
     let scan1 = Command::new(bin())
         .current_dir(root)
         .arg("scan")
@@ -143,9 +138,6 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
         String::from_utf8_lossy(&scan1.stderr)
     );
 
-    // Locate the chunk sidecar written by the first scan. If none exists (chunker disabled or
-    // an early fatal error), skip gracefully rather than failing — this test is only meaningful
-    // when chunking actually ran.
     let sidecar = find_chunk_sidecar(root);
     let Some(sidecar) = sidecar else {
         eprintln!(
@@ -160,16 +152,9 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
         sidecar.display()
     );
 
-    // Delete the sidecar WITHOUT modifying the source file. The content hash is therefore
-    // unchanged — a naive scanner would treat the file as `Unchanged` and skip chunking,
-    // leaving the sidecar absent and the code-search index empty.
     std::fs::remove_file(&sidecar).expect("remove sidecar");
     assert!(!sidecar.exists(), "sidecar must be gone after manual deletion");
 
-    // Second scan: the stale-sidecar guard must detect the missing sidecar and re-chunk,
-    // even though the file content hash is identical. Chunk writing is deterministic and does
-    // not depend on embedding model availability (the sidecar stores the textual chunks; the
-    // embedding is a separate step that may fail silently without affecting sidecar creation).
     let scan2 = Command::new(bin())
         .current_dir(root)
         .arg("scan")
@@ -181,8 +166,6 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
         String::from_utf8_lossy(&scan2.stderr)
     );
 
-    // The sidecar must have been regenerated. This is deterministic regardless of the
-    // embedding model — chunk-only writes happen before the optional embed step.
     assert!(
         sidecar.exists(),
         "re-scan must regenerate the .chunk.msgpack sidecar after it was deleted \
@@ -203,8 +186,6 @@ fn search_code_keyword_mode_ranks_by_bm25() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
-    // Force the embed-free path so chunking + BM25 postings are written deterministically without a
-    // model download — the keyword lane's documented `embed = false` guarantee.
     std::fs::create_dir_all(root.join(".basemind")).expect("mkdir .basemind");
     std::fs::write(
         root.join(".basemind/basemind.toml"),
@@ -250,7 +231,6 @@ fn search_code_keyword_mode_ranks_by_bm25() {
         Some("lib.rs"),
         "top keyword hit must point at the only indexed file: {top}"
     );
-    // The keyword lane reports a BM25 `score` (higher = better), not a vector `distance`.
     let score = top
         .get("score")
         .and_then(serde_json::Value::as_f64)
@@ -264,7 +244,6 @@ fn search_code_keyword_mode_ranks_by_bm25() {
         "keyword hit must not carry a vector distance: {top}"
     );
 
-    // The pointer round-trips through get-chunk exactly like the semantic lane.
     let chunk_id = top
         .get("chunk_id")
         .and_then(|c| c.as_str())
@@ -315,7 +294,6 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
         String::from_utf8_lossy(&scan.stderr)
     );
 
-    // No `--mode`: exercises the DEFAULT, which Phase 3 flips to hybrid.
     let out = Command::new(bin())
         .current_dir(root)
         .args(["--json", "query", "search-code", "parse_config"])
@@ -343,16 +321,12 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
         Some("parse_config"),
         "the exact symbol lane must float parse_config's defining chunk to rank #1: {top}"
     );
-    // Hybrid hits carry the fused RRF score, not a raw distance.
     assert!(
         top.get("score")
             .and_then(serde_json::Value::as_f64)
             .is_some_and(|s| s > 0.0),
         "hybrid hit must carry a positive fused RRF score: {top}"
     );
-    // Why-matched provenance: the top hit for an identifier query is produced by the exact lane,
-    // so `matched_lanes` includes "exact" and `exact_rank` is set (1-based). Keyword may also
-    // contribute; the vector lane is absent under embed=false.
     let lanes: Vec<&str> = top
         .get("matched_lanes")
         .and_then(|v| v.as_array())

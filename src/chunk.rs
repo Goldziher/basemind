@@ -152,7 +152,6 @@ fn doc_for_symbol(docs: &[DocComment], sym: &Symbol, source: &str) -> Option<Str
         if de > start {
             continue;
         }
-        // Only whitespace may separate the doc from the symbol.
         let gap = source.get(de..start).unwrap_or("");
         if !gap.chars().all(char::is_whitespace) {
             continue;
@@ -186,7 +185,6 @@ fn split_oversized(chunk: RawChunk, opts: ChunkOptions) -> Vec<RawChunk> {
     if char_count <= opts.max_characters || opts.max_characters == 0 {
         return vec![chunk];
     }
-    // Byte offset of each char boundary in the chunk text, plus the final length.
     let mut boundaries: Vec<usize> = chunk.text.char_indices().map(|(i, _)| i).collect();
     boundaries.push(chunk.text.len());
 
@@ -244,7 +242,6 @@ pub fn chunk_file(
     source: &[u8],
     opts: ChunkOptions,
 ) -> Vec<CodeChunk> {
-    // Source is validated UTF-8 by the scanner before chunking; bail to no chunks otherwise.
     let Ok(source) = std::str::from_utf8(source) else {
         return Vec::new();
     };
@@ -253,7 +250,6 @@ pub fn chunk_file(
 
     let mut raws: Vec<RawChunk> = Vec::new();
 
-    // 1. One chunk per symbol span (nested symbols each get their own chunk).
     let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(l1.symbols.len());
     for sym in &l1.symbols {
         let s = sym.start_byte as usize;
@@ -277,7 +273,6 @@ pub fn chunk_file(
         });
     }
 
-    // 2. Gap chunks over the complement of the union of symbol spans.
     let merged = merge_intervals(intervals);
     let mut prev_end = 0usize;
     let push_gap = |gs: usize, ge: usize, raws: &mut Vec<RawChunk>| {
@@ -285,7 +280,6 @@ pub fn chunk_file(
             return;
         }
         let raw = source.get(gs..ge).unwrap_or("");
-        // Tighten to the non-whitespace bounds so a gap of blank lines contributes nothing.
         let leading = raw.len() - raw.trim_start().len();
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -309,13 +303,11 @@ pub fn chunk_file(
     }
     push_gap(prev_end, len, &mut raws);
 
-    // 3. Split oversized chunks.
     let mut split: Vec<RawChunk> = Vec::with_capacity(raws.len());
     for raw in raws {
         split.extend(split_oversized(raw, opts));
     }
 
-    // 4. Finalize: sort by byte order, assign ordinals + content-addressed ids + lines.
     split.sort_by(|a, b| a.byte_start.cmp(&b.byte_start).then(a.byte_end.cmp(&b.byte_end)));
     let newlines: Vec<usize> = memchr::memchr_iter(b'\n', source.as_bytes()).collect();
     split
@@ -413,7 +405,6 @@ mod tests {
 
     #[test]
     fn should_emit_gap_chunk_for_module_level_code() {
-        // Module-level statement before any symbol.
         let source = "use std::io;\nstatic X: u32 = 1;\nfn f() {\n    0\n}\n";
         let f_start = source.find("fn f").unwrap() as u32;
         let f_end = source.rfind('}').unwrap() as u32 + 1;
@@ -464,7 +455,6 @@ mod tests {
 
     #[test]
     fn should_split_oversized_symbol_with_overlap() {
-        // Build a symbol whose body is 500 chars; cap at 100, overlap 20.
         let body = "x".repeat(500);
         let source = format!("fn big() {{{body}}}");
         let l1 = l1_with(
@@ -481,7 +471,6 @@ mod tests {
             "oversized chunk split into multiple pieces: {}",
             chunks.len()
         );
-        // Each piece is at most max_characters chars.
         for c in &chunks {
             assert!(
                 c.text.chars().count() <= 100,
@@ -489,7 +478,6 @@ mod tests {
                 c.text.chars().count()
             );
         }
-        // Ordinals are contiguous and content-addressed.
         assert_eq!(chunks[0].chunk_id, "abcd:0");
         assert_eq!(chunks[1].chunk_id, "abcd:1");
     }
@@ -547,8 +535,6 @@ mod tests {
             decoded.embedding_model, "",
             "missing field defaults to empty model (a cache miss under any named preset)"
         );
-        // The reuse predicate that `scanner_code` applies: same dim + same model is a hit; an empty
-        // model (or a different one) at the same dim is a miss.
         assert_ne!(
             decoded.embedding_model, "balanced",
             "empty model must not match a named preset — forces re-embed"

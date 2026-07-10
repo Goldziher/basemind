@@ -85,8 +85,6 @@ impl RelPath {
     /// Windows-best-effort until we tighten the byte-form constructors.
     pub fn as_os_str(&self) -> &OsStr {
         // SAFETY: see the doc comment above. `from_encoded_bytes_unchecked` accepts either
-        // `as_encoded_bytes` output or valid UTF-8 — both held for typical construction
-        // sites (scanner via `as_encoded_bytes`, MCP layer via `&str`).
         unsafe { OsStr::from_encoded_bytes_unchecked(self.0.as_slice()) }
     }
 
@@ -111,15 +109,12 @@ impl AsRef<Path> for RelPath {
 
 impl fmt::Debug for RelPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // BString's Debug already escapes invalid bytes as \xNN, which is what we want.
         write!(f, "RelPath({:?})", self.0)
     }
 }
 
 impl fmt::Display for RelPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Use `ByteSlice::to_str_lossy` so invalid bytes become U+FFFD — readable for
-        // humans, distinct from the discriminated `{"bytes": ...}` serde form.
         write!(f, "{}", self.0.as_slice().to_str_lossy())
     }
 }
@@ -213,17 +208,10 @@ impl std::borrow::Borrow<BStr> for RelPath {
 pub(crate) fn normalize_query_path(user_path: &str, repo_root: &std::path::Path) -> Option<String> {
     let path = std::path::Path::new(user_path);
 
-    // For absolute inputs, re-root against `repo_root` first. We compare on the
-    // logical (non-canonicalized) prefix so the helper stays pure and testable
-    // without touching the filesystem.
     if path.is_absolute() {
         if let Ok(inside) = path.strip_prefix(repo_root) {
             return normalize_relative_components(inside);
         }
-        // Outside the repo: this is how `scan.extra_roots` files are keyed — by their
-        // absolute path (see `RelPath::is_external`). Preserve the leading `/` so the key
-        // matches what the scanner emitted. Lexical only (no filesystem canonicalization);
-        // a non-canonical input simply misses on lookup.
         return normalize_absolute_components(path);
     }
     normalize_relative_components(path)
@@ -239,16 +227,11 @@ fn normalize_relative_components(relative: &std::path::Path) -> Option<String> {
         match component {
             Component::CurDir => {}
             Component::Normal(os) => {
-                // CLI paths are UTF-8; bail to None on the rare non-UTF-8 component
-                // rather than corrupting the key.
                 parts.push(os.to_str()?);
             }
             Component::ParentDir => {
-                // Popping past the root escapes the repo — reject (`?` yields None).
                 parts.pop()?;
             }
-            // An absolute remainder or a Windows prefix after stripping means the
-            // path is not a clean repo-relative key.
             Component::RootDir | Component::Prefix(_) => return None,
         }
     }
@@ -265,10 +248,6 @@ fn normalize_relative_components(relative: &std::path::Path) -> Option<String> {
 fn normalize_absolute_components(path: &std::path::Path) -> Option<String> {
     use std::path::Component;
 
-    // Windows absolute paths carry a drive/UNC `Prefix` component (never emitted on Unix). Keep it
-    // as the leading key segment so the external key is the file's absolute path in forward-slash
-    // form (`C:/…`) — the same shape the scanner stores, so `root.join(key)` round-trips back to the
-    // real path. On Unix (no prefix) the key stays a leading-`/` path, byte-identical to before.
     let mut prefix: Option<&str> = None;
     let mut parts: Vec<&str> = Vec::new();
     for component in path.components() {
@@ -304,8 +283,6 @@ pub(crate) fn is_external_key(key: &[u8]) -> bool {
         _ => false,
     }
 }
-
-// ─── serde — discriminated wire format ──────────────────────────────────────
 
 impl Serialize for RelPath {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
@@ -359,15 +336,11 @@ impl<'de> Deserialize<'de> for RelPath {
     }
 }
 
-// ─── schemars — used by rmcp request-param schema generation ─────────────────
-
 impl rmcp::schemars::JsonSchema for RelPath {
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "RelPath".into()
     }
     fn json_schema(_: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
-        // Accept either a plain string (common case) or the discriminated
-        // `{"bytes": [u8...]}` object that `Serialize` falls back to for non-UTF-8 bytes.
         rmcp::schemars::json_schema!({
             "oneOf": [
                 { "type": "string" },
@@ -401,12 +374,10 @@ mod tests {
 
     #[test]
     fn non_utf8_uses_discriminated_object() {
-        // 0xff is invalid as a UTF-8 lead byte.
         let bytes: Vec<u8> = vec![b'f', 0xff, b'o', b'o', b'.', b'r', b's'];
         let p = RelPath::from(bytes.as_slice());
         assert!(!p.is_utf8());
         let json = serde_json::to_string(&p).unwrap();
-        // Comes out as the `{"bytes": [...]}` form.
         assert!(json.starts_with("{\"bytes\":"), "got {json}");
         let back: RelPath = serde_json::from_str(&json).unwrap();
         assert_eq!(p.as_bytes(), back.as_bytes());
@@ -430,15 +401,11 @@ mod tests {
     fn display_renders_lossy_for_invalid_utf8() {
         let bad = RelPath::from([b'a', 0xff, b'b'].as_slice());
         let s = format!("{bad}");
-        // U+FFFD takes 3 bytes in UTF-8.
         assert!(s.contains('\u{FFFD}'), "got {s:?}");
     }
 
     #[test]
     fn normalize_absolute_inside_repo_becomes_relative() {
-        // Build a platform-absolute root + input so the `is_absolute()` re-rooting branch is
-        // exercised on Windows too — a Unix-style "/abs/repo" is not absolute there, which
-        // sent the input down the relative path and yielded None on the Windows CI runner.
         let root = std::path::Path::new(if cfg!(windows) { r"C:\abs\repo" } else { "/abs/repo" });
         let input = root.join("src").join("foo.rs");
         assert_eq!(
@@ -464,10 +431,6 @@ mod tests {
 
     #[test]
     fn normalize_absolute_outside_repo_passes_through_as_external_key() {
-        // An absolute path outside the repo is an `scan.extra_roots` file — keyed by its
-        // absolute path (forward-slash form) so the CLI can query it verbatim: a leading `/`
-        // on POSIX, a drive prefix (`C:/…`) on Windows. Lexical `..` is resolved; a bare
-        // root has no file key.
         #[cfg(unix)]
         {
             let root = std::path::Path::new("/abs/repo");
@@ -501,7 +464,6 @@ mod tests {
         assert!(RelPath::from("/abs/ext/foo.rs").is_external());
         assert!(!RelPath::from("src/foo.rs").is_external());
         assert!(!RelPath::from("").is_external());
-        // A Windows drive-prefixed key is external too (drive detection is Windows-gated).
         #[cfg(windows)]
         assert!(RelPath::from("C:/ext/foo.rs").is_external());
     }

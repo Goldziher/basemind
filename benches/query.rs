@@ -72,7 +72,6 @@ fn bench_query(c: &mut Criterion) {
     });
 
     group.finish();
-    // `_dir` is held to the end of the fn so the on-disk blobs outlive every bench.
     drop(_dir);
 }
 

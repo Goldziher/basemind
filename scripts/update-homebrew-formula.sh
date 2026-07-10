@@ -2,15 +2,7 @@
 set -euo pipefail
 
 # update-homebrew-formula.sh <version> <checksums-file>
-#
-# Emits a Homebrew formula (to stdout) for the PREBUILT basemind binary, pulling
-# the per-platform archive URLs from the GitHub release and the sha256 digests
 # from the release checksums file (`basemind_<version>_checksums.txt`). This
-# replaces goreleaser's `brews:` generator. Run only for stable releases.
-#
-# The archives contain `basemind` + `lib/` at the root; the binary's rpath
-# ($ORIGIN/lib on Linux, @loader_path/lib on macOS) resolves the bundled native
-# libs, so the formula just drops everything into libexec and symlinks the binary.
 
 if [ $# -ne 2 ]; then
 	echo "Usage: $0 <version> <checksums-file>" >&2

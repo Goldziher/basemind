@@ -151,8 +151,6 @@ fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: S
         TerminalChoice::Iterm2 => true,
         TerminalChoice::TerminalApp => false,
         TerminalChoice::Auto => detected_macos_is_iterm(),
-        // Cross-platform emulators: honour them if the user forced one, else they have their own
-        // CLIs; for macOS we fall back to Terminal.app driving when we cannot.
         _ => false,
     };
     let script = if use_iterm {
@@ -230,8 +228,6 @@ fn applescript_quote(value: &str) -> String {
             '\n' => escaped.push_str("\\n"),
             '\r' => escaped.push_str("\\r"),
             '\t' => escaped.push_str("\\t"),
-            // Any other control char (including NUL) is dropped to a space so it
-            // cannot terminate the literal or smuggle a newline-delimited command.
             c if (c as u32) < 0x20 => escaped.push(' '),
             c => escaped.push(c),
         }
@@ -242,10 +238,6 @@ fn applescript_quote(value: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: Surface) -> Option<PresentCommand> {
-    // The only Windows terminal the launcher drives is Windows Terminal (`wt.exe`). Honour an
-    // explicit `WindowsTerminal` choice and treat `Auto` the same (it is the platform default on
-    // Windows 11). Any non-Windows emulator choice is meaningless here, so fall through to the
-    // attach-command hand-back rather than spawning the wrong terminal.
     match terminal {
         TerminalChoice::WindowsTerminal | TerminalChoice::Auto => {}
         _ => return None,
@@ -262,9 +254,7 @@ fn build_for_surface(terminal: TerminalChoice, target: &AttachTarget, surface: S
 #[cfg(target_os = "windows")]
 fn windows_terminal_command(target: &AttachTarget, surface: Surface) -> PresentCommand {
     let window = match surface {
-        // `-w 0` reuses the current Windows Terminal window; a new tab is added there.
         Surface::Tab => "0",
-        // `-w new` always spins up a fresh window.
         Surface::Window => "new",
     };
     let mut args = vec![
@@ -310,7 +300,6 @@ fn resolve_linux_emulator(terminal: TerminalChoice) -> LinuxEmulator {
         TerminalChoice::Alacritty => LinuxEmulator::Alacritty,
         TerminalChoice::Kitty => LinuxEmulator::Kitty,
         TerminalChoice::Xterm => LinuxEmulator::Xterm,
-        // macOS / Windows choices are meaningless on Linux; treat as Auto.
         TerminalChoice::Auto
         | TerminalChoice::Iterm2
         | TerminalChoice::TerminalApp
@@ -390,7 +379,6 @@ fn linux_command(emulator: LinuxEmulator, attach: &str, surface: Surface) -> Pre
             }
         }
         LinuxEmulator::Wezterm => {
-            // `wezterm cli spawn` opens a new tab in the running GUI; a fresh window uses `start`.
             let args = if want_tab {
                 vec![
                     "cli".to_string(),
@@ -415,7 +403,6 @@ fn linux_command(emulator: LinuxEmulator, attach: &str, surface: Surface) -> Pre
             }
         }
         LinuxEmulator::Kitty => {
-            // kitty drives tabs via remote control; fall back to a new OS window otherwise.
             let args = if want_tab {
                 vec![
                     "@".to_string(),
@@ -433,7 +420,6 @@ fn linux_command(emulator: LinuxEmulator, attach: &str, surface: Surface) -> Pre
                 args,
             }
         }
-        // Alacritty and xterm have no tab model — always a new window.
         LinuxEmulator::Alacritty => PresentCommand {
             program: "alacritty".to_string(),
             args: vec![
@@ -443,7 +429,6 @@ fn linux_command(emulator: LinuxEmulator, attach: &str, surface: Surface) -> Pre
                 attach.to_string(),
             ],
         },
-        // xterm has no tab model — always a new window running the attach directly.
         LinuxEmulator::Xterm => PresentCommand {
             program: "xterm".to_string(),
             args: vec![
@@ -465,7 +450,6 @@ pub fn present(mode: VisualMode, terminal: TerminalChoice, target: &AttachTarget
         return Ok(Presentation::Headless);
     }
     let Some(command) = build_present_command(mode, terminal, target) else {
-        // Web (or any mode that yields no command) hands the attach string back to the caller.
         return Ok(Presentation::AttachCommand(target.attach_command()));
     };
     std::process::Command::new(&command.program)
@@ -485,7 +469,6 @@ mod tests {
             socket_path: PathBuf::from("/tmp/rmux.sock"),
             cols: 200,
             rows: 50,
-            // Pinned to a fixed path so the asserted attach string is deterministic.
             exe: PathBuf::from("/usr/local/bin/basemind"),
         }
     }
@@ -544,8 +527,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn applescript_quote_neutralizes_control_chars() {
-        // A newline must become the `\n` escape, not a raw line break that would
-        // start a second AppleScript statement; a NUL collapses to a space.
         let quoted = applescript_quote("attach\nrm -rf /\0");
         assert!(quoted.starts_with('"') && quoted.ends_with('"'), "{quoted}");
         assert!(quoted.contains("\\n"), "newline must be escaped: {quoted}");
@@ -590,7 +571,6 @@ mod tests {
         let cmd = build_present_command(VisualMode::Current, TerminalChoice::WindowsTerminal, &target())
             .expect("wt.exe command");
         assert_eq!(cmd.program, "wt.exe");
-        // `-w 0 new-tab --` then the attach argv, each a separate process argument.
         assert_eq!(cmd.args[0], "-w");
         assert_eq!(cmd.args[1], "0");
         assert_eq!(cmd.args[2], "new-tab");
@@ -618,8 +598,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_auto_uses_wt() {
-        // `Auto` is Windows Terminal on Windows; a non-Windows emulator choice hands the
-        // attach command back instead of spawning the wrong terminal.
         let cmd = build_present_command(VisualMode::Current, TerminalChoice::Auto, &target()).expect("auto -> wt.exe");
         assert_eq!(cmd.program, "wt.exe");
         assert!(build_present_command(VisualMode::Current, TerminalChoice::Xterm, &target()).is_none());
@@ -628,8 +606,6 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_attach_command_uses_double_quotes() {
-        // On Windows the human-facing attach string must double-quote (cmd/wt ignore single
-        // quotes); the raw argv the launcher actually spawns is unquoted.
         let cmd = target().attach_command();
         assert!(cmd.contains("\"/usr/local/bin/basemind\""), "{cmd}");
         assert!(cmd.contains("\"bmsh-1-2\""), "{cmd}");
@@ -677,7 +653,6 @@ mod tests {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     #[test]
     fn linux_alacritty_falls_back_to_window_for_tab() {
-        // Alacritty has no tab model — both surfaces yield the same new-window argv.
         let cmd = build_present_command(VisualMode::Current, TerminalChoice::Alacritty, &target()).expect("command");
         assert_eq!(cmd.program, "alacritty");
         assert_eq!(cmd.args[0], "-e");

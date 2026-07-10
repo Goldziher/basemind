@@ -88,19 +88,15 @@ pub fn source_type_for_path(path: &Path) -> Option<SourceType> {
 pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
-    // `with_build_nodes` is required so we can map a reference's NodeId back to a span below.
     let semantic_ret = SemanticBuilder::new().with_build_nodes(true).build(&parsed.program);
     let semantic = semantic_ret.semantic;
     let scoping = semantic.scoping();
     let nodes = semantic.nodes();
 
-    // Resolved references: for each symbol, its definition span + every use oxc resolved to it.
     let mut resolved = Vec::new();
     for symbol_id in scoping.symbol_ids() {
         let def_span = scoping.symbol_span(symbol_id);
         for reference in scoping.get_resolved_references(symbol_id) {
-            // A resolved reference's NodeId points at its `IdentifierReference` node, so this
-            // span is the use-site identifier token.
             let use_span = nodes.kind(reference.node_id()).span();
             resolved.push(ResolvedRef {
                 def_start: def_span.start,
@@ -111,9 +107,6 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         }
     }
 
-    // Import edges from the module record. Namespace imports are dropped (see below) — they bind a
-    // whole-module object with no single export site, so folding them into `default` would emit a
-    // spurious cross-file edge.
     let imports = parsed
         .module_record
         .import_entries
@@ -134,7 +127,6 @@ pub fn analyze(source: &str, source_type: SourceType) -> JsAnalysis {
         })
         .collect();
 
-    // Export edges (best-effort — named exports; default/star handled in the cross-file slice).
     let exports = parsed
         .module_record
         .local_export_entries
@@ -166,7 +158,6 @@ mod tests {
 
     #[test]
     fn resolves_call_to_its_definition() {
-        // `greet(...)` and the `name` return both resolve to their in-file definitions.
         let src = "function greet(name) {\n  return name;\n}\ngreet(\"hi\");\n";
         let a = ts(src);
         assert!(!a.had_errors);
@@ -185,7 +176,6 @@ mod tests {
 
     #[test]
     fn shadowing_resolves_to_inner_binding() {
-        // The `x` returned inside `f` must resolve to the INNER const, not the module-level one.
         let src = "const x = 1;\nfunction f() {\n  const x = 2;\n  return x;\n}\n";
         let a = ts(src);
         let outer_x = src.find("const x = 1").unwrap() + "const ".len();
@@ -241,8 +231,6 @@ mod tests {
 
     #[test]
     fn free_identifier_is_not_resolved() {
-        // `fetch` is a global — oxc leaves it unresolved (no in-file symbol), so it never appears
-        // as a resolved reference. This is the cross-file-candidate signal.
         let src = "function f() {\n  return fetch('/x');\n}\n";
         let a = ts(src);
         let fetch_use = src.find("fetch(").unwrap() as u32;

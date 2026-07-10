@@ -33,7 +33,7 @@ fn scanned_repo() -> tempfile::TempDir {
         basemind::scanner::EmbedMode::Inline,
     )
     .expect("initial scan");
-    drop(store); // release the scan lock
+    drop(store);
     dir
 }
 
@@ -47,7 +47,6 @@ fn second_writer_fails_fast_without_spinning() {
     let result = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve);
     let elapsed = started.elapsed();
 
-    // `Store` is not `Debug`, so unwrap the error arm by hand rather than via `expect_err`.
     let error = match result {
         Ok(_) => panic!("a second writer must not acquire the held lock"),
         Err(error) => error,
@@ -56,8 +55,6 @@ fn second_writer_fails_fast_without_spinning() {
         error.is_lock_contention(),
         "expected a lock-contention error, got: {error}"
     );
-    // `acquire_lock_as` budgets 25 × 20 ms = 500 ms then errors. Allow generous slack but assert it
-    // stays bounded — a busy-spin (issue #26) would blow far past this or never return.
     assert!(
         elapsed < Duration::from_secs(5),
         "second writer took {elapsed:?} — not failing fast (possible busy-spin regression)"
@@ -70,9 +67,6 @@ fn read_only_serve_coexists_with_live_writer() {
     let root = dir.path();
     let _writer = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");
 
-    // The read-only fallback takes no write lock and opens alongside the live writer — the same
-    // concurrent-reader path the CLI `query` uses. This is what a contending serve does instead of
-    // dying with `-32000`.
     let reader = Store::open_read_only(root, VIEW_WORKING).expect("read-only open alongside live writer");
     let hits = basemind::query::search_symbols(&reader, "alpha", None).expect("search");
     assert_eq!(
@@ -85,10 +79,6 @@ fn read_only_serve_coexists_with_live_writer() {
 
 #[test]
 fn cli_scan_exits_cleanly_when_a_writer_holds_the_lock() {
-    // Double-run UX (report): an editor plugin's `basemind serve` holds the write lock while the
-    // user (or another plugin command) runs `basemind scan` directly. The pre-flight probe must
-    // detect the live holder, print actionable guidance naming it, and exit 0 — never collide with
-    // a raw lock error or busy-wait.
     let dir = scanned_repo();
     let root = dir.path();
     let _writer = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Serve).expect("writer holds lock");

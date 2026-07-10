@@ -51,15 +51,6 @@ pub fn normalize_remote_url(url: &str) -> String {
     {
         s = s[at + 1..].to_string();
     }
-    // Strip an explicit `:<port>` segment in the host position before the scp-form colon
-    // rewrite. Without this, `ssh://git@github.com:22/Foo/bar` (port form) rewrites to
-    // `github.com/22/Foo/bar`, diverging from the https form's `github.com/Foo/bar` and
-    // splitting the memory scope across ssh+port vs https clones of the same repo.
-    //
-    // Bracketed IPv6 hosts (`[2001:db8::1]:22/path`) must be left alone — the colons inside
-    // `[...]` are part of the address, not port delimiters. Detect and skip them entirely so
-    // `ssh://git@[2001:db8::1]:22/Foo/bar` collapses to `[2001:db8::1]/Foo/bar` rather than
-    // being corrupted by the port-strip or scp-colon logic.
     if !s.starts_with('[') {
         if let Some(colon) = s.find(':')
             && !s[..colon].contains('/')
@@ -67,20 +58,16 @@ pub fn normalize_remote_url(url: &str) -> String {
             let after = &s[colon + 1..];
             let port_len = after.bytes().take_while(u8::is_ascii_digit).count();
             if port_len > 0 && after[port_len..].starts_with('/') {
-                // `host:22/path` → `host/path`: drop the colon and the digit run, keep the slash.
                 s.replace_range(colon..colon + 1 + port_len, "");
             } else {
-                // scp form `host:path` → `host/path`: turn the single colon into a slash.
                 s.replace_range(colon..=colon, "/");
             }
         }
     } else if let Some(bracket_end) = s.find(']') {
-        // Bracketed IPv6: strip the optional `:<port>` immediately after the closing `]`.
         let after_bracket = &s[bracket_end + 1..];
         if let Some(port_str) = after_bracket.strip_prefix(':') {
             let port_len = port_str.bytes().take_while(u8::is_ascii_digit).count();
             if port_len > 0 && port_str[port_len..].starts_with('/') {
-                // `[::1]:22/path` → `[::1]/path`
                 let colon_pos = bracket_end + 1;
                 s.replace_range(colon_pos..colon_pos + 1 + port_len, "");
             }
@@ -125,7 +112,6 @@ mod tests {
         assert_eq!(normalize_remote_url("ssh://git@github.com:22/Foo/bar"), expected);
         assert_eq!(normalize_remote_url("git@github.com:Foo/bar"), expected);
         assert_eq!(normalize_remote_url("https://github.com/Foo/bar"), expected);
-        // `.git` suffix + ssh port should still collapse identically.
         assert_eq!(normalize_remote_url("ssh://git@github.com:22/Foo/bar.git"), expected);
     }
 
@@ -141,20 +127,14 @@ mod tests {
 
     #[test]
     fn bracketed_ipv6_host_normalizes_correctly() {
-        // `ssh://git@[2001:db8::1]:22/Foo/bar` — the colons inside `[...]` are part of the
-        // IPv6 address and must not be treated as port delimiters or scp-form separators.
-        // The host portion is lowercased (no effect for hex-digit IPv6 addresses); the path
-        // component is preserved case-sensitively, consistent with the non-IPv6 behavior.
         assert_eq!(
             normalize_remote_url("ssh://git@[2001:db8::1]:22/Foo/bar"),
             "[2001:db8::1]/Foo/bar"
         );
-        // Without port: brackets but no port suffix.
         assert_eq!(
             normalize_remote_url("ssh://git@[2001:db8::1]/Foo/bar"),
             "[2001:db8::1]/Foo/bar"
         );
-        // With .git suffix.
         assert_eq!(
             normalize_remote_url("ssh://git@[2001:db8::1]:2222/Foo/bar.git"),
             "[2001:db8::1]/Foo/bar"

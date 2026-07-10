@@ -60,7 +60,6 @@ fn build_synthetic() -> Harness {
 
     let stride = COMMITS / RARE_FILES.max(1);
     for i in 0..COMMITS {
-        // Monotonically increasing dates so the rev-walk's newest-first order is deterministic.
         let date = format!("2020-01-01T00:{:02}:{:02}", (i / 60) % 60, i % 60);
         std::fs::write(root.join("hot.rs"), format!("fn hot() {{ /* rev {i} */ }}\n")).unwrap();
         git(root, &["add", "hot.rs"], &date);
@@ -97,7 +96,6 @@ fn open_real(repo_root: &str) -> Option<Harness> {
     }
     let repo = Repo::discover(root).ok()?;
     let index = GitHistoryIndex::open(&bdir).ok()?;
-    // Pick the most-changed file in the newest window as "hot" and a single-touch file as "rare".
     let window = index.window_commits(2000);
     let mut counts: ahash::AHashMap<RelPath, usize> = ahash::AHashMap::new();
     for commit in &window {
@@ -131,14 +129,12 @@ fn bench_git_history(c: &mut Criterion) {
     let h = harness();
 
     let mut group = c.benchmark_group("commits_touching");
-    // Hot path: long posting list — exercises tail-decode + per-commit meta reads.
     group.bench_function("indexed_hot", |b| {
         b.iter(|| black_box(h.index.commits_touching(black_box(&h.hot_path), 0, 50)))
     });
     group.bench_function("livewalk_hot", |b| {
         b.iter(|| black_box(h.repo.log_for_path(black_box(&h.hot_path), 50).unwrap()))
     });
-    // Rare path: short posting list, but the live walk still scans the whole history to find it.
     group.bench_function("indexed_rare", |b| {
         b.iter(|| black_box(h.index.commits_touching(black_box(&h.rare_path), 0, 50)))
     });
@@ -156,7 +152,6 @@ fn bench_git_history(c: &mut Criterion) {
     });
     group.finish();
 
-    // `hot_files` / `find_commits_by_path` input: a whole window decoded with files resolved.
     let mut group = c.benchmark_group("window_commits");
     group.bench_function("indexed_300", |b| b.iter(|| black_box(h.index.window_commits(300))));
     group.finish();

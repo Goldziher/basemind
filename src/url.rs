@@ -76,8 +76,6 @@ fn is_private_v4(v4: Ipv4Addr) -> bool {
 }
 
 fn is_private_v6(v6: Ipv6Addr) -> bool {
-    // `Ipv6Addr::is_unique_local` / `is_unicast_link_local` are stable since
-    // Rust 1.84; both fall under our denylist (fc00::/7 and fe80::/10).
     v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local() || v6.is_unicast_link_local()
 }
 
@@ -114,8 +112,6 @@ impl Url {
         if !ALLOWED_SCHEMES.contains(&scheme) {
             return Err(UrlError::DisallowedScheme(scheme.to_string()));
         }
-        // SSRF guard: refuse private / loopback / link-local hosts unless the
-        // operator explicitly opted in via `BASEMIND_ALLOW_PRIVATE_HOSTS=1`.
         reject_private_host(parsed.host())?;
         Ok(Self(parsed))
     }
@@ -266,14 +262,6 @@ mod tests {
         assert_eq!(u.host_str(), Some("docs.rs"));
     }
 
-    // ── SSRF host denylist ──────────────────────────────────────────────────
-    //
-    // These tests mutate a process-global env var. `ENV_LOCK` serializes them so
-    // the default-vs-override cases never observe each other's state. It is the
-    // crate-wide lock (`super::PRIVATE_HOSTS_ENV_LOCK`) — shared with the
-    // `web::ingest` and `mcp::helpers_web` test modules that toggle the same env
-    // var — so no cross-module race is possible. `lock()` recovers from poison so
-    // one panicking test does not cascade into spurious failures.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         super::PRIVATE_HOSTS_ENV_LOCK
             .lock()
@@ -302,8 +290,6 @@ mod tests {
     fn rejects_trailing_dot_localhost() {
         let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
-        // The absolute (FQDN) form `localhost.` must be caught — a single
-        // trailing dot is stripped before the name check.
         assert!(matches!(
             Url::parse("http://localhost./"),
             Err(UrlError::PrivateHost(_))
@@ -363,7 +349,6 @@ mod tests {
     fn rejects_ipv4_mapped_loopback() {
         let _g = env_lock();
         unsafe { std::env::remove_var(super::ALLOW_PRIVATE_HOSTS_ENV) };
-        // ::ffff:127.0.0.1 must not bypass the IPv4 loopback classifier.
         assert!(matches!(
             Url::parse("http://[::ffff:127.0.0.1]/"),
             Err(UrlError::PrivateHost(_))

@@ -1,5 +1,3 @@
-// Prototype: rustdoc lives in the code itself and in README.md rather than per-symbol docstrings.
-// Flip this off once the public API is frozen.
 #![allow(missing_docs)]
 
 #[cfg(feature = "code-search")]

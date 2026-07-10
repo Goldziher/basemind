@@ -80,80 +80,35 @@ const WEB_INGEST_MULTIPLIER: u64 = 3;
 pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> SavingsRow {
     let actual = tokens_for_text(resp_text);
     let (baseline, baseline_name) = match tool {
-        // Outline replaces a full Read of the file. We don't know which file
-        // without re-deserialising params, so use the response bytes as a
-        // floor — the underlying file is typically 3–10× the outline summary.
         "outline" => (actual.saturating_mul(5), "full_file_read"),
 
-        // Symbol-name search would otherwise be `grep -r <needle>` followed by
-        // reading the top hits. The grep emits the matching lines (≈ our response
-        // payload) and the agent reads a few top files to confirm — modelled as
-        // the response times GREP_READ_MULTIPLIER, independent of corpus size.
         "search_symbols" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_plus_read_top_hits"),
 
-        // Reference / caller lookups: same grep-output-plus-confirm model as
-        // search_symbols. `find_references` already returns the call sites inline,
-        // so the payload is the grep output and the multiplier covers reading a
-        // few sites to confirm. Corpus-independent.
         "find_references" | "find_callers" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
-        // Implementation lookups: alternative is `rg 'impl.*Trait'` / `grep class.*extends`
-        // plus manual filtering across languages. Same grep-output-plus-confirm model —
-        // the response is the filtered result, the multiplier covers confirming a few hits.
         "find_implementations" => (actual.saturating_mul(GREP_READ_MULTIPLIER), "grep_top_hits"),
 
-        // Dependents = grep imports across the corpus. Imports are sparse and the
-        // result needs less follow-up reading than a name search, so it uses the
-        // smaller DEPENDENTS_READ_MULTIPLIER. Corpus-independent.
         "dependents" => (
             actual.saturating_mul(DEPENDENTS_READ_MULTIPLIER),
             "grep_imports_top_hits",
         ),
 
-        // Hot files: the agent would otherwise iterate `git log` per file,
-        // which is many round-trips. Model conservatively: 100 commits × 200
-        // bytes each per file in the result.
         "hot_files" => (actual.saturating_mul(3), "git_log_per_file"),
 
-        // symbol_history: avoiding many `git blame` + tree-sitter diffs. Same
-        // order of magnitude as outline savings.
         "symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
 
-        // workspace_grep: alternative is shelling out to `rg`/`grep`. The agent
-        // would spend tokens reading grep output from stdout; the MCP response is
-        // comparable in size, so no honest savings number. Record but don't claim.
         "workspace_grep" => (actual, "no_baseline"),
 
-        // call_graph: alternative is many manual `find_references` / `find_callers`
-        // calls plus building the DAG in the agent's head. There's no clean grep
-        // baseline — substring-grepping for a callee leaves the "who calls *that*"
-        // step to the agent. Record the call, claim zero savings.
         "call_graph" => (actual, "no_baseline"),
 
-        // architecture_map: the alternative is many manual find_references / call_graph
-        // calls plus building the dependency picture by hand. No clean grep baseline —
-        // record the call, claim zero savings.
         "architecture_map" => (actual, "no_baseline"),
 
-        // search_documents: the agent's alternative is reading whole documents
-        // to locate the relevant passages. The response is just the matching
-        // chunks, so model the saving like outline (~5× the snippet).
         "search_documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
-        // list_files: alternative is `find` / `ls -R` then reading the listing
-        // the agent filters by hand. basemind returns the filtered set, so a
-        // modest 2× over the response covers the extra listing read.
         "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
-        // Web ingestion: alternative is the agent browsing the page(s) and
-        // pasting raw page text into context. The extracted response is a
-        // fraction of that — model conservatively at 3× the payload.
         "web_scrape" | "web_crawl" | "web_map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
-        // Tools where basemind is the only practical path — no honest grep+read
-        // baseline. Record the call but don't claim savings. The git tools have
-        // no clean grep/read alternative (you'd shell out to git anyway), and
-        // memory / cache / status are basemind-internal state with no analogue.
         "memory_get"
         | "memory_put"
         | "memory_list"
@@ -175,8 +130,6 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         | "blame_file"
         | "blame_symbol" => (actual, "no_baseline"),
 
-        // Unknown tool name (e.g. an upstream addition we haven't classified
-        // yet) — be conservative.
         _ => (actual, "unclassified"),
     };
 
@@ -203,7 +156,6 @@ mod tests {
 
     #[test]
     fn outline_baseline_is_5x_response() {
-        // 400-byte text → 100 actual tokens under the heuristic tier; baseline = 5×.
         let s = estimate_from_text("outline", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.baseline, "full_file_read");
@@ -217,7 +169,6 @@ mod tests {
 
     #[test]
     fn search_symbols_savings_independent_of_corpus() {
-        // Same response payload, wildly different corpus sizes → identical savings.
         let text = "a".repeat(400);
         let big = estimate_from_text("search_symbols", 1_000_000, &text);
         let empty = estimate_from_text("search_symbols", 0, &text);
@@ -225,7 +176,6 @@ mod tests {
         assert_grep_model(&big, "grep_plus_read_top_hits");
         #[cfg(not(feature = "documents"))]
         {
-            // 400 bytes → 100 actual tokens; baseline = 100 * 3 = 300; saved = 200.
             assert_eq!(big.actual_tokens, 100);
             assert_eq!(big.baseline_tokens, 300);
             assert_eq!(big.est_tokens_saved, 200);
@@ -234,12 +184,10 @@ mod tests {
 
     #[test]
     fn find_references_grep_baseline_floors_at_zero_for_empty_corpus() {
-        // Corpus is now irrelevant; savings derive from the response payload.
         let s = estimate_from_text("find_references", 0, &"a".repeat(200));
         assert_grep_model(&s, "grep_top_hits");
         #[cfg(not(feature = "documents"))]
         {
-            // 200 bytes → 50 actual; baseline = 50 * 3 = 150; saved = 100.
             assert_eq!(s.actual_tokens, 50);
             assert_eq!(s.baseline_tokens, 150);
             assert_eq!(s.est_tokens_saved, 100);
@@ -248,12 +196,6 @@ mod tests {
 
     #[test]
     fn grep_savings_scale_with_response_not_corpus() {
-        // Larger hit payload → larger savings, holding corpus fixed. Use space-separated words
-        // (not one long run of a single char): under the `documents` feature `count_tokens` uses a
-        // real tokenizer that falls back to a *word* estimate when the model isn't available (e.g.
-        // offline CI), and a single 4_000-char run of `a` is still one "word" — indistinguishable
-        // from the 400-char one, which would break this scaling check. `"word "` (5 bytes) keeps the
-        // 400/4_000 byte totals exact for the heuristic assertion below while scaling word counts.
         let small = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(80));
         let large = estimate_from_text("search_symbols", 1_000_000, &"word ".repeat(800));
         assert!(
@@ -262,7 +204,6 @@ mod tests {
             large.est_tokens_saved,
             small.est_tokens_saved
         );
-        // 4_000 bytes → 1_000 actual; baseline = 3_000; saved = 2_000 (heuristic tier).
         #[cfg(not(feature = "documents"))]
         assert_eq!(large.est_tokens_saved, 2_000);
     }
@@ -299,7 +240,6 @@ mod tests {
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
         #[cfg(not(feature = "documents"))]
         {
-            // 400 bytes → 100 actual; baseline = 100 * 5 = 500; saved = 400.
             assert_eq!(s.actual_tokens, 100);
             assert_eq!(s.baseline_tokens, 500);
             assert_eq!(s.est_tokens_saved, 400);
@@ -314,7 +254,6 @@ mod tests {
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));
         #[cfg(not(feature = "documents"))]
         {
-            // 400 bytes → 100 actual; baseline = 100 * 2 = 200; saved = 100.
             assert_eq!(s.actual_tokens, 100);
             assert_eq!(s.baseline_tokens, 200);
             assert_eq!(s.est_tokens_saved, 100);
@@ -338,7 +277,6 @@ mod tests {
             );
             #[cfg(not(feature = "documents"))]
             {
-                // 400 bytes → 100 actual; baseline = 100 * 3 = 300; saved = 200.
                 assert_eq!(s.actual_tokens, 100, "{tool} actual");
                 assert_eq!(s.baseline_tokens, 300, "{tool} baseline");
                 assert_eq!(s.est_tokens_saved, 200, "{tool} saved");
@@ -359,7 +297,6 @@ mod tests {
     #[test]
     fn estimate_from_text_is_bytes_over_four_under_heuristic() {
         let s = estimate_from_text("outline", 0, &"x".repeat(800));
-        // 800 bytes → 200 actual; baseline = 200 * 5 = 1_000; saved = 800.
         assert_eq!(s.actual_tokens, 200);
         assert_eq!(s.baseline_tokens, 1_000);
         assert_eq!(s.est_tokens_saved, 800);

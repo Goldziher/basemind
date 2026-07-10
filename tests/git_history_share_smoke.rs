@@ -30,15 +30,12 @@ fn git_history_index_is_shared_from_linked_worktree() {
     git(&main, &["add", "."]);
     git(&main, &["commit", "-qm", "init"]);
 
-    // A linked worktree (detached) — shares main's object DB.
     let wt = tmp.path().join("wt");
     git(&main, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap()]);
 
     let main_bm = shared_history_basemind_dir(&main);
     let wt_bm = shared_history_basemind_dir(&wt);
 
-    // Compare canonicalized parents (the checkout roots) to sidestep /var → /private/var symlinks on
-    // macOS. `.basemind` itself need not exist yet, so canonicalize the parent and rejoin.
     let root_of = |bm: &Path| std::fs::canonicalize(bm.parent().unwrap()).expect("canonicalize");
 
     assert_eq!(
@@ -51,6 +48,5 @@ fn git_history_index_is_shared_from_linked_worktree() {
         std::fs::canonicalize(&wt).unwrap(),
         "a linked worktree must NOT build its own per-worktree git-history index"
     );
-    // Sanity: the main worktree resolves to itself.
     assert_eq!(root_of(&main_bm), std::fs::canonicalize(&main).unwrap());
 }

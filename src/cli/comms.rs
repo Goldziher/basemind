@@ -524,7 +524,6 @@ async fn dm(
     as_agent: Option<String>,
     out: &mut impl Write,
 ) -> Result<()> {
-    // Sender = --as-agent (validated) or the CLI default; recipient = --to.
     let from_agent = match &as_agent {
         Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
         None => cli_agent_id(root)?,
@@ -534,19 +533,15 @@ async fn dm(
         anyhow::bail!("cannot dm yourself");
     }
 
-    // Canonical pairwise room id: sort the two ids so a<->b and b<->a map to the same room.
     let (lo, hi) = if from_agent.as_str() <= to_agent.as_str() {
         (from_agent.as_str(), to_agent.as_str())
     } else {
         (to_agent.as_str(), from_agent.as_str())
     };
     let room = RoomId::parse(format!("dm:{lo}:{hi}")).context("derive dm room id")?;
-    // A unique session token (not any agent's real session id) so the broker auto-joins NOBODY;
-    // a `Global` scope would broadcast the DM to every agent on the machine.
     let dm_scope = RoomScope::Session(format!("dm:{lo}:{hi}"));
     let title = format!("dm {lo} <-> {hi}");
 
-    // Connect as the SENDER: idempotent create_room + join, then post.
     let mut sender = connect_as(root, as_agent).await?;
     sender
         .create_room(room.clone(), dm_scope, Some(title))
@@ -557,14 +552,12 @@ async fn dm(
         .await
         .map_err(|e| anyhow::anyhow!("sender join: {e}"))?;
 
-    // Host a SECOND connection as the RECIPIENT so the DM lands in its inbox.
     let mut recipient = connect_as(root, Some(to_agent.as_str().to_string())).await?;
     recipient
         .join_room(room.clone())
         .await
         .map_err(|e| anyhow::anyhow!("recipient join: {e}"))?;
 
-    // Post via the sender.
     let body = body.unwrap_or_default().into_bytes();
     let message_id = sender
         .post_message(room.clone(), subject, body, Vec::new(), reply_to, Vec::new())
@@ -702,7 +695,6 @@ fn render_front_matter(
     if messages.is_empty() {
         writeln!(out, "(no messages)")?;
     } else {
-        // Front-matter table: subject, from, ts, id — bodies are fetched with `read`.
         for sm in messages {
             let m = &sm.meta;
             writeln!(out, "{}\t{}\t{}\t{}", m.subject, m.from.as_str(), m.ts_micros, m.id)?;

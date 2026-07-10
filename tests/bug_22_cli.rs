@@ -43,7 +43,6 @@ fn cache_clear_single_view_leaves_others_intact() {
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init"]);
 
-    // Working view + a named rev view.
     assert!(run(root, &["scan"]).status.success(), "working scan");
     assert!(run(root, &["scan", "--rev", "HEAD"]).status.success(), "rev scan");
 
@@ -55,7 +54,6 @@ fn cache_clear_single_view_leaves_others_intact() {
         .find(|n| n.starts_with("rev-"))
         .expect("a rev-* view exists after `scan --rev`");
 
-    // Clear only the rev view.
     let out = run(root, &["cache", "clear", "--component", &format!("views:{rev_view}")]);
     assert!(
         out.status.success(),

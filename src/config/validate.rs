@@ -25,7 +25,6 @@ pub fn validate_v1(value: &Value) -> Result<(), ConfigError> {
     if !errors.is_empty() {
         return Err(ConfigError::SchemaValidation(errors.join("\n")));
     }
-    // Cross-field constraints the per-field JSON schema cannot express.
     validate_code_search(value)
 }
 

@@ -110,9 +110,6 @@ fn lean_tool_definitions() -> Vec<Tool> {
                 "additionalProperties": false
             })),
         )
-        // Dispatches to ANY real tool (read or mutating, incl. web), so it cannot be marked
-        // read-only — clients should gate it like a mutating tool; the target's own annotation
-        // governs once resolved.
         .annotate(ToolAnnotations::new().read_only(false).open_world(true)),
     ]
 }
@@ -165,7 +162,6 @@ pub(super) async fn lean_call_tool(
 ) -> Result<CallToolResult, McpError> {
     match request.name.as_ref() {
         TOOL_LIST => {
-            // Compressed listing: one row per real tool, sorted by name (list_all sorts).
             let rows: Vec<Value> = router
                 .list_all()
                 .into_iter()
@@ -196,7 +192,6 @@ pub(super) async fn lean_call_tool(
             if !router.has_route(&tool_name) {
                 return Err(McpError::invalid_params(format!("unknown tool `{tool_name}`"), None));
             }
-            // `tool_input` is optional: a no-arg tool may be invoked with it omitted.
             let arguments = match request.arguments.as_ref().and_then(|o| o.get("tool_input")) {
                 Some(Value::Object(map)) => Some(map.clone()),
                 Some(Value::Null) | None => None,
@@ -207,9 +202,7 @@ pub(super) async fn lean_call_tool(
                     ));
                 }
             };
-            // Rewrite the request to target the REAL tool and dispatch through the shared
             // router. `CallToolRequestParams` is `#[non_exhaustive]`, so mutate in place rather
-            // than re-struct it — this also forwards `meta` / `task` untouched.
             let mut inner = request;
             inner.name = Cow::Owned(tool_name);
             inner.arguments = arguments;

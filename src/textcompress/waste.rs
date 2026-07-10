@@ -129,7 +129,6 @@ pub fn detect_waste(calls: &[ToolCall]) -> WasteReport {
         let target = call.target.as_str();
         if call.tool == "Read" {
             reads.entry(target).or_default().observe(call.bytes);
-            // Oversized-read detector: independent of the redundant-read group.
             if call.bytes >= LARGE_READ_BYTES {
                 findings.push(WasteFinding {
                     kind: "oversized_read".to_string(),
@@ -165,14 +164,10 @@ pub fn detect_waste(calls: &[ToolCall]) -> WasteReport {
         }
     }
 
-    // Hard security gate: a finding whose target embeds a credential is dropped
-    // entirely (findings are surfaced and persisted).
     findings.retain(|f| !safety::contains_credential(&f.target));
 
-    // Deterministic order, independent of map iteration order.
     findings.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.target.cmp(&b.target)));
 
-    // Headline waste counts every finding BEFORE truncation.
     let total_estimated_waste_bytes = findings
         .iter()
         .fold(0u64, |sum, f| sum.saturating_add(f.estimated_waste_bytes));
@@ -280,8 +275,6 @@ mod tests {
 
     #[test]
     fn oversized_read_coexists_with_redundant_read() {
-        // Two oversized reads of the same path: one redundant_read finding plus
-        // two oversized_read findings (distinct detectors).
         let calls = vec![read("huge.rs", LARGE_READ_BYTES), read("huge.rs", LARGE_READ_BYTES)];
         let report = detect_waste(&calls);
         let kinds: Vec<&str> = report.findings.iter().map(|f| f.kind.as_str()).collect();
@@ -315,9 +308,6 @@ mod tests {
 
     #[test]
     fn findings_are_deterministically_ordered() {
-        // Mixed kinds and targets arriving in an order that would not match the
-        // sorted output, exercised across detectors so map iteration order can
-        // vary. The result vec must be sorted by (kind, target).
         let calls = vec![
             read("zzz.rs", LARGE_READ_BYTES),
             read("aaa.rs", 5),
@@ -349,9 +339,6 @@ mod tests {
 
     #[test]
     fn max_findings_cap_sets_truncated_and_keeps_full_waste_total() {
-        // Build more than MAX_FINDINGS distinct oversized reads (each 1 byte over
-        // a value chosen so the per-finding waste is known and the headline total
-        // exceeds what survives the cap).
         let total = MAX_FINDINGS + 50;
         let calls: Vec<ToolCall> = (0..total)
             .map(|n| read(&format!("file_{n:05}.rs"), LARGE_READ_BYTES))
@@ -359,10 +346,8 @@ mod tests {
         let report = detect_waste(&calls);
         assert_eq!(report.findings.len(), MAX_FINDINGS);
         assert!(report.truncated);
-        // The headline counts ALL findings before truncation.
         let expected_total = (total as u64) * LARGE_READ_BYTES;
         assert_eq!(report.total_estimated_waste_bytes, expected_total);
-        // And it is strictly larger than the sum of the surviving (capped) vec.
         let surviving: u64 = report.findings.iter().map(|f| f.estimated_waste_bytes).sum();
         assert!(report.total_estimated_waste_bytes > surviving);
     }
@@ -380,10 +365,10 @@ mod tests {
         let input = concat!(
             "{\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":10}\n",
             "not json at all\n",
-            "{\"target\":\"b.rs\",\"bytes\":20}\n", // missing `tool`
+            "{\"target\":\"b.rs\",\"bytes\":20}\n",
             "\n",
             "   \n",
-            "{\"tool\":\"Grep\",\"target\":\"q\"}\n", // bytes defaults to 0
+            "{\"tool\":\"Grep\",\"target\":\"q\"}\n",
         );
         let calls = parse_calls(input);
         assert_eq!(

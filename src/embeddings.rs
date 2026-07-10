@@ -38,8 +38,6 @@ pub fn embed_pool(max_threads: usize) -> &'static rayon::ThreadPool {
             .num_threads(n)
             .thread_name(|i| format!("bm-embed-{i}"))
             .build()
-            // The only failure mode is requesting more threads than the OS
-            // permits — treat as unrecoverable at startup.
             .expect("failed to build embedding rayon pool")
     })
 }
@@ -156,7 +154,6 @@ mod tests {
             got, expected,
             "resolve_embed_threads(0) should yield max(2, cores/4) = {expected}"
         );
-        // The auto value is always at least 2, never pinning all cores.
         assert!(got >= 2, "auto embed cap must be >= 2, got {got}");
     }
 }

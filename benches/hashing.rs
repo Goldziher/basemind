@@ -15,8 +15,6 @@ const SIZES: &[usize] = &[1 << 10, 1 << 12, 1 << 14, 1 << 16, 1 << 18];
 fn bench_hash(c: &mut Criterion) {
     let mut group = c.benchmark_group("hashing/hash_bytes");
     for &size in SIZES {
-        // Deterministic pseudo-random fill — avoids the all-zero fast path some
-        // hashers take and keeps the input stable across runs.
         let buf: Vec<u8> = (0..size).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
         group.throughput(Throughput::Bytes(size as u64));
         group.bench_with_input(BenchmarkId::from_parameter(size), &buf, |b, buf| {
@@ -25,7 +23,6 @@ fn bench_hash(c: &mut Criterion) {
     }
     group.finish();
 
-    // Hex encode/decode is the zero-copy blob-key path in src/store.rs.
     let hash = hash_bytes(b"basemind blob key sample");
     c.bench_function("hashing/hex_roundtrip", |b| {
         b.iter(|| {

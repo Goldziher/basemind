@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Smoke test for .claude-plugin/statusline.sh — runs the script against a
-# synthetic fixture and asserts the rendered output has colors, the brand mark,
-# a file count derived from the blob store, and the freshness dot.
 
 set -euo pipefail
 
@@ -11,30 +8,24 @@ STATUSLINE="$REPO_ROOT/.claude-plugin/statusline.sh"
 
 [[ -x "$STATUSLINE" ]] || chmod +x "$STATUSLINE"
 
-# ─── Fixture ───────────────────────────────────────────────────────────────────
 FIXTURE="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE"' EXIT
 
 mkdir -p "$FIXTURE/.basemind/blobs"
 mkdir -p "$FIXTURE/.basemind/views/working"
-# Synthesize 7 fake filemap blobs → file_count == 7.
 for i in 0 1 2 3 4 5 6; do
 	: >"$FIXTURE/.basemind/blobs/${i}aaaaaaaa.fm.msgpack"
 done
-# A views index file so scan-age stamps as "Xs ago".
 : >"$FIXTURE/.basemind/views/working/index.msgpack"
 
-# Synthesize one telemetry record from today (microseconds since epoch).
 now_us="$(($(date +%s) * 1000000))"
 printf '{"ts_micros": %d, "tool": "outline", "est_tokens_saved": 500}\n' "$now_us" \
 	>"$FIXTURE/.basemind/telemetry.jsonl"
 
-# ─── Run ───────────────────────────────────────────────────────────────────────
 payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$FIXTURE")"
 output="$(printf '%s' "$payload" | "$STATUSLINE")"
 exit_code=$?
 
-# ─── Assertions ────────────────────────────────────────────────────────────────
 fail=0
 assert_contains() {
 	local needle="$1"
@@ -61,15 +52,12 @@ assert_contains 'basemind' 'name present'
 assert_contains '●' 'liveness dot present'
 assert_contains '7' 'file count 7 from blob fixture'
 
-# Version display: the running version is read from the sibling plugin.json (same
-# `.claude-plugin/` dir as statusline.sh) and shown as `v<version>` in the full tier.
 plugin_version=""
 if command -v jq >/dev/null 2>&1; then
 	plugin_version="$(jq -r '.version // empty' "$REPO_ROOT/.claude-plugin/plugin.json" 2>/dev/null || true)"
 fi
 if [[ -n "$plugin_version" ]]; then
 	assert_contains "v$plugin_version" "version v$plugin_version shown (full tier)"
-	# Minimal tier is width-starved and must OMIT the version.
 	min_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE=minimal "$STATUSLINE")"
 	if [[ "$min_output" != *"v$plugin_version"* ]]; then
 		printf '  ok  version omitted in minimal tier\n'
@@ -77,7 +65,6 @@ if [[ -n "$plugin_version" ]]; then
 		printf '  FAIL minimal tier should omit version v%s; got: %q\n' "$plugin_version" "$min_output" >&2
 		fail=1
 	fi
-	# Opt-out env hides it even in the full tier.
 	nover_output="$(printf '%s' "$payload" | BASEMIND_STATUSLINE_VERSION=0 "$STATUSLINE")"
 	if [[ "$nover_output" != *"v$plugin_version"* ]]; then
 		printf '  ok  BASEMIND_STATUSLINE_VERSION=0 hides version\n'
@@ -89,10 +76,6 @@ else
 	printf '  skip version assertions (jq or plugin.json unavailable)\n'
 fi
 
-# Legacy split-layout index (pre-0.9 `.l1`/`.l2` blobs, still written by an older serve)
-# must read as ready — NOT stuck on "scanning…" — and count one per source file (the
-# `.l2` secondary layer is never counted). Regression guard for the `.fm`-only check that
-# left every older index showing "scanning…" forever.
 legacy_dir="$(mktemp -d)"
 mkdir -p "$legacy_dir/.basemind/blobs" "$legacy_dir/.basemind/views/working"
 for i in 0 1 2 3; do
@@ -111,7 +94,6 @@ else
 	fail=1
 fi
 
-# Empty-index (`.basemind/` exists but no blobs/) → "scanning…" hint.
 unscanned_dir="$(mktemp -d)"
 mkdir -p "$unscanned_dir/.basemind"
 trap 'rm -rf "$FIXTURE" "$empty_dir" "$unscanned_dir"' EXIT
@@ -124,7 +106,6 @@ else
 	fail=1
 fi
 
-# Missing `.basemind/` → actionable "no index — run: basemind scan" hint.
 empty_dir="$(mktemp -d)"
 trap 'rm -rf "$FIXTURE" "$empty_dir"' EXIT
 empty_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$empty_dir")"
@@ -136,11 +117,6 @@ else
 	fail=1
 fi
 
-# Resolver version selection: /bm-statusline persists a version-independent resolver
-# that must pick the HIGHEST-versioned cached statusline.sh via `sort -V` — NOT the
-# most recently modified (mtime), which would pick an older dir touched later. This
-# guards the "selects 0.19.0 instead of 0.19.1" bug: synthesize three fake version
-# dirs where the OLDEST version has the NEWEST mtime, and assert sort -V still wins.
 resolver_dir="$(mktemp -d)"
 mkdir -p \
 	"$resolver_dir/0.9.0/.claude-plugin" \
@@ -149,7 +125,6 @@ mkdir -p \
 : >"$resolver_dir/0.19.0/.claude-plugin/statusline.sh"
 : >"$resolver_dir/0.14.0/.claude-plugin/statusline.sh"
 : >"$resolver_dir/0.9.0/.claude-plugin/statusline.sh"
-# Make the OLDEST version the most-recently-modified so mtime ordering would mislead.
 touch "$resolver_dir/0.19.0/.claude-plugin/statusline.sh"
 touch "$resolver_dir/0.14.0/.claude-plugin/statusline.sh"
 touch "$resolver_dir/0.9.0/.claude-plugin/statusline.sh"

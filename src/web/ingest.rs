@@ -47,9 +47,6 @@ pub fn index_page(
 ) -> Result<IndexedPage> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
-        // Drop any prior rows for this URL so a re-scrape that now yields empty
-        // text doesn't leave stale chunks behind. `replace_document` with an
-        // empty Vec performs the delete and returns Ok.
         lance
             .replace_document(scope, path, Vec::new())
             .context("clear stale rows for empty body")?;
@@ -153,10 +150,6 @@ mod tests {
 
     #[test]
     fn default_scope_strips_port_and_path() {
-        // The scope is host-only — port + path are deliberately excluded so
-        // `search_documents { scope: "web:example.com" }` retrieves every
-        // page from that host regardless of port. Two URLs to the same host
-        // on different ports collapse into one scope.
         let a = Url::parse("https://example.com:8443/a").unwrap();
         let b = Url::parse("https://example.com/b?q=1").unwrap();
         assert_eq!(default_scope(&a), default_scope(&b));
@@ -165,21 +158,10 @@ mod tests {
 
     #[test]
     fn default_scope_preserves_case_as_parsed() {
-        // `url::Url` lowercases the host at parse time, so the scope tag is
-        // already canonical — locking in that contract here so a future
-        // refactor doesn't accidentally start round-tripping mixed case.
         let u = Url::parse("https://EXAMPLE.com/").unwrap();
         assert_eq!(default_scope(&u), "web:example.com");
     }
 
-    // Private / loopback hosts are rejected by the SSRF guard in `Url::parse`
-    // (see `src/url.rs`). These tests pin that the guard fires by default and
-    // that the `BASEMIND_ALLOW_PRIVATE_HOSTS=1` escape hatch re-enables them so
-    // `default_scope` still produces the host-only scope tag. The env var is
-    // process-global, so we serialize on the CRATE-WIDE lock shared with the
-    // `url` and `mcp::helpers_web` test modules (a per-module lock would let a
-    // setter in one module observe a remover in another mid-run). Poison is
-    // recovered so one panicking test does not cascade.
     const ALLOW_ENV: &str = "BASEMIND_ALLOW_PRIVATE_HOSTS";
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {

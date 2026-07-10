@@ -61,16 +61,13 @@ mod imp {
     impl CommsLink for NamedPipeLink {
         async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
             loop {
-                // Try to decode a complete frame from whatever is already buffered.
                 if let Some(frame) = self.codec.decode(&mut self.read_buf)? {
                     let req = rmp_serde::from_slice(&frame)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
                     return Ok(Some(req));
                 }
-                // Need more bytes from the pipe.
                 let n = self.server.read_buf(&mut self.read_buf).await?;
                 if n == 0 {
-                    // EOF: a clean close has an empty buffer; a partial frame is an error.
                     if self.read_buf.is_empty() {
                         return Ok(None);
                     }
@@ -92,8 +89,6 @@ mod imp {
         }
 
         fn peer_cred(&self) -> PeerCred {
-            // No SO_PEERCRED on Windows; the pipe is user-scoped by name + DACL, so cross-user
-            // connections are refused by the OS rather than by a uid check here.
             PeerCred::default()
         }
     }
@@ -128,13 +123,10 @@ mod imp {
                     conn = server.connect() => {
                         if let Err(e) = conn {
                             tracing::warn!(error = %e, "comms: pipe connect failed");
-                            // The half-open instance is unusable; mint a fresh one and retry.
                             server = ServerOptions::new().create(&self.pipe_name)?;
                             continue;
                         }
                         let connected = server;
-                        // Create the NEXT instance BEFORE serving so no client is refused during
-                        // the hand-off (named pipes accept exactly one client per instance).
                         server = ServerOptions::new().create(&self.pipe_name)?;
                         let broker = broker.clone();
                         tokio::spawn(serve_link(broker, NamedPipeLink::new(connected)));
@@ -146,8 +138,6 @@ mod imp {
                     }
                 }
             }
-            // Named pipes vanish when their owning handles drop, so there is no unlink-on-drain
-            // step (unlike the UDS path which removes the socket file).
             Ok(())
         }
     }

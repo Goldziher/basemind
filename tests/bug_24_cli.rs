@@ -41,7 +41,6 @@ fn build_repo() -> TempDir {
     std::fs::write(&bad, b"pub fn bad() {}\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init"]);
-    // Make bad.rs unreadable so the scanner records a read failure for it.
     std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).unwrap();
     dir
 }
@@ -58,7 +57,6 @@ fn should_exit_zero_when_read_failed_but_index_updated() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
 
-    // Sanity: the run actually exercised the read-failure + update path.
     assert!(
         combined.contains("read failed") || combined.contains("failed 1"),
         "expected a read failure in the report; got:\n{combined}"
@@ -68,7 +66,6 @@ fn should_exit_zero_when_read_failed_but_index_updated() {
         "expected the readable file to update the index; got:\n{combined}"
     );
 
-    // Restore perms so the tempdir can be cleaned up.
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(root.join("bad.rs"), std::fs::Permissions::from_mode(0o644));
 

@@ -45,8 +45,6 @@ pub(super) fn run_search_git_history(
     let head = head_sha(repo)?;
     let snapshot = head_snapshot_id(&head);
 
-    // Decode the cursor (offset + HEAD-snapshot guard). A stale snapshot → empty page +
-    // cursor_invalidated so the caller restarts, exactly like the other git-log tools.
     let skip = match params.cursor.as_ref() {
         Some(cursor) => {
             let (offset, snapshot_id) = cursor.decode_in_memory()?;
@@ -63,14 +61,10 @@ pub(super) fn run_search_git_history(
         None => 0,
     };
 
-    // One extra past the page tells us whether more remain.
     let want = limit.saturating_add(1);
     let (mut hits, partial) = match git_history_if_fresh(state, &head) {
         Some(index) => (index.search_commits(&params.pattern, scope, skip, want), false),
         None => {
-            // No fresh index (read-only session or still building): bounded live fallback. Walk the
-            // recent window and reuse the same tokenized-AND matcher for consistent semantics.
-            // Tokenize the (loop-invariant) query ONCE, not per commit across the whole window.
             let mut query_terms = ahash::AHashSet::new();
             fts::tokenize(&params.pattern, &mut query_terms);
             let window = LOG_WALK_MAX as u32;

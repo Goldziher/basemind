@@ -61,18 +61,15 @@ fn commit_files_cache_round_trip() {
     let repo = Repo::discover(root).unwrap();
     let head = repo.resolve_rev("HEAD").unwrap();
 
-    // First call: cold — populates RAM and disk.
     let first = cache.commit_files(&repo, &head).unwrap();
     assert!(!first.is_empty(), "expected commit_files to be non-empty");
 
-    // Disk artifact exists at the sha-keyed path.
     let on_disk = basemind_dir
         .join(GIT_CACHE_DIR)
         .join("commit_files")
         .join(format!("{head}.msgpack"));
     assert!(on_disk.exists(), "commit_files disk entry missing");
 
-    // RAM hit: same Arc identity.
     let second = cache.commit_files(&repo, &head).unwrap();
     assert!(
         std::sync::Arc::ptr_eq(&first, &second),
@@ -99,7 +96,6 @@ fn log_cache_round_trip() {
         "second log call should hit RAM"
     );
 
-    // Disk persists.
     let log_dir = basemind_dir.join(GIT_CACHE_DIR).join("log");
     let entries: Vec<_> = fs::read_dir(&log_dir).unwrap().flatten().collect();
     assert_eq!(entries.len(), 1, "exactly one log disk entry expected");
@@ -118,7 +114,6 @@ fn disk_persistence_survives_reopen() {
         let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
         cache.commit_files(&repo, &head).unwrap();
     }
-    // New cache instance — RAM is empty, but disk should still hit.
     let cache = GitCache::open(&basemind_dir, 8, true).unwrap();
     let arc = cache.commit_files(&repo, &head).unwrap();
     assert!(!arc.is_empty(), "second cache should populate from disk");
@@ -139,7 +134,6 @@ fn clear_removes_disk_files() {
     let removed = cache.clear().unwrap();
     assert!(removed >= 2, "expected at least the two seeded entries; got {removed}");
 
-    // Recompute hits cold path now.
     cache.commit_files(&repo, &head).unwrap();
 }
 

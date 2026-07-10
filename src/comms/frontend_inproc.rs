@@ -57,7 +57,6 @@ impl CommsLink for InProcLink {
     }
 
     fn peer_cred(&self) -> PeerCred {
-        // Same process — trusted by construction.
         PeerCred {
             uid: Some(current_uid()),
             pid: Some(std::process::id()),
@@ -96,9 +95,6 @@ impl InProcFrontend {
 
 impl CommsFrontend for InProcFrontend {
     async fn serve(self: Box<Self>, _broker: Arc<Broker>, mut shutdown: watch::Receiver<bool>) -> std::io::Result<()> {
-        // The in-process front-end is driven by explicit `connect()` calls, so `serve` just
-        // parks until shutdown — it exists to satisfy the trait for symmetry with the UDS
-        // front-end.
         let _ = shutdown.changed().await;
         Ok(())
     }
@@ -147,7 +143,6 @@ mod tests {
         let mut writer = frontend.connect();
         let mut reader = frontend.connect();
 
-        // Both say hello (Global default room).
         for (link, name) in [(&mut writer, "writer"), (&mut reader, "reader")] {
             link.send_request(CommsRequest::Hello {
                 agent: AgentId::parse(name).expect("agent"),
@@ -162,7 +157,6 @@ mod tests {
             assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
         }
 
-        // Create a shared global room and have the reader subscribe + join.
         let room = RoomId::parse("team").expect("room");
         writer
             .send_request(CommsRequest::CreateRoom {
@@ -180,7 +174,6 @@ mod tests {
             .expect("join");
         assert!(matches!(expect_response(&mut reader).await, CommsResponse::Ok));
 
-        // Writer posts.
         writer
             .send_request(CommsRequest::Post {
                 room: room.clone(),
@@ -198,7 +191,6 @@ mod tests {
             other => panic!("expected Posted, got {other:?}"),
         };
 
-        // Reader reads history → sees the front-matter (not the body).
         reader
             .send_request(CommsRequest::History {
                 room: room.clone(),
@@ -218,7 +210,6 @@ mod tests {
             other => panic!("expected History, got {other:?}"),
         }
 
-        // Reader fetches the body on demand.
         reader
             .send_request(CommsRequest::GetBody {
                 message_id: message_id.clone(),
@@ -232,7 +223,6 @@ mod tests {
             other => panic!("expected Body, got {other:?}"),
         }
 
-        // Reader's inbox shows the unread message, then mark_read clears it.
         reader
             .send_request(CommsRequest::Inbox {
                 remote: None,
@@ -252,7 +242,6 @@ mod tests {
             other => panic!("expected Inbox, got {other:?}"),
         }
 
-        // Second inbox read after mark_read → empty.
         reader
             .send_request(CommsRequest::Inbox {
                 remote: None,
@@ -296,7 +285,6 @@ mod tests {
             assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
         }
 
-        // A global room both agents auto-join (Global scope matches every chain).
         let room = RoomId::parse("team").expect("room");
         writer
             .send_request(CommsRequest::CreateRoom {
@@ -308,7 +296,6 @@ mod tests {
             .expect("create");
         assert!(matches!(expect_response(&mut writer).await, CommsResponse::Room(_)));
 
-        // The author posts to the room.
         writer
             .send_request(CommsRequest::Post {
                 room: room.clone(),
@@ -325,7 +312,6 @@ mod tests {
             other => panic!("expected Posted, got {other:?}"),
         };
 
-        // The author's OWN inbox excludes the message (auto-join subscribed them to the room).
         writer
             .send_request(CommsRequest::Inbox {
                 remote: None,
@@ -345,7 +331,6 @@ mod tests {
             other => panic!("expected Inbox, got {other:?}"),
         }
 
-        // But room_history still shows it for the author — the full log is not filtered.
         writer
             .send_request(CommsRequest::History {
                 room: room.clone(),
@@ -363,7 +348,6 @@ mod tests {
             other => panic!("expected History, got {other:?}"),
         }
 
-        // A different agent DOES see the message in their inbox.
         reader
             .send_request(CommsRequest::Inbox {
                 remote: None,

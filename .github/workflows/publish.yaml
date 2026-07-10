@@ -243,9 +243,6 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
 
       - name: Ensure the GitHub release exists
-        # The native build matrix uploads assets to this release; gh release upload
-        # requires it to already exist (goreleaser used to create it). Create it once
-        # here, marked prerelease for rc/beta/alpha tags.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -267,9 +264,6 @@ jobs:
             gh release create "$tag" --title "$tag" --notes "Release $tag" --verify-tag --draft $prerelease
           fi
 
-  # macOS + Windows binaries. Linux binaries are built separately in
-  # build-linux-binaries (a manylinux_2_28 container is required to link ort's
-  # prebuilt ONNX Runtime at a glibc 2.28 floor — see that job).
   build-binaries:
     name: Build binaries / ${{ matrix.triple }}
     needs: [meta, create_release]
@@ -280,10 +274,6 @@ jobs:
         include:
           - triple: aarch64-apple-darwin
             os: macos-latest
-          # Intel macOS: native x86_64 build on the macos-15-intel runner. ort has no
-          # static x86_64-apple-darwin ONNX Runtime, so this leg swaps in ort-dynamic
-          # (ort/load-dynamic) and package-release.sh vendors libonnxruntime.dylib next
-          # to the binary. `full` still names ort-bundled but disable-linking wins.
           - triple: x86_64-apple-darwin
             os: macos-15-intel
             features: full,ort-dynamic
@@ -320,10 +310,6 @@ jobs:
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
 
-      # Intel macOS ships ONNX Runtime dynamically (ort/load-dynamic) with the dylib
-      # vendored next to the binary. That packaging can't be exercised on the arm64
-      # dev machines, so validate the shipped archive here — before it's uploaded — so
-      # a broken bundle fails the release instead of a user's first embedding call.
       - name: Smoke-test packaged Intel binary (ONNX Runtime loads)
         if: matrix.triple == 'x86_64-apple-darwin'
         shell: bash
@@ -364,12 +350,6 @@ jobs:
 
           gh release upload "$tag" "$archive" --clobber
 
-  # Linux binaries (x86_64 + aarch64). Built inside the official manylinux_2_28
-  # containers with native gcc so ort's prebuilt ONNX Runtime links at a glibc
-  # 2.28 floor (RHEL 8 / Debian 11 / Ubuntu 20.04+ / Amazon Linux 2023). zig as
-  # the linker cannot do this (libc++ vs the prebuilt's libstdc++ ABI), and the
-  # prebuilt itself references glibc 2.38 symbols — backfilled by the small
-  # scripts/glibc228_compat.c shim linked via a target-scoped RUSTFLAGS.
   build-linux-binaries:
     name: Build Linux binaries / ${{ matrix.triple }}
     needs: [meta, create_release]
@@ -607,12 +587,6 @@ jobs:
   finalize_release:
     name: Publish GitHub release
     needs: [meta, checksums]
-    # Run after the build/checksums jobs settle, regardless of their result, so a
-    # draft left complete by a cancelled/partial earlier run can still be promoted.
-    # The step re-verifies completeness itself, so it never publishes an incomplete
-    # release — it only flips the draft to live once ALL 5 platform archives AND the
-    # checksums file are present. This is the gate that makes a partial publish a
-    # hidden draft instead of a live, half-populated release.
     if: always() && needs.meta.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -690,12 +664,7 @@ jobs:
 
   publish_npm:
     name: Publish npm
-    # Gated on finalize_release: the npm install.js downloads the platform binary
-    # from the GitHub release, so it must not publish until that release is live.
     needs: [meta, finalize_release]
-    # always() so a re-run whose build/checksums jobs skip (assets already
-    # present) does not skip-propagate into this publisher; the result guard
-    # keeps it from ever publishing when the release did not finalize.
     if: always() && needs.meta.outputs.npm_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -712,8 +681,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
-        # Pin to npm@11: npm@latest is now v12, which requires Node 22+ and
-        # EBADENGINE-fails on this job's Node 20. npm@11 supports Node 20.17+.
         run: npm install -g npm@11
 
       - name: Publish to npm
@@ -734,7 +701,6 @@ jobs:
   publish_opencode:
     name: Publish npm (basemind-opencode)
     needs: [meta, finalize_release]
-    # always(): see publish_npm — survive skip-propagation on a partial re-run.
     if: always() && needs.meta.outputs.opencode_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
@@ -751,8 +717,6 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Update npm
-        # Pin to npm@11: npm@latest is now v12, which requires Node 22+ and
-        # EBADENGINE-fails on this job's Node 20. npm@11 supports Node 20.17+.
         run: npm install -g npm@11
 
       - name: Publish to npm
@@ -772,10 +736,7 @@ jobs:
 
   publish_pypi:
     name: Publish PyPI
-    # Gated on finalize_release: the pip downloader fetches the platform binary
-    # from the GitHub release, so it must not publish until that release is live.
     needs: [meta, finalize_release]
-    # always(): see publish_npm — survive skip-propagation on a partial re-run.
     if: always() && needs.meta.outputs.pypi_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     environment: pypi
@@ -806,11 +767,7 @@ jobs:
 
   publish_homebrew:
     name: Update Homebrew formula
-    # Stable releases only — rc/beta/alpha pre-releases do not update the tap.
-    # Requires the release to be finalized (all 5 binaries + checksums present and
-    # the release published), since the formula points at the release assets.
     needs: [meta, finalize_release]
-    # always(): see publish_npm — survive skip-propagation on a partial re-run.
     if: always() && needs.finalize_release.result == 'success' && !contains(needs.meta.outputs.version, '-rc') && !contains(needs.meta.outputs.version, '-beta') && !contains(needs.meta.outputs.version, '-alpha')
     runs-on: ubuntu-latest
     steps:

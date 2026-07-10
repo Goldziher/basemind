@@ -226,7 +226,6 @@ mod param_alias_tests {
         assert_eq!(by_needle.query, "retry");
         let by_q: MemorySearchParams = serde_json::from_value(serde_json::json!({ "q": "retry" })).unwrap();
         assert_eq!(by_q.query, "retry");
-        // Canonical name still binds after the alias additions.
         let by_query: MemorySearchParams = serde_json::from_value(serde_json::json!({ "query": "retry" })).unwrap();
         assert_eq!(by_query.query, "retry");
     }
@@ -269,7 +268,6 @@ mod tests {
             created_at: 111,
             updated_at: 222,
         };
-        // `to_vec_named` mirrors `write_memory_record`'s on-disk encoding exactly.
         let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy record");
         let decoded: MemoryRecord = rmp_serde::from_slice(&bytes).expect("decode legacy bytes into current record");
 
@@ -277,7 +275,6 @@ mod tests {
         assert_eq!(decoded.tags, vec!["build".to_string()]);
         assert_eq!(decoded.created_at, 111);
         assert_eq!(decoded.updated_at, 222);
-        // New fields default cleanly — no panic, no data loss.
         assert_eq!(decoded.verified, VerifyState::Unverified);
         assert_eq!(decoded.last_verified, 0);
         assert_eq!(decoded.importance, 0.0);

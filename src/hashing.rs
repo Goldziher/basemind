@@ -28,7 +28,6 @@ pub fn hex_buf(h: &Hash) -> [u8; 64] {
 
 /// Borrow the stack hex buffer as `&str`. SAFETY: contents are always lowercase ASCII hex.
 pub fn hex_str(buf: &[u8; 64]) -> &str {
-    // The buffer is filled exclusively by `hex::encode_to_slice` which only emits ASCII.
     unsafe { std::str::from_utf8_unchecked(buf) }
 }
 

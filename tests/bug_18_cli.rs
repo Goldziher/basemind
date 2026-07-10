@@ -18,8 +18,6 @@ fn serve_errors_on_never_scanned_named_view() {
     let root = dir.path();
     std::fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();
 
-    // stdin = null so that *if* the guard were broken and serve actually started, the MCP
-    // stdio server would hit EOF and exit rather than hanging the test.
     let output = Command::new(bin())
         .args(["--root", root.to_str().unwrap(), "serve", "--view", "rev-deadbee"])
         .stdin(Stdio::null())

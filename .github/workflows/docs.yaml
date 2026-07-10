@@ -1,8 +1,5 @@
 name: docs
 
-# Build the Astro Starlight docs site in website/ and deploy it to GitHub Pages
-# (custom domain: basemind.ai, set via website/public/CNAME).
-
 on:
   push:
     branches: [main]
@@ -11,7 +8,6 @@ on:
       - ".github/workflows/docs.yaml"
   workflow_dispatch: {}
 
-# Allow one concurrent deployment; let a newer push cancel an in-flight build.
 concurrency:
   group: pages
   cancel-in-progress: true

@@ -161,7 +161,6 @@ mod tests {
 
     #[test]
     fn prefix_does_not_spill_into_sibling_room() {
-        // `Foo` must not match keys for `Foobar`.
         let foo = messages_by_room_prefix("Foo");
         let foobar_msg = message_by_room("Foobar", 0);
         assert!(

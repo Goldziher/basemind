@@ -73,17 +73,13 @@ pub struct FusedHit {
 /// runs. Empty lanes (and an empty `lanes` slice) contribute nothing. Each hit's `lane_ranks`
 /// records every lane that ranked the chunk and at what 1-based rank, in the lane order passed in.
 pub fn rrf_fuse_detailed(lanes: &[FusionLane<'_>], k: f32) -> Vec<FusedHit> {
-    // Per-chunk fusion accumulator: running score + the (lane, rank) contributions.
     #[derive(Default)]
     struct Acc {
         score: f32,
         lane_ranks: Vec<(&'static str, u32)>,
     }
-    // Keyed by borrowed chunk_id to avoid allocating a String per candidate until the final map.
     let mut acc: AHashMap<&str, Acc> = AHashMap::new();
     for lane in lanes {
-        // Guard against a duplicate chunk_id within a single lane inflating its own contribution —
-        // only the best (first) rank of a chunk within a lane counts.
         let mut seen_in_lane: AHashSet<&str> = AHashSet::new();
         for (rank0, chunk_id) in lane.chunk_ids.iter().enumerate() {
             if !seen_in_lane.insert(chunk_id.as_str()) {
@@ -141,10 +137,8 @@ mod tests {
             ],
             DEFAULT_RRF_K,
         );
-        // h:1 is rank-1 in both lanes → strictly highest fused score.
         assert_eq!(fused[0].0, "h:1");
         assert!(fused[0].1 > fused[1].1);
-        // Every chunk id from either lane appears exactly once.
         let uniq: std::collections::HashSet<&str> = fused.iter().map(|(id, _)| id.as_str()).collect();
         assert_eq!(uniq.len(), 4);
     }
@@ -153,7 +147,6 @@ mod tests {
     fn weight_boosts_a_lane_that_ranks_a_chunk() {
         let exact = ids(&["h:def"]);
         let keyword = ids(&["h:other", "h:def"]);
-        // With a heavy exact weight, the exact-lane's sole hit outranks the keyword-lane's rank-1.
         let fused = rrf_fuse(
             &[
                 FusionLane::new(LANE_EXACT, &exact, WEIGHT_EXACT),
@@ -183,7 +176,6 @@ mod tests {
 
     #[test]
     fn equal_scores_break_ties_by_chunk_id_ascending() {
-        // Two lanes, disjoint single hits at the same rank → equal scores → deterministic id order.
         let a = ids(&["h:zzz"]);
         let b = ids(&["h:aaa"]);
         let fused = rrf_fuse(
@@ -199,7 +191,6 @@ mod tests {
 
     #[test]
     fn detailed_fusion_records_per_lane_ranks_in_lane_order() {
-        // Chunk "h:1": rank-2 in exact, rank-1 in keyword. "h:9": rank-1 in exact only.
         let exact = ids(&["h:9", "h:1"]);
         let keyword = ids(&["h:1"]);
         let fused = rrf_fuse_detailed(
@@ -210,7 +201,6 @@ mod tests {
             DEFAULT_RRF_K,
         );
         let h1 = fused.iter().find(|h| h.chunk_id == "h:1").expect("h:1 present");
-        // Lane order is preserved: exact contribution precedes keyword.
         assert_eq!(h1.lane_ranks, vec![(LANE_EXACT, 2), (LANE_KEYWORD, 1)]);
         let h9 = fused.iter().find(|h| h.chunk_id == "h:9").expect("h:9 present");
         assert_eq!(

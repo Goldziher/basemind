@@ -20,10 +20,7 @@ fn scanned_repo() -> TempDir {
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write a.rs");
     std::fs::write(root.join("b.rs"), b"fn beta() { alpha(); alpha(); }\n").expect("write b.rs");
     {
-        // Embeddings off: these tests resolve references/impls from blobs, not vectors, and run the
         // scan on a `#[tokio::test]` thread. With the ONNX model cached, an embedding scan would open
-        // LanceDB (`block_on` inside the live runtime) and panic — a test-harness fragility unrelated
-        // to what's under test. Production wraps `scan` in `spawn_blocking`, so it's unaffected.
         let mut cfg = ConfigV1::with_defaults();
         cfg.documents.embed = false;
         cfg.code_search.embed = false;
@@ -36,7 +33,7 @@ fn scanned_repo() -> TempDir {
             basemind::scanner::EmbedMode::Inline,
         )
         .expect("scan");
-    } // drop → release the fs2 advisory lock AND Fjall's directory lock
+    }
     dir
 }
 
@@ -80,8 +77,6 @@ fn second_session_loses_the_fjall_index_but_keeps_blob_reads() {
          see concurrency_smoke::second_session_resolves_find_references_from_blobs."
     );
 
-    // Reads that go through the blobs already work on the 2nd session regardless of
-    // the Fjall lock: symbols come straight from the msgpack blobs.
     let hits = basemind::query::search_symbols(&serve2, "alpha", None).expect("search");
     assert_eq!(hits.len(), 1, "blob-backed search still works on the 2nd session");
 }
@@ -104,8 +99,6 @@ fn writer_never_downgrades_under_a_reader_storm() {
     let root = Arc::new(dir.path().to_path_buf());
     let stop = Arc::new(AtomicBool::new(false));
 
-    // Reader storm: several threads continuously open the store read-only, exactly as concurrent
-    // CLI `query`/`outline` calls or lock-losing read-only serves do.
     let readers: Vec<_> = (0..8)
         .map(|_| {
             let root = Arc::clone(&root);
@@ -120,7 +113,6 @@ fn writer_never_downgrades_under_a_reader_storm() {
         })
         .collect();
 
-    // The sole rightful writer, opened repeatedly mid-storm, must never fail and never downgrade.
     for i in 0..20 {
         let store = Store::open(&root, VIEW_WORKING)
             .unwrap_or_else(|error| panic!("writer open #{i} failed under reader storm: {error}"));

@@ -214,15 +214,11 @@ pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(raw.len());
     let mut i = 0;
     while i < raw.len() {
-        // Line comment: skip from marker through (and including) the trailing newline.
         if !lc_marker.is_empty() && raw[i..].starts_with(lc_marker) {
             i += lc_marker.len();
-            i = memchr::memchr(b'\n', &raw[i..])
-                .map(|off| i + off) // stop at the newline; the whitespace branch consumes it next
-                .unwrap_or(raw.len());
+            i = memchr::memchr(b'\n', &raw[i..]).map(|off| i + off).unwrap_or(raw.len());
             continue;
         }
-        // Block comment: skip to `*/` via memmem.
         if has_block && raw[i..].starts_with(block_open) {
             i += block_open.len();
             if let Some(finder) = &block_close_finder
@@ -230,13 +226,10 @@ pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
             {
                 i = (i + off + block_close.len()).min(raw.len());
             } else {
-                // Unterminated block comment — consume the rest of the buffer, matching the
-                // original "walk to EOF then bump past the close marker" semantics.
                 i = raw.len();
             }
             continue;
         }
-        // Whitespace run → single space (suppressed at the very start).
         if raw[i].is_ascii_whitespace() {
             if !out.is_empty() && out.last() != Some(&b' ') {
                 out.push(b' ');
@@ -249,7 +242,6 @@ pub(crate) fn normalize_for_history(lang: LangId, raw: &[u8]) -> Vec<u8> {
         out.push(raw[i]);
         i += 1;
     }
-    // Trim trailing space introduced by a trailing whitespace run.
     while out.last() == Some(&b' ') {
         out.pop();
     }
@@ -371,11 +363,6 @@ pub(super) fn symbol_line_range(
         .as_str()
         .and_then(|s| repo.read_blob_at_rev("HEAD", s).ok().flatten())
         .or_else(|| path.as_str().and_then(|s| repo.read_blob_staged(s).ok().flatten()))
-        // `..`-safety: `path` is a `RelPath` produced by the scanner's strip_prefix(root) or
-        // git tree enumeration — neither source ever emits `..` components. A repo-relative key
-        // joins under `workdir()`; an external `scan.extra_roots` key is absolute, so
-        // `workdir().join(abs)` yields the absolute path unchanged — which correctly reads the
-        // real external file (that path is what it was indexed under). Either way, no `..` escape.
         .or_else(|| std::fs::read(repo.workdir().join(path.to_path_buf())).ok())
         .unwrap_or_default();
     line_range_in_blob(sym, &bytes)
@@ -494,7 +481,6 @@ pub(super) fn outline_entry_for_blob(
             return Some(Arc::clone(entry));
         }
     }
-    // Cache miss: parse outside the lock so a slow extract doesn't block concurrent lookups.
     let map = Arc::new(crate::extract::l1::extract_l1(lang, &source).ok()?);
     let entry = Arc::new(OutlineEntry {
         map,
@@ -563,8 +549,6 @@ fn structural_hash_of_symbol(
 }
 
 fn find_node_for_range(root: tree_sitter::Node, start: usize, end: usize) -> Option<tree_sitter::Node> {
-    // Iterative DFS: descend into the smallest enclosing subtree that covers (start, end)
-    // exactly, falling back to the smallest enclosing node when no exact match exists.
     let mut best: Option<tree_sitter::Node> = None;
     let mut cursor = root.walk();
     let mut stack = vec![root];
@@ -573,7 +557,6 @@ fn find_node_for_range(root: tree_sitter::Node, start: usize, end: usize) -> Opt
             return Some(node);
         }
         if node.start_byte() <= start && node.end_byte() >= end {
-            // Track the smallest covering ancestor as a fallback.
             if best
                 .map(|b| (node.end_byte() - node.start_byte()) < (b.end_byte() - b.start_byte()))
                 .unwrap_or(true)
@@ -604,14 +587,12 @@ fn walk_structural(
     hasher.update(&(kind_name.len() as u32).to_le_bytes());
     hasher.update(kind_name.as_bytes());
 
-    // Iterate named children by index (Node is Copy) — no Vec staging; extras skipped inline.
     let nc = node.named_child_count() as u32;
     let named_count: u32 = (0..nc)
         .filter(|&i| node.named_child(i).is_some_and(|c| !c.is_extra()))
         .count() as u32;
 
     if named_count == 0 {
-        // Leaf-shaped node: emit identifier or (optionally) literal text.
         let emit_text = is_identifier_kind(kind_name) || (include_literals && is_literal_kind(lang, kind_name));
         if emit_text && let Ok(text) = node.utf8_text(source) {
             hasher.update(&(text.len() as u32).to_le_bytes());
@@ -647,7 +628,6 @@ fn is_identifier_kind(kind: &str) -> bool {
 }
 
 fn is_literal_kind(lang: LangId, kind: &str) -> bool {
-    // Cross-language literal node names. Strings dominate.
     if matches!(
         kind,
         "string"
@@ -685,10 +665,6 @@ fn is_literal_kind(lang: LangId, kind: &str) -> bool {
                 | "float_literal"
                 | "imaginary_literal"
         ),
-        // Conservative default for languages we haven't enumerated: rely on the cross-language
-        // literal table above. Adding a language to the override set is the right way to
-        // extend this — basemind-style structural hashing is meaningless without per-grammar
-        // knowledge of literal node names anyway.
         _ => false,
     }
 }
@@ -717,10 +693,6 @@ pub(super) async fn scan_and_refresh(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
     embed: crate::scanner::EmbedMode,
 ) -> Result<crate::scanner::ScanReport, McpError> {
-    // This serve fell back to read-only because another serve owns the write lock for this repo
-    // (issue #27). It cannot scan without the lock — return a clean, actionable error instead of
-    // attempting a write. The lock-holding serve's watcher keeps the shared index fresh; this
-    // serve's reads pick that up via the passive view watcher.
     if state.read_only {
         return Err(McpError::invalid_request(
             "this basemind serve is read-only: another serve process holds the write lock for \
@@ -732,12 +704,6 @@ pub(super) async fn scan_and_refresh(
     let root = state.root.clone();
     let config = Arc::clone(&state.config);
 
-    // Run the scanner on a blocking thread — fully isolated from the MCP server
-    // runtime's TLS so LanceStore's owned tokio runtime can `block_on` without
-    // tripping tokio's "runtime within a runtime" check. Xberg + rayon handle
-    // their own parallelism here; tokio is intentionally out of this hot path.
-    // A scoped batch (watcher) gets an incremental cache delta; a full scan (manual `rescan` tool /
-    // boot) gets a full rebuild because it also purges stale keys.
     let was_scoped = scoped_paths.is_some();
     let state_for_scan = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
@@ -758,17 +724,10 @@ pub(super) async fn scan_and_refresh(
     .map_err(|e| McpError::internal_error(format!("scan join: {e}"), None))?
     .map_err(|e| McpError::internal_error(format!("rescan: {e}"), None))?;
 
-    // Watcher batch that changed nothing the scanner indexes — the existing cache already reflects
-    // the store. Skip the whole-corpus MapCache rebuild AND the `cache_generation` bump (bumping
-    // needlessly resets every paginating client's cursor). This is the hot no-op path the watcher
-    // hits on gitignored / nested-`.basemind` churn (issue #33). An explicit `rescan` tool call
-    // (`!was_scoped`) is left to fall through so it always refreshes and rolls the snapshot id,
-    // preserving the documented "rescan invalidates cursors" contract.
     if was_scoped && report.stats.updated == 0 && report.stats.removed == 0 {
         return Ok(report);
     }
 
-    // The precise delta to apply to the cache, read off the per-file verdicts.
     let updated: Vec<crate::path::RelPath> = report
         .results
         .iter()
@@ -782,7 +741,6 @@ pub(super) async fn scan_and_refresh(
         .map(|r| crate::path::RelPath::from(r.path.as_str()))
         .collect();
 
-    // Refresh MapCache immediately so the next query sees fresh data; don't race the watcher.
     let new_cache = {
         let store = state.store.read().await;
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
@@ -790,7 +748,6 @@ pub(super) async fn scan_and_refresh(
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
         let cache = if was_scoped {
-            // Incremental: re-read only the changed blobs instead of the whole corpus.
             state.cache.load().with_delta(&store, &updated, &removed)
         } else {
             super::MapCache::build(&store)
@@ -876,8 +833,6 @@ mod tests {
         assert_eq!(normalize_for_history(PYTHON, a), normalize_for_history(PYTHON, b),);
     }
 
-    // ─── structural hash + outline cache (Stage 2) ───────────────────────────
-
     use super::{HashMode, OutlineCache, outline_entry_for_blob, symbol_fingerprint};
     use std::num::NonZeroUsize;
     use std::sync::{Arc, Mutex};
@@ -888,7 +843,6 @@ mod tests {
 
     fn fingerprint_for(source: &[u8], lang: LangId, mode: HashMode) -> Vec<u8> {
         let cache = fresh_cache();
-        // Synthetic OID — we just need *a* key; real gix::ObjectId from a known sha.
         let oid: gix::ObjectId = "0000000000000000000000000000000000000001"
             .parse()
             .expect("synthetic oid");
@@ -946,8 +900,6 @@ mod tests {
         use crate::extract::{Symbol, SymbolKind};
         let blob = b"// hdr\n\nfn alpha() {\n    body;\n}\nfn beta() {}\n";
         let start = blob.windows(8).position(|w| w == b"fn alpha").unwrap();
-        // alpha's body ends at the closing brace; +1 to include the `}` itself, excluding the
-        // trailing newline that separates it from `fn beta`.
         let end = blob.iter().position(|&b| b == b'}').unwrap() + 1;
         let sym = Symbol {
             name: "alpha".into(),
@@ -960,7 +912,6 @@ mod tests {
             decorators: Vec::new(),
         };
         assert_eq!(line_range_in_blob(&sym, blob), (3, 5));
-        // A dirty working copy that inserted lines must not stretch the range past the blob.
         assert_eq!(line_range_in_blob(&sym, &blob[..start + 4]), (3, 3));
     }
 

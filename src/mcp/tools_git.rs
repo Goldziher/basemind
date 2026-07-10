@@ -106,8 +106,6 @@ impl BasemindServer {
             let head = head_sha(repo)?;
             let snapshot = head_snapshot_id(&head);
 
-            // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
-            // cursor_invalidated=true so the caller can restart.
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -125,7 +123,6 @@ impl BasemindServer {
                 None => 0,
             };
 
-            // Walk one extra commit past the page so we can tell whether more remain.
             let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
             let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
                 Some(index) => index.recent_commits(0, walk_depth as usize, params.include_files),
@@ -200,8 +197,6 @@ impl BasemindServer {
             };
 
             let walk_depth = (skip.saturating_add(limit).saturating_add(1)).min(LOG_WALK_MAX) as u32;
-            // Indexed fast path when the git-history index is current; live walk otherwise. Both
-            // return the same newest-first `CommitInfo` prefix, so paging below is identical.
             let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
                 Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
                 None => self
@@ -384,8 +379,6 @@ impl BasemindServer {
             let head = head_sha(repo)?;
             let snapshot = head_snapshot_id(&head);
 
-            // Cursor encodes the offset into the *filtered* hit stream — re-walk the same
-            // window, filter, then skip the first N matches.
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -598,8 +591,6 @@ impl BasemindServer {
             let head = head_sha(repo)?;
             let snapshot = head_snapshot_id(&head);
 
-            // Cursor offset is over the produced `history` entries (newest-first). Walk
-            // enough commits to cover skip+limit+1; bounded by LOG_WALK_MAX.
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -623,8 +614,6 @@ impl BasemindServer {
             };
 
             let walk_depth = (skip.saturating_add(limit).saturating_add(1).saturating_mul(4)).min(LOG_WALK_MAX) as u32;
-            // Only the candidate-commit enumeration is accelerated; the per-blob fingerprint loop
-            // below is unchanged. Both sources yield the same newest-first path-filtered commits.
             let commits: Vec<crate::git::CommitInfo> = match git_history_if_fresh(&self.state, &head) {
                 Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
                 None => self
@@ -739,8 +728,6 @@ impl BasemindServer {
                     ));
                 }
             };
-            // Blame cursor: snapshot_id = 0, offset = last-returned hunk's start_line.
-            // On resume we skip hunks whose start_line <= offset.
             let resume_after: u32 = match params.cursor.as_ref() {
                 Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
                 None => 0,

@@ -34,8 +34,6 @@ pub(super) async fn run_cache_stats(
 ) -> Result<CallToolResult, McpError> {
     let state_for_stats = Arc::clone(&state);
     let stats = tokio::task::spawn_blocking(move || {
-        // Read guard: blocks `scan_and_refresh` for the (cheap) stat walk; cross-process
-        // scans can't run because serve holds the flock.
         let store = state_for_stats.store.blocking_read();
         store_gc::cache_stats(&store.basemind_dir)
     })
@@ -52,8 +50,6 @@ pub(super) async fn run_cache_stats(
 pub(super) async fn run_cache_gc(state: Arc<ServerState>, _params: CacheGcParams) -> Result<CallToolResult, McpError> {
     let state_for_gc = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
-        // The read guard blocks the only in-process writer (`scan_and_refresh`) for the
-        // mark+sweep, so a concurrent rescan can't write a blob we then orphan-reap.
         let store = state_for_gc.store.blocking_read();
         let referenced = store_gc::collect_referenced_hashes(&store.basemind_dir)?;
         store_gc::gc_blobs(&store.basemind_dir, &referenced)
@@ -72,9 +68,6 @@ pub(super) async fn run_cache_clear(
     state: Arc<ServerState>,
     params: CacheClearParams,
 ) -> Result<CallToolResult, McpError> {
-    // `views:<name>` clears a single view (bug #22). Safe in-process for any view EXCEPT the
-    // one this server currently has open (deleting its live Fjall handle's dir would break it
-    // — same hazard as `views`/`all`). Reclaims disk from stale rev/staged views while serving.
     if let Some(name) = params.component.strip_prefix("views:") {
         let name = name.to_string();
         let active_view = state.store.read().await.view.clone();
@@ -107,11 +100,6 @@ pub(super) async fn run_cache_clear(
     })?;
 
     match component {
-        // `all` removes the whole `.basemind/` dir, and `views` removes `index.fjall/` —
-        // the directory the live `IndexDb` handle has OPEN. Deleting either out from under
-        // the running server breaks the open Fjall tree (and, for `all`, the flock this
-        // server holds): a stale handle pointing at a deleted dir. Refuse in-process and
-        // point the operator at the offline CLI, which clears with no handles open.
         CacheComponent::All | CacheComponent::Views => Err(McpError::invalid_request(
             format!(
                 "clearing `{}` removes the live Fjall index out from under the running \
@@ -121,9 +109,6 @@ pub(super) async fn run_cache_clear(
             ),
             None,
         )),
-        // Blobs are content-addressed files, not an open handle: safe to clear under a
-        // write guard, then a rescan re-extracts + rewrites them. Require confirm because
-        // queries briefly see missing L2 blobs until the rescan completes.
         CacheComponent::Blobs => {
             if !params.confirm {
                 return Err(McpError::invalid_request(
@@ -133,14 +118,12 @@ pub(super) async fn run_cache_clear(
                 ));
             }
             clear_live_component(Arc::clone(&state), component).await?;
-            // Rebuild from source so subsequent queries don't hit missing blobs.
             scan_and_refresh(state, None, crate::scanner::EmbedMode::Inline).await?;
             json_result(&CacheClearResponse {
                 component: component.as_str().to_string(),
                 cleared: true,
             })
         }
-        // Non-live caches: clear freely, no confirm, no rebuild needed.
         CacheComponent::Lance | CacheComponent::GitCache | CacheComponent::Telemetry => {
             clear_live_component(Arc::clone(&state), component).await?;
             json_result(&CacheClearResponse {
@@ -174,12 +157,6 @@ pub(super) async fn run_rescan(
     progress_token: Option<rmcp::model::ProgressToken>,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
-    // `full` forces a complete working-tree scan even when `paths` is supplied (full wins);
-    // `None` scoped_paths is the full-scan signal in `scan_and_refresh`. Request paths are raw
-    // strings (not `RelPath`), so validate each through `normalize_query_path` BEFORE joining to
-    // the root: a `../..`-style path would otherwise `root.join` into a traversal that reads (and
-    // indexes) a file outside the repo when `scan.respect_gitignore = false`. `normalize_query_path`
-    // rejects any `..` that escapes the root (→ `None`), mirroring the `shell_spawn` cwd guard.
     let scoped_paths: Option<Vec<std::path::PathBuf>> = match params.paths.filter(|_| !params.full) {
         None => None,
         Some(requested) => {
@@ -196,18 +173,12 @@ pub(super) async fn run_rescan(
 
     let root = state.root.display().to_string();
 
-    // Tell the client the rescan has started (progress is indeterminate up front — the scanner
-    // discovers the file count as it walks).
     if let Some(token) = progress_token.clone() {
         super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
     }
 
-    // Manual `rescan` embeds inline so the tool's return means the index is fully current.
     let report = scan_and_refresh(Arc::clone(&state), scoped_paths, crate::scanner::EmbedMode::Inline).await?;
 
-    // Surface the outcome as a logging notification (gated on the client's level) and close out
-    // progress with the discovered file count as both value and total.
-    // `LoggingLevel` is deprecated by SEP-2577 with no replacement yet; allow until we migrate.
     #[allow(deprecated)]
     super::notifications::emit_log(
         peer,

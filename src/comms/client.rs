@@ -126,8 +126,6 @@ impl SessionContext {
     /// the environment; everywhere else the context is passed explicitly.
     ///
     // NOTE: this is race-free. The `BASEMIND_*` variables are inherited at child-process start
-    // (basemind sets them in the spawn env, never with `set_var` in the running process) and the
-    // server never mutates them afterward, so reading them here cannot race a concurrent writer.
     #[must_use]
     pub fn from_env() -> Self {
         Self {
@@ -233,10 +231,6 @@ impl CommsClient {
         remote: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Self, CommsClientError> {
-        // The session lineage is sourced from the environment at this single boundary: a child
-        // agent that basemind spawned in a shell session inherits `BASEMIND_SESSION_ID` /
-        // `BASEMIND_PARENT_AGENT_ID` and presents them on its `Hello` so the broker auto-joins it
-        // to the matching session-scoped room. A top-level agent has neither var set.
         Self::ensure_and_connect_with_session(agent, remote, cwd, SessionContext::from_env()).await
     }
 
@@ -328,8 +322,6 @@ impl CommsClient {
     /// buffered notifications from the dead link are dropped — they belong to a connection that
     /// no longer exists.
     async fn reconnect(&mut self) -> Result<(), CommsClientError> {
-        // `spawn` is a borrow of `self`, but `ensure_daemon_with` only needs it as `FnOnce`;
-        // borrow it through a closure so we do not move it out of `self`.
         let spawn = &self.spawn;
         singleton::ensure_daemon_with(&self.paths, singleton::probe_alive, |paths| spawn(paths)).await?;
         let (stream, codec) = Self::dial(&self.paths).await?;
@@ -344,8 +336,6 @@ impl CommsClient {
     pub fn agent(&self) -> &AgentId {
         &self.agent
     }
-
-    // ─── public API (the proxied contract) ────────────────────────────────────────────────
 
     /// Register or update this agent's card.
     pub async fn register_agent(&mut self, card: AgentCard) -> Result<(), CommsClientError> {
@@ -578,13 +568,11 @@ impl CommsClient {
         loop {
             match self.read_frame().await? {
                 Some(CommsOut::Notification(n)) => return Ok(Some(n)),
-                Some(CommsOut::Response(_)) => continue, // unsolicited response — ignore
+                Some(CommsOut::Response(_)) => continue,
                 None => return Ok(None),
             }
         }
     }
-
-    // ─── transport plumbing ───────────────────────────────────────────────────────────────
 
     async fn expect_ok(&mut self, req: CommsRequest, label: &'static str) -> Result<(), CommsClientError> {
         match self.request(req).await? {
@@ -624,10 +612,6 @@ impl CommsClient {
         match self.send_and_await(req.clone()).await {
             Ok(resp) => Ok(resp),
             Err(err) if is_connection_lost(&err) => {
-                // The link to the broker is gone. Re-spawn the daemon if its socket is dead,
-                // re-dial, replay the `Hello`, then retry the request exactly once. A second
-                // failure (connection or otherwise) is surfaced — this single-shot bound rules
-                // out an infinite reconnect loop against a daemon that keeps dying.
                 self.reconnect().await?;
                 self.send_and_await(req).await
             }
@@ -754,8 +738,6 @@ mod tests {
     #[test]
     fn session_context_from_env_reads_the_boundary_variables() {
         // SAFETY: env access is serialized by this static mutex and the prior values are restored,
-        // so no other test observes the temporary mutation. `set_var`/`remove_var` are otherwise
-        // unsound under multi-threading; the lock makes this access exclusive.
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -771,7 +753,6 @@ mod tests {
         assert_eq!(present.session_id.as_deref(), Some("bmsh-9-3"));
         assert_eq!(present.parent_agent.as_deref(), Some("lead-agent"));
 
-        // Empty values collapse to `None` (a top-level agent).
         // SAFETY: serialized by ENV_LOCK (see above).
         unsafe {
             std::env::set_var(SESSION_ID_ENV, "");
@@ -782,7 +763,6 @@ mod tests {
             "empty / unset env maps to a top-level (empty) context"
         );
 
-        // Restore the prior environment so sibling tests are unaffected.
         // SAFETY: serialized by ENV_LOCK (see above).
         unsafe {
             match prior_session {

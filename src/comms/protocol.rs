@@ -316,9 +316,6 @@ pub struct StatusReport {
 }
 
 /// An unsolicited message the broker pushes to a subscribed link.
-// The `Message` variant carries the full front-matter and dwarfs the unit `Shutdown` variant.
-// Boxing it would add a heap allocation on every fan-out push (the hot path) to shrink a frame
-// that is constructed-then-serialized once, so the size asymmetry is accepted deliberately.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "notify", content = "data", rename_all = "snake_case")]
@@ -362,7 +359,6 @@ mod tests {
 
     #[test]
     fn request_is_json_rpc_shaped() {
-        // The `method` tag is what a future A2A HTTP front-end keys on.
         let req = CommsRequest::Ping;
         let json = serde_json::to_value(&req).expect("json");
         assert_eq!(json["method"], "ping");
@@ -410,7 +406,6 @@ mod tests {
     #[test]
     fn seq_meta_decodes_legacy_bare_message_meta_with_seq_zero() {
         let legacy = sample_meta("m-old");
-        // The exact bytes a pre-W7 daemon emitted for one `History`/`Inbox` element.
         let legacy_bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy MessageMeta");
         let back: SeqMeta = rmp_serde::from_slice(&legacy_bytes).expect("decode legacy as SeqMeta");
         assert_eq!(back.seq, 0, "missing seq defaults to 0 for legacy records");

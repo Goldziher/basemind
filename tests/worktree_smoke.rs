@@ -41,7 +41,6 @@ fn linked_worktrees_share_the_blob_cache() {
 
     let cfg = ConfigV1::with_defaults();
 
-    // Scan the main worktree BEFORE any linked worktree exists: not shared, blobs land locally.
     {
         let mut store = Store::open(&main, basemind::store::VIEW_WORKING).unwrap();
         assert!(!store.blobs_shared, "no linked worktrees yet → not shared");
@@ -57,14 +56,12 @@ fn linked_worktrees_share_the_blob_cache() {
     let main_blobs = main.join(".basemind").join("blobs");
     assert!(main_blobs.is_dir(), "main scan wrote blobs locally");
 
-    // Add a linked worktree on a new branch.
     let wt2 = tmp.path().join("wt2");
     git(
         &["worktree", "add", "-q", "-b", "feature", wt2.to_str().unwrap()],
         &main,
     );
 
-    // The linked worktree resolves its blob dir to the MAIN worktree's, and marks the cache shared.
     {
         let store2 = Store::open(&wt2, basemind::store::VIEW_WORKING).unwrap();
         assert!(store2.blobs_shared, "linked worktree marks the blob cache shared");
@@ -75,8 +72,6 @@ fn linked_worktrees_share_the_blob_cache() {
         );
     }
 
-    // The MAIN worktree, re-opened now that a linked worktree exists, ALSO sees the cache as shared
-    // (so its own auto-GC is disabled — it must not reap blobs the linked worktree references).
     {
         let store_main = Store::open(&main, basemind::store::VIEW_WORKING).unwrap();
         assert!(
@@ -85,8 +80,6 @@ fn linked_worktrees_share_the_blob_cache() {
         );
     }
 
-    // Scanning the linked worktree writes NO blobs into its own dir — the identical a.rs content
-    // reuses the blob already in the shared cache.
     {
         let mut store2 = Store::open(&wt2, basemind::store::VIEW_WORKING).unwrap();
         scan(

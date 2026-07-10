@@ -30,7 +30,7 @@ pub fn resolve_file(lang: LangId, path: &Path, source: &[u8]) -> FileResolvedRef
         return refs;
     }
     #[cfg(not(feature = "code-intel-js"))]
-    let _ = path; // path only drives JS/TS source-type selection, which is feature-gated
+    let _ = path;
     resolve_via_locals(lang, source)
 }
 
@@ -88,7 +88,7 @@ fn resolve_via_locals(lang: LangId, source: &[u8]) -> FileResolvedRefs {
     let mut out = FileResolvedRefs::new(lang);
     let tree = match with_parser(lang, |p| parse_with_default_timeout(p, source)) {
         Ok(ParseOutcome::Ok(tree)) => tree,
-        _ => return out, // parse failure / timeout / unknown lang → empty facts
+        _ => return out,
     };
     let Ok(bindings) = crate::extract::locals::resolve_locals(lang, &tree, source) else {
         return out;
@@ -111,7 +111,6 @@ mod tests {
 
     #[test]
     fn resolve_file_js_yields_intra_edges_and_imports() {
-        // `x` used in the return resolves to the local `const x`; the import edge is captured.
         let src = b"import { helper } from './util';\nfunction f() {\n  const x = 1;\n  return x + helper();\n}\n";
         let refs = resolve_file("typescript", Path::new("app.ts"), src);
 
@@ -130,9 +129,6 @@ mod tests {
 
     #[test]
     fn resolve_via_locals_emits_real_spans() {
-        // Non-JS path: python resolves through tree-sitter locals. A real local binding must carry
-        // a non-zero-width use span (use_end > use_start), unlike the old interim that set the end
-        // equal to the start. Skips cleanly if the grammar can't be loaded in this environment.
         if !matches!(crate::extract::locals::locals_query("python"), Ok(Some(_))) {
             eprintln!("skip: python locals query unavailable in this environment");
             return;
@@ -149,7 +145,6 @@ mod tests {
                 .all(|e| e.use_end > e.use_start && e.def_end > e.def_start),
             "locals-path edges must carry real (non-zero-width) spans"
         );
-        // `count` is 5 chars — assert exact span widths for that binding on both ends.
         let count_use = b"def outer(a):\n    count = 1\n    return ".len() as u32;
         let edge = refs
             .intra
@@ -170,7 +165,6 @@ mod tests {
 
     #[test]
     fn resolve_file_non_utf8_yields_empty() {
-        // Invalid UTF-8 in a .ts file: the oxc path bails to None, locals can't parse → empty.
         let refs = resolve_file("typescript", Path::new("bad.ts"), &[0xff, 0xfe, 0x00]);
         assert!(refs.is_empty(), "non-UTF-8 source must yield empty facts, not panic");
     }

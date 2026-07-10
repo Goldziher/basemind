@@ -64,8 +64,6 @@ impl BasemindServer {
                 let _ = p;
                 return not_enabled("code-search");
             }
-            // Unreachable when `code-search` is compiled in (the cfg block above returns); kept so
-            // the async block has a tail expression under either feature configuration.
             #[allow(unreachable_code)]
             not_enabled("code-search")
         }
@@ -98,8 +96,6 @@ impl BasemindServer {
                 let _ = p;
                 return not_enabled("code-search");
             }
-            // Unreachable when `code-search` is compiled in (the cfg block above returns); kept so
-            // the async block has a tail expression under either feature configuration.
             #[allow(unreachable_code)]
             not_enabled("code-search")
         }

@@ -200,13 +200,6 @@ impl DocConfig {
             preset: self.embedding_preset.clone(),
             ..Default::default()
         };
-        // Xberg rc.10's `ChunkingConfig` has no language input — sentence /
-        // word boundaries fall out of `ChunkerType` + `ChunkSizing` rather than
-        // a tokenizer keyed on language. Only `LanguageDetectionConfig` is
-        // wired here; an iter 5+ change can revisit chunker selection if
-        // upstream gains a language hint.
-        // xberg gates detection on Option::is_some at features.rs:311; `None`
-        // is the "off" signal, not Some { enabled: false }.
         let language_detection = if self.language.auto_detect {
             Some(LanguageDetectionConfig {
                 enabled: true,
@@ -219,13 +212,6 @@ impl DocConfig {
         let keywords = self.xberg_keywords();
         let ner = self.xberg_ner();
         let summarization = self.xberg_summarization();
-        // Cap xberg's internal fan-out to the configured embed-thread budget.
-        // `ConcurrencyConfig.max_threads` is the single highest-leverage knob:
-        // it bounds how many concurrent ONNX sessions / tensors xberg holds at
-        // once, which is the primary driver of the 15 GB RSS spike on a monorepo.
-        // `resolve_embed_threads` maps the sentinel `0` to `max(2, cores / 4)`
-        // so the default never pins all cores, while still leaving the full
-        // global rayon pool free for code-map extraction.
         let bounded = crate::embeddings::resolve_embed_threads(self.embed_max_threads);
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(bounded),
@@ -281,8 +267,6 @@ impl DocConfig {
         if !self.keywords.enabled {
             return None;
         }
-        // Defend against `ngram_range` not being length-2 (schema constraint enforces
-        // it; the runtime fallback keeps a malformed in-memory config from panicking).
         let ngram = if self.keywords.ngram_range.len() == 2 {
             (self.keywords.ngram_range[0], self.keywords.ngram_range[1])
         } else {
@@ -316,10 +300,6 @@ impl DocConfig {
                 }
             }
         }
-        // Surface algorithm/params mismatches loudly — xberg silently ignores
-        // YakeParams when the algorithm is Rake (and vice versa). The user almost
-        // certainly meant for the params to apply; logging once at config-build
-        // time lets them spot the typo without parsing the xberg source.
         if self.keywords.yake_params.is_some() && self.keywords.algorithm != KeywordAlgorithm::Yake {
             tracing::warn!(
                 algorithm = ?self.keywords.algorithm,
@@ -402,10 +382,6 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
     let krz_config = config.to_xberg();
     let mut input = ExtractInput::from_uri(path.to_string_lossy().into_owned());
     input.mime_type = mime_type.map(str::to_string);
-    // xberg 1.0 returns a batch-shaped `ExtractionResult.results`; a single-file
-    // extract yields exactly one `ExtractedDocument`. Pull it out (surfacing any
-    // non-fatal per-input error if the vec is empty) and carry on with the
-    // per-document fields below.
     let mut extraction = extraction_runtime()
         .block_on(extract(input, &krz_config))
         .map_err(|e| ExtractError::Document(e.to_string()))?;
@@ -460,10 +436,6 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         .unwrap_or_default()
         .into_iter()
         .map(|e| DocEntity {
-            // `entity_category_str` takes `EntityCategory` by value: standard variants
-            // return a static borrow (no alloc in the common case); `Custom(s)` moves `s`.
-            // `.into_owned()` converts `Cow::Borrowed` → `String` (one alloc for statics)
-            // and unwraps `Cow::Owned` for custom labels (zero extra alloc).
             category: entity_category_str(e.category).into_owned(),
             text: e.text,
             start: e.start,
@@ -472,9 +444,6 @@ pub fn extract_doc(path: &Path, mime_type: Option<&str>, config: &DocConfig) -> 
         })
         .collect();
 
-    // `SummaryStrategy` implements `Display` upstream — formatting it directly
-    // produces the same lowercase tags we'd hand-translate ("extractive" /
-    // "abstractive"), and stays correct if xberg adds variants.
     let summary = result.summary.map(|s| DocSummary {
         text: s.text,
         strategy: s.strategy.to_string(),
@@ -528,8 +497,6 @@ fn entity_category_str(category: xberg::types::entity::EntityCategory) -> Cow<'s
 }
 
 fn metadata_pairs(metadata: &xberg::types::Metadata) -> Vec<(String, String)> {
-    // Round-trip the metadata via JSON to flatten its (large, heterogeneous)
-    // shape into stable string pairs without enumerating every field.
     match serde_json::to_value(metadata) {
         Ok(serde_json::Value::Object(map)) => map
             .into_iter()

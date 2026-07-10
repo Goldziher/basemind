@@ -7,9 +7,6 @@ presets = ["claude", "codex"]
 
 builtins = ["rust", "cicd", "documentation", "observability", "default-commands"]
 
-# basemind itself is delivered via the [[plugins]] marketplace entry below (the launcher
-# downloads the published binary), so it is intentionally NOT declared as a project-level
-# mcp_server — that would duplicate the plugin in Claude Code and pin a local binary path.
 
 [[mcp_servers]]
 name = "ai-rulez"

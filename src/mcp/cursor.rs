@@ -56,7 +56,6 @@ impl Cursor {
             o: offset,
             s: snapshot_id,
         };
-        // msgpack is already a workspace dep and the payload is two ints — cheap.
         let bytes = rmp_serde::to_vec(&payload).expect("encode in-memory cursor never fails");
         Cursor(base64url_encode(&bytes))
     }
@@ -92,11 +91,6 @@ pub(super) fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
     }
     None
 }
-
-// ─── tiny base64url codec (no_pad) ───────────────────────────────────────────
-//
-// We avoid pulling the `base64` crate for ~30 lines of stable encoding logic.
-// RFC 4648 §5 (`URL and Filename Safe Alphabet`), no padding.
 
 const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -137,7 +131,7 @@ fn base64url_decode(s: &str) -> Result<Vec<u8>, &'static str> {
             b'0'..=b'9' => b - b'0' + 52,
             b'-' => 62,
             b'_' => 63,
-            b'=' => continue, // tolerate padding even though we don't emit it
+            b'=' => continue,
             _ => return Err("non-base64url byte"),
         };
         buf = (buf << 6) | (v as u32);
@@ -188,8 +182,6 @@ mod tests {
 
     #[test]
     fn prefix_upper_bound_increments_last_byte() {
-        // Use a non-ASCII tail byte so the dictionary-based typos linter
-        // doesn't object to plausible-looking three-letter test strings.
         assert_eq!(prefix_upper_bound(b"prefix\x01"), Some(b"prefix\x02".to_vec()));
     }
 

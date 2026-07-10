@@ -22,7 +22,6 @@ use crate::scanner::{ScanError, ScanSource, submodule_roots_for_source};
 /// Keeping this a hard floor (rather than leaning on the user-replaceable `default_exclude`) means a
 /// user who narrows `scan.exclude` to a single custom pattern still gets these pruned.
 const FLOOR_EXCLUDES: &[&str] = &[
-    // JS / TS
     "**/node_modules/**",
     "**/dist/**",
     "**/build/**",
@@ -31,7 +30,6 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.next/**",
     "**/.nuxt/**",
     "**/.svelte-kit/**",
-    // Python
     "**/.venv/**",
     "**/venv/**",
     "**/__pycache__/**",
@@ -40,20 +38,14 @@ const FLOOR_EXCLUDES: &[&str] = &[
     "**/.mypy_cache/**",
     "**/.ruff_cache/**",
     "**/.tox/**",
-    // Rust
     "**/target/**",
-    // JVM / Gradle
     "**/.gradle/**",
-    // Go / general vendoring
     "**/vendor/**",
-    // Terraform
     "**/.terraform/**",
-    // Bazel convenience symlinks + output trees (root symlinks escape the repo under follow_symlinks)
     "**/bazel-*/**",
     "**/bazel-out/**",
     "**/bazel-bin/**",
     "**/bazel-testlogs/**",
-    // VCS, cache, editor cruft
     "**/.git/**",
     "**/.basemind/**",
     "**/.idea/**",
@@ -81,8 +73,6 @@ pub(crate) struct Filters {
 impl Filters {
     pub(crate) fn build(config: &Config, submodule_roots: Vec<String>) -> Result<Self, ScanError> {
         let include = compile_globs(config.scan.include.iter().map(String::as_str))?;
-        // The exclude set is the always-on floor plus the user's `scan.exclude`, so narrowing the
-        // user list never drops a floor entry (build artifacts, VCS dirs, symlink-escape roots).
         let exclude = compile_globs(
             FLOOR_EXCLUDES
                 .iter()
@@ -98,7 +88,6 @@ impl Filters {
         } else {
             Vec::new()
         };
-        // Pre-build `"{root}/"` once so `allows` never calls `format!` per candidate file.
         let submodule_prefixes: Vec<String> = submodule_roots.iter().map(|r| format!("{r}/")).collect();
         Ok(Self {
             include,
@@ -214,8 +203,6 @@ pub(crate) fn walk_extra_roots(root: &Path, config: &Config, filters: &Filters, 
             out.push(abs_str.to_string());
         }
     }
-    // Extra roots can overlap (nested config entries); dedup only the appended tail so the
-    // repo walk's hot path is untouched when `extra_roots` is empty.
     if out.len() > start {
         out[start..].sort_unstable();
         let mut seen_tail = out.split_off(start);
@@ -361,8 +348,6 @@ mod tests {
     fn filter_for(body: impl FnOnce(&Path)) -> (IndexFilter, PathBuf, tempfile::TempDir) {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().canonicalize().expect("canonicalize");
-        // Mark it a git repo so `.git/info/exclude`-style resolution behaves like a real checkout;
-        // `ignore` honors `.gitignore` files regardless, but this keeps semantics realistic.
         fs::create_dir_all(root.join(".git")).expect("mkdir .git");
         body(&root);
         let config = crate::config::default_for_root(&root);
@@ -390,8 +375,6 @@ mod tests {
 
     #[test]
     fn should_reject_path_when_ancestor_directory_is_gitignored() {
-        // The case a single flat `Gitignore` matcher gets wrong: the file itself matches nothing,
-        // but its parent directory is ignored by the repo-root .gitignore.
         let (filter, root, _tmp) = filter_for(|root| {
             fs::write(root.join(".gitignore"), b"build/\n").unwrap();
             fs::create_dir_all(root.join("build/nested")).unwrap();
@@ -417,7 +400,6 @@ mod tests {
             fs::write(root.join("child/.basemind/y.msgpack"), b"\x00").unwrap();
             fs::write(root.join("child/real.rs"), b"fn d() {}\n").unwrap();
         });
-        // Glob layer alone (no I/O) must reject both the root and nested child `.basemind/`.
         assert!(!filter.allows_glob(".basemind/x.msgpack"));
         assert!(!filter.allows_glob("child/.basemind/y.msgpack"));
         assert!(!filter.is_indexable(&root.join(".basemind/x.msgpack")));
@@ -443,8 +425,6 @@ mod tests {
 
     #[test]
     fn should_apply_exclude_floor_even_with_a_narrow_user_exclude() {
-        // A user who narrows `scan.exclude` to a single custom pattern must still get the floor
-        // (node_modules, target, …) pruned — the floor is added on top, never replaced.
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().canonicalize().expect("canonicalize");
         fs::create_dir_all(root.join(".git")).expect("mkdir .git");
@@ -452,7 +432,6 @@ mod tests {
         config.scan.exclude = vec!["**/mycustom/**".to_string()];
         let filter = IndexFilter::new(&root, &config).expect("build filter");
 
-        // Floor entries are pruned despite not being in the user's narrowed list.
         assert!(
             !filter.allows_glob("node_modules/react/index.js"),
             "floor: node_modules"
@@ -463,9 +442,7 @@ mod tests {
             "floor: __pycache__ / *.pyc"
         );
         assert!(!filter.allows_glob("bazel-out/gen/x.go"), "floor: bazel-out");
-        // The user's own pattern is honored too (added on top of the floor).
         assert!(!filter.allows_glob("mycustom/thing.rs"), "user exclude honored");
-        // A normal source file survives.
         assert!(filter.allows_glob("src/lib.rs"), "real source file kept");
     }
 
@@ -474,9 +451,7 @@ mod tests {
         let (filter, root, _tmp) = filter_for(|root| {
             fs::write(root.join("a.rs"), b"fn e() {}\n").unwrap();
         });
-        // The watched root itself (empty rel) — the FSEvents coalescing case — is not indexable.
         assert!(!filter.is_indexable(&root));
-        // A path outside the root is rejected.
         assert!(!filter.is_indexable(Path::new("/definitely/not/under/root.rs")));
     }
 }

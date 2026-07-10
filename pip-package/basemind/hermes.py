@@ -30,8 +30,6 @@ _PKG_DIR = Path(__file__).resolve().parent
 _SKILLS_DIR = _PKG_DIR / "skills"
 _COMMANDS_DIR = _PKG_DIR / "commands"
 
-# Context-economy operating discipline — mirrors hooks/session-start so the guidance an agent
-# sees is identical across harnesses.
 _DISCIPLINE = (
     "basemind is available over MCP in this session — a tree-sitter code map + git context. "
     "Prefer it over grep/read for structural and historical questions: its tools return paths, "
@@ -67,18 +65,12 @@ def register(ctx) -> None:
             pass
 
 
-# ── Skills ──────────────────────────────────────────────────────────────────────────────────
-
-
 def _register_skills(ctx) -> None:
     reg = getattr(ctx, "register_skill", None)
     if not callable(reg) or not _SKILLS_DIR.is_dir():
         return
     for skill_md in sorted(_SKILLS_DIR.glob("*/SKILL.md")):
         _safe_call(reg, skill_md.parent.name, str(skill_md))
-
-
-# ── Slash commands ──────────────────────────────────────────────────────────────────────────
 
 
 def _register_commands(ctx) -> None:
@@ -107,9 +99,6 @@ def _make_command_handler(body: str):
     return handler
 
 
-# ── Comms notification hooks ────────────────────────────────────────────────────────────────
-
-
 def _register_hooks(ctx) -> None:
     reg = getattr(ctx, "register_hook", None)
     inject = getattr(ctx, "inject_message", None)
@@ -119,7 +108,6 @@ def _register_hooks(ctx) -> None:
     def _inject(text):
         if not text:
             return
-        # inject_message is documented as inject_message(content, role="user"); tolerate either arity.
         if not _safe_call(inject, text):
             _safe_call(inject, text, "user")
 
@@ -137,7 +125,7 @@ def _register_hooks(ctx) -> None:
 def _session_start_context(cwd: str) -> str:
     """Boot context: the operating discipline, plus a condensed comms inbox if the broker responds."""
     messages = _inbox_messages(cwd, 8)
-    if messages is None:  # broker unavailable — discipline only
+    if messages is None:
         return _DISCIPLINE
     if messages:
         return (
@@ -155,7 +143,7 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
         return None
     max_ts = max((_ts(m) for m in messages), default=0)
     hwm_file = _hwm_path(session_id)
-    if not hwm_file.exists():  # first turn: baseline only, do not replay history
+    if not hwm_file.exists():
         _write_text(hwm_file, str(max_ts))
         return None
     hwm = _read_int(hwm_file)
@@ -169,9 +157,6 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
         f"{_format_lines(fresh)}\n"
         "Reply with room_post {room, subject, body, reply_to:<id>} if a response is warranted."
     )
-
-
-# ── basemind CLI bridge + helpers ───────────────────────────────────────────────────────────
 
 
 def _inbox_messages(cwd: str, limit: int):

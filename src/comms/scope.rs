@@ -43,9 +43,6 @@ pub fn scope_chain(cwd: &Path, repo: Option<&Repo>) -> ScopeChain {
 
     let remote = repo.and_then(|r| {
         let key = crate::git::scope_key(r);
-        // `scope_key` returns `path:<workdir>` when there is no origin remote. That is a
-        // local-only fallback, not a shareable remote identity, so we do not treat it as a
-        // `Remote` scope — path-prefix rooms cover the local-only case.
         if key.starts_with("path:") { None } else { Some(key) }
     });
 
@@ -56,8 +53,6 @@ pub fn scope_chain(cwd: &Path, repo: Option<&Repo>) -> ScopeChain {
         remote,
         cwd,
         ancestors,
-        // Session context is not derivable from the filesystem; the broker populates it from
-        // the `Hello` frame after building the base chain.
         session_id: None,
         parent_agent: None,
     }
@@ -170,8 +165,6 @@ mod tests {
 
     #[test]
     fn path_prefix_matches_ancestor_of_cwd() {
-        // Use a non-existent path so canonicalize falls back to the literal path; the
-        // ancestor relationship is what we assert.
         let c = chain(None, "/home/u/workspace/monorepo/services/api");
         assert!(
             room_matches(&RoomScope::PathPrefix(PathBuf::from("/home/u/workspace/monorepo")), &c),
@@ -182,12 +175,10 @@ mod tests {
     #[test]
     fn path_prefix_does_not_match_sibling_or_descendant_only() {
         let c = chain(None, "/home/u/workspace/monorepo");
-        // A deeper path is NOT an ancestor of cwd → no match.
         assert!(!room_matches(
             &RoomScope::PathPrefix(PathBuf::from("/home/u/workspace/monorepo/services")),
             &c
         ));
-        // A sibling tree → no match.
         assert!(!room_matches(
             &RoomScope::PathPrefix(PathBuf::from("/home/u/other")),
             &c

@@ -47,18 +47,10 @@ pub(super) fn apply_budget<T: Serialize>(items: Vec<T>, max_tokens: Option<u32>)
     let mut kept: Vec<T> = Vec::with_capacity(total);
     let mut used: u64 = 0;
     for item in items {
-        // Deliberately the cheap `bytes/4` heuristic, not the real tokenizer: this loop runs
-        // per-item on every budgeted tool call (a hot path) and only ranks/fits items — it is
-        // not user-facing telemetry, so a tokenizer call per item would be an unjustified cost.
         let cost = match serde_json::to_vec(&item) {
             Ok(bytes) => bytes_to_tokens(bytes.len() as u64),
-            // A serialize failure here is unexpected (every response item is plain JSON),
-            // but rather than drop the whole page treat the item as zero-cost and keep it —
-            // the worst case is a slight budget overshoot, never a silent data loss.
             Err(_) => 0,
         };
-        // Always admit the first item so a tiny budget still makes forward progress; after
-        // that, stop as soon as adding this item would push the running total over budget.
         if kept.is_empty() || used.saturating_add(cost) <= budget {
             used = used.saturating_add(cost);
             kept.push(item);
@@ -106,11 +98,9 @@ mod tests {
 
     #[test]
     fn keeps_exact_prefix_that_fits_and_reports_dropped_count() {
-        // 5 items × 4 tokens each = 20 tokens total. Budget of 9 admits exactly 2 (8
-        // tokens); the 3rd would reach 12 > 9, so it and the rest are dropped.
         let items: Vec<Item> = ('a'..='e').map(item).collect();
         let input_len = items.len();
-        let budget = ITEM_TOKENS * 2 + 1; // 9: fits 2 (8), not 3 (12).
+        let budget = ITEM_TOKENS * 2 + 1;
         let out = apply_budget(items, Some(budget as u32));
         assert_eq!(out.items.len(), 2, "exactly the 2-item prefix fits");
         assert_eq!(
@@ -124,7 +114,6 @@ mod tests {
 
     #[test]
     fn budget_exactly_at_boundary_keeps_all() {
-        // Budget exactly equal to the total cost keeps every item, drops none.
         let items: Vec<Item> = ('a'..='c').map(item).collect();
         let out = apply_budget(items, Some((ITEM_TOKENS * 3) as u32));
         assert_eq!(out.items.len(), 3);

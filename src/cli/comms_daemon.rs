@@ -46,11 +46,6 @@ pub fn run() -> Result<()> {
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        // Bind, open the store, and build the broker INSIDE the runtime: `bind_listener`
-        // converts a std listener via `tokio::net::UnixListener::from_std` (or creates the first
-        // named-pipe instance on Windows), which requires a live reactor — calling it before
-        // entering the runtime panics ("no reactor running"). The bind IS the singleton lock;
-        // probe before reclaiming a stale endpoint.
         let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
             Ok(listener) => listener,
             Err(singleton::SingletonError::AlreadyRunning(p)) => {
@@ -61,8 +56,6 @@ pub fn run() -> Result<()> {
         };
 
         let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
-        // Startup prune: trim any messages already past their TTL before serving, so a daemon that
-        // inherits an existing store does not carry stale history forward.
         match store.prune_expired(crate::comms::store::MESSAGE_TTL) {
             Ok(n) if n > 0 => {
                 tracing::info!(pruned = n, "comms: pruned expired messages on startup")
@@ -74,7 +67,6 @@ pub fn run() -> Result<()> {
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // Signal handling: SIGTERM / Ctrl-C begins the drain.
         let broker_for_signal = broker.clone();
         let shutdown_for_signal = shutdown_tx.clone();
         tokio::spawn(async move {
@@ -84,15 +76,12 @@ pub fn run() -> Result<()> {
             let _ = shutdown_for_signal.send(true);
         });
 
-        // Idle reaper: self-terminate once the daemon has no connected links and no activity
-        // for `IDLE_REAP_AFTER`, so a daemon orphaned by a dead session does not linger. Drives
-        // the same clean drain path as a `Stop` RPC / SIGTERM.
         let broker_for_reaper = broker.clone();
         let shutdown_for_reaper = shutdown_tx.clone();
         tokio::spawn(async move {
             use crate::comms::daemon::{IDLE_REAP_AFTER, IDLE_REAP_CHECK_EVERY};
             let mut tick = tokio::time::interval(IDLE_REAP_CHECK_EVERY);
-            tick.tick().await; // consume the immediate first tick
+            tick.tick().await;
             loop {
                 tick.tick().await;
                 if broker_for_reaper.is_idle_for(IDLE_REAP_AFTER).await {
@@ -104,13 +93,10 @@ pub fn run() -> Result<()> {
             }
         });
 
-        // Message-TTL sweep: periodically delete messages past `MESSAGE_TTL` so the comms store
-        // cannot grow without bound over a long-lived daemon. Read-side recency filtering hides
-        // old messages; this is what actually reclaims their storage.
         let store_for_prune = store.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(PRUNE_EVERY);
-            tick.tick().await; // consume the immediate first tick (startup prune already ran)
+            tick.tick().await;
             loop {
                 tick.tick().await;
                 match store_for_prune.prune_expired(crate::comms::store::MESSAGE_TTL) {
@@ -121,12 +107,6 @@ pub fn run() -> Result<()> {
             }
         });
 
-        // Socket-ownership watchdog (Unix): if our bound socket file is unlinked or replaced by a
-        // *different* daemon (a reclaim that wrongly judged us dead — see `bind_listener`), we are
-        // serving a dangling endpoint no client can reach. Self-terminate promptly rather than
-        // linger as an orphan. This is the decisive guard against daemon pile-up: an orphaned
-        // daemon dies within `OWNERSHIP_CHECK_EVERY` instead of waiting out the 30-min idle reaper
-        // (which never fires if a stale link keeps the link count above zero).
         #[cfg(unix)]
         if let Some(bound_inode) = socket_inode(&paths.socket_path) {
             let broker_for_owner = broker.clone();
@@ -134,7 +114,7 @@ pub fn run() -> Result<()> {
             let socket = paths.socket_path.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(OWNERSHIP_CHECK_EVERY);
-                tick.tick().await; // consume the immediate first tick
+                tick.tick().await;
                 loop {
                     tick.tick().await;
                     if socket_inode(&socket) != Some(bound_inode) {
@@ -150,9 +130,6 @@ pub fn run() -> Result<()> {
             });
         }
 
-        // The bound endpoint is platform-specific: a `UnixListener` on Unix, a first
-        // `NamedPipeServer` instance on Windows. Each gets a tiny object-safe shim so the daemon
-        // dispatches through the same `CommsFrontendObj` trait object.
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
             crate::comms::frontend_uds::UdsFrontend::from_listener(listener, paths.socket_path.clone()),
@@ -172,8 +149,6 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-// `CommsFrontend::serve` uses RPITIT and is not object-safe, so wrap it behind a tiny object-safe
-// shim for the single dynamic dispatch in the daemon entry point.
 trait CommsFrontendObj: Send {
     fn serve_obj(
         self: Box<Self>,
@@ -249,15 +224,12 @@ mod tests {
         std::fs::write(&b, b"").expect("write b");
 
         let ident_a = socket_inode(&a).expect("a exists");
-        // Stable while the file is unchanged — the watchdog must not false-positive on its own socket.
         assert_eq!(socket_inode(&a), Some(ident_a), "identity is stable across stats");
-        // A different file has a different (dev, inode) — models a reclaim that rebound the path.
         assert_ne!(
             socket_inode(&b),
             Some(ident_a),
             "a distinct file must not match our bound identity"
         );
-        // Absent after unlink — models a reclaim that removed our socket.
         std::fs::remove_file(&a).expect("unlink a");
         assert_eq!(socket_inode(&a), None, "an unlinked socket reports absence");
     }

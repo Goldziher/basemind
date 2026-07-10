@@ -26,7 +26,6 @@ def test_native_arm64_darwin_resolves_arm64(monkeypatch):
 
 
 def test_rosetta_shell_on_apple_silicon_resolves_native_arm64(monkeypatch):
-    # x86_64 process, hw.optional.arm64 MASKED by Rosetta, but proc_translated=1.
     triple = _triple(
         monkeypatch,
         system="Darwin",
@@ -47,7 +46,6 @@ def test_apple_silicon_native_signal_resolves_arm64(monkeypatch):
 
 
 def test_genuine_intel_mac_resolves_x86_64(monkeypatch):
-    # Real Intel Mac: neither hardware signal set → x86_64-apple-darwin (no longer raises).
     triple = _triple(monkeypatch, system="Darwin", machine="x86_64", sysctls={})
     assert triple == "x86_64-apple-darwin"
 
@@ -63,7 +61,6 @@ def test_prune_removes_old_versions_keeps_current(monkeypatch, tmp_path):
     for name in ("0.9.0", "0.14.0", "0.19.2"):
         (cache / name).mkdir(parents=True)
         (cache / name / "basemind").write_bytes(b"x")
-    # A non-version sibling (e.g. a lock/temp dir) must be left untouched.
     (cache / ".lock").mkdir()
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
 
@@ -75,5 +72,4 @@ def test_prune_removes_old_versions_keeps_current(monkeypatch, tmp_path):
 
 def test_prune_is_noop_when_cache_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
-    # No ~/.cache/basemind at all — must not raise.
     downloader._prune_stale_versions("0.19.2")

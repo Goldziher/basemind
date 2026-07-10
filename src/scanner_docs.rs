@@ -78,10 +78,6 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig, embed: boo
         language: cfg.language.clone(),
         keywords: cfg.keywords.clone(),
         ner: cfg.ner.clone(),
-        // Summarisation + LLM ride on the same `DocConfig` because the boundary
-        // code in `DocConfig::to_xberg` resolves abstractive ⇒ LLM lookup
-        // in one place. The top-level `[llm]` block is intentionally shared
-        // across capabilities (ner-llm, summarization-llm, …).
         summarization: cfg.summarization.clone(),
         llm: llm.clone(),
         embed_max_threads: cfg.embed_max_threads,
@@ -98,10 +94,8 @@ pub(crate) fn doc_config_from(cfg: &DocumentsConfig, llm: &LlmConfig, embed: boo
 /// `mime_guess` fallback, so a MIME-only denylist would miss them. Kept separate from
 /// [`BINARY_EXTENSIONS`] so the toggle only affects archives, never true binaries.
 const ARCHIVE_EXTENSIONS: &[&str] = &[
-    // archives / compressed
-    "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br", "cab",
-    "ar", "iso", "dmg", // packaged archives (zip/tar underneath)
-    "jar", "war", "ear", "apk", "whl", "egg", "deb", "rpm", "nupkg", "pkg", "msi", "crate",
+    "zip", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "zstd", "7z", "rar", "lz", "lz4", "lzma", "br",
+    "cab", "ar", "iso", "dmg", "jar", "war", "ear", "apk", "whl", "egg", "deb", "rpm", "nupkg", "pkg", "msi", "crate",
 ];
 
 /// Native / compiled-binary extensions. ALWAYS rejected — these carry no extractable text, and
@@ -164,7 +158,6 @@ fn binary_ext_set() -> &'static AHashSet<&'static str> {
 fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfig) -> bool {
     if let Some(ext) = abs.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
-        // User-configured denials and true binaries are unconditional.
         if binary_ext_set().contains(ext_lower.as_str())
             || cfg
                 .extension_denylist
@@ -173,7 +166,6 @@ fn is_denied_binary_or_archive(abs: &Path, mime_type: &str, cfg: &DocumentsConfi
         {
             return true;
         }
-        // The archive floor is skipped when the user opted into archive extraction.
         if !cfg.extract_archives && archive_ext_set().contains(ext_lower.as_str()) {
             return true;
         }
@@ -195,8 +187,6 @@ pub(crate) fn should_extract_document(abs: &Path, cfg: &DocumentsConfig) -> Opti
         return None;
     }
     let mime_type = mime::detect_mime_type(abs, false).ok()?;
-    // Reject archives / compressed containers / binaries BEFORE the allowlist branch, so they never
-    // reach xberg's recursive archive extractor + embedder regardless of allowlist configuration.
     if is_denied_binary_or_archive(abs, &mime_type, cfg) {
         return None;
     }
@@ -212,9 +202,6 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
         return true;
     }
     if let Some(prefix) = entry.strip_suffix('/') {
-        // Treat "image/" as the prefix "image/" — match `image/png` etc.
-        // Zero-alloc: check the prefix then that the very next byte is `/`,
-        // instead of building a throwaway `format!("{prefix}/")` per call.
         return mime_type.starts_with(prefix) && mime_type.as_bytes().get(prefix.len()) == Some(&b'/');
     }
     false
@@ -224,9 +211,6 @@ fn matches_mime(entry: &str, mime_type: &str) -> bool {
 /// store, and assemble a [`PendingDocBatch`] for the apply pass. Returns
 /// `Ok(None)` when extraction succeeded but produced no embeddings (we still
 /// persist the blob; the LanceDB side is just a no-op for that file).
-// Eight args sits one above clippy's default seven-arg threshold; collapsing
-// `cfg` + `llm` into a wrapper just to satisfy the lint would obscure the
-// callsite — the scanner already deals in those two structs by reference.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn extract_and_persist_doc(
     store: &Store,
@@ -239,31 +223,18 @@ pub(crate) fn extract_and_persist_doc(
     scope: &str,
     mode: EmbedMode,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
-    // `Deferred` forces the no-embed path regardless of the configured `documents.embed`, so serve
-    // boot extracts + caches the blob without paying the ONNX cost and emits no vector rows; the
-    // background `Inline` pass fills embeddings in later.
-    // A document matching `documents.embed_exclude` is still extracted + indexed, only its
-    // embedding is skipped (the blob is persisted; the LanceDB side is a no-op for that file).
     let embed = matches!(mode, EmbedMode::Inline)
         && cfg.embed
         && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude);
     let hex_buf = hashing::hex_buf(hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
-    // Content-addressed cache reuse (mirrors `scanner_code::chunk_and_embed`): identical source
-    // bytes at any path already extracted (and, when embedding, already embedded at the current
-    // preset) → rebuild the LanceDB rows from the cached `.doc.msgpack` blob and skip xberg extract
-    // + ONNX embed entirely. This dedups identical files within a store and, once blobs are shared,
-    // across worktrees. `read_doc_by_hex` surfaces a schema-mismatched blob as an error → treated as
-    // a miss (`.ok().flatten()`).
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
         && cached_doc_is_reusable(&cached, cfg, embed)
     {
         return Ok(Some(pending_from_doc(cached, rel, scope, cfg, embed)));
     }
 
-    // Cache miss: extract (xberg embeds inline when `embed`), then persist the content-addressed
-    // blob so the next scan / a sibling path / a sibling worktree can reuse it.
     let doc_config = doc_config_from(cfg, llm, embed);
     let doc: FileMapDoc =
         extract_doc(abs, Some(mime_type), &doc_config).with_context(|| format!("extract document {rel}"))?;
@@ -303,8 +274,6 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
 /// directly into the [`DocumentRow`]s instead of cloning them (the embedding `Vec<f32>` can be
 /// hundreds of kilobytes per chunk). Callers extract any fields they need before this call.
 fn pending_from_doc(doc: FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig, embed: bool) -> PendingDocBatch {
-    // Hoist these before any potential early return that would otherwise need
-    // to re-read from an already-moved value.
     let chunk_count = doc.chunks.len();
     let embedding_dim = doc.embedding_dim;
     let no_rows = PendingDocBatch {
@@ -313,7 +282,6 @@ fn pending_from_doc(doc: FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConf
         embedding_dim,
         rows: Vec::new(),
     };
-    // Guard against a pathological input exploding into tens of thousands of vector rows.
     if chunk_count > cfg.max_chunks_per_document {
         tracing::warn!(
             rel,
@@ -344,9 +312,6 @@ fn pending_from_doc(doc: FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConf
 fn build_doc_rows(doc: FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
     let scope_owned = scope.to_string();
     let rel_owned = rel.to_string();
-    // `doc.mime_type` is moved out of the struct — no extra clone compared to the previous
-    // `doc.mime_type.clone()`. It is still cloned once per row below (short string, unavoidable
-    // because each DocumentRow owns its mime_type).
     let mime_owned = doc.mime_type;
     doc.chunks
         .into_iter()
@@ -356,10 +321,10 @@ fn build_doc_rows(doc: FileMapDoc, rel: &str, scope: &str) -> Vec<DocumentRow> {
             path: rel_owned.clone(),
             chunk_idx: u32::try_from(idx).unwrap_or(u32::MAX),
             mime_type: mime_owned.clone(),
-            text: chunk.text, // moved — no String clone per chunk
+            text: chunk.text,
             byte_start: chunk.byte_start,
             byte_end: chunk.byte_end,
-            embedding: chunk.embedding, // moved — no Vec<f32> clone per chunk
+            embedding: chunk.embedding,
         })
         .collect()
 }
@@ -377,7 +342,6 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
     for path in stale {
         store.remove_doc(path);
     }
-    // Nothing to purge from vectors if the store was never built — do not create it here.
     if store.lance.is_none() && !store.lance_dir_exists() {
         return;
     }
@@ -422,16 +386,10 @@ pub(crate) fn flush_document_batches(
     embedding_model: &str,
 ) -> usize {
     let mut inserted = 0usize;
-    // Determine the dim from the first batch that actually has rows; if every
-    // batch is empty (no embeddings), there's nothing to push.
     let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
         return 0;
     };
 
-    // Sanity-check the configured preset name against the runtime dim. A mismatch here
-    // means either the user passed an unknown preset, or the embedding backend swapped
-    // out from under us — both worth surfacing rather than silently writing the wrong
-    // dim into LanceDB.
     match preset_dim(embedding_model) {
         Ok(expected) if expected != dim => {
             tracing::error!(
@@ -496,8 +454,6 @@ pub(crate) fn doc_scope_for<'a>(
         if let Ok(canonical) = raw_root.canonicalize()
             && let Some(prefix) = canonical.to_str()
         {
-            // External keys are forward-slash normalized; match the extra-root prefix the same
-            // way so a Windows drive path (`C:\root` vs the `C:/root/…` key) still compares equal.
             #[cfg(windows)]
             let prefix = prefix.replace('\\', "/");
             #[cfg(windows)]
@@ -554,8 +510,6 @@ mod tests {
             "same preset (balanced) must reuse the cached vectors"
         );
 
-        // `multilingual` shares dim 768 with `balanced`, so the dim gate alone would pass —
-        // the model check is what forces a recompute here.
         let switched = DocumentsConfig {
             embedding_preset: "multilingual".to_string(),
             ..DocumentsConfig::default()
@@ -565,7 +519,6 @@ mod tests {
             "switching balanced -> multilingual (same dim, different model) must force recompute"
         );
 
-        // With embedding off, any cached doc is reusable regardless of model.
         assert!(
             cached_doc_is_reusable(&doc, &switched, false),
             "embedding off: cached doc is always reusable"
@@ -586,7 +539,6 @@ mod tests {
     fn extract_archives_toggle_gates_only_archives_not_binaries() {
         let default_cfg = DocumentsConfig::default();
         assert!(!default_cfg.extract_archives, "archives rejected by default");
-        // Default: an archive extension is denied.
         assert!(is_denied_binary_or_archive(
             Path::new("bundle.zip"),
             "application/zip",
@@ -597,12 +549,10 @@ mod tests {
             extract_archives: true,
             ..DocumentsConfig::default()
         };
-        // With the toggle on, the archive extension + archive MIME are relaxed.
         assert!(
             !is_denied_binary_or_archive(Path::new("bundle.zip"), "application/zip", &extract_cfg),
             "extract_archives=true must route archives to the extractor"
         );
-        // True binaries are ALWAYS denied — the toggle never relaxes them.
         assert!(
             is_denied_binary_or_archive(Path::new("libfoo.so"), "application/x-sharedlib", &extract_cfg),
             "binaries stay denied even with extract_archives=true"
@@ -620,9 +570,6 @@ mod tests {
         assert!(matches_mime("image/", "image/jpeg"));
         assert!(!matches_mime("image/", "video/mp4"));
         assert!(!matches_mime("application/pdf", "application/json"));
-        // The zero-alloc byte check must not let a longer type name that merely
-        // *starts with* the prefix slip through: `image/` must NOT match
-        // `imageprocessing/x` (next byte after `image` is `p`, not `/`).
         assert!(!matches_mime("image/", "imageprocessing/x"));
     }
 
@@ -671,16 +618,12 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        // Use a path that doesn't need to exist — the disabled flag short-circuits
-        // before xberg ever touches the filesystem.
         let out = should_extract_document(Path::new("dummy.pdf"), &cfg);
         assert!(out.is_none());
     }
 
     #[test]
     fn should_extract_document_rejects_archives_and_binaries() {
-        // `detect_mime_type(_, false)` is extension-based and does not stat the file, so
-        // non-existent paths are fine here.
         let cfg = DocumentsConfig::default();
         for path in [
             "vendor/lib.zip",
@@ -717,7 +660,6 @@ mod tests {
             extension_denylist: vec!["pdf".to_string()],
             ..Default::default()
         };
-        // The built-in floor still applies AND the user extension is now denied too.
         assert!(should_extract_document(Path::new("docs/manual.pdf"), &cfg).is_none());
         assert!(should_extract_document(Path::new("vendor/lib.zip"), &cfg).is_none());
     }
@@ -725,9 +667,7 @@ mod tests {
     #[test]
     fn images_pass_but_audio_video_denied() {
         let cfg = DocumentsConfig::default();
-        // Images retain allowlist behavior (xberg OCR may extract text) — not auto-denied.
         assert!(should_extract_document(Path::new("assets/photo.png"), &cfg).is_some());
-        // Audio / video are never extractable → denied via the MIME prefix denylist.
         assert!(should_extract_document(Path::new("clips/audio.mp3"), &cfg).is_none());
         assert!(should_extract_document(Path::new("clips/movie.mp4"), &cfg).is_none());
     }
@@ -735,7 +675,6 @@ mod tests {
     #[test]
     fn doc_scope_keeps_default_for_repo_relative_paths() {
         let cfg = crate::config::ConfigV1::with_defaults();
-        // Repo-relative keys (no leading `/`) keep the scan-wide default scope, borrowed.
         let scope = doc_scope_for("docs/manual.pdf", "repo:origin", &cfg);
         assert_eq!(scope, "repo:origin");
         assert!(matches!(scope, std::borrow::Cow::Borrowed(_)));
@@ -743,8 +682,6 @@ mod tests {
 
     #[test]
     fn doc_scope_namespaces_external_files_under_their_extra_root() {
-        // An external (absolute) key is scoped by the owning `extra_roots` entry so out-of-repo
-        // documents don't land in the repository's own doc scope.
         let ext = tempfile::tempdir().expect("tempdir");
         let ext_canonical = std::fs::canonicalize(ext.path()).unwrap();
         let mut cfg = crate::config::ConfigV1::with_defaults();

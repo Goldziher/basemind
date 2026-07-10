@@ -106,9 +106,6 @@ where
                 .context("--socket requires an absolute daemon socket path")?;
             socket_path = Some(std::path::PathBuf::from(value));
         } else if arg == SIZE_FLAG {
-            // Defensive: a malformed size never aborts the attach — it falls back to
-            // the default geometry. The terminal resizes to the real size via SIGWINCH
-            // inside `attach_terminal_with_initial_bytes` regardless.
             if let Some(value) = iter.next()
                 && let Some((c, r)) = parse_size(&value.to_string_lossy())
             {
@@ -124,8 +121,6 @@ where
     let socket_path = socket_path.context("the visual attach requires a --socket path")?;
 
     crate::shells::daemon::validate_socket_path(&socket_path)?;
-    // Validate the session name through the same constructor the spawn path uses, so a
-    // malformed name fails here rather than at the daemon boundary.
     rmux_sdk::SessionName::new(session_name.clone())
         .map_err(|e| anyhow::anyhow!("invalid rmux session name {session_name:?}: {e}"))?;
 
@@ -166,8 +161,6 @@ fn drive_attach(parsed: &AttachArgs) -> Result<()> {
     match connection.begin_attach(name).context("begin attach to rmux session")? {
         rmux_client::AttachTransition::Upgraded(upgrade) => {
             let (stream, initial) = upgrade.into_parts();
-            // Blocks (owning the terminal: raw termios + SIGWINCH) until detach / EOF,
-            // which is the clean-exit path mapped to `Ok(())`.
             rmux_client::attach_terminal_with_initial_bytes(stream, initial)
                 .context("attach terminal to rmux session")?;
             Ok(())
@@ -247,9 +240,6 @@ mod tests {
         assert!(err.to_string().contains("session name"), "{err}");
     }
 
-    // Unix socket-path rules ("must be absolute" / no `..`). On Windows the endpoint is a
-    // named pipe with different rules + messages (the `\\.\pipe\` checks are covered by
-    // `daemon::tests::validate_socket_path_*`), so these assertions are unix-only.
     #[cfg(unix)]
     #[test]
     fn rejects_relative_socket_path() {
@@ -268,9 +258,6 @@ mod tests {
 
     #[test]
     fn rejects_empty_session_name() {
-        // `--socket` consumes its own value; an empty positional name is rejected by
-        // `SessionName::new` (EmptySessionName). Here we drive it via the missing-name
-        // path: only flags present, no positional, so the name is absent.
         let err = parse_attach_args(args(&["", "--socket", valid_socket()]))
             .expect_err("empty session name must be rejected by SessionName::new");
         assert!(err.to_string().contains("session name"), "{err}");
@@ -284,6 +271,6 @@ mod tests {
         assert_eq!(parse_size("x50"), None);
         assert_eq!(parse_size("200x"), None);
         assert_eq!(parse_size("axb"), None);
-        assert_eq!(parse_size("999999x10"), None); // u16 overflow
+        assert_eq!(parse_size("999999x10"), None);
     }
 }

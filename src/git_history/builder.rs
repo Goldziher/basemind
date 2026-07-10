@@ -31,15 +31,13 @@ pub enum RebuildOutcome {
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
     let head = match repo.resolve_rev("HEAD") {
         Ok(h) => h,
-        Err(_) => return Ok(RebuildOutcome::Fresh), // unborn HEAD: nothing to index
+        Err(_) => return Ok(RebuildOutcome::Fresh),
     };
 
-    // 1. Fresh — HEAD matches the last indexed head.
     if index.last_indexed_head_hex().as_deref() == Some(head.as_str()) {
         return Ok(RebuildOutcome::Fresh);
     }
 
-    // 2. Incremental — last head still resolves, is an ancestor of HEAD, and the fingerprint holds.
     if let Some(last_hex) = index.last_indexed_head_hex()
         && repo.has_commit(&last_hex)
         && repo.is_ancestor(&last_hex, &head)
@@ -48,8 +46,6 @@ pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result
         return append_since(index, repo, &last_hex, &head);
     }
 
-    // 3. Full rebuild — never indexed, or history was rewritten / diverged (filter-repo, rebase,
-    //    force-push, reset-back). Wipe first so stale shas can't survive.
     let reason = if index.is_empty() { "initial" } else { "history-rewrite" };
     index.clear(basemind_dir)?;
     rebuild(index, repo, reason)
@@ -80,7 +76,6 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
         return Ok(RebuildOutcome::FullRebuild { reason, commits: 0 });
     };
 
-    // Chronological (oldest = ord 0) so ordinals are append-friendly for later incremental syncs.
     let chrono: Vec<&String> = newest_first.iter().rev().collect();
     let total = chrono.len() as u32;
     let mut interner = PathInterner::new(index, 0);
@@ -127,7 +122,6 @@ fn append_since(
     let start_ord = index.next_ord();
 
     if new_newest_first.is_empty() {
-        // HEAD moved but no new commits are reachable — just advance the head pointer.
         let writer = index.writer();
         writer.finish_meta(&head20, &root20, start_ord, index.next_path_id(), index.commit_count())?;
         return Ok(RebuildOutcome::Incremental { added: 0 });
@@ -150,8 +144,6 @@ fn append_since(
         &mut term_postings,
         &mut writer,
     )?;
-    // New ordinals are all greater than any existing one, so appending keeps each posting list
-    // ascending — read the existing list, extend, re-encode. Same invariant for the term index.
     for (path_id, new_ords) in postings {
         let mut all = index
             .posting_bytes(path_id)
@@ -194,7 +186,7 @@ const RECORD_CHUNK: usize = 8192;
 /// still consumes its slot, preserving the positional ordinal contract the non-chunked fold had.
 /// Returns the number of commits actually written. `dedup` skips commits already present in
 /// `gh_ord_by_sha` (the incremental append's defensive guard).
-#[allow(clippy::too_many_arguments)] // builder-internal fold; threading shared accumulators by ref
+#[allow(clippy::too_many_arguments)]
 fn fold_chunked(
     index: &GitHistoryIndex,
     repo: &Repo,
@@ -217,11 +209,9 @@ fn fold_chunked(
                 continue;
             };
             if dedup && index.ord_for_sha(&sha20).is_some() {
-                continue; // already indexed (defensive dedup)
+                continue;
             }
             let files = intern_files(interner, postings, ord, &record.files, writer)?;
-            // Full-text search: tokenize identity + message into term postings, and stash the body
-            // in its own partition (only when non-empty) so the head-decode hot path stays lean.
             super::fts::index_commit_terms(
                 term_postings,
                 ord,

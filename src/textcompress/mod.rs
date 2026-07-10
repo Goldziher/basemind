@@ -66,20 +66,15 @@ const MAX_REINJECTED: usize = 32;
 /// - any line carrying a credential or error marker is preserved verbatim;
 /// - a compression saving less than [`MIN_SAVINGS_RATIO`] is discarded.
 pub fn compress_output(text: &str, family: Option<&str>) -> CompressionOutcome {
-    // Always strip ANSI first — it is safe and lets every downstream scan see
-    // the visible text (including any credential hidden in a colour sequence or
-    // hyperlink label).
     let cleaned = safety::strip_ansi(text);
     let original_bytes = cleaned.len();
 
-    // Resolve the family up front so we can always report it, even on a pass-through.
     let resolved = match family {
         Some(name) => detect::Family::parse(name).unwrap_or_else(|| detect::detect(&cleaned)),
         None => detect::detect(&cleaned),
     };
     let family_name = resolved.as_str().to_string();
 
-    // Helper to build a fail-open (raw) outcome.
     let pass_through = |out: String| {
         let len = out.len();
         CompressionOutcome {
@@ -91,55 +86,32 @@ pub fn compress_output(text: &str, family: Option<&str>) -> CompressionOutcome {
         }
     };
 
-    // OSC8 strip destroys the hyperlink *target* (only the visible label is
-    // kept). A credential hidden in the URI — e.g.
-    // `\x1b]8;;postgres://u:SECRET@h\x07ok\x1b]8;;\x07` — is therefore gone from
-    // `cleaned` before any credential scan runs. Detect this by pre-scanning the
-    // RAW pre-strip input: if the raw text carried a credential that did not
-    // survive stripping, the strip destroyed a secret → fail open and return the
-    // RAW input verbatim so the secret is never silently discarded.
     if safety::contains_credential(text) && !safety::contains_credential(&cleaned) {
         return pass_through(text.to_string());
     }
 
-    // Too small to bother.
     if original_bytes < MIN_INPUT_BYTES {
         return pass_through(cleaned);
     }
 
-    // Fail open on errored output: never compress away debugging signal.
     if safety::looks_like_failure(&cleaned) {
         return pass_through(cleaned);
     }
 
-    // Run the handler. Handlers are pure and total; there is no panic path, but
-    // even a no-op result is handled by the savings gate below.
     let mut compressed = handlers::compress(resolved, &cleaned);
 
-    // Re-inject preserved (credential / error) lines a handler dropped. Exact
-    // line membership (not substring) so a short secret line contained inside a
-    // longer summary line is still surfaced on its own.
     let preserved = safety::preserved_line_indices(&cleaned);
     if !preserved.is_empty() {
         match reinject_preserved(&cleaned, &compressed, &preserved) {
-            // All preserved lines fit under the cap; use the augmented output.
             Reinjection::Complete(out) => compressed = out,
-            // More preserved (credential/error-bearing) lines than the cap can
-            // hold would have to be truncated. Truncating could drop secrets
-            // 33+ while still reporting `compressed = true`, so fail open and
-            // return the raw input — every preserved line survives verbatim.
             Reinjection::Overflowed => return pass_through(cleaned),
         }
     }
 
-    // Final backstop: if a credential is present anywhere in the input but did
-    // not survive into the compressed output (e.g. it shared a line that was
-    // restructured), refuse to compress and hand back the raw input.
     if safety::contains_credential(&cleaned) && !safety::contains_credential(&compressed) {
         return pass_through(cleaned);
     }
 
-    // Savings gate: discard a compression that does not save enough.
     let compressed_bytes = compressed.len();
     let saved = if original_bytes == 0 {
         0.0
@@ -177,7 +149,6 @@ fn reinject_preserved(cleaned: &str, compressed: &str, preserved: &ahash::AHashS
     let original_lines: Vec<&str> = cleaned.lines().collect();
     let mut existing: ahash::AHashSet<&str> = compressed.lines().collect();
 
-    // Deterministic order: walk preserved indices in source order.
     let mut sorted: Vec<usize> = preserved.iter().copied().collect();
     sorted.sort_unstable();
 
@@ -186,7 +157,6 @@ fn reinject_preserved(cleaned: &str, compressed: &str, preserved: &ahash::AHashS
         if let Some(line) = original_lines.get(idx)
             && !existing.contains(line)
         {
-            // One more preserved line beyond the cap: do not truncate, fail open.
             if appended.len() >= MAX_REINJECTED {
                 return Reinjection::Overflowed;
             }
@@ -204,8 +174,6 @@ fn reinject_preserved(cleaned: &str, compressed: &str, preserved: &ahash::AHashS
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // --- per-family shrink tests -------------------------------------------
 
     #[test]
     fn git_status_shrinks() {
@@ -325,8 +293,6 @@ mod tests {
         assert!(r.output.contains("(x50)"));
     }
 
-    // --- fail-open tests ----------------------------------------------------
-
     #[test]
     fn fail_open_on_errored_output() {
         let mut input = String::from("On branch main\n");
@@ -342,9 +308,6 @@ mod tests {
 
     #[test]
     fn fail_open_on_low_savings() {
-        // A short, already-compact git status (clean tree) compresses well, so
-        // build an input whose handler output is nearly as large as the input:
-        // a unique-line log that the logs handler cannot collapse.
         let mut input = String::new();
         for n in 0..40 {
             input.push_str(&format!("unique log line number {n} with distinct content here\n"));
@@ -354,13 +317,8 @@ mod tests {
         assert_eq!(r.output, input.trim_end_matches('\n').to_string() + "\n");
     }
 
-    // --- credential-preservation tests -------------------------------------
-
     #[test]
     fn preserves_aws_key_in_droppable_git_status() {
-        // The AWS key is on an untracked-file line the handler would normally
-        // fold into a comma-joined "untracked: ..." list. It must survive
-        // verbatim.
         let mut input = String::from("On branch main\n\nUntracked files:\n  (use \"git add\")\n");
         for n in 0..40 {
             input.push_str(&format!("\tjunk_file_{n}.tmp\n"));
@@ -403,10 +361,6 @@ mod tests {
 
     #[test]
     fn preserves_secret_in_osc8_hyperlink_uri() {
-        // A credential lives in the OSC8 hyperlink *target* (URI), not the
-        // visible label. Stripping ANSI keeps only the label "ok", destroying
-        // the secret before any scan runs on `cleaned`. The raw pre-scan must
-        // catch this and fail open, returning the RAW input verbatim.
         let secret_link = "\x1b]8;;postgres://admin:SECRETPASSWORD@db.internal/prod\x07ok\x1b]8;;\x07";
         let mut input = String::new();
         for _ in 0..30 {
@@ -427,9 +381,6 @@ mod tests {
 
     #[test]
     fn npm_err_failures_fail_open_raw() {
-        // 10 `npm ERR!` lines describe a fully-failed install. Without the
-        // bang-form error detection these would be summarized to a single warn
-        // line; the fix must fail open and return the raw input.
         let mut input = String::new();
         for n in 0..10 {
             input.push_str(&format!("npm ERR! line {n} install failed for dep{n}\n"));
@@ -437,7 +388,6 @@ mod tests {
         let r = compress_output(&input, Some("npm_install"));
         assert!(!r.compressed, "npm ERR! output must fail open, not compress");
         assert_eq!(r.output, input, "raw passthrough expected for npm ERR! block");
-        // Every failure line survives.
         for n in 0..10 {
             assert!(
                 r.output.contains(&format!("npm ERR! line {n}")),
@@ -449,22 +399,12 @@ mod tests {
 
     #[test]
     fn fail_open_when_preserved_lines_exceed_cap() {
-        // More than MAX_REINJECTED unique secret-bearing droppable lines: the
-        // handler would drop them and the cap cannot re-inject all, so we must
-        // fail open and return the raw input rather than truncate (and silently
-        // lose secrets 33+).
         let count = MAX_REINJECTED + 5;
-        // Build a long listing (ls family) where the secret-bearing entries sit
-        // PAST the ls handler's kept head (LS_KEEP=50), so the handler drops
-        // them and the scanner must re-inject more than the cap allows.
         let mut input = String::new();
-        // Padding head the ls handler keeps verbatim, pushing the secrets out of
-        // the kept window so they are genuinely dropped.
         for n in 0..80 {
             input.push_str(&format!("plain_file_{n:04}.txt\n"));
         }
         for n in 0..count {
-            // AKIA + 16 uppercase hex chars; vary the tail so each is unique.
             input.push_str(&format!("file_AKIA{:016X}_creds.txt\n", n));
         }
         let r = compress_output(&input, Some("ls"));
@@ -472,14 +412,12 @@ mod tests {
             !r.compressed,
             "more than {MAX_REINJECTED} secret lines must fail open, not truncate"
         );
-        // Every single secret-bearing line survives in the raw output.
         for n in 0..count {
             assert!(
                 r.output.contains(&format!("AKIA{:016X}", n)),
                 "secret #{n} must survive in raw output"
             );
         }
-        // The misleading "more ... preserved in raw output" note is gone.
         assert!(
             !r.output.contains("preserved in raw output"),
             "misleading cap note must be removed: {}",
@@ -487,8 +425,6 @@ mod tests {
         );
     }
 
-    // Local mirror of the strip used by compress_output, for the raw-passthrough
-    // equality assertion above.
     fn safety_strip(s: &str) -> String {
         super::safety::strip_ansi(s)
     }

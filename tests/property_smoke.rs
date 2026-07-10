@@ -13,7 +13,6 @@ proptest! {
     fn relpath_roundtrip(bytes in prop::collection::vec(any::<u8>(), 0..256)) {
         let original = RelPath::from(bytes.as_slice());
 
-        // JSON round-trip
         let json = serde_json::to_string(&original)
             .expect("serde_json::to_string should not fail for RelPath");
         let back: RelPath = serde_json::from_str(&json)
@@ -25,7 +24,6 @@ proptest! {
             bytes
         );
 
-        // msgpack round-trip
         let packed = rmp_serde::to_vec_named(&original)
             .expect("rmp_serde::to_vec_named should not fail for RelPath");
         let back_mp: RelPath = rmp_serde::from_slice(&packed)
@@ -51,7 +49,6 @@ proptest! {
     ) {
         let rel = RelPath::from(rel_bytes.as_slice());
 
-        // symbol_by_name — names are ≤64 chars so encoding cannot fail.
         let key = symbol_by_name(&name, SymbolKind::Function, &rel, start_byte)
             .expect("symbol_by_name: name is ≤64 chars so encoding cannot fail");
         let (decoded_name, decoded_kind, decoded_rel, decoded_start) =
@@ -61,7 +58,6 @@ proptest! {
         prop_assert_eq!(decoded_rel.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start, start_byte);
 
-        // call_by_callee — names are ≤64 chars so encoding cannot fail.
         let key = call_by_callee(&name, &rel, start_byte)
             .expect("call_by_callee: name is ≤64 chars so encoding cannot fail");
         let (decoded_callee, decoded_rel2, decoded_start2) =
@@ -70,7 +66,6 @@ proptest! {
         prop_assert_eq!(decoded_rel2.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start2, start_byte);
 
-        // import_by_module — names are ≤64 chars so encoding cannot fail.
         let key = import_by_module(&name, &rel, start_byte)
             .expect("import_by_module: name is ≤64 chars so encoding cannot fail");
         let (decoded_module, decoded_rel3, decoded_start3) =
@@ -79,7 +74,6 @@ proptest! {
         prop_assert_eq!(decoded_rel3.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start3, start_byte);
 
-        // impl_by_trait — names are ≤64 chars so encoding cannot fail.
         let key = impl_by_trait(&name, &impl_type, &rel, start_byte)
             .expect("impl_by_trait: name is ≤64 chars so encoding cannot fail");
         let (decoded_trait, decoded_impl_type, decoded_rel4, decoded_start4) =
@@ -89,7 +83,6 @@ proptest! {
         prop_assert_eq!(decoded_rel4.as_bytes(), rel.as_bytes());
         prop_assert_eq!(decoded_start4, start_byte);
 
-        // impl_by_path — names are ≤64 chars so encoding cannot fail.
         let key = impl_by_path(&rel, &name, &impl_type, start_byte)
             .expect("impl_by_path: name is ≤64 chars so encoding cannot fail");
         let (decoded_rel5, decoded_trait2, decoded_impl_type2, decoded_start5) =

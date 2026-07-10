@@ -42,12 +42,10 @@ fn scan_staged_uses_index_blobs_not_working_tree() {
     let (dir, cfg) = init_repo();
     let root = dir.path();
 
-    // Commit a clean file…
     fs::write(root.join("a.rs"), b"pub fn clean_one() {}\n").unwrap();
     run(root, &["add", "a.rs"]);
     run(root, &["commit", "-qm", "init"]);
 
-    // …then break it on disk without staging.
     fs::write(root.join("a.rs"), b"pub fn broken( {\n").unwrap();
 
     let repo = Repo::discover(root).expect("repo discover");
@@ -64,7 +62,6 @@ fn scan_staged_uses_index_blobs_not_working_tree() {
     assert_eq!(report.stats.updated, 1, "one file updated");
     let entry = store.lookup("a.rs").expect("a.rs indexed");
     assert_eq!(entry.language, "rust");
-    // The committed blob has no parse errors — only the WT version does.
     let hits = basemind::query::search_symbols(&store, "clean_one", None).unwrap();
     assert_eq!(hits.len(), 1, "staged scan saw committed symbols");
 }
@@ -78,7 +75,6 @@ fn scan_rev_at_head_matches_clean_working_tree() {
     run(root, &["add", "a.rs"]);
     run(root, &["commit", "-qm", "init"]);
 
-    // Working-tree scan
     let mut wt_store = Store::open(root, VIEW_WORKING).unwrap();
     scan(
         root,
@@ -91,7 +87,6 @@ fn scan_rev_at_head_matches_clean_working_tree() {
     let wt_entry = wt_store.lookup("a.rs").expect("a.rs in WT view").clone();
     drop(wt_store);
 
-    // Rev scan at HEAD
     let repo = Repo::discover(root).unwrap();
     let head_sha = repo.resolve_rev("HEAD").unwrap();
     let rev_view = format!("rev-{}", &head_sha[..7]);
@@ -109,7 +104,6 @@ fn scan_rev_at_head_matches_clean_working_tree() {
     .unwrap();
     let rev_entry = rev_store.lookup("a.rs").expect("a.rs in rev view").clone();
 
-    // The hash + symbol set should match — same bytes give the same blob.
     assert_eq!(wt_entry.hash_hex, rev_entry.hash_hex);
     assert_eq!(wt_entry.size_bytes, rev_entry.size_bytes);
     assert_eq!(wt_entry.language, rev_entry.language);
@@ -150,21 +144,15 @@ fn views_live_in_separate_subdirs_under_dotbasemind() {
     let views_dir = root.join(".basemind").join("views");
     assert!(views_dir.join(VIEW_WORKING).join("index.msgpack").exists());
     assert!(views_dir.join(VIEW_STAGED).join("index.msgpack").exists());
-    // No legacy file left behind.
     assert!(!root.join(".basemind").join("index.msgpack").exists());
 }
 
 #[test]
 fn legacy_dotbasemind_index_is_migrated_into_working_view() {
-    // Simulate a pre-views install: write a top-level `.basemind/index.msgpack` and confirm
-    // `Store::open(.., "working")` quietly moves it into `views/working/index.msgpack`.
     let (dir, _cfg) = init_repo();
     let root = dir.path();
     fs::create_dir_all(root.join(".basemind").join("blobs")).unwrap();
 
-    // A valid, current-schema empty index. Use the public Index type via rmp_serde so the
-    // schema_ver matches whatever SCHEMA_VER currently is — that way the migration test is
-    // about *moving the file*, not about schema mismatch.
     let empty = basemind::store::Index::empty();
     let bytes = rmp_serde::to_vec_named(&empty).unwrap();
     fs::write(root.join(".basemind").join("index.msgpack"), &bytes).unwrap();
@@ -183,11 +171,6 @@ fn legacy_dotbasemind_index_is_migrated_into_working_view() {
 
 #[test]
 fn scan_skips_submodule_paths_by_default() {
-    // Build a parent repo with a submodule pointing at a sibling tempdir repo. With
-    // `skip_submodules: true` (default), files under the submodule root should not appear
-    // in the parent's index. With it disabled, they should.
-
-    // Inner repo — the one we'll mount as a submodule.
     let inner = tempfile::tempdir().expect("inner tempdir");
     run(inner.path(), &["init", "-q"]);
     run(inner.path(), &["config", "commit.gpgsign", "false"]);
@@ -195,15 +178,12 @@ fn scan_skips_submodule_paths_by_default() {
     run(inner.path(), &["add", "inner.rs"]);
     run(inner.path(), &["commit", "-qm", "init inner"]);
 
-    // Parent repo with one bare file at the top.
     let (parent, cfg) = init_repo();
     let root = parent.path();
     fs::write(root.join("top.rs"), b"pub fn top_fn() {}\n").unwrap();
     run(root, &["add", "top.rs"]);
     run(root, &["commit", "-qm", "init parent"]);
 
-    // Wire the submodule using the system git CLI — the modern git complains about
-    // file:// transports for security; -c works around that for local fixtures.
     let url = format!("file://{}", inner.path().display());
     let status = Command::new("git")
         .args([
@@ -225,12 +205,10 @@ fn scan_skips_submodule_paths_by_default() {
     assert!(status.success(), "git submodule add failed");
     run(root, &["commit", "-qm", "add submodule"]);
 
-    // gix should see the submodule via .gitmodules.
     let repo = Repo::discover(root).expect("discover parent");
     let subs = repo.submodule_paths();
     assert_eq!(subs, vec![basemind::path::RelPath::from("vendored")], "got {subs:?}");
 
-    // Default scan should NOT index the submodule's inner.rs.
     {
         let mut store = Store::open(root, VIEW_WORKING).unwrap();
         scan(
@@ -248,7 +226,6 @@ fn scan_skips_submodule_paths_by_default() {
         );
     }
 
-    // Flip the knob → inner.rs reappears.
     let mut cfg2 = ConfigV1::with_defaults();
     cfg2.scan.skip_submodules = false;
     let mut store2 = Store::open(root, VIEW_STAGED).unwrap();
@@ -277,13 +254,11 @@ fn blame_file_uses_committed_blob_not_dirty_working_tree() {
     run(root, &["add", "a.rs"]);
     run(root, &["commit", "-q", "-m", "initial"]);
 
-    // Dirty the working tree by prepending lines that would shift every line number.
     fs::write(root.join("a.rs"), b"// dirty\n// dirty\nfn one() {}\nfn two() {}\n").unwrap();
 
     let repo = Repo::discover(root).expect("discover");
     let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
     let rel = basemind::path::RelPath::from("a.rs".as_bytes());
-    // Blame committed lines 1..=2 — these are `fn one` / `fn two` in the *committed* blob.
     let result = repo
         .blame_file(&head, &rel, Some((1, 2)))
         .expect("blame committed blob");
@@ -312,7 +287,6 @@ fn log_for_path_stops_at_rename_while_blame_follows() {
     run(root, &["commit", "-q", "-m", "rename to new"]);
 
     let repo = Repo::discover(root).expect("discover");
-    // History for the new name only sees the rename commit, not the original add.
     let log = repo.log_for_path("new.rs", 10).expect("log new.rs");
     assert_eq!(
         log.len(),
@@ -324,7 +298,6 @@ fn log_for_path_stops_at_rename_while_blame_follows() {
         "the single visible commit is the rename itself"
     );
 
-    // Blame, by contrast, follows the rename: the kept line still attributes to the add.
     let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
     let rel = basemind::path::RelPath::from("new.rs".as_bytes());
     let blame = repo.blame_file(&head, &rel, Some((1, 1))).expect("blame new.rs");

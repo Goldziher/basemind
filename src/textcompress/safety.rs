@@ -29,29 +29,29 @@ fn credential_set() -> &'static RegexSet {
     static SET: OnceLock<RegexSet> = OnceLock::new();
     SET.get_or_init(|| {
         RegexSet::new([
-            r"AKIA[0-9A-Z]{16}",                                                 // AWS access key id
-            r"ASIA[0-9A-Z]{16}",                                                 // AWS temp access key id
-            r"sk-ant-[a-zA-Z0-9_\-]{20,}",                                       // Anthropic (before generic sk-)
-            r"sk-[a-zA-Z0-9]{20,}",                                              // OpenAI / generic sk-
-            r"ghp_[a-zA-Z0-9]{36}",                                              // GitHub personal access token
-            r"gho_[a-zA-Z0-9]{36}",                                              // GitHub OAuth token
-            r"ghu_[a-zA-Z0-9]{36}",                                              // GitHub user-to-server
-            r"ghs_[a-zA-Z0-9]{36}",                                              // GitHub server-to-server
-            r"ghr_[a-zA-Z0-9]{36}",                                              // GitHub refresh token
-            r"github_pat_[a-zA-Z0-9_]{80,}",                                     // GitHub fine-grained PAT
-            r"npm_[a-zA-Z0-9]{36}",                                              // npm token
-            r"hf_[a-zA-Z0-9]{34}",                                               // HuggingFace token
-            r"xox[baprs]-[0-9A-Za-z-]{10,}",                                     // Slack tokens
-            r"sk_live_[a-zA-Z0-9]{24,}",                                         // Stripe live secret
-            r"rk_live_[a-zA-Z0-9]{24,}",                                         // Stripe restricted live
-            r"AIza[0-9A-Za-z_\-]{35}",                                           // Google API key
-            r"ya29\.[0-9A-Za-z_\-]{20,}",                                        // Google OAuth access token
-            r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}", // JWT
-            r"-----BEGIN [A-Z ]*PRIVATE KEY-----",                               // PEM private key
-            r"(?i)(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|amqp)://[^:\s/]+:[^@\s]+@", // db URL w/ creds
-            r"(?i)https?://[^:\s/@]+:[^@\s]+@",                                  // basic-auth URL
-            r"(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*[=:]\s*\S+", // generic assignment
-            r"(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*",                               // bearer token
+            r"AKIA[0-9A-Z]{16}",
+            r"ASIA[0-9A-Z]{16}",
+            r"sk-ant-[a-zA-Z0-9_\-]{20,}",
+            r"sk-[a-zA-Z0-9]{20,}",
+            r"ghp_[a-zA-Z0-9]{36}",
+            r"gho_[a-zA-Z0-9]{36}",
+            r"ghu_[a-zA-Z0-9]{36}",
+            r"ghs_[a-zA-Z0-9]{36}",
+            r"ghr_[a-zA-Z0-9]{36}",
+            r"github_pat_[a-zA-Z0-9_]{80,}",
+            r"npm_[a-zA-Z0-9]{36}",
+            r"hf_[a-zA-Z0-9]{34}",
+            r"xox[baprs]-[0-9A-Za-z-]{10,}",
+            r"sk_live_[a-zA-Z0-9]{24,}",
+            r"rk_live_[a-zA-Z0-9]{24,}",
+            r"AIza[0-9A-Za-z_\-]{35}",
+            r"ya29\.[0-9A-Za-z_\-]{20,}",
+            r"eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}",
+            r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+            r"(?i)(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|amqp)://[^:\s/]+:[^@\s]+@",
+            r"(?i)https?://[^:\s/@]+:[^@\s]+@",
+            r"(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*[=:]\s*\S+",
+            r"(?i)Bearer\s+[a-zA-Z0-9\-._~+/]+=*",
         ])
         .expect("static credential patterns compile")
     })
@@ -80,15 +80,10 @@ fn error_set() -> &'static RegexSet {
             r"\bFAILED\b",
             r"(?i)\bsegmentation fault\b",
             r"(?i)\bunhandled\b",
-            // npm-style failures carry no trailing colon (`npm ERR!`).
             r"(?i)\bnpm\s+err!",
-            // Named runtime/diagnostic error classes (Python, JS, generic runtimes).
             r"(?i)\b(?:Syntax|Value|Key|Type|File\s*Not\s*Found|Module\s*Not\s*Found|Runtime|Reference|Range)Error\b",
-            // Rust bracketed diagnostics, e.g. `error[E0599]`.
             r"\berror\[",
-            // Shell / OS failure phrases.
             r"(?i)\b(?:command not found|permission denied|no such file or directory)\b",
-            // Fatal signals / process-death markers.
             r"(?i)\b(?:SIGKILL|SIGABRT|SIGSEGV|Killed|Aborted)\b",
         ])
         .expect("static error patterns compile")
@@ -115,7 +110,6 @@ fn ansi_osc8_re() -> &'static Regex {
 /// strip CSI sequences. Returns an owned `String`; when the input has no escape
 /// codes the cost is one allocation, which is acceptable on this cold path.
 pub fn strip_ansi(text: &str) -> String {
-    // Fast path: no ESC byte means nothing to strip.
     if memchr::memchr(0x1b, text.as_bytes()).is_none() {
         return text.to_string();
     }

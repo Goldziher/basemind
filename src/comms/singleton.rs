@@ -109,19 +109,12 @@ pub fn resolve_paths() -> Result<CommsPaths, SingletonError> {
     Ok(CommsPaths { comms_dir, socket_path })
 }
 
-/// The socket path for a resolved comms dir. On Windows, a named-pipe path (see the TODO in
-/// `frontend_uds`); on Unix, `<comms_dir>/comms.sock`.
+/// The socket path for a resolved comms dir. On Windows, a named-pipe path; on Unix,
+/// `<comms_dir>/comms.sock`.
 pub fn comms_socket_path(comms_dir: &Path) -> PathBuf {
     #[cfg(windows)]
     {
         use std::hash::{Hash, Hasher};
-        // Per-user named pipe, isolated by comms_dir. The username keeps it user-scoped on shared
-        // hosts; the comms_dir hash mirrors the per-dir Unix socket so distinct BASEMIND_COMMS_DIR
-        // values (test tempdirs, sandboxes) resolve to distinct pipes instead of colliding on one
-        // per-user singleton. Production leaves BASEMIND_COMMS_DIR unset, so comms_dir is the single
-        // constant ProjectDirs path and the daemon stays one stable per-user broker. DefaultHasher
-        // has a fixed (non-random) seed, so the daemon and client processes derive the same name
-        // from the same comms_dir. Without this, parallel comms dirs cross-contaminate (see #110).
         let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
         let mut hasher = std::hash::DefaultHasher::new();
         comms_dir.hash(&mut hasher);
@@ -156,7 +149,6 @@ pub fn bind_listener(
 ) -> Result<tokio::net::UnixListener, SingletonError> {
     use std::os::unix::fs::PermissionsExt;
 
-    // First attempt: a clean bind wins the lock outright.
     match std::os::unix::net::UnixListener::bind(socket_path) {
         Ok(std_listener) => {
             std_listener
@@ -172,11 +164,9 @@ pub fn bind_listener(
             })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-            // The path is occupied: a live daemon, or a stale socket from a crash. Probe.
             if probe(socket_path) {
                 return Err(SingletonError::AlreadyRunning(socket_path.to_path_buf()));
             }
-            // Stale: unlink and rebind once.
             std::fs::remove_file(socket_path).map_err(|source| SingletonError::Io {
                 path: socket_path.to_path_buf(),
                 source,
@@ -226,17 +216,12 @@ pub fn bind_listener(
         source,
     };
 
-    // First attempt: claiming the first instance wins the lock outright.
     match ServerOptions::new().first_pipe_instance(true).create(pipe_name) {
         Ok(server) => Ok(server),
-        // ERROR_ACCESS_DENIED: another daemon already holds the first instance.
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             if probe(socket_path) {
                 return Err(SingletonError::AlreadyRunning(socket_path.to_path_buf()));
             }
-            // The holder is dead but the pipe lingers in the brief window before its handles
-            // drop; retry the create once. (No explicit unlink: named pipes vanish with their
-            // owner, so there is no stale file to remove.)
             ServerOptions::new()
                 .first_pipe_instance(true)
                 .create(pipe_name)
@@ -265,7 +250,6 @@ pub async fn ensure_daemon_with(
         path: paths.socket_path.clone(),
         source,
     })?;
-    // Poll until ready.
     let deadline = std::time::Instant::now() + SPAWN_READY_TIMEOUT;
     while std::time::Instant::now() < deadline {
         if is_alive(&paths.socket_path) {
@@ -289,7 +273,7 @@ pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
         let ours = env!("CARGO_PKG_VERSION");
         let compatible = report.proto_ver == PROTO_VER && !version_is_older(&report.version, ours);
         if compatible {
-            return Ok(()); // healthy current (or newer) daemon — reuse it
+            return Ok(());
         }
         tracing::warn!(
             daemon_version = %report.version,
@@ -415,7 +399,6 @@ fn probe_once(socket_path: &Path) -> bool {
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
 
-    // Frame a Ping request: u32-be length prefix + msgpack body (matches LengthDelimitedCodec).
     let body = match rmp_serde::to_vec_named(&super::protocol::CommsRequest::Ping) {
         Ok(b) => b,
         Err(_) => return false,
@@ -427,7 +410,6 @@ fn probe_once(socket_path: &Path) -> bool {
     if stream.write_all(&len.to_be_bytes()).is_err() || stream.write_all(&body).is_err() {
         return false;
     }
-    // Read the response frame's length prefix; any well-formed reply means "alive".
     let mut prefix = [0u8; 4];
     stream.read_exact(&mut prefix).is_ok()
 }
@@ -445,7 +427,6 @@ fn probe_once(socket_path: &Path) -> bool {
         return false;
     };
 
-    // Frame a Ping request: u32-be length prefix + msgpack body (matches LengthDelimitedCodec).
     let body = match rmp_serde::to_vec_named(&super::protocol::CommsRequest::Ping) {
         Ok(b) => b,
         Err(_) => return false,
@@ -457,7 +438,6 @@ fn probe_once(socket_path: &Path) -> bool {
     if stream.write_all(&len.to_be_bytes()).is_err() || stream.write_all(&body).is_err() {
         return false;
     }
-    // Read the response frame's length prefix; any well-formed reply means "alive".
     let mut prefix = [0u8; 4];
     stream.read_exact(&mut prefix).is_ok()
 }
@@ -478,24 +458,17 @@ pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // Detach from the parent's process group on Unix so a parent exit (or Ctrl-C) does not
-    // take the daemon with it.
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         // SAFETY: `setsid` takes no arguments and only detaches the child into a new session.
-        // It is called in the child between fork and exec; touching no parent state makes it
-        // safe in the `pre_exec` context (no allocation, no locks).
         unsafe {
             command.pre_exec(|| {
-                // Best-effort: ignore the rare EPERM (already a group leader).
                 let _ = detach_session();
                 Ok(())
             });
         }
     }
-    // Detach the daemon from the spawning console on Windows: a new process group + no console
-    // window so a parent exit (or Ctrl-C in the parent's console) does not take the daemon down.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -506,15 +479,6 @@ pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
         /// `CreateProcess` flag: do not allocate a console window for the child.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        // Stop the long-lived daemon from inheriting our standard handles. `CreateProcess` is
-        // called with `bInheritHandles = TRUE` whenever stdio is redirected (it is, to NUL above),
-        // and that inherits EVERY inheritable handle in this process — including the stdout/stderr
-        // pipe a parent gave us when it captured our output (e.g. `Command::output()`, or `serve`'s
-        // MCP stdio). The detached daemon would then hold the write end open forever, so the
-        // capturing parent never sees EOF and blocks until the daemon dies — the Windows-only
-        // `comms start` hang. Unix avoids this because `Stdio::null()` dup2's /dev/null over the
-        // child fds and Rust sets CLOEXEC on its own pipes. Clearing the inherit bit on our std
-        // handles first makes the detached spawn leak none of them.
         clear_std_handle_inheritance();
     }
     command.spawn()?;
@@ -540,9 +504,6 @@ fn clear_std_handle_inheritance() {
 
     for selector in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
         // SAFETY: both calls take only primitive arguments and read no caller memory.
-        // `GetStdHandle` returns the process's current standard handle (or null /
-        // `INVALID_HANDLE_VALUE`, which we skip); `SetHandleInformation` only clears the inherit
-        // bit on that handle. Neither touches our heap or thread state, so the calls are safe.
         unsafe {
             let handle = GetStdHandle(selector);
             if handle != 0 && handle != INVALID_HANDLE_VALUE {
@@ -565,8 +526,6 @@ unsafe extern "system" {
 #[cfg(unix)]
 fn detach_session() -> std::io::Result<()> {
     // SAFETY: `setsid()` takes no arguments, reads no caller memory, and creates a new session
-    // with the calling process as leader. It can only fail with EPERM when the caller is
-    // already a process-group leader, which we treat as benign.
     let rc = unsafe { setsid() };
     if rc == -1 {
         Err(std::io::Error::last_os_error())
@@ -587,15 +546,12 @@ mod tests {
 
     #[test]
     fn version_is_older_orders_releases_and_ignores_prerelease() {
-        // A strictly older build is a takeover candidate (this is the 0.6.3-vs-0.10.0 squatter).
         assert!(version_is_older("0.6.3", "0.10.0"));
         assert!(version_is_older("0.9.0", "0.10.0"));
         assert!(version_is_older("0.10.0", "0.10.1"));
-        // Same version or newer is reused, never replaced (no flapping between same-version peers).
         assert!(!version_is_older("0.10.0", "0.10.0"));
         assert!(!version_is_older("0.11.0", "0.10.0"));
         assert!(!version_is_older("1.0.0", "0.10.0"));
-        // Pre-release suffixes are ignored for the ordering decision.
         assert!(!version_is_older("0.10.0-rc.1", "0.10.0"));
         assert!(version_is_older("0.9.0-rc.2", "0.10.0"));
     }
@@ -603,9 +559,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bind_as_lock_admits_exactly_one_winner_in_a_race() {
-        // N threads race to bind the same socket; exactly one should win. `probe` always
-        // reports "not alive" so a loser never reclaims — it must observe AddrInUse and fail
-        // (the real daemon would back off; here we just count winners).
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -614,7 +567,6 @@ mod tests {
         let winners = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
         const N: usize = 16;
-        // Hold winning listeners so their sockets stay bound for the duration of the race.
         let listeners = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         for _ in 0..N {
@@ -622,10 +574,7 @@ mod tests {
             let winners = winners.clone();
             let listeners = listeners.clone();
             handles.push(std::thread::spawn(move || {
-                // A probe that always says "stale" would let losers reclaim and double-bind, so
-                // we say "alive" once a socket file exists — modelling a live holder.
                 let probe = |p: &std::path::Path| p.exists();
-                // Each attempt needs its own tokio reactor to call `from_std`.
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -673,7 +622,6 @@ mod tests {
             comms_dir: PathBuf::from("/tmp/x"),
             socket_path: PathBuf::from("/tmp/x/comms.sock"),
         };
-        // Not alive until after spawn flips the flag.
         let alive = std::sync::atomic::AtomicBool::new(false);
         let res = ensure_daemon_with(
             &paths,

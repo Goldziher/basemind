@@ -41,7 +41,7 @@ pub fn stdout(force_off: bool) -> AutoStream<std::io::Stdout> {
     }
 }
 
-const COL_PATH: usize = 8; // "✓ ok  " column width before the path
+const COL_PATH: usize = 8;
 
 /// Print every line of a report, respecting verbosity.
 pub fn render_report(w: &mut AutoStream<std::io::Stdout>, report: &ScanReport, verbosity: Verbosity) {
@@ -71,7 +71,6 @@ pub fn render_summary(w: &mut AutoStream<std::io::Stdout>, stats: &ScanStats, ve
         && stats.extract_failed == 0
         && stats.updated_with_warnings == 0
     {
-        // Nothing the user needs to see.
         return;
     }
     let style_label = Style::new().dimmed();
@@ -392,7 +391,6 @@ fn human_bytes(b: u64) -> String {
     }
 }
 
-// Silence unused warnings for COL_PATH which is documentation rather than logic.
 const _: usize = COL_PATH;
 
 #[cfg(test)]
@@ -407,7 +405,6 @@ mod tests {
 
     #[test]
     fn sanitize_path_strips_ansi_and_control_chars() {
-        // ESC ([1b) + a bell + a tab should all be removed; printable text stays.
         let crafted = "src/\x1b[31mevil\x07\tname.rs";
         assert_eq!(sanitize_path(crafted), "src/[31mevilname.rs");
     }

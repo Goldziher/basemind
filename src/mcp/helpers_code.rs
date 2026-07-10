@@ -48,17 +48,13 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let want_toon = wants_toon(state, params.format.as_deref());
 
-    // Rerank config: per-query override wins over the `[code_search.reranker]` knob.
     let rr = &state.config.code_search.reranker;
     let rerank_enabled = params.reranker_enabled.unwrap_or(rr.enabled);
     let rerank_preset = params.reranker_preset.clone().unwrap_or_else(|| rr.preset.clone());
     let rerank_top_k = params.reranker_top_k.unwrap_or(rr.top_k);
 
-    // When reranking, fetch at least `rerank_top_k` candidates so the cross-encoder has material.
     let fetch_n = if rerank_enabled { limit.max(rerank_top_k) } else { limit };
 
-    // Retrieval lane: "hybrid" (default) fuses vector + keyword + exact via RRF; "semantic" is
-    // vector KNN only; "keyword" is BM25 only. Any other value is an actionable error.
     let mode = params.mode.as_deref().map(str::trim).unwrap_or("hybrid");
     let hits: Vec<CodeSearchHit> = if mode.is_empty() || mode.eq_ignore_ascii_case("hybrid") {
         hybrid_hits(state, &params.query, fetch_n).await
@@ -73,14 +69,12 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
         ));
     };
 
-    // Optional cross-encoder rerank over the produced hits (reorders + truncates to `rerank_top_k`).
     let hits = if rerank_enabled {
         rerank_hits(state, &params.query, hits, &rerank_preset, rerank_top_k).await?
     } else {
         hits
     };
 
-    // Token budget bounds the returned hits (best-first). No cursor — raise `max_tokens` for more.
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_code_response(
         &SearchCodeResponse {
@@ -97,10 +91,8 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
 /// read-only index) or that a non-identifier query doesn't trigger simply contributes nothing; the
 /// query never fails on a single lane. The returned hits carry the fused RRF score in `score`.
 async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
-    // Each lane fetches an expanded candidate set so fusion has material below rank-1.
     let fuse_limit = (limit * 4).clamp(limit, 200);
 
-    // Vector lane (best-effort): only when embeddings are configured; any failure drops the lane.
     let vector_ids: Vec<String> = if state.config.code_search.embed {
         match semantic_hits(state, query, fuse_limit).await {
             Ok(hits) => hits.into_iter().map(|h| h.chunk_id).collect(),
@@ -113,7 +105,6 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
         Vec::new()
     };
 
-    // Keyword + exact lanes + hydration under a single store read lock.
     let store = state.store.read().await;
     let (keyword_ids, exact_ids): (Vec<String>, Vec<String>) = match store.index_db.as_ref() {
         Some(db) => (
@@ -126,9 +117,6 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
         None => (Vec::new(), Vec::new()),
     };
 
-    // Fixed lane order exact → vector → keyword — `rrf_fuse_detailed` preserves it in each hit's
-    // `lane_ranks`, so `matched_lanes[0]` is the highest-precedence lane that ranked the chunk (exact
-    // when it fired). The numeric per-lane ranks carry the actual contribution detail.
     let fused = rrf_fuse_detailed(
         &[
             FusionLane::new(LANE_EXACT, &exact_ids, WEIGHT_EXACT),
@@ -142,7 +130,6 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
     for fh in fused.into_iter().take(limit) {
         if let Some((mut hit, _text)) = hydrate_one(&store, &fh.chunk_id) {
             hit.score = Some(fh.score);
-            // Surface why-matched provenance: which lanes ranked this chunk and at what rank.
             hit.matched_lanes = fh.lane_ranks.iter().map(|(name, _)| name.to_string()).collect();
             for (name, rank) in &fh.lane_ranks {
                 match *name {
@@ -215,7 +202,6 @@ async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Cod
 /// `None`) plus the chunk's body text (for the optional rerank pass), via the content-addressed
 /// sidecar. `None` when the sidecar is missing or the ordinal is out of range — the caller skips it.
 fn hydrate_one(store: &Store, chunk_id: &str) -> Option<(CodeSearchHit, String)> {
-    // chunk_id is `<source-hash-hex>:<ordinal>` — split on the LAST ':' (hex never contains one).
     let (hash_hex, ordinal) = chunk_id.rsplit_once(':')?;
     let ordinal: usize = ordinal.parse().ok()?;
     let blob = store.read_chunks_by_hex(hash_hex).ok()??;
@@ -255,15 +241,12 @@ async fn rerank_hits(
     if hits.is_empty() {
         return Ok(hits);
     }
-    // Fail fast on an unknown preset before constructing the config / triggering a wrong download.
     if xberg::get_reranker_preset(preset).is_none() {
         return Err(McpError::invalid_params(
             format!("unknown reranker preset: {preset:?}"),
             None,
         ));
     }
-    // Candidate texts aligned 1:1 with `hits` (empty when a sidecar read fails — the reranker
-    // tolerates it and just scores it low).
     let texts: Vec<String> = {
         let store = state.store.read().await;
         hits.iter()
@@ -292,7 +275,6 @@ async fn rerank_hits(
             };
             McpError::internal_error(format!("{kind}: {msg}"), None)
         })?;
-    // Bounds-check every external index — a buggy ONNX run must not panic the server.
     let original = hits;
     reranked
         .into_iter()
@@ -319,7 +301,6 @@ async fn rerank_hits(
 }
 
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
-    // Resolve the file's content hash, then read its chunk sidecar — offline, no LanceDB.
     let blob = {
         let store = state.store.read().await;
         let entry = store
@@ -348,7 +329,6 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
         ));
     }
 
-    // Selection: chunk_id > byte_start > single-chunk default. Ambiguity is an actionable error.
     let chunk = if let Some(id) = params.chunk_id.as_deref() {
         chunks.iter().find(|c| c.chunk_id == id).ok_or_else(|| {
             McpError::invalid_params(format!("get_chunk: chunk_id {id:?} not found in {}", params.path), None)

@@ -41,11 +41,6 @@ pub fn intercept_from_env() -> Option<Result<()>> {
     match args.next() {
         Some(first) if first == rmux_client::INTERNAL_DAEMON_FLAG => Some(run_internal_daemon(args)),
         _ => {
-            // Not the daemon re-exec: point the rmux SDK at our own executable so a
-            // later `shell_spawn` re-execs basemind (not a missing `rmux`) as the
-            // daemon. Done HERE, at the single-threaded top of `main`, so the
-            // `set_var` is race-free — by the time the multi-threaded serve runtime
-            // calls `connect_or_start`, the variable is long since set.
             point_sdk_daemon_at_self();
             None
         }
@@ -61,8 +56,6 @@ fn point_sdk_daemon_at_self() {
         return;
     };
     // SAFETY: called only from `intercept_from_env` at the very top of `main`,
-    // before clap parses and before any tokio runtime (or any other thread)
-    // exists — so the single-threaded precondition of `point_sdk_daemon_at` holds.
     unsafe { point_sdk_daemon_at(&exe) }
 }
 
@@ -149,19 +142,11 @@ where
 pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
     #[cfg(windows)]
     {
-        // On Windows the endpoint is a named pipe, not a filesystem socket. Its name is
-        // the path verbatim and must live under the `\\.\pipe\` namespace; rmux binds /
-        // connects to exactly this string. A non-pipe path (e.g. a drive-letter file
-        // path) would either fail to bind or, worse, point at an unrelated object, so
-        // we require the canonical prefix instead of the Unix `is_absolute()` /`..`
-        // checks (which do not model pipe names).
         const PIPE_PREFIX: &str = r"\\.\pipe\";
         let display = path.to_string_lossy();
         if !display.starts_with(PIPE_PREFIX) {
             bail!("embedded rmux daemon named-pipe path must start with `{PIPE_PREFIX}`, got {display}");
         }
-        // The pipe NAME (the part after the prefix) must be non-empty and must not smuggle
-        // a path separator that would escape the pipe namespace.
         let name = &display[PIPE_PREFIX.len()..];
         if name.is_empty() || name.contains('\\') || name.contains('/') {
             bail!("embedded rmux daemon named-pipe name is empty or contains a separator: {display}");

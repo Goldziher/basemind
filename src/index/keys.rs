@@ -291,8 +291,6 @@ pub fn parse_impl_by_path(key: &[u8]) -> Option<(RelPath, String, String, u32)> 
     Some((RelPath::from(rel), trait_name, impl_type, start))
 }
 
-// ─── resolved references (code-intelligence tier) ───────────────────────────
-
 /// `refs_by_def`: resolved "references to a definition", prefix-scannable by the defining site.
 /// Shape:
 /// `u16:len(def_path) ‖ def_path ‖ def_start:u32_be ‖ u16:len(use_path) ‖ use_path ‖ use_start:u32_be`.
@@ -378,19 +376,6 @@ pub fn parse_ref_by_path(key: &[u8]) -> Option<(RelPath, u32, RelPath, u32)> {
     Some((RelPath::from(use_path), use_start, RelPath::from(def_path), def_start))
 }
 
-// ─── code-search BM25 keyword lane ───────────────────────────────────────────
-//
-// Two always-created keyspaces back the native BM25 keyword lane over code chunks
-// (`code-search` feature). A "document" here is one code chunk, identified by its content-
-// addressed `chunk_id` (`<source-hash-hex>:<ordinal>`).
-//
-// - `code_bm25_postings` (inverted): term → the chunks it appears in, with per-posting term
-//   frequency and document length inlined so a single term-prefix scan yields everything the
-//   scorer needs. The posting-list length IS the term's document frequency.
-// - `code_bm25_by_path` (forward): file → its chunks' `(chunk_id, doclen, terms)`, so a re-scan
-//   can reconstruct and remove the previous scan's postings in O(prefix), mirroring the
-//   `calls_by_path` → `calls_by_callee` delete pattern.
-
 /// `code_bm25_postings`: `u16:len(term) ‖ term ‖ u16:len(chunk_id) ‖ chunk_id`.
 ///
 /// Returns `None` when `term` exceeds 65535 bytes (the BM25 tokenizer caps term length far below
@@ -414,7 +399,7 @@ pub fn code_bm25_postings_prefix(term: &str) -> Vec<u8> {
 /// term without allocating it. Returns a borrowed slice into `key`.
 pub fn parse_code_bm25_posting_chunk_id(key: &[u8]) -> Option<&str> {
     let mut c = 0;
-    read_len_prefixed_ref(key, &mut c)?; // skip term
+    read_len_prefixed_ref(key, &mut c)?;
     let chunk_id = read_len_prefixed_ref(key, &mut c)?;
     std::str::from_utf8(chunk_id).ok()
 }
@@ -471,8 +456,6 @@ pub fn parse_code_bm25_by_path(key: &[u8]) -> Option<(RelPath, String)> {
     Some((RelPath::from(rel), chunk_id))
 }
 
-// ─── memory_by_key ───────────────────────────────────────────────────────────
-
 /// Visibility ordinal for the **group** (shared) memory tier. Stable, append-only.
 pub const MEMORY_VIS_GROUP: u8 = 0;
 /// Visibility ordinal for the **individual** (per-agent) memory tier. Stable, append-only.
@@ -528,7 +511,7 @@ pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
     if buf.len() <= c {
         return None;
     }
-    c += 1; // skip NUL separator after scope
+    c += 1;
     if buf.len() <= c {
         return None;
     }
@@ -538,7 +521,7 @@ pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
     if buf.len() <= c {
         return None;
     }
-    c += 1; // skip NUL separator after owner
+    c += 1;
     let key = String::from_utf8(read_len_prefixed(buf, &mut c)?).ok()?;
     Some((scope, vis_byte, owner, key))
 }
@@ -548,26 +531,20 @@ pub fn parse_memory_by_key(buf: &[u8]) -> Option<(String, u8, String, String)> {
 /// `memory_list`) that only need the key and discard the namespace components.
 pub fn parse_memory_key_only(buf: &[u8]) -> Option<&str> {
     let mut c = 0;
-    read_len_prefixed_ref(buf, &mut c)?; // skip scope
-    c += 1; // NUL after scope
+    read_len_prefixed_ref(buf, &mut c)?;
+    c += 1;
     if buf.len() <= c {
         return None;
     }
-    c += 1; // vis_byte
-    read_len_prefixed_ref(buf, &mut c)?; // skip owner
+    c += 1;
+    read_len_prefixed_ref(buf, &mut c)?;
     if buf.len() <= c {
         return None;
     }
-    c += 1; // NUL after owner
+    c += 1;
     let key = read_len_prefixed_ref(buf, &mut c)?;
     std::str::from_utf8(key).ok()
 }
-
-// ─── proposals ─────────────────────────────────────────────────────────────
-//
-// The `proposals` keyspace holds propose-don't-commit governance candidates (W11). Archived
-// stale memories (W10) live in a separate `memory_archive` keyspace but reuse the
-// `memory_by_key` encoder above — archive rows are keyed identically to their live form.
 
 /// Proposal kind ordinal for a **memory** candidate. Stable, append-only.
 pub const PROPOSAL_KIND_MEMORY: u8 = 0;
@@ -608,7 +585,7 @@ pub fn parse_proposal_by_id(buf: &[u8]) -> Option<(String, u8, String)> {
     if buf.len() <= c {
         return None;
     }
-    c += 1; // skip NUL separator after scope
+    c += 1;
     if buf.len() <= c {
         return None;
     }
@@ -639,7 +616,6 @@ fn symbol_kind_byte(k: SymbolKind) -> u8 {
         SymbolKind::Namespace => 13,
         SymbolKind::Getter => 14,
         SymbolKind::Setter => 15,
-        // Append-only past this line — see `index-keyspace-evolution` skill.
         SymbolKind::Field => 16,
         SymbolKind::Variable => 17,
         SymbolKind::EnumVariant => 18,
@@ -1010,7 +986,6 @@ mod tests {
     #[test]
     fn parse_memory_key_only_rejects_truncated_buffer() {
         let raw = memory_by_key("scope-a", MEMORY_VIS_INDIVIDUAL, "agent-7", "my.key");
-        // Lop off the trailing key bytes: the length prefix promises more than remains.
         assert_eq!(parse_memory_key_only(&raw[..raw.len() - 3]), None);
         assert_eq!(parse_memory_key_only(&[]), None);
     }

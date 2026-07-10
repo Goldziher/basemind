@@ -58,9 +58,6 @@ async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, r
 /// atomically before the spawn: a room-creation failure aborts the spawn, so no room-less session
 /// leaks. When comms is disabled the tool behaves headless and `room_id` / `child_agent` are `None`.
 pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParams) -> Result<CallToolResult, McpError> {
-    // Honour the config master switch. `ShellsConfig::enabled` defaults to `true`, so a default
-    // build behaves exactly as before; an operator who set `[shells].enabled = false` gets the
-    // tool wired but inert, mirroring the documented contract on the config field.
     if !state.config.shells.enabled {
         return Err(McpError::invalid_params(
             "shells are disabled in config ([shells].enabled = false)",
@@ -68,9 +65,6 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         ));
     }
 
-    // Confine the caller-supplied working directory to the repository root. `normalize_query_path`
-    // rejects `..` traversal and absolute paths outside `root`, returning a clean repo-relative key
-    // — so a spawned shell can never be pointed at a directory outside the indexed workspace.
     let cwd = match params.cwd {
         Some(rel) => {
             let raw = rel
@@ -83,21 +77,11 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         None => None,
     };
 
-    // Mint ONE session id up front: it keys the comms room the child auto-joins AND addresses the
-    // rmux session for `shell_send` / `shell_capture`. Threading a single id through both paths is
-    // what makes the response's `session_id` and the room the child joins provably the same value.
     let session_id = state.shell_runtime.mint_session_id();
 
-    // Validate + sanitize the caller-supplied env BEFORE building the `KEY=VALUE` vec, so a hostile
-    // entry cannot smuggle a NUL / newline / extra `KEY=VALUE` into the spawned process env.
-    // `mut` is only needed when comms is on (the coupling rewrites the identity vars). The
-    // attribute keeps the headless `shells`-only build free of an `unused_mut` warning.
     #[cfg_attr(not(all(feature = "comms", any(unix, windows))), allow(unused_mut))]
     let mut environment = build_environment(params.env.unwrap_or_default())?;
 
-    // Couple the session to a comms room and inject the child's identity env BEFORE the spawn, so
-    // the child process starts already pointed at its room. `(None, None)` when comms is off. The
-    // pre-minted `session_id` keys the room so the child joins the same one the client addresses.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let (room_id, child_agent) = couple_session_room(state, session_id.as_str(), &mut environment).await?;
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
@@ -118,9 +102,6 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
     let (session_id, name) = match spawned {
         Ok(pair) => pair,
         Err(error) => {
-            // The room was created + joined before the spawn. The spawn failed, so no child will
-            // ever join it — roll the parent's subscription back so the broker room does not leak
-            // (best-effort; the original spawn error is what we propagate).
             #[cfg(all(feature = "comms", any(unix, windows)))]
             if let Some(room) = room_id.as_deref() {
                 rollback_session_room(state, room).await;
@@ -129,8 +110,6 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         }
     };
 
-    // Build the visual attach target: it re-execs basemind (no external `rmux` binary) with the
-    // hidden `--__internal-attach` flag against the same socket the embedded daemon is bound to.
     let target = crate::shells::launcher::AttachTarget {
         session_name: name.as_str().to_string(),
         socket_path: state.shell_runtime.socket_path().to_path_buf(),
@@ -140,10 +119,6 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
     };
     let attach_command = target.attach_command();
 
-    // Present the session in a terminal surface per config, BEST-EFFORT. The headless session is
-    // already alive; a presentation failure (no terminal, osascript error) must not fail the spawn.
-    // Skip the call entirely for Headless mode so tests (and headless operators) never spawn a
-    // terminal and we avoid the no-op round trip.
     let visual = state.config.shells.visual;
     if visual != crate::config::VisualMode::Headless {
         let terminal = state.config.shells.terminal;
@@ -269,17 +244,10 @@ async fn try_couple_session_room(
     let parent = &state.agent_id;
     let comms_session_id = session_id.to_string();
 
-    // Derive the child agent id from the parent + the session id, validating it through
-    // `AgentId::parse`. The session id alphabet (`[A-Za-z0-9._:-]`) is a subset of the agent id
-    // alphabet, so the derived id is valid by construction; fall back to a sanitized id if the
-    // parent contributes an out-of-alphabet byte.
     let child_candidate = format!("{parent}-{comms_session_id}");
     let child_agent = match AgentId::parse(child_candidate.clone()) {
         Ok(id) => id.into_string(),
         Err(error) => {
-            // The primary id is rejected only when the parent contributes an out-of-alphabet byte.
-            // Validate the fallback through the SAME parser so we never hand an invalid id to the
-            // broker — a fallback that itself fails to parse is a hard error, not a silent pass.
             let fallback = format!("shell-{comms_session_id}");
             let fallback_id = AgentId::parse(fallback.clone()).map_err(|fallback_err| {
                 comms_err(format!(
@@ -297,7 +265,6 @@ async fn try_couple_session_room(
         }
     };
 
-    // The room id reuses the comms session id (valid `RoomId` by construction).
     let room = RoomId::parse(comms_session_id.clone())
         .map_err(|e| comms_err(format!("derive session room id {comms_session_id:?}: {e}")))?;
     let title = format!("shell session {comms_session_id} ({parent} -> {child_agent})");
@@ -309,15 +276,9 @@ async fn try_couple_session_room(
             .create_room(room.clone(), RoomScope::Session(comms_session_id.clone()), Some(title))
             .await
             .map_err(comms_err)?;
-        // Subscribe the PARENT (this server) so it receives the child's posts.
         client.join_room(room.clone()).await.map_err(comms_err)?;
     }
 
-    // The server's identity values are authoritative. Drop any caller-supplied entries for these
-    // exact keys FIRST so we do not rely on last-wins env semantics — then inject the child's
-    // identity + session lineage so its basemind auto-identifies and auto-joins the same session
-    // room on its first `Hello`. The child reaches the same per-user broker by default, so no
-    // socket env is needed.
     const IDENTITY_KEYS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_SESSION_ID"];
     environment.retain(|entry| {
         let key = entry.split('=').next().unwrap_or(entry);
@@ -413,8 +374,6 @@ pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams)
         .map_err(|e| mcp_internal("kill shell session", e))?;
     state.shell_runtime.forget(&id).await;
 
-    // Best-effort: drop the broker lineage row so the `sessions` keyspace does not accumulate dead
-    // rows. A comms failure must not fail the kill — the session is already gone.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     delete_session_lineage(state, id.as_str()).await;
 
@@ -456,7 +415,6 @@ pub(super) async fn run_shell_broadcast(
     if params.session_ids.is_empty() {
         return Err(McpError::invalid_params("session_ids must not be empty", None));
     }
-    // Validate every id up front so an unknown id fails before any delivery.
     let mut ids = Vec::with_capacity(params.session_ids.len());
     for raw in &params.session_ids {
         let (id, _name) = require_session(state, raw).await?;
@@ -490,9 +448,6 @@ pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams
         .await
         .map_err(|e| mcp_internal("list shell sessions", e))?;
 
-    // Seed the merge map from this server's own sessions (name + liveness; lineage unknown here).
-    // Bound as a non-`mut` `let` so the headless `shells`-only build needs no `unused_mut`
-    // suppression (the project bans `allow`-style attributes); the comms-on path rebinds it `mut`.
     let by_id: ahash::AHashMap<String, ShellSessionView> = runtime
         .into_iter()
         .map(|info| {
@@ -511,9 +466,6 @@ pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams
         })
         .collect();
 
-    // Enrich with the broker's lineage when comms is built. Best-effort: a comms failure leaves
-    // `by_id` as the runtime-only view rather than failing the whole tool. The `mut` rebind lives
-    // under the same gate as the enrichment, so it is absent (and harmless) in the headless build.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let by_id = {
         let mut by_id = by_id;
@@ -560,11 +512,6 @@ async fn enrich_with_lineage(state: &ServerState, by_id: &mut ahash::AHashMap<St
         let parent_agent = row.parent_agent.map(|agent| agent.into_string());
         let child_agent = row.child_agent.into_string();
         let room_id = row.room_id.into_string();
-        // Get-or-default first, then assign the lineage fields by MOVE. A present entry (this server
-        // spawned it) keeps its runtime `name` / `alive`; an absent one is seeded as a lineage-only
-        // row (`name = session_id`, `alive = false`) because this process holds no rmux handle for a
-        // session spawned elsewhere in the chain. Either way the three lineage values are moved in,
-        // not cloned, since each is consumed exactly once.
         let view = by_id.entry(row.session_id.clone()).or_insert_with(|| ShellSessionView {
             name: row.session_id.clone(),
             session_id: row.session_id,

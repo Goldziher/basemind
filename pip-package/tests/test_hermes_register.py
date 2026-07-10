@@ -54,7 +54,6 @@ def test_register_wires_all_skills():
     ctx = RecordingCtx()
     hermes.register(ctx)
     names = {name for name, _ in ctx.skills}
-    # The canonical skill set synced into the wheel by scripts/sync-plugin-skills.sh.
     assert "basemind" in names
     assert len(ctx.skills) >= 8
     for _, path in ctx.skills:
@@ -67,9 +66,9 @@ def test_register_wires_expected_commands_with_body_handlers():
     by_name = {name: (handler, desc) for name, handler, desc in ctx.commands}
     assert {"bm", "bm-doctor", "bm-scan", "bm-stats"} <= set(by_name)
     handler, description = by_name["bm-doctor"]
-    assert description  # pulled from the command's front-matter
+    assert description
     body = handler("")
-    assert isinstance(body, str) and len(body) > 0  # returns the command markdown verbatim
+    assert isinstance(body, str) and len(body) > 0
 
 
 def test_register_wires_comms_hooks():
@@ -79,14 +78,11 @@ def test_register_wires_comms_hooks():
 
 
 def test_hooks_are_fail_open_without_a_basemind_binary(monkeypatch):
-    # Force the CLI bridge to report the broker as unavailable.
     monkeypatch.setattr(hermes, "_run_basemind_json", lambda *a, **k: None)
     ctx = RecordingCtx()
     hermes.register(ctx)
-    # on_session_start still injects the operating discipline even with no comms broker.
     ctx.hooks["on_session_start"]()
     assert ctx.injected and hermes._DISCIPLINE in ctx.injected[-1][1]
-    # pre_llm_call injects nothing when there are no messages — and must not raise.
     ctx.injected.clear()
     ctx.hooks["pre_llm_call"](task_id="s1")
     assert ctx.injected == []
@@ -96,7 +92,7 @@ def test_register_never_raises_on_a_minimal_ctx():
     class Bare:
         """A ctx with none of the register_* methods — plugin must no-op cleanly."""
 
-    hermes.register(Bare())  # must not raise
+    hermes.register(Bare())
 
 
 def test_session_start_context_lists_messages(monkeypatch):
@@ -115,7 +111,6 @@ def test_delta_context_baselines_then_reports_new(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes.tempfile, "gettempdir", lambda: str(tmp_path))
     msgs = [{"subject": "a", "from": "p", "id": "m1", "ts_micros": 10}]
     monkeypatch.setattr(hermes, "_run_basemind_json", lambda *a, **k: {"messages": msgs})
-    # First turn baselines (no output); a newer message on the next turn is reported.
     assert hermes._delta_context("/tmp", "sid") is None
     msgs.append({"subject": "b", "from": "p", "id": "m2", "ts_micros": 20})
     out = hermes._delta_context("/tmp", "sid")
@@ -156,7 +151,6 @@ def test_built_wheel_contains_manifest_and_skills(tmp_path):
         names = zf.namelist()
     assert any(n.endswith("basemind/plugin.yaml") for n in names)
     assert any("basemind/skills/" in n and n.endswith("SKILL.md") for n in names)
-    # Entry point recorded in wheel metadata.
     ep = next(n for n in names if n.endswith("entry_points.txt"))
     with zipfile.ZipFile(wheels[0]) as zf:
         assert "hermes_agent.plugins" in zf.read(ep).decode()

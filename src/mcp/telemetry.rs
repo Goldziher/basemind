@@ -83,8 +83,6 @@ impl Telemetry {
         let line = serde_json::to_vec(row).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut guard = self.writer.lock().expect("telemetry mutex poisoned");
         if guard.is_none() {
-            // Ensure the parent dir exists — `.basemind/` is created by `Store::open`, but a
-            // unit-test caller passing an arbitrary path may not have one.
             if let Some(parent) = self.path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -94,8 +92,6 @@ impl Telemetry {
         let w = guard.as_mut().expect("writer just initialized");
         w.write_all(&line)?;
         w.write_all(b"\n")?;
-        // Flush per record — JSONL rows are tiny (~200B) and the statusline reads in real time,
-        // so we want each row visible as soon as the tool returns.
         w.flush()?;
         Ok(())
     }
@@ -231,9 +227,6 @@ fn window_cutoff_micros(window: &str) -> Result<Option<i64>, &'static str> {
         "all" => Ok(None),
         "1h" => Ok(Some(now_us.saturating_sub(3_600 * 1_000_000))),
         "24h" => Ok(Some(now_us.saturating_sub(24 * 3_600 * 1_000_000))),
-        // "today" = midnight-local in the docs; we approximate as last 24h to avoid
-        // pulling chrono just for tz arithmetic. The window is monotonically valid;
-        // the label is a UX cue.
         "today" => Ok(Some(now_us.saturating_sub(24 * 3_600 * 1_000_000))),
         _ => Err("expected one of: today, 1h, 24h, all"),
     }
@@ -261,7 +254,7 @@ fn read_telemetry_tail(path: &std::path::Path) -> Result<Vec<TelemetryRow>, std:
         }
         if let Ok(row) = serde_json::from_str::<TelemetryRow>(&line) {
             if rows.len() == TELEMETRY_SUMMARY_READ_CAP {
-                rows.pop_front(); // O(1) eviction of the oldest row
+                rows.pop_front();
             }
             rows.push_back(row);
         }
@@ -325,8 +318,6 @@ mod tests {
             est_tokens_saved: 90,
             baseline: "test",
         };
-        // Write (TELEMETRY_SUMMARY_READ_CAP + 2) rows with distinct tool names so we can
-        // verify which ones survive the cap eviction.
         let tel = Telemetry::new(dir.path());
         for i in 0..(TELEMETRY_SUMMARY_READ_CAP + 2) {
             tel.record(&format!("tool_{i:05}"), &json!({}), 0, 0, &savings);
@@ -334,22 +325,18 @@ mod tests {
 
         let rows = read_telemetry_tail(&path).unwrap();
 
-        // Exactly TELEMETRY_SUMMARY_READ_CAP rows survive.
         assert_eq!(rows.len(), TELEMETRY_SUMMARY_READ_CAP);
 
-        // The two oldest rows must have been evicted: first survivor is tool_00002.
         assert_eq!(
             rows[0].tool, "tool_00002",
             "oldest two rows must be evicted; first survivor should be tool_00002"
         );
-        // Order is oldest-first (ascending).
         let last_expected = format!("tool_{:05}", TELEMETRY_SUMMARY_READ_CAP + 1);
         assert_eq!(
             rows[rows.len() - 1].tool,
             last_expected,
             "last row must be the most-recently written one"
         );
-        // Monotonically increasing tool names confirm no re-ordering.
         for w in rows.windows(2) {
             assert!(
                 w[0].tool < w[1].tool,

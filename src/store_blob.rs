@@ -121,10 +121,6 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
     use std::fs::OpenOptions;
     use std::io::Write;
 
-    // Unique tmp suffix per writer thread + process so two workers racing on the same
-    // content-hash never share a tmp path. The process-id + thread-id portion is invariant
-    // for a given worker thread, so it is cached per thread; only the final per-call
-    // extension is formatted on the hot path.
     let tmp = TMP_SUFFIX.with(|suffix| path.with_extension(format!("msgpack.{suffix}")));
     {
         let mut f = OpenOptions::new()
@@ -142,7 +138,6 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
         })?;
     }
     if let Err(source) = std::fs::rename(&tmp, &path) {
-        // Clean up the orphan tmp so a partially-completed run doesn't leave litter.
         let _ = std::fs::remove_file(&tmp);
         return Err(StoreError::Io { path, source });
     }
@@ -153,9 +148,6 @@ pub(crate) fn write_bytes_atomic(path: PathBuf, bytes: &[u8]) -> Result<(), Stor
 /// matching schema, else serialize + atomic write. The combined-filemap blobs go through
 /// `Store::write_filemap_hex` instead.
 pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
-    // A schema bump leaves a stale-schema blob at the same content-hash path; the durable
-    // refresh re-extracts and relies on this write to OVERWRITE it. Only short-circuit when
-    // the on-disk schema already matches.
     if path.exists() && peek_blob_schema(&path) == Some(SCHEMA_VER) {
         return Ok(());
     }

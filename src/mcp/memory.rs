@@ -62,10 +62,6 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
             let dim = embedder.dim();
             let model = embedder.model().to_string();
             let lance_dir = state.store.read().await.basemind_dir.join(crate::store::LANCE_DIR);
-            // LanceStore::open builds its own current-thread tokio runtime and
-            // calls `block_on`, which panics when invoked from inside the live
-            // server runtime. Offload to a blocking thread so the inner runtime
-            // owns its own thread.
             let model_for_open = model.clone();
             tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open))
                 .await
@@ -152,10 +148,6 @@ fn delete_memory_record(
 /// mutex and the two no longer serialize — a window only reachable when more
 /// than [`MEMORY_PUT_LOCK_CAP`] distinct keys are written between two racing
 /// puts on the same key.
-// `NonZeroUsize::new(4096)` is `Some` at const-eval time; `.unwrap()` here runs
-// in a const initializer, so it is a compile-time check, not a runtime panic —
-// the lib-code "no unwrap" rule targets fallible runtime paths, which this is
-// not.
 #[cfg(feature = "memory")]
 const MEMORY_PUT_LOCK_CAP: std::num::NonZeroUsize = std::num::NonZeroUsize::new(4096).unwrap();
 
@@ -172,9 +164,6 @@ fn memory_put_lock(scope: &str, vis_byte: u8, owner: &str, key: &str) -> Arc<tok
     let registry = LOCKS.get_or_init(|| std::sync::Mutex::new(lru::LruCache::new(MEMORY_PUT_LOCK_CAP)));
     let mut guard = registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let registry_key = (scope.to_string(), vis_byte, owner.to_string(), key.to_string());
-    // `get_or_insert` bumps recency on hit and inserts (evicting LRU) on miss,
-    // returning a reference to the live `Arc` either way. We clone the `Arc`
-    // while holding the std mutex — never across an `.await`.
     Arc::clone(guard.get_or_insert(registry_key, || Arc::new(tokio::sync::Mutex::new(()))))
 }
 
@@ -205,19 +194,12 @@ fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
-    // Serialize same-key puts within the SAME namespace so the read-modify-write below is
-    // atomic w.r.t. `created_at` derivation and the Fjall + Lance stores cannot interleave.
-    // Different agents'/visibilities' same-key puts use distinct locks and run in parallel.
     let key_lock = memory_put_lock(&state.scope, vis_byte, owner, &params.key);
     let _put_guard = key_lock.lock().await;
 
     let now = crate::lance::now_micros();
     let tags = params.tags.clone().unwrap_or_default();
 
-    // Read-modify-write the Fjall record under the store read guard, then drop
-    // the guard before the async Lance upsert. The per-key lock (held for the
-    // whole function) — not the store guard — is what serializes same-key puts,
-    // so dropping the store guard here does not reopen the race.
     let created_at = {
         let store = state.store.read().await;
         let idx = store
@@ -226,10 +208,6 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
             .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
         let existing = read_memory_record(idx, &state.scope, vis_byte, owner, &params.key);
         let created_at = existing.map(|r| r.created_at).unwrap_or(now);
-        // A plain put carries no code references, so the W10 governance fields default:
-        // an unaudited memory with empty provenance simply has nothing to verify. A value
-        // change resets `verified` to `Unverified` (any prior verdict no longer applies);
-        // the governance accept-path stamps provenance/importance directly when it needs to.
         let record = MemoryRecord {
             value: params.value.clone(),
             tags: tags.clone(),
@@ -321,10 +299,6 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
     };
     let key_prefix_filter = params.prefix.as_deref().unwrap_or("");
     let tag_filter = params.tag.as_deref();
-    // Bound the post-page count so a huge scope doesn't force a full keyspace
-    // walk just to compute `total`. Once we have a full page AND have counted
-    // past `scan_cap` matching entries, we stop: `has_more`/`next_cursor` still
-    // drive pagination, and `truncated` flags that `total` is a lower bound.
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut entries: Vec<MemoryEntry> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
@@ -373,8 +347,6 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
             last_emitted_key = Some(raw_key.to_vec());
         } else {
             has_more = true;
-            // We already have a full page; stop the count once it exceeds the
-            // scan cap to bound work on large scopes.
             if total > scan_cap {
                 break;
             }
@@ -446,10 +418,6 @@ pub(super) async fn run_memory_delete(
         let key = params.key.clone();
         let visibility = lance_visibility(params.visibility).to_string();
         let agent_id = owner.to_string();
-        // The Fjall delete already succeeded and is the authoritative `deleted`
-        // signal, so a Lance failure here is non-fatal — but it leaves Fjall and
-        // Lance divergent (a stale embedding lingers), so log it rather than
-        // swallow it silently with `.ok()`.
         match tokio::task::spawn_blocking(move || lance.delete_memory(&scope, &visibility, &agent_id, &key)).await {
             Ok(Ok(_rows_deleted)) => {}
             Ok(Err(error)) => {
@@ -476,11 +444,6 @@ pub(super) async fn run_search_documents(
     state: &ServerState,
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve effective config. The common case has no overrides — skip the
-    // `ConfigV1` deep clone (`BTreeMap<String, LanguageConfig>` + several `Vec<String>`)
-    // entirely. Only pay the clone when overrides actually need to be layered.
-    // We capture both the output format AND the reranker config in one pass so we
-    // only clone once even when the reranker is enabled via TOML (no overrides).
     let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = if params.overrides.any() {
         let mut effective = (*state.config).clone();
         crate::config::layered::apply_documents_overrides(
@@ -528,10 +491,6 @@ pub(super) async fn run_search_documents(
         })
         .collect();
 
-    // Attach keywords + entities from each hit's parent doc blob (if extraction
-    // ran them at scan time) and optionally post-filter by `entity_category` /
-    // `keywords_contains`. We dedupe by `path` first so we only read each blob
-    // once even when several chunks of the same doc landed in the result set.
     attach_doc_metadata(
         state,
         &mut hits,
@@ -540,13 +499,7 @@ pub(super) async fn run_search_documents(
     )
     .await?;
 
-    // Reranker post-step: cross-encoder rescores and reorders the candidate hits.
-    // Default OFF — first call downloads ONNX weights (~100 MB) into
-    // `~/.cache/xberg/rerankers/`. Enable via `[documents.reranker] enabled = true`
-    // in TOML or `reranker_enabled = true` as a per-query override.
     if reranker_enabled && !hits.is_empty() {
-        // Fail-fast on unknown preset names before constructing `RerankerConfig` so we
-        // don't trigger an opaque ONNX error or a wrong-model download.
         if xberg::get_reranker_preset(&reranker_preset).is_none() {
             return Err(McpError::invalid_params(
                 format!("unknown reranker preset: {reranker_preset:?}"),
@@ -562,10 +515,6 @@ pub(super) async fn run_search_documents(
         let reranked = xberg::rerank_async(params.query.clone(), documents, &krz_config)
             .await
             .map_err(|e| {
-                // Best-effort split between model-load and inference failures. The
-                // xberg error variants don't expose a kind discriminator, so we
-                // substring-match the Display impl — better than the opaque `rerank: {e}`
-                // we had before, even if it occasionally misclassifies.
                 let msg = e.to_string();
                 let kind = if msg.contains("download") || msg.contains("HuggingFace") || msg.contains("model") {
                     "rerank model load"
@@ -574,8 +523,6 @@ pub(super) async fn run_search_documents(
                 };
                 McpError::internal_error(format!("{kind}: {msg}"), None)
             })?;
-        // Bounds-check every external index — the reranker is a third-party ONNX model
-        // and a buggy run must not panic the server.
         let original_hits = std::mem::take(&mut hits);
         hits = reranked
             .into_iter()
@@ -601,16 +548,12 @@ pub(super) async fn run_search_documents(
             .collect::<Result<Vec<_>, _>>()?;
     }
 
-    // Per-call `format` param overrides the `[documents.output] format` config knob when set;
-    // an absent / unrecognized value keeps the config-derived default.
     let output_format = match params.format.as_deref().map(str::trim) {
         Some(f) if f.eq_ignore_ascii_case("toon") => crate::config::OutputFormat::Toon,
         Some(f) if f.eq_ignore_ascii_case("json") => crate::config::OutputFormat::Json,
         _ => output_format,
     };
 
-    // Token budget bounds the returned hits list (best-first after any rerank). No cursor
-    // for search_documents — `budgeted: true` signals the caller to raise `max_tokens`.
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     format_response(
         &SearchDocumentsResponse {
@@ -641,7 +584,6 @@ async fn attach_doc_metadata(
     if hits.is_empty() {
         return Ok(());
     }
-    // Collect distinct paths once so we don't re-read the same blob for every chunk.
     let mut unique_paths: Vec<String> = Vec::with_capacity(hits.len());
     {
         let mut seen: ahash::AHashSet<&str> = ahash::AHashSet::new();
@@ -652,8 +594,6 @@ async fn attach_doc_metadata(
         }
     }
 
-    // Phase 1: under the read guard, resolve path → blob filesystem path. We do
-    // NOT touch the filesystem here so the lock window stays trivially short.
     let pairs: Vec<(String, std::path::PathBuf)> = {
         let store = state.store.read().await;
         unique_paths
@@ -664,16 +604,8 @@ async fn attach_doc_metadata(
                     .map(|entry| (p.clone(), store.blob_path_doc_hex(&entry.hash_hex)))
             })
             .collect()
-    }; // guard dropped here
+    };
 
-    // Phase 2: read blobs off the async runtime. Each blob is a synchronous
-    // `std::fs::read` + msgpack decode — exactly the work `spawn_blocking` is
-    // for. The async path keeps making progress while we crunch metadata.
-    //
-    // `Arc` wrap: multiple chunks of the same doc map to the same path. Storing
-    // an `Arc<DocMeta>` means N chunk-hits from the same doc pay one atomic
-    // increment each instead of cloning the full `(Vec<DocKeyword>, Vec<DocEntity>,
-    // Option<DocSummary>)` triple N times.
     type DocMeta = (Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>);
     let meta: ahash::AHashMap<String, Arc<DocMeta>> = tokio::task::spawn_blocking(move || {
         let mut out: ahash::AHashMap<String, Arc<DocMeta>> = ahash::AHashMap::with_capacity(pairs.len());
@@ -702,17 +634,12 @@ async fn attach_doc_metadata(
     .await
     .unwrap_or_default();
 
-    // Pre-lowercase filter substrings once.
     let cat_needle = entity_category.map(|s| s.to_lowercase());
     let kw_needle = keywords_contains.map(|s| s.to_lowercase());
 
     hits.retain_mut(|hit| {
-        // `Arc::clone` = one atomic increment per hit vs cloning the full
-        // `(Vec<DocKeyword>, Vec<DocEntity>, Option<DocSummary>)` triple.
-        // Filter checks borrow through the Arc; only surviving hits pay a clone.
         let meta_arc = meta.get(&hit.path).cloned();
 
-        // Apply filters first via borrows — drop the hit before any owned clone.
         if let Some(needle) = cat_needle.as_deref() {
             let ents = meta_arc.as_ref().map(|m| m.1.as_slice()).unwrap_or(&[]);
             if !ents.iter().any(|e| e.category.to_lowercase().contains(needle)) {
@@ -726,7 +653,6 @@ async fn attach_doc_metadata(
             }
         }
 
-        // Hit survived all filters — now pay the clone (once per surviving hit).
         if let Some(m) = meta_arc {
             hit.keywords = m.0.clone();
             hit.entities = m.1.clone();

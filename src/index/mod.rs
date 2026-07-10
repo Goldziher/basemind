@@ -107,7 +107,7 @@ pub struct IndexDb {
     /// `code_bm25_by_path`: forward companion keyed by file → its chunks' `(chunk_id, doclen,
     /// terms)`, so a re-scan deletes the previous postings in O(prefix). Always created.
     pub(crate) code_bm25_by_path: Keyspace,
-    #[allow(dead_code)] // reserved for the future vector iteration
+    #[allow(dead_code)]
     pub(crate) embeddings: Keyspace,
     /// `memory_by_key`: scope + key → msgpack `MemoryRecord`.
     /// Always created for DB stability; used by `memory` feature tools.
@@ -134,13 +134,6 @@ impl IndexDb {
             path: dir.clone(),
             source,
         })?;
-        // Open the Fjall database ONCE and read the persisted schema version through the same
-        // handle we intend to keep. The previous code peeked the version via a throwaway
-        // `Database::open` before this real open — two exclusive fjall-lock acquisitions per
-        // `IndexDb::open`, which doubled the window in which a concurrent reader's transient open
-        // could collide with a rightful writer and force it to downgrade to read-only (the
-        // multi-session writer-downgrade race). One open closes that extra window. Only the rare
-        // schema-mismatch path below pays a second open.
         let mut db = Database::builder(&dir).open()?;
         let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta
@@ -148,10 +141,6 @@ impl IndexDb {
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
         if matches!(on_disk_ver, Some(ver) if ver != INDEX_SCHEMA_VER) {
-            // Schema drifted: drop every handle first so Fjall releases the directory lock and its
-            // file handles, then wipe and reopen fresh. The caller repopulates from the msgpack
-            // blobs via `IndexWriter`. Mirrors the old wipe-on-mismatch flow, minus the extra open
-            // on the common (matching / brand-new) path.
             drop(meta);
             drop(db);
             std::fs::remove_dir_all(&dir).map_err(|source| IndexError::Io {
@@ -182,8 +171,6 @@ impl IndexDb {
         let memory_archive = db.keyspace("memory_archive", KeyspaceCreateOptions::default)?;
         let proposals = db.keyspace("proposals", KeyspaceCreateOptions::default)?;
 
-        // Stamp the version on a fresh open. We do this every time because rewriting one
-        // 4-byte row is essentially free and saves us from a "was it really empty?" race.
         meta.insert(META_SCHEMA_VER, INDEX_SCHEMA_VER.to_be_bytes())?;
 
         Ok(Self {

@@ -45,9 +45,6 @@ pub fn extract_l1_l2(
     };
     let l1 = extract_l1_from_tree(lang, &tree, source)?;
     let l2 = if eager_l2 {
-        // L2 failure is non-fatal: log nothing here (scanner already warns at the call site)
-        // and let L1 stand on its own. The calls index stays empty for this file until the
-        // lazy path populates it or the next scan retries.
         extract_l2_from_tree(lang, &tree, source).ok()
     } else {
         None
@@ -161,12 +158,6 @@ pub enum SymbolKind {
     Getter,
     Setter,
     Unknown,
-    // ─── Tail-only additions ──────────────────────────────────────────────────
-    //
-    // Variants below this line are appended to keep `symbol_kind_byte()` ordinals in
-    // `src/index/keys.rs` stable. Append-only is the contract — reordering would silently
-    // miscategorize cached entries. See the `index-keyspace-evolution` skill.
-    //
     /// Struct / class field. Captured by TSLP `tags.scm` under `@definition.field` in many
     /// languages; surfaced so symbol search can target data members.
     Field,
@@ -224,9 +215,6 @@ impl SymbolKind {
         match self {
             Unknown => 0,
             Const | Variable | Field | Decorator => 1,
-            // Everything below is "concrete": one specific shape of declaration.
-            // Same score — first-seen wins among them, which keeps document order intact
-            // when the same symbol is captured twice as e.g. both function and method.
             Function | Method | Struct | Enum | Class | Interface | Trait | Type | Module | Macro | Impl
             | Namespace | Getter | Setter | EnumVariant | Constructor | Heading => 2,
         }

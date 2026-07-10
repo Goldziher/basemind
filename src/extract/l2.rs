@@ -5,8 +5,6 @@ use super::{Call, DocComment, ExtractError, FileMapL2, SCHEMA_VER, capture_name}
 use crate::lang::{LangId, ParseOutcome, QueryKind, parse_with_default_timeout, try_get_query, with_parser};
 
 pub fn extract_l2(lang: LangId, source: &[u8]) -> Result<FileMapL2, ExtractError> {
-    // Use the timeout-bounded parse so L2 gets the same protection as L1 against
-    // pathological inputs that spin the parser's error-recovery loop indefinitely.
     let outcome = with_parser(lang, |p| parse_with_default_timeout(p, source))?;
     let tree = match outcome {
         ParseOutcome::Ok(t) => t,
@@ -29,11 +27,6 @@ pub(crate) fn extract_l2_from_tree(
     let root = tree.root_node();
 
     let mut calls = run_calls(lang, root, source)?;
-    // Obsidian's reference graph — wikilinks, standard note links, and `#tags` — isn't modeled by the
-    // markdown grammar (basemind runs only the block grammar; these all live inside opaque `inline`
-    // nodes). Harvest them from the bytes and surface them as calls, so `find_references "Note"` /
-    // `find_references "#tag"` return the notes that link to a note or share a tag (the backlink and
-    // tag graphs).
     if lang == "markdown" {
         calls.extend(markdown_references(source));
     }
@@ -52,9 +45,6 @@ fn run_calls(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    // Reuse the per-thread QueryCursor — avoids a heap allocation per file.
-    // `run_calls` and `run_docs` are called sequentially; the iterator is fully
-    // drained before `with_query_cursor` returns, so the TLS slot is free for `run_docs`.
     crate::lang::with_query_cursor(|cursor| {
         let mut iter = cursor.matches(&q, root, source);
         while let Some(m) = iter.next() {
@@ -71,8 +61,6 @@ fn run_docs(lang: LangId, root: tree_sitter::Node, source: &[u8]) -> Result<Vec<
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
-    // Reuse the per-thread QueryCursor — safe because `run_calls` has already returned
-    // and fully consumed its iterator, releasing the TLS borrow.
     crate::lang::with_query_cursor(|cursor| {
         let mut iter = cursor.matches(&q, root, source);
         while let Some(m) = iter.next() {
@@ -149,7 +137,6 @@ pub(crate) fn markdown_references(source: &[u8]) -> Vec<Call> {
     let mut line_start = 0usize;
     let mut in_fence = false;
     let mut fence_char = 0u8;
-    // YAML frontmatter is a `---`-delimited block that MUST be the very first line of the file.
     let mut in_frontmatter = source.starts_with(b"---\n") || source.starts_with(b"---\r\n");
     let mut in_tags_block = false;
     let mut first_line = true;
@@ -244,15 +231,12 @@ fn scan_standard_links(line: &[u8], line_start: usize, row: u32, out: &mut Vec<C
     let mut i = 0;
     while let Some(rel) = memmem::find(&line[i..], b"](") {
         let mid = i + rel;
-        // A `](` that is really the tail of a `]]` wikilink close never has `(` after `]]`, so this
-        // only fires on genuine `[text](dest)` links.
         let dest_start = mid + 2;
         let Some(close_rel) = memchr::memchr(b')', &line[dest_start..]) else {
             break;
         };
         let dest_end = dest_start + close_rel;
         if let Some(target) = mdlink_target(&line[dest_start..dest_end]) {
-            // Anchor the call at the `(` — precise enough for a backlink and cheap to compute.
             push_call(out, target, line_start, dest_start, dest_end - dest_start, row);
         }
         i = dest_end + 1;
@@ -266,14 +250,11 @@ fn scan_inline_tags(line: &[u8], line_start: usize, row: u32, out: &mut Vec<Call
             i += 1;
             continue;
         }
-        // A tag's `#` must sit at start-of-line or follow whitespace / an opening delimiter, so
-        // `word#frag` and URL fragments are not mistaken for tags.
         let ok_prefix = i == 0
             || matches!(
                 line[i - 1],
                 b' ' | b'\t' | b'(' | b'[' | b'{' | b'>' | b'*' | b'_' | b'~' | b'"' | b'\''
             );
-        // ...but a `#` right after a `](` is a standard link's `#anchor`, not a tag.
         let link_anchor = i >= 2 && line[i - 1] == b'(' && line[i - 2] == b']';
         if !ok_prefix || link_anchor {
             i += 1;
@@ -287,8 +268,6 @@ fn scan_inline_tags(line: &[u8], line_start: usize, row: u32, out: &mut Vec<Call
             }
             j += 1;
         }
-        // Obsidian requires a tag to contain at least one non-numeric character (`#123` is not a tag)
-        // and to be non-empty.
         if j > i + 1
             && has_alpha
             && let Ok(tag) = std::str::from_utf8(&line[i..j])
@@ -313,14 +292,13 @@ fn scan_frontmatter_line(line: &[u8], line_start: usize, row: u32, in_tags_block
     let indent = text.len() - text.trim_start().len();
     let trimmed = text.trim();
 
-    // A list item under an open `tags:` block.
     if *in_tags_block {
         if let Some(item) = trimmed.strip_prefix("- ") {
             emit_tag_value(item, line_start, indent, row, out);
             return;
         }
         if indent == 0 && trimmed.contains(':') {
-            *in_tags_block = false; // a new top-level key closed the block
+            *in_tags_block = false;
         } else if trimmed.is_empty() {
             return;
         }
@@ -330,10 +308,9 @@ fn scan_frontmatter_line(line: &[u8], line_start: usize, row: u32, in_tags_block
     if key == "tags" || key == "tag" {
         let rest = trimmed.strip_prefix(key).unwrap_or("").trim_start_matches(':').trim();
         if rest.is_empty() {
-            *in_tags_block = true; // block/list form follows on subsequent lines
+            *in_tags_block = true;
             return;
         }
-        // Inline form: `[a, b]` or `a, b`.
         let inner = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')).unwrap_or(rest);
         for part in inner.split(',') {
             emit_tag_value(part.trim(), line_start, indent, row, out);
@@ -411,7 +388,6 @@ mod markdown_ref_tests {
 
     #[test]
     fn reports_accurate_row_and_col_for_wikilink() {
-        // Line 2 (0-based row 2), the `[[` starts at column 4.
         let src = "line0\nline1\nabc [[Target]]\n";
         let links = markdown_references(src.as_bytes());
         assert_eq!(links.len(), 1);
@@ -433,7 +409,6 @@ mod markdown_ref_tests {
 
     #[test]
     fn extracts_inline_tags_including_nested_and_ignores_non_tags() {
-        // `[[N#Head]]` is a wikilink (→ "N"); `a#tag` and `#123` are not tags.
         let src = "Tagged #project and #area/sub here. Not a#tag, not #123, anchor [[N#Head]].\n";
         assert_eq!(
             callees(src),

@@ -290,9 +290,6 @@ impl Repo {
         })?;
         let mut out = Vec::with_capacity(recorder.len());
         for entry in recorder {
-            // Only real file blobs (regular/executable/symlink) are readable content. Skip
-            // submodule gitlinks (mode 0o160000 = commit) and sub-tree entries — handing those
-            // to `read_blob_at_rev_with_oid`'s `try_into_blob()` would error (bug #24).
             if !entry.mode.is_blob_or_symlink() {
                 continue;
             }
@@ -490,11 +487,6 @@ impl Repo {
 
         let local = self.local();
 
-        // Size cap: blame's per-line work is O(history); a 100k-line lockfile blame swamps
-        // the worker. Reject up front with a typed error the caller can surface cleanly.
-        // We peek at the suspect-rev *committed* blob (not the working tree) because that's
-        // exactly what blame reads. When the tree is dirty these can differ — blame still
-        // operates on the committed blob, so the size cap must measure the committed blob too.
         let (size_bytes, line_count) = blob_size_and_line_count(&local, suspect_sha, path).unwrap_or((0, 0));
         let max_bytes = blame_max_bytes_from_env();
         let max_lines = blame_max_lines_from_env();
@@ -528,9 +520,6 @@ impl Repo {
         let outcome = match local.blame_file(BStr::new(path.as_bytes()), suspect, options) {
             Ok(o) => o,
             Err(e) => {
-                // Shallow clones routinely trip gix's history walk near the cut. Surface a
-                // graceful truncated result rather than failing the whole call — the caller
-                // (MCP) reports `truncated_reason` so the agent knows what happened.
                 if self.is_shallow && looks_like_shallow_blame_error(&e) {
                     return Ok(BlameResult {
                         path: path.clone(),
@@ -546,7 +535,6 @@ impl Repo {
             }
         };
 
-        // Resolve author info per unique commit id, then map each hunk.
         let mut author_cache: ahash::AHashMap<gix::ObjectId, (String, i64, String)> = ahash::AHashMap::new();
         let mut hunks = Vec::with_capacity(outcome.entries.len());
         for entry in &outcome.entries {
@@ -666,8 +654,6 @@ impl Repo {
     }
 }
 
-// ─── module-level helpers — operate on a per-thread Repository ──────────────────
-
 /// Default blame size cap in bytes (1 MiB) — protects against vendored bundles + lockfiles.
 const BLAME_DEFAULT_MAX_BYTES: u64 = 1 << 20;
 /// Default blame line cap (5 000) — protects against generated single-line monsters that
@@ -700,7 +686,6 @@ fn blob_size_and_line_count(local: &gix::Repository, rev: &str, path: &crate::pa
     }
     let data = &obj.data;
     let bytes = data.len() as u64;
-    // memchr is already a dep; line count = (NL count) + (1 if no trailing NL && non-empty).
     let nls = memchr::memchr_iter(b'\n', data).count() as u64;
     let lines = if bytes == 0 {
         0
@@ -734,7 +719,6 @@ fn resolve_tree<'r>(local: &'r gix::Repository, rev_sha: &str) -> Result<gix::Tr
             what: rev_sha.to_string(),
             msg: e.to_string(),
         })?;
-    // Try to peel a commit to its tree first; if it was already a tree, take it as-is.
     let kind = object.kind;
     match kind {
         gix::object::Kind::Commit => object.try_into_commit().ok().and_then(|c| c.tree().ok()),

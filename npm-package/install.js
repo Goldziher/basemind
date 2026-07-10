@@ -7,18 +7,8 @@ const crypto = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const AdmZip = require("adm-zip");
 
-// tar v7 is ESM-only, so it is pulled in via dynamic import() at the extract
-// site rather than a top-level require (this file is CommonJS).
-
 const { version } = require("./package.json");
 
-// `os.arch()` reflects the Node process arch, so an x64 Node under Rosetta reports
-// "x64" even on Apple Silicon hardware. Two hardware signals resolve it, either of
-// which is conclusive for Apple Silicon:
-//   * `sysctl.proc_translated` = 1 → this process runs under Rosetta, which exists
-//     ONLY on Apple Silicon. Rosetta MASKS `hw.optional.arm64`, so that check alone
-//     misses the Rosetta case — probe proc_translated first.
-//   * `hw.optional.arm64` = 1 → native arm64 process.
 function isAppleSilicon() {
   if (os.type() !== "Darwin") return false;
   if (os.arch() === "arm64") return true;
@@ -48,7 +38,6 @@ function getPlatformTriple() {
   }
 
   if (type === "Darwin") {
-    // Apple Silicon (incl. under Rosetta) → native arm64; genuine Intel → x86_64.
     return isAppleSilicon() ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
   }
 
@@ -117,10 +106,8 @@ function downloadWithRedirects(url, dest, maxRedirects = 5) {
   });
 }
 
-// Retry-with-exponential-backoff wrapper. Retries on network errors, 5xx, and timeout.
-// Does NOT retry on 404 (deterministic failure). Returns error on 4xx (except retryable timeout).
 function retryWithBackoff(fn, maxAttempts = 3) {
-  const delays = [1000, 2000, 4000]; // exponential: 1s, 2s, 4s
+  const delays = [1000, 2000, 4000];
   return (async function attempt(index = 0) {
     try {
       return await fn();
@@ -145,7 +132,6 @@ function retryWithBackoff(fn, maxAttempts = 3) {
   })();
 }
 
-// Download a (small) text resource into memory, following redirects.
 function fetchTextWithRedirects(url, maxRedirects = 5) {
   return new Promise((resolve, reject) => {
     if (maxRedirects <= 0) {
@@ -188,7 +174,6 @@ function fetchTextWithRedirects(url, maxRedirects = 5) {
   });
 }
 
-// Retry wrapper for text fetches (same retry policy as binary downloads).
 function retryFetchText(url) {
   return retryWithBackoff(() => fetchTextWithRedirects(url));
 }
@@ -199,9 +184,6 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
-// Parse a `sha256<space>filename` checksums file and return the digest for
-// `assetName`, or null if absent. Lines may use one or two spaces (GNU coreutils
-// uses two: binary-mode marker "* "), so split on whitespace.
 function expectedDigest(checksumsText, assetName) {
   for (const line of checksumsText.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -215,9 +197,6 @@ function expectedDigest(checksumsText, assetName) {
   return null;
 }
 
-// Verify the downloaded archive against the release checksums file. Fails CLOSED:
-// any failure to fetch the checksums, locate the entry, or match the digest
-// aborts the install. Uses retry-with-backoff for transient failures.
 async function verifyChecksum(archivePath, assetName, checksumsUrl) {
   let checksumsText;
   try {
@@ -262,15 +241,10 @@ async function installBinary() {
 
     await retryWithBackoff(() => downloadWithRedirects(archiveUrl, archivePath));
 
-    // Fail CLOSED: verify the archive against the release checksums before
-    // extracting anything. Any fetch/parse/mismatch failure aborts the install.
     await verifyChecksum(archivePath, assetName, checksumsUrl);
 
     console.log("Extracting archive (binary + bundled libraries)...");
 
-    // Archives now contain the binary plus a lib/ tree of bundled native
-    // libraries (the binary finds them via rpath; Windows co-locates DLLs next
-    // to the exe). Extract the whole tree into bin/, not just the binary.
     if (isZip) {
       const zip = new AdmZip(archivePath);
       zip.extractAllTo(binDir, true);

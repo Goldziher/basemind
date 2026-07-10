@@ -1,13 +1,8 @@
-/* basemind brand theme — palette lifted from docs/media/basemind-banner.svg
-   purple #965aff (primary) · pink #ff5d7c ("base") · blue #5b9bff ("mind") · base #080b13 */
-
 :root {
-  /* purple accent ramp (dark theme is the default) */
   --sl-color-accent-low: #2b1a54;
   --sl-color-accent: #7d4dff;
   --sl-color-accent-high: #d3c1ff;
 
-  /* cool-tinted grays so surfaces read as deep indigo, not neutral black */
   --sl-color-white: #f4f2fb;
   --sl-color-gray-1: #e3e0f0;
   --sl-color-gray-2: #b6b2ca;
@@ -38,14 +33,12 @@
   --sl-color-black: #ffffff;
 }
 
-/* Ambient brand glow behind the header, echoing the banner's radial gradients. */
 [data-has-hero] .page {
   background:
     radial-gradient(60ch 40ch at 15% -10%, color-mix(in oklch, var(--bm-purple) 16%, transparent), transparent 70%),
     radial-gradient(50ch 32ch at 88% -6%, color-mix(in oklch, var(--bm-blue) 14%, transparent), transparent 70%);
 }
 
-/* Hero: gradient wordmark + brand accent on the primary CTA. */
 .hero h1,
 .hero .tagline {
   font-feature-settings: "ss01";
@@ -62,7 +55,6 @@
   filter: brightness(1.08);
 }
 
-/* Brandable inline mark used on the home page: "base" pink, "mind" blue. */
 .bm-wordmark {
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -74,7 +66,6 @@
   color: var(--bm-blue);
 }
 
-/* Card grid: lift the surface, add a hairline brand edge on hover. */
 .card {
   background: color-mix(in oklch, var(--sl-color-gray-6) 60%, transparent);
   border: 1px solid var(--sl-color-gray-5);
@@ -89,20 +80,17 @@
   background: color-mix(in oklch, var(--bm-purple) 12%, transparent);
 }
 
-/* Pixel-art wordmark logo — cap its height so it sits balanced in the nav bar. */
 .site-title img {
   height: 1.75rem;
   width: auto;
 }
 
-/* Splash hero: keep the "core" mark a tidy logo size, not a giant block. */
 .hero > img,
 .hero .hero-html {
   max-width: 200px;
   margin-inline: auto;
 }
 
-/* Tighter, denser tables — the reference pages are table-heavy. */
 .sl-markdown-content table {
   font-size: var(--sl-text-sm);
 }

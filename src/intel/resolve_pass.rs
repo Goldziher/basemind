@@ -69,8 +69,6 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store) {
     let facts = compute_facts(root, store, &files);
     stage_facts(index_db, &facts);
 
-    // Cross-file JOIN sub-pass (JS/TS only): stitch importer bindings to resolved-target exports.
-    // Runs after every per-file upsert has committed, so each importer's slate is already clean.
     #[cfg(feature = "code-intel-js")]
     {
         let facts_map = harvest_cross_file_facts(facts);
@@ -88,8 +86,6 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
         return;
     };
 
-    // Phase 1: re-resolve + stage intra facts for the changed files only. Unchanged files keep
-    // their persisted `.rref` blob and their existing `refs_by_def` / `refs_by_path` entries.
     let changed_snapshot: Vec<FileSnapshot> = changed
         .iter()
         .filter_map(|rel| {
@@ -100,7 +96,6 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
     let changed_facts = compute_facts(root, store, &changed_snapshot);
     stage_facts(index_db, &changed_facts);
 
-    // Phase 2 (JS/TS): re-stitch only importers whose cross-file resolution could have changed.
     #[cfg(feature = "code-intel-js")]
     xfile_incremental::restitch_affected(root, store, index_db, changed);
     #[cfg(not(feature = "code-intel-js"))]
@@ -120,13 +115,10 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot]) -> Vec<(Str
             let refs = match store.read_resolved_by_hex(hash_hex) {
                 Ok(Some(cached)) => cached,
                 _ => {
-                    // Cache miss / schema drift: recompute from source and cache the result.
                     let lang = lang::intern(language)?;
                     let abs = root.join(rel_str);
                     let bytes = std::fs::read(&abs).ok()?;
                     let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes);
-                    // Persist only non-empty facts: a file with no resolved edges would otherwise
-                    // write an empty blob just to have `remove_resolved_file` clear it later.
                     if !computed.is_empty() {
                         let _ = store.write_resolved_hex(hash_hex, &computed);
                     }
@@ -255,7 +247,7 @@ mod xfile_incremental {
         };
         for import in &facts.imports {
             if import.is_type {
-                continue; // runtime-erased — no runtime edge
+                continue;
             }
             if let Ok(resolution) = resolver.resolve(importer_dir, &import.specifier)
                 && let Some(target) = to_repo_relative(root, &resolution.full_path())
@@ -268,20 +260,15 @@ mod xfile_incremental {
     /// Re-stitch only the importers whose cross-file resolution could have changed after `changed`
     /// was re-indexed: the changed JS/TS files themselves plus every file that imports one.
     pub(super) fn restitch_affected(root: &Path, store: &Store, index_db: &IndexDb, changed: &[String]) {
-        // The changed JS/TS files are both the export-movers to detect importers against AND
-        // always-affected importers (their own outgoing imports may have moved).
         let changed_set: AHashSet<&str> = changed
             .iter()
             .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| is_js_ts(&e.language)))
             .map(String::as_str)
             .collect();
         if changed_set.is_empty() {
-            return; // no JS/TS file changed → no cross-file edge can have moved
+            return;
         }
 
-        // Reverse-import map input: load every indexed JS/TS file's persisted import/export lists
-        // (parallel blob reads, no Fjall work). Files with no imports and no exports contribute
-        // nothing to the join and are dropped.
         let js_files: Vec<(String, String)> = store
             .index
             .files
@@ -289,8 +276,6 @@ mod xfile_incremental {
             .filter(|(_, e)| is_js_ts(&e.language))
             .map(|(rel, e)| (rel.to_str_lossy().into_owned(), e.hash_hex.clone()))
             .collect();
-        // Collect into a Vec in parallel, then fold into the map serially: rayon's
-        // `FromParallelIterator` is not implemented for a custom-hasher `AHashMap`.
         let js_facts: AHashMap<String, FileFacts> = js_files
             .par_iter()
             .filter_map(|(rel, hash)| {
@@ -311,8 +296,6 @@ mod xfile_incremental {
 
         let resolver = build_resolver();
 
-        // Reverse-import scan (parallel): a file is an affected importer when any of its runtime
-        // imports resolves to a changed file.
         let importers_of_changed: Vec<String> = js_facts
             .par_iter()
             .filter_map(|(importer, facts)| {
@@ -328,14 +311,9 @@ mod xfile_incremental {
             })
             .collect();
 
-        // Affected importer set = changed JS/TS files ∪ files importing a changed file.
         let mut affected: AHashSet<String> = changed_set.iter().map(|s| (*s).to_string()).collect();
         affected.extend(importers_of_changed);
 
-        // Clear + re-stage intra facts for affected importers that were NOT in the changed set:
-        // `upsert_resolved_file` deletes the importer's whole use-side slate (its stale cross-file
-        // edges included) before the fresh stitch. Their bytes are unchanged, so this is a blob
-        // cache hit — no re-parse. Changed files were already staged in Phase 1.
         let unchanged_affected: Vec<FileSnapshot> = affected
             .iter()
             .filter(|k| !changed_set.contains(k.as_str()))
@@ -347,10 +325,6 @@ mod xfile_incremental {
         let ua_facts = compute_facts(root, store, &unchanged_affected);
         stage_facts(index_db, &ua_facts);
 
-        // Build the facts map the stitch consumes. Affected importers carry their real imports (so
-        // stitch processes them as importers) plus their exports; every import TARGET of an affected
-        // importer is added exports-only (empty imports) so stitch's export map can bind but it is
-        // NOT re-processed as an importer. Every other file is left entirely untouched.
         let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());
         for key in &affected {
             if let Some(facts) = js_facts.get(key) {

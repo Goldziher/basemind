@@ -86,10 +86,6 @@ pub(crate) fn chunk_and_embed(
     mode: EmbedMode,
 ) -> Result<Option<PendingCodeBatch>> {
     let cfg = &config.code_search;
-    // `Deferred` forces the chunk-only path regardless of the configured `code_search.embed`, so
-    // serve boot writes symbols + BM25 fast and leaves embeddings to the background `Inline` pass.
-    // A file matching `code_search.embed_exclude` is still chunked + BM25-indexed below, only its
-    // embedding is skipped (the `!embed` branch persists the vector-less sidecar).
     let embed = matches!(mode, EmbedMode::Inline)
         && cfg.embed
         && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude);
@@ -97,21 +93,13 @@ pub(crate) fn chunk_and_embed(
         max_characters: cfg.max_characters,
         overlap: cfg.overlap,
     };
-    // A stale-schema cached blob deserializes as an error (SchemaMismatch); treat any read
-    // failure as a cache miss and recompute.
     let cached = store.read_chunks_by_hex(hash_hex).ok().flatten();
 
     if !embed {
-        // Chunk-only: persist the sidecar (or reuse it) but emit no LanceDB rows.
         let chunks = match cached {
             Some(blob) => blob.chunks,
             None => {
                 let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
-                // Only a genuine `code_search.embed = false` (an `Inline` chunk-only scan) persists
-                // the sidecar. In `Deferred` mode we must NOT: the sidecar's presence is the
-                // "already processed" signal `process_file`'s unchanged-skip keys on, so writing a
-                // vector-less one here would make the background `Inline` fill-in pass skip the file
-                // and never embed it. Leaving it absent lets that pass re-chunk + embed.
                 if matches!(mode, EmbedMode::Inline) {
                     let blob = CodeChunkBlob {
                         schema_ver: SCHEMA_VER,
@@ -139,13 +127,6 @@ pub(crate) fn chunk_and_embed(
         }));
     }
 
-    // Embeddings on. `SharedEmbedder::load` is cheap (config only; the ONNX model is cached in
-    // xberg and loaded lazily on the first `embed_batch`).
-    //
-    // BM25 is independent of embeddings: if the embedder cannot load or run, we still want the
-    // keyword lane populated, so every embed-failure path below degrades to a rows-empty BM25 batch
-    // (via [`bm25_batch_from_chunks`]) rather than propagating an error that would drop the file's
-    // postings. No embedded sidecar is written on failure, so the next scan retries embedding.
     let embedder = match SharedEmbedder::load(&config.documents.embedding_preset, config.documents.embed_max_threads) {
         Ok(embedder) => embedder,
         Err(error) => {
@@ -163,7 +144,6 @@ pub(crate) fn chunk_and_embed(
     };
     let dim = embedder.dim();
 
-    // Cache hit: identical content already chunked + embedded under the current preset.
     if let Some(blob) = &cached
         && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
     {
@@ -177,10 +157,8 @@ pub(crate) fn chunk_and_embed(
         }));
     }
 
-    // Compute from scratch.
     let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
     if chunks.is_empty() {
-        // Persist an empty sidecar so an unchanged empty-of-chunks file is skipped next scan.
         let blob = CodeChunkBlob {
             schema_ver: SCHEMA_VER,
             embedding_dim: 0,
@@ -210,8 +188,6 @@ pub(crate) fn chunk_and_embed(
             return Ok(bm25_batch_from_chunks(rel, &chunks));
         }
     };
-    // Build the deferred LanceDB rows + BM25 postings while borrowing `chunks` + `embeddings`, then
-    // MOVE both into the sidecar blob — no clone of the per-chunk `String` fields on the hot path.
     let rows = build_rows(rel, &chunks, &embeddings);
     let bm25 = build_chunk_postings(&chunks);
     let blob = CodeChunkBlob {
@@ -221,7 +197,6 @@ pub(crate) fn chunk_and_embed(
         chunks,
         embeddings,
     };
-    // Best-effort: a blob-write failure only forfeits the embedding cache, not the scan.
     if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
         tracing::warn!(rel, ?error, "write code-chunk sidecar failed; embedding cache skipped");
     }
@@ -264,14 +239,10 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
     if stale.is_empty() || !should_chunk(config) {
         return;
     }
-    // Nothing to purge if the vector store was never built for this repo — do not create it here.
     if store.lance.is_none() && !store.lance_dir_exists() {
         return;
     }
     let model = &config.documents.embedding_preset;
-    // The store's `(dim, model)` are fixed at creation; `lance_or_open` validates the pair. Deriving
-    // the dim from the preset lets us open the existing store even on a delete-only rescan (no
-    // batches to read a dim from).
     let dim = match SharedEmbedder::load(model, 0) {
         Ok(embedder) => embedder.dim(),
         Err(error) => {
@@ -310,8 +281,6 @@ pub(crate) fn flush_code_batches(
     let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
         return 0;
     };
-    // Validate the configured preset against the runtime dim before writing (mirrors the
-    // document tier's guard) — a mismatch means an unknown preset or a swapped backend.
     match SharedEmbedder::load(embedding_model, 0) {
         Ok(embedder) if embedder.dim() != dim => {
             tracing::error!(
@@ -342,7 +311,6 @@ pub(crate) fn flush_code_batches(
         if batch.rows.is_empty() {
             continue;
         }
-        // Stamp the scan-wide scope onto each row here (build time left it empty).
         for row in &mut batch.rows {
             row.scope = scope.to_string();
         }
@@ -381,7 +349,6 @@ mod tests {
 
     #[test]
     fn bm25_batch_from_chunks_is_rows_empty_with_postings() {
-        // The embed-failure degradation: BM25 postings survive, no LanceDB rows, dim 0.
         let batch = bm25_batch_from_chunks("src/lib.rs", &[chunk("h:0", "alpha beta alpha")])
             .expect("non-empty chunks must yield a batch");
         assert_eq!(batch.rel_path, "src/lib.rs");
@@ -409,28 +376,21 @@ mod tests {
     #[test]
     fn code_cache_reuse_requires_matching_dim_and_model() {
         let blob = embedded_blob("balanced", 768);
-        // Same preset + dim: a hit.
         assert!(code_cache_is_reusable(&blob, 768, "balanced"));
-        // `multilingual` shares dim 768 with `balanced`, so the dim gate alone would pass — the
-        // model check is what forces a re-embed on the preset swap.
         assert!(
             !code_cache_is_reusable(&blob, 768, "multilingual"),
             "same-dim different-model must miss and force a re-embed"
         );
-        // A different dim misses too.
         assert!(!code_cache_is_reusable(&blob, 384, "balanced"));
-        // A pre-field blob (empty model) never matches a named preset.
         assert!(!code_cache_is_reusable(&embedded_blob("", 768), 768, "balanced"));
     }
 
     #[test]
     fn code_cache_reuse_rejects_chunkless_or_unembedded_blob() {
-        // No chunks: nothing to reuse.
         let mut blob = embedded_blob("balanced", 768);
         blob.chunks.clear();
         blob.embeddings.clear();
         assert!(!code_cache_is_reusable(&blob, 768, "balanced"));
-        // Chunk/embedding count mismatch (a chunk-only blob with no vectors): miss.
         let chunk_only = CodeChunkBlob {
             schema_ver: 0,
             embedding_dim: 768,

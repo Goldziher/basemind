@@ -53,9 +53,6 @@ pub enum CacheError {
     Git(#[from] GitError),
 }
 
-// ─── disk payload wrappers ───────────────────────────────────────────────────
-
-// Read side: owned structs for deserialization.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CommitFilesPayload {
     schema_ver: u16,
@@ -74,9 +71,6 @@ struct BlamePayload {
     result: BlameResult,
 }
 
-// Write side: borrow-only structs so the write helpers serialize directly from the
-// caller's slice/reference without cloning the payload. The field names match the
-// read-side structs above so msgpack round-trips via `rmp_serde::to_vec_named`.
 #[derive(Serialize)]
 struct CommitFilesOut<'a> {
     schema_ver: u16,
@@ -94,8 +88,6 @@ struct BlameOut<'a> {
     schema_ver: u16,
     result: &'a BlameResult,
 }
-
-// ─── cache keys ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlameKey {
@@ -115,13 +107,11 @@ pub struct LogKey {
     pub include_files: bool,
 }
 
-// ─── main cache ──────────────────────────────────────────────────────────────
-
 /// `(path, change_kind)` for one file in a commit's tree-against-parent diff.
 type CommitFileChange = (crate::path::RelPath, ChangeKind);
 
 pub struct GitCache {
-    commit_files: Mutex<LruCache<String /* sha40 */, Arc<Vec<CommitFileChange>>>>,
+    commit_files: Mutex<LruCache<String, Arc<Vec<CommitFileChange>>>>,
     log: Mutex<LruCache<LogKey, Arc<Vec<CommitInfo>>>>,
     blame: Mutex<LruCache<BlameKey, Arc<BlameResult>>>,
     disk: Option<PathBuf>,
@@ -136,10 +126,6 @@ impl GitCache {
             ensure_subdir(&root, "commit_files")?;
             ensure_subdir(&root, "log")?;
             ensure_subdir(&root, "blame")?;
-            // One-shot LRU sweep of the HEAD-anchored log cache. New `head_sha` after
-            // every rebase/pull would otherwise grow this directory without bound. Sized
-            // to fit comfortably in a typical project's `.basemind/` budget; tune via
-            // `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` (in bytes).
             evict_log_cache(&root, log_cache_max_bytes_from_env());
             Some(root)
         } else {
@@ -263,8 +249,6 @@ impl GitCache {
         Ok(removed)
     }
 
-    // ─── disk helpers ───────────────────────────────────────────────────
-
     fn read_commit_files_disk(&self, sha: &str) -> Option<Vec<CommitFileChange>> {
         let path = self.commit_files_path(sha)?;
         if !path.exists() {
@@ -367,8 +351,6 @@ impl GitCache {
 
     fn log_path(&self, key: &LogKey) -> Option<PathBuf> {
         let root = self.disk.as_ref()?;
-        // Path filter and limit baked into the filename; head sha leads so the dir lists
-        // chronologically-ish when sorted.
         let scope = match &key.path {
             None => format!("all-{}-{}", key.limit, key.include_files as u8),
             Some(p) => {
@@ -452,7 +434,7 @@ pub(crate) fn evict_log_cache(cache_root: &Path, max_bytes: u64) {
     if total <= max_bytes {
         return;
     }
-    entries.sort_by_key(|(_, _, mtime)| *mtime); // oldest first
+    entries.sort_by_key(|(_, _, mtime)| *mtime);
     let mut over = total - max_bytes;
     for (path, size, _) in entries {
         if over == 0 {
@@ -475,7 +457,6 @@ mod tests {
     fn concurrent_same_key_writes_never_tear() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("k.msgpack");
-        // Distinct, equal-length payloads so a torn write would be detectable by content.
         let payloads: Vec<Vec<u8>> = (0..16u8).map(|i| vec![i; 4096]).collect();
         std::thread::scope(|scope| {
             for p in &payloads {
@@ -490,7 +471,6 @@ mod tests {
             got.iter().all(|&b| b == byte) && byte < 16,
             "final file must be exactly one writer's payload, not a mix"
         );
-        // No stray temp files left behind.
         let leftovers: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
             .filter_map(Result::ok)

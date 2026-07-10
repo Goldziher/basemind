@@ -33,7 +33,6 @@ fn load_reads_root_basemind_toml() {
 fn load_falls_back_to_legacy_in_cache_config() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    // Only the legacy in-cache path exists — it must still be honored for back-compat.
     write(
         &config::legacy_config_path(root),
         "\"$schema\" = \"v1\"\n[scan]\nmax_file_bytes = 8192\n",
@@ -60,10 +59,8 @@ fn root_config_wins_over_legacy_when_both_present() {
 
 #[test]
 fn code_search_embed_defaults_off() {
-    // Local embeddings on code aren't worth the cost — the default must be off.
     let cfg = config::parse_str("\"$schema\" = \"v1\"\n").expect("minimal config parses");
     assert!(!cfg.code_search.embed, "code_search.embed must default to false");
-    // Documents embedding stays on.
     assert!(cfg.documents.embed, "documents.embed must default to true");
 }
 
@@ -111,13 +108,11 @@ fn init_writes_root_config_and_gitignores_cache() {
         .expect("run basemind init");
     assert!(status.success(), "basemind init exits successfully");
 
-    // Root config written and loadable through the full validation path.
     let config_path = config::config_path(root);
     assert!(config_path.exists(), "basemind init writes root basemind.toml");
     let cfg = config::load(root).expect("scaffolded config loads + validates");
     assert_eq!(cfg.schema, "v1");
 
-    // `.gitignore` created with a `.basemind/` entry.
     let gitignore = fs::read_to_string(root.join(".gitignore")).expect("gitignore written");
     assert!(
         gitignore
@@ -131,7 +126,6 @@ fn init_writes_root_config_and_gitignores_cache() {
 fn init_refuses_to_shadow_a_legacy_in_cache_config() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    // A legacy in-cache config with a tuned setting that `resolve_config_path` still honors.
     let legacy = config::legacy_config_path(root);
     fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("mkdir .basemind");
     fs::write(
@@ -155,7 +149,6 @@ fn init_refuses_to_shadow_a_legacy_in_cache_config() {
         "error names the legacy config, got: {stderr:?}"
     );
 
-    // No root scaffold was written, so the legacy config keeps taking effect.
     assert!(
         !config::config_path(root).exists(),
         "no root config written when legacy exists"
@@ -174,7 +167,6 @@ fn init_appends_to_existing_gitignore_without_duplicating() {
     let root = tmp.path();
     fs::write(root.join(".gitignore"), "target/\n").expect("seed gitignore");
 
-    // First init adds the entry.
     let ok = Command::new(env!("CARGO_BIN_EXE_basemind"))
         .arg("init")
         .current_dir(root)

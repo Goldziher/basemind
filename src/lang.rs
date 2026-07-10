@@ -96,22 +96,15 @@ pub fn has_override(lang: LangId) -> bool {
 /// bounded by the size of TSLP's registry (~306 grammars × ~10 bytes), well under the cost
 /// of a single open file.
 pub fn intern(name: &str) -> Option<LangId> {
-    // Hot path: known override names are static literals — return them without touching the
-    // interner lock. Cheap branch that absorbs 99% of indexed-file lookups.
     for &lid in OVERRIDE_LANGUAGES {
         if lid == name {
             return Some(lid);
         }
     }
-    // Already interned? Fast read path — `AHashSet::get` runs a single hash + probe instead
-    // of a linear scan. `<&'static str as Borrow<str>>` lets us look up by `&str` without
-    // allocating; the slot returned is the cached `&'static str` we hand back.
     let lock = INTERNED.get_or_init(|| RwLock::new(AHashSet::new()));
     if let Some(&existing) = lock.read().expect("intern pool poisoned").get(name) {
         return Some(existing);
     }
-    // Cold path: validate against TSLP's registry before leaking the bytes. Unknown names
-    // should not pin memory.
     if !tree_sitter_language_pack::has_language(name) {
         return None;
     }
@@ -160,9 +153,6 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 .map_err(|e| Arc::new(LangError::Pack(format!("resolve cache dir: {e}"))))?;
             let cache_dir = PathBuf::from(&cache_dir_str);
 
-            // Snapshot what's already on disk so the summary can report downloaded-vs-cached
-            // (drives the statusline's first-run hint). `downloaded_languages()` reads the
-            // cache via a `DownloadManager` keyed by tslp's own version — same source of truth.
             let installed = tree_sitter_language_pack::downloaded_languages();
             let mut already_cached: Vec<String> = Vec::new();
             let mut missing: Vec<&'static str> = Vec::new();
@@ -174,10 +164,6 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
                 }
             }
             if !missing.is_empty() {
-                // Offline mode: don't reach the network. If grammars are missing, surface a
-                // clean typed error so MCP clients / CLI users see a useful message instead of
-                // silent empty parses. Set `BASEMIND_GRAMMAR_OFFLINE=1` to opt in (e.g. CI
-                // environments where the cache is pre-warmed and outbound traffic is blocked).
                 if std::env::var("BASEMIND_GRAMMAR_OFFLINE").is_ok_and(|v| v != "0" && !v.is_empty()) {
                     return Err(Arc::new(LangError::Download(format!(
                         "offline mode: missing grammars {missing:?} and \
@@ -198,8 +184,6 @@ pub fn ensure_grammars() -> Result<Arc<BootstrapSummary>, Arc<LangError>> {
 
 /// Languages currently downloaded in the tslp cache (does not hit the network).
 pub fn downloaded_languages() -> Vec<String> {
-    // tslp's `downloaded_languages()` reads via a DownloadManager keyed by its own
-    // CARGO_PKG_VERSION, which matches the cache layout — same source-of-truth either way.
     tree_sitter_language_pack::downloaded_languages()
 }
 
@@ -225,10 +209,6 @@ pub fn language(lang: LangId) -> Result<Language, LangError> {
     tree_sitter_language_pack::get_language(lang).map_err(|e| LangError::Pack(format!("{e}")))
 }
 
-// ─── Parser pool ──────────────────────────────────────────────────────────────
-//
-// Parser is !Sync and stateful — one per thread per language, kept hot in TLS.
-
 thread_local! {
     static PARSERS: RefCell<AHashMap<LangId, Parser>> = RefCell::new(AHashMap::new());
 }
@@ -251,12 +231,6 @@ where
         Ok(f(map.get_mut(&lang).expect("just inserted")))
     })
 }
-
-// ─── Query cursor pool ────────────────────────────────────────────────────────
-//
-// QueryCursor is !Sync and stateful — one per thread, reused across all queries
-// on that thread. tree-sitter explicitly supports reuse: a new `cursor.matches()`
-// call starts a fresh execution; no explicit reset is required.
 
 thread_local! {
     static QUERY_CURSOR: RefCell<QueryCursor> = RefCell::new(QueryCursor::new());
@@ -322,10 +296,6 @@ pub fn parse_timed(parser: &mut Parser, source: &[u8], timeout: Duration) -> Par
 pub fn parse_with_default_timeout(parser: &mut Parser, source: &[u8]) -> ParseOutcome {
     parse_timed(parser, source, parse_timeout_from_env())
 }
-
-// ─── Query pool ───────────────────────────────────────────────────────────────
-//
-// Query is Send + Sync and not Clone; one Arc<Query> per (lang, kind) globally.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryKind {
@@ -400,8 +370,6 @@ static CLASSIFIED_COMBINED_L1: OnceLock<RwLock<ClassifiedL1Map>> = OnceLock::new
 /// Convention: each .scm file is divided into sections marked by `;; section: <name>` lines.
 /// Sections we look for: `symbols`, `imports`, `calls`, `docs`.
 fn extract_section(source: &str, name: &str) -> Option<String> {
-    // Zero-alloc section detection: strip the fixed prefix then compare the trimmed remainder
-    // to `name` exactly. Avoids the `format!(";; section: {name}")` allocation on every call.
     let mut out = String::new();
     let mut in_section = false;
     for line in source.lines() {
@@ -485,13 +453,11 @@ fn split_top_level_patterns(source: &str) -> Vec<&str> {
         let b = bytes[i];
         match b {
             b';' => {
-                // Comment to end of line, regardless of depth.
                 while i < bytes.len() && bytes[i] != b'\n' {
                     i += 1;
                 }
             }
             b'"' => {
-                // Skip string literal — escapes preserved minimally.
                 i += 1;
                 while i < bytes.len() {
                     if bytes[i] == b'\\' && i + 1 < bytes.len() {
@@ -516,14 +482,11 @@ fn split_top_level_patterns(source: &str) -> Vec<&str> {
                 depth -= 1;
                 i += 1;
                 if depth == 0 {
-                    // Consume any trailing `@root.capture` annotation that belongs to the
-                    // just-closed pattern, including whitespace/newlines between `)` and `@`.
                     let mut j = i;
                     while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
                         j += 1;
                     }
                     if j < bytes.len() && bytes[j] == b'@' {
-                        // Skip `@capture.name` token.
                         j += 1;
                         while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
                             j += 1;
@@ -550,13 +513,11 @@ fn is_capture_ident_byte(b: u8) -> bool {
 /// closing paren (or top level). Returns `Definition` if root is `definition.*`,
 /// `ReferenceCall` if root is `reference.call`, `Other` otherwise.
 fn classify_pattern(pattern: &str) -> PatternKind {
-    // The root capture is the LAST `@...` token in the pattern. Scan from the end.
     let bytes = pattern.as_bytes();
     let mut i = bytes.len();
     while i > 0 {
         i -= 1;
         if bytes[i] == b'@' {
-            // Found a `@` — read forward to extract the capture name.
             let cap_start = i + 1;
             let mut j = cap_start;
             while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
@@ -594,7 +555,6 @@ fn rewrite_pattern(pattern: &str, kind: PatternKind) -> String {
             i += 1;
             continue;
         }
-        // Found `@`. Read the capture name.
         let cap_start = i + 1;
         let mut j = cap_start;
         while j < bytes.len() && is_capture_ident_byte(bytes[j]) {
@@ -611,7 +571,6 @@ fn rewrite_pattern(pattern: &str, kind: PatternKind) -> String {
 }
 
 fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
-    // `@name` is the identifier sub-capture; remap by section.
     if cap == "name" {
         return match kind {
             PatternKind::Definition => "symbol.name".to_string(),
@@ -629,8 +588,6 @@ fn rewrite_capture(cap: &str, kind: PatternKind) -> String {
     if cap == "reference.implementation" {
         return "impl.range".to_string();
     }
-    // Predicates like `@cap (#match? ...)` keep their original name in the pattern they
-    // came from — leave untouched.
     cap.to_string()
 }
 
@@ -669,9 +626,7 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
         return Ok(slot.as_ref().map(Arc::clone));
     }
 
-    // Build the concatenated source from the three L1 sections.
     let combined_src: Option<String> = if let Some(raw) = override_query_source(lang) {
-        // Override path: extract the three relevant sections and concatenate.
         let sym = extract_section(raw, "symbols").unwrap_or_default();
         let imp = extract_section(raw, "imports").unwrap_or_default();
         let imp_l = extract_section(raw, "implementations").unwrap_or_default();
@@ -682,8 +637,6 @@ pub fn try_get_combined_l1_query(lang: LangId) -> Result<CachedQuery, LangError>
             Some(combined)
         }
     } else {
-        // TSLP fallback path: symbols + implementations come from the adapted source;
-        // imports are not produced by `adapt_tslp_tags` (only Symbols/Calls/Implementations).
         tslp_tags_adapted(lang).and_then(|adapted| {
             let sym = extract_section(&adapted, "symbols").unwrap_or_default();
             let imp_l = extract_section(&adapted, "implementations").unwrap_or_default();
@@ -726,9 +679,6 @@ pub fn try_get_classified_combined_l1_query(lang: LangId) -> Result<Option<Arc<C
         return Ok(slot.as_ref().map(Arc::clone));
     }
 
-    // Build from the same combined query — reuses the compiled Arc<Query> from the sibling
-    // cache when it already exists, otherwise compiles fresh. We call `try_get_combined_l1_query`
-    // to avoid duplicating the source-assembly logic.
     let cached: Option<Arc<ClassifiedQuery>> = match try_get_combined_l1_query(lang)? {
         Some(query) => {
             let classes: Box<[CaptureClass]> = query
@@ -835,8 +785,6 @@ mod tests {
 
     #[test]
     fn detect_dynamic_extension_resolves() {
-        // Any TSLP-registered grammar resolves through detect(); cpp is outside the override
-        // set but ships in the language pack, so dynamic dispatch must produce its pack name.
         assert_eq!(detect(Path::new("foo.cpp")), Some("cpp"));
     }
 
@@ -860,10 +808,6 @@ mod tests {
         let owned = "rust".to_string();
         let id = intern(&owned).expect("rust must intern");
         assert_eq!(id, "rust");
-        // The id is the canonical static instance: a second intern of an equal name returns
-        // the SAME pointer. Comparing to the "rust" literal instead would rely on the linker
-        // merging identical string literals across the test and the override table, which MSVC
-        // does not guarantee (the Windows CI runner caught this).
         let again = intern("rust").expect("rust must intern");
         assert!(std::ptr::eq(id, again));
     }
@@ -875,10 +819,6 @@ mod tests {
 
     #[test]
     fn try_get_query_returns_none_for_unsupported_lang() {
-        // `json` ships in TSLP but has no override AND no upstream `tags.scm`, so both
-        // lookup branches miss and the cache stores `None`. (Previously `cpp` — which now
-        // resolves through the TSLP tags fallback; data-only formats like JSON / YAML /
-        // TOML reliably ship no tags query.)
         let res = try_get_query("json", QueryKind::Symbols).expect("query lookup must not error");
         assert!(res.is_none());
     }
@@ -898,33 +838,24 @@ mod tests {
 
     #[test]
     fn adapt_tslp_tags_routes_reference_implementation() {
-        // `@reference.implementation` (rust impl_item trait, csharp base_list) must land in the
-        // implementations section, not the calls section.
         let src = "(impl_item trait: (type_identifier) @name) @reference.implementation\n\
                    (call_expression function: (identifier) @name) @reference.call\n";
         let out = adapt_tslp_tags(src);
-        // @reference.implementation pattern must be in the implementations section.
         assert!(out.contains(";; section: implementations"));
         assert!(out.contains("@impl.trait_name"));
         assert!(out.contains("@impl.range"));
-        // Calls section must still work.
         assert!(out.contains("@call.range"));
         assert!(out.contains("@call.callee"));
-        // No raw @reference.* captures should leak out.
         assert!(!out.contains("@reference.implementation"));
         assert!(!out.contains("@reference.call"));
     }
 
     #[test]
     fn adapt_tslp_tags_drops_reference_class() {
-        // `@reference.class` (kotlin constructor invocations, csharp type refs) are generic
-        // type-reference captures — not inheritance. They must be dropped entirely.
         let src = "(object_creation_expression type: (identifier) @name) @reference.class\n\
                    (call_expression function: (identifier) @name) @reference.call\n";
         let out = adapt_tslp_tags(src);
-        // @reference.class has no basemind section, so the pattern must be absent.
         assert!(!out.contains("@reference.class"));
-        // Calls section must still work.
         assert!(out.contains("@call.range"));
         assert!(out.contains("@call.callee"));
     }
@@ -939,8 +870,6 @@ mod tests {
 
     #[test]
     fn adapt_tslp_tags_real_rust_compiles() {
-        // The rust tags.scm from TSLP must produce a query string that tree-sitter compiles
-        // against the rust grammar — guards against ever drifting capture rewrites.
         let raw = tree_sitter_language_pack::get_tags_query("rust").expect("rust ships tags.scm");
         let adapted = adapt_tslp_tags(raw);
         let sym = extract_section(&adapted, "symbols").expect("symbols section");
@@ -954,9 +883,6 @@ mod tests {
 
     #[test]
     fn implementations_query_compiles_for_all_override_languages() {
-        // Verify that the `;; section: implementations` block in each hand-written .scm
-        // override compiles against the respective tree-sitter grammar. Go is excluded
-        // because its implementations section is intentionally empty (structural typing).
         let langs_with_impls = &["rust", "python", "typescript", "tsx", "javascript"];
         for &lang in langs_with_impls {
             let q = try_get_query(lang, QueryKind::Implementations)
@@ -965,7 +891,6 @@ mod tests {
                 q.is_some(),
                 "{lang} implementations section must exist in override .scm"
             );
-            // Validate the compiled query has our expected captures.
             let q = q.unwrap();
             let names = q.capture_names();
             assert!(

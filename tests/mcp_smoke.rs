@@ -24,8 +24,6 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::process::Command as AsyncCommand;
 
-// ─── helpers (kept inline; shared module setup adds noise for one file) ─────
-
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -44,7 +42,6 @@ fn build_repo() -> TempDir {
     let root = dir.path();
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
-    // a.rs: symbols + an impl Drawable for Beta so find_implementations has a Rust hit.
     std::fs::write(
         root.join("a.rs"),
         b"pub fn alpha() {}\n\
@@ -54,7 +51,6 @@ fn build_repo() -> TempDir {
           impl Drawable for Beta { fn draw(&self) {} }\n",
     )
     .unwrap();
-    // b.ts: TypeScript with `class Rectangle implements Drawable`.
     std::fs::write(
         root.join("b.ts"),
         b"export const Greet = (name: string) => `hi ${name}`;\n\
@@ -63,21 +59,13 @@ fn build_repo() -> TempDir {
           class Rectangle implements Drawable { draw() {} }\n",
     )
     .unwrap();
-    // c.rs calls alpha() three times so the reference index has something to chew on.
-    // `zed` is a deliberate ubiquitous-name decoy: defined in BOTH c.rs and e.rs (def_count=2)
-    // and called four times — so raw name-based fan-in (4) exceeds alpha's (3), but its
-    // specificity-weighted hub score (4/2=2) is below alpha's (3/1=3). It proves the symbol
-    // tier ranks by hub-ness, not raw fan-in (else zed would top the repo-wide ranking).
     std::fs::write(
         root.join("c.rs"),
         b"pub fn zed() {}\n\
           pub fn caller() { alpha(); alpha(); other(); alpha(); zed(); zed(); zed(); zed(); }\n",
     )
     .unwrap();
-    // d.py: Python subclass so find_implementations has a Python hit.
     std::fs::write(root.join("d.py"), b"class Foo: pass\nclass Bar(Foo): pass\n").unwrap();
-    // e.rs: caller chain `outer -> middle -> inner` so the call_graph BFS has
-    // something multi-hop to chew on.
     std::fs::write(
         root.join("e.rs"),
         b"pub fn inner() {}\n\
@@ -86,8 +74,6 @@ fn build_repo() -> TempDir {
           pub fn zed() {}\n",
     )
     .unwrap();
-    // cyc1.rs <-> cyc2.rs form a cross-file call cycle so architecture_map's Tarjan SCC
-    // has a known circular-dependency cluster to surface.
     std::fs::write(root.join("cyc1.rs"), b"pub fn ping() { pong(); }\n").unwrap();
     std::fs::write(root.join("cyc2.rs"), b"pub fn pong() { ping(); }\n").unwrap();
     git(
@@ -95,7 +81,6 @@ fn build_repo() -> TempDir {
         &["add", "a.rs", "b.ts", "c.rs", "d.py", "e.rs", "cyc1.rs", "cyc2.rs"],
     );
     git(root, &["commit", "-qm", "init"]);
-    // Touch a.rs in a second commit so symbol_history has something to chew on.
     std::fs::write(
         root.join("a.rs"),
         b"pub fn alpha() { let _ = 1; }\n\
@@ -112,11 +97,7 @@ fn build_repo() -> TempDir {
 fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
-    // The scanner is designed to run OFF a tokio runtime (production scans on a CLI thread or via
-    // `spawn_blocking`). Its deferred vector flush opens `LanceStore`, which `block_on`s an owned
-    // current-thread runtime — that panics if run on a tokio worker thread. These smoke tests are
     // `#[tokio::test]`, so run the scan on a dedicated std thread to mirror the production context.
-    // (Harmless without the intelligence features; required once code chunks/docs flush to LanceDB.)
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
@@ -167,8 +148,6 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     params
 }
 
-// ─── the test ────────────────────────────────────────────────────────────────
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_server_exercises_representative_tools() {
     let dir = build_repo();
@@ -182,8 +161,6 @@ async fn mcp_server_exercises_representative_tools() {
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    // get_info: the always-injected instructions carry the context-economy operating
-    // discipline so agents default to basemind over grep/read and stay token-frugal.
     let instructions = service
         .peer_info()
         .and_then(|info| info.instructions.clone())
@@ -193,7 +170,6 @@ async fn mcp_server_exercises_representative_tools() {
         "server instructions should state the context-economy discipline: {instructions}"
     );
 
-    // status: file_count > 0, languages includes rust + typescript
     let body = decode_text(
         &service
             .call_tool(call_params("status", json!({})))
@@ -202,8 +178,6 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let file_count = body.get("file_count").and_then(Value::as_u64).unwrap_or(0);
     assert!(file_count >= 2, "scan should have indexed at least 2 files");
-    // On the uncontended path `status` reads the committed index (no rebuild in flight), so the
-    // WS4 `rebuild_in_progress` flag is omitted (skipped when false).
     assert!(
         body.get("rebuild_in_progress").is_none(),
         "rebuild_in_progress must be absent when no writer holds the lock: {body:?}"
@@ -218,7 +192,6 @@ async fn mcp_server_exercises_representative_tools() {
         "typescript should be present: {langs:?}"
     );
 
-    // outline: a.rs surfaces alpha, Beta, doit (method); the new impl-kind symbol exists too
     let body = decode_text(
         &service
             .call_tool(call_params("outline", json!({ "path": "a.rs", "l2": false })))
@@ -237,7 +210,6 @@ async fn mcp_server_exercises_representative_tools() {
         .any(|s| s.get("kind").and_then(Value::as_str) == Some("impl"));
     assert!(impl_kind, "Stage 2 impl-kind symbol should be present: {names:?}");
 
-    // search_symbols: arrow-fn const is now kind=function (Stage 2)
     let body = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
@@ -252,9 +224,6 @@ async fn mcp_server_exercises_representative_tools() {
         "Stage 2 arrow-fn const should be kind=function"
     );
 
-    // TOON encoding (W5 slice 1): `format="toon"` must produce a smaller payload than the JSON
-    // form and round-trip the same hit data. Use a needle with several hits to exercise the
-    // tabular block.
     let json_result = service
         .call_tool(call_params("search_symbols", json!({ "needle": "draw", "limit": 50 })))
         .await
@@ -282,8 +251,6 @@ async fn mcp_server_exercises_representative_tools() {
         toon_raw.len(),
         json_raw.len(),
     );
-    // Round-trip: the TOON table header carries the same column set and every JSON hit's
-    // (path, name) pair must appear verbatim as a row cell in the TOON body.
     assert!(
         toon_raw.contains("results[") && toon_raw.contains("name") && toon_raw.contains("path"),
         "TOON should carry a labeled results table with name + path columns:\n{toon_raw}"
@@ -297,7 +264,6 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    // recent_changes: should return 2 commits; not shallow → no truncated flag
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -314,9 +280,6 @@ async fn mcp_server_exercises_representative_tools() {
         "non-shallow clone should not surface truncated=true"
     );
 
-    // search_git_history: the fixture's commit summaries are "init" and "tweak alpha". Searching
-    // the token "tweak" must find exactly the "tweak alpha" commit — via the fresh index or the
-    // live fallback, both of which search commit summaries. `field=message` scopes to summary+body.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -335,7 +298,6 @@ async fn mcp_server_exercises_representative_tools() {
             .is_some_and(|s| s.contains("tweak")),
         "hit summary should contain the query token"
     );
-    // Author-scoped search for a token that is NOT an author token returns nothing.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -350,7 +312,6 @@ async fn mcp_server_exercises_representative_tools() {
         Some(0),
         "'tweak' is a message token, not an author token"
     );
-    // Multi-token AND: both tokens live in the SAME commit ("tweak alpha") → 1 hit.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -365,7 +326,6 @@ async fn mcp_server_exercises_representative_tools() {
         Some(1),
         "'tweak' AND 'alpha' both in the 'tweak alpha' commit"
     );
-    // Multi-token AND across DIFFERENT commits ("init" in c1, "tweak" in c2) → 0 hits.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -381,8 +341,6 @@ async fn mcp_server_exercises_representative_tools() {
         "'init' (c1) AND 'tweak' (c2) share no commit"
     );
 
-    // symbol_history on alpha: Stage 5's normalization keeps whitespace-only commits silent.
-    // The 'tweak alpha' commit changes a literal so we expect ≥ 1 "modified" entry.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -407,7 +365,6 @@ async fn mcp_server_exercises_representative_tools() {
         "default hash_mode echo should be normalized"
     );
 
-    // symbol_history (Stage 2): structural mode is opt-in and echoes its name back.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -432,7 +389,6 @@ async fn mcp_server_exercises_representative_tools() {
         "structural mode should also see the 'tweak alpha' literal change: {history:?}"
     );
 
-    // find_references (Stage 3): c.rs calls alpha() three times — index should reflect that.
     let body = decode_text(
         &service
             .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 100 })))
@@ -457,8 +413,6 @@ async fn mcp_server_exercises_representative_tools() {
         "every alpha() call site lives in c.rs in this fixture"
     );
 
-    // find_references pagination (Phase 5): limit=2 → expect next_cursor; second page
-    // should contain the 3rd alpha() hit with no overlap, then next_cursor=None.
     let page1 = decode_text(
         &service
             .call_tool(call_params("find_references", json!({ "name": "alpha", "limit": 2 })))
@@ -487,8 +441,6 @@ async fn mcp_server_exercises_representative_tools() {
         page2.get("next_cursor").is_none(),
         "second page must NOT carry a next_cursor: {page2}"
     );
-    // No overlap between the two pages — compare by (line, column) tuples since the
-    // fixture's three alpha() call sites all sit on c.rs line 1.
     let pos = |h: &Value| -> (u64, u64) {
         (
             h.get("line").and_then(Value::as_u64).unwrap_or(0),
@@ -502,7 +454,6 @@ async fn mcp_server_exercises_representative_tools() {
         "page2 must not overlap page1: {p1_pos:?} vs {p2_pos:?}"
     );
 
-    // find_callers (Stage 3): anchor on the alpha *definition* and confirm the same 3 hits.
     let body = decode_text(
         &service
             .call_tool(call_params("find_callers", json!({ "path": "a.rs", "name": "alpha" })))
@@ -518,7 +469,6 @@ async fn mcp_server_exercises_representative_tools() {
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(hits.len(), 3, "find_callers should see the same 3 sites");
 
-    // find_callers pagination (Phase 5): same 3 alpha hits, paginated.
     let page1 = decode_text(
         &service
             .call_tool(call_params(
@@ -556,10 +506,6 @@ async fn mcp_server_exercises_representative_tools() {
         "find_callers second page must NOT have next_cursor: {page2}"
     );
 
-    // goto_definition: the tool is wired and returns the stable envelope. Whether the fixture's
-    // Rust positions carry a resolved binding depends on the `locals` engine (the deep resolved
-    // path is asserted in `tests/code_intel_smoke.rs` with the oxc JS/TS engine); here we only pin
-    // that the MCP surface answers with the queried position echoed back and normalized.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -579,8 +525,6 @@ async fn mcp_server_exercises_representative_tools() {
         Some(1),
         "goto_definition must echo the normalized 1-based line: {body}"
     );
-    // `definition` is optional (absent when no binding is recorded) but, when present, must carry a
-    // path + 1-based line.
     if let Some(def) = body.get("definition").filter(|d| !d.is_null()) {
         assert!(
             def.get("path").and_then(Value::as_str).is_some(),
@@ -592,8 +536,6 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    // call_graph (Iteration 4): walk the e.rs caller chain `outer -> middle -> inner`.
-    // direction="callers" from `inner` with max_depth=2 must surface inner, middle, outer.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -620,13 +562,11 @@ async fn mcp_server_exercises_representative_tools() {
         names.contains(&"outer".to_string()),
         "call_graph callers must surface depth-2 `outer`: {names:?}"
     );
-    // Root is always nodes[0].
     assert_eq!(
         nodes[0].get("name").and_then(Value::as_str),
         Some("inner"),
         "nodes[0] is the root"
     );
-    // `middle` points at `inner` (parent → current in callers direction).
     let middle_idx = nodes
         .iter()
         .position(|n| n.get("name").and_then(Value::as_str) == Some("middle"))
@@ -642,7 +582,6 @@ async fn mcp_server_exercises_representative_tools() {
         middle_edges.contains(&0),
         "middle.edges_to should reference the root inner (index 0): got {middle_edges:?}"
     );
-    // `outer` points at `middle` (parent → current).
     let outer_idx = nodes
         .iter()
         .position(|n| n.get("name").and_then(Value::as_str) == Some("outer"))
@@ -659,9 +598,6 @@ async fn mcp_server_exercises_representative_tools() {
         "outer.edges_to should reference middle (index {middle_idx}): got {outer_edges:?}"
     );
 
-    // architecture_map (symbol tier): `alpha` (3 calls, 1 definition → hub 3) must top the
-    // ranking over the `zed` decoy (4 calls but 2 definitions → hub 2). This pins the
-    // specificity weighting: a raw-fan-in ranking would wrongly surface `zed` first.
     let sym = decode_text(
         &service
             .call_tool(call_params(
@@ -694,8 +630,6 @@ async fn mcp_server_exercises_representative_tools() {
                 == Some(4),
         "the `zed` decoy is present with its honest raw fan_in=4, just not ranked first: {sym:?}"
     );
-    // Score must be non-increasing across nodes — the symbol tier ranks, knee-cuts, and
-    // scores off one signal, so emitted order matches score (guards the fan_out-after-cut bug).
     let sym_scores: Vec<f64> = sym_nodes
         .iter()
         .filter_map(|n| n.get("score").and_then(Value::as_f64))
@@ -705,8 +639,6 @@ async fn mcp_server_exercises_representative_tools() {
         "symbol-tier nodes must be emitted in non-increasing score order: {sym_scores:?}"
     );
 
-    // architecture_map (file tier): cyc1.rs <-> cyc2.rs is a known SCC — Tarjan must
-    // surface exactly that circular-dependency cluster.
     let filem = decode_text(
         &service
             .call_tool(call_params(
@@ -741,7 +673,6 @@ async fn mcp_server_exercises_representative_tools() {
         "cycle members must include cyc1.rs + cyc2.rs: {cycle_labels:?}"
     );
 
-    // Determinism: PageRank + Tarjan + tiebreaks must produce a byte-identical node order.
     let filem2 = decode_text(
         &service
             .call_tool(call_params(
@@ -757,8 +688,6 @@ async fn mcp_server_exercises_representative_tools() {
         "architecture_map file-tier node order must be deterministic across calls"
     );
 
-    // search_symbols pagination (Phase 5): "a" matches alpha, Beta, caller, plain — well
-    // above the limit=1 page size, so we can validate the two-page round trip.
     let page1 = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
@@ -783,7 +712,6 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let page2_results = page2.get("results").and_then(Value::as_array).expect("page2 results");
     assert_eq!(page2_results.len(), 1, "page2 must also have 1 result");
-    // Verify the two pages don't return the same symbol (path,name pair).
     let key1 = (
         page1_results[0].get("path").and_then(Value::as_str).unwrap_or(""),
         page1_results[0].get("name").and_then(Value::as_str).unwrap_or(""),
@@ -794,10 +722,6 @@ async fn mcp_server_exercises_representative_tools() {
     );
     assert_ne!(key1, key2, "page2 must not repeat page1's entry");
 
-    // search_symbols token budgeting (W3): a generous limit returns several "a" hits, but a
-    // tiny `max_tokens` drops all but the first (one hit always exceeds a 1-token budget).
-    // The response must carry fewer results than an unbudgeted call, `budgeted: true`, and a
-    // non-null cursor so the dropped tail is pageable.
     let unbudgeted = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 100 })))
@@ -846,7 +770,6 @@ async fn mcp_server_exercises_representative_tools() {
         "budgeted response must carry a non-null next_cursor: {budgeted}"
     );
 
-    // list_files pagination (Phase 5): fixture has 7 files; limit=4 paginates (4+3).
     let page1 = decode_text(
         &service
             .call_tool(call_params("list_files", json!({ "limit": 4 })))
@@ -885,8 +808,6 @@ async fn mcp_server_exercises_representative_tools() {
         "list_files pages must not overlap: {p1_paths:?} vs {p2_paths:?}"
     );
 
-    // search_symbols cursor invalidation (Phase 5): after a rescan the snapshot id moves
-    // and the previously-minted cursor must surface cursor_invalidated=true.
     let page1 = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))
@@ -917,7 +838,6 @@ async fn mcp_server_exercises_representative_tools() {
         "rescan must invalidate in-memory search_symbols cursors: {stale_response}"
     );
 
-    // list_files cursor invalidation (Phase 5): same story.
     let page1 = decode_text(
         &service
             .call_tool(call_params("list_files", json!({ "limit": 1 })))
@@ -945,7 +865,6 @@ async fn mcp_server_exercises_representative_tools() {
         "rescan must invalidate in-memory list_files cursors: {stale_response}"
     );
 
-    // No false positive: a name that nobody calls should return 0 hits.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -958,7 +877,6 @@ async fn mcp_server_exercises_representative_tools() {
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
     assert!(hits.is_empty(), "unknown callee should yield no hits");
 
-    // blame_file: should succeed on a non-shallow repo (the gix shallow path doesn't fire).
     let body = decode_text(
         &service
             .call_tool(call_params("blame_file", json!({ "path": "a.rs" })))
@@ -968,7 +886,6 @@ async fn mcp_server_exercises_representative_tools() {
     let hunks = body.get("hunks").and_then(Value::as_array).expect("hunks");
     assert!(!hunks.is_empty(), "blame should return hunks on a real file");
 
-    // workspace_grep: pattern "pub fn" should find hits in a.rs and c.rs.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -998,7 +915,6 @@ async fn mcp_server_exercises_representative_tools() {
         "fixture has alpha + doit + caller = 3+ 'pub fn' occurrences, got {total_matches}"
     );
 
-    // workspace_grep with a tiny limit should truncate.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -1013,8 +929,6 @@ async fn mcp_server_exercises_representative_tools() {
     assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
     assert!(truncated, "limit=1 with multiple matches should set truncated=true");
 
-    // workspace_grep with an invalid regex should return an MCP protocol error (invalid_params).
-    // rmcp surfaces this as Err(McpError) from call_tool, not as Ok with is_error=true.
     let invalid_result = service
         .call_tool(call_params("workspace_grep", json!({ "pattern": "[invalid_regex(" })))
         .await;
@@ -1023,9 +937,6 @@ async fn mcp_server_exercises_representative_tools() {
         "invalid regex should produce a protocol-level MCP error"
     );
 
-    // memory_put / memory_get / memory_list / memory_delete / search_documents:
-    // Feature-gated — without `--features memory`/`--features documents` they return an
-    // MCP-level error. The smoke test confirms they dispatch without crashing.
     let _ = service
         .call_tool(call_params(
             "memory_put",
@@ -1043,11 +954,6 @@ async fn mcp_server_exercises_representative_tools() {
         .call_tool(call_params("search_documents", json!({ "query": "hello" })))
         .await;
 
-    // search_code / get_chunk: the shims are always registered. Without `--features code-search`
-    // they return a graceful MCP-level "feature not compiled" error. With the feature on they
-    // dispatch and return a stable response shape: search_code echoes the query field and carries
-    // a hits array; get_chunk returns Ok at the protocol level with either a decodable body or
-    // an is_error response (no chunks indexed / disambiguation needed in CI without a model).
     #[cfg(not(feature = "code-search"))]
     {
         let sc = service
@@ -1067,10 +973,6 @@ async fn mcp_server_exercises_representative_tools() {
     }
     #[cfg(feature = "code-search")]
     {
-        // Feature on: the shims dispatch to the real helpers. A tool that returns an `McpError`
-        // surfaces here as `Err` (exactly like the not-enabled path above), so we assert the
-        // response SHAPE only on success and tolerate the error path — the synthetic fixture may
-        // lack an embedding model (search_code) or have no indexed chunks (get_chunk) in CI.
         let sc = service
             .call_tool(call_params("search_code", json!({ "query": "hello" })))
             .await;
@@ -1087,9 +989,6 @@ async fn mcp_server_exercises_representative_tools() {
             );
         }
 
-        // get_chunk reads the content-addressed sidecar (no embedder). It succeeds with a body
-        // when the file has chunks and errors otherwise (file not indexed / no chunks / needs
-        // disambiguation). Assert the pointer+body shape only on success.
         let gc = service
             .call_tool(call_params("get_chunk", json!({ "path": "a.rs" })))
             .await;
@@ -1101,8 +1000,6 @@ async fn mcp_server_exercises_representative_tools() {
             );
         }
 
-        // Keyword lane (BM25) needs no embedder, so `mode=keyword` must dispatch and return the same
-        // response shape (echoed query + hits array). Tolerate an empty index in CI.
         let kw = service
             .call_tool(call_params(
                 "search_code",
@@ -1122,7 +1019,6 @@ async fn mcp_server_exercises_representative_tools() {
             );
         }
 
-        // An unknown mode is an actionable error, never a silent fallback to another lane.
         let bad_mode = service
             .call_tool(call_params("search_code", json!({ "query": "hello", "mode": "bogus" })))
             .await;
@@ -1131,9 +1027,6 @@ async fn mcp_server_exercises_representative_tools() {
             "search_code must reject an unknown mode with an MCP error"
         );
 
-        // Hybrid (the default) dispatches and returns the same shape; the Phase-3 rerank-override
-        // fields must deserialize (aliases included). `rerank: false` keeps the ONNX model out of CI
-        // — assert only that the params are accepted and the shape holds on success.
         let hy = service
             .call_tool(call_params(
                 "search_code",
@@ -1154,38 +1047,16 @@ async fn mcp_server_exercises_representative_tools() {
         }
     }
 
-    // Per-query override round-trip: pass `reranker_preset` as a flattened override
-    // field. The fixture has no LanceDB store so the call will error at the vector-
-    // search stage, but it must NOT error at param-deserialization (invalid_params).
-    // Confirming the result is Ok or is_error=true (not a protocol-level Err) is
-    // sufficient to prove the new flatten field is accepted.
     let override_result = service
         .call_tool(call_params(
             "search_documents",
             json!({ "query": "hello", "reranker_preset": "bge-reranker-base" }),
         ))
         .await;
-    // Either succeeds (feature present + store init succeeds) or returns an MCP-level
-    // is_error response. A protocol-level Err here would mean unknown field rejection.
-    match &override_result {
-        Ok(r) => {
-            // is_error may be set when store is unavailable — that's fine.
-            let _ = r;
-        }
-        Err(_) => {
-            // Protocol-level errors can fire when the feature is absent; allowed.
-        }
+    if let Ok(r) = &override_result {
+        let _ = r;
     }
 
-    // TOON output format round-trip: pull the same query in JSON and TOON and confirm
-    // the two payloads carry the same `query` field and `hits` length. This proves the
-    // TOON serializer is wired end-to-end (not just that the override field is
-    // accepted). The fixture has no LanceDB store, so we only enforce the assertion
-    // when both calls succeed at the protocol level — feature-gated builds still
-    // exercise the dispatch path even when the bodies are empty.
-    //
-    // Gated on `documents` because `serde_toon` is only linked when the documents
-    // feature is active (it's an `optional = true` workspace dep).
     #[cfg(feature = "documents")]
     {
         let json_result = service
@@ -1198,10 +1069,6 @@ async fn mcp_server_exercises_representative_tools() {
             ))
             .await;
         if let (Ok(json_resp), Ok(toon_resp)) = (&json_result, &toon_result) {
-            // Extract the raw text payload from each tool call. JSON deserializes via
-            // `decode_text`; TOON uses `serde_toon::from_str` to a `serde_json::Value`
-            // tree so we can compare structurally without leaking crate-internal types
-            // into the integration test.
             let json_body = decode_text(json_resp);
             if json_body != Value::Null {
                 let toon_raw = toon_resp
@@ -1235,8 +1102,6 @@ async fn mcp_server_exercises_representative_tools() {
             }
         }
     }
-    // Even when the documents feature is off, smoke-check that the field is accepted
-    // at param-deserialization time (no protocol-level invalid_params error).
     #[cfg(not(feature = "documents"))]
     {
         let _ = service
@@ -1247,7 +1112,6 @@ async fn mcp_server_exercises_representative_tools() {
             .await;
     }
 
-    // memory_list pagination (Phase 5) — only meaningful with the memory feature wired.
     #[cfg(feature = "memory")]
     {
         for i in 0..3 {
@@ -1300,12 +1164,8 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    // memory_audit (W10b governance): verify audit semantics end-to-end.
-    // `memory_put` writes a record with empty provenance (the only path via MCP).
-    // An empty-provenance audit always returns state="unverified".
     #[cfg(feature = "memory")]
     {
-        // Step 1: write a key so the audit has something to inspect.
         let _ = service
             .call_tool(call_params(
                 "memory_put",
@@ -1318,7 +1178,6 @@ async fn mcp_server_exercises_representative_tools() {
             .await
             .expect("memory_put audit_probe");
 
-        // Step 2: single-key audit — should return audited=1, state="unverified" (no provenance).
         let body = decode_text(
             &service
                 .call_tool(call_params("memory_audit", json!({ "key": "audit_probe" })))
@@ -1338,7 +1197,6 @@ async fn mcp_server_exercises_representative_tools() {
             "empty-provenance memory must audit as unverified: {results:?}"
         );
 
-        // Step 3: dry_run=true — must return verdict without error and without mutating the record.
         let dry_body = decode_text(
             &service
                 .call_tool(call_params(
@@ -1354,8 +1212,6 @@ async fn mcp_server_exercises_representative_tools() {
             "dry_run audit must still report audited=1: {dry_body}"
         );
 
-        // Step 4: range-scan audit — include all written keys (pagination not required for
-        // the small fixture set). At least the audit_probe key should appear.
         let range_body = decode_text(
             &service
                 .call_tool(call_params("memory_audit", json!({ "limit": 50 })))
@@ -1368,28 +1224,14 @@ async fn mcp_server_exercises_representative_tools() {
             "range audit must cover at least the audit_probe key: {range_body}"
         );
 
-        // Clean up.
         let _ = service
             .call_tool(call_params("memory_delete", json!({ "key": "audit_probe" })))
             .await
             .expect("memory_delete audit_probe");
     }
 
-    // ── W11 governance: proposals_mine / proposals_list / proposal_accept / proposal_reject ──
-    //
-    // The fixture's `init` commit stages all 5 files together, so co-change at the default
-    // min_support=5 yields nothing, but min_support=1 deterministically yields the 5-file
-    // cluster. Tests assert:
-    //  (a) proposals_mine returns a well-formed response (default thresholds → zero candidates).
-    //  (b) proposals_list returns a well-formed empty list after a no-candidate mine.
-    //  (c) proposals_mine(min_support=1) mines >= 1 candidate (hard — guards the wedge below).
-    //  (d) W11 Stale-wedge (run first, unconditional): accept → memory gains file provenance →
-    //      delete a referenced file → rescan → memory_audit flips to "stale"; then restore the
-    //      file so later assertions see a pristine fixture. The relocated W10b gap test.
-    //  (e) proposal_reject tombstones a re-mined candidate; the next mine does not re-emit it.
     #[cfg(feature = "memory")]
     {
-        // (a) Mine with default thresholds — 2-commit fixture → zero co-change candidates.
         let mine_body = decode_text(
             &service
                 .call_tool(call_params("proposals_mine", json!({})))
@@ -1410,7 +1252,6 @@ async fn mcp_server_exercises_representative_tools() {
             "proposals_mine must return `skipped_bulk` field: {mine_body}"
         );
 
-        // (b) proposals_list after zero-candidate mine returns a well-formed empty list.
         let list_body = decode_text(
             &service
                 .call_tool(call_params("proposals_list", json!({ "kind": "skill", "limit": 50 })))
@@ -1432,10 +1273,6 @@ async fn mcp_server_exercises_representative_tools() {
             "proposals array must be empty: {list_body}"
         );
 
-        // (c) Mine with min_support=1 — the fixture has 2 commits both touching a.rs;
-        //     c.rs and e.rs each appear once. min_support=1 + max_files_per_commit=10
-        //     may yield some candidates (depends on co-occurrence in each commit), but
-        //     we only assert the call succeeds and the shape is correct.
         let mine_low = decode_text(
             &service
                 .call_tool(call_params(
@@ -1451,19 +1288,11 @@ async fn mcp_server_exercises_representative_tools() {
                 .expect("proposals_mine min_support=1"),
         );
         let mined_low = mine_low.get("mined").and_then(Value::as_u64).unwrap_or(0);
-        // Hard lower bound: the fixture's `init` commit stages all 5 files together
-        // (a.rs b.ts c.rs d.py e.rs), so min_support=1 ALWAYS yields the 5-file co-change
-        // cluster. A zero here means mining is broken — fail loudly rather than skip the wedge.
         assert!(
             mined_low >= 1,
             "proposals_mine(min_support=1) must mine the fixture's co-change cluster: {mine_low}"
         );
 
-        // (d) W11 Stale-wedge — the headline proof, run FIRST and unconditionally (mined_low >= 1
-        //     is guaranteed above). Accept a candidate → it becomes a memory carrying the cluster's
-        //     file provenance → delete a referenced file → rescan → memory_audit flips it to Stale.
-        //     This is the code-grounded-staleness wedge no other memory system can do, and the
-        //     test W10b couldn't write (memory_put can't inject provenance; proposal_accept can).
         let list2 = decode_text(
             &service
                 .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
@@ -1517,7 +1346,6 @@ async fn mcp_server_exercises_representative_tools() {
             "auto-derived key must start with skill/cochange-: {memory_key}"
         );
 
-        // Live audit: every referenced file still exists → Verified (provenance is non-empty).
         let audit_live = decode_text(
             &service
                 .call_tool(call_params("memory_audit", json!({ "key": &memory_key })))
@@ -1539,8 +1367,6 @@ async fn mcp_server_exercises_representative_tools() {
             "freshly accepted skill (all files present) must audit as verified: {audit_live}"
         );
 
-        // The wedge: delete a referenced file, rescan, audit → Stale. Save its bytes first and
-        // RESTORE them afterward so the post-block rescan assertions still see a pristine fixture.
         let probe_file = accept_files[0].clone();
         let probe_abs = root.join(&probe_file);
         let saved = std::fs::read(&probe_abs).expect("read probe file before delete");
@@ -1570,8 +1396,6 @@ async fn mcp_server_exercises_representative_tools() {
              {stale_results:?} (file: {probe_file})"
         );
 
-        // Restore the fixture: rewrite the file (identical bytes) and rescan so later
-        // assertions in this test see the original working tree.
         std::fs::write(&probe_abs, &saved).expect("restore probe file");
         let _ = service
             .call_tool(call_params("rescan", json!({})))
@@ -1581,9 +1405,6 @@ async fn mcp_server_exercises_representative_tools() {
             .call_tool(call_params("memory_delete", json!({ "key": &memory_key })))
             .await;
 
-        // (e) Reject + tombstone idempotency. Git history is immutable, so re-mining
-        //     regenerates the same cluster the accept consumed; reject it and confirm the
-        //     tombstone suppresses it on the next mine.
         let mine_e = decode_text(
             &service
                 .call_tool(call_params(
@@ -1650,9 +1471,6 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    // rescan: trigger an in-process scan via MCP. With no working-tree changes
-    // since the smoke fixture was built, expectation is scanned > 0 and
-    // updated == 0 (everything matched the existing blob hashes).
     let body = decode_text(
         &service
             .call_tool(call_params("rescan", json!({})))
@@ -1662,9 +1480,6 @@ async fn mcp_server_exercises_representative_tools() {
     let scanned = body.get("scanned").and_then(Value::as_u64).expect("scanned");
     assert!(scanned > 0, "rescan should walk at least the fixture files");
 
-    // rescan {full:true}: forcing a full re-index must walk the working tree even though a
-    // `paths` scope is also supplied (full wins over paths). Asserts the full-scan override
-    // wiring — `scanned > 0` proves the whole tree was walked, not just the scoped path.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -1681,12 +1496,6 @@ async fn mcp_server_exercises_representative_tools() {
          got scanned={scanned_full}"
     );
 
-    // rescan {paths:[real file]} (full:false): the scoped path must be VISITED, not silently
-    // dropped. Repo-relative request paths have to be joined to the absolute root before the
-    // scanner strips the root prefix — a bare relative path strips to nothing and the whole
-    // report comes back all-zeros (a no-op that looks like success). `a.rs` is unchanged here, so
-    // it lands in `skipped_unchanged`; asserting the report is non-empty distinguishes the fix
-    // from the relative-path no-op bug.
     let body = decode_text(
         &service
             .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
@@ -1703,9 +1512,6 @@ async fn mcp_server_exercises_representative_tools() {
          got all-zero report {body}"
     );
 
-    // telemetry_summary: every successful tool call we've fired in this test should be
-    // recorded. Don't assert an exact count (the smoke test evolves), just that the
-    // dashboard sees the activity and the per-tool breakdown isn't empty.
     let body = decode_text(
         &service
             .call_tool(call_params("telemetry_summary", json!({ "window": "all" })))
@@ -1725,8 +1531,6 @@ async fn mcp_server_exercises_representative_tools() {
         "savings_note must disclose the heuristic nature: {savings_note:?}"
     );
 
-    // cache_stats: read-only introspection. A freshly-scanned fixture has blobs on disk and
-    // every blob is referenced, so blob_count > 0 and orphan_blob_count == 0.
     let body = decode_text(
         &service
             .call_tool(call_params("cache_stats", json!({})))
@@ -1749,9 +1553,6 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("per_view_file_count array");
     assert!(!per_view.is_empty(), "the working view should be listed: {body}");
 
-    // 0.16 resource-footprint fields: the ground-truth total must reconcile exactly to the sum of
-    // the named components plus the unattributed remainder (so no directory can go uncounted), and
-    // the git-history index (`git-history.fjall/`) — omitted before 0.16 — is now part of it.
     let u = |k: &str| body.get(k).and_then(Value::as_u64).unwrap_or_default();
     let total = u("total_bytes");
     let component_sum = u("blobs_bytes")
@@ -1773,19 +1574,15 @@ async fn mcp_server_exercises_representative_tools() {
         body.get("git_history_bytes").and_then(Value::as_u64).is_some(),
         "git_history_bytes field must be present: {body}"
     );
-    // A freshly-scanned fixture has a readable index, so orphan accounting ran.
     assert_eq!(
         body.get("blob_accounting_ok").and_then(Value::as_bool),
         Some(true),
         "blob_accounting_ok must be true on a clean scan: {body}"
     );
-    // RSS is best-effort per platform; when present it must be a positive number (the MCP server
-    // process is alive while answering).
     if let Some(rss) = body.get("rss_bytes").and_then(Value::as_u64) {
         assert!(rss > 0, "rss_bytes, when reported, is the live server RSS: {body}");
     }
 
-    // cache_gc: nothing is orphaned right after a scan, so removed == 0 and bytes_freed == 0.
     let body = decode_text(
         &service
             .call_tool(call_params("cache_gc", json!({})))
@@ -1805,7 +1602,6 @@ async fn mcp_server_exercises_representative_tools() {
     let scanned = body.get("scanned").and_then(Value::as_u64).expect("scanned");
     assert!(scanned >= 1, "GC should have inspected blob files: {body}");
 
-    // cache_clear: a non-live component (telemetry) clears without confirm.
     let body = decode_text(
         &service
             .call_tool(call_params("cache_clear", json!({ "component": "telemetry" })))
@@ -1823,7 +1619,6 @@ async fn mcp_server_exercises_representative_tools() {
         "telemetry clear should succeed: {body}"
     );
 
-    // cache_clear: a destructive component (blobs) without confirm must be rejected.
     let err = service
         .call_tool(call_params("cache_clear", json!({ "component": "blobs" })))
         .await;
@@ -1832,9 +1627,6 @@ async fn mcp_server_exercises_representative_tools() {
         "clearing `blobs` without confirm=true must be rejected, got: {err:?}"
     );
 
-    // cache_clear: `views` and `all` delete the live Fjall index / lock out from under the
-    // running server, so they must be refused in-process even with confirm=true — the
-    // critical safety gate. Stop the server and use the offline CLI for those.
     for component in ["views", "all"] {
         let err = service
             .call_tool(call_params(
@@ -1848,7 +1640,6 @@ async fn mcp_server_exercises_representative_tools() {
         );
     }
 
-    // find_implementations: `Drawable` should return Beta (a.rs, Rust) and Rectangle (b.ts, TS).
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -1877,7 +1668,6 @@ async fn mcp_server_exercises_representative_tools() {
         "every find_implementations hit must carry a 1-based start_row"
     );
 
-    // find_implementations: Python subclass Bar(Foo).
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -1897,7 +1687,6 @@ async fn mcp_server_exercises_representative_tools() {
         "find_implementations(Foo) must include Bar from d.py: {impl_types:?}"
     );
 
-    // find_implementations pagination: limit=1 → next_cursor; second page no overlap.
     let impl_page1 = decode_text(
         &service
             .call_tool(call_params(
@@ -1951,7 +1740,6 @@ async fn mcp_server_exercises_representative_tools() {
         "find_implementations pages must not overlap"
     );
 
-    // find_implementations language filter: Drawable restricted to rust → only Beta.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -1975,9 +1763,6 @@ async fn mcp_server_exercises_representative_tools() {
         "rust-filtered Drawable must not include Rectangle (TypeScript): {impl_types:?}"
     );
 
-    // find_references substring matching (B3/I14): "lph" is a substring of "alpha" and should
-    // return the same 3 call sites as the exact name. The callee field on each hit must
-    // still be the full captured identifier "alpha", not just the substring.
     let body = decode_text(
         &service
             .call_tool(call_params("find_references", json!({ "name": "lph", "limit": 100 })))
@@ -1996,8 +1781,6 @@ async fn mcp_server_exercises_representative_tools() {
         "every substring hit must carry the full callee=\"alpha\", not the substring"
     );
 
-    // find_implementations substring matching: "raw" is a substring of "Drawable" and must
-    // return both Beta and Rectangle.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -2020,14 +1803,12 @@ async fn mcp_server_exercises_representative_tools() {
         impl_types.contains(&"Rectangle"),
         "find_implementations(\"raw\") must include Rectangle via substring on \"Drawable\": {impl_types:?}"
     );
-    // The echoed trait_name must be the search needle, not the matched trait.
     assert_eq!(
         body.get("trait_name").and_then(Value::as_str),
         Some("raw"),
         "trait_name in response must echo the search needle"
     );
 
-    // search_symbols empty needle guard: empty string must return 0 results without scanning.
     let body = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "", "limit": 100 })))
@@ -2040,10 +1821,6 @@ async fn mcp_server_exercises_representative_tools() {
         "search_symbols with empty needle must return 0 results, got {results:?}"
     );
 
-    // compress (structural): compressing an indexed code file returns the L1 outline —
-    // symbols + imports only, no bodies. The fixture a.rs is small, so we only assert
-    // shape (strategy, positive sizes, symbol presence, no body leak) — not byte reduction
-    // (a 7-symbol outline with comment lines can exceed a short source file in bytes).
     let body = decode_text(
         &service
             .call_tool(call_params("compress", json!({ "path": "a.rs" })))
@@ -2073,8 +1850,6 @@ async fn mcp_server_exercises_representative_tools() {
         output.contains("alpha") || output.contains("Beta"),
         "structural output must reference indexed symbols: {output:?}"
     );
-    // Verify no body content leaked — the fixture function body is `{ let _ = 1; }` in the
-    // second commit; the structural outline must not include that literal.
     assert!(
         !output.contains("let _ = 1"),
         "structural output must NOT include function body literals: {output:?}"
@@ -2100,7 +1875,6 @@ async fn mcp_server_exercises_representative_tools() {
             "heuristic note must disclose bytes/4: {tokens_note:?}"
         );
     }
-    // actually-reduced counter is present and consistent
     let original_tokens = body
         .get("original_tokens")
         .and_then(Value::as_u64)
@@ -2119,8 +1893,6 @@ async fn mcp_server_exercises_representative_tools() {
         "tokens_reduced must equal original - compressed"
     );
 
-    // compress (prose): compressing a prose string with repeated filler applies the
-    // lexical pass and returns a smaller output.
     let prose = "It is worth noting that this is a test paragraph.\n\n\
                  It is worth noting that this is a test paragraph.\n\n\
                  The code runs correctly.";
@@ -2174,7 +1946,6 @@ async fn mcp_server_exercises_representative_tools() {
         "tokens_reduced must equal original - compressed"
     );
 
-    // compress: supplying both text and path must be rejected with an error.
     let err = service
         .call_tool(call_params("compress", json!({ "text": "hello", "path": "a.rs" })))
         .await;
@@ -2183,16 +1954,12 @@ async fn mcp_server_exercises_representative_tools() {
         "compress with both text and path must be rejected: {err:?}"
     );
 
-    // compress: supplying neither text nor path must be rejected with an error.
     let err = service.call_tool(call_params("compress", json!({}))).await;
     assert!(
         err.is_err(),
         "compress with neither text nor path must be rejected: {err:?}"
     );
 
-    // expand: pulling the full body of `alpha` from a.rs must return the source slice.
-    // After the second commit, alpha's body is `{ let _ = 1; }` — the literal that compress
-    // explicitly excludes from its output. expand must include it.
     let body = decode_text(
         &service
             .call_tool(call_params("expand", json!({ "path": "a.rs", "name": "alpha" })))
@@ -2214,7 +1981,6 @@ async fn mcp_server_exercises_representative_tools() {
         expand_body.contains("alpha"),
         "expanded body must contain the function source: {expand_body:?}"
     );
-    // This is the literal that compress omits — expand must include it.
     assert!(
         expand_body.contains("let _ = 1"),
         "expanded body must include the function body literal (compress omits it, expand includes it): {expand_body:?}"
@@ -2229,7 +1995,6 @@ async fn mcp_server_exercises_representative_tools() {
         "small function must not be truncated: {body}"
     );
 
-    // expand: symbol not found must return an error (not panic).
     let err = service
         .call_tool(call_params(
             "expand",
@@ -2238,7 +2003,6 @@ async fn mcp_server_exercises_representative_tools() {
         .await;
     assert!(err.is_err(), "expand with unknown symbol must be rejected: {err:?}");
 
-    // expand: `kind` alias `symbol` must work (serde alias).
     let body = decode_text(
         &service
             .call_tool(call_params("expand", json!({ "path": "a.rs", "symbol": "alpha" })))
@@ -2251,8 +2015,6 @@ async fn mcp_server_exercises_representative_tools() {
         "expand via `symbol` alias must resolve correctly: {body}"
     );
 
-    // delta: a stateless line-diff between two inline strings. `old` -> `new` swaps one line
-    // and appends another: 1 delete + 2 adds.
     let body = decode_text(
         &service
             .call_tool(call_params(
@@ -2291,7 +2053,6 @@ async fn mcp_server_exercises_representative_tools() {
         "delta output must lead with the +A/-R header: {delta_output:?}"
     );
 
-    // delta: identical inputs must report unchanged.
     let body = decode_text(
         &service
             .call_tool(call_params("delta", json!({ "old": "same\n", "new": "same\n" })))
@@ -2304,8 +2065,6 @@ async fn mcp_server_exercises_representative_tools() {
         "identical inputs must report changed=false: {body}"
     );
 
-    // checkpoint: session text with a decision line + an untracked file in the working tree.
-    // `files_changed` must come from git status, not be scraped from `text`.
     std::fs::write(root.join("checkpoint_probe.txt"), b"probe\n").unwrap();
     let body = decode_text(
         &service
@@ -2338,8 +2097,6 @@ async fn mcp_server_exercises_representative_tools() {
         "files_changed must come from this repo's git working tree: {files_changed:?}"
     );
 
-    // detect_waste: two JSON-Lines reads of the same target must fire redundant_read with the
-    // exact count + waste accounting.
     let log = "{\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n\
                {\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n";
     let body = decode_text(
@@ -2388,8 +2145,6 @@ async fn mcp_server_exercises_representative_tools() {
 
     let _ = service.cancel().await;
 }
-
-// ─── git-iterator pagination smoke tests ─────────────────────────────────────
 
 /// Build a multi-commit fixture used by the git-iterator pagination tests.
 ///
@@ -2793,7 +2548,6 @@ async fn blame_symbol_paginates_by_start_line() {
         p1_start >= 1,
         "blame_symbol start_line should be 1-based, got {p1_start}"
     );
-    // Cursor past EOF → empty page + no next_cursor (the "natural restart" semantic).
     let huge_cursor = basemind::testing::encode_in_memory_cursor(9_999, 0);
     let page_empty = decode_text(
         &service
@@ -2824,8 +2578,6 @@ async fn blame_symbol_paginates_by_start_line() {
     let _ = service.cancel().await;
 }
 
-// ─── Reranker smoke test ─────────────────────────────────────────────────────
-
 /// Verify that `search_documents` with `reranker_enabled=true` is accepted at the
 /// param-deserialization layer and, when the feature is active, every returned hit
 /// carries a `rerank_score` field.
@@ -2843,10 +2595,6 @@ async fn blame_symbol_paginates_by_start_line() {
 #[ignore]
 #[cfg(feature = "documents")]
 async fn reranks_search_results() {
-    // Weakness: this test only verifies the reranker ran (rerank_score present)
-    // and produced scores in [0,1]. It does NOT verify that reranking changed the
-    // hit order — engineering a synthetic fixture where vector distance and
-    // cross-encoder scores reliably disagree is impractical without real corpora.
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -2857,15 +2605,12 @@ async fn reranks_search_results() {
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    // Baseline: call without reranker — hits have no `rerank_score`.
     let no_rerank = service
         .call_tool(call_params(
             "search_documents",
             json!({ "query": "function", "reranker_enabled": false }),
         ))
         .await;
-    // The fixture has no LanceDB doc store, so the call may fail at the vector-search
-    // stage. That's acceptable — we only assert on structural shape when we get hits.
     if let Ok(ref resp) = no_rerank {
         let body = decode_text(resp);
         if let Some(hits) = body.get("hits").and_then(Value::as_array)
@@ -2880,8 +2625,6 @@ async fn reranks_search_results() {
         }
     }
 
-    // Reranked: call with reranker ON. Structural assertion: same hit count,
-    // every hit carries `rerank_score: Some(f32)`.
     let reranked = service
         .call_tool(call_params(
             "search_documents",
@@ -2892,12 +2635,10 @@ async fn reranks_search_results() {
             }),
         ))
         .await;
-    // Confirm param deserialization succeeded (no protocol-level Err).
     match &reranked {
         Ok(resp) => {
             let body = decode_text(resp);
             if let Some(hits) = body.get("hits").and_then(Value::as_array) {
-                // When the store is present and returns hits, every hit must carry a score.
                 for hit in hits {
                     assert!(
                         hit.get("rerank_score").is_some(),
@@ -2912,8 +2653,6 @@ async fn reranks_search_results() {
             }
         }
         Err(e) => {
-            // Protocol errors are acceptable when the documents store is absent or
-            // feature is not compiled in — the key assertion is no panic / no crash.
             let _ = e;
         }
     }
@@ -2921,17 +2660,6 @@ async fn reranks_search_results() {
     let _ = service.cancel().await;
 }
 
-// ─── Summarization smoke test ───────────────────────────────────────────────
-//
-// Iter-7 wires `summarization` + `llm` through the schema-driven config across
-// all four surfaces (TOML / CLI / MCP / env). The synthetic fixture has no
-// LanceDB document store, so we can only verify:
-//   1. `summarization_enabled = true` deserializes (no `unknown field`)
-//   2. The server doesn't crash when summarisation is enabled per-query
-//   3. When hits are returned, every hit carries the optional `summary` slot
-//      (None or Some(...) — either is valid because the fixture has no
-//      pre-summarised doc blob to attach metadata from).
-// The extractive path requires NO model download, so this test is NOT gated
 // behind `#[ignore]`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "documents")]
@@ -2965,17 +2693,6 @@ async fn summarizes_via_extractive_default() {
             let body = decode_text(resp);
             if let Some(hits) = body.get("hits").and_then(Value::as_array) {
                 for hit in hits {
-                    // `summary` is the iter-7 additive field. It may be present
-                    // (Some(...)) or absent — `skip_serializing_if = Option::is_none`
-                    // omits the key when None.
-                    //
-                    // LIMITATION: the synthetic fixture's docs are too short
-                    // for TextRank to produce a real summary, so we cannot
-                    // assert `summary.is_some()` here. The tightened contract
-                    // is: when ANY hit has a summary, its strategy must be
-                    // "extractive" — guards against a future-iter abstractive
-                    // bug slipping past the per-query `summarization_strategy`
-                    // override.
                     if let Some(summary) = hit.get("summary") {
                         assert!(
                             summary.get("text").is_some(),
@@ -2994,9 +2711,6 @@ async fn summarizes_via_extractive_default() {
             }
         }
         Err(e) => {
-            // Protocol-level error is acceptable when the docs feature isn't
-            // wired or the LanceDB store is absent. The key assertion is no
-            // `unknown field` rejection on the new per-query params.
             let msg = format!("{e:?}");
             assert!(
                 !msg.contains("unknown field"),
@@ -3008,12 +2722,6 @@ async fn summarizes_via_extractive_default() {
     let _ = service.cancel().await;
 }
 
-// ─── Post-filter smoke test ─────────────────────────────────────────────────
-//
-// `attach_doc_metadata` filters hits by `entity_category` / `keywords_contains`
-// after the vector recall. The fixture has no NER-tagged documents (and no
-// LanceDB store), so the filter yields 0 hits — the test only proves the
-// dispatch + post-filter wiring deserializes the new fields and does not crash.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "documents")]
 async fn search_documents_accepts_post_filter_params() {
@@ -3040,9 +2748,6 @@ async fn search_documents_accepts_post_filter_params() {
         ))
         .await;
 
-    // Either the call succeeds (with possibly an `is_error` payload when the
-    // LanceDB store is unavailable) or returns a protocol-level Err when the
-    // feature isn't wired. The contract is "no unknown-field rejection".
     match &result {
         Ok(_) => {}
         Err(e) => {
@@ -3057,8 +2762,6 @@ async fn search_documents_accepts_post_filter_params() {
     let _ = service.cancel().await;
 }
 
-// ─── agent-comms round-trip (feature = "comms") ─────────────────────────────
-
 /// End-to-end comms round-trip through the real `CommsClient` over an isolated Unix-socket
 /// broker — NOT the user's daemon. A throwaway `UdsFrontend` is bound to a temp socket and a
 /// temp store, then two clients with DISTINCT agent ids exercise the front-matter/body split:
@@ -3071,7 +2774,6 @@ async fn search_documents_accepts_post_filter_params() {
 /// Isolation: a per-test temp dir for the store + a per-test socket path, so the test daemon
 /// never touches the user's real `comms.sock` and parallel test runs do not collide.
 // `UdsFrontend` (and the `UnixListener` this test binds) is `#[cfg(unix)]` inside `frontend_uds`,
-// so this round-trip is unix-only — gate the test to match or the Windows build fails to compile.
 #[cfg(all(feature = "comms", unix))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn comms_round_trip_front_matter_then_body_then_inbox() {
@@ -3087,14 +2789,12 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     use basemind::comms::transport::CommsFrontend;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    // Short socket path under the temp dir (Unix socket paths are length-bounded).
     let socket_path = dir.path().join("c.sock");
     let paths = CommsPaths {
         comms_dir: dir.path().to_path_buf(),
         socket_path: socket_path.clone(),
     };
 
-    // Bind the broker on the temp socket and drive its accept loop in the background.
     let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
     let broker = Arc::new(Broker::new(store));
     let listener = {
@@ -3106,7 +2806,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
     let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
 
-    // Two clients with DISTINCT identities connect to the running broker.
     let agent_a = AgentId::parse("agent-a").expect("agent a");
     let agent_b = AgentId::parse("agent-b").expect("agent b");
     let mut a = CommsClient::connect(&paths, agent_a, None, None)
@@ -3116,14 +2815,12 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("connect b");
 
-    // Shared room; B joins so it lands in B's inbox.
     let room = RoomId::parse("team").expect("room");
     a.create_room(room.clone(), RoomScope::Global, Some("Team".to_string()))
         .await
         .expect("create room");
     b.join_room(room.clone()).await.expect("b joins");
 
-    // A posts subject + body.
     let subject = "deploy status";
     let body = b"all systems green".to_vec();
     let message_id = a
@@ -3138,7 +2835,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("post");
 
-    // B reads history → FRONT-MATTER only: subject present, NO body field on the meta record.
     let (history, _next) = b.read_history(room.clone(), None, 10, None).await.expect("history");
     assert_eq!(history.len(), 1, "exactly one posted message");
     let seq_meta = &history[0];
@@ -3156,8 +2852,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         body.len() as u32,
         "front-matter carries body_len, not the body"
     );
-    // The front-matter record is serialized WITHOUT the body bytes — assert the JSON view has
-    // no `body` key, only the length/hash metadata.
     let meta_json = serde_json::to_value(meta).expect("serialize meta");
     assert!(
         meta_json.get("body").is_none(),
@@ -3168,7 +2862,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         "history front-matter must include body_len: {meta_json}"
     );
 
-    // B fetches the body on demand — the only body path.
     let fetched = b.get_body(message_id.clone()).await.expect("get_body");
     assert_eq!(
         fetched.as_deref(),
@@ -3176,7 +2869,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         "message_get returns the exact body"
     );
 
-    // B's inbox shows the unread message, then mark_read clears it to 0 unread.
     let (inbox, unread, _c) = b
         .read_inbox(None, None, None, 10, true, None)
         .await
@@ -3185,7 +2877,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     assert_eq!(inbox[0].meta.subject, subject, "inbox carries front-matter subject");
     assert_eq!(unread, 0, "mark_read drained the unread count in this page");
 
-    // A second inbox read after mark_read returns nothing new.
     let (inbox2, unread2, _c2) = b
         .read_inbox(None, None, None, 10, false, None)
         .await
@@ -3193,8 +2884,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     assert!(inbox2.is_empty(), "no unread messages remain after mark_read");
     assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
 
-    // inbox_ack: A posts a second message; B dismisses it via `ack_inbox` (a cursor advance,
-    // NOT a delete). The message must leave B's inbox but stay in the shared history.
     let second_id = a
         .post_message(
             room.clone(),
@@ -3227,19 +2916,15 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .expect("inbox after ack");
     assert!(inbox4.is_empty(), "ack removed the message from B's inbox");
 
-    // The acked message is still in the shared, append-only history.
     let (history_after, _n) = b
         .read_history(room.clone(), None, 10, None)
         .await
         .expect("history after ack");
     assert_eq!(history_after.len(), 2, "ack does not delete from the shared log");
 
-    // Tear down the broker.
     let _ = shutdown_tx.send(true);
     let _ = serve.await;
 }
-
-// ─── embedded agent shells round-trip (feature = "shells") ──────────────────
 
 /// End-to-end MCP contract for the headless-shell tools through a real
 /// `basemind serve` child process. The child binary carries the
@@ -3259,9 +2944,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let root = dir.path();
     run_scan(root);
 
-    // Force the spawned `serve` child to run shells in Headless mode so the test NEVER opens a
-    // real terminal window/tab. The child reads `.basemind/basemind.toml` from the repo root
-    // (`run_scan` already created `.basemind/`); `visual = "headless"` makes `present()` a no-op.
     std::fs::write(
         root.join(".basemind").join("basemind.toml"),
         b"\"$schema\" = \"v1\"\n\n[shells]\nvisual = \"headless\"\n",
@@ -3278,7 +2960,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    // Spawn a headless session that prints a sentinel then idles.
     let spawned = service
         .call_tool(call_params(
             "shell_spawn",
@@ -3303,9 +2984,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         "attach_command should be a basemind internal-attach re-exec line: {spawned:?}"
     );
 
-    // Security regression: a cwd that escapes the repository root must be refused
-    // (run_shell_spawn normalizes via normalize_query_path) — it is rejected before any
-    // session is spawned, so there is nothing to clean up.
     let escaped = service
         .call_tool(call_params(
             "shell_spawn",
@@ -3317,7 +2995,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         "shell_spawn must reject a cwd escaping the repository root: {escaped:?}"
     );
 
-    // Poll capture until the sentinel shows up (bounded — not flaky).
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let captured = service
@@ -3339,7 +3016,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    // Kill the session and assert it reports killed.
     let killed = service
         .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
         .await
@@ -3351,7 +3027,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
         "shell_kill should report killed=true for a live session: {killed:?}"
     );
 
-    // A second kill (now-unknown id) must be an error, proving the mapping was forgotten.
     let second = service
         .call_tool(call_params("shell_kill", json!({ "session_id": session_id })))
         .await;
@@ -3368,8 +3043,6 @@ async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningS
     let root = root.to_path_buf();
     let cmd = AsyncCommand::new(bin).configure(move |c| {
         c.arg("--root").arg(&root).arg("serve").arg("--view").arg("working");
-        // Mirror env so the lean toggle is read by the child only when requested; the unset
-        // case must reproduce the default full surface exactly.
         c.env_remove("BASEMIND_MCP_LEAN");
         if let Some(v) = &lean {
             c.env("BASEMIND_MCP_LEAN", v);
@@ -3391,7 +3064,6 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
     run_scan(root);
     let service = spawn_serve(root, None).await;
 
-    // An escaping `..` path must fail the call (invalid_params), never reach the scanner.
     let escaping = service
         .call_tool(call_params(
             "rescan",
@@ -3403,7 +3075,6 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
         "rescan must reject a path that escapes the repo root, got: {escaping:?}"
     );
 
-    // A valid in-repo path is still accepted (the guard doesn't break legitimate scoped rescans).
     let ok = service
         .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
         .await;
@@ -3417,12 +3088,10 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
 /// `status` must converge to `indexing: false` with an `index_build_ms` recording the build cost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_auto_scan_reports_index_build_ms_on_status() {
-    // Intentionally NO run_scan(root): the empty index makes serve auto-scan on startup.
     let dir = build_repo();
     let root = dir.path();
     let service = spawn_serve(root, None).await;
 
-    // Poll status until the boot scan settles (index populated + no longer indexing).
     let mut settled: Option<Value> = None;
     for _ in 0..200 {
         let result = service
@@ -3459,7 +3128,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let root = dir.path();
     run_scan(root);
 
-    // ── Default surface (flag unset): full tool list, direct dispatch. ──────────────
     let full = spawn_serve(root, None).await;
     let full_tools = full.list_all_tools().await.expect("list tools (full)");
     let full_names: Vec<&str> = full_tools.iter().map(|t| t.name.as_ref()).collect();
@@ -3477,9 +3145,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "default surface must NOT expose the lean wrappers: {full_names:?}"
     );
 
-    // Tool annotations drive client-side permission gating (Claude Code auto-approves
-    // read-only tools). Assert the contract: read-only tools advertise `read_only_hint=true`,
-    // mutating tools advertise `read_only_hint=false`, and a destructive one is flagged.
     let annotations_of = |name: &str| {
         full_tools
             .iter()
@@ -3508,7 +3173,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         Some(true),
         "cache_clear must advertise destructive_hint=true"
     );
-    // Baseline result from a direct call on the full surface.
     let direct = decode_text(
         &full
             .call_tool(call_params("search_symbols", json!({ "needle": "Greet", "limit": 10 })))
@@ -3517,7 +3181,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     );
     let _ = full.cancel().await;
 
-    // ── Lean surface (flag set): exactly three wrappers. ────────────────────────────
     let lean = spawn_serve(root, Some("1")).await;
     let lean_tools = lean.list_all_tools().await.expect("list tools (lean)");
     let mut lean_names: Vec<&str> = lean_tools.iter().map(|t| t.name.as_ref()).collect();
@@ -3528,7 +3191,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "lean mode advertises exactly the three wrapper tools"
     );
 
-    // `list_tools` wrapper returns a compressed listing of the real tools.
     let listing = decode_text(
         &lean
             .call_tool(call_params("list_tools", json!({})))
@@ -3543,7 +3205,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "lean list_tools should surface the real search_symbols tool: {listing}"
     );
 
-    // `get_tool_schema` returns the real tool's input schema.
     let schema = decode_text(
         &lean
             .call_tool(call_params("get_tool_schema", json!({ "tool_name": "search_symbols" })))
@@ -3560,7 +3221,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "schema carries the input_schema: {schema}"
     );
 
-    // `invoke_tool` dispatches to the real handler — same payload as the direct call.
     let via_invoke = decode_text(
         &lean
             .call_tool(call_params(
@@ -3578,7 +3238,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "invoke_tool result must match a direct search_symbols call"
     );
 
-    // Unknown tool names are rejected, not silently passed through.
     let bad = lean
         .call_tool(call_params(
             "invoke_tool",
@@ -3600,7 +3259,6 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
     run_scan(root);
     let server = spawn_serve(root, None).await;
 
-    // prompts/list advertises the curated templates.
     let prompts = server.list_all_prompts().await.expect("list_all_prompts");
     let names: Vec<&str> = prompts.iter().map(|p| p.name.as_str()).collect();
     for expected in ["onboard-repo", "trace-symbol", "explain-file", "review-working-tree"] {
@@ -3610,7 +3268,6 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
         );
     }
 
-    // `trace-symbol` exposes a `symbol` argument (the reference the completion handler fills).
     let trace = prompts
         .iter()
         .find(|p| p.name == "trace-symbol")
@@ -3622,7 +3279,6 @@ async fn prompts_are_listed_and_rendered_with_arguments() {
         args.iter().map(|a| &a.name).collect::<Vec<_>>()
     );
 
-    // prompts/get renders the template, interpolating the argument into the message.
     let rendered = server
         .get_prompt(
             GetPromptRequestParams::new("trace-symbol")
@@ -3658,7 +3314,6 @@ async fn completes_prompt_arguments_from_the_code_map() {
     run_scan(root);
     let server = spawn_serve(root, None).await;
 
-    // `trace-symbol` / `symbol` completes against indexed symbol names (prefix `al` → `alpha`).
     let symbols = server
         .complete_prompt_argument("trace-symbol", "symbol", "al", None)
         .await
@@ -3674,7 +3329,6 @@ async fn completes_prompt_arguments_from_the_code_map() {
         symbols.values
     );
 
-    // `explain-file` / `path` completes against indexed file paths (prefix `a` → `a.rs`).
     let paths = server
         .complete_prompt_argument("explain-file", "path", "a", None)
         .await
@@ -3685,7 +3339,6 @@ async fn completes_prompt_arguments_from_the_code_map() {
         paths.values
     );
 
-    // An argument basemind doesn't complete returns nothing, not an error.
     let none = server
         .complete_prompt_argument("onboard-repo", "nope", "x", None)
         .await
@@ -3701,8 +3354,6 @@ async fn completes_prompt_arguments_from_the_code_map() {
 
 /// 0.8.0: `rescan` emits a logging notification (with counts) and progress notifications when
 /// the client supplies a progress token. Uses a capturing client handler to observe both.
-// SEP-2577 deprecated the MCP logging types (LoggingMessageNotificationParam); rmcp 2.1 offers no
-// replacement yet and basemind still emits these notifications, so this test intentionally uses them.
 #[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rescan_emits_logging_and_progress_notifications() {
@@ -3749,7 +3400,6 @@ async fn rescan_emits_logging_and_progress_notifications() {
     let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
     let server = capture.serve(transport).await.expect("rmcp handshake");
 
-    // Call rescan WITH a progress token so the server emits progress.
     let mut params = call_params("rescan", json!({}));
     rmcp::model::RequestParamsMeta::set_progress_token(
         &mut params,
@@ -3757,10 +3407,8 @@ async fn rescan_emits_logging_and_progress_notifications() {
     );
     server.call_tool(params).await.expect("rescan call");
 
-    // Give the notifications a moment to arrive over the transport.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    // Snapshot the captured notifications, dropping the guards before the later await.
     let captured_logs = logs.lock().unwrap().clone();
     let captured_progress = progress.lock().unwrap().clone();
 
@@ -3772,9 +3420,6 @@ async fn rescan_emits_logging_and_progress_notifications() {
         captured_logs.iter().map(|l| &l.data).collect::<Vec<_>>()
     );
 
-    // The client supplied a progress token, so the server emits start + done progress for it.
-    // rmcp assigns the concrete token value; we assert the shape: a start (total: None) and a
-    // completion that reports the discovered file count as both progress and total.
     assert!(
         captured_progress.len() >= 2,
         "rescan with a progress token must emit start + done progress, got {}",
@@ -3790,7 +3435,6 @@ async fn rescan_emits_logging_and_progress_notifications() {
             .any(|p| p.total == Some(p.progress) && p.total.is_some()),
         "expected a completion progress where progress == total (file count)"
     );
-    // All progress shares the one request's token.
     let first = &captured_progress[0].progress_token;
     assert!(
         captured_progress.iter().all(|p| &p.progress_token == first),

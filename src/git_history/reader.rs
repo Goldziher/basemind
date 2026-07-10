@@ -21,14 +21,11 @@ impl GitHistoryIndex {
         let Some(buf) = self.posting_bytes(path_id) else {
             return Vec::new();
         };
-        // The posting list is stored newest-first, so decode only the leading `skip + take`
-        // ordinals — O(skip + take), not O(history depth). Already newest-first; no reverse needed.
         let ords = encoding::decode_ords_head(&buf, skip.saturating_add(take));
         let mut cache = PathCache::new();
         ords.into_iter()
             .skip(skip)
             .take(take)
-            // `commits_touching` omits files (parity with the live walk), so decode head-only.
             .filter_map(|ord| self.commit_meta(ord, false))
             .map(|meta| self.meta_to_info(meta, &mut cache))
             .collect()
@@ -75,9 +72,6 @@ impl GitHistoryIndex {
             author: meta.author,
             author_email: meta.author_email,
             author_time_unix: meta.author_time_unix,
-            // Body lives in the `gh_commit_text_by_ord` partition, not `CommitMeta`. The
-            // path/recent/window readers don't need it (parity with the live walk, which also omits
-            // it here), so they leave it empty; `search_commits` fills it from that partition.
             body: String::new(),
             files,
         }

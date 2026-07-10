@@ -113,7 +113,6 @@ pub fn extract_checkpoint(text: &str, files_changed: Vec<String>) -> Checkpoint 
         if line.is_empty() {
             continue;
         }
-        // Hard security gate: a credential-bearing line never enters a field.
         if safety::contains_credential(line) {
             continue;
         }
@@ -189,8 +188,6 @@ mod tests {
 
     #[test]
     fn drops_credential_line_from_decisions_and_errors() {
-        // A line that is BOTH a decision marker AND carries a GitHub PAT must be
-        // dropped from every field — the hard security gate.
         let pat = format!("chose token=ghp_{}", "a".repeat(36));
         let cp = extract_checkpoint(&pat, Vec::new());
         assert!(
@@ -203,7 +200,6 @@ mod tests {
             "credential error line must be dropped, got: {:?}",
             cp.errors
         );
-        // The token must not appear anywhere in any field.
         let pat_token = format!("ghp_{}", "a".repeat(36));
         assert!(
             !cp.decisions.iter().any(|d| d.contains(&pat_token)),
@@ -221,7 +217,6 @@ mod tests {
 
     #[test]
     fn drops_credential_error_line() {
-        // An error-marked line carrying an AWS key must also be dropped.
         let line = "error: leaked AKIAIOSFODNN7EXAMPLE in config";
         let cp = extract_checkpoint(line, Vec::new());
         assert!(cp.errors.is_empty(), "credential error line must be dropped");
@@ -243,7 +238,6 @@ mod tests {
     fn caps_and_flags_truncated_errors() {
         let mut text = String::new();
         for n in 0..(MAX_ERRORS + 10) {
-            // Unique line per iteration so dedup does not collapse them.
             text.push_str(&format!("error: failure number {n}\n"));
         }
         let cp = extract_checkpoint(&text, Vec::new());

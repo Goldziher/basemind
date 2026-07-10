@@ -25,18 +25,13 @@ use crate::store::{LOCK_FILE, LOCK_META_FILE, LockHolder, LockMeta, StoreError};
 pub(crate) fn writer_lock_is_held(basemind_dir: &Path) -> bool {
     let path = basemind_dir.join(LOCK_FILE);
     let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) else {
-        // No lock file (never scanned) or unopenable — assume no live writer.
         return false;
     };
     match file.try_lock_shared() {
         Ok(()) => {
-            // No exclusive holder. Release our shared probe immediately so we never block a
-            // writer that starts right after this check.
             let _ = FileExt::unlock(&file);
             false
         }
-        // Contention (a writer holds it exclusive) or any probe error → treat as "writer live"
-        // and serve from blobs. Skipping Fjall is always a safe degradation.
         Err(_) => true,
     }
 }
@@ -84,19 +79,11 @@ pub(crate) fn acquire_lock_as(basemind_dir: &Path, holder: LockHolder) -> Result
             path: path.clone(),
             source,
         })?;
-    // A Store dropped microseconds earlier in this process (or a just-exited
-    // holder) can leave the advisory `flock` briefly un-released — macOS in
-    // particular does not always release it before the next acquire observes it.
-    // Retry with a short backoff so a sequential open → close → open never races;
-    // only a lock genuinely held for the whole window (e.g. `basemind watch`)
-    // surfaces as `Locked`.
     const LOCK_ATTEMPTS: u32 = 25;
     const LOCK_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
     for attempt in 0..LOCK_ATTEMPTS {
         match file.try_lock_exclusive() {
             Ok(()) => {
-                // Won the lock — record who we are. Best-effort; a write failure here must
-                // not fail an otherwise-successful acquisition (the sidecar is advisory).
                 write_lock_meta(basemind_dir, holder);
                 return Ok(file);
             }
@@ -158,9 +145,6 @@ mod tests {
 
     #[test]
     fn probe_writer_lock_names_the_live_holder() {
-        // Pre-flight probe underpinning the CLI double-run guidance: while a writer holds the
-        // exclusive lock, the probe must report `Held` and surface the `.lock.meta` holder so
-        // `scan`/`rescan` can name the running `serve` instead of colliding with it.
         let tmp = tempfile::tempdir().expect("tempdir");
         let guard = acquire_lock_as(tmp.path(), LockHolder::Serve).expect("acquire exclusive lock");
         match probe_writer_lock(tmp.path()) {

@@ -163,8 +163,6 @@ fn git_working_tree_status_is_clean() {
 fn git_search_finds_commit_by_author() {
     let dir = build_and_scan();
     let root = dir.path();
-    // The fixture's single commit is authored by "t" (see `git()` env). Full-text author search
-    // over the indexed history must return it — the CLI mirror of the `search_git_history` tool.
     let v = assert_json_fields(root, &["git", "search", "t", "--field", "author"], &["commits"]);
     let commits = v["commits"].as_array().expect("commits array");
     assert_eq!(commits.len(), 1, "author search should find the one commit");
@@ -175,13 +173,11 @@ fn git_search_finds_commit_by_author() {
 fn rescan_full_reindexes_new_file() {
     let dir = build_and_scan();
     let root = dir.path();
-    // A new file the initial scan never saw.
     std::fs::write(root.join("d.rs"), b"pub fn delta() {}\n").unwrap();
 
     let (stdout, ok) = run(root, &["rescan", "--full", "--quiet"]);
     assert!(ok, "rescan --full exited non-zero; stdout: {stdout}");
 
-    // The full re-index must pick up the new symbol and the new file.
     let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
     assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
     let status = assert_json_fields(root, &["query", "status"], &["file_count"]);
@@ -194,7 +190,6 @@ fn rescan_scoped_path_reindexes_only_that_path() {
     let root = dir.path();
     std::fs::write(root.join("d.rs"), b"pub fn delta() {}\n").unwrap();
 
-    // Incremental rescan scoped to the single new path (no --full).
     let (stdout, ok) = run(root, &["rescan", "d.rs", "--quiet"]);
     assert!(ok, "scoped rescan exited non-zero; stdout: {stdout}");
 
@@ -220,25 +215,21 @@ fn build_cochange_fixture() -> TempDir {
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
 
-    // Commit 1 — a.rs + c.rs co-change.
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     std::fs::write(root.join("c.rs"), b"pub fn caller() { alpha(); }\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "init: a and c"]);
 
-    // Commit 2 — a.rs + c.rs co-change.
     std::fs::write(root.join("a.rs"), b"pub fn alpha() -> u32 { 1 }\n").unwrap();
     std::fs::write(root.join("c.rs"), b"pub fn caller() -> u32 { alpha() }\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "feat: typed alpha"]);
 
-    // Commit 3 — a.rs + c.rs co-change.
     std::fs::write(root.join("a.rs"), b"pub fn alpha() -> u32 { 2 }\n").unwrap();
     std::fs::write(root.join("c.rs"), b"pub fn caller() -> u32 { alpha() + 1 }\n").unwrap();
     git(root, &["add", "-A"]);
     git(root, &["commit", "-qm", "feat: bump alpha return"]);
 
-    // Commit 4 — a.rs solo change (raises freq[a.rs] without adding co-change).
     std::fs::write(root.join("a.rs"), b"pub fn alpha() -> u32 { 42 }\n").unwrap();
     git(root, &["add", "a.rs"]);
     git(root, &["commit", "-qm", "fix: solo alpha tweak"]);
@@ -263,8 +254,6 @@ fn run_full(root: &Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
-// ─── Governance tests ─────────────────────────────────────────────────────────
-
 /// End-to-end governance workflow under `--features memory`:
 /// mine → proposals (list) → accept → memory get → reject.
 ///
@@ -275,7 +264,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
     let dir = build_cochange_fixture();
     let root = dir.path();
 
-    // ── Step 1: mine with low thresholds so the (a.rs, c.rs) pair is captured ──
     let mine_v = assert_json_fields(
         root,
         &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
@@ -286,7 +274,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "governance mine must emit at least one co-change proposal; got: {mine_v}"
     );
 
-    // ── Step 2: proposals list — must return the mined candidate ──────────────
     let list_v = assert_json_fields(root, &["governance", "proposals"], &["total", "truncated", "proposals"]);
     let proposals = list_v["proposals"]
         .as_array()
@@ -302,14 +289,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         .expect("each proposal must have an 'id' string field");
     assert!(!id.is_empty(), "proposal id must not be empty");
 
-    // ── Step 3: accept — must write a memory, return accepted=true, exit 0 ────
-    //
-    // `proposal_accept` materialises the cached `LanceStore`, which owns a tokio
-    // runtime. That store is dropped at the end of the CLI's outer `block_on`, i.e.
-    // inside an async context — which used to panic the process on teardown ("Cannot
-    // drop a runtime in a context where blocking is not allowed") and exit 101 even
-    // though the data write succeeded. `LanceStoreInner`'s `Drop` now calls
-    // `Runtime::shutdown_background`, so the command exits cleanly. We assert on that.
     let (accept_stdout, accept_stderr, accept_ok) = run_full(root, &["--json", "governance", "accept", id]);
     assert!(
         accept_ok,
@@ -330,7 +309,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "accepted memory key must start with 'skill/cochange-'; got: {memory_key:?}"
     );
 
-    // ── Step 4: memory get — the accepted skill must be retrievable ───────────
     let get_v = assert_json_fields(root, &["memory", "get", memory_key], &["key", "value", "tags"]);
     assert_eq!(
         get_v["key"].as_str().unwrap(),
@@ -350,10 +328,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "accepted memory must carry the 'cochange' tag; got tags: {tags:?}"
     );
 
-    // ── Step 5: mine again so there is a fresh candidate to reject ────────────
-    // Accept DELETES the proposal but does not tombstone it (only reject tombstones),
-    // and git history is immutable, so re-mining deterministically regenerates the
-    // same content-addressed cluster — `proposals` must be non-empty again.
     let remine_v = assert_json_fields(
         root,
         &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
@@ -364,7 +338,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "re-mine after accept must regenerate the cluster (accept does not tombstone); got: {remine_v}"
     );
 
-    // ── Step 6: reject — must consume the regenerated candidate ───────────────
     let list2_v = assert_json_fields(root, &["governance", "proposals"], &["total", "proposals"]);
     let proposals2 = list2_v["proposals"]
         .as_array()
@@ -385,7 +358,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "governance reject must return rejected=true; got: {reject_v}"
     );
 
-    // The tombstone must now suppress that cluster on a fresh mine.
     let post_reject = assert_json_fields(
         root,
         &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
@@ -407,8 +379,6 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
 /// that). Under default features it must NOT succeed and must NOT crash.
 #[test]
 fn governance_mine_without_memory_feature_does_not_panic() {
-    // Use build_and_scan() — the single-commit repo is enough; we never reach the
-    // mining step when the feature gate fires.
     let dir = build_and_scan();
     let root = dir.path();
 
@@ -417,23 +387,17 @@ fn governance_mine_without_memory_feature_does_not_panic() {
         &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
     );
 
-    // Under --features memory the command succeeds; under default features it must
-    // fail gracefully — non-zero exit, no panic string in stderr.
     if !ok {
-        // Non-zero exit is expected when memory feature is off.
-        // The error must mention "memory" (the feature name) or "not enabled".
         let combined = format!("{stdout}{stderr}");
         assert!(
             combined.to_lowercase().contains("memory") || combined.to_lowercase().contains("not enabled"),
             "governance mine failure must mention 'memory' or 'not enabled'; got stdout={stdout:?} stderr={stderr:?}"
         );
-        // Must NOT be a Rust panic.
         assert!(
             !stderr.contains("thread 'main' panicked"),
             "governance mine must not panic when memory feature is off; stderr={stderr:?}"
         );
     }
-    // If ok==true (memory feature is on), the command succeeded — nothing to assert.
 }
 
 #[test]
@@ -454,8 +418,6 @@ fn cache_stats_reports_blob_accounting() {
         ],
     );
     assert!(v["blob_count"].as_u64().unwrap() >= 2, "at least one blob per file");
-    // The CLI shares `store_gc::cache_stats` with the MCP tool, so it reports the same
-    // reconciling total (components + other == total) that the MCP smoke test asserts.
     let u = |k: &str| v[k].as_u64().unwrap_or_default();
     let component_sum = u("blobs_bytes")
         + u("views_bytes")

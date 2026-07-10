@@ -25,7 +25,6 @@ pub(super) fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf
             remote,
             cwd: std::path::PathBuf::new(),
             ancestors: Vec::new(),
-            // Session context is layered on by `on_hello` after the base chain is built.
             session_id: None,
             parent_agent: None,
         },
@@ -56,7 +55,6 @@ pub(super) fn default_room_for(chain: &ScopeChain) -> Room {
         scope,
         title,
         created_at: now_micros(),
-        // No posts yet — `last_activity` starts at 0 and the room reads as stale until a first post.
         last_activity: 0,
     }
 }

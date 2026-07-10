@@ -1,26 +1,4 @@
 #!/usr/bin/env bash
-# Real-OSS hardening harness orchestrator.
-#
-# Clones a diverse set of upstream repos into /tmp/basemind-harden/, then runs
-# `tests/harden.rs` against each one. The harness exits non-zero if any repo
-# trips its per-repo or generic assertions.
-#
-# This is the gating artifact for the hardening iteration — every stage's
-# success is judged by whether it monotonically reduces this harness's failures.
-#
-# Run:
-#   ./scripts/harden.sh                 # all repos
-#   ./scripts/harden.sh react ripgrep   # subset (logical names below)
-#
-# Env overrides:
-#   BASEMIND_HARDEN_ROOT     base dir for clones (default /tmp/basemind-harden)
-#   BASEMIND_HARDEN_KEEP=1   keep .basemind/ from prior runs (default: wipe between repos)
-#   BASEMIND_HARDEN_NO_BUILD=1   skip the up-front `cargo build --release`
-#   BASEMIND_HARDEN_FEATURES cargo feature set to build/run with (default "full"). Set to "" to
-#                            build default features only — useful on machines where the optional
-#                            documents/memory/intelligence stack can't compile (the harness records
-#                            those tools as skipped rather than failing). Scan + git-ops are
-#                            measured on whatever feature set is given.
 
 set -euo pipefail
 
@@ -32,10 +10,6 @@ if [ -n "${FEATURES}" ]; then feature_args=(--features "${FEATURES}"); fi
 mkdir -p "${ROOT}"
 : >"${RESULTS}"
 
-# Repo set. Format: "logical_name git_url extra_clone_args"
-# Logical names are matched by tests/harden.rs for repo-specific canaries:
-#   - react           — TSX + JSX (useState canary)
-#   - ripgrep-shallow — shallow-clone detection (truncated canary)
 REPOS=(
 	"ripgrep|https://github.com/BurntSushi/ripgrep.git|"
 	"tokio|https://github.com/tokio-rs/tokio.git|--depth=2000"
@@ -60,7 +34,6 @@ if [ -z "${BASEMIND_HARDEN_NO_BUILD:-}" ]; then
 	cargo build --release --quiet ${feature_args[@]+"${feature_args[@]}"} --bin basemind
 fi
 
-# Track overall outcome
 failed=()
 passed=()
 
@@ -87,8 +60,6 @@ for entry in "${REPOS[@]}"; do
 		rm -rf "${dest}/.basemind"
 	fi
 
-	# Run the harness against this repo. `--test-threads=1` keeps the per-repo
-	# output legible; the test itself doesn't care about parallelism.
 	if BASEMIND_HARDEN_REPO="${dest}" \
 		BASEMIND_HARDEN_REPO_NAME="${name}" \
 		BASEMIND_HARDEN_RESULTS="${RESULTS}" \

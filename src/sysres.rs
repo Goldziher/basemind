@@ -44,8 +44,6 @@ fn current_rss() -> Option<u64> {
     use mach2::traps::mach_task_self;
 
     // SAFETY: `task_info` with `MACH_TASK_BASIC_INFO` fills a `mach_task_basic_info` struct. We
-    // pass a zeroed buffer of exactly that type and its element count in 32-bit words, and read
-    // `resident_size` only when the kernel returns `KERN_SUCCESS`.
     unsafe {
         let mut info = mem::zeroed::<mach_task_basic_info>();
         let mut count = (mem::size_of::<mach_task_basic_info>() / mem::size_of::<u32>()) as mach_msg_type_number_t;
@@ -65,11 +63,9 @@ fn current_rss() -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn current_rss() -> Option<u64> {
-    // `/proc/self/statm` field 2 (0-indexed 1) is the resident page count.
     let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
     let resident_pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
     // SAFETY: `sysconf` is a pure query with no memory effects; a non-positive result means the
-    // limit is indeterminate, so we fall back to the near-universal 4 KiB page.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page = if page > 0 { page as u64 } else { 4096 };
     Some(resident_pages.saturating_mul(page))
@@ -84,14 +80,12 @@ fn current_rss() -> Option<u64> {
 fn peak_rss() -> Option<u64> {
     use std::mem;
     // SAFETY: `getrusage` writes a full `rusage` into the zeroed buffer; we read `ru_maxrss` only
-    // when it returns 0 (success).
     unsafe {
         let mut usage: libc::rusage = mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut usage) != 0 {
             return None;
         }
         let maxrss = usage.ru_maxrss.max(0) as u64;
-        // `ru_maxrss` is bytes on Darwin, kilobytes on Linux/BSD.
         #[cfg(target_os = "macos")]
         let bytes = maxrss;
         #[cfg(not(target_os = "macos"))]
@@ -105,9 +99,6 @@ fn peak_rss() -> Option<u64> {
     None
 }
 
-// Unix-only: the sole test exercises the unix RSS readers. Gating the whole module (not just the
-// test) keeps `use super::*` from being an unused import under `-D warnings` on Windows, where
-// `sample()`/`peak_rss()` return `None` and there is nothing to assert.
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -115,8 +106,6 @@ mod tests {
     #[test]
     fn sample_reports_nonzero_rss_on_unix() {
         let s = sample();
-        // A live process always has some resident memory; both readers should succeed on the
-        // Unix CI platforms (macOS + Linux).
         let current = s.current_bytes.expect("current RSS should be readable on unix");
         assert!(current > 0, "current RSS must be positive, got {current}");
         let peak = s.peak_bytes.expect("peak RSS should be readable on unix");

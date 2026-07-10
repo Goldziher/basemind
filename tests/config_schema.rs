@@ -13,19 +13,12 @@ fn generate_schema_text() -> String {
     s
 }
 
-// Schemars top-level property order is sensitive to the dep graph (xberg's
-// own schemars types shift the visit order). Pin the snapshot check to the
-// `full` feature set — that's the maximal config surface and the version we
-// publish on the website. Other matrix points still exercise the test crate;
-// they just skip this single assertion.
 #[cfg(feature = "full")]
 #[test]
 fn schema_snapshot_matches_derived() {
     let derived = generate_schema_text();
     let committed = std::fs::read_to_string(SCHEMA_PATH).expect("read committed schema");
     if derived != committed {
-        // Print a short head-and-tail diff so the assertion message is useful
-        // without flooding the console.
         let derived_lines: Vec<&str> = derived.lines().collect();
         let committed_lines: Vec<&str> = committed.lines().collect();
         eprintln!("--- committed (head) ---");
@@ -112,8 +105,6 @@ fn precedence_env_wins_when_no_cli() {
 #[test]
 fn defaults_layer_yields_default_provenance() {
     let loaded = config::defaults_only();
-    // Every leaf in the documents tree should be marked Default when no layers
-    // are applied.
     assert_eq!(
         loaded.provenance.get("documents.reranker.preset"),
         Some(&ConfigSource::Default)
@@ -180,7 +171,6 @@ fn minimal_valid_config_parses() {
 "#;
     let cfg = config::parse_str(toml).expect("must parse");
     assert_eq!(cfg.schema, "v1");
-    // Defaults applied.
     assert!(cfg.scan.respect_gitignore);
     assert!(!cfg.scan.include.is_empty());
 }

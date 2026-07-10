@@ -1,25 +1,10 @@
 #!/usr/bin/env bash
-# Mirror the canonical skills + slash commands into every NON-Claude plugin tree.
-#
-# Layout model (per each harness's plugin schema):
-#   - Claude Code: the plugin root IS the repo root (marketplace.json `source: "./"`),
-#     so its components live at the repo root — `skills/` and `commands/` — and the
-#     `.claude-plugin/` directory holds ONLY the manifests (plugin.json,
-#     marketplace.json) + statusline.sh. Claude IGNORES component dirs nested inside
-#     `.claude-plugin/`. We therefore treat the repo-root `skills/` + `commands/` as
-#     canonical and do NOT copy anything into `.claude-plugin/`.
-#   - Codex / Cursor / OpenCode: each `<harness>-plugin/` directory is itself the
-#     plugin root, so those trees get their own `skills/` + `commands/` copies.
-#
-# Idempotent. Run via the prek hook `sync-plugin-skills` or manually:
-#   bash scripts/sync-plugin-skills.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Canonical skills (per-skill SKILL.md) mirrored into every non-Claude tree.
 SKILLS=(
 	"basemind"
 	"basemind-cli"
@@ -31,17 +16,12 @@ SKILLS=(
 	"basemind-scan"
 	"basemind-stats"
 )
-# Canonical slash commands mirrored into every non-Claude tree.
 COMMANDS=(
 	"bm"
 	"bm-doctor"
 	"bm-scan"
 	"bm-stats"
 )
-# Canonical agent-comms hook scripts. These are identical across the harness trees that consume
-# `hooks/` (Codex, Cursor) — only each tree's hand-authored `hooks.json` differs (per-harness
-# root env var + event contract), so we sync the scripts but NEVER the manifest. Gemini reads the
-# repo-root `hooks/` directly (extension root == repo root); opencode uses `basemind.js` instead.
 HOOK_SCRIPTS=(
 	"session-start"
 	"inbox-notify"
@@ -61,19 +41,12 @@ for cmd in "${COMMANDS[@]}"; do
 	}
 done
 
-# Plugin trees whose root is their own directory (NOT the repo root). Claude is
-# excluded on purpose — it consumes the repo-root skills/ + commands/ directly.
-# `pip-package/basemind` is the Hermes plugin tree: the skills/commands are bundled into
-# the wheel (see pyproject package-data) and surfaced by basemind/hermes.py; like opencode
-# it drives comms from code, so it gets NO hook-script copies.
 TREES=(
 	".codex-plugin"
 	".cursor-plugin"
 	"opencode-plugin"
 	"pip-package/basemind"
 )
-# Subset of TREES that consume the shared `hooks/` scripts (Codex + Cursor). opencode drives
-# comms from `basemind.js`, so it gets no hook-script copies.
 HOOK_TREES=(
 	".codex-plugin"
 	".cursor-plugin"
@@ -91,8 +64,6 @@ for tree in "${TREES[@]}"; do
 	printf 'sync-plugin-skills: %s ← skills + commands\n' "$tree"
 done
 
-# Mirror the canonical hook scripts (preserving the executable bit) into the hook-consuming
-# trees. Each tree keeps its OWN hooks.json (different root env var / event contract).
 for tree in "${HOOK_TREES[@]}"; do
 	mkdir -p "$tree/hooks"
 	for script in "${HOOK_SCRIPTS[@]}"; do

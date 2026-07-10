@@ -11,8 +11,6 @@ use super::{
 use crate::index::keys::memory_by_key;
 use crate::path::RelPath;
 
-// ── Fixture helpers ──────────────────────────────────────────────────────
-
 /// Scan a single Rust file and return `(TempDir, Store, MapCache)`.
 fn scanned_fixture(rel_path: &str, src: &[u8]) -> (tempfile::TempDir, crate::store::Store, MapCache) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -50,8 +48,6 @@ fn bare_record() -> MemoryRecord {
 fn encode(record: &MemoryRecord) -> Vec<u8> {
     rmp_serde::to_vec_named(record).expect("encode")
 }
-
-// ── T1: audit_one_record branch coverage ─────────────────────────────────
 
 #[test]
 fn should_return_unverified_when_provenance_is_empty() {
@@ -183,7 +179,6 @@ fn should_return_stale_when_symbol_body_changed() {
     let _ = crate::lang::ensure_grammars().expect("grammars");
     let original_hash = structural_hash_of_alpha(root, original_src);
 
-    // Scan the semantically edited body.
     std::fs::write(root.join("a.rs"), edited_src).expect("write edited");
     let cfg = crate::config::default_for_root(root);
     let mut store = crate::store::Store::open(root, crate::store::VIEW_WORKING).expect("open");
@@ -196,7 +191,6 @@ fn should_return_stale_when_symbol_body_changed() {
     )
     .expect("scan");
     let cache = MapCache::build(&store);
-    // Stored hash was for original body; disk now has edited body.
     let record = MemoryRecord {
         provenance: Provenance {
             symbols: vec![SymbolRef {
@@ -225,7 +219,6 @@ fn should_return_stale_when_symbol_body_changed() {
 #[test]
 fn should_remain_verified_after_formatting_only_edit() {
     let original_src = b"pub fn alpha() { let x = 1; x }\n";
-    // Extra spaces + comment — structurally identical to the original.
     let formatted_src = b"pub fn alpha() {\n    // formatting\n    let x = 1;\n    x\n}\n";
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -269,7 +262,6 @@ fn should_remain_verified_after_formatting_only_edit() {
 
 #[test]
 fn should_not_set_stale_for_command_with_missing_path() {
-    // `cargo` is not a tracked path → commands-only provenance → Unverified, not Stale.
     let (_dir, store, cache) = scanned_fixture("a.rs", b"pub fn alpha() {}\n");
     let record = MemoryRecord {
         provenance: Provenance {
@@ -279,15 +271,12 @@ fn should_not_set_stale_for_command_with_missing_path() {
         ..bare_record()
     };
     let verdict = audit_one_record(&cache, &store, _dir.path(), &record);
-    // Only commands → Unverified (not Stale).
     assert_eq!(
         verdict.state,
         VerifyState::Unverified,
         "commands-only provenance must yield Unverified, not Stale"
     );
 }
-
-// ── T2: evaluate_one branch coverage ─────────────────────────────────────
 
 fn stale_record_via_deleted_file(importance: f32, last_verified: i64) -> MemoryRecord {
     MemoryRecord {
@@ -304,8 +293,7 @@ fn stale_record_via_deleted_file(importance: f32, last_verified: i64) -> MemoryR
 #[test]
 fn should_archive_stale_record_exceeding_archive_threshold() {
     let (_dir, store, cache) = scanned_fixture("a.rs", b"pub fn alpha() {}\n");
-    let now: i64 = 1_000_000_000_000_000; // a large fixed µs timestamp
-    // last_verified is far enough in the past that (now - last_verified) > ARCHIVE_AFTER_MICROS
+    let now: i64 = 1_000_000_000_000_000;
     let stale_since = now - ARCHIVE_AFTER_MICROS - 1;
     let record = stale_record_via_deleted_file(1.0, stale_since);
     let raw = encode(&record);
@@ -334,7 +322,6 @@ fn should_archive_stale_record_exceeding_archive_threshold() {
 fn should_decay_importance_but_not_archive_recently_stale_record() {
     let (_dir, store, cache) = scanned_fixture("a.rs", b"pub fn alpha() {}\n");
     let now: i64 = 1_000_000_000_000_000;
-    // last_verified is 1 µs ago — well within the archive threshold.
     let record = stale_record_via_deleted_file(1.0, now - 1);
     let raw = encode(&record);
 
@@ -373,7 +360,6 @@ fn should_not_mutate_record_when_dry_run_is_true() {
         audit_result,
     } = evaluate_one(&ctx, "k", &raw, false).expect("evaluate_one returned None");
 
-    // dry_run → importance unchanged, verified/last_verified not updated, not archived.
     assert_eq!(out.importance, 1.0, "dry_run must not decay importance");
     assert_eq!(
         out.verified,
@@ -382,7 +368,6 @@ fn should_not_mutate_record_when_dry_run_is_true() {
     );
     assert_eq!(out.last_verified, 0, "dry_run must not update last_verified");
     assert!(!audit_result.archived, "dry_run must not archive");
-    // But the state string in audit_result still reflects the computed verdict.
     assert_eq!(audit_result.state, "stale");
 }
 
@@ -405,18 +390,10 @@ fn should_not_mutate_record_when_from_archive_is_true() {
         audit_result,
     } = evaluate_one(&ctx, "k", &raw, true).expect("evaluate_one returned None");
 
-    // from_archive → no mutations.
     assert_eq!(out.importance, 1.0, "from_archive must not decay importance");
     assert!(!audit_result.archived, "from_archive path must never set archived");
     assert_eq!(audit_result.state, "stale");
 }
-
-// ── T3: audit_scope_persist — the background rescan pass, end-to-end ──────────
-//
-// These seed crafted `MemoryRecord`s straight into Fjall (timestamps + provenance MCP cannot
-// inject), run the real `audit_scope_persist` loop, then read the PERSISTED record back from the
-// index — so they prove the background pass mutated durable state, not just that a fresh audit
-// recomputes a verdict. `now` is a large fixed timestamp so the 90-day arithmetic stays positive.
 
 const NOW: i64 = 1_000_000_000_000_000_000;
 
@@ -446,7 +423,6 @@ fn should_persist_stale_and_decay_via_scope_pass() {
     let idx = store.index_db.as_ref().expect("index_db present");
     let scope = "scope-a";
     let vis = Visibility::Group.vis_byte();
-    // Recently-verified, stale-making record (references a file absent from the scan).
     let mut record = stale_record_via_deleted_file(1.0, NOW - 1);
     record.verified = VerifyState::Unverified;
     write_live(idx, scope, vis, "", "k1", &record).expect("seed live record");
@@ -473,7 +449,6 @@ fn should_archive_via_scope_pass_when_stale_over_90_days() {
     let idx = store.index_db.as_ref().expect("index_db present");
     let scope = "scope-a";
     let vis = Visibility::Group.vis_byte();
-    // Continuously stale for > 90 days → must be archived out of the live keyspace.
     let mut record = stale_record_via_deleted_file(1.0, NOW - ARCHIVE_AFTER_MICROS - 1);
     record.verified = VerifyState::Unverified;
     write_live(idx, scope, vis, "", "k2", &record).expect("seed live record");
@@ -500,18 +475,15 @@ fn should_not_touch_foreign_scope_record() {
     let (dir, store, cache) = scanned_fixture("a.rs", b"pub fn alpha() {}\n");
     let idx = store.index_db.as_ref().expect("index_db present");
     let vis = Visibility::Group.vis_byte();
-    // Two identical stale-making records: one in the audited scope, one in a foreign scope.
     let mut local = stale_record_via_deleted_file(1.0, NOW - 1);
     local.verified = VerifyState::Unverified;
     let foreign = local.clone();
     write_live(idx, "scope-a", vis, "", "kl", &local).expect("seed local record");
     write_live(idx, "scope-other", vis, "", "kf", &foreign).expect("seed foreign record");
 
-    // Run the pass for scope-a only; the scope-prefix scan must never reach scope-other.
     let ctx = persist_ctx(&cache, &store, dir.path());
     audit_scope_persist(idx, &ctx, "scope-a", 100);
 
-    // The local record proves the pass actually ran (flipped Stale + decayed)...
     let local_after = read_live(idx, "scope-a", vis, "", "kl").expect("local record must be live");
     assert_eq!(
         local_after.verified,
@@ -520,7 +492,6 @@ fn should_not_touch_foreign_scope_record() {
     );
     assert_eq!(local_after.importance, 1.0 * STALE_DECAY);
 
-    // ...while the foreign-scope record is left completely untouched.
     let untouched = read_live(idx, "scope-other", vis, "", "kf").expect("foreign record must remain live");
     assert_eq!(
         untouched.verified,

@@ -79,10 +79,6 @@ pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -
             }
         }
         CacheCmd::Clear { component } => {
-            // `views:<name>` clears a single view, leaving the others + shared blobs intact
-            // (bug #22 — `--component views` removes ALL views). Offline + lock-free like the
-            // other components; clearing a view a running server is serving will break that
-            // server's open handle, same caveat as `--component views`.
             let value = if let Some(name) = component.strip_prefix("views:") {
                 store_gc::clear_single_view(&basemind_dir, name)
                     .with_context(|| format!("clear single view {name}"))?;

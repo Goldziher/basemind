@@ -109,10 +109,6 @@ impl CommsStore {
             path: dir.clone(),
             source,
         })?;
-        // Open ONCE and read the schema version through the handle we keep, rather than a throwaway
-        // peek-open before the real open — the same single-open shape adopted for the code-map index
-        // (`crate::index::IndexDb::open`), which halves the Fjall-lock acquisition window. Only the
-        // rare schema-mismatch path reopens.
         let mut db = Database::builder(&dir).open()?;
         let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta
@@ -120,7 +116,6 @@ impl CommsStore {
             .and_then(|bytes| <[u8; 4]>::try_from(&bytes[..]).ok())
             .map(u32::from_be_bytes);
         if matches!(on_disk_ver, Some(ver) if ver != COMMS_SCHEMA_VER) {
-            // Schema drifted: drop the handle so Fjall releases its directory lock, wipe, reopen.
             drop(meta);
             drop(db);
             std::fs::remove_dir_all(&dir).map_err(|source| CommsStoreError::Io {
@@ -158,8 +153,6 @@ impl CommsStore {
         })
     }
 
-    // ─── rooms ────────────────────────────────────────────────────────────────────────────
-
     /// Insert or replace a room record.
     pub fn put_room(&self, room: &Room) -> Result<(), CommsStoreError> {
         let bytes = rmp_serde::to_vec_named(room)?;
@@ -185,8 +178,6 @@ impl CommsStore {
         Ok(out)
     }
 
-    // ─── agents ───────────────────────────────────────────────────────────────────────────
-
     /// Insert or replace an agent record.
     pub fn put_agent(&self, agent: &AgentRecord) -> Result<(), CommsStoreError> {
         let bytes = rmp_serde::to_vec_named(agent)?;
@@ -211,8 +202,6 @@ impl CommsStore {
         }
         Ok(out)
     }
-
-    // ─── sessions (terminal-session lineage) ──────────────────────────────────────────────
 
     /// Insert or replace a session lineage record, keyed by its `session_id`.
     pub fn put_session(&self, lineage: &SessionLineage) -> Result<(), CommsStoreError> {
@@ -246,8 +235,6 @@ impl CommsStore {
         self.sessions.remove(keys::session_key(session_id))?;
         Ok(())
     }
-
-    // ─── subscriptions ────────────────────────────────────────────────────────────────────
 
     /// Subscribe an agent to a room (idempotent).
     pub fn subscribe(&self, sub: &Subscription) -> Result<(), CommsStoreError> {
@@ -294,8 +281,6 @@ impl CommsStore {
         }
         Ok(out)
     }
-
-    // ─── messages ─────────────────────────────────────────────────────────────────────────
 
     /// Read the current `seq` counter for a room (0 if unset). Single-writer, so the
     /// read-modify-write in [`post`](Self::post) needs no CAS; the bumped value is staged into
@@ -456,8 +441,6 @@ impl CommsStore {
         Ok(out)
     }
 
-    // ─── read cursors (per agent, per room) ───────────────────────────────────────────────
-
     /// The agent's last-read `seq` for a room (0 when never read).
     pub fn read_cursor(&self, agent: &AgentId, room: &RoomId) -> Result<u64, CommsStoreError> {
         let key = keys::cursor_key(agent.as_str(), room.as_str());
@@ -602,14 +585,11 @@ mod tests {
         assert_eq!(page.messages.len(), 1);
         let (got_seq, got) = &page.messages[0];
         assert_eq!(*got_seq, 1, "history pairs each record with its per-room seq");
-        // History returns the front-matter, including the body length + hash, but NOT the
-        // body itself — `MessageMeta` has no body field.
         assert_eq!(got.id, "m-1");
         assert_eq!(got.subject, "subj");
         assert_eq!(got.body_len as usize, body.len());
         assert_eq!(got.body_sha, body_hash_hex(&body));
 
-        // The body is fetched only on demand, from the separate keyspace.
         let fetched = store.get_body("m-1").expect("get_body");
         assert_eq!(fetched.as_deref(), Some(body.as_slice()));
         assert_eq!(store.get_body("nope").expect("get_body"), None);
@@ -667,11 +647,9 @@ mod tests {
             assert_eq!(post(&store, "m-1"), 1);
             assert_eq!(post(&store, "m-2"), 2);
         }
-        // Reopen: the next seq must continue from the persisted counter, not restart at 1.
         {
             let store = CommsStore::open(dir.path()).expect("reopen");
             assert_eq!(post(&store, "m-3"), 3, "seq must continue past reopen");
-            // All three messages survive with no overwrite.
             let page = store.history(&room, 0, 10).expect("history");
             assert_eq!(page.messages.len(), 3, "no message lost or overwritten");
             let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
@@ -683,7 +661,6 @@ mod tests {
     fn prune_expired_deletes_old_messages_and_bodies_but_keeps_recent() {
         let (_d, store) = temp_store();
         let room = room_id("room-1");
-        // Post one stale message (ts far in the past) and one fresh one.
         let stale_body = b"stale".to_vec();
         let mut stale = build_meta(
             "old".to_string(),
@@ -695,7 +672,6 @@ mod tests {
             vec![],
             &stale_body,
         );
-        // Backdate well beyond any sane TTL (10 days in micros).
         stale.ts_micros = now_micros() - 10 * 24 * 60 * 60 * 1_000_000;
         store.post(&room, stale, MessageBody(stale_body)).expect("post stale");
         let fresh_body = b"fresh".to_vec();
@@ -711,7 +687,6 @@ mod tests {
         );
         store.post(&room, fresh, MessageBody(fresh_body)).expect("post fresh");
 
-        // Prune with a 1-day TTL: the 10-day-old message goes, the fresh one stays.
         let pruned = store
             .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
             .expect("prune");
@@ -720,14 +695,12 @@ mod tests {
         let page = store.history(&room, 0, 10).expect("history");
         let ids: Vec<&str> = page.messages.iter().map(|(_, m)| m.id.as_str()).collect();
         assert_eq!(ids, ["new"], "only the fresh message survives");
-        // The stale body is gone; the fresh body remains.
         assert_eq!(store.get_body("old").expect("get_body"), None);
         assert_eq!(
             store.get_body("new").expect("get_body").as_deref(),
             Some(b"fresh".as_slice())
         );
 
-        // Idempotent: a second prune with everything fresh removes nothing.
         assert_eq!(
             store
                 .prune_expired(std::time::Duration::from_secs(24 * 60 * 60))
@@ -762,7 +735,6 @@ mod tests {
         assert_eq!(store.read_cursor(&agent, &room).expect("read"), 0);
         store.set_read_cursor(&agent, &room, 5).expect("set");
         assert_eq!(store.read_cursor(&agent, &room).expect("read"), 5);
-        // Moving backward is a no-op.
         store.set_read_cursor(&agent, &room, 3).expect("set");
         assert_eq!(store.read_cursor(&agent, &room).expect("read"), 5);
     }
@@ -790,7 +762,6 @@ mod tests {
         let _s_a2 = mk(&store, &room_a, "m-a2");
         let s_b1 = mk(&store, &room_b, "m-b1");
 
-        // Batch resolver groups across rooms; unknown ids are dropped.
         let mut got = store
             .resolve_ids(&["m-a1".to_string(), "m-b1".to_string(), "ghost".to_string()])
             .expect("resolve_ids");
@@ -802,7 +773,6 @@ mod tests {
                 ("m-b1".to_string(), room_b.clone(), s_b1),
             ]
         );
-        // Empty input short-circuits to an empty result with no scan.
         assert!(store.resolve_ids(&[]).expect("resolve_ids").is_empty());
     }
 
@@ -821,7 +791,6 @@ mod tests {
         store.put_session(&lineage).expect("put");
         assert_eq!(store.get_session("sess-abc").expect("get"), Some(lineage.clone()));
 
-        // A second, parentless session lists alongside the first.
         let orphan = SessionLineage {
             session_id: "sess-def".to_string(),
             parent_agent: None,

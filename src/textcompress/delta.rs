@@ -82,7 +82,6 @@ pub fn delta(old: &str, new: &str) -> DeltaOutcome {
         };
     }
 
-    // Bail BEFORE building the O(n*m) table on pathological inputs.
     if old.len() > MAX_DELTA_BYTES
         || new.len() > MAX_DELTA_BYTES
         || old_line_count > MAX_DELTA_LINES
@@ -148,7 +147,6 @@ fn lcs_diff<'a>(a: &[&'a str], b: &[&'a str]) -> Vec<DiffOp<'a>> {
     let n = a.len();
     let m = b.len();
     let stride = m + 1;
-    // lcs[i * stride + j] = LCS length of a[i..] and b[j..].
     let mut lcs = vec![0u32; (n + 1) * stride];
     for i in (0..n).rev() {
         for j in (0..m).rev() {
@@ -204,8 +202,6 @@ mod tests {
 
     #[test]
     fn changed_lines_emit_correct_counts_and_only_changed_lines() {
-        // Common: alpha, gamma, delta. Changed: beta -> beta2 (1 del + 1 add),
-        // and a new line "epsilon" appended (1 add).
         let old = "alpha\nbeta\ngamma\ndelta\n";
         let new = "alpha\nbeta2\ngamma\ndelta\nepsilon\n";
         let r = delta(old, new);
@@ -215,11 +211,9 @@ mod tests {
         assert_eq!(r.added, 2, "beta2 + epsilon are the two adds");
         assert_eq!(r.removed, 1, "beta is the single deletion");
 
-        // Header carries the exact summary.
         let mut lines = r.output.lines();
         assert_eq!(lines.next(), Some("+2/-1"));
 
-        // Only the changed lines appear — common lines are omitted.
         assert!(r.output.contains("-beta"));
         assert!(r.output.contains("+beta2"));
         assert!(r.output.contains("+epsilon"));
@@ -262,7 +256,6 @@ mod tests {
 
     #[test]
     fn oversize_line_count_bails_with_full_content() {
-        // 2_001 lines on the new side trips MAX_DELTA_LINES; no LCS runs.
         let old = "seed\n";
         let mut new = String::new();
         for n in 0..(MAX_DELTA_LINES + 1) {
@@ -279,7 +272,6 @@ mod tests {
             "bail output must lead with the marker: {}",
             &r.output[..r.output.len().min(80)]
         );
-        // The full NEW content follows the marker verbatim.
         assert!(r.output.contains("line 0"));
         assert!(r.output.contains(&format!("line {}", MAX_DELTA_LINES)));
         assert_eq!(r.output, format!("{BAIL_MARKER}\n{new}"));
@@ -287,7 +279,6 @@ mod tests {
 
     #[test]
     fn oversize_byte_count_bails() {
-        // A handful of lines, but one is huge — trips MAX_DELTA_BYTES, not lines.
         let old = "small\n";
         let new = format!("{}\n", "x".repeat(MAX_DELTA_BYTES + 1));
         let r = delta(old, &new);
@@ -298,14 +289,12 @@ mod tests {
 
     #[test]
     fn at_line_limit_does_not_bail() {
-        // Exactly MAX_DELTA_LINES lines is within budget (guard is strictly `>`).
         let mut old = String::new();
         let mut new = String::new();
         for n in 0..MAX_DELTA_LINES {
             old.push_str(&format!("line {n}\n"));
             new.push_str(&format!("line {n}\n"));
         }
-        // Mutate one line so it counts as changed without adding a line.
         let new = new.replacen("line 0\n", "line 0 edited\n", 1);
         let r = delta(&old, &new);
         assert!(!r.bailed, "exactly at the line limit must not bail");

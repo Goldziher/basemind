@@ -26,8 +26,6 @@ pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
-    // The queried file's source maps the input line/column to a byte offset (and, for a same-file
-    // definition, the target offset back to line/column).
     let abs = state.root.join(params.path.to_path_buf());
     let source = std::fs::read(&abs)
         .map_err(|e| McpError::invalid_params(format!("goto_definition: read {}: {e}", params.path), None))?;
@@ -42,10 +40,6 @@ pub(super) async fn run_goto_definition(
         )
     })?;
 
-    // Resolve under one store guard. Prefer the in-file edge; then follow a cross-file hop when that
-    // in-file definition (e.g. an import binding) resolves across modules. With no in-file edge,
-    // consult `refs_by_path` directly — the caller may be pointing at an import binding whose target
-    // is only recorded cross-file (exact identifier-start byte, since that partition is not spanned).
     let resolved: Option<(RelPath, u32)> = {
         let store = state.store.read().await;
         let Some(entry) = store.lookup(&params.path) else {
@@ -54,8 +48,6 @@ pub(super) async fn run_goto_definition(
                 None,
             ));
         };
-        // Blob read is best-effort: a stale-schema or unreadable blob degrades to "no in-file edge"
-        // (the next scan refreshes it), not a hard error.
         let refs = store.read_resolved_by_hex(&entry.hash_hex).unwrap_or_else(|error| {
             tracing::debug!(path = %params.path, %error, "goto_definition: resolution blob unreadable — treating as no in-file edge");
             None
@@ -144,8 +136,6 @@ fn line_col_to_offset(source: &[u8], line: u32, column: u32) -> Option<u32> {
         line_start = cursor;
         current += 1;
     }
-    // Bound the column against THIS line's end (next newline or EOF), not the whole file, so a
-    // column past the line end returns None instead of an offset inside a later line.
     let line_end = match memchr::memchr(b'\n', &source[line_start..]) {
         Some(rel) => line_start + rel,
         None => source.len(),
@@ -188,31 +178,23 @@ mod tests {
     #[test]
     fn line_col_to_offset_maps_positions() {
         let src = b"const count = 1;\nreturn count;\n";
-        // line 1, col 6 → the `count` in the declaration.
         assert_eq!(line_col_to_offset(src, 1, 6), Some(6));
-        // line 2, col 7 → the `count` use (offset of the second `count`).
         let second = (src.iter().position(|&b| b == b'\n').unwrap() + 1 + "return ".len()) as u32;
         assert_eq!(line_col_to_offset(src, 2, 7), Some(second));
-        // line past EOF → None.
         assert_eq!(line_col_to_offset(src, 9, 0), None);
-        // Column past the line's end must NOT spill into the next line — line 1 is 16 chars.
         assert_eq!(
             line_col_to_offset(src, 1, 17),
             None,
             "col past EOL must be None, not next line"
         );
-        // Column exactly at the newline position (line end) is still in-bounds.
         assert_eq!(line_col_to_offset(src, 1, 16), Some(16));
     }
 
     #[test]
     fn identifier_at_reads_the_token() {
         let src = b"const count = 1;";
-        // Start of `count` → the whole identifier, extended past the indexed start byte.
         assert_eq!(identifier_at(src, 6), "count");
-        // `$`/`_` are identifier bytes; digits mid-token are fine.
         assert_eq!(identifier_at(b"let a_1$ = 2;", 4), "a_1$");
-        // Not an identifier start (whitespace) or out of range → empty.
         assert_eq!(identifier_at(src, 5), "");
         assert_eq!(identifier_at(src, 999), "");
     }
@@ -223,7 +205,6 @@ mod tests {
         assert_eq!(offset_to_line_col(src, 0), (1, 0));
         assert_eq!(offset_to_line_col(src, 2), (2, 0));
         assert_eq!(offset_to_line_col(src, 5), (3, 0));
-        // Clamps past EOF rather than panicking.
         assert_eq!(offset_to_line_col(src, 999), (3, 3));
     }
 
@@ -235,7 +216,6 @@ mod tests {
             def_start: 0,
             def_end: 0,
         };
-        // Zero-width (locals) span matches only the exact start byte.
         assert!(containing_edge(std::slice::from_ref(&zero_width), 10).is_some());
         assert!(containing_edge(std::slice::from_ref(&zero_width), 11).is_none());
 
@@ -245,7 +225,6 @@ mod tests {
             def_start: 0,
             def_end: 5,
         };
-        // Real (oxc) span matches any byte inside the identifier, not its end.
         assert!(containing_edge(std::slice::from_ref(&spanned), 20).is_some());
         assert!(containing_edge(std::slice::from_ref(&spanned), 24).is_some());
         assert!(containing_edge(std::slice::from_ref(&spanned), 25).is_none());

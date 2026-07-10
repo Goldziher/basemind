@@ -82,9 +82,6 @@ pub(super) fn encode(value: &Value) -> String {
 /// JSON on their own line so the envelope stays lossless.
 fn encode_envelope(map: &serde_json::Map<String, Value>) -> String {
     let mut lines: Vec<String> = Vec::with_capacity(map.len());
-    // Iterate keys in sorted order so the output is deterministic regardless of whether
-    // `serde_json`'s `preserve_order` feature is active in the dependency graph (it is pulled
-    // transitively by the lancedb/arrow stack). Sorting here keeps TOON byte-stable for agents.
     let mut keys: Vec<&String> = map.keys().collect();
     keys.sort_unstable();
     for key in keys {
@@ -211,7 +208,6 @@ fn needs_quote(s: &str) -> bool {
     if s.starts_with(' ') || s.ends_with(' ') {
         return true;
     }
-    // Leading char that would re-parse as bool / null / number / a quoted string.
     matches!(s, "true" | "false" | "null")
         || s.starts_with(['"', '-', '+'])
         || s.chars().next().is_some_and(|c| c.is_ascii_digit())
@@ -243,10 +239,6 @@ mod tests {
     }
 
     // NOTE: the encoder sorts envelope keys and table columns explicitly (see `encode_envelope`
-    // / `table_parts`), so the output is alphabetically sorted and deterministic regardless of
-    // whether `serde_json`'s `preserve_order` feature is active in the dependency graph (it is,
-    // transitively, via the lancedb/arrow stack). That is valid TOON — the header names the
-    // columns — so the exact-output tests below assert the sorted form.
     #[test]
     fn encodes_uniform_array_as_exact_table() {
         let value = json!([
@@ -278,14 +270,11 @@ mod tests {
     fn empty_array_field_renders_as_json_fallback() {
         let value = json!({ "total": 0, "results": [] });
         let toon = encode(&value);
-        // An empty array is not a uniform array of objects, so it falls back to compact JSON.
-        // Fields sort alphabetically: `results` before `total`.
         assert_eq!(toon, "results: []\ntotal: 0");
     }
 
     #[test]
     fn non_uniform_array_falls_back_to_json() {
-        // Ragged key sets — second object is missing `line`.
         let value = json!([
             { "path": "a.rs", "line": 1 },
             { "path": "b.rs" },
@@ -305,13 +294,11 @@ mod tests {
     fn cells_with_delimiters_are_quoted() {
         let value = json!([{ "sig": "fn f(a, b)", "name": "f" }]);
         let toon = encode(&value);
-        // Columns sort alphabetically: `name` before `sig`.
         assert_eq!(toon, "[1]{name,sig}:\nf,\"fn f(a, b)\"");
     }
 
     #[test]
     fn toon_is_smaller_than_json_for_list_payload() {
-        // A representative `search_symbols`-style envelope with several hits.
         let value = json!({
             "total": 4,
             "truncated": false,

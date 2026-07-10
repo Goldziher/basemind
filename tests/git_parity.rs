@@ -93,20 +93,16 @@ fn author_search_matches_real_git_at_full_depth() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let (index, head) = build_index(&repo, scratch.path());
 
-    // Pick a real author deep in history: the author of the 250th commit back (well outside any
-    // recent window). Falls back to the tip's author on a shallow repo. Pinned to the index head.
     let deep = git_one(&repo, &["log", &head, "--format=%an", "-1", "--skip=250"])
         .or_else(|| git_one(&repo, &["log", &head, "--format=%an", "-1"]))
         .expect("at least one commit");
     eprintln!("git_parity: author under test = {deep:?}");
 
-    // Oracle: git's own case-insensitive author search over the pinned head's history.
     let git_shas = git_lines(&repo, &["log", &head, "-i", &format!("--author={deep}"), "--format=%H"]);
     assert!(!git_shas.is_empty(), "git found no commits for {deep:?}");
     let git_newest = &git_shas[0];
     let git_set: std::collections::HashSet<&String> = git_shas.iter().collect();
 
-    // Index: full-depth author search, newest-first.
     let hits = index.search_commits(&deep, FtsScope::Author, 0, 5000);
     assert!(
         !hits.is_empty(),
@@ -114,14 +110,11 @@ fn author_search_matches_real_git_at_full_depth() {
         git_shas.len()
     );
 
-    // 1. The newest hit is the author's most recent commit — the "what did <author> do last" answer.
     assert_eq!(
         &hits[0].sha, git_newest,
         "index newest author commit must equal `git log -i --author` newest"
     );
 
-    // 2. No false positives: every indexed hit is a real reachable commit by that author.
-    //    (git's `--author` is a substring/regex match; token-AND is a subset of it, so ⊆ must hold.)
     for h in &hits {
         assert!(
             git_set.contains(&h.sha),
@@ -146,7 +139,6 @@ fn recent_and_path_history_match_real_git() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let (index, head) = build_index(&repo, scratch.path());
 
-    // recent_changes parity: newest 50 commits, newest-first, pinned to the index head.
     let git_recent = git_lines(&repo, &["log", &head, "--format=%H", "-50"]);
     let idx_recent: Vec<String> = index
         .recent_commits(0, git_recent.len(), false)
@@ -158,7 +150,6 @@ fn recent_and_path_history_match_real_git() {
         "recent_commits must match `git log <head>` newest-first, exactly"
     );
 
-    // commits_touching parity for a real tracked path: use a file changed in the head commit.
     if let Some(path) = git_one(&repo, &["show", "--format=", "--name-only", &head]) {
         let git_touch = git_lines(&repo, &["log", &head, "--full-history", "--format=%H", "--", &path]);
         let idx_touch: Vec<String> = index

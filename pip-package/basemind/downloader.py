@@ -64,7 +64,6 @@ def _platform_triple() -> str:
         if machine in {"aarch64", "arm64"}:
             return "aarch64-unknown-linux-gnu"
     elif system == "darwin":
-        # Apple Silicon (incl. under Rosetta) → native arm64; genuine Intel → x86_64.
         return "aarch64-apple-darwin" if _is_apple_silicon(machine) else "x86_64-apple-darwin"
 
     raise RuntimeError(f"Unsupported platform: {system} {machine}")
@@ -92,7 +91,6 @@ def _asset(version: str) -> tuple[str, str, str, str]:
 def _is_retryable_error(error: Exception | str) -> bool:
     """Check if an error is transient and worth retrying."""
     error_str = str(error).lower()
-    # Retry on network timeouts, connection errors, and HTTP 5xx
     return any(
         substring in error_str
         for substring in [
@@ -114,7 +112,7 @@ def _retry_with_backoff(fn, max_attempts: int = 3, delays: list[int] | None = No
     (404, bad checksum) propagate immediately.
     """
     if delays is None:
-        delays = [1, 2, 4]  # exponential: 1s, 2s, 4s
+        delays = [1, 2, 4]
 
     last_error = None
     for attempt in range(max_attempts):
@@ -132,7 +130,6 @@ def _retry_with_backoff(fn, max_attempts: int = 3, delays: list[int] | None = No
             )
             time.sleep(delay)
 
-    # Should not reach here, but raise last error just in case
     if last_error:
         raise last_error
 
@@ -180,7 +177,6 @@ def _expected_digest(checksums_text: str, asset_name: str) -> str | None:
         parts = stripped.split()
         if len(parts) < 2:
             continue
-        # GNU coreutils binary-mode marks the name with a leading '*'.
         name = parts[-1].lstrip("*")
         if name == asset_name:
             return parts[0].lower()
@@ -249,7 +245,6 @@ def _prune_stale_versions(keep_version: str) -> None:
     for entry in root.iterdir():
         if entry.name == keep_version or not entry.is_dir():
             continue
-        # Only touch version-shaped dirs (leading digit) — never lock/temp siblings.
         if not entry.name[:1].isdigit():
             continue
         shutil.rmtree(entry, ignore_errors=True)
@@ -277,23 +272,16 @@ def ensure_binary():
     archive_url, ext, asset_name, checksums_url = _asset(__version__)
     print(f"Downloading basemind binary v{__version__}...", file=sys.stderr)
 
-    # Atomic install strategy:
-    # 1. Download + extract into a temp directory (not under cache_dir)
-    # 2. Atomically rename the temp extraction into the versioned cache path
-    # 3. Use a simple lock file to serialize concurrent downloads of the same version
     lock_path = cache_dir / ".lock"
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Try to acquire lock via exclusive file creation (atomic, works cross-platform)
     lock_acquired = False
     try:
-        # O_CREAT | O_EXCL: atomic, fails if lock already exists
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         lock_acquired = True
         os.close(lock_fd)
     except FileExistsError:
-        # Another process holds the lock. Wait for it to complete, then check if binary exists.
-        for attempt in range(30):  # Wait up to 30 seconds for the other process
+        for attempt in range(30):
             time.sleep(0.1)
             if binary_path.exists() and os.access(binary_path, os.X_OK):
                 return str(binary_path)
@@ -303,30 +291,21 @@ def ensure_binary():
         )
 
     try:
-        # Double-check: another process may have installed while we were waiting for the lock
         if binary_path.exists() and os.access(binary_path, os.X_OK):
             return str(binary_path)
 
-        # Download and extract into a temporary directory outside the cache
         with tempfile.TemporaryDirectory() as tmpdir:
             archive_path = Path(tmpdir) / asset_name
             _download(archive_url, archive_path)
-            # Fail CLOSED: verify before extracting anything into the cache.
             _verify_checksum(archive_path, asset_name, checksums_url)
 
-            # Extract into a temporary staging directory
             staging_dir = Path(tmpdir) / "staging"
             staging_dir.mkdir()
             _extract(archive_path, ext, staging_dir)
 
-            # Atomic rename: move the staged extraction into the cache.
             try:
                 staging_dir.replace(cache_dir)
             except (OSError, FileExistsError):
-                # cache_dir already exists. Either another process won the race and a
-                # runnable binary is present (use it), or it is a stale/partial dir.
-                # os.replace() cannot overwrite a non-empty directory (raises Errno 66),
-                # so under the lock we hold here, clear the stale dir and retry the move.
                 if not (binary_path.exists() and os.access(binary_path, os.X_OK)):
                     shutil.rmtree(cache_dir, ignore_errors=True)
                     staging_dir.replace(cache_dir)
@@ -339,7 +318,6 @@ def ensure_binary():
         if platform.system().lower() != "windows":
             binary_path.chmod(0o755)
 
-        # New version is installed — reclaim old per-version cache dirs.
         _prune_stale_versions(__version__)
 
         print("Binary downloaded successfully!", file=sys.stderr)
@@ -349,7 +327,7 @@ def ensure_binary():
             try:
                 lock_path.unlink()
             except FileNotFoundError:
-                pass  # Lock already cleaned up, ok
+                pass
 
 
 def run_basemind(args):

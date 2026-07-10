@@ -1,38 +1,12 @@
 #!/usr/bin/env bash
-# basemind statusline — live, responsive, two-line summary.
-#
-# Line 1 (context): model · output-style · dir · branch · context% — reconstructs
-#   the "Claude" context Claude Code's default status line would show, because a
-#   custom statusLine REPLACES the default (it cannot render below it). Toggle off
-#   with BASEMIND_STATUSLINE_CONTEXT=0 for a single basemind line.
-# Line 2 (basemind): index health + per-capability activity (calls, searches, git,
-#   docs, memory, web) + estimated tokens saved.
-#
-# Wire it into Claude Code by running `/bm-statusline` once. That writes a
-# VERSION-INDEPENDENT resolver as the statusLine command so a basemind update never
-# blanks the bar and the newest installed script always runs — it resolves the
-# highest-versioned cache copy (`sort -V`, never mtime, so it tracks the newest
-# version the moment /plugin update installs it), else the marketplace clone, else a
-# one-line hint:
-#
-#   { "statusLine": { "type": "command",
-#       "command": "bash -c 's=$(ls -d \"$HOME\"/.claude/plugins/cache/basemind/basemind/*/.claude-plugin/statusline.sh 2>/dev/null | sort -V | tail -1); [ -f \"$s\" ] || s=\"$HOME/.claude/plugins/marketplaces/basemind/.claude-plugin/statusline.sh\"; [ -f \"$s\" ] && exec bash \"$s\" || printf \"%s\" \"◆ basemind: run /bm-statusline\"'",
-#       "refreshInterval": 5 } }
-#
-# Layout adapts to terminal width via $COLUMNS (Claude Code sets it; needs CC
-# v2.1.153+). Force a tier with BASEMIND_STATUSLINE=full|compact|minimal (default
-# auto). All filesystem reads are bounded so the script stays cheap at
-# refreshInterval: 1. `jq` is required for telemetry/context parsing; the script
-# degrades gracefully when absent.
 
 set -euo pipefail
 
-# ─── Input ─────────────────────────────────────────────────────────────────────
 input="$(cat 2>/dev/null || true)"
 have_jq=0
 command -v jq >/dev/null 2>&1 && have_jq=1
 
-json() { # json <jq-filter> <default>
+json() {
 	local out=""
 	if [[ $have_jq -eq 1 && -n "$input" ]]; then
 		out="$(printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null || true)"
@@ -40,12 +14,7 @@ json() { # json <jq-filter> <default>
 	[[ -n "$out" ]] && printf '%s' "$out" || printf '%s' "$2"
 }
 
-epoch_mtime() { # epoch_mtime <path> → file mtime in seconds since epoch, or 0
-	# GNU coreutils first, then BSD/macOS. Order matters: GNU `stat -f` means
-	# "filesystem status" (and SUCCEEDS with unrelated output), so probing
-	# `-f %m` first on Linux returns a multi-line "File: …" blob that then trips
-	# `set -u` in the arithmetic compares below. Try `-c %Y` (GNU) first so the
-	# `-f %m` (BSD) branch is only reached where `-c` genuinely fails.
+epoch_mtime() {
 	stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
 }
 
@@ -56,7 +25,6 @@ vim_mode="$(json '.vim.mode' '')"
 ctx_pct="$(json '.context_window.used_percentage' '')"
 bm_dir="${cwd}/.basemind"
 
-# ─── Width / tier ──────────────────────────────────────────────────────────────
 cols="${COLUMNS:-0}"
 [[ "$cols" -le 0 ]] && cols="$(tput cols 2>/dev/null || echo 120)"
 [[ -z "$cols" || "$cols" -le 0 ]] && cols=120
@@ -72,20 +40,18 @@ if [[ "$tier" == "auto" ]]; then
 	fi
 fi
 
-# ─── Styling ───────────────────────────────────────────────────────────────────
-brand=$'\033[38;2;249;115;22m' # brand orange
-cyan=$'\033[38;5;51m'          # file count, scan-age, intel
-magenta=$'\033[38;5;201m'      # calls, tokens saved
-green=$'\033[38;5;46m'         # comms: unread messages
-label=$'\033[38;5;255m'        # units / labels
-sep=$'\033[38;5;240m'          # separators
-muted=$'\033[38;5;244m'        # context line text
+brand=$'\033[38;2;249;115;22m'
+cyan=$'\033[38;5;51m'
+magenta=$'\033[38;5;201m'
+green=$'\033[38;5;46m'
+label=$'\033[38;5;255m'
+sep=$'\033[38;5;240m'
+muted=$'\033[38;5;244m'
 bold=$'\033[1m'
 reset=$'\033[0m'
 glyph="◆"
 
-# ─── Formatters ────────────────────────────────────────────────────────────────
-fmt_count() { # 1234 → 1.2k, 14200 → 14k, 1500000 → 1M
+fmt_count() {
 	local n="$1"
 	if [[ "$n" -lt 1000 ]]; then
 		printf '%d' "$n"
@@ -99,8 +65,6 @@ fmt_thousands() {
 	local n="$1"
 	LC_ALL=en_US.UTF-8 printf "%'d" "$n" 2>/dev/null || printf '%d' "$n"
 }
-# Kilobytes → human size (matches `du -h` / the MCP cache_stats units): 900 → 900K,
-# 15360 → 15M, 1572864 → 1.5G. Input is KB (what `du -sk` and `ps -o rss=` report).
 fmt_kb() {
 	local kb="$1"
 	[[ -z "$kb" || "$kb" -le 0 ]] 2>/dev/null && {
@@ -114,14 +78,6 @@ fmt_kb() {
 	else printf '%d.%dG' "$((kb / 1048576))" "$(((kb * 10 / 1048576) % 10))"; fi
 }
 
-# Agent-comms state — prints "<unread> <agent>" or nothing. Cheap and side-effect-free:
-#   * only runs when a comms-capable `basemind` is on PATH (the cargo `--features comms`
-#     build) AND the broker daemon is ALREADY running — never auto-spawns it;
-#   * TTL-cached (8s) per cwd so a tight refreshInterval hits the daemon at most once
-#     per window;
-#   * one bounded `comms inbox --limit 1` call yields the total unread count
-#     (page length + the `unread` remainder); identity comes from the env or the cheap
-#     persisted `.basemind/agent-id` read.
 comms_state() {
 	command -v basemind >/dev/null 2>&1 || return 1
 	command -v pgrep >/dev/null 2>&1 && pgrep -f "comms daemon" >/dev/null 2>&1 || return 1
@@ -148,10 +104,9 @@ comms_state() {
 	printf '%s %s' "$unread" "${agent:-}"
 }
 
-# ─── Line 1: Claude context ────────────────────────────────────────────────────
 build_context_line() {
 	[[ "${BASEMIND_STATUSLINE_CONTEXT:-1}" == "0" ]] && return 1
-	[[ -z "$model" && -z "$out_style" ]] && return 1 # nothing useful to show
+	[[ -z "$model" && -z "$out_style" ]] && return 1
 
 	local dir branch="" head_file parts=()
 	dir="$(basename "$cwd")"
@@ -181,13 +136,8 @@ build_context_line() {
 	printf '%s' "$line"
 }
 
-# ─── Line 2: basemind ──────────────────────────────────────────────────────────
 mark() { printf '%s%s%s %s%sbasemind%s' "$brand" "$glyph" "$reset" "$bold" "$brand" "$reset"; }
 
-# Running basemind version, for display in the bar. Resolved WITHOUT spawning the binary:
-# read the sibling plugin manifest (statusline.sh and plugin.json share `.claude-plugin/`),
-# falling back to the version-named plugin cache dir (…/basemind/<version>/.claude-plugin).
-# Empty when neither is available, or when disabled with BASEMIND_STATUSLINE_VERSION=0.
 bm_version() {
 	[[ "${BASEMIND_STATUSLINE_VERSION:-1}" == "0" ]] && return 0
 	local dir ver="" parent
@@ -203,31 +153,23 @@ bm_version() {
 }
 
 build_basemind_line() {
-	# No index → actionable hint.
 	if [[ ! -d "$bm_dir" ]]; then
 		printf '%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
 			"$(mark)" "$sep" "$reset" "$label" "$reset" "$bold" "$cyan" "$reset"
 		return
 	fi
 	local blobs_dir="${bm_dir}/blobs"
-	# A source file's canonical blob is `<hash>.fm.msgpack` (current, fused L1/L2) or
-	# `<hash>.l1.msgpack` (pre-0.9 split layout, still written by an older serve). Match
-	# either so an index built by ANY basemind version reads as ready — keying only on
-	# `.fm` left indexes from older binaries stuck on "scanning…" forever. `.l2`/`.l3`
-	# are secondary layers, never counted, so the file count stays one-per-source-file.
 	file_blobs() { find "$blobs_dir" -maxdepth 1 -type f \( -name '*.fm.msgpack' -o -name '*.l1.msgpack' \) "$@" 2>/dev/null; }
 	if [[ ! -d "$blobs_dir" ]] || [[ -z "$(file_blobs -print -quit)" ]]; then
 		printf '%s %s│%s %sscanning…%s' "$(mark)" "$sep" "$reset" "$label" "$reset"
 		return
 	fi
 
-	# File count.
 	local file_count
 	file_count="$(file_blobs | wc -l || echo 0)"
 	file_count="${file_count##*[[:space:]]}"
 	[[ -z "$file_count" ]] && file_count=0
 
-	# Scan recency.
 	local scan_age="never" scan_delta=999999999 scan_mtime=0 m now
 	for candidate in "${bm_dir}/views/working/index.msgpack" "${bm_dir}/views/working/index.fjall"; do
 		if [[ -e "$candidate" ]]; then
@@ -247,7 +189,6 @@ build_basemind_line() {
 		else scan_age="$((scan_delta / 86400))d ago"; fi
 	fi
 
-	# Telemetry buckets (today): calls, saved, and per-capability counts.
 	local calls=0 saved=0 code=0 git=0 docs=0 mem=0 web=0 tel_mtime=0
 	local tel_file="${bm_dir}/telemetry.jsonl"
 	if [[ -f "$tel_file" ]]; then
@@ -275,7 +216,6 @@ build_basemind_line() {
 		fi
 	fi
 
-	# Liveness dot.
 	local now2 tel_age dot_color serve_running=0
 	now2="$(date +%s)"
 	tel_age=$((now2 - tel_mtime))
@@ -289,7 +229,6 @@ build_basemind_line() {
 	else dot_color=$'\033[38;5;196m'; fi
 	local dot="${dot_color}●${reset}"
 
-	# Agent-comms: unread count + identity, only when the broker is live.
 	local comms_unread="" comms_agent="" comms_raw
 	comms_raw="$(comms_state 2>/dev/null || true)"
 	if [[ -n "$comms_raw" ]]; then
@@ -298,11 +237,9 @@ build_basemind_line() {
 		[[ "$comms_agent" == "$comms_raw" ]] && comms_agent=""
 	fi
 
-	# Compose by tier.
 	local searches=$((code))
 	local out ver
 	out="$(mark)  ${dot}  "
-	# Running version (full/compact only — the minimal tier is width-starved).
 	if [[ "$tier" != "minimal" ]]; then
 		ver="$(bm_version)"
 		[[ -n "$ver" ]] && out+="${bold}${muted}${ver}${reset}  ${sep}│${reset}  "
@@ -327,7 +264,6 @@ build_basemind_line() {
 	out+="${bold}${magenta}$(fmt_count "$calls")${reset} ${label}calls${reset}"
 
 	if [[ "$tier" == "full" ]]; then
-		# Per-capability breakdown — only buckets with activity.
 		local seg=""
 		[[ "$searches" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$searches")${reset} ${label}srch${reset}"
 		[[ "$git" -gt 0 ]] && seg+=" ${sep}·${reset} ${bold}${magenta}$(fmt_count "$git")${reset} ${label}git${reset}"
@@ -340,9 +276,6 @@ build_basemind_line() {
 	out+="  ${sep}│${reset}  "
 	out+="${bold}${magenta}$(fmt_count "$saved")${reset} ${label}saved${reset}"
 
-	# Resource footprint (full tier only): on-disk `.basemind/` size + live serve-process RSS. Both
-	# are cheap best-effort probes — `du -sk` on the cache dir and `ps` on the serve pid — and are
-	# simply omitted if the tools/values aren't available. Mirrors the MCP/CLI cache_stats surface.
 	if [[ "$tier" == "full" ]]; then
 		local disk_kb="" rss_kb="" res_seg=""
 		res_add() {
@@ -361,7 +294,6 @@ build_basemind_line() {
 		[[ -n "$res_seg" ]] && out+="  ${sep}│${reset}  $res_seg"
 	fi
 
-	# Comms segment: unread (bright when >0, dim at zero) + identity in the full tier.
 	if [[ -n "$comms_unread" ]]; then
 		out+="  ${sep}│${reset}  "
 		if [[ "$comms_unread" -gt 0 ]]; then
@@ -374,7 +306,6 @@ build_basemind_line() {
 	printf '%s' "$out"
 }
 
-# ─── Emit ──────────────────────────────────────────────────────────────────────
 ctx="$(build_context_line || true)"
 bm="$(build_basemind_line)"
 if [[ -n "$ctx" ]]; then

@@ -1,52 +1,12 @@
 #!/usr/bin/env bash
-#
-# sync-to-codex-plugin.sh
-#
-# Sync this basemind checkout → Goldziher/openai-codex-plugins (a fork of
-# openai/plugins, the canonical Codex plugin marketplace). Clones the fork
-# fresh into a temp dir, rsyncs tracked upstream plugin content (the committed
-# Codex manifest under .codex-plugin/ plus the skills/ tree), preserves
-# OpenAI-owned marketplace metadata already in the destination plugin,
-# commits, pushes a sync branch, and opens a PR.
-# Path/user agnostic — auto-detects upstream from script location.
-#
-# Adapted from obra/superpowers scripts/sync-to-codex-plugin.sh.
-#
-# Deterministic: running twice against the same upstream SHA produces PRs with
-# identical diffs, so two back-to-back runs can verify the tool itself.
-#
-# Usage:
-#   ./scripts/sync-to-codex-plugin.sh                              # full run
-#   ./scripts/sync-to-codex-plugin.sh -n                           # dry run
-#   ./scripts/sync-to-codex-plugin.sh -y                           # skip confirm
-#   ./scripts/sync-to-codex-plugin.sh --local PATH                 # existing checkout
-#   ./scripts/sync-to-codex-plugin.sh --base BRANCH                # default: main
-#   ./scripts/sync-to-codex-plugin.sh --bootstrap                  # create plugin dir if missing
-#
-# Bootstrap mode: skips the "plugin must exist on base" requirement and creates
-# plugins/basemind/ when absent, then copies the tracked plugin files from
-# upstream just like a normal sync.
-#
-# Requires: bash, rsync, git, gh (authenticated), python3.
 
 set -euo pipefail
-
-# =============================================================================
-# Config — edit as upstream or canonical plugin shape evolves
-# =============================================================================
 
 FORK="Goldziher/openai-codex-plugins"
 DEFAULT_BASE="main"
 DEST_REL="plugins/basemind"
 
-# Paths in upstream that should NOT land in the embedded plugin.
-# All patterns use a leading "/" to anchor them to the source root.
-# Unanchored patterns like "scripts/" would match any directory named
-# "scripts" at any depth — including legitimate nested dirs like
-# skills/brainstorming/scripts/. Anchoring prevents that.
-# (.DS_Store is intentionally unanchored — Finder creates them everywhere.)
 EXCLUDES=(
-	# Dotfiles and infra — top-level only
 	"/.ai-rulez/"
 	"/.cargo/"
 	"/.claude/"
@@ -70,7 +30,6 @@ EXCLUDES=(
 	"/.worktrees/"
 	".DS_Store"
 
-	# Root ceremony files
 	"/AGENTS.md"
 	"/CHANGELOG.md"
 	"/CLAUDE.md"
@@ -80,7 +39,6 @@ EXCLUDES=(
 	"/gemini-extension.json"
 	"/package.json"
 
-	# basemind build / language artefacts not shipped by a Codex plugin
 	"/Cargo.toml"
 	"/Cargo.lock"
 	"/Taskfile.yaml"
@@ -91,21 +49,12 @@ EXCLUDES=(
 	"/opencode-plugin/"
 	"/pip-package/"
 	"/schema/"
-	# /scripts/ is dropped wholesale EXCEPT mcp-launch.sh — the Codex plugin's
-	# .codex-plugin/.mcp.json execs ${PLUGIN_ROOT}/scripts/mcp-launch.sh, so the
-	# launcher MUST ship for the installed MCP server to start. A matching
-	# --include for the dir node + the launcher is prepended to RSYNC_ARGS below
-	# (rsync evaluates includes before this excludes the rest of the tree).
 	"/scripts/*"
 	"/src/"
 	"/target/"
 	"/tests/"
 	"/tmp/"
 )
-
-# =============================================================================
-# Ignored-path helpers
-# =============================================================================
 
 IGNORED_DIR_EXCLUDES=()
 
@@ -154,10 +103,6 @@ append_git_ignored_file_excludes() {
 	done < <(git -C "$UPSTREAM" ls-files --others --ignored --exclude-standard -z)
 }
 
-# =============================================================================
-# Args
-# =============================================================================
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UPSTREAM="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE="$DEFAULT_BASE"
@@ -201,10 +146,6 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
-# =============================================================================
-# Preflight
-# =============================================================================
-
 die() {
 	echo "ERROR: $*" >&2
 	exit 1
@@ -217,9 +158,6 @@ command -v python3 >/dev/null || die "python3 not found in PATH"
 
 gh auth status >/dev/null 2>&1 || die "gh not authenticated — run 'gh auth login'"
 
-# The destination fork must already exist on GitHub. We fail loudly here so the
-# user gets a one-line "create the fork first" message instead of an opaque
-# `gh repo clone` failure 30 lines down.
 if [[ -z "$LOCAL_CHECKOUT" ]] && ! gh repo view "$FORK" >/dev/null 2>&1; then
 	die "fork '$FORK' does not exist or you cannot access it.
 
@@ -233,7 +171,6 @@ fi
 [[ -d "$UPSTREAM/.git" ]] || die "upstream '$UPSTREAM' is not a git checkout"
 [[ -f "$UPSTREAM/.codex-plugin/plugin.json" ]] || die "committed Codex manifest missing at $UPSTREAM/.codex-plugin/plugin.json"
 
-# Read the upstream version from the committed Codex manifest.
 UPSTREAM_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$UPSTREAM/.codex-plugin/plugin.json")"
 [[ -n "$UPSTREAM_VERSION" ]] || die "could not read 'version' from committed Codex manifest"
 
@@ -241,8 +178,6 @@ UPSTREAM_BRANCH="$(cd "$UPSTREAM" && git branch --show-current)"
 UPSTREAM_SHA="$(cd "$UPSTREAM" && git rev-parse HEAD)"
 UPSTREAM_SHORT="$(cd "$UPSTREAM" && git rev-parse --short HEAD)"
 
-# Derive the upstream repo URL from the origin remote so a fork or rename
-# doesn't silently link the PR back to the wrong place.
 UPSTREAM_REMOTE_RAW="$(cd "$UPSTREAM" && git remote get-url origin 2>/dev/null || true)"
 case "$UPSTREAM_REMOTE_RAW" in
 git@github.com:*) UPSTREAM_URL="https://github.com/${UPSTREAM_REMOTE_RAW#git@github.com:}" ;;
@@ -270,10 +205,6 @@ if [[ -n "$UPSTREAM_STATUS" ]]; then
 	echo "Sync will use working-tree state, not HEAD ($UPSTREAM_SHORT)."
 	confirm "Continue anyway?" || exit 1
 fi
-
-# =============================================================================
-# Prepare destination (clone fork fresh, or use --local)
-# =============================================================================
 
 CLEANUP_DIR=""
 cleanup() {
@@ -381,14 +312,7 @@ else
 	SYNC_BRANCH="sync/basemind-${UPSTREAM_SHORT}-${TIMESTAMP}"
 fi
 
-# =============================================================================
-# Build rsync args
-# =============================================================================
-
 RSYNC_ARGS=(-av --delete --delete-excluded)
-# Ship the MCP launcher even though /scripts/* is excluded below. rsync applies
-# rules in order, so these includes must precede the exclude loop: keep the
-# scripts/ dir node and mcp-launch.sh, then the "/scripts/*" exclude drops the rest.
 RSYNC_ARGS+=(--include="/scripts/" --include="/scripts/mcp-launch.sh")
 for pat in "${EXCLUDES[@]}"; do RSYNC_ARGS+=(--exclude="$pat"); done
 append_git_ignored_directory_excludes
@@ -424,10 +348,6 @@ prepare_sync_source() {
 
 prepare_sync_source "$PREVIEW_DEST"
 
-# =============================================================================
-# Dry run preview (always shown)
-# =============================================================================
-
 echo ""
 echo "Upstream: $UPSTREAM ($UPSTREAM_BRANCH @ $UPSTREAM_SHORT)"
 echo "Version:  $UPSTREAM_VERSION"
@@ -448,10 +368,6 @@ if [[ $DRY_RUN -eq 1 ]]; then
 	echo "Dry run only. Nothing was changed or pushed."
 	exit 0
 fi
-
-# =============================================================================
-# Apply
-# =============================================================================
 
 echo ""
 confirm "Apply changes, push branch, and open PR?" || {
@@ -481,16 +397,11 @@ if [[ $BOOTSTRAP -eq 1 ]]; then
 fi
 rsync "${RSYNC_ARGS[@]}" "$SYNC_SOURCE/" "$DEST/"
 
-# Bail early if nothing actually changed
 cd "$DEST_REPO"
 if [[ -z "$(git status --porcelain "$DEST_REL")" ]]; then
 	echo "No changes — embedded plugin was already in sync with upstream $UPSTREAM_SHORT (v$UPSTREAM_VERSION)."
 	exit 0
 fi
-
-# =============================================================================
-# Commit, push, open PR
-# =============================================================================
 
 git add "$DEST_REL"
 

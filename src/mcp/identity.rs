@@ -16,7 +16,7 @@ const AGENT_ID_FILE: &str = "agent-id";
 ///    distinct across repos so two windows differ.
 /// 4. `"anon"` — the final fallback (itself a valid `AgentId`).
 ///
-/// TODO: prefer the MCP `clientInfo.name` from rmcp's `initialize` handshake once it is
+/// ~keep TODO: prefer the MCP `clientInfo.name` from rmcp's `initialize` handshake once it is
 /// cleanly reachable at construction time; the persisted per-session id is the stand-in.
 pub(super) fn resolve_agent_id(config: &crate::config::Config, store: &Store) -> String {
     fn validated(candidate: Option<String>) -> Option<String> {
@@ -48,14 +48,11 @@ fn load_or_create_persisted_agent_id(basemind_dir: &std::path::Path) -> Option<S
             return Some(trimmed.to_string());
         }
     }
-    // Generate a short, id-alphabet-safe token. The low 64 bits of a nanosecond timestamp mixed
-    // with the pid give a per-session-unique, NUL-free value within the `AgentId` alphabet.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let token = format!("session-{:x}-{:x}", std::process::id(), nanos);
-    // Persist best-effort; a write failure still returns the in-memory token for this session.
     let _ = std::fs::write(&path, &token);
     Some(token)
 }

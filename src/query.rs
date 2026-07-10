@@ -46,8 +46,6 @@ pub fn file_outline_l2(store: &Store, rel: impl AsRef<[u8]>, root: &std::path::P
     if let Some(l2) = store.read_l2_by_hex(&entry.hash_hex)? {
         return Ok(l2);
     }
-    // Live escalation: read source, extract, persist. The L1 outline already lives in the
-    // combined frame; read it back so the rewrite carries both tiers (the frame is one blob).
     let l1 = store
         .read_l1_by_hex(&entry.hash_hex)?
         .ok_or_else(|| QueryError::BlobMissing(rel_display.clone()))?;
@@ -107,9 +105,6 @@ pub fn search_symbols(store: &Store, needle: &str, kind: Option<SymbolKind>) -> 
 
 /// Heuristic L3: read every L1, collect imports, return paths whose imports mention `module`.
 pub fn dependents_of(store: &Store, module: &str) -> Result<Vec<RelPath>, QueryError> {
-    // `RelPath: AsRef<Path>` so `l3::dependents_of` accepts `Vec<(RelPath, Vec<Import>)>`
-    // without any `PathBuf` allocation per file. Only the matching results (typically small)
-    // are then converted from `PathBuf` back to `RelPath` on the output side.
     let mut by_path: Vec<(RelPath, Vec<crate::extract::Import>)> = Vec::with_capacity(store.index.files.len());
     for (rel, entry) in &store.index.files {
         let l1 = match store.read_l1_by_hex(&entry.hash_hex)? {
@@ -184,8 +179,6 @@ fn definition_of_from_blob(store: &Store, use_path: &RelPath, use_start: u32) ->
         .map(|edge| (use_path.clone(), edge.def_start))
 }
 
-// The blob-fallback parity tests need real resolved edges, which today only the oxc JS/TS engine
-// produces intra-file. Feature-gated so a default build (locals-only) simply skips them.
 #[cfg(all(test, feature = "code-intel-js"))]
 mod tests {
     use super::*;

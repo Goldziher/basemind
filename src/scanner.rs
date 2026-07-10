@@ -67,11 +67,6 @@ impl<'a> WorkerIndexBatch<'a> {
         };
         let writer = self.writer.get_or_insert_with(|| index.writer());
         if writer.upsert_file(rel, l1, l2).is_err() {
-            // upsert_file only errors on a Fjall read / decode fault over the existing
-            // entries (effectively unreachable on a basemind-written index). The partially
-            // staged file rides along in the batch and self-corrects on the next scan via
-            // the read-before-write delete — matching the existing "consistent but slightly
-            // stale" crash guarantee.
             return false;
         }
         self.staged += 1;
@@ -139,9 +134,6 @@ fn scanner_pool() -> &'static rayon::ThreadPool {
     })
 }
 
-// Eight tightly-coupled pieces of per-file scan context (root / filters / store / source / config /
-// scope / embed-mode); bundling them into a struct would just relocate the arguments without
-// clarifying anything, so the threshold is waived here as it is on `process_file`.
 #[allow(clippy::too_many_arguments)]
 fn run_candidates(
     candidates: &[String],
@@ -153,8 +145,6 @@ fn run_candidates(
     scope: &str,
     embed: EmbedMode,
 ) -> Vec<FileResult> {
-    // Run on the deep-stack scanner pool so a pathological file's extraction can't overflow a small
-    // default worker stack and abort the whole process.
     scanner_pool().install(|| {
         candidates
             .par_iter()
@@ -340,8 +330,6 @@ pub(crate) fn submodule_roots_for_source(root: &Path, source: &ScanSource<'_>) -
             Err(_) => Vec::new(),
         },
     };
-    // Filters work on forward-slash strings; non-UTF-8 submodule roots are extremely rare
-    // and lossy here only affects which paths the scanner *skips* (still indexed if lossy).
     paths.into_iter().map(|p| p.to_str_lossy().into_owned()).collect()
 }
 
@@ -384,9 +372,6 @@ pub fn scan(
 
     let outcomes: Vec<FileResult> = run_candidates(&candidates, root, &filters, store, &source, config, &scope, embed);
 
-    // Borrow path strings directly from `outcomes` — avoids one String clone per indexed
-    // file. The `seen` set is built and consumed before `outcomes` is moved into
-    // `apply_outcomes`, so the `&str` borrows remain valid for the full window of use.
     let seen: ahash::AHashSet<&str> = outcomes
         .iter()
         .filter_map(|r| match &r.status {
@@ -395,8 +380,6 @@ pub fn scan(
         })
         .collect();
 
-    // Compute stale keys while `outcomes` (and thus `seen`) are still alive, then consume
-    // both. `store` is not yet mutably borrowed here, so this read is fine.
     let stale: Vec<String> = store
         .index
         .files
@@ -404,13 +387,8 @@ pub fn scan(
         .filter(|k| !seen.contains(k.to_str_lossy().as_ref()))
         .map(|k| k.to_str_lossy().into_owned())
         .collect();
-    // `seen` is no longer needed — drop it explicitly to release the borrows into `outcomes`.
     drop(seen);
 
-    // Doc-tier stale set: a doc is "seen" if it was re-indexed (produced a batch) or skipped
-    // unchanged. Any `doc_files` key not seen this scan was deleted or is no longer a doc → its
-    // LanceDB rows + tracking entry must be purged. Code-file rels that leak into `doc_seen` are
-    // inert (they never match a `doc_files` key). Computed before `apply_outcomes` mutates the store.
     #[cfg(feature = "documents")]
     let doc_stale: Vec<String> = {
         let doc_seen: ahash::AHashSet<&str> = outcomes
@@ -430,7 +408,6 @@ pub fn scan(
     let mut report = ScanReport::default();
     let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
 
-    // Purge index entries for files no longer present / no longer allowed.
     for k in &stale {
         store.remove(k);
         if let Some(idx) = store.index_db.as_ref() {
@@ -445,15 +422,7 @@ pub fn scan(
         report.stats.removed += 1;
     }
 
-    // Second pass: resolve scope/import-bound references now that the primary index is complete.
-    // Only for a working-tree scan: the resolve pass reads source bytes + resolves imports against
-    // the live filesystem, so on a `Staged`/`Rev` scan those bytes would not match the `FileEntry`
-    // blob hash the facts are keyed by (content-addressing violation). The resolved tier targets the
-    // working view; other sources skip it rather than persist wrongly-keyed facts. The pass itself
-    // (parallel compute + serial staging + the cross-file join) lives in `crate::intel::resolve_pass`.
     if matches!(source, ScanSource::WorkingTree) {
-        // Deep-stack pool: the resolve pass parallelizes + recurses through import chains, same
-        // overflow risk as extraction.
         scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store));
     }
 
@@ -485,17 +454,12 @@ pub fn scan_paths(
 
     let mut rels: Vec<String> = Vec::with_capacity(paths.len());
     let mut removed: Vec<String> = Vec::new();
-    // Removed docs live in `doc_files` (not `files`), so the code `store.lookup` check misses them.
     #[cfg(feature = "documents")]
     let mut doc_removed: Vec<String> = Vec::new();
     for abs in paths {
         let rel = match abs.strip_prefix(root) {
             Ok(p) => {
                 let lossy = p.to_string_lossy();
-                // Mirror the `walk_candidates` pattern: only pay for the replace scan on
-                // Windows where backslash separators actually appear. On macOS / Linux
-                // `lossy` is always a `Cow::Borrowed` — `.into_owned()` is a straight copy
-                // with no search pass, shaving one scan per path on the watcher hot path.
                 #[cfg(windows)]
                 {
                     lossy.replace('\\', "/")
@@ -521,9 +485,6 @@ pub fn scan_paths(
             }
             continue;
         }
-        // Full indexability: include/exclude globs AND the nested-`.gitignore` hierarchy, matching
-        // what a full scan would keep. Prevents the watcher from indexing a gitignored file the
-        // full scan skips (and later purges).
         if !filter.is_indexable(abs) {
             continue;
         }
@@ -532,10 +493,6 @@ pub fn scan_paths(
     rels.sort();
     rels.dedup();
 
-    // Nothing the scanner would index changed and nothing was removed — every event was excluded or
-    // gitignored. Skip `run_candidates`, the doc-batch flush, and the unconditional `store.flush()`
-    // (a full index re-serialize + fsync). This is the hot no-op path the serve watcher hits on
-    // gitignored / nested-`.basemind` churn (issue #33); doing real work here pegged multi-core CPU.
     #[cfg(feature = "documents")]
     let nothing_removed = removed.is_empty() && doc_removed.is_empty();
     #[cfg(not(feature = "documents"))]
@@ -556,9 +513,6 @@ pub fn scan_paths(
         if let Some(idx) = store.index_db.as_ref() {
             let mut w = idx.writer();
             let rel = RelPath::from(rel.as_str());
-            // Purge the file's resolved edges too. `resolve_pass` recomputes wholesale over the
-            // CURRENT file set, so a removed file's stale `refs_by_def` / `refs_by_path` entries are
-            // never revisited — they must be dropped explicitly here (mirrors the full `scan`).
             let res = w.remove_file(&rel).and_then(|()| w.remove_resolved_file(&rel));
             #[cfg(feature = "code-search")]
             let res = res.and_then(|()| w.remove_bm25_file(&rel));
@@ -568,10 +522,6 @@ pub fn scan_paths(
         report.stats.removed += 1;
     }
 
-    // Second pass: resolve scope/import-bound references, scoped to what actually changed. Only the
-    // changed files' intra facts are restaged, and only the affected importer set (changed files
-    // plus every file that imports one — the reverse-import invariant) is re-stitched; every other
-    // file's resolved edges are left untouched. See `crate::intel::resolve_pass`.
     scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels));
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
@@ -612,9 +562,6 @@ fn apply_outcomes(
                 if *reused {
                     report.stats.reused_extraction += 1;
                 }
-                // The entry update was already buffered by process_file via the side
-                // channel below. We can't safely mutate the store from inside the
-                // parallel map, so process_file stashes the entry on the FileResult.
             }
             FileStatus::Unchanged => report.stats.skipped_unchanged += 1,
             FileStatus::SkippedTooLarge { .. } => report.stats.skipped_too_large += 1,
@@ -633,10 +580,6 @@ fn apply_outcomes(
                 report.stats.docs_indexed += 1;
             }
         }
-        // Pull buffered entry off the result, if any, and upsert it into the index.
-        // `.take()` moves the owned `FileEntry` / `PendingDocBatch` out of `o` without the
-        // heap clone of `FileEntry.hash_hex` / `FileEntry.language` that a `.clone()` would
-        // do — runs once per scanned file, so trimming the alloc adds up across 39 k files.
         if let Some(entry) = o.upsert.take() {
             store.upsert(&o.path, entry);
         }
@@ -684,8 +627,6 @@ fn candidates_for_source(
         ScanSource::Staged(repo) => repo.list_paths_staged()?,
         ScanSource::Rev { repo, sha } => repo.list_paths_rev(sha)?,
     };
-    // For git sources we still apply the configured include/exclude filters so the user can
-    // turn things off via `.basemind/basemind.toml`.
     let mut out: Vec<String> = match source {
         ScanSource::WorkingTree => raw,
         _ => raw
@@ -711,13 +652,6 @@ fn walk_candidates(root: &Path, config: &Config, filters: &Filters) -> Vec<Strin
             Ok(p) => p,
             Err(_) => continue,
         };
-        // On Unix / Apple-Silicon paths are always valid UTF-8 and contain no separator
-        // backslashes, so `to_str()` (borrow, zero alloc) feeds the filter check directly and the
-        // owned `String` is allocated only for the entries that pass — skipping the allocation for
-        // the majority excluded by gitignore or the `filters.allows` check. Non-UTF-8 paths are
-        // silently skipped. On Windows the walker yields `\`-separated paths, but index keys are
-        // `/`-separated (the incremental `scan_paths` path normalizes identically), so normalize
-        // there; the extra allocation is Windows-only and never touches the Unix hot path.
         let Some(rel_str) = rel.to_str() else {
             continue;
         };
@@ -771,13 +705,10 @@ fn process_file(
     index_batch: &mut WorkerIndexBatch<'_>,
     embed: EmbedMode,
 ) -> FileResult {
-    // No-op marker to keep the `scope`/`config` params in use when the feature is off.
     #[cfg(not(feature = "documents"))]
     {
         let _ = (config, scope);
     }
-    // `embed` is consulted only by the code-search (chunk_and_embed) and documents (process_doc)
-    // tiers; without either feature it is inert.
     #[cfg(not(any(feature = "documents", feature = "code-search")))]
     {
         let _ = embed;
@@ -795,15 +726,6 @@ fn process_file(
         }
     };
 
-    // mtime+size fast-path (WorkingTree only): when the stored entry's size AND mtime both still
-    // match the file on disk and its extraction sidecars are present, the content is unchanged —
-    // return without reading the bytes or computing the blake3 hash. On a large monorepo this turns a
-    // warm rescan of an unchanged file into a single `stat()` instead of a full read + hash.
-    //
-    // Race window: mtime is recorded in nanoseconds (see `mtime_nanos`), so a same-size edit would
-    // have to reproduce the exact nanosecond mtime to be missed — effectively impossible. The live
-    // serve watcher also re-indexes real edits from filesystem events (not mtime polling), so even
-    // that vanishing case only narrows a full `scan`. Guarded on `mtime != 0` (git sources record 0).
     if matches!(source, ScanSource::WorkingTree)
         && let Some(existing) = store.lookup(rel)
         && existing.mtime != 0
@@ -818,7 +740,6 @@ fn process_file(
         }
     }
 
-    // Source-aware byte read + size check + mtime.
     let (bytes, size_bytes, mtime) = match source {
         ScanSource::WorkingTree => match read_working_tree(root, rel, filters) {
             Ok(triple) => triple,
@@ -840,10 +761,6 @@ fn process_file(
         },
     };
 
-    // Cheap NUL-byte scan in the first 8 KiB — anything that's actually binary (ONGs,
-    // .wasm, sourcemaps with embedded base64+NULs, etc.) is filtered before tree-sitter
-    // ever sees it. Faster than the SIMD UTF-8 validator and gives a clearer diagnostic
-    // (`skipped_binary` vs `skipped_non_utf8`) when the file passes UTF-8 by coincidence.
     if looks_binary(&bytes) {
         return FileResult::bare(rel.to_string(), FileStatus::SkippedBinary);
     }
@@ -853,18 +770,9 @@ fn process_file(
     }
 
     let hash = hashing::hash_bytes(&bytes);
-    // Compare against the stored hash without allocating a String on the common
-    // unchanged-file path. `hex_buf` encodes into a stack buffer; `hex_str` borrows it.
-    // The owned `String` is deferred to `FileEntry` construction on the actual update path.
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex_str = hashing::hex_str(&hex_buf);
 
-    // Content-hash unchanged check (the fallback when the mtime+size fast-path above missed — e.g. a
-    // touched-but-unchanged file, or mtime unavailable). `extraction_sidecars_present` also enforces
-    // that toggling code-search on re-chunks a file rather than skipping it as unchanged with an empty
-    // `code_chunks` table.
-    // Computed once and reused by the reuse path below: the two callers otherwise stat the same
-    // sidecar blobs twice on a hash-match-but-sidecar-missing file.
     let sidecars_present = extraction_sidecars_present(store, config, hash_hex_str);
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
@@ -875,12 +783,6 @@ fn process_file(
 
     let want_l2 = filters.eager_l2 && store.index_db.is_some();
 
-    // Cross-view / cross-worktree reuse: when the content-addressed extraction blob already exists in
-    // the (possibly shared) store, deserialize it instead of re-parsing. A fresh worktree scan whose
-    // index is empty — so the unchanged fast-paths above all miss — still reuses the main worktree's
-    // extraction work here, skipping the tree-sitter parse entirely. Only taken when the cached frame
-    // can satisfy `want_l2`: an L1-only frame written by an `eager_l2 = false` scan falls through to a
-    // real parse so callers that want calls (L2) still get them.
     let reused_pair: Option<(FileMapL1, Option<FileMapL2>)> = if sidecars_present {
         match store.read_l1_by_hex(hash_hex_str) {
             Ok(Some(l1)) => {
@@ -898,9 +800,6 @@ fn process_file(
     };
     let reused = reused_pair.is_some();
 
-    // Parse once and run both tiers against the shared tree (only when we couldn't reuse a cached
-    // frame). When eager_l2 is off only L1 runs; when it's on L2 runs against the same Tree with no
-    // second parse. L2 failure is non-fatal (extract_l1_l2 returns None for the L2 slot).
     let (l1, l2_opt): (FileMapL1, Option<FileMapL2>) = match reused_pair {
         Some(pair) => pair,
         None => match extract::extract_l1_l2(lang, &bytes, want_l2) {
@@ -919,26 +818,16 @@ fn process_file(
         },
     };
 
-    // Persist both extraction tiers as one content-addressed frame — one `open` + `write` +
-    // atomic `rename` instead of a separate write per tier. Skipped when we reused an existing frame:
-    // it is already on disk, byte-identical. L1 is essential, so a write failure is fatal for this
-    // file (the index stage below is skipped).
     let l2: Option<FileMapL2> = l2_opt;
     if !reused && let Err(e) = store.write_filemap_hex(hash_hex_str, &l1, l2.as_ref()) {
         return FileResult::bare(rel.to_string(), FileStatus::ExtractFailed { msg: e.to_string() });
     }
 
-    // Stage the file's symbols / calls / imports into the worker's Fjall write batch. The
-    // batch commits every `INDEX_COMMIT_BATCH` files (and once at the worker's end) rather
-    // than per file, so workers no longer serialize on Fjall's write lock per file.
     let rel_path = RelPath::from(rel);
     if !index_batch.stage(&rel_path, &l1, l2.as_ref()) {
         tracing::warn!(rel, "index upsert failed; reference search may be incomplete");
     }
 
-    // Code-search tier: chunk + embed from the cached L1/L2 + source bytes (no re-parse). The
-    // embed compute runs here in the parallel worker; the LanceDB write is deferred to the serial
-    // apply pass. Best-effort — a chunk/embed failure never aborts the file's index update.
     #[cfg(feature = "code-search")]
     let code_batch = if crate::scanner_code::should_chunk(config) {
         match crate::scanner_code::chunk_and_embed(store, rel, &bytes, &l1, l2.as_ref(), hash_hex_str, config, embed) {
@@ -956,9 +845,6 @@ fn process_file(
         None
     };
 
-    // Stage the file's BM25 keyword postings onto the same worker batch as its symbol upsert. Runs
-    // whenever chunks were produced — independent of embeddings, so the keyword lane works even with
-    // `[code_search] embed = false`.
     #[cfg(feature = "code-search")]
     if let Some(batch) = &code_batch {
         index_batch.stage_bm25(&rel_path, &batch.bm25);
@@ -1001,9 +887,6 @@ fn process_doc(
     embed: EmbedMode,
 ) -> FileResult {
     let abs = root.join(rel);
-    // External-root docs (absolute key) get their own LanceDB scope keyed by the owning extra
-    // root, so out-of-repo documents don't pollute the repository's doc scope. Retrieval is
-    // unaffected — `search_documents` has no scope filter — so this only partitions storage.
     let effective_scope = crate::scanner_docs::doc_scope_for(rel, scope, config);
     let scope = effective_scope.as_ref();
     let Some(mime_type) = should_extract_document(&abs, &config.documents) else {
@@ -1017,11 +900,6 @@ fn process_doc(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
-    // Unchanged-skip: identical content, same embedding preset, and the `.doc.msgpack` blob still on
-    // disk → nothing to do. Mirrors the code tier's early-return (this function's `store` is an
-    // immutable borrow, so the lookup is a cheap read on the parallel worker). Note we DON'T re-stamp
-    // `doc_files` here — the prior entry already holds; the doc-seen set (computed in `scan`) keeps it
-    // from being pruned.
     if let Some(existing) = store.lookup_doc(rel)
         && existing.hash_hex == hash_hex
         && existing.embedding_preset == config.documents.embedding_preset
@@ -1052,11 +930,6 @@ fn process_doc(
                 chunk_count: batch.chunk_count,
                 embedding_dim: batch.embedding_dim,
             };
-            // In `Deferred` mode the doc was extracted but not embedded, so we deliberately do NOT
-            // persist its `DocEntry`: the completion marker's absence is what lets the background
-            // `Inline` pass re-process this doc and fill in its vectors (a persisted entry would make
-            // `process_doc`'s unchanged-skip fire and never embed). The doc is still counted as
-            // "seen" via its (row-less) `doc_batch`, so this scan's prune won't drop it.
             let doc_upsert = match embed {
                 EmbedMode::Inline => Some(doc_entry),
                 EmbedMode::Deferred => None,
@@ -1074,13 +947,7 @@ fn process_doc(
         Ok(None) => FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang),
         Err(error) => {
             let msg = format!("document extract: {error:#}");
-            // "Unsupported format" means xberg has no extractor for this MIME — i.e. the
-            // file is not an extractable document (e.g. a source file in a language tree-sitter
-            // didn't recognize, which `mime_guess` maps to `application/x-wais-source`). That's a
-            // skip, not a failure: it shouldn't inflate the failed count or read as a real error.
-            // Genuine extraction errors (corrupt PDF, OCR failure, …) still surface as failures.
             if is_unsupported_format_error(&msg) {
-                // Skip, but log it — a non-extractable file shouldn't vanish silently.
                 tracing::debug!(path = rel, reason = %msg, "skipping file: not an extractable document");
                 FileResult::bare(rel.to_string(), FileStatus::SkippedNoLang)
             } else {
@@ -1146,8 +1013,6 @@ fn read_via_git(filters: &Filters, blob: Result<Option<Vec<u8>>, GitError>) -> R
         });
     }
     let size = bytes.len() as u64;
-    // Git sources don't have an mtime. 0 just means "unknown" — the existing hash-equality
-    // check is what actually decides whether to re-extract.
     Ok((bytes, size, 0))
 }
 
@@ -1243,14 +1108,10 @@ mod tests {
     #[cfg(feature = "documents")]
     #[test]
     fn unsupported_format_error_is_a_skip_not_a_failure() {
-        // xberg's UnsupportedFormat for a non-document (e.g. an `.app.src` source file that
-        // `mime_guess` maps to `application/x-wais-source`) → skip, not a counted failure.
         assert!(is_unsupported_format_error(
             "document extract: Unsupported format: application/x-wais-source"
         ));
-        // Case-insensitive on the xberg phrasing.
         assert!(is_unsupported_format_error("Unsupported Format: text/x-foo"));
-        // A genuine extraction failure on a real document stays a failure.
         assert!(!is_unsupported_format_error(
             "document extract: failed to parse PDF: corrupt xref table"
         ));
@@ -1261,7 +1122,6 @@ mod tests {
 
     #[test]
     fn looks_binary_detects_nul_in_first_kib() {
-        // Synthetic "PNG-like" prefix.
         let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         data.extend_from_slice(&[0; 32]);
         assert!(looks_binary(&data));
@@ -1270,12 +1130,11 @@ mod tests {
     #[test]
     fn looks_binary_accepts_plain_source() {
         assert!(!looks_binary(b"pub fn hello() {}\n"));
-        assert!(!looks_binary(b"")); // empty is fine, downstream UTF-8 step decides
+        assert!(!looks_binary(b""));
     }
 
     #[test]
     fn looks_binary_ignores_nul_past_probe_window() {
-        // 8 KiB of clean source, then a NUL — outside the probe window, should not flip.
         let mut data = vec![b'/'; 8 * 1024];
         data.push(0);
         assert!(!looks_binary(&data));

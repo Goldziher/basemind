@@ -46,7 +46,6 @@ impl IndexWriter {
     pub fn upsert_resolved_file(&mut self, use_rel: &RelPath, refs: &FileResolvedRefs) -> Result<(), IndexError> {
         self.stage_resolved_deletes_for(use_rel)?;
         for edge in &refs.intra {
-            // Intra-file edge: the definition lives in the same file as the use.
             self.batch.insert(
                 &self.db.refs_by_def,
                 keys::ref_by_def(use_rel, edge.def_start, use_rel, edge.use_start),
@@ -124,8 +123,6 @@ impl IndexWriter {
     }
 
     fn stage_deletes_for(&mut self, rel: &RelPath) -> Result<(), IndexError> {
-        // Symbols: scan symbols_by_path under this file's prefix, decode each Symbol to
-        // derive the symbols_by_name key, stage both deletes.
         let path_prefix = keys::symbols_by_path_prefix(rel);
         let mut found_symbols: Vec<(Vec<u8>, Symbol)> = Vec::new();
         for guard in self.db.symbols_by_path.prefix(path_prefix) {
@@ -148,8 +145,6 @@ impl IndexWriter {
             }
         }
 
-        // Calls: scan calls_by_path under this file's prefix, decode each Call to derive
-        // the calls_by_callee key, stage both deletes.
         let call_path_prefix = keys::calls_by_path_prefix(rel);
         let mut found_calls: Vec<(Vec<u8>, crate::extract::Call)> = Vec::new();
         for guard in self.db.calls_by_path.prefix(call_path_prefix) {
@@ -172,9 +167,6 @@ impl IndexWriter {
             }
         }
 
-        // Imports: prefix-scan imports_by_path for this file, derive the
-        // imports_by_module key from each entry, stage both deletes. O(matches) instead
-        // of the previous O(total imports) full-iter scan.
         let imp_path_prefix = keys::imports_by_path_prefix(rel);
         let mut found_imports: Vec<(Vec<u8>, String, u32)> = Vec::new();
         for guard in self.db.imports_by_path.prefix(imp_path_prefix) {
@@ -190,9 +182,6 @@ impl IndexWriter {
             }
         }
 
-        // Implementations: prefix-scan implementations_by_path for this file, derive the
-        // implementations_by_trait key from each entry, stage both deletes. Mirrors the
-        // imports dual-partition pattern.
         let impl_path_prefix = keys::impls_by_path_prefix(rel);
         let mut found_impls: Vec<(Vec<u8>, String, String, u32)> = Vec::new();
         for guard in self.db.implementations_by_path.prefix(impl_path_prefix) {
@@ -243,7 +232,6 @@ impl IndexWriter {
             let Some((_rel, chunk_id)) = keys::parse_code_bm25_by_path(&k) else {
                 continue;
             };
-            // value = doclen:u32_be ‖ msgpack(Vec<String>); only the term list is needed to delete.
             let terms: Vec<String> = if v.len() >= 4 {
                 match rmp_serde::from_slice::<Vec<String>>(&v[4..]) {
                     Ok(terms) => terms,
@@ -287,7 +275,6 @@ impl IndexWriter {
                     );
                 }
             }
-            // Forward entry: doclen prefix (read cheaply by the stats recompute) then the term list.
             let term_names: Vec<&str> = posting.terms.iter().map(|(t, _)| t.as_str()).collect();
             let terms_bytes = rmp_serde::to_vec(&term_names)?;
             let mut value = Vec::with_capacity(4 + terms_bytes.len());
@@ -306,9 +293,7 @@ impl IndexWriter {
         for sym in &l1.symbols {
             let path_key = keys::symbol_by_path(rel, sym.start_byte);
             let value = rmp_serde::to_vec_named(sym)?;
-            // Always write the primary (by-path) entry so the outline stays complete.
             self.batch.insert(&self.db.symbols_by_path, path_key, value);
-            // Secondary (by-name) entry is skipped silently for oversized identifiers.
             if let Some(name_key) = keys::symbol_by_name(&sym.name, sym.kind, rel, sym.start_byte) {
                 self.batch.insert(&self.db.symbols_by_name, name_key, Vec::<u8>::new());
             } else {
@@ -321,7 +306,6 @@ impl IndexWriter {
         }
         for imp in &l1.imports {
             if let Some(module) = &imp.module {
-                // Both partitions are secondary: skip both on oversized module names.
                 match (
                     keys::import_by_module(module, rel, imp.start_byte),
                     keys::import_by_path(rel, module, imp.start_byte),
@@ -345,9 +329,7 @@ impl IndexWriter {
             for call in &l2.calls {
                 let path_key = keys::call_by_path(rel, call.start_byte);
                 let value = rmp_serde::to_vec_named(call)?;
-                // Always write the primary (by-path) entry.
                 self.batch.insert(&self.db.calls_by_path, path_key, value);
-                // Secondary (by-callee) entry is skipped silently for oversized callee names.
                 if let Some(callee_key) = keys::call_by_callee(&call.callee, rel, call.start_byte) {
                     self.batch
                         .insert(&self.db.calls_by_callee, callee_key, Vec::<u8>::new());
@@ -361,7 +343,6 @@ impl IndexWriter {
             }
         }
         for imp in &l1.implementations {
-            // Both partitions are secondary: skip both on oversized trait/impl-type names.
             match (
                 keys::impl_by_trait(&imp.trait_name, &imp.impl_type, rel, imp.start_byte),
                 keys::impl_by_path(rel, &imp.trait_name, &imp.impl_type, imp.start_byte),
@@ -537,7 +518,6 @@ mod tests {
         w.upsert_file(&rel, &l1, None).unwrap();
         w.commit().unwrap();
 
-        // Prefix scan for "os" should NOT hit "os.path" thanks to length-prefixing.
         let prefix = keys::imports_by_module_prefix("os");
         let mut os_hits = 0;
         for guard in db.imports_by_module.prefix(prefix) {
@@ -573,7 +553,6 @@ mod tests {
         let (_d, db) = fresh_db();
         let rel = RelPath::from("src/foo.rs");
 
-        // Initial upsert with two impls.
         let mut w = db.writer();
         w.upsert_file(
             &rel,
@@ -586,8 +565,6 @@ mod tests {
         assert_eq!(db.implementations_by_trait.iter().count(), 2);
         assert_eq!(db.implementations_by_path.iter().count(), 2);
 
-        // Prefix scan for `Display` returns exactly one hit (length-prefix isolates Display
-        // from any future DisplayFmt-style longer-name impls).
         let prefix = keys::impls_by_trait_prefix("Display");
         let mut display_hits = 0;
         for guard in db.implementations_by_trait.prefix(prefix) {
@@ -600,8 +577,6 @@ mod tests {
         }
         assert_eq!(display_hits, 1);
 
-        // Re-upsert with the Debug impl dropped — upsert_file stages deletes for the
-        // existing rows then inserts the fresh set in one batch.
         let mut w = db.writer();
         w.upsert_file(&rel, &synthetic_l1_with_impls(&[("Display", "Foo", 0)]), None)
             .unwrap();
@@ -610,7 +585,6 @@ mod tests {
         assert_eq!(db.implementations_by_trait.iter().count(), 1);
         assert_eq!(db.implementations_by_path.iter().count(), 1);
 
-        // Remove the file → both partitions empty.
         let mut w = db.writer();
         w.remove_file(&rel).unwrap();
         w.commit().unwrap();
@@ -642,11 +616,9 @@ mod tests {
         w.upsert_file(&rel, &l1, None).unwrap();
         w.commit().unwrap();
 
-        // Both partitions populated, both have 2 rows.
         assert_eq!(db.imports_by_module.iter().count(), 2);
         assert_eq!(db.imports_by_path.iter().count(), 2);
 
-        // imports_by_path prefix scan returns both for this file.
         let prefix = keys::imports_by_path_prefix(&rel);
         let mut path_hits = 0;
         for guard in db.imports_by_path.prefix(prefix) {
@@ -657,7 +629,6 @@ mod tests {
         }
         assert_eq!(path_hits, 2);
 
-        // Re-upsert with one import dropped → only that one survives in BOTH partitions.
         let mut l1 = synthetic_l1(&[]);
         l1.imports = vec![Import {
             module: Some("os".to_string()),
@@ -672,7 +643,6 @@ mod tests {
         assert_eq!(db.imports_by_module.iter().count(), 1);
         assert_eq!(db.imports_by_path.iter().count(), 1);
 
-        // Remove the file → both partitions empty.
         let mut w = db.writer();
         w.remove_file(&rel).unwrap();
         w.commit().unwrap();
@@ -694,23 +664,19 @@ mod tests {
             (&huge_name, SymbolKind::Function, 100),
         ]);
         let mut w = db.writer();
-        // Must not panic.
         w.upsert_file(&rel, &l1, None).unwrap();
         w.commit().unwrap();
 
-        // Both symbols appear in the primary partition (outlines complete).
         assert_eq!(
             db.symbols_by_path.iter().count(),
             2,
             "both symbols must be in symbols_by_path"
         );
-        // Only the normal symbol appears in the secondary partition.
         assert_eq!(
             db.symbols_by_name.iter().count(),
             1,
             "only the normal symbol must be in symbols_by_name"
         );
-        // Prefix scan finds the normal symbol.
         let prefix = keys::symbols_by_name_prefix("normal_fn");
         let hits: Vec<_> = db
             .symbols_by_name
@@ -726,7 +692,6 @@ mod tests {
         let (_d, db) = fresh_db();
         let rel = RelPath::from("src/app.ts");
 
-        // Two uses (@100, @200) both bind to the definition at @4.
         let mut refs = FileResolvedRefs::new("typescript");
         refs.intra = vec![
             ResolvedEdge {
@@ -749,7 +714,6 @@ mod tests {
         assert_eq!(db.refs_by_def.iter().count(), 2);
         assert_eq!(db.refs_by_path.iter().count(), 2);
 
-        // find_references: scan refs_by_def for the def at @4 → both use sites.
         let mut uses: Vec<u32> = db
             .refs_by_def
             .prefix(keys::refs_by_def_prefix(&rel, 4))
@@ -763,7 +727,6 @@ mod tests {
         uses.sort_unstable();
         assert_eq!(uses, vec![100, 200], "both uses must resolve to def@4");
 
-        // goto_definition: scan refs_by_path for the use at @100 → def @4.
         let defs: Vec<u32> = db
             .refs_by_path
             .prefix(keys::refs_by_use_prefix(&rel, 100))
@@ -776,7 +739,6 @@ mod tests {
             .collect();
         assert_eq!(defs, vec![4], "use@100 must resolve to def@4");
 
-        // Re-upsert with one edge dropped → both partitions collapse to one.
         refs.intra.truncate(1);
         let mut w = db.writer();
         w.upsert_resolved_file(&rel, &refs).unwrap();
@@ -784,7 +746,6 @@ mod tests {
         assert_eq!(db.refs_by_def.iter().count(), 1);
         assert_eq!(db.refs_by_path.iter().count(), 1);
 
-        // Remove the file → both partitions empty.
         let mut w = db.writer();
         w.remove_resolved_file(&rel).unwrap();
         w.commit().unwrap();
@@ -815,12 +776,9 @@ mod tests {
         w.upsert_bm25_file(&rel, &postings).unwrap();
         w.commit().unwrap();
 
-        // Three postings total (spawn×2 chunks + task×1), two forward entries (one per chunk).
         assert_eq!(db.code_bm25_postings.iter().count(), 3);
         assert_eq!(db.code_bm25_by_path.iter().count(), 2);
 
-        // A `spawn` prefix scan returns exactly the two spawn postings (not `spawn_blocking`-style
-        // longer terms), carrying tf + doclen.
         let mut spawn_docs: Vec<(String, u32, u32)> = db
             .code_bm25_postings
             .prefix(keys::code_bm25_postings_prefix("spawn"))
@@ -834,8 +792,6 @@ mod tests {
         spawn_docs.sort();
         assert_eq!(spawn_docs, vec![("h:0".to_string(), 2, 3), ("h:1".to_string(), 1, 1)]);
 
-        // Re-upsert with the second chunk dropped and `task` gone → deletes reconstruct + purge the
-        // stale postings; only chunk h:0's single `spawn` posting survives.
         let mut w = db.writer();
         w.upsert_bm25_file(
             &rel,
@@ -850,11 +806,9 @@ mod tests {
         assert_eq!(db.code_bm25_postings.iter().count(), 1);
         assert_eq!(db.code_bm25_by_path.iter().count(), 1);
 
-        // Stats recompute reflects the surviving single chunk of length 1.
         db.recompute_bm25_stats().unwrap();
         assert_eq!(db.bm25_stats(), Some((1, 1)));
 
-        // Remove the file → both partitions empty.
         let mut w = db.writer();
         w.remove_bm25_file(&rel).unwrap();
         w.commit().unwrap();

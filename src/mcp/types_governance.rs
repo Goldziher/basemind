@@ -81,8 +81,6 @@ impl AuditVerdict {
     }
 }
 
-// ─── W11 proposal types ───────────────────────────────────────────────────────
-
 /// On-disk record for a co-change skill proposal. Stored as msgpack in the `proposals`
 /// Fjall keyspace. `#[serde(default)]` on new fields ensures old blobs decode cleanly.
 #[cfg(feature = "memory")]

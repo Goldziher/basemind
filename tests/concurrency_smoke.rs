@@ -21,8 +21,6 @@ use tokio::process::Command as AsyncCommand;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-// ─── inline helpers (duplication is fine for smoke tests) ────────────────────
-
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -47,13 +45,11 @@ fn build_repo() -> TempDir {
     git(root, &["config", "commit.gpgsign", "false"]);
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
     std::fs::write(root.join("b.ts"), b"export function plain() { return 1; }\n").unwrap();
-    // c.rs calls alpha() three times so the reference index has something to work with.
     std::fs::write(
         root.join("c.rs"),
         b"pub fn caller() { alpha(); alpha(); other(); alpha(); }\n",
     )
     .unwrap();
-    // d.rs has a trait impl so find_implementations + call_graph (callees) have data.
     std::fs::write(
         root.join("d.rs"),
         b"trait Drawable { fn draw(&self); }\npub struct Circle;\nimpl Drawable for Circle { fn draw(&self) { alpha(); } }\n",
@@ -61,7 +57,6 @@ fn build_repo() -> TempDir {
     .unwrap();
     git(root, &["add", "a.rs", "b.ts", "c.rs", "d.rs"]);
     git(root, &["commit", "-qm", "init"]);
-    // Touch a.rs in a second commit so symbol_history has something to return.
     std::fs::write(
         root.join("a.rs"),
         b"pub fn alpha() { let _ = 1; }\npub struct Beta { x: i32 }\n",
@@ -73,12 +68,6 @@ fn build_repo() -> TempDir {
 
 fn run_scan(root: &Path) {
     // These tests call `scan` synchronously from inside a `#[tokio::test]` multi-thread runtime.
-    // With embeddings ON *and the ONNX model present on disk*, the scan opens LanceDB, whose
-    // `LanceStore::open` does `block_on` on its own runtime — which panics ("cannot start a runtime
-    // from within a runtime") when a tokio runtime is already active on this thread. Production is
-    // unaffected (serve wraps `scan` in `spawn_blocking`; the CLI is sync). These tests exercise
-    // concurrency / blob reads, not embedding, so embed off keeps them runtime-agnostic and green
-    // whether or not the model is cached.
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.embed = false;
     cfg.code_search.embed = false;
@@ -130,8 +119,6 @@ async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCl
     ().serve(transport).await.expect("rmcp handshake")
 }
 
-// ─── test 1 ──────────────────────────────────────────────────────────────────
-
 /// Eight concurrent `symbol_history` calls for the same symbol hit the shared
 /// `Mutex<LruCache>` in `ServerState::outline_cache` at the same time.
 ///
@@ -144,10 +131,8 @@ async fn parallel_symbol_history_same_symbol() {
     run_scan(root);
 
     let service = spawn_server(root).await;
-    // Peer is Clone + &self for call_tool, so share it across tasks via Arc.
     let peer = Arc::new(service.peer().clone());
 
-    // Fire 8 concurrent calls — 4 default mode, 4 structural mode.
     let mut set: JoinSet<CallToolResult> = JoinSet::new();
     for i in 0_u8..8 {
         let p = Arc::clone(&peer);
@@ -187,8 +172,6 @@ async fn parallel_symbol_history_same_symbol() {
     let _ = service.cancel().await;
 }
 
-// ─── test 2 ──────────────────────────────────────────────────────────────────
-
 /// A reader loop (10x `search_symbols`) racing a `rescan` write exercises the
 /// `RwLock<Store>` write-fairness path.
 ///
@@ -201,11 +184,9 @@ async fn concurrent_search_and_rescan() {
     run_scan(root);
 
     let service = spawn_server(root).await;
-    // Clone the Peer (cheap — it's an mpsc::Sender + Arcs) for the two tasks.
     let peer_a = service.peer().clone();
     let peer_b = service.peer().clone();
 
-    // Task A — 10 search_symbols calls.
     let task_a = tokio::spawn(async move {
         for iteration in 0_u32..10 {
             let result = peer_a
@@ -220,7 +201,6 @@ async fn concurrent_search_and_rescan() {
         }
     });
 
-    // Task B — one rescan after a short delay so the reader loop is already running.
     let task_b = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let result = peer_b
@@ -246,8 +226,6 @@ async fn concurrent_search_and_rescan() {
     let _ = service.cancel().await;
 }
 
-// ─── test 3 ──────────────────────────────────────────────────────────────────
-
 /// Four concurrent `memory_put` writers and four concurrent `memory_search`
 /// readers exercise the `LanceStore` / `OnceCell` init path under contention.
 ///
@@ -263,7 +241,6 @@ async fn parallel_memory_put_and_search() {
     let service = spawn_server(root).await;
     let peer = Arc::new(service.peer().clone());
 
-    // 4 puts with distinct keys + 4 concurrent searches, all in one JoinSet.
     let mut set: JoinSet<()> = JoinSet::new();
     for n in 0_u32..4 {
         let p = Arc::clone(&peer);
@@ -292,19 +269,14 @@ async fn parallel_memory_put_and_search() {
         });
     }
 
-    timeout(
-        Duration::from_secs(120), // ONNX warm-up can be slow on first run
-        async {
-            while let Some(result) = set.join_next().await {
-                result.expect("memory task panicked");
-            }
-        },
-    )
+    timeout(Duration::from_secs(120), async {
+        while let Some(result) = set.join_next().await {
+            result.expect("memory task panicked");
+        }
+    })
     .await
     .expect("parallel_memory_put_and_search timed out");
 
-    // After all puts complete, memory_list should return exactly 4 entries with
-    // the test prefix.
     let list_result = peer
         .call_tool(call_params("memory_list", json!({ "prefix": "concurrency_test_k_" })))
         .await
@@ -322,8 +294,6 @@ async fn parallel_memory_put_and_search() {
 
     let _ = service.cancel().await;
 }
-
-// ─── test 4 ──────────────────────────────────────────────────────────────────
 
 /// Four concurrent `blame_file` calls for the same file exercise the shared
 /// `GitCache` under parallel load.
@@ -373,8 +343,6 @@ async fn parallel_blame_same_file() {
     let _ = service.cancel().await;
 }
 
-// ─── test 5 ──────────────────────────────────────────────────────────────────
-
 /// Concurrent `memory_put` calls for the SAME key must serialize so the
 /// read-modify-write of `created_at` is atomic. Without the per-key lock, two
 /// puts both observe "no existing record" and stamp different `created_at`
@@ -396,7 +364,6 @@ async fn concurrent_same_key_put_preserves_created_at() {
 
     const KEY: &str = "same_key_race";
 
-    // Seed once so `created_at` is established before the concurrent storm.
     let seed = peer
         .call_tool(call_params(
             "memory_put",
@@ -410,8 +377,6 @@ async fn concurrent_same_key_put_preserves_created_at() {
         .and_then(Value::as_i64)
         .expect("seed put missing created_at");
 
-    // Ensure the clock advances past `created0` so a buggy put that re-derives
-    // `created_at` would produce a DIFFERENT value (making the race observable).
     tokio::time::sleep(Duration::from_millis(5)).await;
 
     let mut set: JoinSet<i64> = JoinSet::new();
@@ -469,8 +434,6 @@ async fn concurrent_same_key_put_preserves_created_at() {
     let _ = service.cancel().await;
 }
 
-// ─── test 6 ──────────────────────────────────────────────────────────────────
-
 /// Multi-SESSION repro: two `serve` processes against the SAME repo. fjall is
 /// single-holder, so the second process can't open the index and falls back to
 /// read-only (`index_db = None`). It must STILL answer `find_references` — from
@@ -482,11 +445,9 @@ async fn concurrent_same_key_put_preserves_created_at() {
 async fn second_session_resolves_find_references_from_blobs() {
     let dir = build_repo();
     let root = dir.path();
-    run_scan(root); // populate .basemind/ (blobs + fjall), lock released on drop
+    run_scan(root);
 
-    // Session 1 boots first and grabs the single-holder write lock during open.
     let serve1 = spawn_server(root).await;
-    // Session 2 boots while #1 holds the lock → read-only fallback + in-RAM call index.
     let serve2 = spawn_server(root).await;
     let peer2 = serve2.peer().clone();
 
@@ -511,8 +472,6 @@ async fn second_session_resolves_find_references_from_blobs() {
     let _ = serve2.cancel().await;
 }
 
-// ─── test 7 ──────────────────────────────────────────────────────────────────
-
 /// The other two Fjall-backed tools — `call_graph` and `find_implementations` —
 /// must also work on the read-only 2nd session, via the same in-RAM indexes built
 /// from the shared blobs.
@@ -522,11 +481,10 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
     let root = dir.path();
     run_scan(root);
 
-    let serve1 = spawn_server(root).await; // writer holds the lock
-    let serve2 = spawn_server(root).await; // read-only fallback
+    let serve1 = spawn_server(root).await;
+    let serve2 = spawn_server(root).await;
     let peer2 = serve2.peer().clone();
 
-    // call_graph: who calls alpha()? `caller` (c.rs) and `draw` (d.rs) both do.
     let cg = peer2
         .call_tool(call_params(
             "call_graph",
@@ -549,7 +507,6 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
         "call_graph must find caller() among alpha()'s callers, got: {cg_body}"
     );
 
-    // find_implementations: Circle implements Drawable (d.rs).
     let fi = peer2
         .call_tool(call_params("find_implementations", json!({ "trait_name": "Drawable" })))
         .await

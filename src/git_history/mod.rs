@@ -149,10 +149,6 @@ impl GitHistoryIndex {
     /// holds the Fjall lock — read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
-        // Retry a transient fjall `Locked` instead of propagating it. This open is writer-gated
-        // (read-only consumers skip it and serve from the live walk before reaching here), so any
-        // `Locked` is a short-lived concurrent open that clears — mirrors
-        // `store::open_index_with_retry`, the F1 half of the multi-session-downgrade fix.
         let mut attempt = 0;
         loop {
             match Self::open_at(&dir) {
@@ -171,18 +167,10 @@ impl GitHistoryIndex {
             path: dir.to_path_buf(),
             source,
         })?;
-        // Open the fjall database ONCE and read the persisted schema through the same handle we
-        // keep. The previous code peeked the version via a throwaway `Database::open` before this
-        // real open — two exclusive fjall-lock acquisitions per open, doubling the window a
-        // concurrent reader's transient open could collide with a rightful writer. One open closes
-        // that extra window; only the rare schema-mismatch path pays a second open. Mirrors the F2
-        // half of `index::IndexDb::open`.
         let mut db = Database::builder(dir).open()?;
         let mut meta = db.keyspace("gh_meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta.get(keys::META_SCHEMA_VER)?.and_then(|b| keys::parse_u32(&b));
         if matches!(on_disk_ver, Some(ver) if ver != GIT_HISTORY_SCHEMA) {
-            // Schema drifted: drop every handle first so fjall releases the directory lock, then
-            // wipe and reopen fresh. The caller rebuilds via the builder.
             drop(meta);
             drop(db);
             std::fs::remove_dir_all(dir).map_err(|source| GitHistoryError::Io {
@@ -237,7 +225,7 @@ impl GitHistoryIndex {
                 ks.remove(k)?;
             }
         }
-        let _ = dir; // dir retained for signature symmetry with a future remove_dir_all variant
+        let _ = dir;
         self.meta
             .insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(())
@@ -272,8 +260,6 @@ impl GitHistoryIndex {
             staged: 0,
         }
     }
-
-    // ── meta accessors ──────────────────────────────────────────────────────
 
     fn meta_u32(&self, key: &[u8]) -> u32 {
         self.meta
@@ -323,8 +309,6 @@ impl GitHistoryIndex {
     pub fn is_empty(&self) -> bool {
         self.last_indexed_head().is_none()
     }
-
-    // ── point reads used by reader.rs ───────────────────────────────────────
 
     /// Point-read one commit's stored metadata. `want_files=false` decodes only the head fields
     /// (sha / time / author / summary), skipping the changed-file list and its allocation — the
@@ -421,8 +405,6 @@ const COMMIT_BATCH: usize = 4096;
 
 impl GitHistoryWriter {
     pub fn put_commit_meta(&mut self, ord: u32, meta: &CommitMeta) -> Result<(), GitHistoryError> {
-        // A non-hex sha can't be the key of `gh_ord_by_sha` either, so the caller has already
-        // filtered it; default to zero rather than failing the whole build on one odd row.
         let sha20 = keys::sha_hex_to_raw(&meta.sha).unwrap_or([0u8; 20]);
         let value = encoding::encode_commit_meta(
             &sha20,
@@ -497,18 +479,14 @@ impl GitHistoryWriter {
         next_path_id: u32,
         commit_count: u32,
     ) -> Result<(), GitHistoryError> {
-        // Flush all data batches first, then stamp meta in a final batch so the data is durable
-        // before `last_indexed_head` is published.
         self.flush()?;
         let mut meta = self.index.db.batch();
         meta.insert(&self.index.meta, keys::META_NEXT_ORD, next_ord.to_be_bytes());
         meta.insert(&self.index.meta, keys::META_NEXT_PATH_ID, next_path_id.to_be_bytes());
         meta.insert(&self.index.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
         meta.insert(&self.index.meta, keys::META_ROOT_SHA, root.to_vec());
-        // last_indexed_head LAST within this final batch's logical write set.
         meta.insert(&self.index.meta, keys::META_LAST_HEAD, head.to_vec());
         meta.commit()?;
-        // Compact memtables → segments so the on-disk size reflects the data, not the journal.
         self.index.compact()?;
         Ok(())
     }

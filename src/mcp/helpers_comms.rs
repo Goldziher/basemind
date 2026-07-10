@@ -72,7 +72,6 @@ pub(super) async fn resolve_comms_client(
     state: &ServerState,
     as_agent: Option<String>,
 ) -> Result<Arc<Mutex<CommsClient>>, McpError> {
-    // Target identity: as_agent (validated) or the server's own agent_id.
     let target = match as_agent {
         Some(raw) => AgentId::parse(raw.clone()).map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
         None => AgentId::parse(state.agent_id.clone())
@@ -276,8 +275,6 @@ pub(super) async fn run_inbox_read(state: &ServerState, params: InboxReadParams)
 }
 
 pub(super) async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -> Result<CallToolResult, McpError> {
-    // Validate up front: at least one mode must be supplied (the broker also guards this, but
-    // failing fast here gives a clearer MCP error than a round-trip).
     let has_bulk = params.room.is_some() && params.to_seq.is_some();
     if params.message_ids.is_empty() && !has_bulk {
         return Err(comms_err("inbox_ack requires message_ids or a (room, to_seq) pair"));
@@ -310,8 +307,6 @@ pub(super) async fn run_get_or_create_chat_room_for_path(
     state: &ServerState,
     params: GetOrCreateRoomForPathParams,
 ) -> Result<CallToolResult, McpError> {
-    // Resolve the repo root so subdirs of one repo map to a single room; fall back to the raw path
-    // when it is not inside a git repo (a path-scoped room keyed by the path itself).
     let base = crate::git::Repo::discover(std::path::Path::new(&params.path))
         .ok()
         .map(|r| r.workdir().to_path_buf())
@@ -327,8 +322,6 @@ pub(super) async fn run_get_or_create_chat_room_for_path(
 
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
-    // Existence check BEFORE the idempotent upsert: list the rooms matching the target scope and
-    // see whether the derived id is already present.
     let existed = client
         .list_rooms(remote, cwd)
         .await
@@ -358,7 +351,6 @@ pub(super) async fn run_get_or_create_chat_room_for_path(
 /// `inbox_read(as_agent = to_agent)` like any other subscribed-room message. The recipient's
 /// connection is created lazily if it does not exist yet.
 pub(super) async fn run_dm_send(state: &ServerState, params: DmSendParams) -> Result<CallToolResult, McpError> {
-    // Resolve both identities up front (the sender may be a sub-identity via `as_agent`).
     let from_agent = match &params.as_agent {
         Some(raw) => AgentId::parse(raw.clone()).map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
         None => AgentId::parse(state.agent_id.clone())
@@ -370,7 +362,6 @@ pub(super) async fn run_dm_send(state: &ServerState, params: DmSendParams) -> Re
         return Err(comms_err("cannot dm yourself"));
     }
 
-    // Canonical pairwise room id: sort the two ids so a<->b and b<->a map to the same room.
     let (lo, hi) = if from_agent.as_str() <= to_agent.as_str() {
         (from_agent.as_str(), to_agent.as_str())
     } else {
@@ -378,10 +369,6 @@ pub(super) async fn run_dm_send(state: &ServerState, params: DmSendParams) -> Re
     };
     let room = RoomId::parse(format!("dm:{lo}:{hi}")).map_err(|e| comms_err(format!("derive dm room id: {e}")))?;
 
-    // Ensure the room exists and the SENDER is subscribed (create_room is an idempotent upsert).
-    // The room is scoped to a UNIQUE session token that matches no agent's real session id, so the
-    // broker never auto-joins anyone — membership is explicit (only the two ends that `join_room`).
-    // (A `Global` scope would broadcast the DM to every agent on the machine.)
     let dm_scope = RoomScope::Session(format!("dm:{lo}:{hi}"));
     let sender = resolve_comms_client(state, params.as_agent.clone()).await?;
     {
@@ -393,14 +380,12 @@ pub(super) async fn run_dm_send(state: &ServerState, params: DmSendParams) -> Re
         client.join_room(room.clone()).await.map_err(comms_err)?;
     }
 
-    // Subscribe the RECIPIENT via its own connection (lazily created) so the DM lands in its inbox.
     {
         let recipient = resolve_comms_client(state, Some(to_agent.as_str().to_string())).await?;
         let mut client = recipient.lock().await;
         client.join_room(room.clone()).await.map_err(comms_err)?;
     }
 
-    // Post via the sender.
     let body = params.body.unwrap_or_default().into_bytes();
     let message_id = {
         let mut client = sender.lock().await;

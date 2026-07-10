@@ -22,8 +22,6 @@ fn run(repo: &Path, args: &[&str]) {
         .env("GIT_AUTHOR_EMAIL", "t@e.x")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@e.x")
-        // Deterministic, monotonically increasing commit times so the newest-first walk order is
-        // stable (rev-walk sorts by commit time).
         .env("GIT_AUTHOR_DATE", "2025-01-01T00:00:00")
         .env("GIT_COMMITTER_DATE", "2025-01-01T00:00:00")
         .status()
@@ -95,7 +93,6 @@ fn full_rebuild_then_fresh_then_incremental() {
     commit_file(root, "b.rs", "fn b1() {}\n", "c2");
     commit_file(root, "a.rs", "fn a2() {}\n", "c3");
 
-    // First sync: full rebuild over all three commits.
     let (index, outcome) = sync(root);
     assert_eq!(
         outcome,
@@ -110,27 +107,21 @@ fn full_rebuild_then_fresh_then_incremental() {
         git_commits_touching(root, "a.rs"),
         "indexed history of a.rs matches git"
     );
-    // Drop the handle before re-opening — Fjall takes an exclusive per-directory process lock, so
-    // only one open handle may exist at a time (the single-writer model the real code relies on).
     drop(index);
 
-    // Second sync, HEAD unchanged: fresh no-op.
     let (index, outcome) = sync(root);
     assert_eq!(outcome, RebuildOutcome::Fresh);
     drop(index);
 
-    // Add a commit, then sync: incremental append of exactly one commit.
     commit_file(root, "a.rs", "fn a3() {}\n", "c4");
     let (index, outcome) = sync(root);
     assert_eq!(outcome, RebuildOutcome::Incremental { added: 1 });
     assert_eq!(index.commit_count(), 4);
-    // The newest commit touching a.rs is the one just added; full history still matches git.
     assert_eq!(
         index_commits_touching(&index, "a.rs"),
         git_commits_touching(root, "a.rs"),
         "incremental append preserves old ords and adds the new commit"
     );
-    // A file untouched by the new commit still resolves to its original history.
     assert_eq!(
         index_commits_touching(&index, "b.rs"),
         git_commits_touching(root, "b.rs"),
@@ -149,7 +140,6 @@ fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
     assert_eq!(before.len(), 2);
     drop(index);
 
-    // Rewrite history: amend the tip (changes its sha) — the filter-repo class of event.
     run(root, &["commit", "--amend", "-qm", "c2-amended"]);
     let rewritten = git_commits_touching(root, "a.rs");
     assert_ne!(before, rewritten, "amend changed the tip sha");
@@ -165,7 +155,6 @@ fn history_rewrite_triggers_full_rebuild_no_stale_commits() {
         ),
         "rewrite forces a full rebuild, got {outcome:?}"
     );
-    // No stale commits: the index now reflects the rewritten history exactly.
     assert_eq!(index_commits_touching(&index, "a.rs"), rewritten);
 }
 
@@ -181,7 +170,6 @@ fn reset_back_diverges_and_triggers_full_rebuild() {
     assert_eq!(index.commit_count(), 3);
     drop(index);
 
-    // Move HEAD backwards: the last indexed head is no longer an ancestor of HEAD.
     run(root, &["reset", "--hard", "-q", "HEAD~2"]);
     let (index, outcome) = sync(root);
     assert!(
@@ -200,17 +188,13 @@ fn merge_commit_union_across_parents_matches_git() {
     let dir = init_repo();
     let root = dir.path();
     commit_file(root, "base.rs", "fn base() {}\n", "c1");
-    // Branch off and change shared.rs on a feature branch.
     run(root, &["checkout", "-qb", "feature"]);
     commit_file(root, "shared.rs", "fn feature() {}\n", "feat");
     run(root, &["checkout", "-q", "main"]);
-    // Diverge on master too so the merge is a real two-parent merge.
     commit_file(root, "base.rs", "fn base2() {}\n", "main2");
     run(root, &["merge", "-q", "--no-ff", "feature", "-m", "merge"]);
 
     let (index, _) = sync(root);
-    // shared.rs came in on the feature leg; the merge is union-across-parents, so the index must
-    // agree with `git log --full-history` for the path.
     assert_eq!(
         index_commits_touching(&index, "shared.rs"),
         git_commits_touching(root, "shared.rs"),
@@ -257,7 +241,6 @@ fn bench_warm_query_latency() {
         return;
     }
     let index = GitHistoryIndex::open(&bdir).expect("open index");
-    // Walk the newest commits to harvest real paths to query (mix of rare + hot).
     let sample: Vec<String> = index
         .recent_commits(0, 200, true)
         .into_iter()
@@ -266,7 +249,6 @@ fn bench_warm_query_latency() {
         .collect();
     assert!(!sample.is_empty(), "index has commits to sample paths from");
 
-    // Warm the block cache.
     for p in sample.iter().take(50) {
         let _ = index.commits_touching(&p.as_bytes().into(), 0, 20);
     }
@@ -309,7 +291,6 @@ fn bench_rebuild_peak_rss() {
     let bdir = root.join(".basemind");
     std::fs::create_dir_all(&bdir).unwrap();
     let index = GitHistoryIndex::open(&bdir).expect("open");
-    // Force a from-scratch rebuild so the run measures the full build, not an incremental no-op.
     index.clear(&bdir).expect("clear");
     let start = std::time::Instant::now();
     let outcome = builder::sync(&index, &repo, &bdir).expect("sync");
@@ -382,7 +363,7 @@ fn full_text_search_over_author_message_and_body() {
         "Ada Lovelace",
         "ada@calc.example",
         "docs: readme",
-        "", // summary-only: no body row written
+        "",
     );
 
     let (index, _) = sync(root);
@@ -390,18 +371,14 @@ fn full_text_search_over_author_message_and_body() {
     let all_by_ada = search_shas(&index, "ada", FtsScope::Author);
     assert_eq!(all_by_ada.len(), 2, "two commits authored by Ada, got {all_by_ada:?}");
 
-    // Author email token matches the author field.
     assert_eq!(
         search_shas(&index, "calc", FtsScope::Author).len(),
         2,
         "email host token 'calc' matches both of Ada's commits"
     );
-    // 'ada' is an author token, not a message token → message scope finds nothing.
     assert!(search_shas(&index, "ada", FtsScope::Message).is_empty());
 
-    // Message/summary search.
     assert_eq!(search_shas(&index, "adder", FtsScope::All).len(), 1);
-    // Body-only word (not in the summary) proves the body is indexed.
     let addition = index.search_commits("addition", FtsScope::Message, 0, 10);
     assert_eq!(addition.len(), 1, "body-only term 'addition' finds the feat commit");
     assert!(
@@ -410,18 +387,14 @@ fn full_text_search_over_author_message_and_body() {
         addition[0].body
     );
 
-    // AND semantics: both terms in one commit's message → match.
     assert_eq!(search_shas(&index, "null deref", FtsScope::Message).len(), 1);
-    // Terms that live in DIFFERENT commits → no single commit satisfies the AND.
     assert!(
         search_shas(&index, "adder parser", FtsScope::All).is_empty(),
         "'adder' (c1) AND 'parser' (c2) share no commit"
     );
-    // Empty / punctuation-only query → nothing.
     assert!(search_shas(&index, "   ", FtsScope::All).is_empty());
     drop(index);
 
-    // Incremental append keeps the term index current.
     commit_authored(
         root,
         "vector.rs",
@@ -433,11 +406,8 @@ fn full_text_search_over_author_message_and_body() {
     );
     let (index, outcome) = sync(root);
     assert!(matches!(outcome, RebuildOutcome::Incremental { added: 1 }));
-    // 'adder' now appears in two commits (c1 feat + c4 perf), newest-first.
     assert_eq!(search_shas(&index, "adder", FtsScope::All).len(), 2);
-    // New author is searchable after the incremental append.
     assert_eq!(search_shas(&index, "gauss", FtsScope::Author).len(), 1);
-    // 'addition' now in c1 body + c4 body.
     assert_eq!(search_shas(&index, "addition", FtsScope::Message).len(), 2);
 }
 
@@ -448,7 +418,6 @@ fn empty_index_before_sync_falls_back() {
     commit_file(root, "a.rs", "fn a() {}\n", "c1");
     let bdir = basemind_dir(root);
     let index = GitHistoryIndex::open(&bdir).expect("open");
-    // Never synced: empty, and not fresh for any head (so tools would live-walk).
     assert!(index.is_empty());
     assert_eq!(index.last_indexed_head_hex(), None);
 }
@@ -484,7 +453,6 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
     let dir = init_repo();
     let root = dir.path();
 
-    // Oldest commit (rank 121): the author we later look for.
     commit_authored_at(
         root,
         "a.rs",
@@ -494,7 +462,6 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
         "early: seed the module",
         "2025-01-01T00:00:00",
     );
-    // Bury it under 120 strictly-later commits by a different author.
     for i in 0..120 {
         let date = format!("2025-01-01T{:02}:{:02}:00", 1 + (i / 60), i % 60);
         commit_authored_at(
@@ -511,20 +478,17 @@ fn author_search_finds_commit_beyond_recent_window_matches_git() {
     let (index, _) = sync(root);
     assert_eq!(index.commit_count(), 121);
 
-    // Oracle: git's own HEAD-scoped, case-insensitive author search, newest first.
     let git_newest = capture(root, &["log", "-i", "--author=Dor Green", "--format=%H", "-1"])
         .trim()
         .to_string();
     assert!(!git_newest.is_empty(), "git finds Dor Green's commit");
 
-    // search_git_history(author) returns exactly Dor's commit — full-depth, matching git.
     assert_eq!(
         search_shas(&index, "Dor Green", FtsScope::Author),
         vec![git_newest.clone()],
         "author search matches `git log -i --author` at full depth"
     );
 
-    // And it lives beyond the newest-100 window that `recent_changes` scans — the bug's root cause.
     let recent: Vec<String> = index.recent_commits(0, 100, false).into_iter().map(|c| c.sha).collect();
     assert_eq!(recent.len(), 100, "the recent window is capped at 100");
     assert!(

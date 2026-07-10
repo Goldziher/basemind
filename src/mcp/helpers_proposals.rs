@@ -49,8 +49,6 @@ use crate::index::keys::{PROPOSAL_KIND_SKILL, PROPOSAL_KIND_TOMBSTONE};
 #[cfg(feature = "memory")]
 use crate::path::RelPath;
 
-// ─── Named constants ──────────────────────────────────────────────────────────
-
 /// Default number of recent commits to walk when mining.
 #[cfg(feature = "memory")]
 const DEFAULT_MINE_WINDOW: u32 = 200;
@@ -84,8 +82,6 @@ const SHORT_ID_LEN: usize = 12;
 #[cfg(feature = "memory")]
 const COCHANGE_TAGS: &[&str] = &["skill", "cochange"];
 
-// ─── Content-addressed proposal id ───────────────────────────────────────────
-
 /// Compute the proposal id as the hex-encoded blake3 hash of the sorted file-set bytes.
 /// The sort is byte-order (RelPath implements Ord lexicographically on raw bytes) so the id is
 /// deterministic regardless of which file is the "anchor" in the pair loop.
@@ -94,12 +90,10 @@ fn proposal_id(sorted_files: &[RelPath]) -> String {
     let mut hasher = blake3::Hasher::new();
     for f in sorted_files {
         hasher.update(f.as_bytes());
-        hasher.update(b"\x00"); // NUL separator — safe because RelPath never contains NUL
+        hasher.update(b"\x00");
     }
     hex::encode(hasher.finalize().as_bytes())
 }
-
-// ─── Cluster helpers ──────────────────────────────────────────────────────────
 
 /// Transitively cluster a file with all partners that exceed both `min_support` and
 /// `min_confidence` (using `file` as the anchor). Returns the sorted file-set.
@@ -173,8 +167,6 @@ fn build_description(anchor: &RelPath, cluster: &[RelPath], support: u32, anchor
     )
 }
 
-// ─── `proposals_mine` ─────────────────────────────────────────────────────────
-
 /// Mine co-change skill proposals from the recent git history.
 ///
 /// See module-level docs for the algorithm. Requires git (returns an MCP error when not in a
@@ -195,7 +187,6 @@ pub(super) async fn run_proposals_mine(
         .unwrap_or(DEFAULT_MAX_FILES_PER_COMMIT)
         .min(HARD_MAX_FILES_PER_COMMIT);
 
-    // ── Git log ──────────────────────────────────────────────────────────────
     let repo = require_git_repo(state)?;
     let head = head_sha(repo)?;
     let commits = state
@@ -203,39 +194,23 @@ pub(super) async fn run_proposals_mine(
         .log(repo, &head, None, window, true)
         .map_err(|e| McpError::internal_error(format!("git log: {e}"), None))?;
 
-    // ── Co-change counting ────────────────────────────────────────────────────
-    //
-    // Each distinct `RelPath` is interned once into `files` (the owned-path arena); `freq` and the
-    // `cochange` pair map are then keyed by the cheap `usize` index instead of cloning the heap
-    // `bstr::BString` per pair. At defaults (window=200, max=25 files) the old code cloned a
-    // `RelPath` for every one of the ~62.5k pair updates; interning drops that to one clone per
-    // distinct path at first sight.
-    //
-    // `files[id]`: the interned path. `freq[id]`: how many commits touched it.
-    // `cochange[(a,b)]`: how many commits touched both, with the smaller index first so
-    // `(a,b) == (b,a)` collapses to one canonical key.
     let mut interner: AHashMap<RelPath, usize> = AHashMap::new();
     let mut files: Vec<RelPath> = Vec::new();
     let mut freq: Vec<u32> = Vec::new();
     let mut cochange: AHashMap<(usize, usize), u32> = AHashMap::new();
     let mut skipped_bulk: u32 = 0;
 
-    // Reused per-commit scratch buffer of interned indices — avoids reallocating each iteration.
     let mut commit_ids: Vec<usize> = Vec::new();
 
     for commit in commits.as_ref() {
-        // Changed/Added/Modified files for this commit (no Deleted).
         let is_changed = |kind: &crate::git::ChangeKind| !matches!(kind, crate::git::ChangeKind::Deleted);
 
-        // Bulk/vendor guard: count changed files before interning so a skipped commit costs nothing.
         let changed_count = commit.files.iter().filter(|(_, kind)| is_changed(kind)).count();
         if changed_count > max_files_per_commit as usize {
             skipped_bulk += 1;
             continue;
         }
 
-        // Intern each changed path and record per-file frequency. One clone per distinct path
-        // (only when first seen); repeat sightings reuse the existing index.
         commit_ids.clear();
         for (path, _) in commit.files.iter().filter(|(_, kind)| is_changed(kind)) {
             let id = match interner.get(path) {
@@ -252,10 +227,8 @@ pub(super) async fn run_proposals_mine(
             commit_ids.push(id);
         }
 
-        // Update pair co-change counts (O(files²) per commit — bounded by max_files_per_commit).
         for i in 0..commit_ids.len() {
             for j in (i + 1)..commit_ids.len() {
-                // Canonical key: smaller index first so (a,b) == (b,a).
                 let (a, b) = if commit_ids[i] <= commit_ids[j] {
                     (commit_ids[i], commit_ids[j])
                 } else {
@@ -266,14 +239,6 @@ pub(super) async fn run_proposals_mine(
         }
     }
 
-    // ── Candidate extraction ──────────────────────────────────────────────────
-    //
-    // Collect anchors that have at least one qualifying partner. An anchor is the higher-freq
-    // file in each qualifying pair — biases toward "when you change the hot file, check the
-    // co-changed file" rather than the reverse. We deduplicate by cluster id (content-addressed
-    // blake3 of the sorted file-set) to avoid emitting the same cluster from both ends.
-
-    // Identify anchors (interned indices) with at least one partner exceeding thresholds.
     let mut anchor_candidates: AHashSet<usize> = AHashSet::new();
     for (&(a, b), &count) in &cochange {
         if count < min_support {
@@ -281,7 +246,6 @@ pub(super) async fn run_proposals_mine(
         }
         let fa = freq.get(a).copied().unwrap_or(1).max(1);
         let fb = freq.get(b).copied().unwrap_or(1).max(1);
-        // Use the higher-frequency file as anchor.
         if fa >= fb {
             let conf = count as f32 / fa as f32;
             if conf >= min_confidence {
@@ -295,7 +259,6 @@ pub(super) async fn run_proposals_mine(
         }
     }
 
-    // ── Write proposals ───────────────────────────────────────────────────────
     let store_guard = state.store.read().await;
     let idx = store_guard
         .index_db
@@ -310,17 +273,14 @@ pub(super) async fn run_proposals_mine(
         let anchor_path = &files[anchor];
         let cluster = build_cluster(anchor, &files, &cochange, &freq, min_support, min_confidence);
         if cluster.len() < 2 {
-            // Degenerate cluster (no qualifying partner survived) — skip.
             continue;
         }
 
         let id = proposal_id(&cluster);
         if !seen_ids.insert(id.clone()) {
-            // Already wrote this cluster from a different anchor in this run.
             continue;
         }
 
-        // Skip if a tombstone exists for this id (user previously rejected it).
         let tombstone_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &id);
         let has_tombstone = idx
             .proposals
@@ -331,9 +291,6 @@ pub(super) async fn run_proposals_mine(
             continue;
         }
 
-        // Find the co-change count for the anchor ↔ each partner pair (use the max support
-        // across pairs in the cluster as the representative support for the description).
-        // Partners are mapped back to their interned index via the interner to key `cochange`.
         let anchor_freq = freq.get(anchor).copied().unwrap_or(1).max(1);
         let max_support = cluster
             .iter()
@@ -349,7 +306,6 @@ pub(super) async fn run_proposals_mine(
             .unwrap_or(0);
 
         let confidence = max_support as f32 / anchor_freq as f32;
-        // Importance: support / window (normalised to [0,1)).
         let importance = (max_support as f32 / window as f32).min(0.99);
         let description = build_description(anchor_path, &cluster, max_support, anchor_freq);
 
@@ -380,8 +336,6 @@ pub(super) async fn run_proposals_mine(
     })
 }
 
-// ─── `proposals_list` ─────────────────────────────────────────────────────────
-
 /// List pending proposals for the current scope, optionally filtered by kind.
 /// Paginated via Fjall-backed cursors (stable across rescans).
 #[cfg(feature = "memory")]
@@ -396,8 +350,6 @@ pub(super) async fn run_proposals_list(
     let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT) as usize;
     let scan_cap = limit.saturating_mul(8).max(1_000);
 
-    // Determine which kind byte(s) to scan. When `kind` is omitted we scan both
-    // PROPOSAL_KIND_MEMORY and PROPOSAL_KIND_SKILL (skip tombstones).
     let kind_bytes: Vec<u8> = match params.kind.as_deref() {
         Some("skill") => vec![PROPOSAL_KIND_SKILL],
         Some("memory") => vec![crate::index::keys::PROPOSAL_KIND_MEMORY],
@@ -414,7 +366,6 @@ pub(super) async fn run_proposals_list(
     let mut truncated = false;
     let mut last_key_bytes: Option<Vec<u8>> = None;
 
-    // Resume from cursor when provided: decode the raw Fjall key and start after it.
     let resume_key: Option<Vec<u8>> = if let Some(c) = &params.cursor {
         Some(c.decode_fjall()?)
     } else {
@@ -426,7 +377,6 @@ pub(super) async fn run_proposals_list(
         let upper = prefix_upper_bound(&prefix);
 
         let lower_bound: Bound<Vec<u8>> = if let Some(ref key) = resume_key {
-            // Only skip past the resume key if it is within THIS kind's prefix.
             if key.starts_with(&prefix) {
                 Bound::Excluded(key.clone())
             } else {
@@ -491,8 +441,6 @@ pub(super) async fn run_proposals_list(
     })
 }
 
-// ─── `proposal_accept` ────────────────────────────────────────────────────────
-
 /// Accept a proposal: promote it to a `MemoryRecord` (Fjall + LanceDB), then delete the
 /// proposal from the `proposals` keyspace.
 ///
@@ -505,7 +453,6 @@ pub(super) async fn run_proposal_accept(
     state: &ServerState,
     params: ProposalAcceptParams,
 ) -> Result<CallToolResult, McpError> {
-    // ── Read proposal ─────────────────────────────────────────────────────────
     let raw_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &params.id);
 
     let proposal: ProposalRecord = {
@@ -523,13 +470,11 @@ pub(super) async fn run_proposal_accept(
             .map_err(|e| McpError::internal_error(format!("decode proposal: {e}"), None))?
     };
 
-    // ── Derive memory key ─────────────────────────────────────────────────────
     let memory_key = params.key.clone().unwrap_or_else(|| {
         let short = &params.id[..params.id.len().min(SHORT_ID_LEN)];
         format!("{MEMORY_KEY_PREFIX}{short}")
     });
 
-    // ── Build MemoryRecord ────────────────────────────────────────────────────
     let now = crate::lance::now_micros();
     let tags: Vec<String> = COCHANGE_TAGS.iter().map(|s| s.to_string()).collect();
     let provenance = Provenance {
@@ -538,8 +483,6 @@ pub(super) async fn run_proposal_accept(
         commands: Vec::new(),
     };
 
-    // Build the record once (Unverified), then stamp the verdict from a single audit pass —
-    // avoids two struct literals that could silently drift out of sync.
     let mut record = MemoryRecord {
         value: proposal.description.clone(),
         tags: tags.clone(),
@@ -558,7 +501,6 @@ pub(super) async fn run_proposal_accept(
     record.verified = verdict.state;
     record.last_verified = now;
 
-    // ── Write to Fjall (group tier, owner = "") ───────────────────────────────
     let idx = store_guard
         .index_db
         .as_ref()
@@ -573,15 +515,12 @@ pub(super) async fn run_proposal_accept(
         &record,
     )?;
 
-    // Delete the proposal from the proposals keyspace.
     idx.proposals
         .remove(&raw_key)
         .map_err(|e| McpError::internal_error(format!("proposals remove: {e}"), None))?;
 
-    // Drop the store guard before the async Lance embed.
     drop(store_guard);
 
-    // ── Embed into LanceDB ────────────────────────────────────────────────────
     {
         let embedding = super::memory::embed_query(state, &proposal.description).await?;
         let lance = super::memory::lance_store(state).await?;
@@ -609,8 +548,6 @@ pub(super) async fn run_proposal_accept(
     })
 }
 
-// ─── `proposal_reject` ────────────────────────────────────────────────────────
-
 /// Reject a proposal: delete it from the `proposals` keyspace and write a tombstone so
 /// re-mining will not resurface the same candidate.
 #[cfg(feature = "memory")]
@@ -631,12 +568,10 @@ pub(super) async fn run_proposal_reject(
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
 
-    // Delete proposal (if it still exists — idempotent).
     idx.proposals
         .remove(&proposal_key)
         .map_err(|e| McpError::internal_error(format!("proposals remove: {e}"), None))?;
 
-    // Write tombstone (empty value — marker only).
     idx.proposals
         .insert(tombstone_key, b"")
         .map_err(|e| McpError::internal_error(format!("tombstone insert: {e}"), None))?;

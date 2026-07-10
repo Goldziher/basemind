@@ -58,10 +58,7 @@ pub fn exact_lane_chunk_ids(store: &Store, db: &IndexDb, query: &str, cap: usize
     if matches.is_empty() {
         return Vec::new();
     }
-    // Read each file's chunk sidecar at most once per query.
     let mut blob_cache: AHashMap<RelPath, Option<CodeChunkBlob>> = AHashMap::new();
-    // Two rank tiers: exact-name matches first, then longer prefix matches. Dedup chunk ids across
-    // both (a chunk resolved by an exact match must not reappear in the prefix tier).
     let mut exact: Vec<String> = Vec::new();
     let mut prefix: Vec<String> = Vec::new();
     let mut seen: AHashSet<String> = AHashSet::new();
@@ -118,7 +115,6 @@ mod tests {
         assert!(is_identifier_query("parse_config"));
         assert!(is_identifier_query("_private"));
         assert!(is_identifier_query("Factory2"));
-        // Rejections: phrases, too short, leading digit, punctuation/paths, whitespace.
         assert!(!is_identifier_query("parse config"));
         assert!(!is_identifier_query("a"));
         assert!(!is_identifier_query("2fast"));
@@ -129,7 +125,6 @@ mod tests {
 
     #[test]
     fn owning_chunk_prefers_tightest_containing_span() {
-        // A class chunk [0,100) with a nested method chunk [20,40); offset 30 is in both.
         let chunks = [chunk("h:0", 0, 100), chunk("h:1", 20, 40)];
         assert_eq!(
             owning_chunk_id(&chunks, 30),
@@ -146,9 +141,7 @@ mod tests {
     #[test]
     fn owning_chunk_none_for_uncovered_offset() {
         let chunks = [chunk("h:0", 0, 10), chunk("h:1", 50, 60)];
-        // Offset 30 falls in the gap between the two chunks (a whitespace hole).
         assert_eq!(owning_chunk_id(&chunks, 30), None);
-        // Half-open: byte_end is exclusive.
         assert_eq!(owning_chunk_id(&chunks, 10), None);
         assert_eq!(owning_chunk_id(&chunks, 0), Some("h:0"));
     }

@@ -45,15 +45,10 @@ fn scan_extracts_rust_symbols() {
 
 #[test]
 fn scan_reuses_extraction_across_views_sharing_blobs() {
-    // Gap A regression. A second view over the same root shares the content-addressed blob store, so
-    // its (empty) index misses the mtime/content "unchanged" fast-paths — yet the extraction must be
-    // reused from the existing blob rather than re-parsed with tree-sitter. This is the fresh-worktree
-    // case in miniature: a linked worktree shares the main worktree's blobs exactly this way.
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
 
-    // First scan into the working view: real parse, blob written.
     let mut working = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let first = scan(
         root,
@@ -68,13 +63,8 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
         first.stats.reused_extraction, 0,
         "first scan parses; nothing to reuse yet"
     );
-    // Release the repo-wide `.basemind/.lock` before opening the sibling view. On real worktrees the
-    // two stores live under separate `.basemind` dirs (separate locks) but share the same blob store;
-    // here a single root with two views models the same code path — empty index + blobs already on
-    // disk — without a second git worktree.
     drop(working);
 
-    // Second scan into a DIFFERENT view — empty index, shared blobs. Must reuse, not re-parse.
     let mut sibling = Store::open(root, "sibling").unwrap();
     let second = scan(
         root,
@@ -94,7 +84,6 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
         "extraction reused from the shared content-addressed blob instead of re-parsed"
     );
 
-    // The reused index is correct — symbols resolve in the sibling view just like a fresh parse.
     let hits = basemind::query::search_symbols(&sibling, "alpha", Some(SymbolKind::Function)).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path.as_str(), Some("a.rs"));
@@ -102,8 +91,6 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
 
 #[test]
 fn store_open_writes_self_ignoring_gitignore() {
-    // Opening the store must drop a `.basemind/.gitignore` containing `*` so a
-    // user's repo never accidentally commits the machine-local index.
     let (dir, _cfg) = fresh_repo();
     let root = dir.path();
 
@@ -120,7 +107,6 @@ fn store_open_writes_self_ignoring_gitignore() {
 
 #[test]
 fn store_open_preserves_existing_gitignore() {
-    // A user edit to `.basemind/.gitignore` must be respected — never overwritten.
     let (dir, _cfg) = fresh_repo();
     let root = dir.path();
     let basemind_dir = root.join(".basemind");
@@ -135,11 +121,6 @@ fn store_open_preserves_existing_gitignore() {
 
 #[test]
 fn scan_indexes_dynamic_language_without_override_queries() {
-    // A file in a TSLP-supported language for which basemind ships no hand-written `.scm`
-    // override now resolves through the TSLP `tags.scm` fallback (where one exists). For
-    // formats with no tags.scm (e.g. JSON / YAML), the file still indexes but symbols stay
-    // empty — exercised here with a `.json` file to keep the test focused on the negative
-    // branch. Positive-branch coverage for kotlin / csharp lives in `tests/lang_fallback_smoke.rs`.
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
 
@@ -160,8 +141,6 @@ fn scan_indexes_dynamic_language_without_override_queries() {
     let entry = store.lookup("data.json").expect("data.json indexed");
     assert_eq!(entry.language, "json", "language stored as TSLP pack name");
 
-    // No tags.scm for JSON in TSLP — fallback misses, symbols stay empty, lookup chain
-    // doesn't error.
     let hits = basemind::query::search_symbols(&store, "alpha", None).unwrap();
     assert!(hits.is_empty(), "json has no tags.scm; symbols stay empty");
 }
@@ -306,11 +285,6 @@ fn ignores_unknown_languages() {
         basemind::scanner::EmbedMode::Inline,
     )
     .unwrap();
-    // `.xyz` is not in the tree-sitter-language-pack registry. Without the documents
-    // feature it's counted as `skipped_no_lang`; with documents enabled the scanner
-    // hands it to the doc tier where mime sniffing + chunking decide its fate (typically
-    // `extract_failed` or `doc_indexed` with zero chunks). The invariant that holds in
-    // both modes is that the file never lands in the code-tier index.
     #[cfg(not(feature = "documents"))]
     assert_eq!(_report.stats.skipped_no_lang, 1);
     assert!(store.lookup("weird.xyz").is_none());
@@ -354,7 +328,6 @@ fn store_lock_prevents_concurrent_open() {
         .expect("second open must fail");
     assert!(matches!(err, basemind::store::StoreError::Locked { .. }));
     drop(first);
-    // After dropping, open succeeds again.
     Store::open(root, basemind::store::VIEW_WORKING).unwrap();
 }
 
@@ -362,7 +335,6 @@ fn store_lock_prevents_concurrent_open() {
 fn scan_flags_files_with_syntax_errors() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    // Broken `fn x( {` plus a well-formed neighbor.
     fs::write(
         root.join("broken.rs"),
         b"pub fn ok_one() {}\n\npub fn broken( {\n    let x = ;\n}\n",
@@ -401,7 +373,6 @@ fn scan_flags_files_with_syntax_errors() {
         other => panic!("expected Updated, got {other:?}"),
     }
 
-    // Recovered symbols are still queryable.
     let outline = basemind::query::file_outline(&store, "broken.rs").unwrap();
     assert!(outline.had_errors);
     let names: Vec<&str> = outline.symbols.iter().map(|s| s.name.as_str()).collect();
@@ -432,7 +403,6 @@ fn scan_paths_only_touches_listed_files() {
     let hash_b_before = store.lookup("b.rs").unwrap().hash_hex.clone();
     let hash_c_before = store.lookup("c.rs").unwrap().hash_hex.clone();
 
-    // Mutate a.rs only.
     fs::write(root.join("a.rs"), b"pub fn a_changed() {}\n").unwrap();
 
     let report = scan_paths(
@@ -446,16 +416,12 @@ fn scan_paths_only_touches_listed_files() {
     assert_eq!(report.stats.scanned, 1, "scan_paths visited only one file");
     assert_eq!(report.stats.updated, 1);
 
-    // The unchanged files keep their original hashes.
     assert_eq!(store.lookup("b.rs").unwrap().hash_hex, hash_b_before);
     assert_eq!(store.lookup("c.rs").unwrap().hash_hex, hash_c_before);
 
-    // The mutated file's symbol has changed.
     let hits = basemind::query::search_symbols(&store, "a_changed", None).unwrap();
     assert_eq!(hits.len(), 1);
 }
-
-// ─── Stage 2: query coverage gaps (TSX, arrow functions, Rust impl) ────────────
 
 /// `const Foo = () => { … }` should surface as kind `function`, not `const`. The dedupe
 /// pass in `extract/l1.rs` promotes the generic-`@symbol.const` match to function when the
@@ -539,12 +505,9 @@ fn rust_impl_block_is_impl_kind() {
     assert_eq!(impls.len(), 1, "expected an impl block for Foo");
     assert_eq!(impls[0].symbol.kind, SymbolKind::Impl);
 
-    // The struct itself coexists, not replaced by the impl.
     let structs = basemind::query::search_symbols(&store, "Foo", Some(SymbolKind::Struct)).unwrap();
     assert_eq!(structs.len(), 1);
 }
-
-// ─── Stage 3: tree-sitter robustness ──────────────────────────────────────────
 
 /// A binary-shaped file masquerading as TypeScript via its extension should be skipped
 /// before the parser is invoked, not turned into an empty-symbols entry.
@@ -552,7 +515,6 @@ fn rust_impl_block_is_impl_kind() {
 fn binary_file_with_source_extension_is_skipped() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    // Synthetic content with a NUL in the first few bytes — looks_binary catches it.
     let mut payload = vec![0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02, 0x03];
     payload.extend_from_slice(&[0u8; 64]);
     fs::write(root.join("not_really.ts"), &payload).unwrap();
@@ -735,11 +697,7 @@ fn python_decorators_attach_to_symbol() {
     );
 }
 
-// Skipped on macOS — APFS rejects non-UTF-8 filenames with EILSEQ at fs::write time.
 // Marked #[ignore] on Linux too: the GitHub-hosted Ubuntu runners' filesystem rejects
-// the indexed entry (updated=0 in CI) even though local Linux exercises it correctly;
-// the JSON / msgpack round-trip is still covered cross-platform by the unit tests in
-// `src/path.rs`. Re-enable once a stable repro on a hosted runner is available.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "non-UTF-8 filename indexing not reliable on GitHub-hosted Ubuntu runners"]
@@ -748,8 +706,6 @@ fn scanner_preserves_non_utf8_filename_bytes() {
 
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    // Build a filename containing an invalid UTF-8 lead byte (0xff). On Unix, paths are
-    // raw bytes — std::fs::write happily creates this file.
     let raw_bytes: &[u8] = b"f\xffoo.rs";
     let bad_name = std::ffi::OsStr::from_bytes(raw_bytes);
     fs::write(root.join(bad_name), b"pub fn from_bad_path() {}\n").unwrap();
@@ -768,7 +724,6 @@ fn scanner_preserves_non_utf8_filename_bytes() {
         "scanner should index files with non-UTF-8 names; updated={}",
         report.stats.updated
     );
-    // The path should round-trip through the on-disk index as raw bytes.
     let key = basemind::path::RelPath::from(raw_bytes);
     let entry = store.lookup(&key).expect("non-UTF-8 path should be in index");
     assert_eq!(entry.language, "rust");
@@ -795,8 +750,6 @@ fn scan_detects_french_in_markdown_fixture() {
     fs::copy(src, &dst).expect("copy french fixture");
 
     let cfg = DocConfig {
-        // Embeddings are expensive (model download) and unrelated to language
-        // detection; skip them so the test stays offline-friendly.
         embed: false,
         embedding_preset: None,
         language: DocLanguageConfig {
@@ -829,7 +782,6 @@ fn extract_doc_surfaces_keywords_when_enabled() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("article.txt");
-    // Topical text so YAKE has obvious phrases to lock onto.
     let body = "Climate change is reshaping global agriculture. Farmers in tropical regions \
                 report shifting rainfall patterns and crop yields are declining year over year. \
                 Climate adaptation strategies include drought-resistant seed varieties and \
@@ -906,8 +858,6 @@ fn scan_extracts_keywords_and_entities() {
         !doc.entities.is_empty(),
         "NER pipeline should produce at least one entity on the fixture"
     );
-    // We don't pin the exact label set — gline-rs models evolve — but at least
-    // ONE entity should land in a structured category (i.e. not custom-empty).
     assert!(
         doc.entities
             .iter()
@@ -943,7 +893,6 @@ fn ts_multiline_generic_signature_is_collapsed() {
         .signature
         .as_deref()
         .expect("signature should be present");
-    // Signature should be on one line, contain both generic params, and stop before the brace.
     assert!(
         sig.contains("T extends Bar") && sig.contains("U extends Baz"),
         "signature lost generic params: {sig}"
@@ -956,12 +905,8 @@ fn ts_multiline_generic_signature_is_collapsed() {
 
 #[test]
 fn scan_paths_noop_batch_does_no_work() {
-    // A debounced batch where every path is excluded (default excludes: node_modules / .basemind)
-    // or gitignored must record zero work — no indexing, empty report — so the serve watcher never
-    // rebuilds its cache on ignored / nested-`.basemind` churn (issue #33).
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    // `.git` + `.gitignore` so the `ignore` crate honors gitignore (git rules apply only in a repo).
     fs::create_dir_all(root.join(".git")).unwrap();
     fs::write(root.join(".gitignore"), b"build/\n").unwrap();
     fs::create_dir_all(root.join("build")).unwrap();
@@ -972,7 +917,6 @@ fn scan_paths_noop_batch_does_no_work() {
     fs::write(root.join("child/.basemind/index.msgpack"), b"\x00").unwrap();
 
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-    // Seed the index with one real file so the store is non-empty.
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
     scan(
         root,
@@ -999,8 +943,6 @@ fn scan_paths_noop_batch_does_no_work() {
 
 #[test]
 fn scan_paths_prunes_deleted_indexed_file() {
-    // A deletion-only batch (no indexable additions) must still record the removal — the short
-    // circuit only triggers when BOTH rels and removed are empty.
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
@@ -1032,9 +974,6 @@ fn scan_paths_prunes_deleted_indexed_file() {
 
 #[test]
 fn markdown_headings_and_obsidian_references_are_indexed() {
-    // Obsidian/Markdown support: headings become navigable `Heading` symbols; wikilinks, standard
-    // note links, and `#tags` (inline + frontmatter) become calls so `find_references` yields a
-    // note's backlinks and a tag's members.
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
     fs::write(
@@ -1055,12 +994,10 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
     .unwrap();
     assert_eq!(report.stats.updated, 2);
 
-    // Headings → `Heading` symbols, searchable like source symbols.
     let hits = basemind::query::search_symbols(&store, "Section A", Some(SymbolKind::Heading)).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path.as_str(), Some("note.md"));
     assert_eq!(hits[0].symbol.kind, SymbolKind::Heading);
-    // All four headings across the two notes are indexed.
     assert_eq!(
         basemind::query::search_symbols(&store, "Title", Some(SymbolKind::Heading))
             .unwrap()
@@ -1068,9 +1005,6 @@ fn markdown_headings_and_obsidian_references_are_indexed() {
         1
     );
 
-    // Links + tags → calls (the backlink / tag graph). note.md links to "Other Note" three times
-    // (two wikilink forms + one standard `[..](Other%20Note.md)` link, all normalized to the same
-    // note name), embeds "Diagram.png", and carries three tags (two frontmatter, one inline).
     let entry = store.lookup("note.md").expect("note indexed");
     let l2 = store.read_l2_by_hex(&entry.hash_hex).unwrap().expect("l2 present");
     let callees: Vec<&str> = l2.calls.iter().map(|c| c.callee.as_str()).collect();
@@ -1112,7 +1046,6 @@ fn documents_are_cached_unchanged_and_pruned() {
     assert!(store.lookup_doc("notes.svg").is_some(), "doc tracked in doc_files");
     drop(store);
 
-    // Rescan, same content: skipped as Unchanged, NOT re-indexed. The entry is retained.
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
         root,
@@ -1130,7 +1063,6 @@ fn documents_are_cached_unchanged_and_pruned() {
     );
     drop(store);
 
-    // Delete the doc: the tracking entry is pruned.
     fs::remove_file(root.join("notes.svg")).unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     scan(
@@ -1206,7 +1138,6 @@ fn same_size_content_change_is_reextracted() {
         )
         .unwrap();
     }
-    // Identical byte length, different content — the racy window the nanosecond mtime closes.
     fs::write(root.join("a.rs"), b"pub fn gamma() {}\n").unwrap();
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let report = scan(
@@ -1256,16 +1187,13 @@ fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() 
     .unwrap();
     assert_eq!(report.stats.updated, 1);
 
-    // Code-map is queryable: the symbol resolves from the deferred pass.
     let hits = basemind::query::search_symbols(&store, "parse_config", None).unwrap();
     assert_eq!(hits.len(), 1, "deferred scan must still index symbols");
 
-    // The BM25 keyword lane is populated even though embeddings were deferred.
     let db = store.index_db.as_ref().expect("index db present");
     let keyword = basemind::search::bm25::bm25_search(db, "parse", 10);
     assert!(!keyword.is_empty(), "deferred scan must populate the BM25 keyword lane");
 
-    // No semantic vectors: the LanceDB code_chunks store was never created (no embedding rows).
     assert!(
         !store.lance_dir_exists(),
         "deferred scan must not write LanceDB vector rows"

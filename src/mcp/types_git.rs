@@ -10,8 +10,6 @@ use super::cursor::Cursor;
 use super::types::default_true;
 use crate::path::RelPath;
 
-// ─── Parameter shapes ────────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchGitHistoryParams {
     #[serde(alias = "query", alias = "needle", alias = "q", alias = "search", alias = "text")]
@@ -168,8 +166,6 @@ pub struct BlameSymbolParams {
     #[serde(default)]
     pub cursor: Option<Cursor>,
 }
-
-// ─── Response shapes ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
 pub(in crate::mcp) struct CommitView {

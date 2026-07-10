@@ -256,8 +256,6 @@ impl Broker {
         }
     }
 
-    // ─── handlers ─────────────────────────────────────────────────────────────────────────
-
     #[allow(clippy::too_many_arguments)]
     async fn on_hello(
         &self,
@@ -276,8 +274,6 @@ impl Broker {
             });
         }
         session.agent = Some(agent.clone());
-        // A malformed parent id from the wire is dropped rather than rejecting the Hello — the
-        // lineage hint is advisory; the session room match keys on `session_id` alone.
         let parent_agent = parent_agent.and_then(|p| AgentId::parse(p).ok());
         session.session_id = session_id.clone();
         session.parent_agent = parent_agent.clone();
@@ -286,7 +282,6 @@ impl Broker {
         chain.parent_agent = parent_agent;
         session.chain = Some(chain);
 
-        // Record / refresh the agent.
         let now = now_micros();
         let record = match self.store.get_agent(&agent)? {
             Some(mut existing) => {
@@ -303,11 +298,8 @@ impl Broker {
         };
         self.store.put_agent(&record)?;
 
-        // Auto-join every scope-matching room and the default per-repo room.
         if let Some(ref chain) = session.chain {
             let session_room = self.auto_join(&agent, chain)?;
-            // Persist the session lineage row now that the child is joined to its session room.
-            // Best-effort: a store failure here must not fail the handshake.
             if let Err(e) = self.record_session_lineage(&agent, chain, session_room) {
                 tracing::warn!(error = %e, "comms: failed to record session lineage");
             }
@@ -338,9 +330,6 @@ impl Broker {
             return Ok(());
         };
         let Some(room_id) = session_room else {
-            // The child presented a session id but no `RoomScope::Session` room matched — the parent
-            // has not created it yet (out-of-order startup). Skip the row; a later `Hello` (after the
-            // room exists) records it. Warn so the ordering bug is diagnosable.
             tracing::warn!(
                 session_id = %sid,
                 agent = %agent,
@@ -348,7 +337,6 @@ impl Broker {
             );
             return Ok(());
         };
-        // Preserve the original first-seen time across reconnects.
         let created_at = match self.store.get_session(&sid)? {
             Some(existing) => existing.created_at,
             None => now_micros(),
@@ -419,9 +407,6 @@ impl Broker {
         scope: RoomScope,
         title: Option<String>,
     ) -> Result<CommsResponse, CommsStoreError> {
-        // A freshly-created room has no posts yet, so `last_activity` starts at 0 (⇒ flagged stale
-        // until the first post stamps it). An idempotent re-create of an EXISTING room must not
-        // clobber its accrued activity, so carry the prior `last_activity` forward when present.
         let last_activity = self
             .store
             .get_room(&room)?
@@ -445,7 +430,6 @@ impl Broker {
         session: &mut Session,
     ) -> Result<CommsResponse, CommsStoreError> {
         let chain = build_chain(remote, cwd);
-        // Auto-join the matching rooms for the session agent, if it has said Hello.
         if let Some(agent) = session.agent.clone() {
             self.auto_join(&agent, &chain)?;
         }
@@ -495,10 +479,6 @@ impl Broker {
         let id = mint_message_id(&room, &agent);
         let meta = store::build_meta(id, room.clone(), agent, subject, tags, reply_to, scope, &body);
         let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
-        // Stamp the room's freshness clock. Read-modify-write via the store is fine here — posting
-        // is not a hot path, and the daemon is the sole writer so no CAS is needed. The room may not
-        // exist yet (a post to a never-registered id); skip the stamp in that case rather than
-        // synthesising a room, leaving room registration to the create/auto-join paths.
         if let Some(mut record) = self.store.get_room(&room)? {
             record.last_activity = stored.ts_micros;
             self.store.put_room(&record)?;
@@ -518,9 +498,6 @@ impl Broker {
         let limit = clamp_limit(limit);
         let page = self.store.history(&room, after, limit)?;
         let next = page.more.then(|| Cursor::encode(room.as_str(), page.last_seq));
-        // Recency is an ADDITIONAL filter applied AFTER the cursor/seq window: drop messages older
-        // than the cutoff but keep `next_cursor` driven by the (unfiltered) seq scan so pagination
-        // resumes from the same point regardless of how many rows the recency filter elided.
         let messages = page
             .messages
             .into_iter()
@@ -556,45 +533,29 @@ impl Broker {
         self.auto_join(&agent, &chain)?;
 
         let limit = clamp_limit(limit);
-        // Walk the agent's subscribed rooms in a stable (id-sorted) order, gathering messages
-        // past each room's per-agent read cursor. The cursor token carries the room + seq of
-        // where the previous page stopped so we resume mid-walk deterministically.
         let resume = cursor.as_ref().and_then(|c| c.decode().ok());
         let mut rooms = self.store.rooms_for_agent(&agent)?;
         rooms.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
         let mut collected: Vec<SeqMeta> = Vec::new();
-        // Highest delivered seq per room in THIS page — used to mark-read and to mint the
-        // next cursor.
         let mut delivered_high: Vec<(RoomId, u64)> = Vec::new();
         let mut unread_remaining: u32 = 0;
         let mut next_cursor: Option<Cursor> = None;
 
         for room in &rooms {
             let read_seq = self.store.read_cursor(&agent, room)?;
-            // Resume point for THIS room: its read cursor, bumped past anything already paged
-            // when the resume token points at this room.
             let after = match &resume {
                 Some(pos) if pos.room == room.as_str() => pos.seq.max(read_seq),
                 _ => read_seq,
             };
-            // +1 so we can tell whether more remain past the page budget for this room.
             let remaining = limit.saturating_sub(collected.len());
             let want = remaining.saturating_add(1).max(1);
             let rows = self.store.history_with_seq(room, after, want)?;
             for (seq, meta) in rows {
-                // The agent's own posts are not "inbox" for their author — skip them from the
-                // page and the unread count, but still record the seq so `mark_read` advances the
-                // read cursor past them (they must never resurface). `room_history` is unaffected:
-                // the full log still shows self-authored messages.
                 if meta.from == agent {
                     upsert_high(&mut delivered_high, room, seq);
                     continue;
                 }
-                // Recency filter: a message older than the cutoff is elided from the page and the
-                // unread count, but its seq still records into `delivered_high` so `mark_read`
-                // advances the read cursor past it (a stale message must not resurface or block the
-                // cursor). This composes with the per-room read cursor rather than replacing it.
                 if !keep_since(meta.ts_micros, since_micros) {
                     upsert_high(&mut delivered_high, room, seq);
                     continue;
@@ -603,7 +564,6 @@ impl Broker {
                     collected.push(SeqMeta { seq, meta });
                     upsert_high(&mut delivered_high, room, seq);
                 } else {
-                    // Overflow: this is where the next page resumes.
                     unread_remaining = unread_remaining.saturating_add(1);
                     if next_cursor.is_none() {
                         let resume_seq = highest_for(&delivered_high, room).unwrap_or(after);
@@ -648,8 +608,6 @@ impl Broker {
             });
         }
 
-        // Accumulate the highest seq to advance per room across both modes, then apply once so a
-        // room targeted by both modes advances to the single maximum.
         let mut targets: Vec<(RoomId, u64)> = Vec::new();
         let mut acked: u32 = 0;
         if !message_ids.is_empty() {
@@ -662,9 +620,6 @@ impl Broker {
             upsert_high(&mut targets, &room, seq);
         }
 
-        // Apply each advance (monotonic in the store) and report ONLY the rooms whose cursor
-        // actually moved, so the response never claims a phantom advance for an already-acked seq
-        // or a `to_seq` at or below the current position (e.g. `to_seq = 0`).
         let mut cursors_advanced: Vec<(String, u64)> = Vec::new();
         for (room, seq) in &targets {
             let before = self.store.read_cursor(&agent, room)?;
@@ -690,7 +645,6 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        // Persist the subscription so the inbox sees it even across reconnects.
         self.store.subscribe(&Subscription {
             agent_id: agent.clone(),
             room: room.clone(),
@@ -737,8 +691,6 @@ impl Broker {
         })
     }
 
-    // ─── internals ────────────────────────────────────────────────────────────────────────
-
     /// Subscribe `agent` to every registered room whose scope matches `chain`, auto-creating
     /// and registering a default room for the agent's repo/workspace on first sight. Logs each
     /// auto-join.
@@ -749,7 +701,6 @@ impl Broker {
     /// the exact room the child joined (not a re-scan that could pick a different room sharing the
     /// scope) and the room keyspace is scanned once per `Hello` rather than twice.
     fn auto_join(&self, agent: &AgentId, chain: &ScopeChain) -> Result<Option<RoomId>, CommsStoreError> {
-        // Ensure a default room exists for this scope.
         let default = default_room_for(chain);
         if self.store.get_room(&default.room_id)?.is_none() {
             tracing::info!(

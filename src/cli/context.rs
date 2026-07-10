@@ -32,9 +32,6 @@ pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -
     let basemind_dir = root.join(config::BASEMIND_DIR);
     let cfg = Arc::new(load_config(root, documents)?);
     let repo = Repo::discover(root).ok().map(Arc::new);
-    // Disk cache off for the CLI: a one-shot process never benefits from the
-    // persisted git cache and disabling it avoids writing under a path a live
-    // server might own.
     let git_cache = Arc::new(GitCache::open(&basemind_dir, CLI_GIT_CACHE_MEM, false).context("open git cache")?);
     Ok(BasemindServer::new_oneshot(
         store,

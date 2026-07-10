@@ -29,7 +29,6 @@ fn count_def_start(src: &str) -> u32 {
 fn scan_paths_refreshes_resolved_edges_after_edit() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    // Two uses of the module-level const `count` inside `f`.
     let before = "const count = 1;\nfunction f() {\n  return count + count;\n}\n";
     let app_abs = root.join("app.js");
     fs::write(&app_abs, before).unwrap();
@@ -53,16 +52,13 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
     let app = RelPath::from("app.js");
     let def_start = count_def_start(before);
 
-    // Baseline from the full scan: two resolved uses.
     let baseline = basemind::query::resolved_references(&store, &app, def_start);
     assert_eq!(baseline.len(), 2, "full scan must resolve both uses; got {baseline:?}");
 
-    // Edit: add a third use of `count`, then re-scan ONLY this path via the incremental entry point.
     let after = "const count = 1;\nfunction f() {\n  return count + count + count;\n}\n";
     fs::write(&app_abs, after).unwrap();
     scan_paths(root, &mut store, &cfg, &[app_abs], basemind::scanner::EmbedMode::Inline).unwrap();
 
-    // The incremental resolve pass must have refreshed the edges — three uses now, all in app.js.
     let mut uses = basemind::query::resolved_references(&store, &app, def_start);
     uses.sort_by_key(|(_, s)| *s);
     assert_eq!(
@@ -75,7 +71,6 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
         "resolved uses must stay in app.js"
     );
 
-    // goto_definition stays consistent: the first use resolves back to the const.
     let first_use = (after.find("return count").unwrap() + "return ".len()) as u32;
     assert_eq!(
         basemind::query::definition_of(&store, &app, first_use),
@@ -114,12 +109,9 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
     let gone = RelPath::from("gone.js");
     let def_start = count_def_start(src);
 
-    // Both files carry resolved edges after the full scan.
     assert_eq!(basemind::query::resolved_references(&store, &gone, def_start).len(), 2);
     assert_eq!(basemind::query::resolved_references(&store, &keep, def_start).len(), 2);
 
-    // Delete gone.js and re-scan only that path. The deletion-mirror loop must purge its resolved
-    // edges; the wholesale resolve pass alone would never revisit them.
     fs::remove_file(&gone_abs).unwrap();
     scan_paths(
         root,
@@ -134,7 +126,6 @@ fn scan_paths_purges_resolved_edges_for_removed_file() {
         basemind::query::resolved_references(&store, &gone, def_start).is_empty(),
         "removed file's resolved edges must be purged by scan_paths"
     );
-    // The surviving file keeps its edges — the incremental scan is not destructive to others.
     assert_eq!(
         basemind::query::resolved_references(&store, &keep, def_start).len(),
         2,

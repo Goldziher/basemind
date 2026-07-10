@@ -53,8 +53,6 @@ fn build_repo() -> TempDir {
 
 fn run_scan(root: &Path) {
     // Embed off: this runs `scan` on a `#[tokio::test]` thread, and an embedding scan with the ONNX
-    // model cached opens LanceDB (`block_on` inside the live runtime) → panic. The test resolves
-    // callers from the index, not vectors; production wraps `scan` in `spawn_blocking`.
     let mut cfg = basemind::config::default_for_root(root);
     cfg.documents.embed = false;
     cfg.code_search.embed = false;

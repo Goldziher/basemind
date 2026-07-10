@@ -5,12 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  # Nightly run of the hardening harness — gated by the `hardening` job's `if:` below.
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch: {}
 
-# Cancel superseded runs on the same ref — fresher pushes win.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -28,17 +26,11 @@ jobs:
   test:
     name: test / ${{ matrix.os }} / ${{ matrix.features }}
     runs-on: ${{ matrix.os }}
-    # Per-leg backstop against a hung test (e.g. a Windows IPC deadlock) running to the 6h
-    # default — on main, concurrency is queue-not-cancel, so a 6h hang blocks every subsequent
-    # run. Windows stays tight (its build is light; the budget guards the comms hang); the heavy
-    # `full` builds (ONNX / kreuzberg / lance) get a generous ceiling so a cold cache compile is
-    # never mistaken for a hang.
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Unix: default-features + full-features builds.
           - os: ubuntu-latest
             features: ""
             timeout_minutes: 30
@@ -48,14 +40,9 @@ jobs:
           - os: macos-latest
             features: ""
             timeout_minutes: 30
-          # Pinned to macos-14 (Xcode 16): the macos-latest image (Xcode 26.5) ships a clang
-          # whose compiler-rt moved, so linking the `full` build's prebuilt onnxruntime (`ort`)
-          # fails with `ld: library 'clang_rt.osx' not found`. macos-14 has a working toolchain.
-          # Revisit once the macos-latest image is fixed upstream.
           - os: macos-14
             features: "full"
             timeout_minutes: 90
-          # Windows: comms+shells only (no heavy doc deps that require system libs).
           - os: windows-latest
             features: "comms shells"
             timeout_minutes: 30
@@ -66,14 +53,10 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      # System dependencies for the full feature surface (image libs, tesseract, protoc, onnx runtime).
-      # Skipped for default-features builds and Windows (which uses comms+shells instead).
       - name: Install system dependencies
         if: matrix.features == 'full'
         uses: ./.github/actions/install-system-deps
 
-      # protoc is required by lance-encoding's build script (transitive via the
-      # `full` feature). Install on default-features too for uniformity.
       - name: Install protoc (Linux, default-features)
         if: runner.os == 'Linux' && matrix.features == ''
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -83,7 +66,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          # Differentiate caches per-OS and features so the cache key is stable across runs.
           key: ${{ matrix.os }}-${{ matrix.features }}
 
       - name: cargo fmt
@@ -107,12 +89,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          # Uses deny.toml at the repo root.
           command: check
 
-  # Real-OSS hardening harness. Clones large upstream repos and exercises every MCP tool
-  # against them — too heavy for per-PR but ideal as a nightly canary. Runs on manual
-  # dispatch and once a day.
   hardening:
     name: hardening harness (nightly)
     runs-on: ubuntu-latest
@@ -121,8 +99,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # System dependencies for the `full` feature surface that harden.sh builds.
-      # Consolidated in the composite action; includes protoc, tesseract, libheif build from source.
       - name: Install system dependencies
         uses: ./.github/actions/install-system-deps
 

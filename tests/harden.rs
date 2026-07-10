@@ -17,7 +17,7 @@
 //! is `#[ignore]`d so default `cargo test` runs are unaffected — this is a gating
 //! harness, run on demand and on a nightly CI schedule, not per-PR.
 
-#![allow(clippy::expect_used)] // it's a test harness — explicit panics on bad env are fine
+#![allow(clippy::expect_used)]
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
@@ -31,15 +31,13 @@ use rmcp::{ServiceExt, service::RoleClient, service::RunningService};
 use serde_json::{Value, json};
 use tokio::process::Command;
 
-// ─── Configuration ──────────────────────────────────────────────────────────
-
 /// Per-tool wall-clock ceiling. Any call exceeding this fails the harness.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Scan ceilings keyed by repo logical name. Defaults to 60s if missing.
 fn scan_ceiling_secs(repo_name: &str) -> u64 {
     match repo_name {
-        "typescript" | "TypeScript" => 600, // huge repo + intentionally-broken fixtures
+        "typescript" | "TypeScript" => 600,
         "django" => 300,
         "react" => 300,
         "tokio" => 180,
@@ -48,8 +46,6 @@ fn scan_ceiling_secs(repo_name: &str) -> u64 {
         _ => 120,
     }
 }
-
-// ─── NDJSON record shape (also serialized to results file) ──────────────────
 
 #[derive(Debug, serde::Serialize)]
 struct ToolCallRecord {
@@ -117,8 +113,6 @@ struct RepoRecord {
     git_history: Option<GitOpsMetrics>,
     canaries: BTreeMap<String, Value>,
 }
-
-// ─── Helpers around the MCP service ─────────────────────────────────────────
 
 type ServiceHandle = RunningService<RoleClient, ()>;
 
@@ -195,8 +189,6 @@ async fn call(
         }
         Ok(Ok(result)) => {
             let body = decode_text(&result);
-            // Some tools return a logically-empty body (e.g. `dependents` with no paths).
-            // We still mark them ok unless `is_error` was set by the server.
             let is_error = result.is_error.unwrap_or(false);
             records.push(ToolCallRecord {
                 tool,
@@ -214,8 +206,6 @@ async fn call(
     }
 }
 
-// ─── In-process scan (avoids a second process round-trip) ───────────────────
-
 struct ScanOutcome {
     elapsed: Duration,
     stats: basemind::scanner::ScanStats,
@@ -232,17 +222,12 @@ struct SampleFile {
 }
 
 fn run_scan(repo_root: &Path) -> ScanOutcome {
-    // Ensure grammars are present before the scan — main.rs's `bootstrap_grammars`
-    // wraps the same call with progress UI; tests don't need the UI.
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
 
     let mut config = match basemind::config::load(repo_root) {
         Ok(c) => c,
         Err(_) => basemind::config::default_for_root(repo_root),
     };
-    // The harness exercises the MCP surface; document-tier indexing adds
-    // xberg + embedding cost that has nothing to do with the canaries.
-    // Disable it so per-repo scan ceilings stay meaningful.
     config.documents.enabled = false;
     let mut store = basemind::store::Store::open(repo_root, basemind::store::VIEW_WORKING).expect("open store");
     let t0 = Instant::now();
@@ -256,8 +241,6 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
     .expect("scan");
     let elapsed = t0.elapsed();
 
-    // Pick a non-empty, well-formed file to use as the per-tool argument.
-    // Prefer something with imports + symbols so we can also exercise `dependents`.
     let sample_file = pick_sample(&store);
 
     ScanOutcome {
@@ -268,8 +251,6 @@ fn run_scan(repo_root: &Path) -> ScanOutcome {
 }
 
 fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
-    // Iterate path → entry, read L1, pick the first file with ≥1 symbol; capture an
-    // import module from anywhere in the index. Keeps the scan-time cost bounded.
     let mut sample: Option<SampleFile> = None;
     let mut fallback_module: Option<String> = None;
     for (path, entry) in &store.index.files {
@@ -310,8 +291,6 @@ fn pick_sample(store: &basemind::store::Store) -> Option<SampleFile> {
     sample
 }
 
-// ─── Drive every tool against one repo ──────────────────────────────────────
-
 async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<ToolCallRecord> {
     let mut records: Vec<ToolCallRecord> = Vec::with_capacity(20);
 
@@ -343,9 +322,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         )
         .await;
 
-        // goto_definition sweep: resolve the first position of the sampled file. Bare-success
-        // only — whether that byte holds a resolved binding depends on the file's contents and the
-        // per-language resolution engine, so no hit is asserted.
         call(
             svc,
             &mut records,
@@ -358,8 +334,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             call(svc, &mut records, "dependents", json!({ "module": module })).await;
         }
 
-        // Git tools — these short-circuit cleanly when no repo is present, so we
-        // don't need a separate non-git branch.
         call(svc, &mut records, "working_tree_status", json!({})).await;
         call(svc, &mut records, "repo_info", json!({})).await;
         call(
@@ -422,9 +396,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "path": &sample.path, "name": sym, "limit": 20 }),
             )
             .await;
-            // Stage 3 canary: reference search on the sampled symbol. Just confirm the
-            // call succeeds — hit count varies wildly per repo (a `pub fn` in Rust vs an
-            // `export const` in TS), so the bare-success is the only stable assertion.
             call(
                 svc,
                 &mut records,
@@ -432,8 +403,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "name": sym, "limit": 100 }),
             )
             .await;
-            // Iteration-4 sweep: shallow call_graph walk on the same sampled symbol.
-            // Bare-success assertion only; node count varies per repo.
             call(
                 svc,
                 &mut records,
@@ -444,8 +413,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
     }
 
-    // find_implementations: sweep with a common trait name. Use "Future" as a universally
-    // present trait in Rust repos; falls back gracefully to 0 hits for non-Rust repos.
     call(
         svc,
         &mut records,
@@ -454,13 +421,9 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
-    // compress (structural): sweep with the sample file path when available.
     if let Some(sample) = sample {
         call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
 
-        // expand: pull the first symbol's body from the same sample file.
-        // We only call expand when a sample_symbol is available; errors on
-        // languages without indexed symbols are expected and tolerated.
         if let Some(sym) = &sample.sample_symbol {
             call(
                 svc,
@@ -472,7 +435,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
     }
 
-    // compress (prose): always available, no feature gate.
     call(
         svc,
         &mut records,
@@ -481,7 +443,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
-    // Memory + document tools: sweep unconditionally (MCP error when features off is ok).
     call(
         svc,
         &mut records,
@@ -492,7 +453,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(svc, &mut records, "memory_get", json!({ "key": "harden_probe" })).await;
     call(svc, &mut records, "memory_list", json!({})).await;
     call(svc, &mut records, "memory_delete", json!({ "key": "harden_probe" })).await;
-    // memory_audit: write a probe key then sweep; MCP error when memory feature is off is ok.
     call(
         svc,
         &mut records,
@@ -521,9 +481,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "code map scanner" }),
     )
     .await;
-    // search_code with no mode: exercises the DEFAULT lane, which is now hybrid (RRF fusion of
-    // vector + keyword + exact). MCP error when the code-search feature is off is ok (same gate as
-    // the memory/document sweep). On success the hit count varies per repo.
     call(
         svc,
         &mut records,
@@ -531,8 +488,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "parse the file and extract symbols" }),
     )
     .await;
-    // search_code keyword lane (BM25): exercises the Fjall keyword path + sidecar hydration over a
-    // real repo. Needs no embedder; feature-off routes through the same tolerated `not_enabled` shim.
     call(
         svc,
         &mut records,
@@ -540,8 +495,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         json!({ "query": "parse file extract symbols", "mode": "keyword" }),
     )
     .await;
-    // search_code hybrid with an identifier-shaped query: fires the exact symbol lane, which resolves
-    // the bare identifier against `symbols_by_name` and maps it to its owning chunk before fusion.
     call(
         svc,
         &mut records,
@@ -550,9 +503,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
-    // get_chunk: fetch chunks for an indexed file path. An MCP-level error (feature-off,
-    // file-not-indexed, or needs-disambiguation) is a valid sweep outcome — tolerated in
-    // assert_passing. Uses the sample path when available so we hit a real indexed file.
     let chunk_path_arg = if let Some(s) = sample {
         json!({ "path": &s.path })
     } else {
@@ -560,9 +510,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     };
     call(svc, &mut records, "get_chunk", chunk_path_arg).await;
 
-    // proposals_mine: co-change mining over recent history. MCP error when memory feature is
-    // off is ok (same gate as memory_audit). On success we just verify the call completes
-    // without error — candidate count varies wildly per repo and mining threshold.
     call(
         svc,
         &mut records,
@@ -578,15 +525,9 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
-    // Cache admin tools: both must succeed on every repo. cache_stats is read-only;
-    // cache_gc reclaims orphaned blobs (safe in-process under the server's lock).
     call(svc, &mut records, "cache_stats", json!({})).await;
     call(svc, &mut records, "cache_gc", json!({})).await;
 
-    // Agent shells: spawn a trivial self-exiting session, capture it, then kill it — exercising the
-    // embedded rmux daemon end-to-end. MCP error when the `shells` feature is off is ok (the tool is
-    // simply unregistered), same as the memory/document sweep above. On success we chain the real
-    // session id through capture + kill so the canary leaves no live session behind.
     if let Some(spawned) = call(
         svc,
         &mut records,
@@ -609,8 +550,6 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     records
 }
 
-// ─── Per-repo assertions ────────────────────────────────────────────────────
-
 /// Returns the human-readable failure summary if anything tripped; None on pass.
 fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRecord) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
@@ -626,23 +565,11 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
         failures.push("scan touched zero files".to_string());
     }
 
-    // Generic per-tool: any !ok or timeout fails the harness — except tolerated responses that are
-    // not malfunctions:
-    //   * "requires the X feature" / "tool not found" — the tool isn't compiled into this binary. The
-    //     published release includes every feature, but a reduced build (e.g. on a machine where the
-    //     documents/memory/intelligence stack can't compile) leaves those tools unregistered. The
-    //     harness still measures scan + git-ops on whatever binary it's given.
-    //   * "disambiguate" — `expand` was fed a symbol name the generic sweep sampled that happens to
-    //     match several symbols; returning a disambiguation error is the tool behaving correctly, not
-    //     failing. (The expand contract is covered by its own smoke test, not this sweep.)
     for r in &repo_record.tools {
         let tolerated = !r.ok
             && (r.detail.contains("requires the")
                 || r.detail.contains("tool not found")
                 || r.detail.contains("disambiguate")
-                // get_chunk called with just a path (no chunk_id) may return is_error when the
-                // file has no indexed chunks or when the repo was scanned without code-search
-                // embedding — file-not-indexed is a valid sweep outcome.
                 || (r.tool == "get_chunk" && r.detail == "is_error=true"));
         if !r.ok && !tolerated {
             failures.push(format!("{} failed: {}", r.tool, r.detail));
@@ -657,17 +584,10 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
         }
     }
 
-    // Global git-ops canaries (every git repo): the index must build, and on a repo with real
-    // history the indexed hot-path query must not be slower than the live walk it replaces. The
-    // depth gate keeps tiny repos (where the live walk is itself sub-microsecond) from flaking on
-    // fixed Fjall overhead — there the numbers are still recorded, just not asserted.
     if let Some(m) = &repo_record.git_history {
         if m.commits == 0 {
             failures.push("git-history index built zero commits".to_string());
         }
-        // Resource-stats canary: a built git-history index must be counted by cache_stats
-        // (`git_history_bytes > 0`) and rolled into the total — the WS1 fix for the reported
-        // disk-footprint undercount. Only asserted when the stats canary was captured.
         if m.commits > 0
             && let Some(gh) = repo_record
                 .canaries
@@ -702,13 +622,8 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
         }
     }
 
-    // Repo-specific canaries. These are the gating bits the iteration is meant
-    // to flip green — they will fail on the baseline run, by design.
     match repo_name {
         "react" => {
-            // After Stage 2, search_symbols("useState") returns ≥ 1 hit.
-            // The canary records what we actually got so the orchestrator can diff
-            // baselines across runs.
             let hit_count = repo_record
                 .canaries
                 .get("useState_hits")
@@ -719,7 +634,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             }
         }
         name if name.ends_with("-shallow") => {
-            // After Stage 4, history-walking responses surface `truncated: true`.
             let truncated = repo_record
                 .canaries
                 .get("any_truncated")
@@ -730,8 +644,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             }
         }
         "tokio" => {
-            // Iteration-3 canary: tokio is the canonical async-call corpus. `spawn` is
-            // called in dozens of places throughout the runtime; ≥ 50 is conservative.
             let hits = repo_record
                 .canaries
                 .get("spawn_hits")
@@ -742,9 +654,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: find_references(\"spawn\") returned {hits} hits (expected ≥ 50)"
                 ));
             }
-            // workspace_grep canary: `fn spawn` appears in many source files in tokio.
-            // The pattern matches both function definitions and call-like patterns — at
-            // least 20 hits is a very conservative lower bound for a repo this size.
             let grep_hits = repo_record
                 .canaries
                 .get("grep_fn_spawn_hits")
@@ -755,7 +664,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: workspace_grep(\"fn spawn\") returned {grep_hits} hits (expected ≥ 20)"
                 ));
             }
-            // find_implementations canary: tokio's `Future` trait has many implementors.
             let future_hits = repo_record
                 .canaries
                 .get("future_impl_hits")
@@ -766,9 +674,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: find_implementations(\"Future\") returned {future_hits} hits (expected ≥ 20)"
                 ));
             }
-            // Iteration-4 canary: call_graph upward from `spawn` (depth=2) must surface
-            // at least 5 nodes. Conservative lower bound — `spawn` is invoked from dozens
-            // of helpers/spawners.
             let cg_nodes = repo_record
                 .canaries
                 .get("spawn_call_graph_nodes")
@@ -779,8 +684,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: call_graph(\"spawn\", callers, depth=2) returned {cg_nodes} nodes (expected ≥ 5)"
                 ));
             }
-            // architecture_map canary: the module tier must surface at least a handful of
-            // ranked modules. Conservative lower bound — tokio has many source directories.
             let archmap_nodes = repo_record
                 .canaries
                 .get("archmap_module_nodes")
@@ -791,9 +694,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: architecture_map(module) returned {archmap_nodes} nodes (expected ≥ 5)"
                 ));
             }
-            // search_code canary: only asserted when the embedder was available (canary present
-            // and non-empty). Skipped when offline or no model — do not fail the harness solely
-            // on embedder absence. "spawn a task" should semantically match tokio spawn code.
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -807,8 +707,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             }
         }
         "django" => {
-            // Iteration-3 canary: `get` is overloaded in Django (ORM queryset method, view
-            // dispatch, dict access). Should saturate the limit easily.
             let hits = repo_record
                 .canaries
                 .get("get_hits")
@@ -819,11 +717,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "django canary: find_references(\"get\") returned {hits} hits (expected ≥ 50)"
                 ));
             }
-            // git-history canary: `django/db/models/query.py` has been edited across many releases.
-            // ≥ 10 commits is a conservative, churn-stable lower bound (it has hundreds in reality).
-            // search_git_history canary: "fixed" is in a large share of Django commit messages;
-            // ≥ 20 is a very conservative lower bound (limit=100 caps the page, so the hard floor
-            // is really "the page filled well past 20").
             let search_fixed = repo_record
                 .canaries
                 .get("search_fixed_commits")
@@ -844,10 +737,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "django canary: commits_touching(\"django/db/models/query.py\") returned {query_commits} commits (expected ≥ 10)"
                 ));
             }
-            // Author-parity canary (anti-regression for the reported "author's commits missing"
-            // bug): full-depth author search must find the deep-history author sampled from real
-            // git, and must not leak commits by other authors into the author scope. Only asserted
-            // when the sample was taken (canary present).
             if let Some(author_hits) = repo_record.canaries.get("author_search_hits").and_then(Value::as_u64) {
                 if author_hits < 1 {
                     let token = repo_record
@@ -870,10 +759,6 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     );
                 }
             }
-            // Governance canary — enforced only when mining actually ran (the `proposals_mined`
-            // value is present, i.e. the harness was built with `--features memory`). Django
-            // yields several co-change candidates at the default thresholds; ≥ 1 is a
-            // conservative, churn-stable lower bound.
             if let Some(mined) = repo_record.canaries.get("proposals_mined").and_then(Value::as_u64)
                 && mined < 1
             {
@@ -910,13 +795,6 @@ fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
 }
 
 async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path, record: &mut RepoRecord) {
-    // Always evaluate canaries on a best-effort basis — failures here don't block
-    // the rest of the suite. We feed the results back into assert_passing.
-
-    // Global (every repo): resource-stats canary. `cache_stats` must count the git-history index in
-    // its per-component breakdown — the reported "1.15 GB reported vs 1.5 GB on disk" gap was the
-    // uncounted `git-history.fjall/` — and roll every component into `total_bytes`. Asserted in
-    // `assert_passing` only where the git-history index actually built (`commits > 0`).
     if let Ok(out) = svc.call_tool(call_params("cache_stats", &json!({}))).await {
         let body = decode_text(&out);
         if let Some(gh) = body.get("git_history_bytes").and_then(Value::as_u64) {
@@ -946,7 +824,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
         }
         name if name.ends_with("-shallow") => {
-            // Ask a recent-changes call; after Stage 4 we expect `truncated` to bubble up.
             let mut truncated = false;
             for tool in ["recent_changes", "blame_file"] {
                 let args = if tool == "blame_file" {
@@ -987,7 +864,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("spawn_hits".into(), json!(hits));
             }
-            // find_implementations canary: tokio implements `Future` in many places.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "find_implementations",
@@ -1003,9 +879,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("future_impl_hits".into(), json!(hits));
             }
-            // Iteration-4 canary: call_graph callers from `spawn`, max_depth=2. tokio has
-            // dense indirection around its runtime spawn helpers, so the BFS should pull
-            // in well more than a handful of nodes even at depth 2.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "call_graph",
@@ -1021,8 +894,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("spawn_call_graph_nodes".into(), json!(nodes));
             }
-            // architecture_map canary: module tier over tokio. Its many source directories
-            // with dense inter-module calls should yield a ranked module graph of several nodes.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "architecture_map",
@@ -1038,7 +909,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("archmap_module_nodes".into(), json!(nodes));
             }
-            // workspace_grep canary for tokio: count "fn spawn" across source files.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "workspace_grep",
@@ -1050,9 +920,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 let hits = body.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
                 record.canaries.insert("grep_fn_spawn_hits".into(), json!(hits));
             }
-            // search_code canary: only populated when the code-search feature is compiled and the
-            // embedder returned non-empty hits. Absent when offline or no model available — the
-            // assertion in assert_passing skips rather than failing when the canary is absent.
             #[cfg(feature = "code-search")]
             if let Ok(out) = svc
                 .call_tool(call_params(
@@ -1084,10 +951,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("get_hits".into(), json!(hits));
             }
-            // git-history canary: `django/db/models/query.py` is a foundational, long-lived file
-            // touched by many commits. Served by the precomputed git-history index when the serve's
-            // background sync has caught up, else by the live walk — both must agree, so a stable
-            // lower bound holds regardless. Validates the history index end-to-end on a deep repo.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "commits_touching",
@@ -1103,10 +966,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("query_py_commits".into(), json!(hits));
             }
-            // git-history FTS canary: Django's commit convention is "Fixed #NNNNN -- …", so the
-            // message token "fixed" appears in a huge fraction of commits. Exercises
-            // search_git_history end-to-end (indexed term postings, or the live fallback over the
-            // recent window — both search summaries), a stable high lower bound either way.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "search_git_history",
@@ -1122,12 +981,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .unwrap_or(0);
                 record.canaries.insert("search_fixed_commits".into(), json!(hits));
             }
-            // Author-parity canary (the reported bug): sample an author deep in history (skip 500,
-            // far outside any recent window), then prove full-depth `search_git_history` by author
-            // finds them. Self-consistent: every returned hit's author name/email must contain the
-            // queried token — the FTS must not leak commits by other authors into an author scope.
-            // Derived from real git so it self-adapts across django releases; skipped if the sample
-            // can't be taken (canary simply absent, never a spurious fail).
             if let Some(author) = git_first_line(repo_root, &["log", "--format=%an", "-1", "--skip=500"])
                 && let Some(token) = author
                     .split_whitespace()
@@ -1163,11 +1016,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .insert("author_search_consistent".into(), json!(consistent));
                 record.canaries.insert("author_search_token".into(), json!(token));
             }
-            // Governance canary — only populated under `--features memory`; with the feature
-            // off, `proposals_mine` returns an MCP error and the canary stays absent (so the
-            // assertion below is skipped on default-feature runs). Django's co-change history
-            // yields several candidates at the harness default thresholds (measured ~4 at
-            // window=100/support=5/conf=0.6).
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "proposals_mine",
@@ -1184,8 +1032,6 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
         _ => {}
     }
 }
-
-// ─── In-process git-ops measurement (warm, microsecond, indexed vs live) ─────
 
 /// Warm-up iterations discarded before timing (let the block cache + branch predictor settle).
 const GITOPS_WARMUP: usize = 8;
@@ -1209,13 +1055,12 @@ fn measure_git_ops(repo_root: &Path) -> Option<GitOpsMetrics> {
     std::fs::create_dir_all(&bdir).ok()?;
     let index = GitHistoryIndex::open(&bdir).ok()?;
 
-    // Deterministic full build, timed. On a fresh `.basemind/` this is a from-scratch rebuild.
     let t0 = Instant::now();
     let outcome = builder::sync(&index, &repo, &bdir).ok()?;
     let build_ms = t0.elapsed().as_millis();
     let commits = index.commit_count();
     if commits == 0 {
-        return None; // unborn / empty repo — nothing to measure
+        return None;
     }
 
     let index_bytes = dir_size(&bdir.join("git-history.fjall"));
@@ -1249,7 +1094,6 @@ fn measure_git_ops(repo_root: &Path) -> Option<GitOpsMetrics> {
         ),
     ];
 
-    // Drop the index handle (releasing the Fjall lock) before `serve` opens it for the MCP sweep.
     drop(index);
     Some(GitOpsMetrics {
         build_ms,
@@ -1397,8 +1241,6 @@ fn append_gitops_md(repo_name: &str, m: &GitOpsMetrics) {
     }
 }
 
-// ─── NDJSON output ──────────────────────────────────────────────────────────
-
 fn append_results(record: &RepoRecord) {
     let Ok(path) = std::env::var("BASEMIND_HARDEN_RESULTS") else {
         return;
@@ -1410,8 +1252,6 @@ fn append_results(record: &RepoRecord) {
         let _ = writeln!(f, "{line}");
     }
 }
-
-// ─── The harness entry point ────────────────────────────────────────────────
 
 /// Single ignored test that exercises one repo per invocation. Spawn via the
 /// orchestrator script — it iterates the configured repo set and runs `cargo
@@ -1436,10 +1276,6 @@ async fn harden_repo() {
 
     eprintln!("[harden] repo={} ({})", repo_name, repo.display());
 
-    // 1. Scan in-process on a blocking thread — the scanner is sync and may
-    // reach the doc tier, which opens a LanceStore that owns its own tokio
-    // runtime. Running it under spawn_blocking strips the test's tokio TLS so
-    // LanceStore's `block_on` is safe.
     let scan = {
         let repo = repo.clone();
         tokio::task::spawn_blocking(move || run_scan(&repo))
@@ -1455,9 +1291,6 @@ async fn harden_repo() {
         scan.stats.extract_failed
     );
 
-    // 1.5 Build the git-history index synchronously and measure warm indexed-vs-live latency BEFORE
-    //     starting `serve`. Deterministic (no background-sync race), and it leaves the index fresh so
-    //     the MCP git tools below hit the indexed path. Runs on a blocking thread (gix + Fjall).
     let git_history = {
         let repo = repo.clone();
         tokio::task::spawn_blocking(move || measure_git_ops(&repo))
@@ -1485,13 +1318,11 @@ async fn harden_repo() {
         append_gitops_md(&repo_name, m);
     }
 
-    // 2. Spawn `basemind serve` and connect via rmcp's child-process transport.
     let boot_start = Instant::now();
     let svc = connect(&repo).await;
     let server_boot_ms = boot_start.elapsed().as_millis();
     eprintln!("[harden] server boot: {}ms", server_boot_ms);
 
-    // 3. Walk every MCP tool.
     let tools = drive_tools(&svc, scan.sample_file.as_ref()).await;
 
     let mut record = RepoRecord {
@@ -1509,9 +1340,6 @@ async fn harden_repo() {
         canaries: BTreeMap::new(),
     };
 
-    // 3.5 Git-ops canaries (every git repo): the index built, and the indexed hot-path query is no
-    //     slower than the live walk it replaces. Recorded for all repos; asserted in `assert_passing`
-    //     only where the history is deep enough for the comparison to be stable.
     if let Some(m) = &record.git_history {
         record.canaries.insert("gh_index_commits".to_string(), json!(m.commits));
         if let Some(ct) = m
@@ -1531,21 +1359,14 @@ async fn harden_repo() {
         }
     }
 
-    // 4. Per-repo canary captures (read-only; results go into record.canaries).
     capture_canaries(&svc, &repo_name, &repo, &mut record).await;
 
-    // 5. Persist the per-repo record before assertions so we get partial data
-    //    even when a later step panics.
     append_results(&record);
 
-    // 6. Clean shutdown so the child exits before the test returns.
     let _ = svc.cancel().await;
 
-    // 7. Assert pass/fail.
     let failures = assert_passing(&repo_name, &scan, &mut record);
     if !failures.is_empty() {
-        // Re-append after canaries were materialized into the record so the
-        // failures and final canary values stay in sync on disk.
         append_results(&record);
         panic!(
             "[harden] {} failed {} check(s):\n  - {}",

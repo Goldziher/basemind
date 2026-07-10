@@ -62,8 +62,6 @@ impl Daemon {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        // `daemon` (and thus the child) is dropped + reaped by the unwind before the panic
-        // propagates.
         panic!("comms daemon did not become ready");
     }
 
@@ -78,8 +76,6 @@ impl Drop for Daemon {
             .args(["comms", "stop"])
             .env("BASEMIND_COMMS_DIR", &self.comms_dir)
             .output();
-        // The stop RPC drains the daemon; give it a moment, then reap. Kill as a fallback so the
-        // child is never left as a zombie if the RPC did not land.
         if self.child.try_wait().ok().flatten().is_none() {
             std::thread::sleep(Duration::from_millis(200));
             if self.child.try_wait().ok().flatten().is_none() {
@@ -115,7 +111,6 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
 
     let room = RoomId::parse("team").expect("room");
 
-    // Alice creates a global room and posts two messages; the first carries a `scope`.
     let mut alice = connect(&socket, "agent-alice", &root).await;
     alice
         .create_room(room.clone(), RoomScope::Global, Some("Team".to_string()))
@@ -146,13 +141,11 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
         .await
         .expect("post m2");
 
-    // Bob and Carol both join the room (durable membership → inbox).
     let mut bob = connect(&socket, "agent-bob", &root).await;
     let mut carol = connect(&socket, "agent-carol", &root).await;
     bob.join_room(room.clone()).await.expect("bob joins");
     carol.join_room(room.clone()).await.expect("carol joins");
 
-    // (5) Front-matter now carries ts_micros + tags + scope + seq.
     let (bob_inbox, _unread, _c) = bob
         .read_inbox(None, None, None, 100, false, None)
         .await
@@ -164,12 +157,10 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
     assert_eq!(first.meta.scope, scope, "scope round-trips through post");
     assert_eq!(first.seq, 1, "seq surfaced (first message in the room)");
 
-    // (1) Bob acks the first message BY ID → his cursor advances past it.
     let (acked, cursors) = bob.ack_inbox(vec![m1.clone()], None, None).await.expect("bob ack m1");
     assert_eq!(acked, 1, "one id resolved + acked");
     assert_eq!(cursors, vec![("team".to_string(), 1)], "cursor advanced to seq 1");
 
-    // Bob's next inbox no longer shows the acked message; only "second" remains.
     let (bob_after, _u, _c) = bob
         .read_inbox(None, None, None, 100, false, None)
         .await
@@ -177,18 +168,15 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
     assert_eq!(bob_after.len(), 1, "acked message dropped from Bob's inbox");
     assert_eq!(bob_after[0].meta.subject, "second");
 
-    // (2) The shared log is intact — room_history STILL returns BOTH messages.
     let (history, _next) = bob.read_history(room.clone(), None, 100, None).await.expect("history");
     assert_eq!(history.len(), 2, "ack must not delete from the shared log");
 
-    // (3) Carol's inbox is unaffected by Bob's ack — per-agent isolation.
     let (carol_inbox, _u, _c) = carol
         .read_inbox(None, None, None, 100, false, None)
         .await
         .expect("carol inbox");
     assert_eq!(carol_inbox.len(), 2, "another agent's inbox is untouched");
 
-    // (4) The to_seq bulk mode clears the whole room for Carol straight to seq 2.
     let (acked2, cursors2) = carol
         .ack_inbox(vec![], Some(room.clone()), Some(2))
         .await
@@ -201,7 +189,6 @@ async fn inbox_ack_advances_cursor_without_touching_shared_log_or_other_agents()
         .expect("carol inbox after bulk ack");
     assert!(carol_after.is_empty(), "to_seq bulk-acked the whole room");
 
-    // An ack with neither mode is rejected by the broker.
     let err = bob.ack_inbox(vec![], None, None).await;
     assert!(err.is_err(), "empty ack must be rejected");
 }
@@ -218,9 +205,6 @@ async fn client_recovers_when_daemon_dies_mid_session() {
     let comms_dir = tmp.path().join("comms");
     let root = tmp.path().to_path_buf();
 
-    // Spawn the FIRST daemon and connect a client that knows how to respawn the real `basemind`
-    // binary against this isolated comms dir (production `ensure_and_connect` would respawn the
-    // test binary, which has no `comms daemon` subcommand — so inject the real binary spawn).
     let mut daemon = Daemon::start(&comms_dir);
     let paths = CommsPaths {
         comms_dir: comms_dir.clone(),
@@ -264,8 +248,6 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         .expect("post before death");
     assert!(!first.is_empty(), "first post returns an id");
 
-    // Kill the daemon hard (no drain): the cached client stream is now stale. Wait until the
-    // socket stops answering so the next post genuinely races a dead daemon.
     let _ = daemon.child.kill();
     let _ = daemon.child.wait();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -277,8 +259,6 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         "daemon must be dead before the recovery post"
     );
 
-    // The post that previously failed with EPIPE forever: the client must respawn + reconnect +
-    // retry, and the post must succeed against the fresh daemon.
     let second = client
         .post_message(
             room.clone(),
@@ -293,7 +273,6 @@ async fn client_recovers_when_daemon_dies_mid_session() {
     assert!(!second.is_empty(), "recovered post returns an id");
     assert_ne!(first, second, "recovered post is a distinct message");
 
-    // The shared log is intact and reachable through the respawned daemon: both posts land.
     let (history, _next) = client
         .read_history(room.clone(), None, 100, None)
         .await
@@ -304,7 +283,6 @@ async fn client_recovers_when_daemon_dies_mid_session() {
         "both the pre-death and post-recovery messages are in the log"
     );
 
-    // Reap the respawned daemon (the original `Daemon` Drop targets the dead child).
     let _ = Command::new(BIN)
         .args(["comms", "stop"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
@@ -332,7 +310,6 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
     let session_id = "bmsh-1234-0";
     let room = RoomId::parse("shell-session-room").expect("room");
 
-    // The parent creates a session-scoped room and joins it (mirrors `shell_spawn`).
     let mut parent = connect(&socket, "parent-agent", &root).await;
     parent
         .create_room(
@@ -344,8 +321,6 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
         .expect("create session room");
     parent.join_room(room.clone()).await.expect("parent joins");
 
-    // The child connects carrying the SAME session_id via the explicit-argument seam: its `Hello`
-    // presents the session context, and the broker auto-joins it to the matching session room.
     let mut child = CommsClient::connect_with_session(
         &paths,
         AgentId::parse("parent-agent-bmsh1234").expect("child agent"),
@@ -359,7 +334,6 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
     .await
     .expect("child connect");
 
-    // The parent posts into the session room → the child sees it WITHOUT an explicit join.
     parent
         .post_message(
             room.clone(),
@@ -383,7 +357,6 @@ async fn child_with_session_context_auto_joins_parents_session_room() {
     );
     assert_eq!(child_inbox[0].meta.subject, "hello-child");
 
-    // A control agent with NO session context is not auto-joined and sees nothing.
     let mut outsider = connect(&socket, "outsider-agent", &root).await;
     let (outsider_inbox, _u, _c) = outsider
         .read_inbox(None, None, None, 100, false, None)
@@ -411,13 +384,11 @@ async fn session_lineage_chain_records_grandparent_parent_child() {
         socket_path: socket.clone(),
     };
 
-    // Distinct, explicit session ids and (intentionally different) room ids per generation.
     let session_b = "sess-b";
     let session_c = "sess-c";
     let room_b = RoomId::parse("room-for-b").expect("room b");
     let room_c = RoomId::parse("room-for-c").expect("room c");
 
-    // A (top-level grandparent) creates B's session room and joins it, then B connects as A's child.
     let mut agent_a = connect(&socket, "agent-a", &root).await;
     agent_a
         .create_room(
@@ -441,7 +412,6 @@ async fn session_lineage_chain_records_grandparent_parent_child() {
     .await
     .expect("B connects as A's child");
 
-    // B creates C's session room and joins it, then C connects as B's child.
     agent_b
         .create_room(
             room_c.clone(),
@@ -464,7 +434,6 @@ async fn session_lineage_chain_records_grandparent_parent_child() {
     .await
     .expect("C connects as B's child");
 
-    // `list_sessions` returns the two-row spawn graph: A→B and B→C.
     let mut sessions = agent_a.list_sessions().await.expect("list sessions");
     sessions.sort_by(|x, y| x.session_id.cmp(&y.session_id));
     assert_eq!(sessions.len(), 2, "two lineage rows: A→B and B→C");
@@ -506,7 +475,6 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
     let mut tester = connect(&socket, "tester", &root).await;
     let mut outsider = connect(&socket, "outsider", &root).await;
 
-    // Shared room: both join, each posts, each sees BOTH senders in the history.
     let room = RoomId::parse("review-room").expect("room");
     reviewer
         .create_room(room.clone(), RoomScope::Global, Some("review".to_string()))
@@ -547,11 +515,7 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         "both distinct senders appear in the shared room: {forms:?}"
     );
 
-    // DM: the canonical pairwise room both ends join; reviewer DMs tester.
     let dm = RoomId::parse("dm:reviewer:tester").expect("dm room");
-    // Scope the pairwise room to a unique session token that matches no agent's real session id,
-    // so the broker auto-joins NOBODY — membership is explicit (mirrors `dm_send`). A `Global`
-    // scope would broadcast the DM to every agent on the machine.
     reviewer
         .create_room(
             dm.clone(),
@@ -574,7 +538,6 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         .await
         .expect("dm post");
 
-    // The recipient sees the DM in its cross-room inbox.
     let (tester_inbox, _u, _c) = tester
         .read_inbox(None, None, None, 100, false, None)
         .await
@@ -584,7 +547,6 @@ async fn shared_room_chat_and_pairwise_dm_isolation() {
         "tester must receive the DM"
     );
 
-    // A third agent, in neither room, never sees it.
     let (outsider_inbox, _u, _c) = outsider
         .read_inbox(None, None, None, 100, false, None)
         .await
@@ -621,7 +583,6 @@ async fn read_history_recency_cutoff_and_room_freshness() {
         .expect("create room");
     assert_eq!(created.last_activity, 0, "a freshly-created room has no activity yet");
 
-    // now_micros() is read BEFORE the posts so `now + 1h` is strictly after both their timestamps.
     let before_posts = basemind::comms::model::now_micros();
     for subject in ["first", "second"] {
         alice
@@ -639,7 +600,6 @@ async fn read_history_recency_cutoff_and_room_freshness() {
 
     const ONE_HOUR_MICROS: i64 = 3_600_000_000;
 
-    // (1) A cutoff strictly AFTER both posts returns nothing — recency elides the older messages.
     let (future, _next) = alice
         .read_history(room.clone(), None, 100, Some(before_posts + ONE_HOUR_MICROS))
         .await
@@ -650,34 +610,29 @@ async fn read_history_recency_cutoff_and_room_freshness() {
         future.len()
     );
 
-    // (2) No cutoff returns the full log — the append-only history is intact.
     let (all_none, _n) = alice
         .read_history(room.clone(), None, 100, None)
         .await
         .expect("history with no cutoff");
     assert_eq!(all_none.len(), 2, "None cutoff returns the whole log");
 
-    // (2b) A cutoff at 0 (before the epoch) is equivalent to no cutoff for real messages.
     let (all_zero, _n) = alice
         .read_history(room.clone(), None, 100, Some(0))
         .await
         .expect("history with zero cutoff");
     assert_eq!(all_zero.len(), 2, "a 0 cutoff also returns the whole log");
 
-    // (3) The room's freshness clock is populated and recent after the posts. `create_room` is an
-    // idempotent upsert that carries the accrued `last_activity` forward, so re-creating reads it.
     let refreshed = alice
         .create_room(room.clone(), RoomScope::Global, Some("Fresh".to_string()))
         .await
         .expect("re-create room reads carried-forward activity");
     assert!(refreshed.last_activity > 0, "last_activity is stamped after a post");
     let now = basemind::comms::model::now_micros();
-    const STALE_WINDOW_MICROS: i64 = 168 * ONE_HOUR_MICROS; // 7 days
+    const STALE_WINDOW_MICROS: i64 = 168 * ONE_HOUR_MICROS;
     assert!(
         now - refreshed.last_activity <= STALE_WINDOW_MICROS,
         "a just-posted room is within the freshness window (not stale)"
     );
-    // A far-past last_activity WOULD be stale — pin the arithmetic the summary/CLI use.
     let far_past = now - STALE_WINDOW_MICROS - ONE_HOUR_MICROS;
     assert!(
         now - far_past > STALE_WINDOW_MICROS,

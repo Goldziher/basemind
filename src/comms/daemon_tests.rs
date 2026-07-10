@@ -63,7 +63,6 @@ async fn subscribe_then_post_fans_out_notification() {
     let (_d, broker) = temp_broker();
     let (tx, mut rx) = mpsc::channel(8);
     let mut session = Session::default();
-    // Hello with no cwd → Global default room.
     broker
         .handle(
             CommsRequest::Hello {
@@ -219,14 +218,12 @@ async fn ack_by_ids_advances_only_the_acking_agents_cursor() {
     let (tx, _rx) = mpsc::channel(64);
     let room = RoomId::parse("r").expect("r");
 
-    // Alice posts two messages; Bob and Carol are inbox readers.
     let mut alice = hello_join(&broker, &tx, "alice", &room).await;
     let mut bob = hello_join(&broker, &tx, "bob", &room).await;
     let mut carol = hello_join(&broker, &tx, "carol", &room).await;
     let m1 = post(&broker, &mut alice, &tx, &room, "first").await;
     let _m2 = post(&broker, &mut alice, &tx, &room, "second").await;
 
-    // Bob sees both, acks the first by id.
     assert_eq!(inbox(&broker, &mut bob, &tx).await.len(), 2);
     let resp = broker
         .handle(
@@ -250,12 +247,10 @@ async fn ack_by_ids_advances_only_the_acking_agents_cursor() {
         other => panic!("expected Acked, got {other:?}"),
     }
 
-    // Bob's inbox no longer shows the acked message; only "second" remains.
     let bob_after = inbox(&broker, &mut bob, &tx).await;
     assert_eq!(bob_after.len(), 1);
     assert_eq!(bob_after[0].meta.subject, "second");
 
-    // The shared log is intact — History still returns both messages.
     match broker
         .handle(
             CommsRequest::History {
@@ -273,7 +268,6 @@ async fn ack_by_ids_advances_only_the_acking_agents_cursor() {
         other => panic!("expected History, got {other:?}"),
     }
 
-    // Carol's inbox is unaffected by Bob's ack — per-agent isolation.
     assert_eq!(inbox(&broker, &mut carol, &tx).await.len(), 2);
 }
 
@@ -317,7 +311,6 @@ async fn ack_does_not_report_phantom_advance() {
     let mut bob = hello_join(&broker, &tx, "bob", &room).await;
     post(&broker, &mut alice, &tx, &room, "m0").await;
 
-    // to_seq = 0 cannot advance past the default cursor of 0.
     let resp = broker
         .handle(
             CommsRequest::AckInbox {
@@ -343,7 +336,6 @@ async fn ack_does_not_report_phantom_advance() {
         other => panic!("expected Acked, got {other:?}"),
     }
 
-    // Advance to seq 1, then re-ack the same seq: no further advance is reported.
     let _ = broker
         .handle(
             CommsRequest::AckInbox {
@@ -401,34 +393,28 @@ async fn idle_reaper_tracks_links_and_activity() {
     use std::time::Duration;
     let (_d, broker) = temp_broker();
 
-    // A fresh, unused broker is immediately idle past a zero window — the reaper would
-    // self-terminate a daemon that was spawned but never used.
     assert!(
         broker.is_idle_for(Duration::ZERO).await,
         "an unused broker is idle past a zero window"
     );
 
-    // A connected link is never idle, even past the window.
     broker.link_connected();
     assert!(
         !broker.is_idle_for(Duration::ZERO).await,
         "a connected link keeps the daemon alive"
     );
 
-    // After the last link closes the broker is idle again.
     broker.link_disconnected();
     assert!(
         broker.is_idle_for(Duration::ZERO).await,
         "the broker is idle once every link has closed"
     );
 
-    // Recent activity (the disconnect just touched it) keeps it out of a real reap window.
     assert!(
         !broker.is_idle_for(Duration::from_secs(3600)).await,
         "recent activity keeps the broker out of the reap window"
     );
 
-    // A draining broker is never reaped — the clean-shutdown path is already underway.
     broker.begin_drain().await;
     assert!(
         !broker.is_idle_for(Duration::ZERO).await,
@@ -467,7 +453,6 @@ async fn session_scoped_room_auto_joins_only_matching_session() {
     let (tx, _rx) = mpsc::channel(64);
     let room = RoomId::parse("session-abc").expect("room");
 
-    // A session-scoped room exists before anyone connects.
     broker
         .handle(
             CommsRequest::CreateRoom {
@@ -480,12 +465,10 @@ async fn session_scoped_room_auto_joins_only_matching_session() {
         )
         .await;
 
-    // Parent + child share session "abc"; outsider has a different session.
     let mut parent = hello_session(&broker, &tx, "parent", Some("abc")).await;
     let mut child = hello_session(&broker, &tx, "child", Some("abc")).await;
     let mut outsider = hello_session(&broker, &tx, "outsider", Some("zzz")).await;
 
-    // The matching session's agents were auto-joined to the room; the outsider was not.
     let subs = broker.store.subscribers(&room).expect("subs");
     assert!(subs.contains(&agent("parent")), "parent auto-joins session room");
     assert!(subs.contains(&agent("child")), "child auto-joins session room");
@@ -494,7 +477,6 @@ async fn session_scoped_room_auto_joins_only_matching_session() {
         "a different session id must not auto-join"
     );
 
-    // Parent posts → child sees it in the inbox, outsider does not.
     let _ = post(&broker, &mut parent, &tx, &room, "hello-child").await;
     let child_inbox = inbox(&broker, &mut child, &tx).await;
     assert_eq!(child_inbox.len(), 1);
@@ -539,13 +521,8 @@ async fn hello_session_with_parent(
 async fn child_hello_records_session_lineage_row() {
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(8);
-    // The room id is deliberately DISTINCT from the session id to prove the write reads the real
-    // room id rather than assuming `room_id == session_id`.
     let room = RoomId::parse("session-room-s1").expect("room");
 
-    // The parent creates the session room and joins it (mirrors `shell_spawn`). The parent itself
-    // presents no `session_id` for this session — it is the spawner, not a session child — so its
-    // own Hello records no lineage for "s1".
     let mut parent = Session::default();
     broker
         .handle(
@@ -560,10 +537,8 @@ async fn child_hello_records_session_lineage_row() {
         .await;
     let _ = hello_session(&broker, &tx, "parent", None).await;
 
-    // No lineage exists before the child says Hello.
     assert_eq!(broker.store.get_session("s1").expect("get"), None);
 
-    // The child says Hello carrying session "s1" + parent "parent".
     let _child = hello_session_with_parent(&broker, &tx, "child", "s1", "parent").await;
 
     let lineage = broker
@@ -576,7 +551,6 @@ async fn child_hello_records_session_lineage_row() {
     assert_eq!(lineage.parent_agent, Some(agent("parent")));
     assert_eq!(lineage.room_id, room, "room id is the real created room");
 
-    // `list_sessions` (and the `ListSessions` request) surfaces the row.
     let listed = broker.on_list_sessions().expect("list");
     match listed {
         CommsResponse::Sessions { sessions } => {
@@ -615,7 +589,6 @@ async fn re_hello_preserves_session_created_at() {
     let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
     let first = broker.store.get_session("s2").expect("get").expect("first row");
 
-    // A reconnect (a second Hello) for the same session must not move `created_at`.
     let _ = hello_session_with_parent(&broker, &tx, "child", "s2", "parent").await;
     let second = broker.store.get_session("s2").expect("get").expect("second row");
     assert_eq!(
@@ -656,7 +629,6 @@ async fn delete_session_removes_lineage_row() {
     let _ = hello_session_with_parent(&broker, &tx, "child", "s3", "parent").await;
     assert!(broker.store.get_session("s3").expect("get").is_some());
 
-    // Deleting an absent id is a no-op (idempotent).
     match broker
         .handle(
             CommsRequest::DeleteSession {
@@ -672,7 +644,6 @@ async fn delete_session_removes_lineage_row() {
     }
     assert!(broker.store.get_session("s3").expect("get").is_some());
 
-    // Deleting the real id removes the row.
     match broker
         .handle(
             CommsRequest::DeleteSession {

@@ -1,9 +1,3 @@
-// L3: cross-file resolution.
-//
-// For v0 we ship a heuristic only: `dependents_of(module)` matches a string against
-// the `module` field on imports, plus a substring fallback against the raw import text.
-// Real per-language module resolvers land later.
-
 use std::path::{Path, PathBuf};
 
 use super::Import;

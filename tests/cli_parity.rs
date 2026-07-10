@@ -29,11 +29,8 @@ fn bin() -> &'static str {
 /// router; feature-gated groups mirror the `#[cfg]` on their `tool_router_*` registration in
 /// `src/mcp/mod.rs` so the set matches `tool_names()` exactly under any feature build.
 fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
-    // `mut` is only exercised when a feature-gated `m.extend(...)` block below is compiled in;
-    // on a default-feature build none of those blocks exist, so `mut` looks unused.
     #[allow(unused_mut)]
     let mut m: Vec<(&str, &str)> = vec![
-        // code-map (tool_router_core)
         ("outline", "query outline"),
         ("search_symbols", "query search"),
         ("find_references", "query references"),
@@ -50,16 +47,13 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("symbol_history", "git symbol-history"),
         ("rescan", "rescan"),
         ("telemetry_summary", "telemetry"),
-        // semantic code search (tool_router_code — shims compile without the feature)
         ("search_code", "query search-code"),
         ("get_chunk", "query get-chunk"),
-        // code-aware compression (tool_router_compress)
         ("expand", "query expand"),
         ("compress", "compress-output"),
         ("delta", "delta"),
         ("checkpoint", "checkpoint"),
         ("detect_waste", "detect-waste"),
-        // git history (tool_router_git)
         ("working_tree_status", "git working-tree-status"),
         ("recent_changes", "git recent-changes"),
         ("commits_touching", "git commits-touching"),
@@ -70,20 +64,17 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("blame_file", "git blame-file"),
         ("blame_symbol", "git blame-symbol"),
         ("search_git_history", "git search"),
-        // shared memory (tool_router_memory — shims compile without the feature)
         ("memory_put", "memory put"),
         ("memory_get", "memory get"),
         ("memory_list", "memory list"),
         ("memory_search", "memory search"),
         ("memory_delete", "memory delete"),
         ("search_documents", "memory search-documents"),
-        // governance (tool_router_governance)
         ("proposals_mine", "governance mine"),
         ("proposals_list", "governance proposals"),
         ("proposal_accept", "governance accept"),
         ("proposal_reject", "governance reject"),
         ("memory_audit", "governance audit"),
-        // cache admin (tool_router_admin)
         ("cache_stats", "cache stats"),
         ("cache_gc", "cache gc"),
         ("cache_clear", "cache clear"),
@@ -96,9 +87,6 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
     ]);
     #[cfg(all(feature = "comms", any(unix, windows)))]
     m.extend([
-        // Comms CLI verbs connect to the broker directly (a parallel path), but the capability of
-        // every comms tool is reachable from the CLI. `inbox_ack` has no standalone verb — it is
-        // folded into `comms inbox --mark-read`.
         ("agent_register", "comms register"),
         ("agent_list", "comms agents"),
         ("room_create", "comms room-create"),
@@ -140,16 +128,12 @@ fn every_mcp_tool_has_a_cli_command() {
     let map = tool_to_cli();
     let mapped: std::collections::HashSet<&str> = map.iter().map(|(t, _)| *t).collect();
 
-    // 1. Every advertised MCP tool must be mapped to a CLI command. A new tool without an entry
-    //    here fails — the author must add its CLI counterpart and record the mapping.
     let unmapped: Vec<&String> = tools.iter().filter(|t| !mapped.contains(t.as_str())).collect();
     assert!(
         unmapped.is_empty(),
         "MCP tools with no CLI mapping (add the CLI command + a TOOL_TO_CLI row): {unmapped:?}"
     );
 
-    // 2. No stale mappings: every mapped tool must still be advertised (catches a renamed/removed
-    //    tool whose stale row would otherwise mask a real gap).
     let live: std::collections::HashSet<&str> = tools.iter().map(String::as_str).collect();
     let stale: Vec<&str> = map.iter().map(|(t, _)| *t).filter(|t| !live.contains(t)).collect();
     assert!(
@@ -160,8 +144,6 @@ fn every_mcp_tool_has_a_cli_command() {
 
 #[test]
 fn every_mapped_cli_command_resolves() {
-    // Each mapped CLI path must be a real, wired subcommand: `--help` parses the command tree and
-    // exits 0 without running any tool. A renamed/missing CLI command fails here.
     for (tool, cli) in tool_to_cli() {
         let mut args: Vec<&str> = cli.split(' ').collect();
         args.push("--help");

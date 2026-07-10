@@ -70,9 +70,6 @@ fn build_resolver() -> Resolver {
             "require".to_string(),
             "default".to_string(),
         ],
-        // Do NOT canonicalize symlinks: we map the resolved path back to a repo-relative key via
-        // `strip_prefix(root)`, and canonicalization would rewrite `root` (e.g. macOS `/var` →
-        // `/private/var`, or any symlinked checkout) out from under that prefix, dropping the edge.
         symlinks: false,
         ..ResolveOptions::default()
     })
@@ -96,8 +93,6 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
     if facts.is_empty() {
         return;
     }
-    // Pre-index every target file's exports by name once, so the per-import lookup is O(1) instead
-    // of a linear scan over a barrel file's hundreds of re-exports.
     let export_maps: AHashMap<&str, AHashMap<&str, u32>> = facts
         .iter()
         .filter(|(_, f)| !f.exports.is_empty())
@@ -122,7 +117,6 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
         let importer_rel = RelPath::from(importer_key.as_str());
 
         for import in &importer_facts.imports {
-            // Type-only imports are erased at runtime — no runtime reference edge.
             if import.is_type {
                 continue;
             }
@@ -139,9 +133,8 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 }
             };
             let Some(target_rel) = to_repo_relative(root, &target_abs) else {
-                continue; // resolved outside the repo (e.g. a symlinked node_modules) — not indexed
+                continue;
             };
-            // The target must be an indexed file; unindexed targets have no export facts to bind.
             if store.lookup(&target_rel).is_none() {
                 continue;
             }
@@ -149,7 +142,7 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 continue;
             };
             let Some(export_map) = export_maps.get(target_key) else {
-                continue; // target exports nothing (nothing to bind to)
+                continue;
             };
 
             let wanted = import.imported.as_deref().unwrap_or(DEFAULT_EXPORT_NAME);

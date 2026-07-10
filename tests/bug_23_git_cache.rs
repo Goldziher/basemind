@@ -40,23 +40,15 @@ fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
     let repo = Repo::discover(root).expect("discover");
     let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
 
-    // Disk-backed cache, as `serve` opens it by default.
     let cache = GitCache::open(&basemind_dir, 32, true).expect("open git cache");
 
     let before = cache_stats(&basemind_dir).expect("stats before");
 
-    // A `recent_changes`-style call: persists a LogPayload under git-cache/log/.
     let commits = cache.log(&repo, &head, None, 50, true).expect("log");
     assert!(!commits.is_empty(), "repo has at least one commit");
 
     let after = cache_stats(&basemind_dir).expect("stats after");
 
-    // The bug-#23 invariant is that a disk-backed call is *reflected* on disk: the cache is
-    // non-zero afterwards and strictly grows across the call. We deliberately do NOT assert
-    // `before == 0` — `cache_stats` sizes by allocated blocks, so opening the disk-backed cache can
-    // pre-create the `git-cache/` directory that already costs one block on block-counting
-    // filesystems (ext4/xfs on Linux CI) while reading 0 on APFS. Asserting growth is the portable,
-    // meaningful check.
     assert!(
         after.git_cache_bytes > before.git_cache_bytes,
         "git_cache_bytes must grow across a disk-backed call: before={} after={}",
@@ -72,8 +64,6 @@ fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
 
 #[test]
 fn ram_only_git_cache_legitimately_persists_nothing() {
-    // The companion truth for bug #23: with `persist=false` (`--no-git-cache-disk`) the
-    // git cache is RAM-only by design, so `git_cache_bytes` staying 0 is honest, not a bug.
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     run(root, &["init", "-q"]);

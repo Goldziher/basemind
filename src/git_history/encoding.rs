@@ -34,7 +34,7 @@ pub fn read_uvarint(buf: &[u8], cursor: &mut usize) -> Option<u64> {
         let byte = *buf.get(*cursor)?;
         *cursor += 1;
         if shift >= 64 {
-            return None; // would overflow u64
+            return None;
         }
         result |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
@@ -53,8 +53,6 @@ pub fn read_uvarint(buf: &[u8], cursor: &mut usize) -> Option<u64> {
 /// round-trips through [`decode_ords`] but wastes space.
 pub fn encode_ords(ords: &[u32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(ords.len() * 2);
-    // Walk newest-first (input is ascending, so iterate in reverse). The first (largest) ordinal is
-    // written as its absolute value; each subsequent entry is the positive gap down from the previous.
     let mut iter = ords.iter().rev();
     let Some(&first) = iter.next() else {
         return out;
@@ -73,8 +71,8 @@ pub fn encode_ords(ords: &[u32]) -> Vec<u8> {
 /// returns what was read cleanly (best-effort, mirroring the index module's `None`-skip philosophy —
 /// a corrupt byte never panics a query).
 pub fn decode_ords(buf: &[u8]) -> Vec<u32> {
-    let mut out = decode_ords_head(buf, usize::MAX); // newest-first …
-    out.reverse(); // … flipped to ascending
+    let mut out = decode_ords_head(buf, usize::MAX);
+    out.reverse();
     out
 }
 
@@ -94,7 +92,6 @@ pub fn decode_ords_head(buf: &[u8], n: usize) -> Vec<u32> {
         let Some(delta) = read_uvarint(buf, &mut cursor) else {
             break;
         };
-        // First entry is the absolute (largest) ordinal; the rest step downward by the gap.
         acc = if first {
             delta as u32
         } else {
@@ -257,7 +254,6 @@ mod tests {
 
     #[test]
     fn read_uvarint_returns_none_on_truncation() {
-        // A lone continuation byte (high bit set) with no follow-up byte.
         let mut cursor = 0;
         assert_eq!(read_uvarint(&[0x80], &mut cursor), None);
     }
@@ -277,7 +273,6 @@ mod tests {
 
     #[test]
     fn head_returns_newest_n_first() {
-        // Ascending input; `decode_ords_head` returns the newest `n` in newest-first order.
         let ords: Vec<u32> = (0..1000).map(|i| i * 3).collect();
         let buf = encode_ords(&ords);
         let head = decode_ords_head(&buf, 5);
@@ -289,7 +284,6 @@ mod tests {
         let ords = vec![10u32, 20, 30];
         let buf = encode_ords(&ords);
         assert_eq!(decode_ords_head(&buf, 100), vec![30, 20, 10]);
-        // The full decode flips it back to ascending for the append-merge path.
         assert_eq!(decode_ords(&buf), ords);
     }
 
@@ -309,7 +303,7 @@ mod tests {
     #[test]
     fn commit_meta_round_trips() {
         let sha = [7u8; 20];
-        let files = vec![(5u32, 1u8), (2, 0), (100, 2)]; // unsorted on input
+        let files = vec![(5u32, 1u8), (2, 0), (100, 2)];
         let buf = encode_commit_meta(&sha, 1_700_000_000, b"Ada", b"ada@x.io", b"fix: thing", &files);
         let decoded = decode_commit_meta(&buf).expect("decodes");
         assert_eq!(decoded.sha20, sha);
@@ -317,7 +311,6 @@ mod tests {
         assert_eq!(decoded.author, b"Ada");
         assert_eq!(decoded.author_email, b"ada@x.io");
         assert_eq!(decoded.summary, b"fix: thing");
-        // Files come back sorted by path_id (set semantics).
         assert_eq!(decoded.files, vec![(2, 0), (5, 1), (100, 2)]);
     }
 
@@ -332,7 +325,6 @@ mod tests {
         assert_eq!(head.author, b"Ada");
         assert_eq!(head.author_email, b"ada@x.io");
         assert_eq!(head.summary, b"fix: thing");
-        // Head decode agrees with the full decode on every non-file field, but allocates no Vec.
         let full = decode_commit_meta(&buf).expect("full decodes");
         assert_eq!(head.sha20, full.sha20);
         assert_eq!(head.author_email, full.author_email);
@@ -351,8 +343,6 @@ mod tests {
 
     #[test]
     fn delta_encoding_is_compact_for_dense_ascending() {
-        // 1000 consecutive ordinals → 1000 single-byte deltas (delta 1 = one varint byte each),
-        // far smaller than 4 bytes/ord raw.
         let ords: Vec<u32> = (5000..6000).collect();
         let buf = encode_ords(&ords);
         assert!(

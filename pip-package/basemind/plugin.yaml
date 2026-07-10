@@ -1,16 +1,3 @@
-# Hermes Agent plugin manifest for basemind.
-#
-# Discovered by Hermes via the `hermes_agent.plugins` entry point declared in this
-# package's pyproject.toml (`basemind = "basemind"`), so `pip install basemind` makes
-# the plugin available. basemind's TOOLS reach Hermes through an MCP server declared in
-# ~/.hermes/config.yaml (mcp_servers.basemind) — a plugin cannot declare an MCP server —
-# while this plugin adds the helper skills, slash commands, and agent-comms notifications.
-#
-# General plugins are opt-in: enable with `hermes plugins enable basemind` or add
-# `basemind` under `plugins.enabled` in ~/.hermes/config.yaml.
-#
-# Version is kept in lock-step with every other basemind surface by
-# scripts/release-bump.sh — do not hand-edit.
 name: basemind
 version: "0.20.0"
 description: Tree-sitter code-map + git history/blame + document RAG + shared agent memory, over MCP.

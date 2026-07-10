@@ -210,24 +210,18 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
         if !view_dir.is_dir() {
             continue;
         }
-        // Cheap fast-path: a view with no index file references nothing. Skip without a read.
         if !view_dir.join(INDEX_FILE).exists() {
             tracing::warn!(view = %view_dir.display(), "view has no index.msgpack; skipping");
             continue;
         }
-        // Propagate any non-missing read failure: an incomplete live set is unsafe to sweep.
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
-            // Raced removal between the exists() check and the read — nothing to contribute.
             Ok(None) => continue,
             Err(e) => return Err(GcError::Store(e)),
         };
         for entry in index.files.values() {
             referenced.insert(entry.hash_hex.clone());
         }
-        // Doc-tier blobs (`.doc.msgpack`) are keyed by `doc_files` hashes, which are NOT in
-        // `index.files`. Without this union `gc_blobs` (which deletes by hex stem regardless of
-        // suffix) would reap every doc blob — destroying the doc cache after every boot GC.
         for entry in index.doc_files.values() {
             referenced.insert(entry.hash_hex.clone());
         }
@@ -261,9 +255,6 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
         let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        // Pre-0.9 split-tier blobs are dead format — reclaim unconditionally (their stem may
-        // still be referenced by the live combined `.fm` blob, so the stem check below would
-        // wrongly keep them).
         let is_legacy = LEGACY_BLOB_SUFFIXES.iter().any(|suffix| file_name.ends_with(suffix));
         let Some(stem) = blob_stem(file_name) else {
             report.scanned += 1;
@@ -276,7 +267,6 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
                 report.removed += 1;
                 report.bytes_freed += size;
             }
-            // Otherwise not a recognized blob (e.g. a `.tmp` writer leftover) — never delete.
             continue;
         };
         report.scanned += 1;
@@ -309,10 +299,6 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
 /// `basemind scan` / `basemind watch`, so every blob a scan has written is either already
 /// referenced (committed) or invisible to GC (scan still holds the lock).
 pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
-    // Safety: when the clone has linked git worktrees the blob cache is shared, but this sweep marks
-    // references from THIS worktree's views only — it would reap blobs a sibling worktree still
-    // needs. Skip (GC only reclaims orphaned disk; a worktree-spanning GC is a follow-up). Detected
-    // from the workdir (`basemind_dir`'s parent) so it holds from the main or a linked worktree.
     if let Some(workdir) = basemind_dir.parent()
         && crate::git::Repo::discover(workdir)
             .map(|r| r.has_linked_worktrees())
@@ -327,7 +313,6 @@ pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
             bytes_freed: 0,
         });
     }
-    // Held for the whole mark+sweep; dropped when `_lock` goes out of scope.
     let _lock = acquire_lock(basemind_dir)?;
     let referenced = collect_referenced_hashes(basemind_dir)?;
     gc_blobs(basemind_dir, &referenced)
@@ -375,11 +360,6 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 /// count reuses [`collect_referenced_hashes`] but never deletes.
 pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
     let blobs_dir = basemind_dir.join(BLOBS_DIR);
-    // cache_stats is read-only and never deletes, so — unlike `cache_gc` — it must NOT hard-fail
-    // when a view index can't be read (e.g. a schema-mismatched `.basemind/` from an older binary
-    // that hasn't been re-scanned). The disk/RAM footprint is exactly what an operator asking
-    // "how much does this consume" needs, and it requires no index. So degrade: report sizes
-    // regardless, and mark orphan accounting unavailable when the live set can't be determined.
     let referenced = match collect_referenced_hashes(basemind_dir) {
         Ok(set) => Some(set),
         Err(e) => {
@@ -409,8 +389,6 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
                 continue;
             };
             blob_count += 1;
-            // Only classify orphans when the live reference set is known; otherwise leave the
-            // count at 0 and let `blob_accounting_ok = false` disclose it wasn't computed.
             if let Some(referenced) = &referenced
                 && !referenced.contains(stem)
             {
@@ -426,8 +404,6 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
     let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    // Ground-truth footprint: size the whole tree, then derive `other` as the remainder so the
-    // breakdown always reconciles to the total and no directory can go uncounted.
     let total_bytes = dir_size(basemind_dir)?;
     let accounted = blobs_bytes + views_bytes + lance_bytes + git_cache_bytes + telemetry_bytes + git_history_bytes;
     let other_bytes = total_bytes.saturating_sub(accounted);
@@ -451,8 +427,6 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
         peak_rss_bytes: rss.peak_bytes,
     })
 }
-
-// ─── internal helpers ───────────────────────────────────────────────────────
 
 /// Strip a known blob suffix off a filename, returning the hex stem. `None` if the filename
 /// is not a recognized blob (so the caller never treats stray files as reclaimable).
@@ -564,7 +538,6 @@ fn dir_size(dir: &Path) -> Result<u64, GcError> {
     if !dir.exists() {
         return Ok(0);
     }
-    // The directory's own allocation (`du` counts it too).
     let mut total = std::fs::symlink_metadata(dir).map(|m| on_disk_size(&m)).unwrap_or(0);
     for entry in read_dir(dir)? {
         let entry = entry.map_err(|source| GcError::Io {
@@ -577,7 +550,6 @@ fn dir_size(dir: &Path) -> Result<u64, GcError> {
             source,
         })?;
         if meta.is_dir() {
-            // Recursion counts the subdirectory's own blocks + its contents.
             total += dir_size(&path)?;
         } else {
             total += on_disk_size(&meta);
@@ -612,19 +584,14 @@ mod tests {
         fs::create_dir_all(&blobs).expect("mk blobs");
         fs::create_dir_all(&working).expect("mk view");
 
-        // 64-hex-char stems (matches the real hashing::hex output width).
         let referenced_stem = "a".repeat(64);
         let orphan_stem = "b".repeat(64);
 
-        // Referenced blob: one combined filemap for the live stem.
         fs::write(blobs.join(format!("{referenced_stem}.fm.msgpack")), b"fm").expect("write ref fm");
-        // Orphan blob: a single filemap with a known byte length.
         let orphan_bytes = b"orphan-blob-bytes";
         let orphan_len = orphan_bytes.len() as u64;
         fs::write(blobs.join(format!("{orphan_stem}.fm.msgpack")), orphan_bytes).expect("write orphan");
 
-        // Hand-build a real Index referencing only the live stem, serialized with the same
-        // rmp-serde `to_vec_named` the store's `flush` uses.
         let mut index = Index::empty();
         index.files.insert(
             crate::path::RelPath::from("src/main.rs"),
@@ -649,25 +616,18 @@ mod tests {
 
     #[test]
     fn cache_stats_counts_git_history_and_reconciles_total() {
-        // Regression for the 0.15 disk-undercount bug: `git-history.fjall/` (a sibling of
-        // `views/`) was never summed, so the reported total fell short of `du`. Assert it is now
-        // counted and that the breakdown reconciles exactly to the whole-tree total.
         let fx = build_fixture();
 
-        // A git-history index directory with a known payload …
         let gh_dir = fx.basemind_dir.join(crate::git_history::GIT_HISTORY_DIR);
         fs::create_dir_all(&gh_dir).expect("mk git-history");
         let gh_payload = b"git-history-index-bytes-XXXXXXXX";
         fs::write(gh_dir.join("commits.fjall"), gh_payload).expect("write gh blob");
 
-        // … and a stray top-level file that belongs to no named component (→ `other_bytes`).
         let stray = b"lockmeta";
         fs::write(fx.basemind_dir.join(".lock.meta"), stray).expect("write stray");
 
         let stats = cache_stats(&fx.basemind_dir).expect("cache_stats");
 
-        // Block-rounded (allocated) sizing, so assert coverage rather than exact byte counts: the
-        // git-history directory is now counted (was silently omitted before 0.16).
         assert!(
             stats.git_history_bytes >= gh_payload.len() as u64,
             "git-history.fjall/ must be counted (got {})",
@@ -679,7 +639,6 @@ mod tests {
             stats.other_bytes
         );
 
-        // The whole-tree total is ground truth, and the breakdown reconciles to it exactly.
         assert_eq!(
             stats.total_bytes,
             dir_size(&fx.basemind_dir).expect("dir_size"),
@@ -700,22 +659,15 @@ mod tests {
 
     #[test]
     fn cache_stats_degrades_when_index_unreadable() {
-        // A corrupt/unreadable view index (e.g. an older-schema `.basemind/` not yet re-scanned)
-        // must not sink the whole call: sizes are still reported, orphan accounting is skipped,
-        // and `blob_accounting_ok` discloses that. (GC, which deletes, still hard-fails — asserted
-        // separately by the collect/gc tests.)
         let fx = build_fixture();
         let working = fx.basemind_dir.join(VIEWS_DIR).join("working");
-        // Overwrite the valid index with bytes rmp-serde can't decode.
         fs::write(working.join(INDEX_FILE), b"\xff\xff not-msgpack \x00").expect("corrupt index");
 
-        // collect_referenced_hashes (the GC safety path) still errors …
         assert!(
             collect_referenced_hashes(&fx.basemind_dir).is_err(),
             "an unreadable index must fail the delete-path safety check"
         );
 
-        // … but read-only stats degrade gracefully.
         let stats = cache_stats(&fx.basemind_dir).expect("cache_stats must not hard-fail");
         assert!(
             !stats.blob_accounting_ok,
@@ -772,9 +724,6 @@ mod tests {
 
     #[test]
     fn should_reclaim_legacy_split_tier_blobs_even_when_stem_is_referenced() {
-        // A pre-0.9 `.l1`/`.l2` pair left on disk after the schema-bump refresh shares its stem
-        // with the live combined `.fm` blob — the stem IS referenced, yet the dead-format pair
-        // must still be reaped.
         let fx = build_fixture();
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
         fs::write(blobs.join(format!("{}.l1.msgpack", fx.referenced_stem)), b"legacy-l1").expect("write legacy l1");
@@ -825,7 +774,6 @@ mod tests {
     #[test]
     fn should_clear_only_blobs_component() {
         let fx = build_fixture();
-        // Drop a telemetry file so we can prove it survives the Blobs clear.
         fs::write(fx.basemind_dir.join(TELEMETRY_FILENAME), b"{}\n").expect("telemetry");
 
         clear_component(&fx.basemind_dir, CacheComponent::Blobs).expect("clear blobs");
@@ -838,7 +786,6 @@ mod tests {
         assert!(remaining.is_empty(), "blobs dir emptied: {remaining:?}");
         assert!(blobs.exists(), "blobs dir itself preserved");
 
-        // Other components untouched.
         assert!(
             fx.basemind_dir
                 .join(VIEWS_DIR)
@@ -879,7 +826,6 @@ mod tests {
 
     #[test]
     fn should_clear_single_view_and_leave_others_intact() {
-        // bug #22: clearing one view by name must NOT nuke every view.
         let (_tmp, basemind_dir) = build_two_view_fixture();
 
         clear_single_view(&basemind_dir, "rev-abc").expect("clear one view");
@@ -898,7 +844,6 @@ mod tests {
     fn clear_single_view_is_idempotent_for_missing_view() {
         let (_tmp, basemind_dir) = build_two_view_fixture();
         clear_single_view(&basemind_dir, "rev-does-not-exist").expect("missing view is a no-op");
-        // Existing views untouched.
         assert!(basemind_dir.join(VIEWS_DIR).join("working").exists());
         assert!(basemind_dir.join(VIEWS_DIR).join("rev-abc").exists());
     }
@@ -912,39 +857,29 @@ mod tests {
                 "invalid view name {bad:?} must be rejected"
             );
         }
-        // The legitimate views are untouched by the rejected calls.
         assert!(basemind_dir.join(VIEWS_DIR).join("working").exists());
     }
 
     #[test]
     fn blob_stem_recovers_stem_for_every_known_suffix() {
-        // Every suffix in BLOB_SUFFIXES must strip back to the bare hex stem — a suffix missing
-        // from the list makes gc_blobs take the "never delete" branch and leak that tier forever
-        // (the .chunk / .rref regression this covers).
         assert_eq!(blob_stem("deadbeef.fm.msgpack"), Some("deadbeef"));
         assert_eq!(blob_stem("deadbeef.doc.msgpack"), Some("deadbeef"));
         assert_eq!(blob_stem("deadbeef.chunk.msgpack"), Some("deadbeef"));
         assert_eq!(blob_stem("deadbeef.rref.msgpack"), Some("deadbeef"));
-        // A stray file that matches no known suffix is not a reclaimable blob.
         assert_eq!(blob_stem("deadbeef.tmp"), None);
     }
 
     #[test]
     fn should_reclaim_unreferenced_chunk_and_rref_but_keep_referenced() {
-        // Regression: `.chunk.msgpack` (code-search) and `.rref.msgpack` (code-intel) blobs share
-        // the source-hash stem with `.fm`. An orphan-stem chunk/rref must be reaped, while a
-        // referenced-stem chunk/rref (still pointed at by the live index) must survive.
         let fx = build_fixture();
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
 
-        // Referenced-stem sidecar tiers: kept because the live index references the stem.
         fs::write(
             blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)),
             b"ref-chunk",
         )
         .expect("ref chunk");
         fs::write(blobs.join(format!("{}.rref.msgpack", fx.referenced_stem)), b"ref-rref").expect("ref rref");
-        // Orphan-stem sidecar tiers: reclaimed because no view references the stem.
         fs::write(blobs.join(format!("{}.chunk.msgpack", fx.orphan_stem)), b"orphan-chunk").expect("orphan chunk");
         fs::write(blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)), b"orphan-rref").expect("orphan rref");
 

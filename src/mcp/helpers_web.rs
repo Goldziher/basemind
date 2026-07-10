@@ -60,8 +60,6 @@ fn reject_redirected_private_url(context: &str, fetched_url: &str) -> Result<(),
             ),
             None,
         )),
-        // A non-denylist parse failure (e.g. an exotic scheme the crawler
-        // normalised to) is also unsafe to index — fail closed rather than open.
         Err(other) => Err(McpError::invalid_params(
             format!("{context}: refusing to index unparsable fetched URL {fetched_url:?}: {other}"),
             None,
@@ -121,10 +119,6 @@ fn per_call_engine(
 }
 
 async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> {
-    // Use the configured embedding preset, not a hardcoded one. The disk
-    // scanner embeds with `documents.embedding_preset`; if serve loaded a
-    // different model the LanceStore (dim, model) mismatch would wipe the table
-    // on the next open, so serve and disk scans must agree on the preset.
     let preset = state.config.documents.embedding_preset.clone();
     let max_embed_threads = state.config.documents.embed_max_threads;
     let embedder = state
@@ -153,14 +147,8 @@ pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams)
         .await
         .map_err(|e| mcp_internal("crawlberg scrape", e))?;
 
-    // POST-FETCH SSRF guard: crawlberg may have followed a redirect from the
-    // (validated) seed to a private host. Re-validate the URL we actually
-    // landed on before indexing anything from it.
     reject_redirected_private_url("web_scrape", &result.final_url)?;
 
-    // Derive the scope from the FINAL url (post-redirect), not the requested
-    // host — the rows we store are keyed by `result.final_url`, so the scope
-    // must match the host they actually came from.
     let scope = resolve_scope(params.scope.as_deref(), &params.url, &result.final_url);
 
     let body_text: String = result
@@ -219,23 +207,11 @@ pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams)
 }
 
 pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<CallToolResult, McpError> {
-    // When both overrides are None reuse the shared engine — no config clone,
-    // no new engine construction. When either override is set, build a one-shot
-    // engine from a cloned config (crawlberg bakes caps into the engine handle).
-    // Validate the shared engine is live either way so the error surface matches
-    // the other web tools.
     engine(state)?;
-    // Reject zero overrides at the boundary: the JSON schema declares `min = 1`
-    // for both, but a hand-crafted MCP request can still send `0`, which would
-    // bake a degenerate crawl (0 pages / 0 depth) into the per-call engine.
-    // `None` keeps the server default.
     reject_zero_override("max_pages", params.max_pages)?;
     reject_zero_override("max_depth", params.max_depth)?;
-    // `engine` borrow must outlive the crawl call; hold in a local so the
-    // `Cow` borrow of the shared handle compiles without a use-after-free.
     let per_call_handle;
     let engine_ref = if params.max_pages.is_none() && params.max_depth.is_none() {
-        // Zero-override fast path: borrow the already-initialized shared handle.
         engine(state)?
     } else {
         per_call_handle = per_call_engine(state, params.max_pages, params.max_depth)?;
@@ -247,42 +223,22 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
         .await
         .map_err(|e| mcp_internal("crawlberg crawl", e))?;
 
-    // Top-level scope echoed in the response: explicit when supplied, else
-    // derived from the seed URL's host. Per-page rows derive their own scope
-    // from the page's final URL below (a crawl can span subdomains).
     let scope = params.scope.clone().unwrap_or_else(|| default_scope(&params.url));
 
-    // Maximum concurrent ONNX embed + LanceDB write tasks per `web_crawl` call.
-    // Each task runs on a blocking thread. The semaphore caps active tasks so
-    // the blocking pool doesn't exhaust under large crawls. `LanceStore` wraps
-    // a current-thread tokio runtime; tokio's docs confirm that `block_on` on a
-    // current-thread runtime IS safe to call concurrently from multiple threads —
-    // the first caller "owns" the driver; other callers hook into it.
     const CRAWL_INDEX_CONCURRENCY: usize = 4;
 
     let pages_visited = crawl_outcome.pages.len();
     let lance = lance_store(state).await?;
     let embedder = embedder(state).await?;
-    // Hoist the two chunking scalars out once rather than cloning the full
-    // `DocumentsConfig` (which contains several `Vec<String>` + `BTreeMap`)
-    // once per page closure.
     let documents_cfg = Arc::new(state.config.documents.clone());
 
     let mut total_chunks = 0usize;
     let mut pages_indexed = 0usize;
-    // Track outcomes in insertion order. SSRF-rejected pages are written
-    // directly as `Some`; indexing futures write their slot on completion.
     let mut outcomes: Vec<Option<WebCrawlPageOutcome>> = Vec::with_capacity(crawl_outcome.pages.len());
     let mut futs: FuturesUnordered<_> = FuturesUnordered::new();
     let semaphore = Arc::new(tokio::sync::Semaphore::new(CRAWL_INDEX_CONCURRENCY));
 
     for (slot, page) in crawl_outcome.pages.into_iter().enumerate() {
-        // POST-FETCH SSRF guard (defence-in-depth): a crawl can follow links /
-        // redirects from a public seed onto a private host. Re-validate the URL
-        // each page actually came from and skip indexing it when it resolves to
-        // a private / loopback / link-local host. See
-        // `reject_redirected_private_url` for why this can't block the GET
-        // itself (crawlberg owns the redirect policy, un-vendored here).
         if let Err(error) = reject_redirected_private_url("web_crawl", &page.normalized_url) {
             tracing::warn!(
                 url = %page.normalized_url,
@@ -305,10 +261,6 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| page.html.clone());
 
-        // Each page is stored under `page.normalized_url`; derive its scope from
-        // that same URL's host so rows land under the host they came from, not
-        // the seed host (a crawl can follow links across subdomains). An
-        // explicit caller scope still wins for every page.
         let page_scope = match params.scope.as_deref() {
             Some(s) => s.to_string(),
             None => match crate::url::Url::parse(&page.normalized_url) {
@@ -319,8 +271,6 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
 
         let lance_for_block = Arc::clone(&lance);
         let embedder_for_block = Arc::clone(&embedder);
-        // Arc clone = one atomic increment per page (vs a full DocumentsConfig
-        // deep clone). The async closure below accesses it with a shared borrow.
         let docs_for_block = Arc::clone(&documents_cfg);
         let sem = Arc::clone(&semaphore);
         let scope_for_block = page_scope;
@@ -329,12 +279,9 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
         let status_code = page.status_code;
         let normalized_url = page.normalized_url.clone();
 
-        // Reserve a slot now; the future writes its `(slot, outcome)` pair.
         outcomes.push(None);
 
         futs.push(async move {
-            // Acquire the semaphore before entering the blocking pool so at
-            // most CRAWL_INDEX_CONCURRENCY tasks are active simultaneously.
             let _permit = sem.acquire().await;
             let res = tokio::task::spawn_blocking(move || {
                 index_page(
@@ -378,8 +325,6 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
         });
     }
 
-    // Drive all concurrent indexing futures to completion, placing results back
-    // into assigned slots to preserve caller-visible insertion order.
     while let Some((slot, outcome)) = futs.next().await {
         if outcome.indexed {
             pages_indexed += 1;
@@ -388,8 +333,6 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
         outcomes[slot] = Some(outcome);
     }
 
-    // Unwrap sentinels — every slot is now `Some`: SSRF-rejected slots were
-    // written directly above; indexing slots were written in the drive loop.
     let outcomes: Vec<WebCrawlPageOutcome> = outcomes.into_iter().flatten().collect();
 
     json_result(&WebCrawlResponse {
@@ -433,10 +376,6 @@ pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Re
 mod tests {
     use super::*;
 
-    // `reject_redirected_private_url` consults the same process-global
-    // `BASEMIND_ALLOW_PRIVATE_HOSTS` env as `Url::parse`; serialize the env
-    // mutation on the CRATE-WIDE lock shared with the `url` and `web::ingest`
-    // test modules so a setter in one module never observes a remover here.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::url::PRIVATE_HOSTS_ENV_LOCK
             .lock()
@@ -447,7 +386,6 @@ mod tests {
     fn rejects_zero_max_pages_and_depth() {
         assert!(reject_zero_override("max_pages", Some(0)).is_err());
         assert!(reject_zero_override("max_depth", Some(0)).is_err());
-        // None (inherit server default) and >= 1 pass through.
         assert!(reject_zero_override("max_pages", None).is_ok());
         assert!(reject_zero_override("max_pages", Some(1)).is_ok());
         assert!(reject_zero_override("max_depth", Some(50)).is_ok());
@@ -467,8 +405,6 @@ mod tests {
     fn rejects_private_redirect_target() {
         let _g = env_lock();
         unsafe { std::env::remove_var("BASEMIND_ALLOW_PRIVATE_HOSTS") };
-        // Simulates the URL crawlberg landed on AFTER following a redirect from a
-        // public seed to the AWS metadata endpoint — the canonical SSRF target.
         let err = reject_redirected_private_url("web_scrape", "http://169.254.169.254/latest/meta-data/")
             .expect_err("link-local redirect target must be rejected");
         assert!(

@@ -162,9 +162,7 @@ fn build_bindings(query: &Query, root: Node, source: &[u8]) -> LocalBindings {
     debug_assert!(source.len() <= u32::MAX as usize, "source exceeds u32 byte range");
     let src_len = source.len() as u32;
 
-    // index 0 is always the implicit whole-file root scope.
     let mut scopes: Vec<(u32, u32)> = vec![(0, src_len)];
-    // (name bytes borrowed from source, start_byte, end_byte)
     let mut defs: Vec<(&[u8], u32, u32)> = Vec::new();
     let mut refs: Vec<(&[u8], u32, u32)> = Vec::new();
 
@@ -215,20 +213,13 @@ fn resolve_bindings(
     defs: &[(&[u8], u32, u32)],
     refs: &[(&[u8], u32, u32)],
 ) -> AHashMap<u32, ResolvedSpan> {
-    // Each definition's owning scope = the innermost scope containing its range.
     let mut defs_by_scope: AHashMap<usize, Vec<usize>> = AHashMap::new();
     for (di, &(_, ds, de)) in defs.iter().enumerate() {
         let owner = innermost_scope(scopes, ds, de);
         defs_by_scope.entry(owner).or_default().push(di);
     }
 
-    // Scope indices sorted innermost-first (smallest area), once — reused for every reference so
-    // the per-ref containment walk is an allocation-free linear scan instead of a per-ref
-    // collect-and-sort.
     let mut scope_order: Vec<usize> = (0..scopes.len()).collect();
-    // `saturating_sub`: a well-formed grammar always emits `end >= start`, but a malformed one could
-    // invert the span; saturating keeps the sort total (area 0 → treated as innermost) rather than
-    // wrapping to a huge value in release builds.
     scope_order.sort_by_key(|&i| scopes[i].1.saturating_sub(scopes[i].0));
 
     let mut ref_to_def: AHashMap<u32, ResolvedSpan> = AHashMap::new();
@@ -278,15 +269,6 @@ fn innermost_scope(scopes: &[(u32, u32)], start: u32, end: u32) -> usize {
 mod tests {
     use super::*;
 
-    // Synthetic layout mirroring:
-    //   function outer(a) {            // scope S1 = bytes [10, 100]
-    //     let x = 1;                   // def x @ 30
-    //     function inner(b) {          // scope S2 = bytes [50, 90], def inner @ 45, def b @ 60
-    //       return x + b;              // ref x @ 70, ref b @ 74
-    //     }
-    //     return inner(a);             // ref inner @ 95, ref a @ 96
-    //   }
-    // Root scope [0, 200]. a is a param owned by S1.
     type NamedSpan = (&'static [u8], u32, u32);
     type Fixture = (Vec<(u32, u32)>, Vec<NamedSpan>, Vec<NamedSpan>);
     fn fixture() -> Fixture {
@@ -310,7 +292,6 @@ mod tests {
     fn reference_binds_to_nearest_enclosing_definition() {
         let (scopes, defs, refs) = fixture();
         let map = resolve_bindings(&scopes, &defs, &refs);
-        // x (in inner) binds to the outer `let x` at 30..31, ref span 70..71.
         let x = map.get(&70).expect("x should bind");
         assert_eq!(
             (x.def_start, x.def_end),
@@ -318,13 +299,11 @@ mod tests {
             "x should bind to outer let x@30..31"
         );
         assert_eq!(x.use_end, 71, "x ref end must be the identifier end, not the start");
-        // b binds to inner's param at 60..61.
         assert_eq!(
             map.get(&74).map(|s| s.def_start),
             Some(60),
             "b should bind to inner param b@60"
         );
-        // inner (called in outer) binds to the function def at 45..50, ref span 95..100.
         let inner = map.get(&95).expect("inner should bind");
         assert_eq!(
             (inner.def_start, inner.def_end),
@@ -332,7 +311,6 @@ mod tests {
             "inner should bind to function inner@45..50"
         );
         assert_eq!(inner.use_end, 100, "inner ref end must be the identifier end");
-        // a binds to outer's param at 20.
         assert_eq!(
             map.get(&96).map(|s| s.def_start),
             Some(20),
@@ -342,8 +320,6 @@ mod tests {
 
     #[test]
     fn shadowing_prefers_inner_scope() {
-        // Same name `v` defined at both the outer scope (owned by S1) and the inner scope
-        // (owned by S2). A reference inside S2 must bind to the inner definition, not the outer.
         let scopes = vec![(0u32, 200u32), (10, 100), (50, 90)];
         let defs: Vec<(&[u8], u32, u32)> = vec![(b"v".as_slice(), 30, 31), (b"v".as_slice(), 55, 56)];
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"v".as_slice(), 70, 71)];
@@ -357,8 +333,6 @@ mod tests {
 
     #[test]
     fn unbound_reference_is_absent() {
-        // A reference to a name with no matching definition anywhere (an imported/global symbol)
-        // must NOT resolve — callers treat it as a cross-file candidate.
         let (scopes, defs, _) = fixture();
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"fetch".as_slice(), 70, 75)];
         let map = resolve_bindings(&scopes, &defs, &refs);
@@ -368,7 +342,6 @@ mod tests {
 
     #[test]
     fn module_level_binding_resolves_to_root() {
-        // A top-level def (owned by the root scope) still binds a same-file reference.
         let scopes = vec![(0u32, 200u32), (10, 100)];
         let defs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 5, 11)];
         let refs: Vec<(&[u8], u32, u32)> = vec![(b"helper".as_slice(), 50, 56)];
@@ -384,7 +357,6 @@ mod tests {
     /// its download) is unavailable in this environment, so grammar-gated tests can skip cleanly.
     fn try_parse(lang: LangId, bytes: &[u8]) -> Option<Tree> {
         use crate::lang::{self, ParseOutcome};
-        // A vendored/compiled locals query is a prerequisite for a meaningful assertion.
         if !matches!(locals_query(lang), Ok(Some(_))) {
             return None;
         }
@@ -402,7 +374,6 @@ mod tests {
 
     #[test]
     fn resolve_locals_binds_python_local() {
-        // `x` and param `a` used inside `outer` must bind to the in-file local defs, not a global.
         let lang = "python";
         let src = "def outer(a):\n    x = 1\n    return x + a\n";
         let bytes = src.as_bytes();
@@ -425,7 +396,6 @@ mod tests {
             Some(a_def as u32),
             "python: `a` use must bind to param `a`"
         );
-        // The enriched ends are real identifier extents, not the interim zero-width spans.
         let (us, ue, ds, de) = spanned_for(&bindings, x_use as u32).expect("python: x edge spanned");
         assert_eq!(
             ue - us,
@@ -441,8 +411,6 @@ mod tests {
 
     #[test]
     fn resolve_locals_binds_go_local() {
-        // `x` (block-scoped short var) and param `a` used in the return must bind to the local
-        // defs across the nested function/block scopes.
         let lang = "go";
         let src = "package main\n\nfunc outer(a int) int {\n\tx := 1\n\treturn x + a\n}\n";
         let bytes = src.as_bytes();
@@ -538,19 +506,16 @@ mod tests {
 
     #[test]
     fn resolve_locals_binds_real_javascript() {
-        // Grammar-backed smoke covering build_bindings' capture-name matching against a real
-        // locals.scm. Skips gracefully if the grammar (or its locals query) can't be loaded in
-        // this environment — the TSLP grammar download can be unavailable in a cold sandbox/CI.
         use crate::lang::{self, ParseOutcome};
         let lang = "javascript";
         let Ok(Some(_)) = locals_query(lang) else {
-            return; // grammar or locals query unavailable — skip, don't fail
+            return;
         };
         let src = "function outer(a) {\n  let x = 1;\n  return function () { return x + a; };\n}\n";
         let bytes = src.as_bytes();
         let tree = match lang::with_parser(lang, |p| lang::parse_with_default_timeout(p, bytes)) {
             Ok(ParseOutcome::Ok(t)) => t,
-            _ => return, // grammar unavailable / parse failed — skip
+            _ => return,
         };
         let bindings = resolve_locals(lang, &tree, bytes).expect("resolve_locals must not error");
 

@@ -167,13 +167,6 @@ impl LanceStoreInner {
 
 impl Drop for LanceStoreInner {
     fn drop(&mut self) {
-        // This runtime is owned by `LanceStore`, which is cached in the MCP
-        // `ServerState`. In the single-shot CLI path that whole server is dropped at
-        // the end of the outer `block_on`, i.e. *inside* an async context — and the
-        // default `Runtime` drop blocks waiting for the blocking pool, which panics
-        // with "Cannot drop a runtime in a context where blocking is not allowed".
-        // `shutdown_background` is tokio's sanctioned escape hatch: it tears the
-        // runtime down without blocking, so the drop is safe from any context.
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -203,8 +196,6 @@ impl LanceStore {
             .block_on(async { lancedb::connect(&uri).execute().await })
             .with_context(|| format!("open lancedb at {uri}"))?;
 
-        // Best-effort: ensure both tables exist with the expected schema. We
-        // create them empty on first use; subsequent opens are cheap no-ops.
         runtime.block_on(async {
             ensure_table(&connection, DOCUMENTS_TABLE, documents_schema(dim)).await?;
             ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
@@ -381,9 +372,7 @@ impl LanceStore {
                 .context("build memory vector search")?
                 .limit(limit);
             let namespace_clause = memory_namespace_predicate(scope, visibility, agent_id);
-            // LanceDB's predicate language does not have a clean "list_contains" yet for
-            // List<Utf8>; tag filtering is therefore best-effort post-filter in the host.
-            let _ = tag_filter; // kept in the signature for forward-compat
+            let _ = tag_filter;
             q = q.only_if(namespace_clause);
             let mut stream = q.execute().await.context("run memory search")?;
             let mut hits = Vec::new();
@@ -511,8 +500,6 @@ fn wipe_on_mismatch(dir: &Path, meta_path: &Path, expected: &LanceMeta) -> Resul
         "lance store dim/model/schema mismatch — wiping {}",
         dir.display()
     );
-    // Remove every file/dir under `dir` but keep the dir itself, so callers
-    // that hold a path reference don't break.
     for entry in std::fs::read_dir(dir).with_context(|| format!("read_dir {}", dir.display()))? {
         let entry = entry.context("entry")?;
         let p = entry.path();
@@ -891,9 +878,7 @@ mod tests {
             "scope = 'scope-a' AND visibility = 'individual' AND agent_id = 'agent-a'"
         );
 
-        // The group and individual predicates differ, so they select disjoint row sets.
         assert_ne!(group, indiv_a);
-        // A different agent gets a different predicate — no cross-agent leakage.
         let indiv_b = memory_namespace_predicate("scope-a", "individual", "agent-b");
         assert_ne!(indiv_a, indiv_b);
     }
@@ -917,7 +902,6 @@ mod tests {
     fn pre_0_5_meta_without_schema_ver_triggers_wipe() {
         let dir = tempfile::tempdir().unwrap();
         let meta_path = dir.path().join(META_FILE);
-        // Old layout: only dim + embedding_model, no schema_ver field.
         std::fs::write(&meta_path, br#"{"dim":384,"embedding_model":"balanced"}"#).unwrap();
         let keep = sentinel(dir.path());
 

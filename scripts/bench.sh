@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Bench basemind against a handful of real-world OSS repos.
-# Clones into /tmp/basemind-bench/ (skips if already present) and runs cold + cached scans.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

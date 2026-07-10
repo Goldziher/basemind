@@ -37,8 +37,6 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::process::Command as AsyncCommand;
 
-// ─── Shared helpers ───────────────────────────────────────────────────────────
-
 /// Run a `git` command in `repo`, propagating identity env vars so CI works.
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -76,7 +74,6 @@ fn build_governance_repo() -> TempDir {
     git(root, &["add", "core.rs", "helper.rs", "extra.rs"]);
     git(root, &["commit", "-qm", "init"]);
 
-    // Touch core.rs in a second commit so the repo has some co-change history.
     std::fs::write(root.join("core.rs"), b"pub fn process() { helper(); let _ = 1; }\n").unwrap();
     git(root, &["commit", "-aqm", "update core"]);
 
@@ -88,9 +85,6 @@ fn run_scan(root: &Path) {
     let cfg = basemind::config::default_for_root(root);
     let _ = basemind::lang::ensure_grammars().expect("grammar bootstrap");
     // Run the scan on a dedicated std thread, OFF this `#[tokio::test]` runtime: the scanner's
-    // deferred vector flush opens `LanceStore`, which `block_on`s its own current-thread runtime and
-    // panics if driven from a tokio worker thread once the ONNX model is cached. Mirrors the
-    // production context (CLI thread / `spawn_blocking`) — the pattern `mcp_smoke::run_scan` uses.
     std::thread::scope(|scope| {
         scope.spawn(|| {
             let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
@@ -129,26 +123,6 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     params
 }
 
-// ─── Confidence-boundary fixture ──────────────────────────────────────────────
-//
-// Commits that build up exactly: freq[a]=10, freq[b]=5, cochange(a,b)=5.
-//   anchor = a (higher freq), confidence = 5/10 = 0.5
-//
-// Layout (files created in separate commits so the init does NOT inflate cochange):
-//   1. init-a:    only a.rs (Added)
-//   2. init-b:    only b.rs (Added)
-//   3..7. both-N: a.rs + b.rs together  → cochange += 1 each (5 commits)
-//   8..12. only-N: a.rs only            → cochange unchanged (5 commits)
-//
-// After walking all commits:
-//   freq[a] = 1(init-a) + 5(both) + 5(only) = 11 — wait, init-a also counted.
-//   Actually: freq[a] = 1+5+5 = 11, freq[b] = 1+5 = 6, cochange = 5.
-//   anchor = a (freq 11 >= 6), confidence = 5/11 ≈ 0.454.
-//
-// We therefore set boundary thresholds at 0.5 (reject) and 0.4 (accept),
-// and support boundary at 6 (reject) and 5 (accept).
-//
-// This fixture serves both the confidence-boundary test and the support-gating test.
 fn build_confidence_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -156,17 +130,14 @@ fn build_confidence_repo() -> TempDir {
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
 
-    // Create a.rs alone (does not contribute to cochange with b.rs).
     std::fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();
     git(root, &["add", "a.rs"]);
     git(root, &["commit", "-qm", "init-a"]);
 
-    // Create b.rs alone (does not contribute to cochange with a.rs).
     std::fs::write(root.join("b.rs"), b"pub fn b() {}\n").unwrap();
     git(root, &["add", "b.rs"]);
     git(root, &["commit", "-qm", "init-b"]);
 
-    // 5 commits touching BOTH a.rs and b.rs together → cochange(a,b) = 5.
     for i in 0..5u32 {
         std::fs::write(root.join("a.rs"), format!("pub fn a() {{ /* both {i} */ }}\n")).unwrap();
         std::fs::write(root.join("b.rs"), format!("pub fn b() {{ /* both {i} */ }}\n")).unwrap();
@@ -174,28 +145,15 @@ fn build_confidence_repo() -> TempDir {
         git(root, &["commit", "-qm", &format!("both {i}")]);
     }
 
-    // 5 commits touching ONLY a.rs → freq[a] += 5, cochange unchanged.
     for i in 0..5u32 {
         std::fs::write(root.join("a.rs"), format!("pub fn a() {{ /* only-a {i} */ }}\n")).unwrap();
         git(root, &["add", "a.rs"]);
         git(root, &["commit", "-qm", &format!("only-a {i}")]);
     }
 
-    // Final counts (window covers all commits, all within max_files_per_commit=10):
-    //   freq[a] = 1(init-a) + 5(both) + 5(only) = 11
-    //   freq[b] = 1(init-b) + 5(both) = 6
-    //   cochange(a,b) = 5
-    //   anchor = a (freq 11 >= 6), confidence = 5/11 ≈ 0.454
-
     dir
 }
 
-// ─── Bulk-skip fixture ────────────────────────────────────────────────────────
-//
-// One bulk commit with 6 files (p.rs, q.rs, r.rs, s.rs, t.rs, u.rs)
-// plus several "normal" commits touching only p.rs + q.rs together.
-// With max_files_per_commit=3, the bulk commit is skipped and p.rs+q.rs
-// co-change only from the small commits.
 fn build_bulk_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -203,15 +161,12 @@ fn build_bulk_repo() -> TempDir {
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
 
-    // Create all 6 files.
     for f in &["p.rs", "q.rs", "r.rs", "s.rs", "t.rs", "u.rs"] {
         std::fs::write(root.join(f), format!("pub fn {f}() {{}}\n")).unwrap();
     }
-    // Bulk commit: all 6 files.
     git(root, &["add", "p.rs", "q.rs", "r.rs", "s.rs", "t.rs", "u.rs"]);
     git(root, &["commit", "-qm", "bulk init"]);
 
-    // 3 small commits touching ONLY p.rs + q.rs.
     for i in 0..3u32 {
         std::fs::write(root.join("p.rs"), format!("pub fn p() {{ /* {i} */ }}\n")).unwrap();
         std::fs::write(root.join("q.rs"), format!("pub fn q() {{ /* {i} */ }}\n")).unwrap();
@@ -222,12 +177,6 @@ fn build_bulk_repo() -> TempDir {
     dir
 }
 
-// ─── Two-cluster fixture (pagination test) ───────────────────────────────────
-//
-// Two disjoint co-change clusters:
-//   cluster 1: a.rs + b.rs  (co-change N times, support >= min_support)
-//   cluster 2: x.rs + y.rs  (co-change N times, support >= min_support)
-// Mining with min_support=3 should yield >= 2 proposals.
 fn build_two_cluster_repo() -> TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
@@ -235,14 +184,12 @@ fn build_two_cluster_repo() -> TempDir {
     git(root, &["init", "-q"]);
     git(root, &["config", "commit.gpgsign", "false"]);
 
-    // Create all files.
     for f in &["a.rs", "b.rs", "x.rs", "y.rs"] {
         std::fs::write(root.join(f), "pub fn f() {}\n").unwrap();
     }
     git(root, &["add", "a.rs", "b.rs", "x.rs", "y.rs"]);
     git(root, &["commit", "-qm", "init"]);
 
-    // 5 commits co-changing a.rs + b.rs.
     for i in 0..5u32 {
         std::fs::write(root.join("a.rs"), format!("pub fn a{i}() {{}}\n")).unwrap();
         std::fs::write(root.join("b.rs"), format!("pub fn b{i}() {{}}\n")).unwrap();
@@ -250,7 +197,6 @@ fn build_two_cluster_repo() -> TempDir {
         git(root, &["commit", "-qm", &format!("ab {i}")]);
     }
 
-    // 5 commits co-changing x.rs + y.rs.
     for i in 0..5u32 {
         std::fs::write(root.join("x.rs"), format!("pub fn x{i}() {{}}\n")).unwrap();
         std::fs::write(root.join("y.rs"), format!("pub fn y{i}() {{}}\n")).unwrap();
@@ -271,11 +217,6 @@ async fn spawn_serve(root: &Path) -> rmcp::service::RunningService<rmcp::RoleCli
     ().serve(transport).await.expect("rmcp handshake")
 }
 
-// ─── Test 1: confidence boundary ─────────────────────────────────────────────
-//
-// Fixture: freq[a]=11, freq[b]=6, cochange=5 → confidence = 5/11 ≈ 0.454.
-// - min_confidence=0.5 → mined==0 (0.454 < 0.5)
-// - min_confidence=0.4 → mined>=1 (0.454 >= 0.4)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
     let dir = build_confidence_repo();
@@ -283,7 +224,6 @@ async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
     run_scan(root);
     let service = spawn_serve(root).await;
 
-    // confidence ≈ 0.454 < 0.5 → rejected.
     let mine_reject = decode_text(
         &service
             .call_tool(call_params(
@@ -308,7 +248,6 @@ async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
          {mine_reject}"
     );
 
-    // confidence ≈ 0.454 >= 0.4 → accepted.
     let mine_accept = decode_text(
         &service
             .call_tool(call_params(
@@ -335,11 +274,6 @@ async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
     );
 }
 
-// ─── Test 2: support gating ───────────────────────────────────────────────────
-//
-// Same confidence fixture: cochange(a,b)=5.
-// - min_support=6 → mined==0 (5 < 6)
-// - min_support=5 → mined>=1 (5 >= 5)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_reject_pair_below_support_threshold_and_emit_above() {
     let dir = build_confidence_repo();
@@ -347,7 +281,6 @@ async fn should_reject_pair_below_support_threshold_and_emit_above() {
     run_scan(root);
     let service = spawn_serve(root).await;
 
-    // Support=5 < 6 → no proposals.
     let mine_reject = decode_text(
         &service
             .call_tool(call_params(
@@ -371,7 +304,6 @@ async fn should_reject_pair_below_support_threshold_and_emit_above() {
         "cochange=5 must be REJECTED at min_support=6; got mined={mined_reject}: {mine_reject}"
     );
 
-    // Support=5 >= 5 → at least one proposal.
     let mine_accept = decode_text(
         &service
             .call_tool(call_params(
@@ -396,14 +328,6 @@ async fn should_reject_pair_below_support_threshold_and_emit_above() {
     );
 }
 
-// ─── Test 3: skipped_bulk ────────────────────────────────────────────────────
-//
-// Fixture: 1 bulk commit (6 files) + 3 small commits (p.rs + q.rs).
-// With max_files_per_commit=3:
-//   - The bulk commit is skipped → skipped_bulk >= 1
-//   - Pairs from the bulk commit (e.g. r.rs+s.rs) must NOT be in co-change counts
-//   - p.rs+q.rs have support=3 from the small commits → mined >= 1
-//   - r.rs+s.rs only appear together in the skipped bulk commit → support=0 → never mined
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_skip_bulk_commits_and_not_inflate_cochange() {
     let dir = build_bulk_repo();
@@ -446,8 +370,6 @@ async fn should_skip_bulk_commits_and_not_inflate_cochange() {
          so at least one proposal must be emitted; got mined={mined}: {mine_body}"
     );
 
-    // Verify that r.rs+s.rs are NOT in any mined proposal (they only co-change in the skipped
-    // bulk commit). List proposals and assert none of them contain both r.rs and s.rs.
     let list_body = decode_text(
         &service
             .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "skill" })))
@@ -475,10 +397,6 @@ async fn should_skip_bulk_commits_and_not_inflate_cochange() {
     }
 }
 
-// ─── Test 4: deterministic proposal_id ───────────────────────────────────────
-//
-// Mining the same fixture twice with identical params must produce proposals with
-// the same id (content-addressed blake3 of the sorted file-set).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_produce_same_proposal_id_on_repeated_mine() {
     let dir = build_governance_repo();
@@ -493,7 +411,6 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
         "window": 50,
     });
 
-    // First mine.
     let mine1 = decode_text(
         &service
             .call_tool(call_params("proposals_mine", mine_params.clone()))
@@ -518,7 +435,6 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
         .collect();
     assert!(!ids1.is_empty(), "first proposals_list must return ids: {list1}");
 
-    // Second mine (proposals are overwritten, not duplicated — same content-addressed ids).
     let mine2 = decode_text(
         &service
             .call_tool(call_params("proposals_mine", mine_params))
@@ -542,7 +458,6 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
         .collect();
     assert!(!ids2.is_empty(), "second proposals_list must return ids: {list2}");
 
-    // The first id from both mines must match (content-addressed over the same file-set).
     assert_eq!(
         ids1[0], ids2[0],
         "proposal ids must be deterministic across repeated mines of the same fixture: \
@@ -551,13 +466,6 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
     );
 }
 
-// ─── Test 5: proposals_list pagination + truncated + kind filter ──────────────
-//
-// Two disjoint clusters (a+b and x+y), each co-changing 5 times.
-// Mining with min_support=5 → at least 2 proposals.
-// proposals_list {limit:1} → truncated=true, next_cursor present.
-// Follow cursor → second page.
-// proposals_list {kind:"memory"} → empty (v1 only mines skill proposals).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_paginate_proposals_list_and_filter_by_kind() {
     let dir = build_two_cluster_repo();
@@ -565,7 +473,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     run_scan(root);
     let service = spawn_serve(root).await;
 
-    // Mine both clusters.
     let mine_body = decode_text(
         &service
             .call_tool(call_params(
@@ -590,7 +497,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
          got mined={mined}: {mine_body}"
     );
 
-    // Page 1: limit=1 → first proposal + truncated=true + next_cursor.
     let page1 = decode_text(
         &service
             .call_tool(call_params("proposals_list", json!({ "limit": 1, "kind": "skill" })))
@@ -620,7 +526,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
         .collect();
     assert_eq!(page1_ids.len(), 1, "page 1 must contain exactly 1 proposal: {page1}");
 
-    // Page 2: follow next_cursor → remaining proposals, truncated=false.
     let page2 = decode_text(
         &service
             .call_tool(call_params(
@@ -647,7 +552,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
         "page 2 must contain at least one more proposal: {page2}"
     );
 
-    // The two pages must be disjoint (no overlap in ids).
     for id in &page2_ids {
         assert!(
             !page1_ids.contains(id),
@@ -656,7 +560,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
         );
     }
 
-    // kind="memory" → v1 only mines skill proposals, so memory list is always empty.
     let memory_list = decode_text(
         &service
             .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "memory" })))
@@ -678,10 +581,6 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     );
 }
 
-// ─── Test 6: idempotent reject ────────────────────────────────────────────────
-//
-// Mine → list → reject twice (second must be a no-op, not an error).
-// Re-mine → tombstone suppresses the same id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     let dir = build_governance_repo();
@@ -689,7 +588,6 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     run_scan(root);
     let service = spawn_serve(root).await;
 
-    // Mine to get a candidate.
     let mine_body = decode_text(
         &service
             .call_tool(call_params(
@@ -710,7 +608,6 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
         "reject test requires at least one mined proposal: {mine_body}"
     );
 
-    // List to get the id.
     let list_body = decode_text(
         &service
             .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
@@ -723,7 +620,6 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
         .expect("proposal id must be present")
         .to_string();
 
-    // First reject — must return rejected=true.
     let reject1 = decode_text(
         &service
             .call_tool(call_params(
@@ -739,7 +635,6 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
         "first proposal_reject must return rejected=true: {reject1}"
     );
 
-    // Second reject of the same id — must also return rejected=true (idempotent, no error).
     let reject2 = decode_text(
         &service
             .call_tool(call_params(
@@ -755,7 +650,6 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
         "second proposal_reject must also return rejected=true (idempotent): {reject2}"
     );
 
-    // Re-mine — tombstone must suppress the rejected id.
     let mine_after = decode_text(
         &service
             .call_tool(call_params(

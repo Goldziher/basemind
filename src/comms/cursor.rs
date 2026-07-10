@@ -29,7 +29,6 @@ impl Cursor {
             room: room.to_string(),
             seq,
         };
-        // msgpack is already a workspace dep; the payload is a short string + an int.
         let bytes = rmp_serde::to_vec_named(&payload).expect("encoding a (room, seq) cursor never fails");
         Cursor(base64url_encode(&bytes))
     }
@@ -48,8 +47,6 @@ pub enum CursorError {
     #[error("malformed cursor")]
     Malformed,
 }
-
-// ─── base64url codec (no_pad), RFC 4648 §5 — mirrors `src/mcp/cursor.rs` ──────────────────
 
 const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 

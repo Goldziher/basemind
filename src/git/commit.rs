@@ -14,7 +14,6 @@ pub(super) fn build_commit_info(local: &gix::Repository, id: gix::ObjectId, incl
     let short_sha = sha[..7.min(sha.len())].to_string();
     let message = commit.message().ok();
     let summary = message.as_ref().map(|m| m.summary().to_string()).unwrap_or_default();
-    // Everything after the summary line; `None` (summary-only commit) → empty.
     let body = message
         .as_ref()
         .and_then(|m| m.body())
@@ -57,7 +56,6 @@ pub(super) fn commit_files(
     let tree = commit.tree().ok()?;
     let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
     if parents.is_empty() {
-        // Initial commit — every entry is "added".
         let mut recorder = tree.traverse().breadthfirst.files().ok()?;
         recorder.sort_by(|a, b| a.filepath.cmp(&b.filepath));
         let mut out = Vec::with_capacity(recorder.len());
@@ -67,7 +65,6 @@ pub(super) fn commit_files(
         return Some(out);
     }
 
-    // path → strongest ChangeKind seen across all parent diffs.
     let mut union: ahash::AHashMap<crate::path::RelPath, ChangeKind> = ahash::AHashMap::new();
     for pid in parents {
         let Ok(parent_commit) = local.find_commit(pid) else {
@@ -80,8 +77,6 @@ pub(super) fn commit_files(
             Ok(p) => p,
             Err(_) => continue,
         };
-        // `for_each_to_obtain_tree(other, ..)` walks the changes needed to convert `self` →
-        // `other`. From parent → commit gives us commit-relative-to-this-parent.
         let _ = platform.for_each_to_obtain_tree(&tree, |change| {
             if let Some((path, kind)) = classify_tree_change(&change) {
                 union
@@ -117,16 +112,6 @@ fn change_severity(k: ChangeKind) -> u8 {
 /// `symbol_history`) stops at a rename. Deliberate asymmetry with [`Repo::blame_file`], which
 /// passes `Rewrites::default()` to gix and follows renames line-by-line.
 pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::ObjectId, rel: &[u8]) -> bool {
-    // Path-scoped TREESAME check: compare the entry at `rel` in this commit's tree against
-    // each parent's, by (blob oid, mode). `lookup_entry` walks the path component-by-component
-    // and never recurses into sibling subtrees, so this is O(path depth) tree object reads per
-    // commit instead of the full recursive tree diff `commit_files` performs. That difference is
-    // what keeps `log_for_path` / `commits_touching` sub-second on a deep monorepo (200k+
-    // commits) — a full diff per walked commit pushes a single query into minutes.
-    //
-    // Semantics match `commit_files`' union-across-parents: the path is "touched" when it
-    // differs from at least one parent (covers add / modify / delete / mode-change). Exact-path
-    // only — like the diff path, it does not follow renames.
     let components: Vec<&[u8]> = rel.split(|&b| b == b'/').filter(|c| !c.is_empty()).collect();
     if components.is_empty() {
         return false;
@@ -141,7 +126,6 @@ pub(super) fn commit_touches_path(local: &gix::Repository, commit_id: gix::Objec
 
     let parents: Vec<gix::ObjectId> = commit.parent_ids().map(|p| p.detach()).collect();
     if parents.is_empty() {
-        // Root commit — every entry is "added", so the path is touched iff it exists.
         return current.is_some();
     }
     parents.into_iter().any(|pid| {
@@ -204,8 +188,6 @@ pub(super) fn compute_hunks(old: &[u8], new: &[u8]) -> Vec<Hunk> {
         } else if added_count == 0 {
             removed
         } else {
-            // Git-style unified body: lines from the removed side prefixed with '-',
-            // added side with '+'. Trailing newlines preserved when present in source.
             let mut s = String::with_capacity(removed.len() + added.len());
             for line in removed.lines() {
                 s.push('-');
@@ -259,14 +241,10 @@ fn classify_tree_change(
 }
 
 pub(super) fn decode_path(bstr: &gix::bstr::BStr) -> Option<crate::path::RelPath> {
-    // Preserve raw bytes — gix hands us paths in the on-disk byte form. The discriminated
-    // serde wire format on RelPath round-trips non-UTF-8 bytes losslessly to MCP clients.
     Some(crate::path::RelPath::from(<gix::bstr::BStr as AsRef<[u8]>>::as_ref(
         bstr,
     )))
 }
-
-// ── typed commit-walk surface for the git-history index ──────────────────────
 
 impl Repo {
     /// Resolve a rev-spec (sha / branch / HEAD) to a detached gix [`ObjectId`].
@@ -280,7 +258,7 @@ impl Repo {
         let local = self.local();
         let head = match local.head_id() {
             Ok(h) => h.detach(),
-            Err(_) => return Ok(Vec::new()), // unborn HEAD
+            Err(_) => return Ok(Vec::new()),
         };
         let walk = local
             .rev_walk([head])

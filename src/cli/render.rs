@@ -53,7 +53,6 @@ pub fn render_json(value: &Value, out: &mut impl Write) -> Result<()> {
 
 /// Truncate a string to [`MAX_INLINE_LEN`] characters, appending an ellipsis marker.
 fn truncate(s: &str) -> String {
-    // Collapse newlines so multi-line values stay on one row.
     let flat = s.replace('\n', " ");
     if flat.chars().count() <= MAX_INLINE_LEN {
         return flat;
@@ -69,7 +68,6 @@ fn scalar_to_string(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => truncate(s),
-        // Compact one-liner for nested arrays/objects that surface as a cell.
         other => truncate(&other.to_string()),
     }
 }
@@ -83,9 +81,6 @@ fn scalar_to_string(value: &Value) -> String {
 pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Result<()> {
     match value {
         Value::Object(map) => {
-            // Collect EVERY array-of-objects field. Multi-array responses (e.g.
-            // `diff_outline` with added / removed / common) each get their own
-            // labeled table — none are hidden behind a "(N items)" summary.
             let object_arrays: Vec<(&str, &Vec<Value>)> = map
                 .iter()
                 .filter_map(|(k, v)| match v {
@@ -94,15 +89,12 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
                 })
                 .collect();
 
-            // Print the scalar / flat fields first as a header. Object-arrays are
-            // rendered as tables below, so skip them here.
             for (key, v) in map.iter() {
                 if object_arrays.iter().any(|(k, _)| *k == key) {
                     continue;
                 }
                 match v {
                     Value::Array(items) if !items.is_empty() => {
-                        // Scalar arrays: render as a comma list inline.
                         let joined: Vec<String> = items.iter().map(scalar_to_string).collect();
                         writeln!(out, "{key}: {}", joined.join(", "))?;
                     }
@@ -112,7 +104,6 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
                 }
             }
 
-            // Render each object-array as its own labeled table.
             for (key, items) in &object_arrays {
                 writeln!(out, "\n{key} ({} items):", items.len())?;
                 render_table(tool_name, items, out)?;
@@ -139,12 +130,10 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write) -> Resul
         return Ok(());
     }
 
-    // High-traffic special cases: a compact one-line-per-item form.
     if let Some(rendered) = render_special(tool_name, items, out)? {
         return Ok(rendered);
     }
 
-    // Generic table: columns from the first object's keys.
     let Some(first) = items.first().and_then(Value::as_object) else {
         for item in items {
             writeln!(out, "  {}", scalar_to_string(item))?;
@@ -153,7 +142,6 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write) -> Resul
     };
     let columns: Vec<&str> = first.keys().map(String::as_str).collect();
 
-    // Compute per-column widths.
     let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
     let display = items.len().min(MAX_HUMAN_ITEMS);
     let rows: Vec<Vec<String>> = items
@@ -172,14 +160,12 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write) -> Resul
         }
     }
 
-    // Header.
     let header: Vec<String> = columns
         .iter()
         .enumerate()
         .map(|(i, c)| format!("{:<width$}", c, width = widths[i]))
         .collect();
     writeln!(out, "  {}", header.join("  "))?;
-    // Rows.
     for row in &rows {
         let cells: Vec<String> = row
             .iter()
@@ -199,7 +185,6 @@ fn render_table(tool_name: &str, items: &[Value], out: &mut impl Write) -> Resul
 fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Result<Option<()>> {
     match tool_name {
         "outline" | "search_symbols" => {
-            // Symbol-shaped: name + kind + position + signature.
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -220,7 +205,6 @@ fn render_special(tool_name: &str, items: &[Value], out: &mut impl Write) -> Res
             Ok(Some(()))
         }
         "find_references" | "find_callers" => {
-            // Reference-shaped: path:line:col callee.
             for item in items.iter().take(MAX_HUMAN_ITEMS) {
                 let Some(obj) = item.as_object() else {
                     return Ok(None);
@@ -253,8 +237,6 @@ mod tests {
 
     #[test]
     fn renders_every_object_array_as_labeled_table() {
-        // A diff_outline-shaped response with three object-arrays. Every one must
-        // appear as its own table — none hidden behind "(N items)".
         let value = json!({
             "added": [{"name": "alpha"}],
             "removed": [{"name": "beta"}],
@@ -265,7 +247,6 @@ mod tests {
         assert!(out.contains("removed (1 items):"), "missing removed table: {out}");
         assert!(out.contains("common (1 items):"), "missing common table: {out}");
         assert!(out.contains("alpha") && out.contains("beta") && out.contains("gamma"));
-        // No array should be summarized away.
         assert!(!out.contains("items)\nremoved"), "removed was summarized: {out}");
     }
 }

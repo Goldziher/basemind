@@ -13,9 +13,6 @@ keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
 categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.cargo-machete]
-# serde_toon_format exposes the lib crate as `serde_toon`; machete sees the
-# package name and can't resolve the rename, so it flags it as unused.
-# The crate IS used — `serde_toon::to_string(...)` in src/mcp/helpers.rs.
 ignored = ["serde_toon_format"]
 
 [lib]
@@ -27,104 +24,42 @@ name = "basemind"
 path = "src/main.rs"
 
 [features]
-# Document intelligence + vector storage + shared agent memory.
-# Off by default so a vanilla `cargo install basemind` stays MIT-only, builds
-# fast, and doesn't pull in ONNX Runtime. Opt in with --features documents,memory
-# (or just one of them).
 default = []
 
-# Base infrastructure: xberg (MIT) + LanceDB + Arrow. Pulled in by
-# both `documents` and `memory`; doesn't activate any extraction backends by
-# itself.
 intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
-# Document tier: ingest PDFs, Office docs, emails, HTML, etc. via xberg,
-# plus the full RAG-supporting analysis stack (chunking, keywords, NER, layout,
-# OCR, summarization, redaction). `embeddings` already implies `chunking` and
-# bundles ORT binaries (ort-bundled) so no system onnxruntime install is
-# required. `summarization-llm` IS bundled, but it stays dormant unless an
-# `[llm]` config block (model + api_key) is supplied — with no key it is a no-op,
-# so it imposes no runtime config burden on the default user. The remaining
-# LLM-driven features (liter-llm, ner-llm, translation, classification,
-# captioning, redaction-ml) are intentionally excluded — they require an external
-# API key to do anything useful.
 documents = [
     "intelligence",
     "xberg/formats",
-    # pdf, excel, office, hwp, hwpx, iwork, email, html, xml, archives, mdx
     "xberg/analysis",
-    # language-detection, chunking, quality, keywords, diff
     "xberg/chunking-tokenizers",
-    # token-aware chunk boundaries
     "xberg/embeddings",
-    # ORT-bundled embedding generation
     "xberg/reranker",
-    # cross-encoder reranking (ORT-bundled, off by default in config)
     "xberg/reranker-presets",
-    # preset catalog (bge-reranker-base, jina-reranker-v1-turbo-en, …)
     "xberg/ocr",
-    # Tesseract OCR
     "xberg/paddle-ocr",
-    # PaddleOCR (multilingual)
     "xberg/layout-detection",
-    # YOLO/RT-DETR page layout
     "xberg/auto-rotate",
-    # page orientation correction
     "xberg/ner-onnx",
-    # local NER (gline-rs)
     "xberg/keywords-yake",
-    # YAKE keyword algorithm + YakeParams tuning
     "xberg/keywords-rake",
-    # RAKE keyword algorithm + RakeParams tuning
     "xberg/summarization",
-    # TextRank extractive (no LLM)
     "xberg/summarization-llm",
-    # liter-llm abstractive summarisation (gated on `[llm]` config)
     "xberg/redaction",
-    # pattern-based PII (no LLM)
-    # QR decode from images
     "xberg/qr-codes",
     "dep:serde_toon_format",
 ]
 
-# Semantic + keyword + exact hybrid code search: chunk + embed source code (from cached L1/L2, no
-# re-parse) into a LanceDB `code_chunks` table for vector KNN, a native BM25 keyword lane, and a
-# scope-resolved symbol (exact) lane, fused via RRF for the `search_code` MCP tool. Needs the
-# embedding engine + LanceDB (`intelligence`) plus xberg's ORT-bundled embedding generation and the
-# cross-encoder reranker (shared with the documents tier) for the optional rerank pass.
 code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
 
-# Shared agent memory: needs the embedding engine + LanceDB, plus the bits of
-# RAG infrastructure that make memory search useful (keywords for hybrid rank,
-# NER for entity-anchored retrieval). No document parsing backends.
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
-# On-demand web crawling. Pulls crawlberg as an HTTP-only crawler (no chromium,
-# no LLM extraction) and routes scrape/crawl results through the documents
-# pipeline (chunk → embed → LanceDB). Implies `documents` because the doc tier
-# IS the indexing sink for crawled pages.
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
-# Agent-to-agent communication: the singleton broker daemon, named rooms + per-agent
-# inbox, and the comms MCP/CLI surface. Pulls only small pure-Rust crates (directories,
-# tokio-util). Message/agent-card shapes are modelled as plain serde structs that are
-# field-compatible with the A2A spec (the published `a2a-types` crate is protobuf-based and
-# doesn't round-trip through msgpack), so a future A2A HTTP front-end maps cleanly. The
-# `AgentId`/`RoomId` newtypes in `comms::ids` are always compiled (the split-memory tier
-# needs them); this feature gates the daemon + tools.
 comms = ["dep:directories", "dep:tokio-util"]
 
-# Headless agent shells: embed the rmux daemon (self-contained — basemind re-execs
-# itself as the daemon, no external `rmux` binary) and expose MCP tools to spawn a
-# headless shell session, send stdin, capture output, and kill it. Pulls the
-# rmux-sdk / rmux-server / rmux-client trio with default features off (no `web`
-# frontend). Pulls `directories` for the per-user private socket dir (same crate
-# the comms daemon uses). Opt in with --features shells.
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client", "dep:directories"]
 
-# JS/TS code-intelligence: scope + import-resolved find_references / goto_definition via oxc.
-# Self-contained — oxc parses JS/TS with its own parser, so no tree-sitter grammar is needed
-# (works even where the TSLP grammar cache is cold).
 code-intel-js = [
     "dep:oxc_allocator",
     "dep:oxc_parser",
@@ -134,23 +69,10 @@ code-intel-js = [
     "dep:oxc_resolver",
 ]
 
-# Convenience meta-feature over the code-intelligence tier. `code-intel-graph` (stack-graphs
-# cross-file resolution) folds in here once Phase 3 lands.
 code-intel = ["code-intel-js"]
 
-# Convenience meta-feature: everything basemind exposes today. Equivalent to
-# `--features documents,memory,crawl,comms,shells,code-intel`. Use this when you want one flag
-# that always pulls in the full intelligence surface as we add tiers in the future.
 full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
-# ONNX Runtime linking strategy. The ML surface (embeddings/reranker/NER) arrives via
-# `xberg/embeddings`, which defaults to `ort-bundled` (ort/download-binaries, static).
-# `ort` has NO prebuilt static x86_64-apple-darwin artifact (Microsoft dropped
-# onnxruntime-osx-x86_64 after 1.23), so the Intel macOS release build adds `ort-dynamic`
-# alongside `full`: ort loads libonnxruntime.dylib at runtime (co-located next to the
-# binary). `load-dynamic` pulls ort-sys `disable-linking`, which short-circuits the static
-# download path — so enabling both is safe, dynamic wins workspace-wide. `xberg?/…` keeps
-# this a no-op when xberg isn't enabled. Build: `--features full,ort-dynamic`.
 ort-dynamic = ["xberg?/ort-dynamic"]
 
 [dependencies]
@@ -159,20 +81,12 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.2"
-# Pinned to arrow 58 to match the version lancedb 0.31 resolves transitively
-# (lancedb → lance → datafusion → arrow 58). Depending on a different arrow major
-# here produces a dual-version skew where our `src/lance` RecordBatch/Schema types
-# don't match lancedb's API. Bump in lock-step with lancedb's arrow major.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-# crawlberg powers the on-demand web crawl tier.
-# Default features cover native-runtime (HTTP + tokio); we deliberately do NOT
-# opt into `browser`, `ai`, `api`, `mcp`, or `warc`.
 crawlberg = { version = "1.0.3", default-features = false, features = ["native-runtime"], optional = true }
-# User-global data/runtime dirs for the comms daemon's socket + store (XDG / Known Folders).
 directories = { version = "6", optional = true }
 fjall = "3.1.6"
 fs2 = "0.4"
@@ -183,42 +97,24 @@ hex = "0.4"
 ignore = "0.4"
 jsonschema = "0.46"
 lancedb = { version = "0.31", optional = true }
-# Process RSS / peak-RSS reporting (src/sysres.rs): non-deprecated `getrusage` (peak) on all Unix
-# and `/proc/self/statm` (current, Linux). macOS current RSS uses the `mach2` crate below. Windows
-# falls back to `None`.
 libc = "0.2"
 lru = "0.18.0"
 memchr = "2"
 notify = "8"
 notify-debouncer-full = "0.7"
-# oxc powers the JS/TS code-intelligence tier (scope/import-resolved navigation). Pinned to an
-# exact version — oxc breaks APIs across minors, but the resolved-reference surface we use is its
-# stable core. All crates.io-published (MIT), so `cargo publish` stays clean (no git deps). These
-# share the 0.138 workspace version; the cross-file stitch slice adds `oxc_resolver` (a standalone
-# repo, Node/tsconfig module resolution) when it is first used.
 oxc_allocator = { version = "=0.138.0", optional = true }
 oxc_parser = { version = "=0.138.0", optional = true }
+oxc_resolver = { version = "=11.23.0", optional = true }
 oxc_semantic = { version = "=0.138.0", optional = true }
 oxc_span = { version = "=0.138.0", optional = true }
 oxc_syntax = { version = "=0.138.0", optional = true }
-# Node/tsconfig ESM+CJS module resolution (MIT, standalone repo — versioned independently of the
-# 0.138 oxc workspace above). Powers the cross-file stitch: an importer's specifier → the absolute
-# on-disk target file, honoring extension + index + package.json resolution.
-oxc_resolver = { version = "=11.23.0", optional = true }
 rayon = "1"
 regex = "1.12.4"
 rmcp = { version = "2.1", features = ["server", "macros", "schemars", "transport-io"] }
 rmp-serde = "1"
-# Embedded headless agent shells (shells feature only). The rmux trio is pulled
-# with default features off so the `web` frontend (and its crypto stack) never
-# enters the dep tree — basemind embeds only the daemon + SDK client. basemind
-# re-execs ITSELF as the rmux daemon, so no external `rmux` binary is required.
 rmux-client = { version = "0.8", default-features = false, optional = true }
 rmux-sdk = { version = "0.8", default-features = false, optional = true }
 rmux-server = { version = "0.8", default-features = false, optional = true }
-# Drives the schema-first config: every config struct in src/config/v1.rs derives
-# JsonSchema so the committed JSON schema can be regenerated from the Rust types.
-# Pinned to 1.2 to match the transitive version rmcp already pulls in.
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -237,7 +133,6 @@ tokio = { version = "1", features = [
     "fs",
     "process",
 ] }
-# Length-delimited framing for the comms daemon IPC (Unix socket / named pipe).
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
 tracing = "0.1"
@@ -245,36 +140,26 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "1.12.4"
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.16", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.0.0-rc.16", default-features = false, features = [
+    "tokio-runtime",
+    "simd-utf8",
+], optional = true }
 
-# macOS current-RSS reader (src/sysres.rs) via mach `task_info`. `mach2` is the maintained
-# replacement for libc's deprecated mach bindings; scoped to macOS so no other target pulls it.
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"
 
 [dev-dependencies]
-# Criterion microbenchmark harness for the v0.9.0 performance cycle. `html_reports`
-# emits the per-bench HTML under target/criterion for before/after comparison.
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"
-# Client-side rmcp used by the `harden` integration test to drive `basemind serve`
-# over a stdio child-process transport. Composes with the [dependencies] entry
-# above — features are union-merged by cargo.
 rmcp = { version = "2.1", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-# wiremock spins up an in-process HTTP server for the `crawl` smoke test so we
-# never hit the live network. Pulled in only at test time.
 wiremock = "0.6"
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
-
-# ─── Microbenchmarks (v0.9.0 performance cycle) ──────────────────────────────
-# Criterion-driven hot-path micro-baselines. `harness = false` hands main() to
-# criterion. Run: `cargo bench --bench <name>`.
 
 [[bench]]
 name = "extract"

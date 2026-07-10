@@ -26,8 +26,6 @@ use super::helpers::{HashMode, json_result, symbol_fingerprint};
 use super::types_governance::{AuditResult, AuditVerdict, MemoryAuditParams, MemoryAuditResponse};
 use super::types_memory::{MemoryRecord, VerifyState};
 
-// ─── Named constants ──────────────────────────────────────────────────────────
-
 /// Importance decay multiplier applied to Stale records on every audit run.
 const STALE_DECAY: f32 = 0.5;
 /// After a record has been continuously Stale for this many microseconds (90 days)
@@ -37,8 +35,6 @@ const ARCHIVE_AFTER_MICROS: i64 = 90 * 24 * 60 * 60 * 1_000_000;
 pub(super) const DEFAULT_AUDIT_LIMIT: u32 = 100;
 /// Hard ceiling on the number of records to audit in a single call.
 const MAX_AUDIT_LIMIT: u32 = 1000;
-
-// ─── Helpers from memory.rs (re-exported here to avoid duplication) ───────────
 
 /// Write a `MemoryRecord` into the **live** `memory_by_key` keyspace.
 pub(super) fn write_live(
@@ -82,8 +78,6 @@ fn delete_live(idx: &crate::index::IndexDb, scope: &str, vis_byte: u8, owner: &s
         .map_err(|e| McpError::internal_error(format!("fjall remove: {e}"), None))
 }
 
-// ─── Core audit logic ─────────────────────────────────────────────────────────
-
 /// Compute the audit verdict for one `MemoryRecord`.
 ///
 /// Entirely in-RAM (plus optional disk reads for structural hashes).  No async — this
@@ -101,7 +95,6 @@ pub(super) fn audit_one_record(
     root: &std::path::Path,
     record: &MemoryRecord,
 ) -> AuditVerdict {
-    // Empty provenance → nothing to verify; mark Unverified rather than Stale.
     let prov = &record.provenance;
     if prov.files.is_empty() && prov.symbols.is_empty() && prov.commands.is_empty() {
         return AuditVerdict {
@@ -113,7 +106,6 @@ pub(super) fn audit_one_record(
     let mut reasons: Vec<String> = Vec::new();
     let mut stale = false;
 
-    // ── File provenance ────────────────────────────────────────────────────────
     for rel in &prov.files {
         if !cache.by_path.contains_key(rel) {
             reasons.push(format!("file deleted: {}", rel.to_str_lossy()));
@@ -121,7 +113,6 @@ pub(super) fn audit_one_record(
         }
     }
 
-    // ── Symbol provenance ──────────────────────────────────────────────────────
     for sym_ref in &prov.symbols {
         let Some(l1) = cache.by_path.get(&sym_ref.path) else {
             reasons.push(format!(
@@ -147,21 +138,10 @@ pub(super) fn audit_one_record(
             continue;
         };
 
-        // Structural hash comparison — only when the stored ref carries a hash.
-        //
-        // PERF (deferred — cold in v1): this branch only runs for *symbol* provenance, which
-        // nothing populates yet (W11 cochange skills carry file refs). Before a symbol-capture
-        // path ships, address: the `l1.clone()` below (Arc-wrap `FileMap` in the cache instead),
-        // the redundant find here vs inside `symbol_fingerprint`, reading bytes from the
-        // content-addressed blob store rather than disk, and dropping the store guard across the
-        // parse in `audit_scope_on_rescan`.
         if let Some(stored_hash) = sym_ref.structural_hash {
-            // Intern the language name to a `'static` `LangId`; skip hash check when
-            // the language is unknown (tolerate gracefully, do not flip to Stale).
             if let Some(lang) = crate::lang::intern(&l1.language) {
                 let abs_path = root.join(sym_ref.path.to_path_buf());
                 if let Ok(source) = std::fs::read(&abs_path) {
-                    // Build a minimal OutlineEntry wrapping the in-RAM L1 and the source.
                     let entry = OutlineEntry {
                         map: Arc::new(l1.clone()),
                         source: Arc::new(source),
@@ -174,30 +154,22 @@ pub(super) fn audit_one_record(
                         reasons.push(format!("symbol body changed: {}", sym_ref.name));
                         stale = true;
                     }
-                    // Cannot compute hash (no tree-sitter support / parse failure) →
-                    // tolerate silently; do not flip to Stale.
                 }
-                // Cannot read from disk (race with deletion / permissions) →
-                // do not flip to Stale; the file-existence check above covers deletion.
             }
         }
-        let _ = sym; // suppress unused-variable warning
+        let _ = sym;
     }
 
-    // ── Command provenance (advisory only) ────────────────────────────────────
     for cmd in &prov.commands {
         let first_token = cmd.split_whitespace().next().unwrap_or(cmd.as_str());
         let cmd_rel = crate::path::RelPath::from(first_token);
         if cache.by_path.contains_key(&cmd_rel) {
-            // First token looks like a tracked path — check it in the store.
             if store.lookup(first_token).is_none() {
                 reasons.push(format!("command may be stale: {cmd}"));
-                // Do NOT set stale = true — commands are advisory.
             }
         }
     }
 
-    // ── Final verdict ──────────────────────────────────────────────────────────
     if stale {
         return AuditVerdict {
             state: VerifyState::Stale,
@@ -205,7 +177,6 @@ pub(super) fn audit_one_record(
         };
     }
 
-    // At least one code reference was present and all resolved cleanly → Verified.
     if !prov.files.is_empty() || !prov.symbols.is_empty() {
         return AuditVerdict {
             state: VerifyState::Verified,
@@ -213,7 +184,6 @@ pub(super) fn audit_one_record(
         };
     }
 
-    // Only commands (advisory) → Unverified.
     AuditVerdict {
         state: VerifyState::Unverified,
         reasons,
@@ -249,8 +219,6 @@ fn parse_kind_opt(k: &str) -> Option<crate::extract::SymbolKind> {
     })
 }
 
-// ─── Async entrypoint ─────────────────────────────────────────────────────────
-
 /// Internal return value from `evaluate_one` — carries the updated record and the
 /// `archived` flag so the caller can dispatch the right Fjall write without holding
 /// a mutable borrow on the `results` vector at the same time.
@@ -279,8 +247,6 @@ fn evaluate_one(ctx: &AuditCtx<'_>, key: &str, raw_val: &[u8], from_archive: boo
 
     let mut archived = false;
     if !ctx.dry_run && !from_archive {
-        // Capture old `last_verified` BEFORE updating so the archive threshold
-        // measures how long the record has been stale.
         let prev_last_verified = record.last_verified;
         record.verified = verdict.state;
         record.last_verified = ctx.now;
@@ -320,18 +286,15 @@ pub(super) async fn run_memory_audit(
     let limit = params.limit.unwrap_or(DEFAULT_AUDIT_LIMIT).min(MAX_AUDIT_LIMIT) as usize;
     let scan_cap = limit.saturating_mul(8).max(1_000);
 
-    // Resolve namespace coordinates — mirrors `memory::namespace` exactly.
     let vis_byte = params.visibility.vis_byte();
     let owner: &str = match params.visibility {
         super::types_memory::Visibility::Individual => &state.agent_id,
         super::types_memory::Visibility::Group => "",
     };
 
-    // Load a stable cache snapshot.
     let cache = state.cache.load_full();
     let root = state.root.clone();
 
-    // Acquire store read guard once for the Fjall queries.
     let store_guard = state.store.read().await;
     let idx = store_guard
         .index_db
@@ -349,7 +312,6 @@ pub(super) async fn run_memory_audit(
     let mut results: Vec<AuditResult> = Vec::new();
 
     if let Some(ref single_key) = params.key {
-        // Single-key mode.
         let raw_key = crate::index::keys::memory_by_key(&state.scope, vis_byte, owner, single_key);
         let keyspace = if params.include_archived {
             &idx.memory_archive
@@ -373,7 +335,6 @@ pub(super) async fn run_memory_audit(
             results.push(outcome.audit_result);
         }
     } else {
-        // Range-scan mode — walk the live namespace.
         let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(&state.scope, vis_byte, owner);
 
         for (scanned, guard) in idx.memory_by_key.prefix(&ns_prefix).enumerate() {
@@ -400,7 +361,6 @@ pub(super) async fn run_memory_audit(
             }
         }
 
-        // Optionally also scan the archive keyspace (read-only; no mutations on archived rows).
         if params.include_archived {
             for (arch_scanned, guard) in idx.memory_archive.prefix(&ns_prefix).enumerate() {
                 if results.len() >= limit || arch_scanned >= scan_cap {
@@ -426,8 +386,6 @@ pub(super) async fn run_memory_audit(
 
 #[cfg(all(test, feature = "memory"))]
 mod tests;
-
-// ─── Background maintenance ───────────────────────────────────────────────────
 
 /// Lightweight background audit pass injected by `scan_and_refresh` after every rescan.
 ///
@@ -470,12 +428,6 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
 /// scope-prefix scan guarantees every key belongs to `scope`, so foreign-scope records are never
 /// touched. Fail-open: any per-record error is warn-logged and the loop continues.
 pub(super) fn audit_scope_persist(idx: &crate::index::IndexDb, ctx: &AuditCtx<'_>, scope: &str, limit: usize) {
-    // Scope-bounded prefix scan — never iterates another repo's keys (the prefix encodes this
-    // repo's scope across every visibility tier / owner), so the per-key scope check is needless.
-    //
-    // Two bounds (project-standard, mirrors `audit_scope`/`memory_list`): `limit` caps the records
-    // we evaluate, and `scan_cap = limit * 8` caps the entries *examined* so a dense partition
-    // can't over-walk before `evaluated` trips — a skipped (parse-fail) entry still costs a step.
     let scope_prefix = crate::index::keys::memory_scope_prefix(scope);
     let scan_cap = limit.saturating_mul(8).max(1_000);
     let mut evaluated = 0usize;
@@ -497,12 +449,9 @@ pub(super) fn audit_scope_persist(idx: &crate::index::IndexDb, ctx: &AuditCtx<'_
             continue;
         };
         evaluated += 1;
-        // Persist only Stale records (decay always; archive once stale > 90 days). Verified /
-        // Unverified rows are left as-is so a rescan doesn't rewrite the whole store.
         if outcome.record.verified != VerifyState::Stale {
             continue;
         }
-        // `scope` is safe here — the prefix scan guarantees every key is in this scope.
         let write = if outcome.audit_result.archived {
             write_archive(idx, scope, vis_byte, &owner, &key_str, &outcome.record)
                 .and_then(|()| delete_live(idx, scope, vis_byte, &owner, &key_str))

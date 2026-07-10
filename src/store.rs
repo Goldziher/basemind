@@ -163,9 +163,6 @@ pub const LOCK_CONTENTION_HELP: &str = "the basemind index is locked by another 
 (likely the MCP server). If an editor/plugin is serving this repo, use its `rescan` tool \
 to refresh the index, or stop that server before running `basemind scan`.";
 
-// The lock *behavior* lives in `store_lock.rs` (extracted to keep this file under the module-size
-// cap); the lock *types* above stay here. Re-export the entry points so callers keep importing
-// them from `crate::store`.
 pub use crate::store_lock::{WriterProbe, probe_writer_lock};
 pub(crate) use crate::store_lock::{acquire_lock, acquire_lock_as, writer_lock_is_held};
 
@@ -269,12 +266,8 @@ impl Store {
         ensure_gitignore(&basemind_dir)?;
         let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
         ensure_dir(&blobs_dir)?;
-        if blobs_shared {
-            // The shared blob dir lives under the main worktree's `.basemind`, which may not exist
-            // yet if only this linked worktree has been scanned — make sure it's git-ignored too.
-            if let Some(shared_basemind) = blobs_dir.parent() {
-                ensure_gitignore(shared_basemind)?;
-            }
+        if blobs_shared && let Some(shared_basemind) = blobs_dir.parent() {
+            ensure_gitignore(shared_basemind)?;
         }
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
         migrate_legacy_index_into_views(&basemind_dir)?;
@@ -286,21 +279,6 @@ impl Store {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
             Err(StoreError::SchemaMismatch { found, expected }) => {
-                // Durable refresh: reset only THIS view's `index.msgpack` (so `read_index`
-                // → None → `Index::empty()` and the next scan treats every file as new and
-                // re-extracts it). The shared content-addressed blob store is left in place;
-                // re-extraction overwrites each stale-schema blob at its (content-hash) path
-                // via `write_blob`'s schema-aware guard, and any blob no longer referenced
-                // becomes an orphan reclaimed later by `store_gc::run_gc`. No destructive
-                // `rm -rf blobs/`, so there is no window where the expensive cache is gone.
-                //
-                // Stale-blob-read safety: after this reset the in-RAM index is empty and the
-                // view's `index.msgpack` is gone, so every read path that resolves a blob by
-                // a `FileEntry.hash_hex` (`query::file_outline` / `file_outline_l2`, the
-                // MapCache build) finds no entry and returns "not found". The rescan that
-                // follows `Store::open` is what repopulates the index, and it re-extracts
-                // before it records the entry — so no consumer ever deserializes a
-                // pre-refresh (stale-schema) blob through the current code.
                 tracing::info!(
                     found,
                     expected,
@@ -312,10 +290,6 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        // We hold `.basemind/.lock` (acquired above), so we are the sole rightful writer; retry a
-        // transient fjall `Locked` from a concurrent reader instead of letting it propagate — a
-        // bare `?` here would surface as lock contention and downgrade this writer to read-only,
-        // the multi-session writer-downgrade race.
         let index_db = Some(open_index_with_retry(&view_dir)?);
         Ok(Self {
             root: root.to_path_buf(),
@@ -335,26 +309,14 @@ impl Store {
     /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
     pub fn open_read_only(root: &Path, view: &str) -> Result<Self, StoreError> {
         let basemind_dir = root.join(crate::config::BASEMIND_DIR);
-        // Idempotent migration so a read-only consumer sees the same shape a fresh writer would.
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
         }
         let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
-        // An explicitly-named view (e.g. `rev-<sha>`, `staged`) that has never been scanned
-        // has no `index.msgpack`. Reading it would silently return an empty, working-like
-        // index — masking a typo'd `--view` or an unscanned rev as "0 results" (bug #18).
-        // Error instead so the caller knows to scan it. The default working view is exempt:
-        // it legitimately reads empty before the first scan, and `serve` auto-scans it.
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
             return Err(StoreError::ViewNotScanned { view: view.to_string() });
         }
-        // A read-only consumer cannot wipe + rebuild like `Store::open` does, so a schema
-        // bump must degrade gracefully rather than propagate a hard error: an out-of-date
-        // index reads as empty until the next `basemind scan` / `serve` refreshes it in
-        // place. `schema_ok == false` also means we must NOT open the Fjall index — its
-        // own open path wipes on a schema mismatch, which would corrupt a concurrently
-        // running `serve`'s live index. Skip it; the CLI degrades to "no indexed files".
         let (index, schema_ok) = match read_index(&view_dir) {
             Ok(Some(idx)) => (idx, true),
             Ok(None) => (Index::empty(), true),
@@ -368,16 +330,6 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        // Fjall is a SINGLE-holder store: only one process can open `index.fjall/` at a time. If a
-        // writer (a lock-holding `serve` / `scan`) is live, this read-only consumer cannot open the
-        // index anyway — and merely attempting it can transiently hold the fjall lock long enough to
-        // force the rightful writer into read-only (the multi-session writer-downgrade race). So we
-        // only open Fjall when NO writer holds `.basemind/.lock`; otherwise we serve from the
-        // concurrently-readable blobs (`index_db = None`, the in-RAM MapCache fallback covers
-        // find_references/callers/impls/call_graph). A single open with no retry — a reader never
-        // holds the lock, and any race with a starting writer just degrades to `None`. A transient
-        // `Locked` is the expected silent degradation; any OTHER error (corrupt WAL, truncated SST,
-        // IO) is logged so a genuinely broken index isn't indistinguishable from "writer holds it".
         let index_db = if schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             match IndexDb::open(&view_dir) {
                 Ok(db) => Some(db),
@@ -490,9 +442,6 @@ impl Store {
     /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
     pub fn write_filemap_hex(&self, hash_hex: &str, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), StoreError> {
         let path = self.blob_path_fm_hex(hash_hex);
-        // Content-addressed skip: an existing frame at this path holds the extraction of
-        // identical source bytes. Only short-circuit when its schema already matches — a
-        // schema bump must overwrite the stale frame in place (see `write_blob`).
         if path.exists() && peek_filemap_schema(&path) == Some(SCHEMA_VER) {
             return Ok(());
         }
@@ -743,7 +692,6 @@ fn migrate_legacy_index_into_views(basemind_dir: &Path) -> Result<(), StoreError
     let working_dir = basemind_dir.join(VIEWS_DIR).join(VIEW_WORKING);
     let working_index = working_dir.join(INDEX_FILE);
     if working_index.exists() {
-        // Both present — `legacy` is the duplicate. Remove it so we don't migrate twice.
         let _ = std::fs::remove_file(&legacy);
         return Ok(());
     }
@@ -913,14 +861,11 @@ mod tests {
 
     #[test]
     fn locked_display_names_the_serve_holder() {
-        // With no sidecar, the generic fallback still names both serve and watch.
         let err = StoreError::Locked {
             path: PathBuf::from("/repo/.basemind/.lock"),
             holder: None,
         };
         let msg = err.to_string();
-        // The common holder is the editor plugin's `serve` process; the message must
-        // name it so the user knows what to stop (W8: the old text said only `watch`).
         assert!(
             msg.contains("serve"),
             "Locked message should name the `serve` holder, got: {msg}"
@@ -933,8 +878,6 @@ mod tests {
 
     #[test]
     fn locked_message_names_actual_holder_from_sidecar() {
-        // When the sidecar is present, the message names the ACTUAL holder command + pid,
-        // not the hardcoded serve/watch guess (bug #11).
         let err = StoreError::Locked {
             path: PathBuf::from("/repo/.basemind/.lock"),
             holder: Some(LockMeta {
@@ -953,8 +896,6 @@ mod tests {
 
     #[test]
     fn second_acquisition_names_first_holders_command() {
-        // Simulate two acquisitions of the same store lock: the first wins as `scan`, the
-        // second must surface a Locked error naming `basemind scan` (bug #11 contract).
         let tmp = tempfile::tempdir().expect("tempdir");
         let basemind_dir = tmp.path().join(".basemind");
         std::fs::create_dir_all(&basemind_dir).expect("mkdir");
@@ -972,8 +913,6 @@ mod tests {
 
     #[test]
     fn open_read_only_errors_on_never_scanned_named_view() {
-        // Opening an explicitly-named view that was never scanned must error rather than
-        // silently return an empty working-like index (bug #18).
         let tmp = tempfile::tempdir().expect("tempdir");
         let err = match Store::open_read_only(tmp.path(), "rev-deadbee") {
             Ok(_) => panic!("named unscanned view must error, not silently open empty"),
@@ -991,8 +930,6 @@ mod tests {
 
     #[test]
     fn open_read_only_allows_unscanned_working_view() {
-        // The default working view legitimately reads empty before the first scan — it must
-        // NOT error (would break `serve` auto-scan-on-empty + first-run query).
         let tmp = tempfile::tempdir().expect("tempdir");
         let store =
             Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
@@ -1001,8 +938,6 @@ mod tests {
 
     #[test]
     fn open_writer_creates_named_view_for_first_scan() {
-        // The writer path (scan/serve) must still be able to create a named view fresh —
-        // that is how `basemind scan --rev <sha>` first materializes `rev-<sha>`.
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path(), "rev-cafe000").expect("writer creates a named view on first scan");
         assert!(store.view_dir.exists(), "named view dir created by writer");
@@ -1019,8 +954,6 @@ mod tests {
 
     #[test]
     fn fjall_internal_lock_is_lock_contention() {
-        // A reader can slip past the fs2 advisory lock yet still trip Fjall's own
-        // exclusive open lock; both must route to the same actionable guidance.
         let err = StoreError::Index(IndexError::Fjall(fjall::Error::Locked));
         assert!(err.is_lock_contention());
     }

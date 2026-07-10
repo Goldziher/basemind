@@ -157,8 +157,6 @@ impl GitHistoryIndex {
             return Vec::new();
         }
 
-        // AND across terms: start from the first term's ordinal set, then intersect each remaining
-        // term's set into it. Bail the moment the running intersection empties.
         let mut matching: Option<AHashSet<u32>> = None;
         for term in &query_terms {
             let ords = self.ords_for_term(term, scope);
@@ -178,7 +176,6 @@ impl GitHistoryIndex {
             return Vec::new();
         };
 
-        // Newest-first (ordinals are assigned oldest→newest, so descending == most recent first).
         let mut ords: Vec<u32> = matching.into_iter().collect();
         ords.sort_unstable_by(|a, b| b.cmp(a));
 
