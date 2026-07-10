@@ -57,6 +57,20 @@ fn falls_back_to_git_workdir_when_no_basemind() {
 }
 
 #[test]
+fn a_basemind_regular_file_is_ignored_only_a_directory_counts() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path().canonicalize().expect("canonicalize root");
+    // ~keep A stray `.basemind` *file* (a merge/corruption artifact) is not a cache directory and must
+    // ~keep not be adopted as the root — discovery only matches a real `.basemind/` directory.
+    fs::write(root.join(BASEMIND_DIR), b"not a directory").expect("write .basemind file");
+    let sub = root.join("child");
+    fs::create_dir(&sub).expect("mkdir child");
+
+    let resolved = discover_root_with_basemind(&sub);
+    assert_eq!(resolved, sub, ".basemind as a file is skipped; no git → start unchanged");
+}
+
+#[test]
 fn returns_start_unchanged_when_neither_basemind_nor_git() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let start = tmp.path().canonicalize().expect("canonicalize start");

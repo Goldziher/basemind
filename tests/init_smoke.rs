@@ -127,6 +127,38 @@ fn ai_rulez_present_writes_rule_file_and_leaves_claude_untouched() {
 }
 
 #[test]
+fn agents_md_is_used_when_it_is_the_only_rules_file() {
+    let dir = tmpdir();
+    let root = dir.path();
+    std::fs::write(root.join("AGENTS.md"), "# Agents\n\nkeep me\n").expect("seed AGENTS.md");
+
+    run_init(root, &["--yes"]);
+
+    let agents = std::fs::read_to_string(root.join("AGENTS.md")).expect("read AGENTS.md");
+    assert_eq!(count_markers(&agents), 1, "block injected into AGENTS.md");
+    assert!(agents.contains("keep me"), "pre-existing AGENTS.md content preserved");
+    assert!(
+        !root.join("CLAUDE.md").exists(),
+        "CLAUDE.md must not be created when AGENTS.md already owns the rules"
+    );
+}
+
+#[test]
+fn print_dry_run_writes_nothing_on_a_fresh_repo() {
+    let dir = tmpdir();
+    let root = dir.path();
+    let out = run_init(root, &["--yes", "--print"]);
+
+    assert!(!root.join("basemind.toml").exists(), "--print must not write config");
+    assert!(!root.join(".gitignore").exists(), "--print must not write .gitignore");
+    assert!(!root.join("CLAUDE.md").exists(), "--print must not write rules");
+    assert!(
+        out.to_lowercase().contains("would") || out.to_lowercase().contains("would change"),
+        "--print should report the pending changes it would make, got:\n{out}"
+    );
+}
+
+#[test]
 fn rules_target_none_touches_no_rules_file() {
     let dir = tmpdir();
     let root = dir.path();
