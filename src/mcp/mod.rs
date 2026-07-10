@@ -313,9 +313,10 @@ pub(crate) enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// Pure precedence classifier over the three lifecycle flags: `building` (from-scratch index scan)
-    /// > `warming` (blobs loading into RAM) > `rescanning` (watcher refresh) > `Ready`. Split out from
-    /// [`ServerState::lifecycle`] so the precedence is unit-testable without constructing a server.
+    /// Pure precedence classifier over the three lifecycle flags. Highest first: `building`
+    /// (from-scratch index scan), then `warming` (blobs loading into RAM), then `rescanning`
+    /// (watcher refresh), then `Ready`. Split out from [`ServerState::lifecycle`] so the precedence
+    /// is unit-testable without constructing a server.
     pub(crate) fn from_flags(building: bool, warming: bool, rescanning: bool) -> Self {
         if building {
             Lifecycle::BuildingIndex
