@@ -99,6 +99,34 @@ pub fn load_with_overrides(
     ))
 }
 
+/// Resolve the repository root by walking UP from `start` to the nearest ancestor that already
+/// holds a `.basemind/` cache dir (monorepo/nested-git support), falling back to git discovery,
+/// then to `start` unchanged. Lets basemind commands run from a monorepo subfolder attach to the
+/// root `.basemind` index.
+///
+/// Precedence:
+/// 1. The nearest ancestor of `start` (including `start` itself) whose `.basemind/` is a directory.
+/// 2. Else the git workdir discovered from `start`.
+/// 3. Else `start` unchanged.
+///
+/// Assumes `start` is already canonicalized by the caller.
+pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
+    let mut current = start;
+    loop {
+        if current.join(BASEMIND_DIR).is_dir() {
+            return current.to_path_buf();
+        }
+        match current.parent() {
+            Some(parent) if parent != current => current = parent,
+            _ => break,
+        }
+    }
+    match crate::git::Repo::discover(start) {
+        Ok(repo) => repo.workdir().to_path_buf(),
+        Err(_) => start.to_path_buf(),
+    }
+}
+
 /// Canonical (write) location of the config: `<root>/basemind.toml`.
 ///
 /// The config moved from inside `.basemind/` to the repo root so it can be committed — the
@@ -174,8 +202,6 @@ mod tests {
 
     #[test]
     fn parse_extra_roots_through_schema_validation() {
-        // Exercises the full load path (JSON-schema validator + deserialize), so it catches
-        // any drift between the `ScanConfig` struct and the committed schema snapshot.
         let raw = "\"$schema\" = \"v1\"\n[scan]\nextra_roots = [\"/opt/ext\", \"/var/cache/bazel\"]\n";
         let cfg = parse_str(raw).expect("extra_roots is a valid, schema-accepted scan field");
         assert_eq!(
@@ -188,5 +214,22 @@ mod tests {
     fn extra_roots_defaults_to_empty() {
         let cfg = parse_str("\"$schema\" = \"v1\"\n").unwrap();
         assert!(cfg.scan.extra_roots.is_empty());
+    }
+
+    #[test]
+    fn discover_root_walks_up_to_ancestor_basemind() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize");
+        std::fs::create_dir(root.join(BASEMIND_DIR)).expect("mkdir .basemind");
+        let sub = root.join("a").join("b");
+        std::fs::create_dir_all(&sub).expect("mkdir sub");
+        assert_eq!(discover_root_with_basemind(&sub), root);
+    }
+
+    #[test]
+    fn discover_root_returns_start_when_no_basemind_or_git() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let start = tmp.path().canonicalize().expect("canonicalize");
+        assert_eq!(discover_root_with_basemind(&start), start);
     }
 }
