@@ -84,7 +84,9 @@ In the session (not your shell), run in order:
 ```
 
 Restart, then run `/bm-statusline` once to turn on the live statusline (a one-time step — see
-[Statusline](#install-the-program)).
+[Statusline](#install-the-program)). Recommended: turn on auto-update for the `basemind`
+marketplace (Claude Code's plugin manager) so you always get the current index format and tool
+set — or update it regularly by hand if you'd rather control timing.
 
 </details>
 
@@ -273,6 +275,25 @@ The Homebrew / npm / pip / GitHub downloads include the full feature set — doc
 web crawl, shared memory, agent comms, and agent shells — so the first run downloads the models it
 needs. The plain `cargo install` builds the code-map and git tools only.
 
+### Get started
+
+After installing, run **`basemind init`** (CLI) — or **`/bm-init`** if your tool supports slash
+commands — from the repo root. It's re-runnable and safe to call again later:
+
+- Writes a commented `basemind.toml` scaffold at the repo root, if one doesn't already exist.
+- Lets you pick which capabilities to advertise (interactive prompt in a TTY, or non-interactive
+  with `--yes`, `--with <capability>`, `--without <capability>`). Capability slugs:
+  `code-search-navigation`, `code-mapping-architecture`, `git-history`, `agent-comms`,
+  `documents-rag`, `semantic-search`.
+- Injects a "prefer basemind over grep/read/git" rules block into your repo's agent-instructions
+  file — `.ai-rulez/rules/basemind-usage.md` if `.ai-rulez/config.toml` is present (run
+  `ai-rulez generate` afterward), else `CLAUDE.md`, else `AGENTS.md`, else a new `CLAUDE.md`. The
+  block is delimited (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so re-running
+  replaces it in place instead of duplicating it.
+
+Preview changes without writing with `--print`; skip the rules step with `--no-rules`; steer the
+target explicitly with `--rules-target <auto|claude|agents|ai-rulez|none>`.
+
 <details>
 <summary><strong>Statusline</strong> (Claude Code)</summary>
 
@@ -343,6 +364,28 @@ flowchart LR
 ```
 
 Search and memory are powered by a vector store ([LanceDB]).
+
+</details>
+
+<details>
+<summary><strong>Index lifecycle &amp; freshness</strong></summary>
+
+`basemind serve` answers the MCP handshake immediately and warms the code map into memory in the
+background, so a client never blocks waiting for a large repo to load. The `status` tool reports
+`warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
+`indexing` / `index_build_ms`.
+
+While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
+object — `{ state, message, retry }` — instead of (or alongside) their normal result:
+
+| `state` | Meaning | `retry` |
+|---|---|---|
+| `warming_up` | Loading an existing index into memory. | `true` |
+| `building_index` | Indexing from scratch (no `.basemind/` yet). | `true` |
+| `rescanning` | Incremental rescan after a file change; current results are usable but may be stale. | `false` |
+
+Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
+`status` (or just retry the call) until the notice clears.
 
 </details>
 
@@ -645,7 +688,7 @@ machine-readable output.
 | `scan` / `rescan <path>` | Full scan / update one path. |
 | `watch` | Keep the index fresh as files change (no server). |
 | `serve [--no-watch]` | Start the server (keeps the index fresh by default). |
-| `init` | Create a `.basemind/` folder with a default config (optional). |
+| `init` | Re-runnable onboarding: write `basemind.toml`, select capabilities, inject usage rules. |
 | `lang <list\|install\|clean>` | Manage downloaded language grammars. |
 | `hook install` | Add a git pre-commit hook that runs a scan. |
 | `compress-output` / `delta --old <path>` | Backends for the optional guardrails above. |

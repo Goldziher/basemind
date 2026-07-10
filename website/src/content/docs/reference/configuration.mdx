@@ -11,14 +11,17 @@ default (`Mcp > Cli > Env > File > Default`).
 
 ## Config File
 
-Create `.basemind/basemind.toml` to customize behavior. `basemind init` generates a starter file
-(optional — all settings have sensible defaults). The file is validated against a JSON Schema and
-**rejects unknown keys**, so a typo fails loudly rather than being silently ignored.
+Create `basemind.toml` at the repo root to customize behavior. `basemind init` (see
+[Get started](/start/installation/#get-started)) writes a fully-commented starter file there if
+one doesn't already exist — optional, since all settings have sensible defaults. The file is
+validated against a JSON Schema and **rejects unknown keys**, so a typo fails loudly rather than
+being silently ignored. A legacy `.basemind/basemind.toml` path is still read as a fallback for
+older checkouts.
 
 ### Minimal Example
 
 ```toml
-# .basemind/basemind.toml
+# basemind.toml (repo root)
 "$schema" = "v1"
 
 [scan]

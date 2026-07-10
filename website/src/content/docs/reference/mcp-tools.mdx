@@ -178,3 +178,20 @@ For index scans (symbol + reference tools), basemind internally uses `scan_cap =
 <Aside>
 Tool descriptions are the routing surface for agents. Read them carefully — they describe matching semantics (substring vs. prefix), scope resolution (name-only vs. scope-aware), and what each tool trades off. This helps agents pick the right tool for the question.
 </Aside>
+
+## Lifecycle notices
+
+`basemind serve` warms the code map in the background after answering the MCP handshake. While
+it isn't fully ready, `status` and every code-map read tool may include a `notice` object instead
+of, or alongside, their normal result:
+
+| Field | Meaning |
+|---|---|
+| `state` | One of `warming_up`, `building_index`, `rescanning`. |
+| `message` | Human/agent-readable explanation of what's happening. |
+| `retry` | `true` to retry shortly for complete results; `false` if the result is usable but may be stale. |
+
+`status` additionally reports `warming` / `warm_ms` (in-memory preload of an existing index) and
+`indexing` / `index_build_ms` (first-time index build). Treat an empty or partial result carrying
+a `notice` as "retry shortly," not "no matches." See
+[Index lifecycle and freshness](/concepts/how-it-works/#index-lifecycle-and-freshness) for details.

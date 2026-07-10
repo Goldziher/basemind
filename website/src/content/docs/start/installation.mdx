@@ -27,7 +27,10 @@ agent-comms features, and the slash commands. Pick your coding tool.
     <Code code={`/plugin marketplace add Goldziher/basemind\n/plugin install basemind@basemind`} lang="text" />
 
     Restart, then run `/bm-statusline` once to turn on the live statusline (a
-    one-time step — see [Statusline](#statusline-claude-code)).
+    one-time step — see [Statusline](#statusline-claude-code)). Recommended:
+    turn on auto-update for the `basemind` marketplace in Claude Code's plugin
+    manager, so you always get the current index format and tool set — or
+    update it regularly by hand if you'd rather control timing.
   </TabItem>
 
   <TabItem label="Codex">
@@ -211,6 +214,30 @@ The Homebrew / npm / pip / GitHub downloads include the full feature set —
 documents, OCR, search, web crawl, shared memory, agent comms, and agent shells
 — so the first run downloads the models it needs. The plain `cargo install`
 builds the code-map and git tools only.
+
+## Get started
+
+After installing, run **`basemind init`** (CLI) — or **`/bm-init`** if your
+tool supports slash commands — from the repo root. It's re-runnable and safe
+to call again later:
+
+- Writes a commented `basemind.toml` scaffold at the repo root, if one doesn't
+  already exist.
+- Lets you pick which capabilities to advertise (interactive prompt in a TTY,
+  or non-interactive with `--yes`, `--with <capability>`,
+  `--without <capability>`). Capability slugs: `code-search-navigation`,
+  `code-mapping-architecture`, `git-history`, `agent-comms`, `documents-rag`,
+  `semantic-search`.
+- Injects a "prefer basemind over grep/read/git" rules block into your repo's
+  agent-instructions file — `.ai-rulez/rules/basemind-usage.md` if
+  `.ai-rulez/config.toml` is present (run `ai-rulez generate` afterward), else
+  `CLAUDE.md`, else `AGENTS.md`, else a new `CLAUDE.md`. The block is delimited
+  (`<!-- BEGIN basemind ... -->` / `<!-- END basemind -->`) so re-running
+  replaces it in place instead of duplicating it.
+
+Preview changes without writing with `--print`; skip the rules step with
+`--no-rules`; steer the target explicitly with
+`--rules-target <auto|claude|agents|ai-rulez|none>`.
 
 ### Statusline (Claude Code)
 

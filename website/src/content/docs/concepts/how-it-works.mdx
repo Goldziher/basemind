@@ -45,6 +45,25 @@ Each tool call resolves to a lookup in the in-memory index, not a re-read of the
 When you edit code, basemind detects the change and re-scans the affected file. Other files stay
 unchanged. This means keeping the index fresh as you work costs far less than the initial scan.
 
+## Index lifecycle and freshness
+
+`basemind serve` answers the MCP handshake immediately and warms the code map into memory in the
+background, so a client never blocks waiting for a large repo to load. The `status` tool reports
+`warming` (still loading) and, once done, `warm_ms`; a first-time index build similarly reports
+`indexing` / `index_build_ms`.
+
+While the server isn't fully ready, `status` and every code-map read tool may carry a `notice`
+object — `{ state, message, retry }` — instead of (or alongside) their normal result:
+
+| `state` | Meaning | `retry` |
+|---|---|---|
+| `warming_up` | Loading an existing index into memory. | `true` |
+| `building_index` | Indexing from scratch (no `.basemind/` yet). | `true` |
+| `rescanning` | Incremental rescan after a file change; results are usable but may be stale. | `false` |
+
+Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
+`status` (or just retry the call) until the notice clears.
+
 ## Markdown and Obsidian as first-class
 
 Markdown and Obsidian vaults are indexed like code:
