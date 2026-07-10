@@ -312,19 +312,32 @@ pub(crate) enum Lifecycle {
     Rescanning,
 }
 
-impl ServerState {
-    /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
-    pub(crate) fn lifecycle(&self) -> Lifecycle {
-        use std::sync::atomic::Ordering::Relaxed;
-        if self.initial_scan_active.load(Relaxed) {
+impl Lifecycle {
+    /// Pure precedence classifier over the three lifecycle flags: `building` (from-scratch index scan)
+    /// > `warming` (blobs loading into RAM) > `rescanning` (watcher refresh) > `Ready`. Split out from
+    /// [`ServerState::lifecycle`] so the precedence is unit-testable without constructing a server.
+    pub(crate) fn from_flags(building: bool, warming: bool, rescanning: bool) -> Self {
+        if building {
             Lifecycle::BuildingIndex
-        } else if self.cache_warming.load(Relaxed) {
+        } else if warming {
             Lifecycle::WarmingUp
-        } else if self.rescan_active.load(Relaxed) {
+        } else if rescanning {
             Lifecycle::Rescanning
         } else {
             Lifecycle::Ready
         }
+    }
+}
+
+impl ServerState {
+    /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
+    pub(crate) fn lifecycle(&self) -> Lifecycle {
+        use std::sync::atomic::Ordering::Relaxed;
+        Lifecycle::from_flags(
+            self.initial_scan_active.load(Relaxed),
+            self.cache_warming.load(Relaxed),
+            self.rescan_active.load(Relaxed),
+        )
     }
 
     /// Block a cache-reading tool until the deferred boot preload has published the full map, bounded by
@@ -912,6 +925,34 @@ mod map_cache_tests {
             .get(&key)
             .map(|l1| l1.symbols.iter().map(|s| s.name.clone()).collect())
             .unwrap_or_default()
+    }
+
+    /// The lifecycle precedence is BuildingIndex > WarmingUp > Rescanning > Ready — a from-scratch
+    /// scan outranks a preload, which outranks a watcher refresh. Guards the ordering a read tool
+    /// relies on to label a possibly-incomplete result correctly.
+    #[test]
+    fn lifecycle_from_flags_applies_precedence() {
+        assert_eq!(Lifecycle::from_flags(false, false, false), Lifecycle::Ready);
+        assert_eq!(Lifecycle::from_flags(false, false, true), Lifecycle::Rescanning);
+        assert_eq!(Lifecycle::from_flags(false, true, true), Lifecycle::WarmingUp);
+        assert_eq!(Lifecycle::from_flags(true, true, true), Lifecycle::BuildingIndex);
+        assert_eq!(Lifecycle::from_flags(true, false, false), Lifecycle::BuildingIndex);
+    }
+
+    /// A notice is emitted for every non-ready state (with the stable machine tag and the right retry
+    /// hint) and suppressed when ready, so a healthy response carries no `notice` field.
+    #[test]
+    fn lifecycle_notice_maps_state_to_tag_and_retry() {
+        assert!(types::LifecycleNotice::for_state(Lifecycle::Ready).is_none());
+        let warming = types::LifecycleNotice::for_state(Lifecycle::WarmingUp).expect("warming notice");
+        assert_eq!(warming.state, "warming_up");
+        assert!(warming.retry, "warming asks the caller to retry for complete results");
+        let building = types::LifecycleNotice::for_state(Lifecycle::BuildingIndex).expect("building notice");
+        assert_eq!(building.state, "building_index");
+        assert!(building.retry);
+        let rescanning = types::LifecycleNotice::for_state(Lifecycle::Rescanning).expect("rescan notice");
+        assert_eq!(rescanning.state, "rescanning");
+        assert!(!rescanning.retry, "rescan results are usable, no retry required");
     }
 
     /// `with_delta` must re-read only the changed blobs, preserve untouched entries, drop removed
