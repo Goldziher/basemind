@@ -19,7 +19,9 @@ SKILLS=(
 COMMANDS=(
 	"bm"
 	"bm-doctor"
+	"bm-init"
 	"bm-scan"
+	"bm-statusline"
 	"bm-stats"
 )
 HOOK_SCRIPTS=(
