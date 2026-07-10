@@ -73,7 +73,7 @@ fn init_is_idempotent_single_block_and_print_shows_no_change() {
         "second run must not duplicate the block:\n{claude}"
     );
 
-    // A --print dry-run after convergence must report no pending changes.
+    // ~keep A --print dry-run after convergence must report no pending changes.
     let out = run_init(root, &["--yes", "--print"]);
     let lower = out.to_lowercase();
     assert!(
@@ -97,7 +97,7 @@ fn existing_claude_content_is_preserved_verbatim() {
         "pre-existing content must survive verbatim:\n{claude}"
     );
     assert_eq!(count_markers(&claude), 1, "block appended once");
-    // The managed block must come AFTER the user content (appended at EOF).
+    // ~keep The managed block must come AFTER the user content (appended at EOF).
     let user_idx = claude.find("Do not delete me.").expect("user content present");
     let block_idx = claude.find(BEGIN_MARKER).expect("block present");
     assert!(block_idx > user_idx, "block appended after user content");
@@ -109,7 +109,7 @@ fn ai_rulez_present_writes_rule_file_and_leaves_claude_untouched() {
     let root = dir.path();
     std::fs::create_dir_all(root.join(".ai-rulez")).expect("mkdir .ai-rulez");
     std::fs::write(root.join(".ai-rulez/config.toml"), "version = \"4.0\"\n").expect("seed ai-rulez config");
-    // A CLAUDE.md that is a generated artifact must NOT be edited when ai-rulez owns the rules.
+    // ~keep A CLAUDE.md that is a generated artifact must NOT be edited when ai-rulez owns the rules.
     std::fs::write(root.join("CLAUDE.md"), "# generated\n").expect("seed CLAUDE.md");
 
     run_init(root, &["--yes"]);

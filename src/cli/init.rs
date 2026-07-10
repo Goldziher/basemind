@@ -219,7 +219,7 @@ fn select_capabilities(args: &InitArgs) -> Result<Vec<Capability>> {
     let with = parse_capabilities(&args.with)?;
     let without = parse_capabilities(&args.without)?;
 
-    // Explicit `--with` is an allow-list; otherwise start from "all on".
+    // ~keep Explicit `--with` is an allow-list; otherwise start from "all on".
     let base: Vec<Capability> = if with.is_empty() {
         Capability::ALL.to_vec()
     } else {
@@ -262,7 +262,7 @@ fn prompt_capabilities() -> Result<Vec<Capability>> {
         stdout.flush().context("flush prompt")?;
         let mut line = String::new();
         let read = stdin.read_line(&mut line).context("read stdin")?;
-        // EOF mid-prompt: accept the default for this and every remaining capability.
+        // ~keep EOF mid-prompt: accept the default for this and every remaining capability.
         let answer = line.trim().to_ascii_lowercase();
         let yes = answer.is_empty() || answer == "y" || answer == "yes";
         if yes {
@@ -285,9 +285,9 @@ fn plan_config(root: &Path) -> Result<Change> {
     }
     let legacy = config::legacy_config_path(root);
     if legacy.exists() {
-        // A root scaffold would silently shadow the legacy config (root path wins in resolution), so
-        // refuse rather than change the effective config behind the user's back. They migrate the file,
-        // then re-run init. Matches the pre-onboarding `cmd_init` contract (config_root_smoke).
+        // ~keep A root scaffold would silently shadow the legacy config (root path wins in resolution), so
+        // ~keep refuse rather than change the effective config behind the user's back. They migrate it,
+        // ~keep then re-run init. Matches the pre-onboarding `cmd_init` contract (config_root_smoke).
         anyhow::bail!(
             "legacy config at {} is still read as a fallback; move it to {} to migrate — init will \
              not write a scaffold that shadows it",
@@ -425,7 +425,7 @@ fn splice_block(existing: Option<&str>, block: &str) -> String {
     };
     if let (Some(begin), Some(end_start)) = (existing.find(BEGIN_MARKER), existing.find(END_MARKER)) {
         let end = end_start + END_MARKER.len();
-        // Absorb a single trailing newline after the END marker so replacement is byte-stable.
+        // ~keep Absorb a single trailing newline after the END marker so replacement is byte-stable.
         let tail_start = if existing[end..].starts_with('\n') {
             end + 1
         } else {
@@ -437,7 +437,7 @@ fn splice_block(existing: Option<&str>, block: &str) -> String {
         out.push_str(&existing[tail_start..]);
         return out;
     }
-    // No markers: append at EOF with a blank-line separator.
+    // ~keep No markers: append at EOF with a blank-line separator.
     let mut out = existing.to_string();
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
@@ -493,7 +493,7 @@ mod tests {
             after.contains("intro") && after.contains("outro"),
             "surrounding content kept"
         );
-        // Re-splicing the same block is a fixpoint.
+        // ~keep Re-splicing the same block is a fixpoint.
         assert_eq!(splice_block(Some(&after), &block), after);
     }
 
