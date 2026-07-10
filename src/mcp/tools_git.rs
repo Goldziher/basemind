@@ -252,6 +252,7 @@ impl BasemindServer {
                 .resolve_rev(rev_spec)
                 .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
 
+            self.state.await_cache_ready().await;
             let cache = self.state.cache.load_full();
             let here = cache.by_path.get(&params.path).map(|l1| {
                 l1.symbols
@@ -781,6 +782,7 @@ impl BasemindServer {
             let repo = require_git_repo(&self.state)?;
             super::helpers_git::reject_external_path(&params.path)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
+            self.state.await_cache_ready().await;
             let cache = self.state.cache.load_full();
             let l1 = cache.by_path.get(&params.path).ok_or_else(|| {
                 McpError::invalid_params(format!("file not indexed in current view: {}", params.path), None)

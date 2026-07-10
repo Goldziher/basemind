@@ -53,6 +53,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             #[cfg(feature = "memory")]
             {
                 return super::helpers_governance::run_memory_audit(&self.state, p).await;
@@ -162,6 +163,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             #[cfg(feature = "memory")]
             {
                 return super::helpers_proposals::run_proposal_accept(&self.state, p).await;

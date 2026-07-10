@@ -269,21 +269,17 @@ pub(crate) struct ServerState {
     /// MCP `initialize`/`tools/list` handshake immediately instead of blocking on a rayon `par_iter`
     /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
     /// [`cache_ready`](Self::cache_ready) while this is set (see [`ServerState::await_cache_ready`]).
-    #[allow(dead_code)]
     pub(crate) cache_warming: std::sync::atomic::AtomicBool,
     /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
     /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
-    #[allow(dead_code)]
     pub(crate) cache_warm_ms: std::sync::atomic::AtomicU64,
     /// Fired once when the deferred preload finishes and the full map is swapped in. Tools that read
     /// the cache `notified().await` on this (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued
     /// during the warmup window returns COMPLETE data rather than an empty snapshot.
-    #[allow(dead_code)]
     pub(crate) cache_ready: tokio::sync::Notify,
     /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
     /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
-    #[allow(dead_code)]
     pub(crate) rescan_active: std::sync::atomic::AtomicBool,
     /// True when this serve fell back to a read-only store because another serve owns the
     /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
@@ -296,7 +292,6 @@ pub(crate) struct ServerState {
 /// whatever is loaded so far. Sized so a normal repo's preload (seconds) completes within the wait — a
 /// query issued right after the handshake returns COMPLETE data — while a pathologically large tree
 /// still can't hang a call indefinitely (it returns partial results labelled with a warming notice).
-#[allow(dead_code)]
 pub(crate) const CACHE_WARM_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Coarse server lifecycle state surfaced to clients so an empty/partial result is never mistaken for
@@ -345,7 +340,6 @@ impl ServerState {
     /// [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path). Does NOT wait on
     /// [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for minutes, so those tools return the
     /// partial index plus a [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
-    #[allow(dead_code)]
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         if !self.cache_warming.load(Relaxed) {
