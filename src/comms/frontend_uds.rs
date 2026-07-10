@@ -13,11 +13,8 @@
 //! basemind does not depend on `libc`, so this module declares the two C entry points it needs
 //! itself (`getuid`, `getsockopt`). They are part of the platform libc that is always linked
 //! on Unix, so the `extern "C"` declarations resolve at link time. Each call site carries a
-//! `// SAFETY:` note. On non-Unix targets the front-end is unavailable (see the `#[cfg]`
-//! stubs); the singleton path still resolves a Windows pipe name for a future named-pipe
-//! front-end, but this iteration ships the Unix path.
-//!
-//! ~keep TODO: implement the Windows named-pipe front-end.
+//! `// SAFETY:` note. On non-Unix targets the front-end is unavailable; Windows production IPC
+//! lives in [`frontend_named_pipe`](super::frontend_named_pipe).
 
 #[cfg(unix)]
 mod imp {
@@ -174,8 +171,8 @@ pub fn daemon_uid() -> u32 {
     unsafe { getuid() }
 }
 
-/// On non-Unix targets there is no uid; report a fixed value so callers compile.
-/// ~keep TODO: the Windows named-pipe front-end needs a different access-control mechanism.
+/// On non-Unix targets there is no uid; report a fixed value so shared callers compile.
+/// Windows access control is enforced by the named-pipe endpoint rather than a uid check.
 #[cfg(not(unix))]
 pub fn daemon_uid() -> u32 {
     0

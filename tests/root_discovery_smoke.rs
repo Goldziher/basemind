@@ -67,7 +67,10 @@ fn a_basemind_regular_file_is_ignored_only_a_directory_counts() {
     fs::create_dir(&sub).expect("mkdir child");
 
     let resolved = discover_root_with_basemind(&sub);
-    assert_eq!(resolved, sub, ".basemind as a file is skipped; no git → start unchanged");
+    assert_eq!(
+        resolved, sub,
+        ".basemind as a file is skipped; no git → start unchanged"
+    );
 }
 
 #[test]
