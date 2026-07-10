@@ -15,9 +15,6 @@ const AGENT_ID_FILE: &str = "agent-id";
 /// 3. A generated-and-persisted id at `.basemind/agent-id` — stable per repo across restarts,
 ///    distinct across repos so two windows differ.
 /// 4. `"anon"` — the final fallback (itself a valid `AgentId`).
-///
-/// ~keep TODO: prefer the MCP `clientInfo.name` from rmcp's `initialize` handshake once it is
-/// cleanly reachable at construction time; the persisted per-session id is the stand-in.
 pub(super) fn resolve_agent_id(config: &crate::config::Config, store: &Store) -> String {
     fn validated(candidate: Option<String>) -> Option<String> {
         candidate
