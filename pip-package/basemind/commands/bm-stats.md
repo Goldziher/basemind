@@ -1,18 +1,22 @@
 ---
 name: bm-stats
-description: basemind dashboard — resource footprint (disk + RAM) and activity (tool calls, per-tool histogram, estimated tokens saved). Works with or without the MCP server.
+description: Show the basemind dashboard — resource footprint (disk + RAM) and activity (tool calls, per-tool histogram, estimated tokens saved). Works with or without the MCP server.
+argument-hint: [today|1h|24h|all]
 ---
 
 # bm-stats — basemind dashboard
 
-Show a basemind dashboard with two sections: **resource footprint** (on-disk size + process RAM) and
-**activity** (tool calls, per-tool histogram, estimated tokens saved). $ARGUMENTS
+Show a basemind dashboard with two sections: resource footprint (on-disk size + process RAM) and
+activity (tool calls, per-tool histogram, estimated tokens saved).
 
-Prefer the MCP tools when they're connected, but do **not** depend on them — the CLI reads the same
-data with no server (the MCP server can be reconnecting, or not running at all). If a step's MCP tool
-isn't available, run its CLI equivalent instead of giving up.
+## When to use
 
-Default window is `today`. If the user asks for a range, map it to one of `today`, `1h`, `24h`, `all`.
+The user asks "how much is basemind helping?", "show me basemind stats", or wants to check disk /
+RAM usage.
+
+## How to use
+
+Invoke `/bm-stats` (default window `today`) or `/bm-stats <today|1h|24h|all>`. Window: $ARGUMENTS
 
 1. **Resource footprint.** MCP tool `cache_stats`, or CLI `basemind cache stats` (add `--json` to
    parse). Report: `total_bytes` (matches `du`), the per-component breakdown (blobs / views /
@@ -26,8 +30,14 @@ Default window is `today`. If the user asks for a range, map it to one of `today
 
 3. **Render** both sections as a compact markdown dashboard.
 
-If neither MCP nor CLI is reachable (no `basemind` binary and no server), say so plainly and point at
-`/bm-doctor`.
+## Notes
 
-Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
-realistic baseline (memory, document search, git wrappers) report 0 saved.
+- Prefer the MCP tools when connected, but don't depend on them — the CLI reads the same data
+  with no server. If a step's MCP tool isn't available, run its CLI equivalent instead of giving up.
+- If neither MCP nor CLI is reachable, say so plainly and point at `/bm-doctor`.
+- Always end with a one-sentence disclosure that the savings number is heuristic: tools without a
+  realistic baseline (memory, document search, git wrappers) report 0 saved.
+
+## See also
+
+The `basemind-stats` skill for the render shape and the `--explain` breakdown.

@@ -5,27 +5,30 @@ description: Diagnose and recover basemind when it isn't working (MCP tools miss
 
 # bm-doctor — diagnose and recover basemind
 
-basemind isn't behaving (MCP tools missing or erroring, "no index" / "no indexed files", empty
-results, or the MCP server seems dead). Diagnose and recover using the **CLI** (works with no MCP
-server). $ARGUMENTS
+Diagnose and recover basemind using the CLI (works even with no MCP server running).
 
-Note: a stdio MCP server can't be restarted by an agent or by basemind itself — reconnecting it is
-the MCP client's job (step 4). You can still make the index healthy from here.
+## When to use
 
-1. **Index present?** `basemind query status` — errors / `file_count: 0` → build it with
-   `basemind scan` (or `/bm-scan`). Healthy count → it's a connection problem (step 4).
+basemind isn't behaving: MCP tools are missing or erroring, the statusline or a tool reports
+"no index" / "no indexed files", results are empty when they shouldn't be, or the `basemind
+serve` MCP server seems dead.
 
-2. **Server already running?** If `basemind scan` errors on the lock, check the holder:
-   `cat .basemind/.lock.meta` (shows `command` + `pid`). Live pid → server is up, use the MCP
-   tools / `rescan`. Dead pid → stale lock; the OS already released it, so retry (you may delete
-   the stale `.basemind/.lock.meta`).
+## How to use
 
-3. **Rebuild if needed:** `basemind scan` (non-extractable files are skipped, not failed).
+Invoke `/bm-doctor` (optional free-text detail, e.g. `/bm-doctor tools return no indexed files`).
+It runs the checks below in order:
 
-4. **Reconnect the MCP server (only way to restart it):** in Claude Code, reconnect the basemind
-   MCP server from the MCP UI or restart the session (the launcher re-execs the binary on the next
-   connection); in Cursor/others, toggle the server in MCP settings. Meanwhile you're not blocked —
-   the `basemind query …` / `basemind git …` CLI reads the same index with no server.
+1. Check the index: `basemind query status`.
+2. Check for a lock-holding server: `cat .basemind/.lock.meta`.
+3. Rebuild the index if needed: `basemind scan`.
+4. Reconnect the MCP server (client-specific — this is the only way to restart it).
 
-`basemind serve` logs its startup (pid/version/view) and exit reason to stderr — captured in the
-client's MCP server logs; if serve keeps dying, that line names why.
+## Notes
+
+- A stdio MCP server can't be restarted by an agent or by basemind itself; reconnecting it is
+  the MCP client's job. The CLI stays usable throughout.
+
+## See also
+
+The `basemind-doctor` skill for the full step-by-step diagnostic workflow, lock-holder detection,
+and log-reading guidance.

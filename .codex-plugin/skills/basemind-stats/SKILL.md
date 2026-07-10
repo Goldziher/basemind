@@ -5,14 +5,19 @@ description: >-
   tool calls have run, the per-tool histogram, and the estimated tokens saved vs
   a hypothetical grep+Read baseline. Use when the user asks "what has basemind
   done?", "how much is basemind helping?", "show me basemind stats", or invokes
-  `/basemind-stats` directly.
+  `/bm-stats` directly.
 ---
 
 # basemind-stats — on-demand usage dashboard
 
 Call the `telemetry_summary` MCP tool and render the result as a markdown report.
 
-## What to do
+## When to use
+
+The user asks "what has basemind done?", "how much is basemind helping?", "show me basemind
+stats", or invokes `/bm-stats` directly. This skill is strictly user-invoked — see Notes.
+
+## How to run
 
 1. Call `telemetry_summary` with `{ "window": "today" }` (the default). If the
    user asks for a specific range, map it to one of `"today"`, `"1h"`, `"24h"`,
@@ -38,12 +43,12 @@ Call the `telemetry_summary` MCP tool and render the result as a markdown report
 
 ## When the user asks "--explain"
 
-If they invoke `/basemind-stats --explain` or ask how the savings number is
+If they invoke `/bm-stats --explain` or ask how the savings number is
 derived, include the per-baseline breakdown from the `per_baseline` field of the
 response and call out which tools fall into which bucket. The estimator lives in
 `src/mcp/savings.rs` if they want to read the code.
 
-## Don't
+## Notes
 
 - Don't auto-display the dashboard at the start of every conversation. This skill
   is strictly user-invoked.
