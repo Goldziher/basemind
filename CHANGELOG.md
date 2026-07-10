@@ -10,6 +10,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-07-10
+
+Minor bump: `RELEASE_MINOR` advances 20 → 21, so the `.basemind/` index + blob cache is wiped and
+rebuilt from source on the next `basemind scan` (expected — the msgpack blob store is content-
+addressed and rebuilds losslessly).
+
+### Added
+
+- **`basemind init` onboarding + `/bm-init` slash command.** A re-runnable setup flow that scaffolds
+  the root `basemind.toml`, gitignores `.basemind/`, and injects an idempotent, clearly-delimited
+  rules block into the repo's agent guidance (`CLAUDE.md` / `AGENTS.md`, or an `.ai-rulez` rule file
+  when that's the source of truth) teaching agents to prefer basemind over grep/read/git per
+  capability. Interactive by default; `--yes` plus `--with`/`--without`, `--rules-target`,
+  `--no-rules`, and `--print` (dry-run) drive it non-interactively. The block is spliced between
+  stable `<!-- BEGIN/END basemind -->` markers so re-running never duplicates it and never touches
+  content outside the markers.
+- **Monorepo-aware root resolution.** basemind now walks up from the working directory to the nearest
+  ancestor containing `.basemind/` (the way git finds `.git/`), so running an agent from a subfolder
+  of a monorepo attaches to the root index instead of finding nothing. `.basemind` discovery takes
+  precedence over git-root discovery; `--root` still overrides.
+- **Index lifecycle signalling on MCP responses + `status`.** Read tools attach a `notice`
+  (`warming_up` / `building_index` / `rescanning`) with an actionable retry hint so an agent never
+  mistakes a mid-warmup or mid-scan result for "no matches". `status` gains `warming` + `warm_ms`.
+
+### Fixed
+
+- **`serve` answers the MCP handshake before warming the code map.** The in-RAM preload (a rayon
+  `par_iter` over every L1/L2 blob) ran synchronously before `.serve(transport)`, so on a loaded
+  machine — several sessions' scans saturating the shared rayon pool — it could queue for minutes,
+  blow the client's plugin-MCP startup window, and the tools would never register. The preload now
+  runs in a background task; `initialize`/`tools/list` answer immediately regardless of tree size or
+  contention. Cache-reading tools await a bounded (15s) ready signal so a query issued during warmup
+  still returns complete data rather than an empty snapshot. `diff_outline`, `blame_symbol`,
+  `memory_audit`, and `proposal_accept` — which read the map directly — now await warm too, closing a
+  window where they returned a wrong diff, a spurious "not indexed" error, or a false stale verdict.
+- **`basemind init` refuses to splice into a file with malformed markers.** A stray or unpaired
+  `BEGIN`/`END` marker (a hand-edit or bad merge) could make a re-run replace everything between an
+  orphaned marker and an unrelated pair, silently deleting the user's own content. init now bails on
+  any malformed marker state instead of guessing, and absorbs a CRLF trailing newline so a
+  Windows-line-ending rules file converges to a byte-stable fixpoint (no phantom `--print` diff).
+
 ## [0.20.0] — 2026-07-08
 
 Minor bump: `RELEASE_MINOR` advances 19 → 20, so the `.basemind/` index + blob cache is wiped and
