@@ -20,6 +20,8 @@ pub mod comms_daemon;
 pub mod context;
 pub mod git;
 pub mod governance;
+pub mod init;
+pub mod init_rules;
 pub mod memory;
 pub mod render;
 #[cfg(all(feature = "shells", any(unix, windows)))]
