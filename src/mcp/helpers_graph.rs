@@ -48,6 +48,7 @@ pub(super) fn run_call_graph(
     idx: Option<&crate::index::IndexDb>,
     params: CallGraphParams,
     cache: &MapCache,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     let direction = params.direction.as_str();
     let direction_owned = match direction {
@@ -62,8 +63,6 @@ pub(super) fn run_call_graph(
     let max_depth = params.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).min(MAX_DEPTH_CEILING);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_NODES_CEILING) as usize;
 
-    // A read-only session (no Fjall) routes through the in-RAM call index built
-    // from the shared blobs — see `collect_callers` / `collect_callees_for_name`.
     let outcome = if direction == "callers" {
         bfs_callers(idx, cache, &params.name, params.path.as_ref(), max_depth, max_nodes)?
     } else {
@@ -76,6 +75,7 @@ pub(super) fn run_call_graph(
         nodes: outcome.nodes,
         truncated: outcome.truncated,
         truncation_reason: outcome.truncation_reason,
+        notice,
     })
 }
 
@@ -163,14 +163,9 @@ fn bfs_callers(
 
     while let Some((current_name, depth)) = frontier.pop_front() {
         if depth >= max_depth {
-            // We won't expand at the max depth — record that there *may* be more
-            // beyond. Honest "may" — when this frontier entry has no actual callers,
-            // marking truncated is a false positive, but we'd have to do the full
-            // scan to know, defeating the purpose of the cap.
             depth_gated = true;
             continue;
         }
-        // Gather unique parent (containing function) names for this frontier entry.
         let parents = match collect_callers(idx, cache, &current_name, scan_cap) {
             Ok(p) => p,
             Err(CallerScanError::ScanCap) => {
@@ -183,7 +178,6 @@ fn bfs_callers(
         let current_idx = *index_of.get(&current_name).expect("frontier entry must be indexed");
 
         for (parent_name, parent_sites) in parents {
-            // Self-recursion: add a self-edge and stop expanding.
             if parent_name == current_name {
                 if !nodes[current_idx as usize].edges_to.contains(&current_idx) {
                     nodes[current_idx as usize].edges_to.push(current_idx);
@@ -211,7 +205,6 @@ fn bfs_callers(
                     new_idx
                 }
             };
-            // Edge: parent (callers direction) points to current (parent → current).
             if !nodes[parent_idx as usize].edges_to.contains(&current_idx) {
                 nodes[parent_idx as usize].edges_to.push(current_idx);
             }
@@ -221,8 +214,6 @@ fn bfs_callers(
         }
     }
 
-    // Order of precedence: max_nodes already short-circuited above. Then scan_cap
-    // (hard work-bound), then depth_gated (we stopped expanding at the boundary).
     if truncation_reason.is_none() && hit_scan_cap {
         truncated = true;
         truncation_reason = Some("scan_cap");
@@ -253,16 +244,9 @@ fn collect_callers(
     scan_cap: usize,
 ) -> Result<AHashMap<String, Vec<CallGraphSite>>, CallerScanError> {
     let mut parents: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
-    // Dedupe by (path, start_row, start_col) of the *parent symbol* — a function
-    // definition has a unique (file, start position) triple, so this key is sufficient
-    // to prevent adding the same parent site twice when one function calls `name` many
-    // times. The name dimension is not needed: two distinct functions cannot share the
-    // same (file, row, col).
     let mut seen_sites: AHashSet<(RelPath, u32, u32)> = AHashSet::new();
     let mut scanned: usize = 0;
 
-    // Per-call-site closure shared by both backends: resolve the containing function
-    // and record its definition site once.
     let mut record = |rel: RelPath, start_byte: u32| {
         let Some(l1) = cache.by_path.get(&rel) else {
             return;
@@ -300,7 +284,6 @@ fn collect_callers(
                 let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k) else {
                     continue;
                 };
-                // Defensive exact-name guard (the length-prefixed key already ensures it).
                 if callee != name {
                     continue;
                 }
@@ -345,10 +328,6 @@ fn bfs_callees(
     let mut hit_scan_cap = false;
     let mut depth_gated = false;
 
-    // Precompute function-like symbol sites per name once, O(n_all_symbols). The original
-    // code scanned all of cache.by_path for every newly-discovered callee (O(max_nodes ×
-    // n_all_symbols)). Iterates cache.by_path in the same BTreeMap ascending order so the
-    // sites Vec per name is byte-identical to what the old inline scan produced.
     let mut name_to_sites: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
     for (path, l1) in &cache.by_path {
         for sym in &l1.symbols {
@@ -368,8 +347,6 @@ fn bfs_callees(
             depth_gated = true;
             continue;
         }
-        // Collect the callees of `current_name` by walking every definition site
-        // (or just the one at path_filter, when frontier == root).
         let callees = match collect_callees_for_name(
             idx,
             cache,
@@ -404,9 +381,6 @@ fn bfs_callees(
                         break;
                     }
                     let new_idx = nodes.len() as u32;
-                    // Look up definition sites from the precomputed map (O(1) per callee)
-                    // instead of re-scanning all symbols on every newly-discovered callee.
-                    // May be empty for external library functions not in the index.
                     let sites = name_to_sites.get(callee.as_str()).cloned().unwrap_or_default();
                     nodes.push(CallGraphNode {
                         name: callee.clone(),
@@ -419,7 +393,6 @@ fn bfs_callees(
                     new_idx
                 }
             };
-            // Edge: current (callees direction) points to child (current → child).
             if !nodes[current_idx as usize].edges_to.contains(&child_idx) {
                 nodes[current_idx as usize].edges_to.push(child_idx);
             }
@@ -466,7 +439,6 @@ fn collect_callees_for_name(
     };
 
     for (path, l1) in iter {
-        // Collect every function-like symbol in this file whose name matches.
         let matching: Vec<&Symbol> = l1
             .symbols
             .iter()
@@ -475,9 +447,6 @@ fn collect_callees_for_name(
         if matching.is_empty() {
             continue;
         }
-        // Delegate the dual-backend scan (Fjall prefix vs in-RAM call index) to the shared
-        // helper. Same cap semantics: `scanned` increments for every call site, `cap_hit`
-        // stops the current file, checked after each file to short-circuit further iteration.
         let mut cap_hit = false;
         for_each_call_in_file(idx, cache, path, |callee, start_byte| {
             scanned += 1;

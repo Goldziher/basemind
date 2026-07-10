@@ -35,10 +35,6 @@ const ARCHMAP_EDGE_SCAN_CAP: usize = 4_000_000;
 const PAGERANK_ITERS: usize = 20;
 const PAGERANK_DAMPING: f64 = 0.85;
 
-// ---------------------------------------------------------------------------
-// Generic directed graph + deterministic metrics
-// ---------------------------------------------------------------------------
-
 /// A directed weighted graph in adjacency form. `out[i]` / `in_[i]` are sorted for
 /// deterministic iteration (PageRank / Tarjan discovery order).
 struct Graph {
@@ -86,8 +82,6 @@ impl Graph {
         let base = (1.0 - PAGERANK_DAMPING) / n as f64;
         let outdeg: Vec<usize> = (0..n).map(|i| self.out[i].len()).collect();
         let mut rank = vec![1.0 / n as f64; n];
-        // Pre-allocate the accumulator once and re-initialize each iteration instead of
-        // allocating a fresh Vec<f64> on every pass (20 allocs → 1 alloc total).
         let mut next = vec![0.0f64; n];
         for _ in 0..PAGERANK_ITERS {
             for x in next.iter_mut() {
@@ -124,7 +118,6 @@ impl Graph {
             if index[start] != u32::MAX {
                 continue;
             }
-            // Work stack of (node, next-child-pointer).
             let mut work: Vec<(u32, usize)> = vec![(start as u32, 0)];
             while let Some(&(v, pi)) = work.last() {
                 let vu = v as usize;
@@ -145,7 +138,6 @@ impl Graph {
                         low[vu] = low[vu].min(index[wu]);
                     }
                 } else {
-                    // Done expanding v: if it's an SCC root, pop the component.
                     if low[vu] == index[vu] {
                         loop {
                             let w = stack.pop().unwrap();
@@ -167,10 +159,6 @@ impl Graph {
         comp
     }
 }
-
-// ---------------------------------------------------------------------------
-// RepoGraph: whole-repo file-level call graph built from the index
-// ---------------------------------------------------------------------------
 
 /// Whole-repo file-level call graph plus a per-callee-name fan-in table (reused by the
 /// symbol tier, and by the Session-2 coverage tool).
@@ -200,7 +188,6 @@ impl RepoGraph {
             id_of.insert(p.clone(), i as u32);
         }
 
-        // Join table: callee name → file ids that define it as a function-like symbol.
         let mut def_files_by_name: AHashMap<String, Vec<u32>> = AHashMap::new();
         for (path, l1) in &cache.by_path {
             let fid = id_of[path];
@@ -226,8 +213,6 @@ impl RepoGraph {
                     cap_hit = true;
                     return false;
                 }
-                // Zero-alloc increment on existing key (String key; &str lookup via Borrow).
-                // Only allocates a new String on the first occurrence of each callee name.
                 if let Some(count) = callee_counts.get_mut(callee) {
                     *count += 1;
                 } else {
@@ -249,8 +234,6 @@ impl RepoGraph {
             }
         }
 
-        // Consume the join table into per-name definition counts (the symbol-tier
-        // specificity denominator). Done after the scan loop so it stays out of the hot path.
         let def_counts: AHashMap<String, u32> = def_files_by_name
             .into_iter()
             .map(|(name, files)| (name, files.len() as u32))
@@ -274,10 +257,6 @@ impl RepoGraph {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tool entry
-// ---------------------------------------------------------------------------
-
 /// Body of the `architecture_map` tool. `churn` (commits-touching per file) is `None`
 /// when the overlay is disabled or there's no git repo.
 pub(crate) fn run_architecture_map(
@@ -285,6 +264,7 @@ pub(crate) fn run_architecture_map(
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
     params: ArchitectureMapParams,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     let max_nodes = params.max_nodes.unwrap_or(60).min(300) as usize;
     let max_edges = params.max_edges.unwrap_or(200).min(2000) as usize;
@@ -294,9 +274,9 @@ pub(crate) fn run_architecture_map(
     let rg = RepoGraph::build(idx, cache, ARCHMAP_EDGE_SCAN_CAP)?;
 
     match params.granularity.as_str() {
-        "module" => run_tier_grouped(&rg, churn, focus, Some(depth), &params, max_nodes, max_edges),
-        "file" => run_tier_grouped(&rg, churn, focus, None, &params, max_nodes, max_edges),
-        "symbol" => run_tier_symbol(&rg, cache, idx, churn, focus, &params, max_nodes, max_edges),
+        "module" => run_tier_grouped(&rg, churn, focus, Some(depth), &params, max_nodes, max_edges, notice),
+        "file" => run_tier_grouped(&rg, churn, focus, None, &params, max_nodes, max_edges, notice),
+        "symbol" => run_tier_symbol(&rg, cache, idx, churn, focus, &params, max_nodes, max_edges, notice),
         other => Err(McpError::invalid_params(
             format!("granularity must be \"module\", \"file\", or \"symbol\", got {other:?}"),
             None,
@@ -331,10 +311,6 @@ fn dir_label(path: &str, depth: usize) -> String {
     dirs[..take].join("/")
 }
 
-// ---------------------------------------------------------------------------
-// Module / file tiers (grouped graph)
-// ---------------------------------------------------------------------------
-
 #[allow(clippy::too_many_arguments)]
 fn run_tier_grouped(
     rg: &RepoGraph,
@@ -344,8 +320,8 @@ fn run_tier_grouped(
     params: &ArchitectureMapParams,
     max_nodes: usize,
     max_edges: usize,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
-    // 1. Assign each in-scope base file to a group (directory label, or the file itself).
     let mut group_of: Vec<Option<u32>> = vec![None; rg.files.len()];
     let mut label_to_gid: AHashMap<String, u32> = AHashMap::new();
     let mut labels: Vec<String> = Vec::new();
@@ -384,7 +360,6 @@ fn run_tier_grouped(
 
     let ngroups = labels.len();
 
-    // 2. Aggregate base call edges into inter-group edges (intra-group edges collapse).
     let mut gedges: AHashMap<(u32, u32), u32> = AHashMap::new();
     for s in 0..rg.files.len() {
         let Some(gs) = group_of[s] else { continue };
@@ -396,7 +371,6 @@ fn run_tier_grouped(
         }
     }
 
-    // 3. Grouped graph + metrics.
     let mut g = Graph::empty(ngroups);
     for (&(s, d), &w) in &gedges {
         g.out[s as usize].push((d, w));
@@ -406,7 +380,6 @@ fn run_tier_grouped(
     let pr = g.pagerank();
     let comp = g.tarjan_scc();
 
-    // 4. Blend scores over all groups.
     let deg: Vec<f64> = (0..ngroups).map(|i| (g.fan_in(i) + g.fan_out(i)) as f64).collect();
     let prv: Vec<f64> = pr.iter().map(|&r| r as f64).collect();
     let chv: Vec<f64> = group_churn.iter().map(|&c| c as f64).collect();
@@ -418,7 +391,6 @@ fn run_tier_grouped(
         .map(|i| w_pr * prn[i] + w_deg * degn[i] + w_churn * chn[i])
         .collect();
 
-    // 5. Rank, knee-cut, cap.
     let mut order: Vec<usize> = (0..ngroups).collect();
     order.sort_by(|&a, &b| {
         scores[b]
@@ -430,7 +402,6 @@ fn run_tier_grouped(
     let cut = knee_cutoff(&ranked_scores).min(max_nodes).min(ngroups);
     let survivor_gids: Vec<u32> = order[..cut].iter().map(|&i| i as u32).collect();
 
-    // 6. Build nodes (id = position), then apply the token budget (keeps a prefix).
     let prelim: Vec<ArchNode> = survivor_gids
         .iter()
         .enumerate()
@@ -457,13 +428,11 @@ fn run_tier_grouped(
     let mut nodes = budgeted.items;
     let kept = nodes.len();
 
-    // 7. Map surviving group ids → response-local ids (budget kept a prefix).
     let mut local_of: AHashMap<u32, u32> = AHashMap::with_capacity(kept);
     for (local, &gid) in survivor_gids[..kept].iter().enumerate() {
         local_of.insert(gid, local as u32);
     }
 
-    // 8. Cycle clusters among kept nodes (shared SCC component with >1 member).
     let (cycles, scc_of_local) = build_cycles(&comp, &survivor_gids[..kept], &gedges, &local_of);
     for node in &mut nodes {
         if let Some(&sid) = scc_of_local.get(&node.id) {
@@ -471,7 +440,6 @@ fn run_tier_grouped(
         }
     }
 
-    // 9. Emit edges among kept nodes, heaviest first, capped.
     let edges = emit_edges(&gedges, &local_of, max_edges);
 
     json_result(&ArchitectureMapResponse {
@@ -484,6 +452,7 @@ fn run_tier_grouped(
         truncated: rg.truncated,
         truncation_reason: rg.truncation_reason,
         budgeted: budgeted.budgeted,
+        notice,
     })
 }
 
@@ -505,13 +474,11 @@ fn build_cycles(
     gedges: &AHashMap<(u32, u32), u32>,
     local_of: &AHashMap<u32, u32>,
 ) -> (Vec<CycleCluster>, AHashMap<u32, u32>) {
-    // component id → kept local ids in that component.
     let mut by_comp: AHashMap<u32, Vec<u32>> = AHashMap::new();
     for &gid in kept_gids {
         let c = comp[gid as usize];
         by_comp.entry(c).or_default().push(local_of[&gid]);
     }
-    // Deterministic cluster ordering: by ascending smallest-member local id.
     let mut clusters: Vec<(u32, Vec<u32>)> = by_comp.into_iter().filter(|(_, m)| m.len() > 1).collect();
     for (_, m) in &mut clusters {
         m.sort_unstable();
@@ -524,7 +491,6 @@ fn build_cycles(
         for &loc in &members {
             scc_of_local.insert(loc, scc_id as u32);
         }
-        // Internal edges: base group edges where both endpoints are in this component.
         let member_gids: AHashSet<u32> = kept_gids
             .iter()
             .copied()
@@ -563,10 +529,6 @@ fn emit_edges(gedges: &AHashMap<(u32, u32), u32>, local_of: &AHashMap<u32, u32>,
     edges
 }
 
-// ---------------------------------------------------------------------------
-// Symbol tier (top hub functions by fan-in)
-// ---------------------------------------------------------------------------
-
 struct SymCand {
     path: RelPath,
     name: String,
@@ -593,8 +555,8 @@ fn run_tier_symbol(
     params: &ArchitectureMapParams,
     max_nodes: usize,
     max_edges: usize,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
-    // 1. Candidate function-like symbols in scope, with specificity-weighted hub-ness.
     let mut cands: Vec<SymCand> = Vec::new();
     for (path, l1) in &cache.by_path {
         let ps = path.as_str().unwrap_or("");
@@ -609,8 +571,6 @@ fn run_tier_symbol(
                 continue;
             }
             let fan_in = rg.callee_counts.get(&sym.name).copied().unwrap_or(0);
-            // Divide by the number of files defining this name. `def_count >= 1` always: a
-            // function-like candidate is itself a definition, so its name is in the table.
             let def_count = rg.def_counts.get(&sym.name).copied().unwrap_or(1).max(1);
             cands.push(SymCand {
                 path: path.clone(),
@@ -628,8 +588,6 @@ fn run_tier_symbol(
     }
     let node_count_total = cands.len() as u32;
 
-    // 2. Rank by specificity-weighted hub-ness, knee-cut, cap. Raw fan-in loses to `hub`:
-    //    `new` (huge fan-in, hundreds of definitions) ranks below a genuine single-def hub.
     cands.sort_by(|a, b| {
         b.hub
             .partial_cmp(&a.hub)
@@ -643,8 +601,6 @@ fn run_tier_symbol(
     cands.truncate(cut);
     let survivors = cands;
 
-    // 3. Fan-out + inter-hub edges: scan each survivor's file once, attribute calls that
-    //    fall inside a survivor's byte range.
     let mut by_file: AHashMap<RelPath, Vec<u32>> = AHashMap::new();
     let mut name_to_locals: AHashMap<&str, Vec<u32>> = AHashMap::new();
     for (loc, s) in survivors.iter().enumerate() {
@@ -658,8 +614,6 @@ fn run_tier_symbol(
             for &loc in locals {
                 let s = &survivors[loc as usize];
                 if s.start_byte <= start_byte && start_byte < s.end_byte {
-                    // Guard with contains (&str lookup via Borrow on AHashSet<String>)
-                    // to avoid allocating a String when the callee is already in the set.
                     let fo = &mut fan_out_sets[loc as usize];
                     if !fo.contains(callee) {
                         fo.insert(callee.to_string());
@@ -678,11 +632,6 @@ fn run_tier_symbol(
     }
     let fan_out: Vec<u32> = fan_out_sets.iter().map(|s| s.len() as u32).collect();
 
-    // 4. Score = normalized hub-ness. Selection (step 2), knee-cut, and this score all key
-    //    off the same `hub` signal, so emitted nodes stay in non-increasing score order.
-    //    `fan_out` is only known post-truncation, so it cannot gate selection — it (and
-    //    per-file churn) are reported per node but deliberately kept out of the ranking
-    //    rather than folded into a blend that would silently fail to re-order anything.
     let hubv: Vec<f64> = survivors.iter().map(|c| c.hub).collect();
     let hubn = minmax_norm(&hubv);
 
@@ -709,7 +658,6 @@ fn run_tier_symbol(
     let nodes = budgeted.items;
     let kept = nodes.len();
 
-    // 5. Edges among kept hubs (ids are already response-local; budget kept a prefix).
     let mut edges: Vec<ArchEdge> = edge_map
         .iter()
         .filter(|((from, to), _)| (*from as usize) < kept && (*to as usize) < kept)
@@ -734,6 +682,7 @@ fn run_tier_symbol(
         truncated: rg.truncated,
         truncation_reason: rg.truncation_reason,
         budgeted: budgeted.budgeted,
+        notice,
     })
 }
 

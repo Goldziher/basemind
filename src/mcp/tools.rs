@@ -34,7 +34,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
-            // Helper: map an L1 blob to its (symbols, imports) view fields.
+            self.state.await_cache_ready().await;
             fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
                 let symbols = l1
                     .symbols
@@ -62,7 +62,6 @@ impl BasemindServer {
             }
 
             let mut response = if params.l2 {
-                // L2 path: take the store lock once for both the L1 read and the L2 read.
                 let store = self.state.store.read().await;
                 let l1 = query::file_outline(&store, &params.path)
                     .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
@@ -79,6 +78,7 @@ impl BasemindServer {
                     calls: None,
                     docs: None,
                     l2_status: None,
+                    notice: None,
                 };
                 let entry = store
                     .lookup(&params.path)
@@ -114,10 +114,6 @@ impl BasemindServer {
                 }
                 r
             } else {
-                // L1-only path: serve from the in-RAM MapCache — no store lock, no disk
-                // read. The cache is authoritative (rebuilt on every rescan). Fall back
-                // to the store only on a cache miss (file indexed but blob evicted, which
-                // should not happen in normal operation).
                 let cache = self.state.cache.load();
                 if let Some(l1) = cache.by_path.get(&params.path) {
                     let (symbols, imports) = l1_views(l1);
@@ -133,9 +129,9 @@ impl BasemindServer {
                         calls: None,
                         docs: None,
                         l2_status: None,
+                        notice: None,
                     }
                 } else {
-                    // Cache miss fallback.
                     let store = self.state.store.read().await;
                     let l1 = query::file_outline(&store, &params.path)
                         .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
@@ -152,12 +148,12 @@ impl BasemindServer {
                         calls: None,
                         docs: None,
                         l2_status: None,
+                        notice: None,
                     }
                 }
             };
+            response.notice = self.state.lifecycle_notice();
 
-            // Token budget bounds the symbols list (the high-volume part of an outline);
-            // imports / calls / docs are left intact. Applied before serializing.
             if params.max_tokens.is_some() {
                 let budgeted = super::budget::apply_budget(std::mem::take(&mut response.symbols), params.max_tokens);
                 response.symbols = budgeted.items;
@@ -191,13 +187,12 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             use std::sync::atomic::Ordering;
 
+            self.state.await_cache_ready().await;
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
             let generation = self.state.cache_generation.load(Ordering::Relaxed);
 
-            // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
-            // cursor_invalidated=true so the caller can restart.
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -211,6 +206,7 @@ impl BasemindServer {
                                 results: Vec::new(),
                                 next_cursor: None,
                                 cursor_invalidated: true,
+                                notice: self.state.lifecycle_notice(),
                             },
                             format,
                         );
@@ -220,8 +216,6 @@ impl BasemindServer {
                 None => 0,
             };
 
-            // Empty needle matches every symbol — never what the caller wants and
-            // expensive on large repos. Return immediately.
             if params.needle.is_empty() {
                 return super::toon::format_result(
                     &SearchResponse {
@@ -232,6 +226,7 @@ impl BasemindServer {
                         results: Vec::new(),
                         next_cursor: None,
                         cursor_invalidated: false,
+                        notice: self.state.lifecycle_notice(),
                     },
                     format,
                 );
@@ -240,9 +235,6 @@ impl BasemindServer {
             let max_total = search_max_total(limit);
             let mut results: Vec<SearchHitView> = Vec::with_capacity(limit);
             let mut total: usize = 0;
-            // `seen` tracks how many *matching* entries we've walked past, including the
-            // first `skip` we discard. The `total` counter only includes the entries that
-            // make it into / past this page.
             let mut seen: usize = 0;
             let mut total_is_partial = false;
             let cache = self.state.cache.load_full();
@@ -279,15 +271,9 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit || total_is_partial;
-            // Apply the token budget AFTER the limit page is built but BEFORE computing the
-            // cursor, so the cursor advances by the *kept* count — the next page resumes
-            // exactly at the first dropped item with no gap or overlap.
             let budget = super::budget::apply_budget(results, params.max_tokens);
             let results = budget.items;
             let budgeted = budget.budgeted;
-            // `next_cursor` advances by the kept page size (results.len()) past the skip
-            // offset. More remains when the scan saw more than we kept (limit cap) OR the
-            // budget dropped items from this page.
             let next_cursor = if total > results.len() {
                 Some(super::cursor::Cursor::encode_in_memory(
                     (skip + results.len()) as u64,
@@ -305,6 +291,7 @@ impl BasemindServer {
                     results,
                     next_cursor,
                     cursor_invalidated: false,
+                    notice: self.state.lifecycle_notice(),
                 },
                 format,
             )
@@ -333,13 +320,11 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             use std::sync::atomic::Ordering;
 
+            self.state.await_cache_ready().await;
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let (limit, limit_clamped) = effective_list_limit(params.limit);
             let generation = self.state.cache_generation.load(Ordering::Relaxed);
 
-            // List uses the underlying `store.index.files` BTreeMap which is also rebuilt
-            // on rescan — treat the same `cache_generation` as the snapshot id, since
-            // `cache.store` always happens after a store mutation.
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
                     let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -354,6 +339,7 @@ impl BasemindServer {
                                 files: Vec::new(),
                                 next_cursor: None,
                                 cursor_invalidated: true,
+                                notice: self.state.lifecycle_notice(),
                             },
                             format,
                         );
@@ -394,8 +380,6 @@ impl BasemindServer {
                 }
             }
             let truncated = total > limit;
-            // Budget the file list before computing the cursor so the next page resumes at
-            // the first dropped entry (cursor advances by the kept count, not the scanned count).
             let budget = super::budget::apply_budget(files, params.max_tokens);
             let files = budget.items;
             let budgeted = budget.budgeted;
@@ -418,6 +402,7 @@ impl BasemindServer {
                     files,
                     next_cursor,
                     cursor_invalidated: false,
+                    notice: self.state.lifecycle_notice(),
                 },
                 format,
             )
@@ -440,6 +425,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             let paths: Vec<crate::path::RelPath> =
                 crate::extract::l3::dependents_of(&params.module, &self.state.cache.load().imports_index)
                     .into_iter()
@@ -448,6 +434,7 @@ impl BasemindServer {
             json_result(&DependentsResponse {
                 module: params.module.clone(),
                 paths,
+                notice: self.state.lifecycle_notice(),
             })
         }
         .await;
@@ -467,8 +454,6 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
-            // Boot-scan state (cheap atomic loads) — reported on both the contended and
-            // uncontended paths so a client can tell "index building" from "index ready".
             let indexing = self
                 .state
                 .initial_scan_active
@@ -477,11 +462,12 @@ impl BasemindServer {
                 let ms = self.state.initial_scan_ms.load(std::sync::atomic::Ordering::Relaxed);
                 (ms > 0).then_some(ms)
             };
-            // Non-blocking read: a writer (`scan`/`rescan`/`watch`) can hold the store lock for
-            // minutes during a rebuild. `read().await` would queue behind it and record the
-            // whole lock-wait as this call's wall-clock (the misleading multi-minute `status`
-            // latency). `try_read` fails fast instead — we report `rebuild_in_progress` with a
-            // fresh on-disk blob tally and skip the index-derived counts rather than block.
+            let warming = self.state.cache_warming.load(std::sync::atomic::Ordering::Relaxed);
+            let warm_ms = {
+                let ms = self.state.cache_warm_ms.load(std::sync::atomic::Ordering::Relaxed);
+                (ms > 0).then_some(ms)
+            };
+            let notice = self.state.lifecycle_notice();
             let store = match self.state.store.try_read() {
                 Ok(store) => store,
                 Err(_) => {
@@ -497,6 +483,9 @@ impl BasemindServer {
                         rebuild_in_progress: true,
                         indexing,
                         index_build_ms,
+                        warming,
+                        warm_ms,
+                        notice,
                         total_size_bytes: 0,
                         languages: BTreeMap::new(),
                         cache_dir: crate::lang::grammar_cache_dir()
@@ -513,10 +502,6 @@ impl BasemindServer {
                     });
                 }
             };
-            // Count into a borrowed-key map to avoid one String::clone() per file.
-            // The store lock is held for the entire loop, so &str borrows into the
-            // store are valid. Convert to BTreeMap<String,usize> once at the end —
-            // cost is O(distinct languages), not O(total files).
             let mut by_lang_ref: BTreeMap<&str, usize> = BTreeMap::new();
             let mut total_size: u64 = 0;
             for entry in store.index.files.values() {
@@ -534,8 +519,6 @@ impl BasemindServer {
                 .map(|r| r.submodule_paths())
                 .unwrap_or_default();
             let file_count = store.index.files.len();
-            // Cheap single-dir blob tally — distinguishes a legitimately unscanned view (no
-            // blobs) from a lost/empty index over live blobs (bug #10).
             let blob_count = count_fm_blobs(&store.basemind_dir);
             let note = blob_divergence_note(file_count, blob_count);
             json_result(&StatusResponse {
@@ -545,6 +528,9 @@ impl BasemindServer {
                 rebuild_in_progress: false,
                 indexing,
                 index_build_ms,
+                warming,
+                warm_ms,
+                notice,
                 total_size_bytes: total_size,
                 languages: by_lang,
                 cache_dir,
@@ -576,14 +562,12 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            // No `read_only_index_unavailable` guard: when the Fjall index is held by
-            // another process, we answer from the in-RAM call index built from the
-            // shared blobs (`MapCache::calls`), so concurrent sessions stay functional.
             let cache = self.state.cache.load_full();
-            run_find_references(idx.as_ref(), params, &cache)
+            run_find_references(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
         }
         .await;
         record_call(&self.state, "find_references", &__params_json, __started, &__result);
@@ -611,12 +595,10 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
-            // Hold the store read guard for the call (like `goto_definition`): the resolved path
-            // reads the `.rref` blobs + Fjall index, the fallback reads the index or the in-RAM
-            // call cache (shared blobs) so a read-only multi-session serve still answers.
+            self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let cache = self.state.cache.load_full();
-            run_find_callers(&store, &self.state.root, &cache, params)
+            run_find_callers(&store, &self.state.root, &cache, params, self.state.lifecycle_notice())
         }
         .await;
         record_call(&self.state, "find_callers", &__params_json, __started, &__result);
@@ -666,7 +648,11 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async { run_workspace_grep(&self.state, params) }.await;
+        let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
+            run_workspace_grep(&self.state, params)
+        }
+        .await;
         record_call(&self.state, "workspace_grep", &__params_json, __started, &__result);
         __result
     }
@@ -689,13 +675,12 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            // Read-only sessions answer from the in-RAM impl index (built off the
-            // shared L1 blobs) when the Fjall lock is held elsewhere.
             let cache = self.state.cache.load_full();
-            run_find_implementations(idx.as_ref(), params, &cache)
+            run_find_implementations(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
         }
         .await;
         record_call(
@@ -725,13 +710,12 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            // Read-only sessions walk the call graph via the in-RAM call index
-            // (shared blobs) when the Fjall lock is held elsewhere.
             let cache = self.state.cache.load_full();
-            run_call_graph(idx.as_ref(), params, &cache)
+            run_call_graph(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
         }
         .await;
         record_call(&self.state, "call_graph", &__params_json, __started, &__result);
@@ -767,8 +751,6 @@ impl BasemindServer {
         __result
     }
 }
-
-// ─── pure decision helpers (unit-testable without the serve harness) ──────────
 
 /// Resolve the effective `list_files` page limit and report whether the caller's
 /// requested limit was clamped to [`LIST_LIMIT_MAX`].
@@ -858,10 +840,8 @@ mod tests {
 
     #[test]
     fn search_total_partial_when_cap_reached() {
-        // Simulate the scan loop's cap accounting: `total` counts matches up to the cap.
         let limit = 10usize;
         let cap = search_max_total(limit);
-        // A query with more matches than the cap stops at the cap and flags partial.
         let matches_available = cap + 500;
         let mut total = 0usize;
         let mut partial = false;
@@ -880,7 +860,7 @@ mod tests {
     fn search_total_exact_when_under_cap() {
         let limit = 10usize;
         let cap = search_max_total(limit);
-        let matches_available = 5usize; // well under the cap
+        let matches_available = 5usize;
         let mut total = 0usize;
         let mut partial = false;
         for _ in 0..matches_available {

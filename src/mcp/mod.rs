@@ -161,7 +161,6 @@ pub(crate) type OutlineCache = Mutex<LruCache<(gix::ObjectId, LangId), Arc<Outli
 #[derive(Clone)]
 pub struct BasemindServer {
     pub(crate) state: Arc<ServerState>,
-    // Touched by macro-generated dispatch; dead_code can't see that.
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
@@ -213,12 +212,12 @@ pub(crate) struct ServerState {
     pub(crate) cache_generation: std::sync::atomic::AtomicU32,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
-    #[allow(dead_code)] // used by memory / documents feature tools
+    #[allow(dead_code)]
     pub(crate) scope: String,
     /// Owner segment for the individual-memory tier. Resolved once at boot from
     /// `BASEMIND_AGENT_ID` (validated through [`crate::comms::ids::AgentId`] so it is
     /// NUL-free) or `"anon"` when unset/invalid. Group-tier writes ignore it.
-    #[allow(dead_code)] // used by the memory feature tools
+    #[allow(dead_code)]
     pub(crate) agent_id: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
     #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
@@ -265,11 +264,92 @@ pub(crate) struct ServerState {
     /// (`0` = no initial scan happened this session, or it is still running). Surfaced on `status`
     /// as `index_build_ms` to report indexing time separately from query time.
     pub(crate) initial_scan_ms: std::sync::atomic::AtomicU64,
+    /// True while the boot-time in-RAM code-map preload (`MapCache::build` over the existing blobs)
+    /// is still running. Deferring that build off the startup path is what lets `serve` answer the
+    /// MCP `initialize`/`tools/list` handshake immediately instead of blocking on a rayon `par_iter`
+    /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
+    /// [`cache_ready`](Self::cache_ready) while this is set (see [`ServerState::await_cache_ready`]).
+    #[allow(dead_code)]
+    pub(crate) cache_warming: std::sync::atomic::AtomicBool,
+    /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
+    /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
+    #[allow(dead_code)]
+    pub(crate) cache_warm_ms: std::sync::atomic::AtomicU64,
+    /// Fired once when the deferred preload finishes and the full map is swapped in. Tools that read
+    /// the cache `notified().await` on this (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued
+    /// during the warmup window returns COMPLETE data rather than an empty snapshot.
+    #[allow(dead_code)]
+    pub(crate) cache_ready: tokio::sync::Notify,
+    /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
+    /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
+    /// a moment stale" rather than treating a mid-rescan snapshot as final.
+    #[allow(dead_code)]
+    pub(crate) rescan_active: std::sync::atomic::AtomicBool,
     /// True when this serve fell back to a read-only store because another serve owns the
     /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
+}
+
+/// Upper bound a cache-reading tool waits for the deferred boot preload to finish before serving from
+/// whatever is loaded so far. Sized so a normal repo's preload (seconds) completes within the wait — a
+/// query issued right after the handshake returns COMPLETE data — while a pathologically large tree
+/// still can't hang a call indefinitely (it returns partial results labelled with a warming notice).
+#[allow(dead_code)]
+pub(crate) const CACHE_WARM_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Coarse server lifecycle state surfaced to clients so an empty/partial result is never mistaken for
+/// "no matches". Precedence (highest first): [`BuildingIndex`](Lifecycle::BuildingIndex) (a from-scratch
+/// scan is populating the index) > [`WarmingUp`](Lifecycle::WarmingUp) (blobs are loading into RAM) >
+/// [`Rescanning`](Lifecycle::Rescanning) (a watcher-driven incremental refresh is in flight) >
+/// [`Ready`](Lifecycle::Ready).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lifecycle {
+    Ready,
+    WarmingUp,
+    BuildingIndex,
+    Rescanning,
+}
+
+impl ServerState {
+    /// Current [`Lifecycle`] derived from the boot/rescan atomics, applying the documented precedence.
+    pub(crate) fn lifecycle(&self) -> Lifecycle {
+        use std::sync::atomic::Ordering::Relaxed;
+        if self.initial_scan_active.load(Relaxed) {
+            Lifecycle::BuildingIndex
+        } else if self.cache_warming.load(Relaxed) {
+            Lifecycle::WarmingUp
+        } else if self.rescan_active.load(Relaxed) {
+            Lifecycle::Rescanning
+        } else {
+            Lifecycle::Ready
+        }
+    }
+
+    /// Block a cache-reading tool until the deferred boot preload has published the full map, bounded by
+    /// [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path). Does NOT wait on
+    /// [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for minutes, so those tools return the
+    /// partial index plus a [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
+    #[allow(dead_code)]
+    pub(crate) async fn await_cache_ready(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        if !self.cache_warming.load(Relaxed) {
+            return;
+        }
+        let notified = self.cache_ready.notified();
+        if !self.cache_warming.load(Relaxed) {
+            return;
+        }
+        let _ = tokio::time::timeout(CACHE_WARM_WAIT_CAP, notified).await;
+    }
+
+    /// A [`LifecycleNotice`](types::LifecycleNotice) to attach to a tool response, or `None` when
+    /// [`Ready`](Lifecycle::Ready). Lets every read tool label a possibly-incomplete result with the
+    /// server state + an actionable message, so an agent knows to retry rather than concluding "empty".
+    pub(crate) fn lifecycle_notice(&self) -> Option<types::LifecycleNotice> {
+        types::LifecycleNotice::for_state(self.lifecycle())
+    }
 }
 
 pub(crate) struct MapCache {
@@ -294,12 +374,6 @@ impl MapCache {
     fn build(store: &Store) -> Self {
         use rayon::prelude::*;
 
-        // Finding #4: deserialize every L1 msgpack blob in parallel. The reads are
-        // pure file I/O + decode (`Store::read_l1_by_hex` takes `&self` and never
-        // mutates), so sharing `&Store` across rayon workers is sound. `BTreeMap`
-        // implements `FromParallelIterator`, so the result is still path-sorted —
-        // matching the serial build's ordering. Files whose blob is missing or fails
-        // to decode are dropped (same as the serial `continue`).
         let by_path: BTreeMap<crate::path::RelPath, FileMapL1> = store
             .index
             .files
@@ -312,18 +386,10 @@ impl MapCache {
                     .map(|l1| (path.clone(), l1))
             })
             .collect();
-        // Finding #5: the `dependents` tool consumes `imports_index` through
-        // `extract::l3::dependents_of`, whose signature owns `Vec<Import>` per entry
-        // (`&[(P, Vec<Import>)]`). That forces a per-file clone of the import list here;
-        // an `Arc`-shared view would require changing the `l3` signature. We at least
-        // parallelize the clone (was a serial second pass) so it scales with cores.
         let imports_index: Vec<(PathBuf, Vec<Import>)> = by_path
             .par_iter()
             .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
             .collect();
-        // Only a session WITHOUT the Fjall index (read-only fallback, lock held by
-        // another process) needs the in-RAM callee/impl indexes; a writer reads Fjall
-        // directly. `calls` reads the L2 blobs; `impls` reuses the L1 already in `by_path`.
         let (calls, impls) = if store.index_db.is_none() {
             (
                 Some(helpers_calls::InRamCallIndex::build(store)),
@@ -337,6 +403,21 @@ impl MapCache {
             imports_index,
             calls,
             impls,
+        }
+    }
+
+    /// An empty map cache: the placeholder a `serve` boots with while the real [`build`](Self::build)
+    /// runs in the background (see [`background::spawn_cache_warm`]). Deferring the whole-corpus blob
+    /// load off the startup path is what lets the MCP `initialize`/`tools/list` handshake answer
+    /// immediately instead of blocking on a rayon `par_iter` that a loaded machine can starve for
+    /// minutes. Cache-reading tools await [`ServerState::cache_ready`] before reading, so they observe
+    /// the fully-built map, never this placeholder.
+    fn empty() -> Self {
+        Self {
+            by_path: BTreeMap::new(),
+            imports_index: Vec::new(),
+            calls: None,
+            impls: None,
         }
     }
 
@@ -367,7 +448,6 @@ impl MapCache {
                         by_path.insert(p.clone(), l1);
                     }
                 }
-                // An "updated" path that is no longer in the index — treat as removed.
                 None => {
                     by_path.remove(p);
                 }
@@ -424,7 +504,6 @@ pub struct ServerOptions {
 
 impl Default for ServerOptions {
     fn default() -> Self {
-        // Default mirrors `serve`: everything on, sole writer.
         Self {
             background: true,
             watch: true,
@@ -486,9 +565,6 @@ impl BasemindServer {
             .as_ref()
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
-        // Open the git-history index when serving a git repo writably with the feature enabled.
-        // A read-only serve, or losing the Fjall lock to another process, degrades to `None`
-        // (live-walk fallback) exactly like the symbol index does — never an error.
         let basemind_dir = store.basemind_dir.clone();
         let git_history = if !options.read_only && repo.is_some() && crate::git_history::index_enabled() {
             match crate::git_history::GitHistoryIndex::open(&basemind_dir) {
@@ -501,47 +577,29 @@ impl BasemindServer {
         } else {
             None
         };
-        // Resolve this server's stable agent identity once. Used as the individual-memory
-        // owner segment AND the comms-broker handle, so it must be NUL-free — every candidate
-        // is validated through `AgentId` and rejected candidates fall through to the next tier.
         let agent_id = identity::resolve_agent_id(&config, &store);
-        let cache = Arc::new(MapCache::build(&store));
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
-        // A fresh repo has no index yet. Auto-scan on startup (working view only)
-        // so the agent never has to run `basemind scan` by hand — the scan runs
-        // in-process below, after the server is up, so it never contends for the
-        // Fjall lock this `serve` already holds.
-        //
-        // Two distinct "needs a scan" signals, both working-view only:
-        //   1. The in-RAM map cache is empty — a fresh repo with no `index.msgpack`.
-        //   2. The map cache is populated (msgpack survived) BUT the Fjall secondary
-        //      index holds no symbols. `index.msgpack` and `index.fjall/` are separate
-        //      on-disk artifacts written together by the scanner; they can diverge if the
-        //      Fjall dir is removed or wiped out-of-band (manual `rm -rf`, a crash mid-wipe,
-        //      or an independent index-schema bump) while the msgpack index stays current.
-        //      In that state the RAM cache looks healthy but `find_references` /
-        //      `search_symbols` silently return nothing. Detect it cheaply and rescan.
         let view_is_working = store.view == crate::store::VIEW_WORKING;
-        // `None` index_db means Fjall failed to OPEN (not that it is empty); an auto-scan writes to
-        // the same broken path and would just fail in a loop, so treat that as "not empty" and let
-        // the failure surface elsewhere rather than triggering a futile rescan.
         let fjall_index_empty = store
             .index_db
             .as_ref()
             .map(|db| db.symbols_index_is_empty())
             .unwrap_or(false);
-        // NOTE: a genuinely empty repo (zero source files) satisfies this every startup and
-        // re-runs a trivially fast no-op scan; that is acceptable and not worth a freshness flag.
-        // A read-only serve never auto-scans — it holds no write lock; the lock-holding writer
-        // owns index refresh, and this serve sees it via the passive view watcher.
         let needs_initial_scan =
-            !options.read_only && view_is_working && (cache.by_path.is_empty() || fjall_index_empty);
+            !options.read_only && view_is_working && (store.index.files.is_empty() || fjall_index_empty);
+        let defer_warm = options.background && !needs_initial_scan;
+        let cache = if defer_warm {
+            Arc::new(MapCache::empty())
+        } else {
+            Arc::new(MapCache::build(&store))
+        };
         tracing::info!(
-            files = cache.by_path.len(),
+            files = store.index.files.len(),
             corpus_bytes,
             git = repo.is_some(),
             scope = %scope,
-            "preloaded code map into RAM for MCP server"
+            deferred_warm = defer_warm,
+            "code map ready for MCP server (preloaded, or warming in background)"
         );
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
@@ -584,40 +642,24 @@ impl BasemindServer {
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
             initial_scan_active: std::sync::atomic::AtomicBool::new(false),
             initial_scan_ms: std::sync::atomic::AtomicU64::new(0),
+            cache_warming: std::sync::atomic::AtomicBool::new(defer_warm),
+            cache_warm_ms: std::sync::atomic::AtomicU64::new(0),
+            cache_ready: tokio::sync::Notify::new(),
+            rescan_active: std::sync::atomic::AtomicBool::new(false),
             read_only: options.read_only,
         });
-        // One-shot CLI queries skip ALL background facilities: no view watcher,
-        // no auto-scan, no background GC. They preload the map cache (above) and
-        // return immediately so the process can exit after a single tool call.
         if options.background {
-            // Live FS watcher vs. passive view watcher are mutually exclusive for
-            // the working view: the active watcher already triggers
-            // `scan_and_refresh`, which writes `index.msgpack` — the exact event
-            // the passive watcher reacts to. Running both would double-refresh.
-            //
-            // Non-working views (staged / rev-<sha>) are immutable snapshots, so
-            // the active watcher is meaningless there; they always get the passive
-            // watcher (which still picks up an external re-scan of that view).
             let view_is_working = {
                 match state.store.try_read() {
                     Ok(g) => g.view == crate::store::VIEW_WORKING,
-                    // Unable to read the view at boot is unexpected; fall back to the
-                    // passive watcher rather than risk watching the wrong tree.
                     Err(_) => false,
                 }
             };
-            // A read-only serve must not run the active FS watcher — it funnels changes into
-            // `scan_and_refresh`, which writes. It still gets the passive view watcher, so its
-            // in-RAM map tracks the lock-holding writer's `index.msgpack` updates.
             if options.watch && !options.read_only && view_is_working {
                 background::spawn_serve_watcher(Arc::clone(&state));
             } else {
                 background::spawn_view_watcher(Arc::clone(&state));
             }
-            // Bring the git-history index up to date in the background (revalidate → rebuild /
-            // incremental append). Never blocks serve startup; the history tools fall back to the
-            // live walk until `last_indexed_head` reaches HEAD. The first build on a deep repo is
-            // minutes-scale and one-time; later syncs are incremental.
             if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
                 let basemind_dir = basemind_dir.clone();
                 tokio::task::spawn_blocking(move || {
@@ -631,17 +673,12 @@ impl BasemindServer {
                     }
                 });
             }
-            // Background blob GC: reclaim orphaned blobs left behind by prior scans /
-            // branch switches. Detached so it never blocks serve startup, and it never
-            // crashes serve (all errors are warned + swallowed).
             if needs_initial_scan {
-                // Two-pass boot: a fast `Deferred` scan makes serve queryable immediately, then a
-                // detached `Inline` embedding pass + GC. (A fresh scan is what *creates* reclaimable
-                // orphans, so GC is chained after the embed pass inside the helper.)
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
-                // No initial scan — run GC shortly after startup to reclaim any
-                // orphans from earlier sessions.
+                if defer_warm {
+                    background::spawn_cache_warm(Arc::clone(&state));
+                }
                 let gc_state = Arc::clone(&state);
                 tokio::spawn(async move {
                     background::run_background_gc(gc_state).await;
@@ -762,7 +799,6 @@ impl ServerHandler for BasemindServer {
 
     /// `logging/setLevel`: record the minimum severity the client wants. Subsequent log
     /// notifications (e.g. from `rescan`) are gated on this threshold.
-    // `SetLevelRequestParams` is deprecated by SEP-2577 with no replacement yet; allow until we migrate.
     #[allow(deprecated)]
     async fn set_level(
         &self,
@@ -786,9 +822,6 @@ impl ServerHandler for BasemindServer {
         Ok(self.complete_argument(&request))
     }
 
-    // MCP logging is deprecated upstream by SEP-2577 (rmcp 1.8), but basemind intentionally
-    // advertises the capability — the statusline and `rescan` progress emit structured log
-    // notifications through it. Keep it until a migration off MCP logging lands.
     #[allow(deprecated)]
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
@@ -905,10 +938,8 @@ mod map_cache_tests {
         let cache = MapCache::build(&store);
         assert_eq!(sym_names(&cache, "a.rs"), vec!["alpha".to_string()]);
         assert_eq!(sym_names(&cache, "b.rs"), vec!["beta".to_string()]);
-        // Writer session (Fjall index present): in-RAM call/impl indexes stay None.
         assert!(cache.calls.is_none() && cache.impls.is_none());
 
-        // Edit a.rs, re-scan just that path, then patch the cache incrementally.
         fs::write(root.join("a.rs"), b"pub fn alpha2() {}\npub fn alpha3() {}\n").unwrap();
         let report = crate::scanner::scan_paths(
             root,
@@ -933,7 +964,6 @@ mod map_cache_tests {
             "untouched path preserved without re-reading its blob"
         );
 
-        // Remove b.rs from the cache.
         let removed = vec![crate::path::RelPath::from("b.rs")];
         let after = next.with_delta(&store, &[], &removed);
         assert!(

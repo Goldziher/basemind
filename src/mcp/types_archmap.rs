@@ -78,6 +78,10 @@ pub struct ArchitectureMapResponse {
     pub truncation_reason: Option<&'static str>,
     /// True when the `nodes` list was trimmed to fit `max_tokens`.
     pub budgeted: bool,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<super::types::LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

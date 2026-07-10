@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 use super::cursor::Cursor;
 use crate::path::RelPath;
 
-// ─── Params ──────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsParams {
     /// The trait / interface / base-class name to find implementations of.
@@ -33,8 +31,6 @@ pub struct FindImplementationsParams {
     pub cursor: Option<Cursor>,
 }
 
-// ─── Response ─────────────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FindImplementationsResponse {
     pub trait_name: String,
@@ -50,6 +46,10 @@ pub struct FindImplementationsResponse {
     /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<super::types::LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

@@ -21,18 +21,16 @@ pub(super) fn run_find_implementations(
     idx: Option<&crate::index::IndexDb>,
     params: FindImplementationsParams,
     cache: &super::MapCache,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
-    // No Fjall index (read-only session that lost the single-holder lock): answer
-    // from the in-RAM impl index built off the L1 blobs.
     let Some(idx) = idx else {
-        return find_implementations_in_ram(cache, params, limit);
+        return find_implementations_in_ram(cache, params, limit, notice);
     };
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
-    // Build the finder once for the full-partition substring scan.
     let finder = memchr::memmem::Finder::new(params.trait_name.as_bytes());
 
     let lower: Bound<Vec<u8>> = match cursor_bytes.as_deref() {
@@ -42,8 +40,6 @@ pub(super) fn run_find_implementations(
 
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let mut hits: Vec<ImplementationHit> = Vec::with_capacity(limit.min(64));
-    // Parallel to `hits`: the Fjall key for each emitted hit, so a token budget can re-anchor
-    // the cursor to the last KEPT hit instead of the last scanned one.
     let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
     let mut total: usize = 0;
     let mut total_is_partial = false;
@@ -62,13 +58,10 @@ pub(super) fn run_find_implementations(
             continue;
         };
 
-        // Case-sensitive substring filter on trait_name.
         if finder.find(trait_name.as_bytes()).is_none() {
             continue;
         }
 
-        // Language filter: look up the file's L1 blob in the in-RAM cache.
-        // Applied after the substring filter — filtered entries don't count toward scan_cap.
         if let Some(lang_filter) = params.language.as_deref() {
             let l1_lang = cache.by_path.get(&rel).map(|l1| l1.language.as_str());
             if l1_lang != Some(lang_filter) {
@@ -80,7 +73,6 @@ pub(super) fn run_find_implementations(
         matched += 1;
 
         if hits.len() < limit {
-            // Resolve start_row / start_col from the stored Implementation in the L1 blob.
             let (start_row, start_col) = resolve_impl_row_col(cache, &rel, start_byte);
             hits.push(ImplementationHit {
                 path: rel,
@@ -106,9 +98,6 @@ pub(super) fn run_find_implementations(
         None
     };
 
-    // Apply the token budget. When it drops trailing hits, re-anchor the cursor to the last
-    // KEPT hit's Fjall key so the next page resumes exactly after it. A no-op when
-    // `max_tokens` is None or every hit fit.
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
@@ -125,6 +114,7 @@ pub(super) fn run_find_implementations(
         budgeted,
         hits,
         next_cursor,
+        notice,
     })
 }
 
@@ -138,12 +128,7 @@ fn resolve_impl_row_col(cache: &super::MapCache, rel: &crate::path::RelPath, sta
     let Some(l1) = cache.by_path.get(rel) else {
         return (0, 0);
     };
-    // Match by start_byte alone: an `impl` / class definition has a unique byte offset
-    // within a file, so start_byte is a sufficient key into l1.implementations. The
-    // index writer encodes exactly one record per (path, start_byte) pair, making
-    // trait_name and impl_type redundant discriminants here.
     if let Some(imp) = l1.implementations.iter().find(|i| i.start_byte == start_byte) {
-        // start_row is 0-based in the blob; emit 1-based for line numbers per editor convention.
         (imp.start_row + 1, imp.start_col)
     } else {
         (0, 0)
@@ -157,6 +142,7 @@ fn find_implementations_in_ram(
     cache: &super::MapCache,
     params: FindImplementationsParams,
     limit: usize,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     let Some(index) = cache.impls.as_ref() else {
         return json_result(&FindImplementationsResponse {
@@ -166,11 +152,11 @@ fn find_implementations_in_ram(
             budgeted: false,
             hits: Vec::new(),
             next_cursor: None,
+            notice,
         });
     };
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let finder = memchr::memmem::Finder::new(params.trait_name.as_bytes());
-    // Entries are sorted by key; resume = first entry strictly past the cursor.
     let start = match cursor_bytes.as_deref() {
         Some(c) => index.entries.partition_point(|e| e.key.as_slice() <= c),
         None => 0,
@@ -233,6 +219,7 @@ fn find_implementations_in_ram(
         budgeted,
         hits,
         next_cursor,
+        notice,
     })
 }
 

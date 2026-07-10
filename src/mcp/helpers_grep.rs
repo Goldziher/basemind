@@ -22,8 +22,6 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
     let scan_cap = limit.saturating_mul(8).max(2_000);
     let generation = state.cache_generation.load(Ordering::Relaxed);
 
-    // Decode cursor and check snapshot id. Stale cursor → bail with empty page +
-    // cursor_invalidated=true so the caller can restart.
     let skip: usize = match params.cursor.as_ref() {
         Some(c) => {
             let (offset, snapshot_id) = c.decode_in_memory()?;
@@ -38,6 +36,7 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
                         hits: Vec::new(),
                         next_cursor: None,
                         cursor_invalidated: true,
+                        notice: state.lifecycle_notice(),
                     },
                     format,
                 );
@@ -59,37 +58,29 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
     let cache = state.cache.load_full();
 
     let mut hits: Vec<GrepHit> = Vec::with_capacity(limit.min(64));
-    // Parallel to `hits`: the 1-based `files_seen` index of the file that produced each hit.
-    // Lets a token budget re-anchor the cursor to the file of the last KEPT hit so no hit is
-    // permanently lost when the budget cuts mid-file (that boundary file is re-scanned).
     let mut hit_file_idx: Vec<usize> = Vec::with_capacity(limit.min(64));
     let mut total_matches: u32 = 0;
     let mut total_files_matched: usize = 0;
     let mut truncated = false;
     let mut files_visited: usize = 0;
-    // Track how many files passed filters so far (for cursor offset).
     let mut files_seen: usize = 0;
 
     'files: for (path, entry) in &cache.by_path {
-        // Honour scan_cap: stop iterating files once we've visited enough.
         if files_visited >= scan_cap {
             truncated = true;
             break;
         }
 
-        // Path filter (memchr).
         let path_ok = path_finder.as_ref().is_none_or(|f| f.find(path.as_bytes()).is_some());
         if !path_ok {
             continue;
         }
 
-        // Language filter.
         let lang_ok = lang_filter.is_none_or(|l| entry.language == l);
         if !lang_ok {
             continue;
         }
 
-        // Skip files that were already returned on prior pages.
         if files_seen < skip {
             files_seen += 1;
             continue;
@@ -97,7 +88,6 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
         files_seen += 1;
         files_visited += 1;
 
-        // Read the file from the working tree; skip non-UTF-8 silently.
         let abs = state.root.join(path.to_path_buf());
         let source = match std::fs::read_to_string(&abs) {
             Ok(s) => s,
@@ -107,8 +97,6 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
             }
         };
 
-        // Pre-build line offset table so match→line/col is O(hits), not O(file).
-        // `line_starts[i]` = byte offset of the start of line `i` (0-based).
         let line_starts: Vec<usize> = std::iter::once(0)
             .chain(memchr::memchr_iter(b'\n', source.as_bytes()).map(|pos| pos + 1))
             .collect();
@@ -120,20 +108,16 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
             file_had_match = true;
 
             if hits.len() >= limit {
-                // Keep counting total_matches, but stop materialising hits.
-                // Once limit is saturated, set truncated and stop processing files.
                 truncated = true;
                 break 'files;
             }
 
-            // Binary search for the line that contains the match start.
             let match_start = mat.start();
             let line_idx = line_starts.partition_point(|&ls| ls <= match_start).saturating_sub(1);
             let line_start_byte = line_starts[line_idx];
-            let line_num = (line_idx as u32) + 1; // 1-based
-            let column = (match_start - line_start_byte) as u32; // 0-based byte col
+            let line_num = (line_idx as u32) + 1;
+            let column = (match_start - line_start_byte) as u32;
 
-            // Context: extract line-string helper (strip trailing '\n'/'\r\n').
             let context_before = if params.include_context && line_idx > 0 {
                 Some(extract_line(&source, &line_starts, line_idx - 1))
             } else {
@@ -161,19 +145,12 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
         }
     }
 
-    // Emit a cursor when hits are saturated and there may be more files to visit.
-    // `files_seen` is the position past the last file we processed; the next page
-    // skips all files before that index.
     let next_cursor = if truncated {
         Some(super::cursor::Cursor::encode_in_memory(files_seen as u64, generation))
     } else {
         None
     };
 
-    // Apply the token budget over the materialised hits. When it drops trailing hits,
-    // re-anchor the cursor to RE-SCAN the file of the last kept hit (offset = that file's
-    // index minus one) so no hit is permanently lost — the boundary file may re-emit a few
-    // already-returned hits, which is the safe trade-off for a file-granular cursor.
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
         let kept = budget.items.len();
@@ -200,6 +177,7 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
             hits,
             next_cursor,
             cursor_invalidated: false,
+            notice: state.lifecycle_notice(),
         },
         format,
     )
@@ -211,7 +189,6 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
 fn extract_line(source: &str, line_starts: &[usize], line_idx: usize) -> String {
     let start = line_starts[line_idx];
     let end = line_starts.get(line_idx + 1).copied().unwrap_or(source.len());
-    // `end` points past the '\n'; trim trailing CR+LF.
     let raw = &source[start..end];
     raw.trim_end_matches('\n').trim_end_matches('\r').to_owned()
 }

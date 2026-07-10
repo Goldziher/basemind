@@ -80,7 +80,6 @@ pub(super) fn resolve_call_line_col(
         Ok(c) => c,
         Err(_) => return (0, 0),
     };
-    // `start_row` is 0-based; emit 1-based for line numbers per editor convention.
     (call.start_row + 1, call.start_col)
 }
 
@@ -91,6 +90,7 @@ pub(super) fn run_find_references(
     idx: Option<&crate::index::IndexDb>,
     params: super::types::FindReferencesParams,
     cache: &super::MapCache,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -108,6 +108,7 @@ pub(super) fn run_find_references(
             budgeted: budgeted.budgeted,
             hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
+            notice,
         },
         format,
     )
@@ -127,6 +128,7 @@ pub(super) fn run_find_callers(
     root: &std::path::Path,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
+    notice: Option<super::types::LifecycleNotice>,
 ) -> Result<CallToolResult, McpError> {
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -145,8 +147,6 @@ pub(super) fn run_find_callers(
         start_col: sym.start_col,
     });
 
-    // Resolved mode: precise, scope-correct callers. Only when the definition resolves to a
-    // symbol AND that symbol has resolved uses; otherwise fall through to the name scan.
     if let Some(sym) = symbol.as_ref()
         && let Some(page) = resolved_callers_page(store, root, &params.path, &params.name, sym, limit)
     {
@@ -161,11 +161,10 @@ pub(super) fn run_find_callers(
             budgeted: budgeted.budgeted,
             hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
+            notice,
         });
     }
 
-    // Name-scan fallback: substring on the callee, no scope resolution (`Foo::bar()` and `bar()`
-    // both match `name="bar"`). Cursor paging applies here.
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
     let scan = scan_calls(
         store.index_db.as_ref(),
@@ -185,6 +184,7 @@ pub(super) fn run_find_callers(
         budgeted: budgeted.budgeted,
         hits: budgeted.hits,
         next_cursor: budgeted.next_cursor,
+        notice,
     })
 }
 
@@ -214,7 +214,6 @@ fn resolved_callers_page(
     let refs = store.read_resolved_by_hex(&entry.hash_hex).ok().flatten()?;
     let def_source = std::fs::read(root.join(def_path.to_path_buf())).ok()?;
 
-    // Recover the true resolved def identifier byte(s) inside the symbol's node span.
     let mut def_starts: Vec<u32> = Vec::new();
     for edge in &refs.intra {
         if edge.def_start >= symbol.start_byte
@@ -229,7 +228,6 @@ fn resolved_callers_page(
         return None;
     }
 
-    // Collect resolved uses (intra via blob / index; cross-file only when the index is open).
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
         for use_ref in crate::query::resolved_references(store, def_path, def_start) {
@@ -241,12 +239,10 @@ fn resolved_callers_page(
     if uses.is_empty() {
         return None;
     }
-    // Deterministic order: (path, byte offset).
     uses.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     let total = uses.len() as u32;
     let total_is_partial = uses.len() > limit;
-    // Cache per-file source (read once) to map each use offset to line/col + callee identifier.
     let mut source_cache: ahash::AHashMap<crate::path::RelPath, Vec<u8>> = ahash::AHashMap::new();
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(uses.len().min(limit));
     for (use_path, use_start) in uses.into_iter().take(limit) {
@@ -307,15 +303,12 @@ pub(super) fn budget_call_page(page: CallScanPage, max_tokens: Option<u32>) -> B
     }
     let budget = super::budget::apply_budget(page.hits, max_tokens);
     if !budget.budgeted {
-        // Budget kept every hit on the page — leave the original scan cursor untouched.
         return BudgetedCallPage {
             hits: budget.items,
             next_cursor: page.next_cursor,
             budgeted: false,
         };
     }
-    // Re-anchor the cursor to the last kept hit. `budgeted` implies at least one drop and a
-    // non-empty page, so `kept >= 1` and the index is in range.
     let kept = budget.items.len();
     let next_cursor = page.hit_keys.get(kept - 1).map(|k| Cursor::encode_fjall(k));
     BudgetedCallPage {
@@ -339,7 +332,6 @@ fn scan_calls_by_name(
     limit: usize,
     cursor_after: Option<&[u8]>,
 ) -> Result<CallScanPage, McpError> {
-    // Build the finder once; full-partition substring scan per the B3/I14 spec.
     let finder = memchr::memmem::Finder::new(name.as_bytes());
 
     let lower: Bound<Vec<u8>> = match cursor_after {
@@ -347,8 +339,6 @@ fn scan_calls_by_name(
         None => Bound::Unbounded,
     };
     let mut hits: Vec<ReferenceHit> = Vec::with_capacity(limit.min(64));
-    // Parallel to `hits`: the Fjall key for each emitted hit, so a later token budget can
-    // re-anchor the cursor to the last KEPT hit instead of the last scanned one.
     let mut hit_keys: Vec<Vec<u8>> = Vec::with_capacity(limit.min(64));
     let mut total: u32 = 0;
     let mut total_is_partial = false;
@@ -362,7 +352,6 @@ fn scan_calls_by_name(
         let Some((callee, rel, start)) = crate::index::keys::parse_call_by_callee(&k) else {
             continue;
         };
-        // Case-sensitive substring filter — skip non-matching callees cheaply.
         if finder.find(callee.as_bytes()).is_none() {
             continue;
         }
@@ -378,7 +367,6 @@ fn scan_calls_by_name(
             });
             hit_keys.push(k.to_vec());
         } else {
-            // We collected a full page; this extra entry proves more remain on disk.
             has_more = true;
         }
         if matched >= scan_cap {
@@ -440,7 +428,6 @@ fn empty_call_page() -> CallScanPage {
 /// scan order round-trip identically between the two paths.
 fn scan_calls_in_ram(index: &InRamCallIndex, name: &str, limit: usize, cursor_after: Option<&[u8]>) -> CallScanPage {
     let finder = memchr::memmem::Finder::new(name.as_bytes());
-    // Entries are sorted by key, so resume = first entry strictly past the cursor.
     let start = match cursor_after {
         Some(cursor) => index.entries.partition_point(|e| e.key.as_slice() <= cursor),
         None => 0,
@@ -633,13 +620,11 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        // util.ts: the definition + two callers that resolve to it.
         std::fs::write(
             root.join("util.ts"),
             b"export function target() { return 1; }\ntarget();\ntarget();\n",
         )
         .expect("util.ts");
-        // other.ts: a same-named function whose caller must NOT be conflated with util.ts's.
         std::fs::write(root.join("other.ts"), b"function target() { return 3; }\ntarget();\n").expect("other.ts");
         let mut store = Store::open(root, VIEW_WORKING).expect("open");
         scan(
@@ -660,7 +645,6 @@ mod tests {
             .cloned()
             .expect("util.ts target function symbol");
 
-        // Offset-alignment finding: the L1 node start_byte is NOT the resolved def identifier byte.
         let entry = store.lookup(&def_path).expect("indexed");
         let refs = store
             .read_resolved_by_hex(&entry.hash_hex)

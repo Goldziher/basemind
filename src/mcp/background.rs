@@ -13,10 +13,6 @@ use super::{MapCache, ServerState};
 /// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
 /// mark+sweep; cross-process scans are impossible because serve holds the flock.
 pub(super) async fn run_background_gc(state: Arc<ServerState>) {
-    // Skip auto-GC when the blob cache is shared across git worktrees: this sweep would collect
-    // references from THIS worktree's views only and could reap blobs a sibling worktree still
-    // references. GC only reclaims orphaned disk, so skipping is safe; a worktree-spanning GC is a
-    // follow-up. (Checked before spawning so we don't even take the store guard.)
     if state.store.read().await.blobs_shared {
         tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees");
         return;
@@ -51,8 +47,6 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     tokio::spawn(async move {
         use std::sync::atomic::Ordering;
-        // Mark the index as building so a concurrent `status` poll reports `indexing: true` instead
-        // of an empty index — separating build time from query time.
         state.initial_scan_active.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
         match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred).await {
@@ -64,14 +58,10 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             ),
             Err(error) => tracing::warn!(%error, "initial background scan failed"),
         }
-        // Record the build duration and clear the building flag (even on failure, so a client never
-        // sees a permanently-"indexing" server). The code-map is queryable now; the embed pass runs
-        // unobtrusively afterward.
         state
             .initial_scan_ms
             .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
         state.initial_scan_active.store(false, Ordering::Relaxed);
-        // Second pass (detached): fill in the vectors the fast pass skipped, then GC.
         let embed_state = Arc::clone(&state);
         tokio::spawn(async move {
             let embed_started = std::time::Instant::now();
@@ -87,6 +77,51 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             }
             run_background_gc(embed_state).await;
         });
+    });
+}
+
+/// Boot-time in-RAM code-map preload, spawned once from `BasemindServer::new_with_options` when the
+/// index is already populated (no initial scan needed) on the background `serve` path.
+///
+/// `serve` boots with an EMPTY [`MapCache`] placeholder so it can answer the MCP `initialize` /
+/// `tools/list` handshake immediately, then this task does the heavy `MapCache::build` (a rayon
+/// `par_iter` over every L1/L2 blob) on a blocking thread, publishes the full map via `ArcSwap`, and
+/// wakes every tool awaiting [`ServerState::cache_ready`]. Without this, that build ran synchronously
+/// before `.serve(transport)` and — under rayon-pool contention from other sessions' scans — could take
+/// minutes, blowing the client's startup window so the tools never registered.
+pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
+    tracing::info!("warming in-RAM code map in background (handshake already served)");
+    tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
+        let started = std::time::Instant::now();
+        let build_state = Arc::clone(&state);
+        let built = tokio::task::spawn_blocking(move || {
+            let store = build_state.store.blocking_read();
+            MapCache::build(&store)
+        })
+        .await;
+        match built {
+            Ok(cache) => {
+                let files = cache.by_path.len();
+                state.cache.store(Arc::new(cache));
+                state.cache_generation.fetch_add(1, Ordering::Relaxed);
+                state
+                    .cache_warm_ms
+                    .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+                state.cache_warming.store(false, Ordering::Relaxed);
+                state.cache_ready.notify_waiters();
+                tracing::info!(
+                    files,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "in-RAM code map warm complete"
+                );
+            }
+            Err(error) => {
+                state.cache_warming.store(false, Ordering::Relaxed);
+                state.cache_ready.notify_waiters();
+                tracing::error!(%error, "in-RAM code map warm task panicked; serving un-warmed cache");
+            }
+        }
     });
 }
 
@@ -118,29 +153,23 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
     let root = state.root.clone();
     let config = Arc::clone(&state.config);
     let handle = tokio::runtime::Handle::current();
-    // Keep the sender alive for the process lifetime by leaking it into the
-    // detached closure-free slot: we never signal shutdown explicitly (the
-    // process exit tears the watcher down), so hold the receiver and drop the
-    // sender at the end of `serve`'s life via the thread owning it.
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     std::thread::Builder::new()
         .name("basemind-mcp-serve-watcher".to_string())
         .spawn(move || {
-            // Hold the sender for the whole watcher lifetime so the receiver never
-            // sees `Disconnected` early; the watcher exits when the debouncer
-            // channel closes at process teardown.
             let _keep_sender_alive = _shutdown_tx;
             tracing::info!(root = %root.display(), "serve watcher armed (live incremental rescan)");
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
+                use std::sync::atomic::Ordering;
                 let refresh_state = Arc::clone(&state);
-                // Bridge the blocking watcher thread into the async refresh. Incremental watcher
-                // batches embed inline — they are small and already bounded by the WS4-A embed pool;
-                // only the serve-boot scan defers embedding to a background pass.
-                match handle.block_on(helpers::scan_and_refresh(
-                    refresh_state,
+                refresh_state.rescan_active.store(true, Ordering::Relaxed);
+                let outcome = handle.block_on(helpers::scan_and_refresh(
+                    Arc::clone(&refresh_state),
                     Some(paths),
                     crate::scanner::EmbedMode::Inline,
-                )) {
+                ));
+                refresh_state.rescan_active.store(false, Ordering::Relaxed);
+                match outcome {
                     Ok(report) => tracing::debug!(
                         scanned = report.stats.scanned,
                         updated = report.stats.updated,

@@ -36,18 +36,24 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.cache.load_full();
-            // Churn overlay is best-effort: absent outside a git repo (degrade silently).
             let churn = if params.include_churn {
                 let window = params.churn_window.unwrap_or(200).min(2000);
                 churn_commit_counts(&self.state, window).ok()
             } else {
                 None
             };
-            run_architecture_map(idx.as_ref(), &cache, churn.as_ref(), params)
+            run_architecture_map(
+                idx.as_ref(),
+                &cache,
+                churn.as_ref(),
+                params,
+                self.state.lifecycle_notice(),
+            )
         }
         .await;
         record_call(&self.state, "architecture_map", &__params_json, __started, &__result);

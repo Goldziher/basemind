@@ -10,7 +10,50 @@ use serde::{Deserialize, Serialize};
 use super::cursor::Cursor;
 use crate::path::RelPath;
 
-// ─── Parameter shapes ────────────────────────────────────────────────────────
+/// Lifecycle label attached to a read-tool response when the server is not fully [`Ready`]. Lets an
+/// agent distinguish "index still loading — retry" from a genuine empty result, so a query issued during
+/// startup warmup or a from-scratch index build is never misread as "no matches".
+///
+/// [`Ready`]: super::Lifecycle::Ready
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub(crate) struct LifecycleNotice {
+    /// Machine-readable state tag: `"warming_up"`, `"building_index"`, or `"rescanning"`.
+    pub state: &'static str,
+    /// Human/agent-readable explanation of what the server is doing and what it means for this result.
+    pub message: &'static str,
+    /// `true` when the caller should retry shortly for complete results (warming / building), `false`
+    /// when the current result is usable but may be a moment stale (rescanning).
+    pub retry: bool,
+}
+
+impl LifecycleNotice {
+    /// Build the notice for `state`, or `None` when [`Ready`](super::Lifecycle::Ready) (the common path,
+    /// so no notice field is serialized on a healthy response).
+    pub(crate) fn for_state(state: super::Lifecycle) -> Option<Self> {
+        use super::Lifecycle;
+        match state {
+            Lifecycle::Ready => None,
+            Lifecycle::WarmingUp => Some(Self {
+                state: "warming_up",
+                message: "Index is warming up (loading the code map into memory). Results may be \
+                          incomplete — retry in a moment for the full set.",
+                retry: true,
+            }),
+            Lifecycle::BuildingIndex => Some(Self {
+                state: "building_index",
+                message: "Index is building for the first time. Results are incomplete — poll `status` \
+                          until `indexing` is false, then retry.",
+                retry: true,
+            }),
+            Lifecycle::Rescanning => Some(Self {
+                state: "rescanning",
+                message: "An incremental rescan is in progress after a file change. Results are usable \
+                          but may be a moment stale.",
+                retry: false,
+            }),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct OutlineParams {
@@ -171,8 +214,6 @@ pub(super) fn default_true() -> bool {
     true
 }
 
-// ─── Response shapes ─────────────────────────────────────────────────────────
-
 #[derive(Debug, Serialize)]
 pub(super) struct OutlineResponse {
     pub path: RelPath,
@@ -192,6 +233,10 @@ pub(super) struct OutlineResponse {
     pub docs: Option<Vec<DocView>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub l2_status: Option<&'static str>,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -259,6 +304,10 @@ pub(super) struct SearchResponse {
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -288,12 +337,20 @@ pub(super) struct ListFilesResponse {
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
 pub(super) struct DependentsResponse {
     pub module: String,
     pub paths: Vec<RelPath>,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -325,6 +382,19 @@ pub(super) struct StatusResponse {
     /// conflated with the one-time indexing cost. Absent when no initial scan ran this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build_ms: Option<u64>,
+    /// `true` while this serve's boot-time in-RAM code-map preload is still running (the index exists
+    /// on disk but is loading into memory). Like `indexing`, a client should treat empty/partial query
+    /// results as "not ready yet" and retry shortly rather than "no matches". Absent once warm.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub warming: bool,
+    /// Wall-clock duration of the boot-time preload in milliseconds, once complete. Absent while still
+    /// warming or when the preload wasn't deferred this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm_ms: Option<u64>,
+    /// Current lifecycle notice (warming / building / rescanning) with an actionable message, or absent
+    /// when the server is fully ready. Mirrors the `notice` on every read-tool response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
     pub total_size_bytes: u64,
     pub languages: BTreeMap<String, usize>,
     pub cache_dir: String,
@@ -364,6 +434,10 @@ pub(super) struct FindReferencesResponse {
     /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,6 +460,10 @@ pub(super) struct FindCallersResponse {
     /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
 
 #[derive(Debug, Serialize)]
@@ -430,10 +508,6 @@ pub(super) struct RepoInfoResponse {
     pub head_short_sha: Option<String>,
     pub branch: Option<String>,
 }
-
-// ─── Document-search shapes ──────────────────────────────────────────────────
-//
-// Memory tool shapes (`Memory*Params/Response`, `Visibility`) live in `types_memory.rs`.
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspaceGrepParams {
@@ -507,9 +581,11 @@ pub(super) struct WorkspaceGrepResponse {
     /// (a rescan happened between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
 }
-
-// ─── rescan ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct RescanParams {
@@ -535,8 +611,6 @@ pub(super) struct RescanResponse {
     pub elapsed_ms: u128,
     pub root: String,
 }
-
-// ─── telemetry_summary ───────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct TelemetrySummaryParams {
@@ -588,8 +662,6 @@ pub(super) struct RecentCallView {
     pub elapsed_ms: u64,
     pub est_tokens_saved: u64,
 }
-
-// ─── web_scrape / web_crawl / web_map ────────────────────────────────────────
 
 #[cfg(feature = "crawl")]
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -701,9 +773,6 @@ pub(super) struct WebMapEntry {
 
 pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
 pub(super) use super::types_admin::{CacheClearResponse, CacheGcResponse, CacheStatsResponse};
-// Git-tool types live in `types_git.rs`; re-exported here so existing `super::types::<T>`
-// references (the `params` re-export in `mod.rs`, the `use super::types::*` glob in
-// `tools_git.rs`, and the explicit imports in `helpers.rs`) keep resolving unchanged.
 pub use super::types_documents::SearchDocumentsParams;
 #[cfg(feature = "documents")]
 pub(super) use super::types_documents::{DocumentSearchHit, SearchDocumentsResponse};
