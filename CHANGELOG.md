@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Root discovery no longer climbs across a nested subrepo boundary.** `discover_root_with_basemind`
+  walked up looking for an ancestor `.basemind/` without a ceiling, so running from inside a nested
+  git subrepo (checked out under a polyrepo that has its own root `.basemind/`) wrongly attached to
+  the parent polyrepo's index. The upward walk is now bounded by the closest enclosing git repository
+  — the subrepo's own root is the ceiling. A non-git monorepo (no git boundary anywhere) still walks
+  freely to an ancestor `.basemind/`.
 - Fixed Codex plugin MCP startup by using the required root `.mcp.json` shape and resolving the
   launcher relative to the installed plugin instead of an unsupported `${PLUGIN_ROOT}` placeholder.
 

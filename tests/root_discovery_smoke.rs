@@ -29,19 +29,42 @@ fn resolves_upward_to_ancestor_with_basemind() {
 }
 
 #[test]
-fn ancestor_basemind_wins_over_inner_git_repo() {
+fn inner_git_repo_bounds_the_basemind_walk() {
+    // A nested subrepo (its own git root) checked out inside a polyrepo that has a root
+    // `.basemind/`. Invoking from a subfolder of the subrepo must NOT climb across the subrepo
+    // boundary into the outer polyrepo's cache — the subrepo's own root is the ceiling.
     let tmp = tempfile::tempdir().expect("tempdir");
     let outer = tmp.path().canonicalize().expect("canonicalize outer");
     fs::create_dir(outer.join(BASEMIND_DIR)).expect("mkdir outer .basemind");
-    let inner = outer.join("vendor").join("nested");
+    let inner = outer.join("crates").join("subrepo");
     fs::create_dir_all(&inner).expect("mkdir inner");
     git_init(&inner);
+    let sub = inner.join("src").join("pkg");
+    fs::create_dir_all(&sub).expect("mkdir inner subfolder");
 
-    let resolved = discover_root_with_basemind(&inner);
+    let resolved = discover_root_with_basemind(&sub);
     assert_eq!(
-        resolved, outer,
-        ".basemind precedence: nested git repo resolves to the OUTER dir holding .basemind/"
+        resolved, inner,
+        "the enclosing subrepo bounds the walk: resolves to the subrepo root, not the outer .basemind/"
     );
+}
+
+#[test]
+fn inner_repo_own_basemind_wins_within_its_bound() {
+    // The subrepo has its OWN `.basemind/`: a subfolder of it resolves to the subrepo root even
+    // though an outer polyrepo also has one. Confirms the in-bound upward walk still works.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let outer = tmp.path().canonicalize().expect("canonicalize outer");
+    fs::create_dir(outer.join(BASEMIND_DIR)).expect("mkdir outer .basemind");
+    let inner = outer.join("crates").join("subrepo");
+    fs::create_dir_all(&inner).expect("mkdir inner");
+    git_init(&inner);
+    fs::create_dir(inner.join(BASEMIND_DIR)).expect("mkdir inner .basemind");
+    let sub = inner.join("src");
+    fs::create_dir(&sub).expect("mkdir inner subfolder");
+
+    let resolved = discover_root_with_basemind(&sub);
+    assert_eq!(resolved, inner, "subrepo's own .basemind/ is found within its bound");
 }
 
 #[test]

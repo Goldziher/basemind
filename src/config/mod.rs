@@ -104,27 +104,45 @@ pub fn load_with_overrides(
 /// then to `start` unchanged. Lets basemind commands run from a monorepo subfolder attach to the
 /// root `.basemind` index.
 ///
+/// The upward `.basemind` search is **bounded by the closest enclosing git repository**: it never
+/// ascends above that repo's workdir. Without the bound, running from inside a nested subrepo (a
+/// git repo checked out inside a polyrepo that has its own root `.basemind`) would climb across the
+/// subrepo boundary and wrongly attach to the parent polyrepo's cache. The subrepo's own root is
+/// the ceiling.
+///
 /// Precedence:
-/// 1. The nearest ancestor of `start` (including `start` itself) whose `.basemind/` is a directory.
+/// 1. The nearest ancestor of `start` (including `start` itself, up to and including the enclosing
+///    git root) whose `.basemind/` is a directory.
 /// 2. Else the git workdir discovered from `start`.
 /// 3. Else `start` unchanged.
 ///
 /// Assumes `start` is already canonicalized by the caller.
 pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
+    // Closest enclosing git repo workdir — the ceiling for the `.basemind` walk. Canonicalized so
+    // it compares equal to the canonical `current` path as we ascend. `None` when `start` is not
+    // inside any git repo: then there is no repo boundary to respect and the walk runs to the
+    // filesystem root (non-git monorepo case).
+    let git_root = crate::git::Repo::discover(start).ok().map(|repo| {
+        repo.workdir()
+            .canonicalize()
+            .unwrap_or_else(|_| repo.workdir().to_path_buf())
+    });
+
     let mut current = start;
     loop {
         if current.join(BASEMIND_DIR).is_dir() {
             return current.to_path_buf();
+        }
+        // Stop after checking the enclosing git root — do not ascend past it into a parent repo.
+        if git_root.as_deref() == Some(current) {
+            break;
         }
         match current.parent() {
             Some(parent) if parent != current => current = parent,
             _ => break,
         }
     }
-    match crate::git::Repo::discover(start) {
-        Ok(repo) => repo.workdir().to_path_buf(),
-        Err(_) => start.to_path_buf(),
-    }
+    git_root.unwrap_or_else(|| start.to_path_buf())
 }
 
 /// Canonical (write) location of the config: `<root>/basemind.toml`.
