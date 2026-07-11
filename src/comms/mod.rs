@@ -1,9 +1,10 @@
-//! Agent-to-agent communication substrate: named rooms, per-agent inbox, and the
+//! Agent-to-agent communication substrate: multi-dimension THREADS, a per-agent inbox, and the
 //! singleton broker daemon that backs them.
 //!
-//! This module is built in phases (see `docs/agent-comms.md`). The first landed piece is
-//! [`ids`] — the validated identifier newtypes that double as composite-key segments in the
-//! comms store. Subsequent phases add the transport traits, the second Fjall-backed
+//! A thread is a conversation addressed by at least two of `subject` / `path` (globset) /
+//! `members`. Discovery is scoped — a thread is never globally visible; there is no auto-join.
+//! [`ids`] holds the validated identifier newtypes that double as composite-key segments in the
+//! comms store; the rest of the module adds the transport traits, the second Fjall-backed
 //! `CommsStore`, the broker, and the front-ends (Unix socket, in-process, future A2A HTTP).
 
 pub mod ids;

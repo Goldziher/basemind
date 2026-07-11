@@ -232,11 +232,10 @@ pub(crate) struct ServerState {
     #[cfg(feature = "crawl")]
     pub(crate) crawl_engine: Option<crawlberg::CrawlEngineHandle>,
     /// Per-identity registry of lazily-connected comms-broker clients, keyed by `AgentId`. The
-    /// server's own identity (`agent_id`) connects with its env-derived session; a sub-identity
-    /// (driven via a tool's `as_agent` param) gets its own broker connection parented to the
-    /// server and sharing `orchestration_session`, so one `serve` process can act as many named
-    /// agents. Entries are created on first use; a connect failure surfaces as an MCP error on
-    /// the triggering call, never at server boot.
+    /// server's own identity (`agent_id`) connects directly; a sub-identity (driven via a tool's
+    /// `as_agent` param) gets its own broker connection, so one `serve` process can act as many
+    /// named agents. Entries are created on first use; a connect failure surfaces as an MCP error
+    /// on the triggering call, never at server boot.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) comms_clients: tokio::sync::Mutex<
         ahash::AHashMap<
@@ -244,10 +243,6 @@ pub(crate) struct ServerState {
             std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
         >,
     >,
-    /// Session id shared by every sub-identity this server drives, so the broker records their
-    /// lineage under one orchestration session. Derived once at boot from the process id.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) orchestration_session: String,
     /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
     /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
     /// hold otherwise (no daemon spawn until first use).
@@ -644,8 +639,6 @@ impl BasemindServer {
             crawl_engine,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            orchestration_session: format!("orch-{}", std::process::id()),
             #[cfg(all(feature = "shells", any(unix, windows)))]
             shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),

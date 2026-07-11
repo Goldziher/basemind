@@ -90,17 +90,19 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
     m.extend([
         ("agent_register", "comms register"),
         ("agent_list", "comms agents"),
-        ("room_create", "comms room-create"),
-        ("room_join", "comms join"),
-        ("room_leave", "comms leave"),
-        ("room_list", "comms rooms"),
-        ("room_post", "comms post"),
-        ("room_history", "comms history"),
-        ("dm_send", "comms dm"),
+        ("thread_start", "comms thread-start"),
+        ("thread_list", "comms threads"),
+        ("thread_join", "comms join"),
+        ("thread_leave", "comms leave"),
+        ("thread_members", "comms members"),
+        ("thread_add_member", "comms add-member"),
+        ("thread_remove_member", "comms remove-member"),
+        ("thread_archive", "comms archive"),
+        ("thread_post", "comms post"),
+        ("thread_history", "comms history"),
+        ("message_get", "comms read"),
         ("inbox_read", "comms inbox"),
         ("inbox_ack", "comms inbox"),
-        ("message_get", "comms read"),
-        ("get_or_create_chat_room_for_path", "comms room-for-path"),
     ]);
     #[cfg(all(feature = "shells", any(unix, windows)))]
     m.extend([

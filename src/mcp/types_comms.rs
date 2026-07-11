@@ -1,8 +1,8 @@
 //! Request / response shapes for the agent-comms MCP tools.
 //!
 //! Parameter structs derive `Deserialize + Serialize + JsonSchema` and use the validated
-//! [`RoomId`](crate::comms::ids::RoomId) / [`AgentId`](crate::comms::ids::AgentId) newtypes for
-//! identifier fields so a malformed id is rejected at the serde boundary rather than reaching
+//! [`ThreadId`](crate::comms::ids::ThreadId) / [`AgentId`](crate::comms::ids::AgentId) newtypes
+//! for identifier fields so a malformed id is rejected at the serde boundary rather than reaching
 //! the broker. Response structs serialize the broker's [`MessageMeta`] front-matter directly —
 //! history and inbox tools return front-matter ONLY; bodies come from `message_get`.
 
@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::comms::cursor::Cursor;
-use crate::comms::ids::RoomId;
-use crate::comms::model::{Room, RoomScope};
+use crate::comms::ids::{AgentId, ThreadId};
+use crate::comms::model::Thread;
 use crate::comms::protocol::SeqMeta;
 
 /// Params for `agent_register`: announce or update this agent's A2A card.
@@ -45,12 +45,12 @@ pub(super) struct AgentRegisterResponse {
     pub registered: bool,
 }
 
-/// Params for `agent_list`: enumerate known agents, optionally restricted to one room.
+/// Params for `agent_list`: enumerate known agents, optionally restricted to one thread.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AgentListParams {
-    /// Restrict to subscribers of this room when set.
+    /// Restrict to members of this thread when set.
     #[serde(default)]
-    pub room: Option<RoomId>,
+    pub thread: Option<ThreadId>,
     /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
     /// drive many named subagents.
     #[serde(default)]
@@ -85,139 +85,129 @@ pub(super) struct AgentListResponse {
     pub agents: Vec<AgentSummary>,
 }
 
-/// Room-scope selector for `room_create`. Mirrors [`RoomScope`] but is a flat, agent-friendly
-/// MCP input: pick exactly one of `remote` / `path_prefix` / `global`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ScopeInput {
-    /// Scope to a normalised git remote (every clone of it auto-joins).
-    Remote(String),
-    /// Scope to a filesystem path prefix (an agent at/below it auto-joins).
-    PathPrefix(std::path::PathBuf),
-    /// Scope to a terminal session id (a parent + child sharing the session auto-join).
-    Session(String),
-    /// Scope to every agent on the machine. Reserve `global` for MACHINE-WIDE ops coordination
-    /// (resource / CPU contention, shared-host scheduling), NOT general per-repo chat — use a repo
-    /// room (`remote` / `path_prefix`, via `get_or_create_chat_room_for_path`) for work in a repo.
-    #[default]
-    Global,
-}
-
-impl From<ScopeInput> for RoomScope {
-    fn from(value: ScopeInput) -> Self {
-        match value {
-            ScopeInput::Remote(r) => RoomScope::Remote(r),
-            ScopeInput::PathPrefix(p) => RoomScope::PathPrefix(p),
-            ScopeInput::Session(s) => RoomScope::Session(s),
-            ScopeInput::Global => RoomScope::Global,
-        }
-    }
-}
-
-/// Params for `room_create`.
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomCreateParams {
-    /// Id of the room to create.
-    pub room: RoomId,
-    /// Scope governing which agents auto-join. Defaults to `global`.
-    #[serde(default)]
-    pub scope: ScopeInput,
-    /// Optional human-readable title.
-    #[serde(default)]
-    pub title: Option<String>,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
-    #[serde(default)]
-    pub as_agent: Option<String>,
-}
-
-/// A room front-matter view shared by `room_create` and `room_list`.
+/// A thread front-matter view shared by `thread_start` and `thread_list`.
 #[derive(Debug, Serialize)]
-pub(super) struct RoomSummary {
-    /// Stable room id.
-    pub room_id: String,
-    /// Human-readable title.
-    pub title: String,
+pub(super) struct ThreadSummary {
+    /// Stable thread id.
+    pub id: String,
+    /// Topic string, when addressed by subject.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Path or GLOB pattern, when addressed by path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The member agent ids.
+    pub members: Vec<String>,
+    /// The creating agent.
+    pub creator: String,
+    /// True while active; false once archived.
+    pub active: bool,
     /// Creation time, microseconds since the unix epoch.
     pub created_at: i64,
-    /// Last post time, microseconds since the unix epoch. `0` when the room has never had a post.
+    /// Last-activity time, microseconds since the unix epoch. `0` when the thread has no posts.
     pub last_activity_micros: i64,
-    /// True when the room is STALE: either it has never had a post (`last_activity == 0`) or its
-    /// last post is older than the staleness window. A stale room's chatter is unlikely to be
-    /// relevant to current work — surface but de-prioritise it.
+    /// True when the thread is STALE: never had a post, or its last post is older than 7 days.
     pub stale: bool,
 }
 
-/// The staleness window for a room, in hours. A room whose last post is older than this — or which
-/// has never had a post — is flagged `stale` in a [`RoomSummary`]. 168h = 7 days.
+/// The staleness window for a thread, in hours. 168h = 7 days.
 pub(super) const STALE_AFTER_HOURS: i64 = 168;
 
-impl RoomSummary {
-    /// Build a room summary, computing `stale` against `now_micros` (microseconds since the unix
-    /// epoch). A room with no activity (`last_activity == 0`) is treated as stale: there is no
-    /// recent chatter to anchor it to current work.
-    pub(super) fn from_room(room: &Room, now_micros: i64) -> Self {
-        let last = room.last_activity;
+impl ThreadSummary {
+    /// Build a thread summary, computing `stale` against `now_micros`.
+    pub(super) fn from_thread(thread: &Thread, now_micros: i64) -> Self {
+        let last = thread.last_activity;
         let window_micros = STALE_AFTER_HOURS * 3_600_000_000;
         let stale = last == 0 || (now_micros - last) > window_micros;
         Self {
-            room_id: room.room_id.as_str().to_string(),
-            title: room.title.clone(),
-            created_at: room.created_at,
+            id: thread.id.as_str().to_string(),
+            subject: thread.subject.clone(),
+            path: thread.path.clone(),
+            members: thread.members.iter().map(|m| m.as_str().to_string()).collect(),
+            creator: thread.creator.as_str().to_string(),
+            active: thread.active,
+            created_at: thread.created_at,
             last_activity_micros: last,
             stale,
         }
     }
 }
 
-/// Response for `room_create`.
-#[derive(Debug, Serialize)]
-pub(super) struct RoomCreateResponse {
-    /// The created (or re-confirmed) room.
-    pub room: RoomSummary,
-}
-
-/// Params for `room_list`: list rooms whose scope matches the calling agent's chain. No fields
-/// — scope context (remote + cwd) is injected by the server from its root.
+/// Params for `thread_start`: open a conversation addressed by AT LEAST TWO of `subject` /
+/// `path` / `members`. Fewer than two is rejected. The caller becomes the creator + a member.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomListParams {}
+pub struct ThreadStartParams {
+    /// Topic string.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// A path or GLOB pattern (globset syntax, e.g. `src/**`) for path-based discovery.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Explicit additional member agent ids (the caller is added automatically).
+    #[serde(default)]
+    pub members: Vec<AgentId>,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
 
-/// Response for `room_list`.
+/// Response for `thread_start`.
 #[derive(Debug, Serialize)]
-pub(super) struct RoomListResponse {
-    /// Number of rooms returned.
+pub(super) struct ThreadStartResponse {
+    /// The created thread.
+    pub thread: ThreadSummary,
+}
+
+/// Params for `thread_list`: list threads DISCOVERABLE to this agent. No global listing — a
+/// thread surfaces only when the caller is a member, its cwd matches the thread's path glob, or
+/// `subject_contains` matches. Scope context (remote + cwd) is injected by the server.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ThreadListParams {
+    /// Optional case-sensitive substring filter over thread subjects.
+    #[serde(default)]
+    pub subject_contains: Option<String>,
+    /// When true, also return archived threads.
+    #[serde(default)]
+    pub include_archived: bool,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `thread_list`.
+#[derive(Debug, Serialize)]
+pub(super) struct ThreadListResponse {
+    /// Number of threads returned.
     pub total: usize,
-    /// The room rows.
-    pub rooms: Vec<RoomSummary>,
+    /// The thread rows.
+    pub threads: Vec<ThreadSummary>,
 }
 
-/// Params for `room_join`.
+/// Params for `thread_join`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomJoinParams {
-    /// The room to join (subscribe to).
-    pub room: RoomId,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+pub struct ThreadJoinParams {
+    /// The thread to join.
+    pub thread: ThreadId,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
 
-/// Params for `room_leave`.
+/// Params for `thread_leave`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomLeaveParams {
-    /// The room to leave (unsubscribe from).
-    pub room: RoomId,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+pub struct ThreadLeaveParams {
+    /// The thread to leave.
+    pub thread: ThreadId,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
 
-/// Response for `room_join` / `room_leave`.
+/// Response for `thread_join` / `thread_leave`.
 #[derive(Debug, Serialize)]
-pub(super) struct RoomMembershipResponse {
-    /// The room acted on.
-    pub room: String,
+pub(super) struct ThreadMembershipResponse {
+    /// The thread acted on.
+    pub thread: String,
     /// True after a successful join.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub joined: bool,
@@ -226,11 +216,76 @@ pub(super) struct RoomMembershipResponse {
     pub left: bool,
 }
 
-/// Params for `room_post`.
+/// Params for `thread_members`.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomPostParams {
-    /// Target room.
-    pub room: RoomId,
+pub struct ThreadMembersParams {
+    /// The thread whose members to list.
+    pub thread: ThreadId,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `thread_members`.
+#[derive(Debug, Serialize)]
+pub(super) struct ThreadMembersResponse {
+    /// The thread queried.
+    pub thread: String,
+    /// The member agent ids.
+    pub members: Vec<String>,
+}
+
+/// Params for `thread_add_member` / `thread_remove_member` (creator only).
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ThreadMemberParams {
+    /// The thread to modify.
+    pub thread: ThreadId,
+    /// The member agent id to add / remove.
+    pub member: AgentId,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `thread_add_member` / `thread_remove_member`.
+#[derive(Debug, Serialize)]
+pub(super) struct ThreadMemberChangeResponse {
+    /// The thread acted on.
+    pub thread: String,
+    /// The member agent id.
+    pub member: String,
+    /// True after a successful add.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub added: bool,
+    /// True after a successful remove.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub removed: bool,
+}
+
+/// Params for `thread_archive` (creator only).
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ThreadArchiveParams {
+    /// The thread to archive.
+    pub thread: ThreadId,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `thread_archive`.
+#[derive(Debug, Serialize)]
+pub(super) struct ThreadArchiveResponse {
+    /// The thread archived.
+    pub thread: String,
+    /// Always true on success.
+    pub archived: bool,
+}
+
+/// Params for `thread_post`.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ThreadPostParams {
+    /// Target thread.
+    pub thread: ThreadId,
     /// Short human subject line.
     pub subject: String,
     /// Message body (markdown). Empty when omitted.
@@ -242,28 +297,23 @@ pub struct RoomPostParams {
     /// Id of the message this one replies to, for threading.
     #[serde(default)]
     pub reply_to: Option<String>,
-    /// Glob / path patterns (or repo / workspace tags) describing WHERE this message applies, so
-    /// peers can filter relevance from front-matter without fetching the body. Empty when omitted.
-    #[serde(default)]
-    pub scope: Option<Vec<String>>,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
 
-/// Response for `room_post`.
+/// Response for `thread_post`.
 #[derive(Debug, Serialize)]
-pub(super) struct RoomPostResponse {
+pub(super) struct ThreadPostResponse {
     /// The id of the message just stored.
     pub message_id: String,
 }
 
-/// Params for `room_history`: read a room's front-matter, oldest-first, paginated.
+/// Params for `thread_history`: read a thread's front-matter, oldest-first, paginated.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct RoomHistoryParams {
-    /// The room to read.
-    pub room: RoomId,
+pub struct ThreadHistoryParams {
+    /// The thread to read.
+    pub thread: ThreadId,
     /// Resume token from a previous page's `next_cursor` (opaque string).
     #[serde(default)]
     pub cursor: Option<String>,
@@ -273,38 +323,32 @@ pub struct RoomHistoryParams {
     /// Only return messages from the last N hours; defaults to 24. Pass 0 for ALL history.
     #[serde(default)]
     pub since_hours: Option<u32>,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
 
-/// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-room `seq`
-/// — NO body. Fetch the body with `message_get`. `seq` lets callers drive `inbox_ack` (the
-/// `to_seq` bulk mode) without an extra round-trip.
+/// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-thread
+/// `seq` — NO body. Fetch the body with `message_get`.
 #[derive(Debug, Serialize)]
 pub(super) struct MessageFrontMatter {
     /// Globally unique message id (pass to `message_get` or `inbox_ack`).
     pub id: String,
-    /// Room the message was posted to.
-    pub room: String,
+    /// Thread the message was posted to.
+    pub thread: String,
     /// Authoring agent.
     pub from: String,
     /// Short human subject line.
     pub subject: String,
     /// Post time, microseconds since the unix epoch.
     pub ts_micros: i64,
-    /// Age of the message in whole seconds at read time (`now - ts`, floored at 0). Lets an agent
-    /// gauge staleness without converting `ts_micros` against a wall clock itself.
+    /// Age of the message in whole seconds at read time (`now - ts`, floored at 0).
     pub age_secs: i64,
     /// Free-form tags.
     pub tags: Vec<String>,
-    /// Glob / path patterns describing where the message applies (empty when unscoped).
-    pub scope: Vec<String>,
     /// Id of the message this one replies to, if any.
     pub reply_to: Option<String>,
-    /// Per-room sequence number — the message's position in its room's append-only log. Pass as
-    /// `inbox_ack`'s `to_seq` to bulk-ack everything up to and including this message.
+    /// Per-thread sequence number — pass as `inbox_ack`'s `to_seq` to bulk-ack up to here.
     pub seq: u64,
     /// Length of the separately-stored body in bytes.
     pub body_len: u32,
@@ -313,20 +357,17 @@ pub(super) struct MessageFrontMatter {
 }
 
 impl MessageFrontMatter {
-    /// Build a front-matter row from a [`SeqMeta`], stamping `age_secs` against `now_micros`
-    /// (microseconds since the unix epoch). `now` is threaded in rather than read here so a whole
-    /// page shares one clock reading and the conversion stays testable.
+    /// Build a front-matter row from a [`SeqMeta`], stamping `age_secs` against `now_micros`.
     pub(super) fn from_seq_meta(sm: &SeqMeta, now_micros: i64) -> Self {
         let meta = &sm.meta;
         Self {
             id: meta.id.clone(),
-            room: meta.room.as_str().to_string(),
+            thread: meta.thread.as_str().to_string(),
             from: meta.from.as_str().to_string(),
             subject: meta.subject.clone(),
             ts_micros: meta.ts_micros,
             age_secs: ((now_micros - meta.ts_micros) / 1_000_000).max(0),
             tags: meta.tags.clone(),
-            scope: meta.scope.clone(),
             reply_to: meta.reply_to.clone(),
             seq: sm.seq,
             body_len: meta.body_len,
@@ -335,9 +376,9 @@ impl MessageFrontMatter {
     }
 }
 
-/// Response for `room_history`.
+/// Response for `thread_history`.
 #[derive(Debug, Serialize)]
-pub(super) struct RoomHistoryResponse {
+pub(super) struct ThreadHistoryResponse {
     /// Number of messages in this page.
     pub total: usize,
     /// Front-matter rows, oldest-first.
@@ -352,8 +393,7 @@ pub(super) struct RoomHistoryResponse {
 pub struct MessageGetParams {
     /// The message id (the `id` of a front-matter record).
     pub message_id: String,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
@@ -370,7 +410,7 @@ pub(super) struct MessageGetResponse {
     pub body: Option<String>,
 }
 
-/// Params for `inbox_read`: read new front-matter across subscribed rooms.
+/// Params for `inbox_read`: read new front-matter across JOINED threads.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct InboxReadParams {
     /// Resume token from a previous page's `next_cursor` (opaque string).
@@ -385,8 +425,7 @@ pub struct InboxReadParams {
     /// Only return messages from the last N hours; defaults to 24. Pass 0 for ALL history.
     #[serde(default)]
     pub since_hours: Option<u32>,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
@@ -398,44 +437,41 @@ pub(super) struct InboxReadResponse {
     pub total: usize,
     /// Count of unread messages remaining after this page.
     pub unread: u32,
-    /// Front-matter rows across subscribed rooms.
+    /// Front-matter rows across joined threads.
     pub messages: Vec<MessageFrontMatter>,
     /// Opaque cursor for the next page; absent means no more results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
 }
 
-/// Params for `inbox_ack`: advance this agent's per-room read cursors past acked messages.
+/// Params for `inbox_ack`: advance this agent's per-thread read cursors past acked messages.
 ///
 /// Two modes, combinable:
-/// * `message_ids` — resolve each id to its `(room, seq)`, then advance each room's cursor to the
-///   max acked seq in that room.
-/// * `room` + `to_seq` — advance that one room's cursor straight to `to_seq` ("ack everything up
-///   to here" / stale-room cleanup).
+/// * `message_ids` — resolve each id to its `(thread, seq)`, then advance each thread's cursor.
+/// * `thread` + `to_seq` — advance that one thread's cursor straight to `to_seq`.
 ///
 /// At least one mode must be supplied; an empty request is rejected.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct InboxAckParams {
-    /// Message ids to ack (mode a). Empty when only the bulk mode is used.
+    /// Message ids to ack (mode a).
     #[serde(default)]
     pub message_ids: Vec<String>,
-    /// Target room for the bulk `to_seq` mode (mode b).
+    /// Target thread for the bulk `to_seq` mode (mode b).
     #[serde(default)]
-    pub room: Option<RoomId>,
-    /// Advance `room`'s cursor straight to this seq (mode b). Requires `room`.
+    pub thread: Option<ThreadId>,
+    /// Advance `thread`'s cursor straight to this seq (mode b). Requires `thread`.
     #[serde(default)]
     pub to_seq: Option<u64>,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
+    /// Optional sub-identity to act as; defaults to the server's own agent.
     #[serde(default)]
     pub as_agent: Option<String>,
 }
 
-/// One `(room, new_seq)` cursor advance recorded by `inbox_ack`.
+/// One `(thread, new_seq)` cursor advance recorded by `inbox_ack`.
 #[derive(Debug, Serialize)]
 pub(super) struct CursorAdvance {
-    /// The room whose per-agent read cursor advanced.
-    pub room: String,
+    /// The thread whose per-agent read cursor advanced.
+    pub thread: String,
     /// The cursor's new seq after the advance.
     pub seq: u64,
 }
@@ -443,64 +479,8 @@ pub(super) struct CursorAdvance {
 /// Response for `inbox_ack`.
 #[derive(Debug, Serialize)]
 pub(super) struct InboxAckResponse {
-    /// Number of message ids that resolved and were acked (the bulk `to_seq` mode does not
-    /// contribute to this count).
+    /// Number of message ids that resolved and were acked.
     pub acked: usize,
-    /// The `(room, new_seq)` cursor advances this call produced.
+    /// The `(thread, new_seq)` cursor advances this call produced.
     pub cursors_advanced: Vec<CursorAdvance>,
-}
-
-/// Params for `get_or_create_chat_room_for_path`: resolve the repo at `path` to its canonical room
-/// (by git remote, else repo path) and join it. Lets an agent coordinate in ANOTHER repo's room.
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GetOrCreateRoomForPathParams {
-    /// Filesystem path inside (or naming) the target repo. Resolved to the repo ROOT so every
-    /// subdirectory of one repo maps to a single room.
-    pub path: String,
-    /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
-    /// drive many named subagents.
-    #[serde(default)]
-    pub as_agent: Option<String>,
-}
-
-/// Response for `get_or_create_chat_room_for_path`.
-#[derive(Debug, Serialize)]
-pub(super) struct GetOrCreateRoomForPathResponse {
-    /// The canonical room id for the target repo (the one agents there auto-join).
-    pub room: String,
-    /// Short scope label: `remote`, `path`, `session`, or `global`.
-    pub scope: String,
-    /// Human-readable room title.
-    pub title: String,
-    /// True when this call created the room; false when it already existed.
-    pub created: bool,
-}
-
-/// Params for `dm_send` — a direct message to one agent.
-#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct DmSendParams {
-    /// Recipient agent id. The DM is delivered to this agent's inbox via a private pairwise room
-    /// that both ends auto-join.
-    pub to_agent: String,
-    /// Optional sub-identity to send AS; defaults to the server's own agent. Lets one orchestrator
-    /// send on behalf of any subagent it drives.
-    #[serde(default)]
-    pub as_agent: Option<String>,
-    /// Short human subject line.
-    pub subject: String,
-    /// Message body (markdown). Empty when omitted.
-    #[serde(default)]
-    pub body: Option<String>,
-    /// Id of the message this one replies to, for threading.
-    #[serde(default)]
-    pub reply_to: Option<String>,
-}
-
-/// Response for `dm_send`.
-#[derive(Debug, Serialize)]
-pub(super) struct DmSendResponse {
-    /// The new message id.
-    pub message_id: String,
-    /// The private pairwise room the DM was delivered to (`dm:<lo>:<hi>`).
-    pub room: String,
 }

@@ -6,6 +6,15 @@
 //! — the body is fetched lazily via `get_body`. This keeps the hot "what's new?" path cheap
 //! even when bodies are large.
 //!
+//! ## Thread model
+//!
+//! A [`Thread`] is a conversation addressed by AT LEAST TWO of three dimensions: a `subject`
+//! (topic string), a `path` (a path or GLOB pattern matched with `globset`), and an explicit
+//! `members` set of [`AgentId`]s. Discovery is scoped — a thread is never globally visible;
+//! an agent sees it only when it is a member, when its cwd matches the thread's path-glob, or
+//! when a subject substring filter matches. There is no auto-join: agents register, then
+//! explicitly START a thread or JOIN one.
+//!
 //! ## A2A alignment
 //!
 //! The brief asks to align [`AgentCard`] and a message view with the `a2a-types` crate. That
@@ -20,7 +29,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::{AgentId, RoomId};
+use super::ids::{AgentId, ThreadId};
 
 /// Current time in microseconds since the unix epoch, saturating on the (effectively
 /// impossible) clock-before-epoch case. A local mirror of `crate::lance::now_micros` so the
@@ -30,59 +39,37 @@ pub fn now_micros() -> i64 {
     i64::try_from(dur.as_micros()).unwrap_or(i64::MAX)
 }
 
-/// The scope that governs which agents auto-join a room.
+/// A registered conversation thread.
 ///
-/// * [`RoomScope::Remote`] — keyed by a normalised git remote (see `crate::git::scope_key`).
-///   Every agent working in a clone of that remote auto-joins, regardless of checkout path.
-/// * [`RoomScope::PathPrefix`] — keyed by a filesystem path. An agent whose cwd is at or
-///   below this path auto-joins. This is what lets nested repos and horizontal monorepos
-///   share a workspace room.
-/// * [`RoomScope::Session`] — keyed by a terminal `session_id`. A parent agent and a child
-///   agent it spawned share the same `session_id` and so auto-join the same room — the basis
-///   for the agent-shells lineage chat. Distinct from `PathPrefix`: two unrelated agents in the
-///   same directory must NOT share a session room, only a shared `session_id` matches.
-/// * [`RoomScope::Global`] — every agent on the machine auto-joins. Reserved for MACHINE-WIDE
-///   ops coordination (resource / CPU contention, shared-host scheduling), NOT general per-repo
-///   chat — repo rooms ([`RoomScope::Remote`] / [`RoomScope::PathPrefix`]) are for work in a repo.
-///
-/// Serialized with an adjacent tag (`{"kind": …, "value": …}`) rather than an internal tag:
-/// `rmp_serde` cannot encode an internally-tagged newtype variant that wraps a scalar, and
-/// adjacent tagging round-trips cleanly through BOTH msgpack (the store) and JSON (a future
-/// A2A front-end). New variants are additive — they extend the tail of the tag set, so rooms
-/// persisted before this variant existed still deserialize.
+/// Addressed by AT LEAST TWO of `subject` / `path` / `members` (enforced at `thread_start`).
+/// The `creator` may archive the thread and manage its membership; the system auto-archives
+/// idle threads past a TTL. An archived thread (`active == false`) drops out of active listings
+/// but its history remains readable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
-pub enum RoomScope {
-    /// Normalised git remote URL (e.g. `github.com/foo/bar`).
-    Remote(String),
-    /// Filesystem path; an agent's cwd at or below this path matches.
-    PathPrefix(std::path::PathBuf),
-    /// Terminal session id; an agent presenting the same `session_id` matches.
-    Session(String),
-    /// Every agent on the machine. Reserved for machine-wide ops coordination (resource / CPU
-    /// contention), not per-repo chat.
-    Global,
-}
-
-/// A registered chat room. Agents whose [scope chain](super::scope::ScopeChain) covers the
-/// room's [`RoomScope`] auto-join it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Room {
-    /// Stable identifier — also the key in the `rooms` keyspace.
-    pub room_id: RoomId,
-    /// Governs auto-join eligibility.
-    pub scope: RoomScope,
-    /// Human-readable title.
-    pub title: String,
+pub struct Thread {
+    /// Stable identifier — also the key in the `threads` keyspace.
+    pub id: ThreadId,
+    /// Topic string. Present when the thread is addressed by subject.
+    #[serde(default)]
+    pub subject: Option<String>,
+    /// A path or GLOB pattern (matched with `globset`). Present when the thread is addressed by
+    /// path — an agent whose cwd matches this glob discovers the thread.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The explicit member set. An agent in this set sees the thread in its `thread_list` and
+    /// inbox regardless of subject / path.
+    #[serde(default)]
+    pub members: Vec<AgentId>,
+    /// The agent that created the thread — the only agent (besides a human via the CLI) that may
+    /// archive it or manage its membership.
+    pub creator: AgentId,
+    /// `true` while the thread is active; `false` once archived (by the creator, a human, or the
+    /// idle-TTL sweep). Archived threads drop out of active `thread_list` results.
+    pub active: bool,
     /// Creation time in microseconds since the unix epoch.
     pub created_at: i64,
-    /// Last-post time in microseconds since the unix epoch; `0` when the room has never had a post.
-    /// Drives room-freshness (ACTIVE / STALE) surfacing so agents can skip dead rooms.
-    ///
-    /// Additive: `#[serde(default)]` keeps rooms persisted before this field existed deserializable
-    /// (they default to `0` — treated as stale until the next post stamps them), so adding it
-    /// required no `COMMS_SCHEMA_VER` bump.
-    #[serde(default)]
+    /// Last-activity time in microseconds since the unix epoch; stamped on each post. Drives the
+    /// idle-TTL auto-archive sweep and STALE surfacing.
     pub last_activity: i64,
 }
 
@@ -95,8 +82,8 @@ pub struct Room {
 pub struct MessageMeta {
     /// Globally unique message id (the `message_body` key).
     pub id: String,
-    /// Room this message was posted to.
-    pub room: RoomId,
+    /// Thread this message was posted to.
+    pub thread: ThreadId,
     /// Authoring agent.
     pub from: AgentId,
     /// Post time in microseconds since the unix epoch.
@@ -107,13 +94,6 @@ pub struct MessageMeta {
     pub tags: Vec<String>,
     /// Optional id of the message this one replies to (threading).
     pub reply_to: Option<String>,
-    /// Glob / path patterns (or repo / workspace tags) describing WHERE this message applies,
-    /// so agents can filter relevance without fetching the body. Empty when unscoped.
-    ///
-    /// Additive: `#[serde(default)]` keeps older blobs (written before this field existed)
-    /// deserializable, so adding it required no comms schema-version bump.
-    #[serde(default)]
-    pub scope: Vec<String>,
     /// Length of the separately-stored body in bytes.
     pub body_len: u32,
     /// Hex-encoded SHA-256 of the body for integrity / dedup.
@@ -125,38 +105,15 @@ pub struct MessageMeta {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageBody(pub Vec<u8>);
 
-/// A standing subscription of an agent to a room. Drives notification fan-out and is the
-/// basis of the inbox (the union of an agent's subscribed rooms).
+/// A standing membership of an agent in a thread. Drives notification fan-out and is the
+/// basis of the inbox (the union of an agent's joined threads).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Subscription {
-    /// Subscribed agent.
+pub struct Membership {
+    /// Member agent.
     pub agent_id: AgentId,
-    /// Room subscribed to.
-    pub room: RoomId,
-    /// Subscription time in microseconds since the unix epoch.
-    pub created_at: i64,
-}
-
-/// Lineage record for a terminal session: which agent owns it, the parent agent that spawned
-/// it (if any), and the session-scoped room they share. Persisted in the `sessions` keyspace
-/// keyed by [`SessionLineage::session_id`], so a future tree view can reconstruct the
-/// spawn graph.
-///
-/// The row is written by the broker at the child's `Hello`: the daemon then knows the
-/// `session_id` and `parent_agent` (both carried on the Hello) and the `child_agent` (the Hello's
-/// agent), and resolves the session-scoped room the child was just auto-joined to. The write is
-/// best-effort — a store failure logs and is swallowed so the handshake still completes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionLineage {
-    /// The terminal session id this lineage describes (also the `sessions` key).
-    pub session_id: String,
-    /// The agent that spawned the child, if this session was spawned by another agent.
-    pub parent_agent: Option<AgentId>,
-    /// The agent that owns this session.
-    pub child_agent: AgentId,
-    /// The session-scoped room the parent and child share.
-    pub room_id: RoomId,
-    /// Creation time in microseconds since the unix epoch.
+    /// Thread joined.
+    pub thread: ThreadId,
+    /// Join time in microseconds since the unix epoch.
     pub created_at: i64,
 }
 
@@ -240,7 +197,7 @@ pub enum Part {
 pub struct MessageView {
     /// Mirrors `a2a_types::Message::message_id`.
     pub message_id: String,
-    /// Room id, surfaced as the A2A `context_id`.
+    /// Thread id, surfaced as the A2A `context_id`.
     pub context_id: String,
     /// Always [`Role::Agent`] for broker traffic; kept for A2A round-tripping.
     pub role: Role,
@@ -253,7 +210,7 @@ impl MessageView {
     pub fn from_meta_and_body(meta: &MessageMeta, body: &[u8]) -> Self {
         Self {
             message_id: meta.id.clone(),
-            context_id: meta.room.as_str().to_string(),
+            context_id: meta.thread.as_str().to_string(),
             role: Role::Agent,
             parts: vec![Part::Text(String::from_utf8_lossy(body).into_owned())],
         }
@@ -270,70 +227,46 @@ mod tests {
         assert!(a > 0, "now_micros should be after the epoch");
     }
 
+    fn thread_id(s: &str) -> ThreadId {
+        ThreadId::parse(s).expect("thread")
+    }
+
+    fn agent_id(s: &str) -> AgentId {
+        AgentId::parse(s).expect("agent")
+    }
+
     #[test]
-    fn room_scope_round_trips_through_msgpack() {
-        for scope in [
-            RoomScope::Remote("github.com/foo/bar".to_string()),
-            RoomScope::PathPrefix(std::path::PathBuf::from("/home/u/work")),
-            RoomScope::Session("sess-abc".to_string()),
-            RoomScope::Global,
-        ] {
-            let bytes = rmp_serde::to_vec_named(&scope).expect("encode");
-            let back: RoomScope = rmp_serde::from_slice(&bytes).expect("decode");
-            assert_eq!(scope, back);
-        }
+    fn thread_round_trips_through_msgpack() {
+        let thread = Thread {
+            id: thread_id("th-1"),
+            subject: Some("refactor".to_string()),
+            path: Some("src/**".to_string()),
+            members: vec![agent_id("alice"), agent_id("bob")],
+            creator: agent_id("alice"),
+            active: true,
+            created_at: now_micros(),
+            last_activity: 0,
+        };
+        let bytes = rmp_serde::to_vec_named(&thread).expect("encode");
+        let back: Thread = rmp_serde::from_slice(&bytes).expect("decode");
+        assert_eq!(thread, back);
     }
 
     #[test]
     fn message_meta_round_trips_and_is_small() {
         let meta = MessageMeta {
             id: "m-1".to_string(),
-            room: RoomId::parse("room-1").expect("room"),
-            from: AgentId::parse("agent-1").expect("agent"),
+            thread: thread_id("th-1"),
+            from: agent_id("agent-1"),
             ts_micros: 123,
             subject: "hello".to_string(),
             tags: vec!["t1".to_string()],
             reply_to: None,
-            scope: vec!["src/**".to_string()],
             body_len: 5,
             body_sha: "abc".to_string(),
         };
         let bytes = rmp_serde::to_vec_named(&meta).expect("encode");
         let back: MessageMeta = rmp_serde::from_slice(&bytes).expect("decode");
         assert_eq!(meta, back);
-    }
-
-    /// `scope` is additive: a msgpack record written before the field existed (i.e. a map with
-    /// no `scope` key) still deserializes, defaulting `scope` to an empty vec. This is what lets
-    /// the field land without a `COMMS_SCHEMA_VER` bump.
-    #[test]
-    fn message_meta_without_scope_field_deserializes_to_empty() {
-        #[derive(serde::Serialize)]
-        struct LegacyMeta {
-            id: String,
-            room: RoomId,
-            from: AgentId,
-            ts_micros: i64,
-            subject: String,
-            tags: Vec<String>,
-            reply_to: Option<String>,
-            body_len: u32,
-            body_sha: String,
-        }
-        let legacy = LegacyMeta {
-            id: "m-old".to_string(),
-            room: RoomId::parse("room-1").expect("room"),
-            from: AgentId::parse("agent-1").expect("agent"),
-            ts_micros: 1,
-            subject: "legacy".to_string(),
-            tags: vec![],
-            reply_to: None,
-            body_len: 0,
-            body_sha: "z".to_string(),
-        };
-        let bytes = rmp_serde::to_vec_named(&legacy).expect("encode legacy");
-        let back: MessageMeta = rmp_serde::from_slice(&bytes).expect("decode legacy");
-        assert_eq!(back.id, "m-old");
-        assert!(back.scope.is_empty(), "missing scope defaults to empty");
     }
 }

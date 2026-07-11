@@ -17,8 +17,8 @@ use tokio_util::bytes::{Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder, LengthDelimitedCodec};
 
 use super::cursor::Cursor;
-use super::ids::{AgentId, RoomId};
-use super::model::{AgentCard, AgentRecord, Room, RoomScope};
+use super::ids::{AgentId, ThreadId};
+use super::model::{AgentCard, AgentRecord, Thread};
 use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
@@ -93,60 +93,8 @@ pub struct CommsClient {
     remote: Option<String>,
     /// Working directory replayed on the `Hello` of a reconnect.
     cwd: Option<PathBuf>,
-    /// Terminal session lineage replayed on the `Hello` of a reconnect. Populated for an agent
-    /// running inside a basemind-spawned shell session so it auto-joins its session-scoped room.
-    session: SessionContext,
     /// Respawn strategy used by [`CommsClient::reconnect`] when the socket is dead.
     spawn: SpawnFn,
-}
-
-/// Terminal session lineage carried on the `Hello`: the `session_id` of the basemind-spawned
-/// shell this agent runs inside (so it auto-joins the matching session-scoped room) and the
-/// `parent_agent` that spawned it (for lineage bookkeeping). Both `None` for a top-level agent.
-///
-/// Read once at the client-construction boundary — either explicitly (the spawning parent threads
-/// the values it already holds) or from the environment ([`SessionContext::from_env`]) for a child
-/// process that basemind launched with `BASEMIND_SESSION_ID` / `BASEMIND_PARENT_AGENT_ID` set.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SessionContext {
-    /// The terminal session id (`bmsh-<pid>-<n>`), if this agent runs inside one.
-    pub session_id: Option<String>,
-    /// The agent that spawned this one, if any.
-    pub parent_agent: Option<String>,
-}
-
-/// Environment variable carrying the basemind shell `session_id` for a spawned child agent.
-pub const SESSION_ID_ENV: &str = "BASEMIND_SESSION_ID";
-/// Environment variable carrying the spawning parent's agent id for a spawned child agent.
-pub const PARENT_AGENT_ENV: &str = "BASEMIND_PARENT_AGENT_ID";
-
-impl SessionContext {
-    /// Read the session lineage from the process environment. Empty / unset variables map to
-    /// `None`. This is the single boundary at which the child's session context is sourced from
-    /// the environment; everywhere else the context is passed explicitly.
-    ///
-    // NOTE: this is race-free. The `BASEMIND_*` variables are inherited at child-process start
-    #[must_use]
-    pub fn from_env() -> Self {
-        Self {
-            session_id: non_empty_env(SESSION_ID_ENV),
-            parent_agent: non_empty_env(PARENT_AGENT_ENV),
-        }
-    }
-
-    /// `true` when no session lineage is present (a top-level agent).
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.session_id.is_none() && self.parent_agent.is_none()
-    }
-}
-
-/// Read an environment variable, mapping the unset / empty-string cases to `None`.
-fn non_empty_env(key: &str) -> Option<String> {
-    match std::env::var(key) {
-        Ok(value) if !value.is_empty() => Some(value),
-        _ => None,
-    }
 }
 
 impl CommsClient {
@@ -189,36 +137,7 @@ impl CommsClient {
             paths: paths.clone(),
             remote,
             cwd,
-            session: SessionContext::default(),
             spawn: Box::new(spawn),
-        };
-        client.handshake().await?;
-        Ok(client)
-    }
-
-    /// Connect (without spawning) and complete the `Hello` carrying an explicit session lineage,
-    /// so the broker auto-joins the matching session-scoped room during the handshake. The
-    /// explicit-argument seam exercised by tests; production callers use
-    /// [`CommsClient::ensure_and_connect`], which sources the same context from the environment.
-    pub async fn connect_with_session(
-        paths: &CommsPaths,
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
-        session: SessionContext,
-    ) -> Result<Self, CommsClientError> {
-        let (stream, codec) = Self::dial(paths).await?;
-        let mut client = Self {
-            stream,
-            codec,
-            read_buf: BytesMut::with_capacity(READ_CHUNK),
-            agent,
-            pending_notifications: std::collections::VecDeque::new(),
-            paths: paths.clone(),
-            remote,
-            cwd,
-            session,
-            spawn: Box::new(singleton::spawn_detached_daemon),
         };
         client.handshake().await?;
         Ok(client)
@@ -231,22 +150,9 @@ impl CommsClient {
         remote: Option<String>,
         cwd: Option<PathBuf>,
     ) -> Result<Self, CommsClientError> {
-        Self::ensure_and_connect_with_session(agent, remote, cwd, SessionContext::from_env()).await
-    }
-
-    /// Resolve the per-user paths, ensure a daemon is running (spawning it if needed), then
-    /// connect + handshake carrying an EXPLICIT session lineage. Used by the per-identity comms
-    /// registry to parent a sub-identity to its orchestrator's session, where the lineage is
-    /// threaded explicitly rather than sourced from the environment.
-    pub async fn ensure_and_connect_with_session(
-        agent: AgentId,
-        remote: Option<String>,
-        cwd: Option<PathBuf>,
-        session: SessionContext,
-    ) -> Result<Self, CommsClientError> {
         let paths = singleton::resolve_paths()?;
         singleton::ensure_daemon(&paths).await?;
-        Self::connect_with_session(&paths, agent, remote, cwd, session).await
+        Self::connect(&paths, agent, remote, cwd).await
     }
 
     /// Dial the endpoint and build the framing codec. No handshake yet. The connect is
@@ -302,8 +208,6 @@ impl CommsClient {
                 proto_ver: PROTO_VER,
                 remote: self.remote.clone(),
                 cwd: self.cwd.clone(),
-                session_id: self.session.session_id.clone(),
-                parent_agent: self.session.parent_agent.clone(),
             })
             .await?;
         match resp {
@@ -342,68 +246,105 @@ impl CommsClient {
         self.expect_ok(CommsRequest::Register { card }, "register").await
     }
 
-    /// List known agents, optionally restricted to subscribers of one room.
-    pub async fn list_agents(&mut self, room: Option<RoomId>) -> Result<Vec<AgentRecord>, CommsClientError> {
-        match self.request(CommsRequest::ListAgents { room }).await? {
+    /// List known agents, optionally restricted to members of one thread.
+    pub async fn list_agents(&mut self, thread: Option<ThreadId>) -> Result<Vec<AgentRecord>, CommsClientError> {
+        match self.request(CommsRequest::ListAgents { thread }).await? {
             CommsResponse::Agents(a) => Ok(a),
             other => Err(self.shape_err(other, "list_agents")),
         }
     }
 
-    /// Create (and register) a room with an explicit scope.
-    pub async fn create_room(
+    /// Start a thread addressed by at least two of subject / path / members. Returns the thread.
+    pub async fn start_thread(
         &mut self,
-        room: RoomId,
-        scope: RoomScope,
-        title: Option<String>,
-    ) -> Result<Room, CommsClientError> {
-        match self.request(CommsRequest::CreateRoom { room, scope, title }).await? {
-            CommsResponse::Room(r) => Ok(r),
-            other => Err(self.shape_err(other, "create_room")),
+        subject: Option<String>,
+        path: Option<String>,
+        members: Vec<AgentId>,
+    ) -> Result<Thread, CommsClientError> {
+        match self
+            .request(CommsRequest::ThreadStart { subject, path, members })
+            .await?
+        {
+            CommsResponse::Thread(t) => Ok(t),
+            other => Err(self.shape_err(other, "start_thread")),
         }
     }
 
-    /// List rooms whose scope matches the supplied chain (remote + cwd).
-    pub async fn list_rooms(
+    /// List threads discoverable to this agent: member OR cwd matches the path glob OR the subject
+    /// filter matches. Never all threads.
+    pub async fn list_threads(
         &mut self,
         remote: Option<String>,
         cwd: Option<PathBuf>,
-    ) -> Result<Vec<Room>, CommsClientError> {
-        match self.request(CommsRequest::ListRooms { remote, cwd }).await? {
-            CommsResponse::Rooms(r) => Ok(r),
-            other => Err(self.shape_err(other, "list_rooms")),
+        subject_contains: Option<String>,
+        include_archived: bool,
+    ) -> Result<Vec<Thread>, CommsClientError> {
+        match self
+            .request(CommsRequest::ThreadList {
+                remote,
+                cwd,
+                subject_contains,
+                include_archived,
+            })
+            .await?
+        {
+            CommsResponse::Threads(t) => Ok(t),
+            other => Err(self.shape_err(other, "list_threads")),
         }
     }
 
-    /// Subscribe this agent to a room (durable membership; drives the inbox).
-    pub async fn join_room(&mut self, room: RoomId) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Join { room }, "join_room").await
+    /// Join a thread (durable membership; drives the inbox).
+    pub async fn join_thread(&mut self, thread: ThreadId) -> Result<(), CommsClientError> {
+        self.expect_ok(CommsRequest::ThreadJoin { thread }, "join_thread").await
     }
 
-    /// Unsubscribe this agent from a room.
-    pub async fn leave_room(&mut self, room: RoomId) -> Result<(), CommsClientError> {
-        self.expect_ok(CommsRequest::Leave { room }, "leave_room").await
+    /// Leave a thread.
+    pub async fn leave_thread(&mut self, thread: ThreadId) -> Result<(), CommsClientError> {
+        self.expect_ok(CommsRequest::ThreadLeave { thread }, "leave_thread")
+            .await
     }
 
-    /// Post a message to a room. Returns the new message id. `scope` carries optional glob / path
-    /// patterns describing where the message applies (empty when unscoped).
-    #[allow(clippy::too_many_arguments)]
+    /// List the members of a thread.
+    pub async fn thread_members(&mut self, thread: ThreadId) -> Result<Vec<AgentId>, CommsClientError> {
+        match self.request(CommsRequest::ThreadMembers { thread }).await? {
+            CommsResponse::Members { members } => Ok(members),
+            other => Err(self.shape_err(other, "thread_members")),
+        }
+    }
+
+    /// Add a member to a thread (creator only).
+    pub async fn add_member(&mut self, thread: ThreadId, member: AgentId) -> Result<(), CommsClientError> {
+        self.expect_ok(CommsRequest::ThreadAddMember { thread, member }, "add_member")
+            .await
+    }
+
+    /// Remove a member from a thread (creator only).
+    pub async fn remove_member(&mut self, thread: ThreadId, member: AgentId) -> Result<(), CommsClientError> {
+        self.expect_ok(CommsRequest::ThreadRemoveMember { thread, member }, "remove_member")
+            .await
+    }
+
+    /// Archive a thread (creator only).
+    pub async fn archive_thread(&mut self, thread: ThreadId) -> Result<(), CommsClientError> {
+        self.expect_ok(CommsRequest::ThreadArchive { thread }, "archive_thread")
+            .await
+    }
+
+    /// Post a message to a thread. Returns the new message id.
     pub async fn post_message(
         &mut self,
-        room: RoomId,
+        thread: ThreadId,
         subject: String,
         body: Vec<u8>,
         tags: Vec<String>,
         reply_to: Option<String>,
-        scope: Vec<String>,
     ) -> Result<String, CommsClientError> {
         match self
-            .request(CommsRequest::Post {
-                room,
+            .request(CommsRequest::ThreadPost {
+                thread,
                 subject,
                 tags,
                 reply_to,
-                scope,
                 body,
             })
             .await?
@@ -413,21 +354,20 @@ impl CommsClient {
         }
     }
 
-    /// Acknowledge inbox messages by advancing this agent's per-room read cursors. Pass
-    /// `message_ids` to ack specific messages (each resolved to its `(room, seq)`), and/or a
-    /// `(room, to_seq)` pair to bulk-ack everything up to `to_seq` in that room. Returns the count
-    /// of acked ids and the `(room, new_seq)` cursors that advanced. Never deletes from the shared
-    /// log and never affects another agent.
+    /// Acknowledge inbox messages by advancing this agent's per-thread read cursors. Pass
+    /// `message_ids` to ack specific messages (each resolved to its `(thread, seq)`), and/or a
+    /// `(thread, to_seq)` pair to bulk-ack everything up to `to_seq` in that thread. Returns the
+    /// count of acked ids and the `(thread, new_seq)` cursors that advanced.
     pub async fn ack_inbox(
         &mut self,
         message_ids: Vec<String>,
-        room: Option<RoomId>,
+        thread: Option<ThreadId>,
         to_seq: Option<u64>,
     ) -> Result<(u32, Vec<(String, u64)>), CommsClientError> {
         match self
             .request(CommsRequest::AckInbox {
                 message_ids,
-                room,
+                thread,
                 to_seq,
             })
             .await?
@@ -440,20 +380,18 @@ impl CommsClient {
         }
     }
 
-    /// Read a room's history (front-matter only), oldest-first. Returns the page plus the next
-    /// cursor when more remain. `since_micros` is an absolute recency cutoff (microseconds since the
-    /// unix epoch): when `Some(cut)`, only messages with `ts_micros >= cut` surface; `None` returns
-    /// the full log. The cutoff is an additional filter that composes with the cursor pagination.
+    /// Read a thread's history (front-matter only), oldest-first. `since_micros` is an absolute
+    /// recency cutoff; `None` returns the full log.
     pub async fn read_history(
         &mut self,
-        room: RoomId,
+        thread: ThreadId,
         cursor: Option<Cursor>,
         limit: u32,
         since_micros: Option<i64>,
     ) -> Result<(Vec<SeqMeta>, Option<Cursor>), CommsClientError> {
         match self
-            .request(CommsRequest::History {
-                room,
+            .request(CommsRequest::ThreadHistory {
+                thread,
                 cursor,
                 limit: Some(limit),
                 since_micros,
@@ -505,10 +443,10 @@ impl CommsClient {
         }
     }
 
-    /// Open a notification stream for a room. Returns the subscription handle; subsequent
-    /// [`CommsClient::next_notification`] calls surface posts to that room.
-    pub async fn subscribe(&mut self, room: RoomId) -> Result<u64, CommsClientError> {
-        match self.request(CommsRequest::Subscribe { room }).await? {
+    /// Open a notification stream for a thread. Returns the subscription handle; subsequent
+    /// [`CommsClient::next_notification`] calls surface posts to that thread.
+    pub async fn subscribe(&mut self, thread: ThreadId) -> Result<u64, CommsClientError> {
+        match self.request(CommsRequest::Subscribe { thread }).await? {
             CommsResponse::Subscribed { sub } => Ok(sub),
             other => Err(self.shape_err(other, "subscribe")),
         }
@@ -525,27 +463,6 @@ impl CommsClient {
             CommsResponse::Status(s) => Ok(s),
             other => Err(self.shape_err(other, "status")),
         }
-    }
-
-    /// List every recorded session lineage row (the spawn graph: each `session_id` mapped to its
-    /// parent/child agents and the session-scoped room they share).
-    pub async fn list_sessions(&mut self) -> Result<Vec<crate::comms::model::SessionLineage>, CommsClientError> {
-        match self.request(CommsRequest::ListSessions {}).await? {
-            CommsResponse::Sessions { sessions } => Ok(sessions),
-            other => Err(self.shape_err(other, "list_sessions")),
-        }
-    }
-
-    /// Delete the session lineage row for `session_id` (called when a session is killed so the
-    /// `sessions` keyspace does not accumulate dead rows). Idempotent on the broker side.
-    pub async fn delete_session(&mut self, session_id: &str) -> Result<(), CommsClientError> {
-        self.expect_ok(
-            CommsRequest::DeleteSession {
-                session_id: session_id.to_string(),
-            },
-            "delete_session",
-        )
-        .await
     }
 
     /// Ask the daemon to drain and stop.
@@ -713,67 +630,6 @@ mod tests {
             !msg.starts_with("comms transport error: No such file or directory"),
             "error must not be the bare OS string, got: {msg}"
         );
-    }
-
-    /// An explicitly-built [`SessionContext`] carries the session lineage verbatim, and the
-    /// `is_empty` predicate distinguishes a top-level agent from a session child. This is the
-    /// seam the broker-level auto-join test drives, kept free of env races.
-    #[test]
-    fn session_context_explicit_seam_carries_lineage() {
-        let top = SessionContext::default();
-        assert!(top.is_empty(), "a default context is a top-level agent");
-
-        let child = SessionContext {
-            session_id: Some("bmsh-1-0".to_string()),
-            parent_agent: Some("parent".to_string()),
-        };
-        assert!(!child.is_empty(), "a session child is not empty");
-        assert_eq!(child.session_id.as_deref(), Some("bmsh-1-0"));
-        assert_eq!(child.parent_agent.as_deref(), Some("parent"));
-    }
-
-    /// `SessionContext::from_env` reads the two `BASEMIND_*` variables at the single env boundary,
-    /// mapping unset / empty values to `None`. Serialized so the temporary env mutation cannot race
-    /// other tests in this multi-threaded binary; prior values are restored on the way out.
-    #[test]
-    fn session_context_from_env_reads_the_boundary_variables() {
-        // SAFETY: env access is serialized by this static mutex and the prior values are restored,
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
-        let prior_session = std::env::var(SESSION_ID_ENV).ok();
-        let prior_parent = std::env::var(PARENT_AGENT_ENV).ok();
-
-        // SAFETY: serialized by ENV_LOCK (see above).
-        unsafe {
-            std::env::set_var(SESSION_ID_ENV, "bmsh-9-3");
-            std::env::set_var(PARENT_AGENT_ENV, "lead-agent");
-        }
-        let present = SessionContext::from_env();
-        assert_eq!(present.session_id.as_deref(), Some("bmsh-9-3"));
-        assert_eq!(present.parent_agent.as_deref(), Some("lead-agent"));
-
-        // SAFETY: serialized by ENV_LOCK (see above).
-        unsafe {
-            std::env::set_var(SESSION_ID_ENV, "");
-            std::env::remove_var(PARENT_AGENT_ENV);
-        }
-        assert!(
-            SessionContext::from_env().is_empty(),
-            "empty / unset env maps to a top-level (empty) context"
-        );
-
-        // SAFETY: serialized by ENV_LOCK (see above).
-        unsafe {
-            match prior_session {
-                Some(v) => std::env::set_var(SESSION_ID_ENV, v),
-                None => std::env::remove_var(SESSION_ID_ENV),
-            }
-            match prior_parent {
-                Some(v) => std::env::set_var(PARENT_AGENT_ENV, v),
-                None => std::env::remove_var(PARENT_AGENT_ENV),
-            }
-        }
     }
 }
 

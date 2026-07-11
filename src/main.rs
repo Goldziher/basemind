@@ -132,9 +132,10 @@ enum Cmd {
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
 ///
 /// Lifecycle verbs (`Daemon`/`Start`/`Stop`/`Status`) manage the singleton broker process. The
-/// agent verbs (`Register`/`Agents`/`RoomCreate`/`Rooms`/`Join`/`Leave`/`Post`/`History`/`Read`/
-/// `Inbox`) connect to the daemon DIRECTLY via `CommsClient::ensure_and_connect` (see
-/// `cli::comms`) — they never build a full server, so they cannot clash with a running `serve`.
+/// agent verbs (`Register`/`Agents`/`ThreadStart`/`Threads`/`Join`/`Leave`/`Members`/`AddMember`/
+/// `RemoveMember`/`Archive`/`Post`/`History`/`Read`/`Inbox`) connect to the daemon DIRECTLY via
+/// `CommsClient::ensure_and_connect` (see `cli::comms`) — they never build a full server, so they
+/// cannot clash with a running `serve`.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 #[derive(Subcommand, Debug)]
 enum CommsLifecycleCmd {
@@ -393,12 +394,12 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
                     );
                 } else {
                     println!(
-                        "pid={} version={} proto={} uptime={}s rooms={} subscribers={}",
+                        "pid={} version={} proto={} uptime={}s threads={} subscribers={}",
                         status.pid,
                         status.version,
                         status.proto_ver,
                         status.uptime_secs,
-                        status.rooms,
+                        status.threads,
                         status.subscribers,
                     );
                 }

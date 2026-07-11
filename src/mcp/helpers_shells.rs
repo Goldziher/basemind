@@ -50,12 +50,12 @@ async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, r
 /// `shell_spawn`: create a detached headless shell session.
 ///
 /// When the server is built with comms enabled (`feature = "comms"`, unix), the spawn is coupled
-/// to a session-scoped comms room so the parent (this server) and the spawned child can talk
-/// bidirectionally: a `RoomScope::Session(<comms_session_id>)` room is created and the parent
-/// joins it BEFORE the shell starts, and the child inherits `BASEMIND_SESSION_ID` /
-/// `BASEMIND_PARENT_AGENT_ID` / `BASEMIND_AGENT_ID` in its environment so its own basemind
-/// auto-identifies and auto-joins the same room on its first `Hello`. The coupling is created
-/// atomically before the spawn: a room-creation failure aborts the spawn, so no room-less session
+/// to a comms THREAD so the parent (this server) and the spawned child can talk bidirectionally: a
+/// thread with explicit members `[parent, child]` (plus a subject, satisfying the ≥2-of-3
+/// addressing rule) is started BEFORE the shell starts, and the child inherits `BASEMIND_THREAD_ID`
+/// / `BASEMIND_PARENT_AGENT_ID` / `BASEMIND_AGENT_ID` in its environment. Because the child is an
+/// explicit member, the thread already surfaces in its inbox — no auto-join. The coupling is
+/// created atomically before the spawn: a failure aborts the spawn, so no thread-less session
 /// leaks. When comms is disabled the tool behaves headless and `room_id` / `child_agent` are `None`.
 pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParams) -> Result<CallToolResult, McpError> {
     if !state.config.shells.enabled {
@@ -193,32 +193,26 @@ fn build_environment(env: Vec<ShellEnv>) -> Result<Vec<String>, McpError> {
 }
 
 /// Best-effort comms coupling for a spawned session. Derives the child agent from the parent +
-/// the pre-minted `session_id`, creates and joins a `RoomScope::Session` room keyed by that id,
-/// and injects the child's identity env into `environment` BEFORE the shell is spawned. Returns
-/// `(room_id, child_agent)` on success.
+/// the pre-minted `session_id`, starts a THREAD with members `[parent, child]` + a subject, and
+/// injects the child's identity env (plus `BASEMIND_THREAD_ID`) into `environment` BEFORE the shell
+/// is spawned. Returns `(thread_id, child_agent)` on success.
 ///
 /// The coupling is OPTIONAL: comms is an add-on, so a broker that is unreachable / down must not
 /// fail the shell spawn. A comms failure is logged and the function returns `(None, None)`, leaving
-/// `environment` untouched so the session spawns headless (no room, no injected identity).
-///
-/// The `session_id` is the single id minted by the runtime in `run_shell_spawn` and threaded here:
-/// it keys the comms room the child auto-joins AND (back in the caller) addresses the rmux session,
-/// so the two are provably the same value rather than two counters that happen to stay in step.
+/// `environment` untouched so the session spawns headless.
 ///
 /// # Threat model
 /// The child's identity is asserted purely through inherited `BASEMIND_*` env vars. A spawned child
 /// is free to overwrite `BASEMIND_AGENT_ID` and claim another agent's id — the broker does not
-/// cross-check the asserted id against the spawning parent. This is acceptable for a local
-/// single-user dev tool (every process already runs as the same uid); broker-side mismatch
-/// detection (warn when a child presents an id inconsistent with its `parent_agent`) is future work.
+/// cross-check. Acceptable for a local single-user dev tool (every process runs as the same uid).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 async fn couple_session_room(
     state: &ServerState,
     session_id: &str,
     environment: &mut Vec<String>,
 ) -> Result<(Option<String>, Option<String>), McpError> {
-    match try_couple_session_room(state, session_id, environment).await {
-        Ok((room_id, child_agent)) => Ok((Some(room_id), Some(child_agent))),
+    match try_couple_session_thread(state, session_id, environment).await {
+        Ok((thread_id, child_agent)) => Ok((Some(thread_id), Some(child_agent))),
         Err(error) => {
             tracing::warn!(
                 error = %error,
@@ -229,24 +223,23 @@ async fn couple_session_room(
     }
 }
 
-/// The fallible inner body of [`couple_session_room`]. On `Ok`, the room exists, the parent has
-/// joined it, and the child's identity env has been appended to `environment`.
+/// The fallible inner body of [`couple_session_room`]. On `Ok`, the thread exists (with the parent
+/// and child as members), and the child's identity env + `BASEMIND_THREAD_ID` have been appended.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-async fn try_couple_session_room(
+async fn try_couple_session_thread(
     state: &ServerState,
     session_id: &str,
     environment: &mut Vec<String>,
 ) -> Result<(String, String), McpError> {
     use super::helpers_comms::{comms_err, resolve_comms_client};
-    use crate::comms::ids::{AgentId, RoomId};
-    use crate::comms::model::RoomScope;
+    use crate::comms::ids::AgentId;
 
     let parent = &state.agent_id;
     let comms_session_id = session_id.to_string();
 
     let child_candidate = format!("{parent}-{comms_session_id}");
     let child_agent = match AgentId::parse(child_candidate.clone()) {
-        Ok(id) => id.into_string(),
+        Ok(id) => id,
         Err(error) => {
             let fallback = format!("shell-{comms_session_id}");
             let fallback_id = AgentId::parse(fallback.clone()).map_err(|fallback_err| {
@@ -261,62 +254,59 @@ async fn try_couple_session_room(
                 fallback = %fallback,
                 "shell_spawn: derived child agent id rejected by AgentId::parse; using fallback"
             );
-            fallback_id.into_string()
+            fallback_id
         }
     };
 
-    let room = RoomId::parse(comms_session_id.clone())
-        .map_err(|e| comms_err(format!("derive session room id {comms_session_id:?}: {e}")))?;
-    let title = format!("shell session {comms_session_id} ({parent} -> {child_agent})");
-
-    {
+    let subject = format!("shell session {comms_session_id} ({parent} -> {child_agent})");
+    let thread_id = {
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
-        client
-            .create_room(room.clone(), RoomScope::Session(comms_session_id.clone()), Some(title))
+        // subject + members[child] is two addressing dimensions (the parent is the implicit creator).
+        let thread = client
+            .start_thread(Some(subject), None, vec![child_agent.clone()])
             .await
             .map_err(comms_err)?;
-        client.join_room(room.clone()).await.map_err(comms_err)?;
-    }
+        thread.id.into_string()
+    };
 
-    const IDENTITY_KEYS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_SESSION_ID"];
+    const IDENTITY_KEYS: [&str; 3] = ["BASEMIND_AGENT_ID", "BASEMIND_PARENT_AGENT_ID", "BASEMIND_THREAD_ID"];
     environment.retain(|entry| {
         let key = entry.split('=').next().unwrap_or(entry);
         !IDENTITY_KEYS.contains(&key)
     });
     environment.push(format!("BASEMIND_AGENT_ID={child_agent}"));
     environment.push(format!("BASEMIND_PARENT_AGENT_ID={parent}"));
-    environment.push(format!("BASEMIND_SESSION_ID={comms_session_id}"));
+    environment.push(format!("BASEMIND_THREAD_ID={thread_id}"));
 
-    Ok((room.into_string(), child_agent))
+    Ok((thread_id, child_agent.into_string()))
 }
 
-/// Roll back the parent's subscription to an orphaned session room after the spawn failed.
-///
-/// The room is created + joined before the spawn; if the spawn errors, no child will ever join, so
-/// the parent's standing subscription would leak. Best-effort: a failure to leave is logged at WARN
-/// (naming the orphan room id) and swallowed so the original spawn error is what propagates. There
-/// is no broker `delete_room`, so the room record itself lingers until the broker is restarted —
-/// only the parent's membership is reclaimed here.
+/// Roll back the orphaned coupling thread after the spawn failed: the parent (its creator) archives
+/// it so it does not linger as an active, member-less-child thread. Best-effort — a failure is
+/// logged at WARN (naming the orphan thread id) and swallowed so the original spawn error propagates.
 #[cfg(all(feature = "comms", any(unix, windows)))]
-async fn rollback_session_room(state: &ServerState, room_id: &str) {
+async fn rollback_session_room(state: &ServerState, thread_id: &str) {
     use super::helpers_comms::resolve_comms_client;
-    use crate::comms::ids::RoomId;
+    use crate::comms::ids::ThreadId;
 
-    let Ok(room) = RoomId::parse(room_id.to_string()) else {
-        tracing::warn!(room_id = %room_id, "shell_spawn rollback: orphan room id is unparsable");
+    let Ok(thread) = ThreadId::parse(thread_id.to_string()) else {
+        tracing::warn!(thread_id = %thread_id, "shell_spawn rollback: orphan thread id is unparsable");
         return;
     };
-    let leave = async {
+    let archive = async {
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
-        client.leave_room(room).await.map_err(super::helpers_comms::comms_err)
+        client
+            .archive_thread(thread)
+            .await
+            .map_err(super::helpers_comms::comms_err)
     };
-    if let Err(error) = leave.await {
+    if let Err(error) = archive.await {
         tracing::warn!(
             error = %error,
-            room_id = %room_id,
-            "shell_spawn rollback: failed to leave orphaned session room; it may leak"
+            thread_id = %thread_id,
+            "shell_spawn rollback: failed to archive orphaned coupling thread; it may leak"
         );
     }
 }
@@ -374,37 +364,10 @@ pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams)
         .map_err(|e| mcp_internal("kill shell session", e))?;
     state.shell_runtime.forget(&id).await;
 
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    delete_session_lineage(state, id.as_str()).await;
-
     json_result(&ShellKillResponse {
         session_id: id.to_string(),
         killed,
     })
-}
-
-/// Best-effort removal of a killed session's broker lineage row. Failures are logged at WARN and
-/// swallowed — the session is already dead, so a leftover lineage row is cosmetic, not a kill error.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-async fn delete_session_lineage(state: &ServerState, session_id: &str) {
-    use super::helpers_comms::resolve_comms_client;
-
-    let result = async {
-        let handle = resolve_comms_client(state, None).await?;
-        let mut client = handle.lock().await;
-        client
-            .delete_session(session_id)
-            .await
-            .map_err(super::helpers_comms::comms_err)
-    }
-    .await;
-    if let Err(error) = result {
-        tracing::warn!(
-            error = %error,
-            session_id = %session_id,
-            "shell_kill: failed to delete session lineage row; it may linger until broker restart"
-        );
-    }
 }
 
 /// `shell_broadcast`: send the same input to many sessions' primary panes.
@@ -428,19 +391,13 @@ pub(super) async fn run_shell_broadcast(
     json_result(&ShellBroadcastResponse { delivered })
 }
 
-/// `shell_list`: enumerate sessions across the full comms lineage, flagged by this server's
-/// liveness.
+/// `shell_list`: enumerate the sessions THIS server spawned (the only ones it holds a live rmux
+/// handle for), each flagged by its liveness.
 ///
-/// Two sources are merged by `session_id`:
-/// - `ShellRuntime::list()` — always present; contributes the rmux `name` + `alive` flag for the
-///   sessions THIS server spawned (the only ones it holds a live rmux handle for).
-/// - The shared comms broker's session lineage — present only when comms is built. It is the
-///   source of truth for the parent -> child chain, so a top-level server sees grandchildren
-///   spawned deeper in the chain (sessions it did not spawn directly are reported with
-///   `alive = false`, since this server has no rmux handle for them).
-///
-/// The comms enrichment is best-effort: if the client is unavailable or the call fails, the
-/// runtime-only list is returned rather than failing `shell_list`.
+/// The thread-model comms broker keeps no session-lineage keyspace, so there is no cross-server
+/// grandchild view to fold in — the list is the runtime's own sessions. The `parent_agent` /
+/// `child_agent` / `room_id` fields on each row stay `None` here; a spawned session's coupling
+/// thread is surfaced by `shell_spawn`'s own response instead.
 pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
         .shell_runtime
@@ -448,80 +405,17 @@ pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams
         .await
         .map_err(|e| mcp_internal("list shell sessions", e))?;
 
-    let by_id: ahash::AHashMap<String, ShellSessionView> = runtime
+    let mut sessions: Vec<ShellSessionView> = runtime
         .into_iter()
-        .map(|info| {
-            let session_id = info.session_id.to_string();
-            (
-                session_id.clone(),
-                ShellSessionView {
-                    session_id,
-                    name: info.name.as_str().to_string(),
-                    alive: info.alive,
-                    parent_agent: None,
-                    child_agent: None,
-                    room_id: None,
-                },
-            )
-        })
-        .collect();
-
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    let by_id = {
-        let mut by_id = by_id;
-        enrich_with_lineage(state, &mut by_id).await;
-        by_id
-    };
-
-    let mut sessions: Vec<ShellSessionView> = by_id.into_values().collect();
-    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
-    json_result(&ShellListResponse { sessions })
-}
-
-/// Fold the shared comms broker's session lineage into `by_id`, keyed by `session_id`.
-///
-/// For each lineage row: if the session is already present (this server spawned it) keep its
-/// runtime `name` / `alive` and just attach the lineage fields; otherwise insert a new view with
-/// `name = session_id` and `alive = false` (this server holds no rmux handle for it).
-///
-/// Best-effort: acquiring the client or the `list_sessions` call failing is logged at WARN and
-/// swallowed, so `shell_list` still returns the runtime-only view when comms is down.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-async fn enrich_with_lineage(state: &ServerState, by_id: &mut ahash::AHashMap<String, ShellSessionView>) {
-    use super::helpers_comms::resolve_comms_client;
-
-    let lineage = async {
-        let handle = resolve_comms_client(state, None).await?;
-        let mut client = handle.lock().await;
-        client.list_sessions().await.map_err(super::helpers_comms::comms_err)
-    }
-    .await;
-
-    let lineage = match lineage {
-        Ok(rows) => rows,
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                "shell_list: comms lineage unavailable; returning this server's own sessions only"
-            );
-            return;
-        }
-    };
-
-    for row in lineage {
-        let parent_agent = row.parent_agent.map(|agent| agent.into_string());
-        let child_agent = row.child_agent.into_string();
-        let room_id = row.room_id.into_string();
-        let view = by_id.entry(row.session_id.clone()).or_insert_with(|| ShellSessionView {
-            name: row.session_id.clone(),
-            session_id: row.session_id,
-            alive: false,
+        .map(|info| ShellSessionView {
+            session_id: info.session_id.to_string(),
+            name: info.name.as_str().to_string(),
+            alive: info.alive,
             parent_agent: None,
             child_agent: None,
             room_id: None,
-        });
-        view.parent_agent = parent_agent;
-        view.child_agent = Some(child_agent);
-        view.room_id = Some(room_id);
-    }
+        })
+        .collect();
+    sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+    json_result(&ShellListResponse { sessions })
 }

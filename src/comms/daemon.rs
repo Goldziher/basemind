@@ -2,17 +2,17 @@
 //!
 //! [`Broker`] wraps the [`CommsStore`] and an in-RAM registry of live notification sinks. It
 //! handles each [`CommsRequest`] and fans out [`CommsNotification::Message`] to every link
-//! subscribed to the posted room. The daemon is the sole writer to the store, so request
+//! subscribed to the posted thread. The daemon is the sole writer to the store, so request
 //! handling needs no cross-process coordination beyond the store's flock.
+//!
+//! There is NO auto-join: `Hello` records identity and captures the scope chain for path-glob
+//! discovery only. Agents explicitly START a thread or JOIN one.
 //!
 //! ## Lifecycle
 //!
 //! `Starting → Active ⇄ Idle → Draining → Stopped`. The subscriber refcount drives the
-//! Active⇄Idle edge: when it drops to zero (and a grace period elapses) the broker may shed
-//! in-RAM caches and pause timers, but it KEEPS the socket bound and the store flock held —
-//! that is the split-brain guard, so a second daemon cannot bind while this one merely idles.
-//! `Draining` (a `Stop` RPC or SIGTERM) stops accepting, flushes, then releases the flock and
-//! unlinks the socket on the way to `Stopped`.
+//! Active⇄Idle edge; `Draining` (a `Stop` RPC or SIGTERM) stops accepting, flushes, then releases
+//! the flock and unlinks the socket on the way to `Stopped`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -23,11 +23,8 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 use super::cursor::Cursor;
-use super::ids::{AgentId, RoomId};
-use super::model::{
-    AgentCard, AgentKind, AgentRecord, MessageBody, MessageMeta, Room, RoomScope, SessionLineage, Subscription,
-    now_micros,
-};
+use super::ids::{AgentId, ThreadId};
+use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
 use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::scope::{self, ScopeChain};
 use super::store::{self, CommsStore, CommsStoreError};
@@ -38,13 +35,14 @@ pub const DEFAULT_LIMIT: u32 = 100;
 pub const MAX_LIMIT: u32 = 1000;
 
 /// Idle window after which a daemon with no connected links and no activity self-terminates.
-/// Without this, daemons orphaned by a dead session (reparented to pid 1) linger forever and
-/// pile up across sessions. The reaper in `cmd_comms_daemon` drives the normal drain path, so
-/// the socket + flock are released cleanly on the way out. A live client (even a quiet
-/// subscriber holding an open link) keeps the daemon alive; only a fully-unused daemon reaps.
 pub const IDLE_REAP_AFTER: Duration = Duration::from_secs(30 * 60);
 /// How often the idle reaper re-checks the broker. Small relative to [`IDLE_REAP_AFTER`].
 pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
+/// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
+/// (`archive_idle`) applies this; the creator or a human can archive sooner.
+pub const THREAD_IDLE_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// Lifecycle state of the broker. See the module docs for the transition rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,18 +61,16 @@ pub enum LifecycleState {
 
 /// A registered notification sink for one subscription. The link's writer half drains it.
 struct SubSink {
-    /// The room this sink streams.
-    room: RoomId,
-    /// The agent owning the subscription. Retained for diagnostics + future per-agent
-    /// targeting; the fan-out currently routes by room.
+    /// The thread this sink streams.
+    thread: ThreadId,
+    /// The agent owning the subscription. Retained for diagnostics; the fan-out routes by thread.
     #[allow(dead_code)]
     agent: AgentId,
     /// Where notifications are pushed.
     tx: mpsc::Sender<CommsOut>,
 }
 
-/// In-RAM broker state behind a single async mutex. Subscriber churn is low-frequency relative
-/// to posts, so one mutex is simpler than sharding and never on a hot loop.
+/// In-RAM broker state behind a single async mutex.
 struct Registry {
     /// Live notification sinks keyed by subscription handle.
     sinks: AHashMap<u64, SubSink>,
@@ -86,20 +82,11 @@ struct Registry {
 pub struct Broker {
     store: Arc<CommsStore>,
     registry: Mutex<Registry>,
-    /// Count of live notification subscribers; drives the Active⇄Idle edge.
     subscriber_count: AtomicUsize,
-    /// Count of connected front-end links (clients). Drives the idle reaper: a daemon with
-    /// zero links and no recent activity past [`IDLE_REAP_AFTER`] self-terminates.
     link_count: AtomicUsize,
-    /// Millis since `started` at the last request / link connect / disconnect. Compared against
-    /// [`IDLE_REAP_AFTER`] so a daemon serving frequent one-shot calls (which hold no long-lived
-    /// subscriber) is not reaped mid-use.
     last_activity_ms: AtomicU64,
-    /// Monotonic source of subscription handles.
     next_sub: AtomicU64,
-    /// When the broker started, for uptime reporting.
     started: Instant,
-    /// Build version string surfaced in `Welcome` / `Status`.
     version: String,
 }
 
@@ -146,16 +133,13 @@ impl Broker {
         self.touch();
     }
 
-    /// Stamp "now" as the last-activity time. Called on every handled request and on link
-    /// connect / disconnect, so the idle reaper measures from genuine quiescence.
+    /// Stamp "now" as the last-activity time.
     pub fn touch(&self) {
         self.last_activity_ms
             .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// True when the broker has no connected links and no activity within `idle_for` — the
-    /// signal for the daemon to self-terminate. Never true while draining or stopped, and never
-    /// while a client link is open (a quiet subscriber must not be reaped out from under itself).
+    /// True when the broker has no connected links and no activity within `idle_for`.
     pub async fn is_idle_for(&self, idle_for: Duration) -> bool {
         if self.link_count.load(Ordering::Relaxed) != 0 {
             return false;
@@ -168,10 +152,13 @@ impl Broker {
         now_ms.saturating_sub(last) >= idle_for.as_millis() as u64
     }
 
-    /// Handle one request on a link. `link_tx` is the link's outbound sink, used both for the
-    /// direct response (returned) and to register notification streams. `agent`/`chain` are
-    /// the per-link session context established by `Hello`. Returns the direct response, or
-    /// `None` for fire-and-forget requests (`Subscribe`/`Unsubscribe` reply through `link_tx`).
+    /// Archive every active thread idle past `ttl`. Returns the count archived. Best-effort — a
+    /// store error is surfaced to the caller (the daemon logs it). This is the reaper hook.
+    pub fn archive_idle_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
+        self.store.archive_idle(ttl)
+    }
+
+    /// Handle one request on a link. Returns the direct response.
     pub async fn handle(
         &self,
         req: CommsRequest,
@@ -200,53 +187,54 @@ impl Broker {
                 proto_ver,
                 remote,
                 cwd,
-                session_id,
-                parent_agent,
-            } => {
-                self.on_hello(agent, proto_ver, remote, cwd, session_id, parent_agent, session)
-                    .await
-            }
+            } => self.on_hello(agent, proto_ver, remote, cwd, session),
             CommsRequest::Register { card } => self.on_register(session, card),
-            CommsRequest::ListAgents { room } => self.on_list_agents(room),
-            CommsRequest::CreateRoom { room, scope, title } => self.on_create_room(room, scope, title),
-            CommsRequest::ListRooms { remote, cwd } => self.on_list_rooms(remote, cwd, session).await,
-            CommsRequest::Join { room } => self.on_join(session, room),
-            CommsRequest::Leave { room } => self.on_leave(session, room),
-            CommsRequest::Post {
-                room,
+            CommsRequest::ListAgents { thread } => self.on_list_agents(thread),
+            CommsRequest::ThreadStart { subject, path, members } => {
+                self.on_thread_start(session, subject, path, members)
+            }
+            CommsRequest::ThreadJoin { thread } => self.on_thread_join(session, thread),
+            CommsRequest::ThreadLeave { thread } => self.on_thread_leave(session, thread),
+            CommsRequest::ThreadList {
+                remote,
+                cwd,
+                subject_contains,
+                include_archived,
+            } => self.on_thread_list(session, remote, cwd, subject_contains, include_archived),
+            CommsRequest::ThreadPost {
+                thread,
                 subject,
                 tags,
                 reply_to,
-                scope,
                 body,
-            } => self.on_post(session, room, subject, tags, reply_to, scope, body).await,
-            CommsRequest::History {
-                room,
+            } => self.on_post(session, thread, subject, tags, reply_to, body).await,
+            CommsRequest::ThreadHistory {
+                thread,
                 cursor,
                 limit,
                 since_micros,
-            } => self.on_history(room, cursor, limit, since_micros),
+            } => self.on_history(thread, cursor, limit, since_micros),
+            CommsRequest::ThreadMembers { thread } => self.on_thread_members(thread),
+            CommsRequest::ThreadAddMember { thread, member } => self.on_thread_add_member(session, thread, member),
+            CommsRequest::ThreadRemoveMember { thread, member } => {
+                self.on_thread_remove_member(session, thread, member)
+            }
+            CommsRequest::ThreadArchive { thread } => self.on_thread_archive(session, thread),
             CommsRequest::GetBody { message_id } => self.on_get_body(message_id),
             CommsRequest::Inbox {
-                remote,
-                cwd,
                 cursor,
                 limit,
                 mark_read,
                 since_micros,
-            } => {
-                self.on_inbox(session, remote, cwd, cursor, limit, mark_read, since_micros)
-                    .await
-            }
+                ..
+            } => self.on_inbox(session, cursor, limit, mark_read, since_micros),
             CommsRequest::AckInbox {
                 message_ids,
-                room,
+                thread,
                 to_seq,
-            } => self.on_ack(session, message_ids, room, to_seq),
-            CommsRequest::Subscribe { room } => self.on_subscribe(session, room, link_tx).await,
+            } => self.on_ack(session, message_ids, thread, to_seq),
+            CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
-            CommsRequest::ListSessions {} => self.on_list_sessions(),
-            CommsRequest::DeleteSession { session_id } => self.on_delete_session(&session_id),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
             CommsRequest::Stop => {
@@ -256,15 +244,12 @@ impl Broker {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn on_hello(
+    fn on_hello(
         &self,
         agent: AgentId,
         proto_ver: u32,
         remote: Option<String>,
         cwd: Option<std::path::PathBuf>,
-        session_id: Option<String>,
-        parent_agent: Option<String>,
         session: &mut Session,
     ) -> Result<CommsResponse, CommsStoreError> {
         if proto_ver != PROTO_VER {
@@ -274,13 +259,7 @@ impl Broker {
             });
         }
         session.agent = Some(agent.clone());
-        let parent_agent = parent_agent.and_then(|p| AgentId::parse(p).ok());
-        session.session_id = session_id.clone();
-        session.parent_agent = parent_agent.clone();
-        let mut chain = build_chain(remote.clone(), cwd.clone());
-        chain.session_id = session_id;
-        chain.parent_agent = parent_agent;
-        session.chain = Some(chain);
+        session.chain = Some(build_chain(remote, cwd));
 
         let now = now_micros();
         let record = match self.store.get_agent(&agent)? {
@@ -289,7 +268,7 @@ impl Broker {
                 existing
             }
             None => AgentRecord {
-                agent_id: agent.clone(),
+                agent_id: agent,
                 card: AgentCard::default(),
                 kind: AgentKind::Other,
                 first_seen: now,
@@ -298,67 +277,10 @@ impl Broker {
         };
         self.store.put_agent(&record)?;
 
-        if let Some(ref chain) = session.chain {
-            let session_room = self.auto_join(&agent, chain)?;
-            if let Err(e) = self.record_session_lineage(&agent, chain, session_room) {
-                tracing::warn!(error = %e, "comms: failed to record session lineage");
-            }
-        }
-
         Ok(CommsResponse::Welcome {
             proto_ver: PROTO_VER,
             daemon_version: self.version.clone(),
         })
-    }
-
-    /// Persist a [`SessionLineage`] row at the child's `Hello`. No-op when the chain carries no
-    /// `session_id` (a top-level agent). `session_room` is the room [`Self::auto_join`] just joined
-    /// the child to — passing it in (rather than re-scanning) means the lineage points at the exact
-    /// room the child joined and the room keyspace is scanned once per `Hello`. The `created_at` of
-    /// an existing row is preserved across reconnects so a re-`Hello` does not rewrite first-seen.
-    ///
-    /// Child-Hello-before-room race: when the child `Hello`s before its parent has created the
-    /// `RoomScope::Session` room, `session_room` is `None` and no lineage row is written — the row
-    /// is deferred until the child reconnects after the room exists (a later `Hello` records it).
-    fn record_session_lineage(
-        &self,
-        agent: &AgentId,
-        chain: &ScopeChain,
-        session_room: Option<RoomId>,
-    ) -> Result<(), CommsStoreError> {
-        let Some(sid) = chain.session_id.clone() else {
-            return Ok(());
-        };
-        let Some(room_id) = session_room else {
-            tracing::warn!(
-                session_id = %sid,
-                agent = %agent,
-                "comms: session id presented but no session room to anchor lineage; skipping"
-            );
-            return Ok(());
-        };
-        let created_at = match self.store.get_session(&sid)? {
-            Some(existing) => existing.created_at,
-            None => now_micros(),
-        };
-        self.store.put_session(&SessionLineage {
-            session_id: sid,
-            parent_agent: chain.parent_agent.clone(),
-            child_agent: agent.clone(),
-            room_id,
-            created_at,
-        })
-    }
-
-    fn on_list_sessions(&self) -> Result<CommsResponse, CommsStoreError> {
-        Ok(CommsResponse::Sessions {
-            sessions: self.store.list_sessions()?,
-        })
-    }
-
-    fn on_delete_session(&self, session_id: &str) -> Result<CommsResponse, CommsStoreError> {
-        self.store.delete_session(session_id)?;
-        Ok(CommsResponse::Ok)
     }
 
     fn on_register(&self, session: &Session, card: AgentCard) -> Result<CommsResponse, CommsStoreError> {
@@ -384,13 +306,13 @@ impl Broker {
         Ok(CommsResponse::Ok)
     }
 
-    fn on_list_agents(&self, room: Option<RoomId>) -> Result<CommsResponse, CommsStoreError> {
-        let agents = match room {
+    fn on_list_agents(&self, thread: Option<ThreadId>) -> Result<CommsResponse, CommsStoreError> {
+        let agents = match thread {
             None => self.store.list_agents()?,
-            Some(room) => {
-                let subs = self.store.subscribers(&room)?;
+            Some(thread) => {
+                let members = self.store.members(&thread)?;
                 let mut out = Vec::new();
-                for id in subs {
+                for id in members {
                     if let Some(rec) = self.store.get_agent(&id)? {
                         out.push(rec);
                     }
@@ -401,103 +323,232 @@ impl Broker {
         Ok(CommsResponse::Agents(agents))
     }
 
-    fn on_create_room(
+    /// Start a thread addressed by at least two of subject / path / members. The creator becomes an
+    /// implicit member; any explicit members are added too. Rejects fewer than two dimensions.
+    fn on_thread_start(
         &self,
-        room: RoomId,
-        scope: RoomScope,
-        title: Option<String>,
+        session: &Session,
+        subject: Option<String>,
+        path: Option<String>,
+        members: Vec<AgentId>,
     ) -> Result<CommsResponse, CommsStoreError> {
-        let last_activity = self
-            .store
-            .get_room(&room)?
-            .map(|existing| existing.last_activity)
-            .unwrap_or(0);
-        let record = Room {
-            room_id: room.clone(),
-            scope,
-            title: title.unwrap_or_else(|| room.as_str().to_string()),
-            created_at: now_micros(),
-            last_activity,
+        let Some(creator) = session.agent.clone() else {
+            return Ok(need_hello());
         };
-        self.store.put_room(&record)?;
-        Ok(CommsResponse::Room(record))
-    }
-
-    async fn on_list_rooms(
-        &self,
-        remote: Option<String>,
-        cwd: Option<std::path::PathBuf>,
-        session: &mut Session,
-    ) -> Result<CommsResponse, CommsStoreError> {
-        let chain = build_chain(remote, cwd);
-        if let Some(agent) = session.agent.clone() {
-            self.auto_join(&agent, &chain)?;
+        let subject = subject.filter(|s| !s.is_empty());
+        let path = path.filter(|p| !p.is_empty());
+        if let Err(message) = validate_dimensions(subject.as_deref(), path.as_deref(), &members, &creator) {
+            return Ok(CommsResponse::Error {
+                code: "insufficient_dimensions".to_string(),
+                message,
+            });
         }
-        let matching: Vec<Room> = self
-            .store
-            .list_rooms()?
-            .into_iter()
-            .filter(|r| scope::room_matches(&r.scope, &chain))
-            .collect();
-        Ok(CommsResponse::Rooms(matching))
+
+        // The full member set: the creator plus any explicit members, deduplicated.
+        let mut member_set: Vec<AgentId> = vec![creator.clone()];
+        for m in members {
+            if !member_set.contains(&m) {
+                member_set.push(m);
+            }
+        }
+
+        let now = now_micros();
+        let id = mint_thread_id(&creator);
+        let thread = Thread {
+            id: id.clone(),
+            subject,
+            path,
+            members: member_set.clone(),
+            creator: creator.clone(),
+            active: true,
+            created_at: now,
+            last_activity: 0,
+        };
+        self.store.put_thread(&thread)?;
+        for agent in &member_set {
+            self.store.add_member(&Membership {
+                agent_id: agent.clone(),
+                thread: id.clone(),
+                created_at: now,
+            })?;
+        }
+        Ok(CommsResponse::Thread(thread))
     }
 
-    fn on_join(&self, session: &Session, room: RoomId) -> Result<CommsResponse, CommsStoreError> {
+    fn on_thread_join(&self, session: &Session, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        self.store.subscribe(&Subscription {
-            agent_id: agent,
-            room,
+        let Some(mut record) = self.store.get_thread(&thread)? else {
+            return Ok(unknown_thread(&thread));
+        };
+        self.store.add_member(&Membership {
+            agent_id: agent.clone(),
+            thread: thread.clone(),
             created_at: now_micros(),
         })?;
+        if !record.members.contains(&agent) {
+            record.members.push(agent);
+            self.store.put_thread(&record)?;
+        }
         Ok(CommsResponse::Ok)
     }
 
-    fn on_leave(&self, session: &Session, room: RoomId) -> Result<CommsResponse, CommsStoreError> {
+    fn on_thread_leave(&self, session: &Session, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        self.store.unsubscribe(&room, &agent)?;
+        self.store.remove_member(&thread, &agent)?;
+        if let Some(mut record) = self.store.get_thread(&thread)? {
+            record.members.retain(|m| m != &agent);
+            self.store.put_thread(&record)?;
+        }
         Ok(CommsResponse::Ok)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// List threads DISCOVERABLE to the caller: member OR cwd matches the path glob OR (when set)
+    /// the subject substring filter matches. Never all threads. Archived excluded unless requested.
+    fn on_thread_list(
+        &self,
+        session: &Session,
+        remote: Option<String>,
+        cwd: Option<std::path::PathBuf>,
+        subject_contains: Option<String>,
+        include_archived: bool,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let agent = session.agent.clone();
+        let chain = build_chain(remote, cwd);
+        let filter = subject_contains.filter(|s| !s.is_empty());
+        let mut out = Vec::new();
+        for thread in self.store.list_threads()? {
+            if !thread.active && !include_archived {
+                continue;
+            }
+            let is_member = agent.as_ref().is_some_and(|a| thread.members.contains(a));
+            let path_hit = thread
+                .path
+                .as_deref()
+                .is_some_and(|p| !chain.cwd.as_os_str().is_empty() && scope::path_matches(p, &chain.cwd));
+            let subject_hit = match (&filter, &thread.subject) {
+                (Some(needle), Some(subject)) => subject.contains(needle.as_str()),
+                _ => false,
+            };
+            if is_member || path_hit || subject_hit {
+                out.push(thread);
+            }
+        }
+        Ok(CommsResponse::Threads(out))
+    }
+
+    fn on_thread_members(&self, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
+        if self.store.get_thread(&thread)?.is_none() {
+            return Ok(unknown_thread(&thread));
+        }
+        Ok(CommsResponse::Members {
+            members: self.store.members(&thread)?,
+        })
+    }
+
+    fn on_thread_add_member(
+        &self,
+        session: &Session,
+        thread: ThreadId,
+        member: AgentId,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let Some(mut record) = self.store.get_thread(&thread)? else {
+            return Ok(unknown_thread(&thread));
+        };
+        if record.creator != agent {
+            return Ok(not_creator());
+        }
+        self.store.add_member(&Membership {
+            agent_id: member.clone(),
+            thread: thread.clone(),
+            created_at: now_micros(),
+        })?;
+        if !record.members.contains(&member) {
+            record.members.push(member);
+            self.store.put_thread(&record)?;
+        }
+        Ok(CommsResponse::Ok)
+    }
+
+    fn on_thread_remove_member(
+        &self,
+        session: &Session,
+        thread: ThreadId,
+        member: AgentId,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let Some(mut record) = self.store.get_thread(&thread)? else {
+            return Ok(unknown_thread(&thread));
+        };
+        if record.creator != agent {
+            return Ok(not_creator());
+        }
+        self.store.remove_member(&thread, &member)?;
+        record.members.retain(|m| m != &member);
+        self.store.put_thread(&record)?;
+        Ok(CommsResponse::Ok)
+    }
+
+    fn on_thread_archive(&self, session: &Session, thread: ThreadId) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        let Some(mut record) = self.store.get_thread(&thread)? else {
+            return Ok(unknown_thread(&thread));
+        };
+        if record.creator != agent {
+            return Ok(not_creator());
+        }
+        record.active = false;
+        self.store.put_thread(&record)?;
+        Ok(CommsResponse::Ok)
+    }
+
     async fn on_post(
         &self,
         session: &Session,
-        room: RoomId,
+        thread: ThreadId,
         subject: String,
         tags: Vec<String>,
         reply_to: Option<String>,
-        scope: Vec<String>,
         body: Vec<u8>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let id = mint_message_id(&room, &agent);
-        let meta = store::build_meta(id, room.clone(), agent, subject, tags, reply_to, scope, &body);
-        let (_, stored) = self.store.post(&room, meta, MessageBody(body))?;
-        if let Some(mut record) = self.store.get_room(&room)? {
-            record.last_activity = stored.ts_micros;
-            self.store.put_room(&record)?;
+        if self.store.get_thread(&thread)?.is_none() {
+            return Ok(unknown_thread(&thread));
         }
-        self.fan_out(&room, &stored).await;
+        let id = mint_message_id(&thread, &agent);
+        let meta = store::build_meta(id, thread.clone(), agent, subject, tags, reply_to, &body);
+        let (_, stored) = self.store.post(&thread, meta, MessageBody(body))?;
+        if let Some(mut record) = self.store.get_thread(&thread)? {
+            record.last_activity = stored.ts_micros;
+            self.store.put_thread(&record)?;
+        }
+        self.fan_out(&thread, &stored).await;
         Ok(CommsResponse::Posted { message_id: stored.id })
     }
 
     fn on_history(
         &self,
-        room: RoomId,
+        thread: ThreadId,
         cursor: Option<Cursor>,
         limit: Option<u32>,
         since_micros: Option<i64>,
     ) -> Result<CommsResponse, CommsStoreError> {
-        let after = decode_after(cursor.as_ref(), room.as_str());
+        let after = decode_after(cursor.as_ref(), thread.as_str());
         let limit = clamp_limit(limit);
-        let page = self.store.history(&room, after, limit)?;
-        let next = page.more.then(|| Cursor::encode(room.as_str(), page.last_seq));
+        let page = self.store.history(&thread, after, limit)?;
+        let next = page.more.then(|| Cursor::encode(thread.as_str(), page.last_seq));
         let messages = page
             .messages
             .into_iter()
@@ -515,12 +566,9 @@ impl Broker {
         Ok(CommsResponse::Body { body })
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn on_inbox(
+    fn on_inbox(
         &self,
         session: &mut Session,
-        remote: Option<String>,
-        cwd: Option<std::path::PathBuf>,
         cursor: Option<Cursor>,
         limit: Option<u32>,
         mark_read: bool,
@@ -529,53 +577,46 @@ impl Broker {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let chain = build_chain(remote, cwd);
-        self.auto_join(&agent, &chain)?;
-
         let limit = clamp_limit(limit);
         let resume = cursor.as_ref().and_then(|c| c.decode().ok());
-        let mut rooms = self.store.rooms_for_agent(&agent)?;
-        rooms.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut threads = self.store.threads_for_agent(&agent)?;
+        threads.sort_by(|a, b| a.as_str().cmp(b.as_str()));
 
         let mut collected: Vec<SeqMeta> = Vec::new();
-        let mut delivered_high: Vec<(RoomId, u64)> = Vec::new();
+        let mut delivered_high: Vec<(ThreadId, u64)> = Vec::new();
         let mut unread_remaining: u32 = 0;
         let mut next_cursor: Option<Cursor> = None;
 
-        for room in &rooms {
-            let read_seq = self.store.read_cursor(&agent, room)?;
+        for thread in &threads {
+            let read_seq = self.store.read_cursor(&agent, thread)?;
             let after = match &resume {
-                Some(pos) if pos.room == room.as_str() => pos.seq.max(read_seq),
+                Some(pos) if pos.thread == thread.as_str() => pos.seq.max(read_seq),
                 _ => read_seq,
             };
             let remaining = limit.saturating_sub(collected.len());
             let want = remaining.saturating_add(1).max(1);
-            let rows = self.store.history_with_seq(room, after, want)?;
+            let rows = self.store.history_with_seq(thread, after, want)?;
             for (seq, meta) in rows {
-                if meta.from == agent {
-                    upsert_high(&mut delivered_high, room, seq);
-                    continue;
-                }
-                if !keep_since(meta.ts_micros, since_micros) {
-                    upsert_high(&mut delivered_high, room, seq);
+                if meta.from == agent || !keep_since(meta.ts_micros, since_micros) {
+                    upsert_high(&mut delivered_high, thread, seq);
                     continue;
                 }
                 if collected.len() < limit {
                     collected.push(SeqMeta { seq, meta });
-                    upsert_high(&mut delivered_high, room, seq);
+                    upsert_high(&mut delivered_high, thread, seq);
                 } else {
                     unread_remaining = unread_remaining.saturating_add(1);
                     if next_cursor.is_none() {
-                        let resume_seq = highest_for(&delivered_high, room).unwrap_or(after);
-                        next_cursor = Some(Cursor::encode(room.as_str(), resume_seq));
+                        let resume_seq = highest_for(&delivered_high, thread).unwrap_or(after);
+                        next_cursor = Some(Cursor::encode(thread.as_str(), resume_seq));
                     }
                 }
             }
         }
 
         if mark_read {
-            for (room, seq) in &delivered_high {
-                self.store.set_read_cursor(&agent, room, *seq)?;
+            for (thread, seq) in &delivered_high {
+                self.store.set_read_cursor(&agent, thread, *seq)?;
             }
         }
 
@@ -586,47 +627,43 @@ impl Broker {
         })
     }
 
-    /// Acknowledge inbox messages by advancing the calling agent's per-room read cursors. Never
-    /// touches the shared log and never affects another agent: an ack is purely a per-agent cursor
-    /// move. Supports both the `message_ids` mode (resolve each id → `(room, seq)`, advance each
-    /// room to its max acked seq) and the bulk `room` + `to_seq` mode, applying both when given.
     fn on_ack(
         &self,
         session: &Session,
         message_ids: Vec<String>,
-        room: Option<RoomId>,
+        thread: Option<ThreadId>,
         to_seq: Option<u64>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        let bulk = matches!((&room, to_seq), (Some(_), Some(_)));
+        let bulk = matches!((&thread, to_seq), (Some(_), Some(_)));
         if message_ids.is_empty() && !bulk {
             return Ok(CommsResponse::Error {
                 code: "empty_ack".to_string(),
-                message: "ack requires message_ids or a (room, to_seq) pair".to_string(),
+                message: "ack requires message_ids or a (thread, to_seq) pair".to_string(),
             });
         }
 
-        let mut targets: Vec<(RoomId, u64)> = Vec::new();
+        let mut targets: Vec<(ThreadId, u64)> = Vec::new();
         let mut acked: u32 = 0;
         if !message_ids.is_empty() {
-            for (_, room, seq) in self.store.resolve_ids(&message_ids)? {
+            for (_, thread, seq) in self.store.resolve_ids(&message_ids)? {
                 acked = acked.saturating_add(1);
-                upsert_high(&mut targets, &room, seq);
+                upsert_high(&mut targets, &thread, seq);
             }
         }
-        if let (Some(room), Some(seq)) = (room, to_seq) {
-            upsert_high(&mut targets, &room, seq);
+        if let (Some(thread), Some(seq)) = (thread, to_seq) {
+            upsert_high(&mut targets, &thread, seq);
         }
 
         let mut cursors_advanced: Vec<(String, u64)> = Vec::new();
-        for (room, seq) in &targets {
-            let before = self.store.read_cursor(&agent, room)?;
-            self.store.set_read_cursor(&agent, room, *seq)?;
-            let after = self.store.read_cursor(&agent, room)?;
+        for (thread, seq) in &targets {
+            let before = self.store.read_cursor(&agent, thread)?;
+            self.store.set_read_cursor(&agent, thread, *seq)?;
+            let after = self.store.read_cursor(&agent, thread)?;
             if after > before {
-                cursors_advanced.push((room.as_str().to_string(), after));
+                cursors_advanced.push((thread.as_str().to_string(), after));
             }
         }
 
@@ -639,15 +676,18 @@ impl Broker {
     async fn on_subscribe(
         &self,
         session: &Session,
-        room: RoomId,
+        thread: ThreadId,
         link_tx: &mpsc::Sender<CommsOut>,
     ) -> Result<CommsResponse, CommsStoreError> {
         let Some(agent) = session.agent.clone() else {
             return Ok(need_hello());
         };
-        self.store.subscribe(&Subscription {
+        if self.store.get_thread(&thread)?.is_none() {
+            return Ok(unknown_thread(&thread));
+        }
+        self.store.add_member(&Membership {
             agent_id: agent.clone(),
-            room: room.clone(),
+            thread: thread.clone(),
             created_at: now_micros(),
         })?;
         let sub = self.next_sub.fetch_add(1, Ordering::Relaxed);
@@ -656,7 +696,7 @@ impl Broker {
             reg.sinks.insert(
                 sub,
                 SubSink {
-                    room,
+                    thread,
                     agent,
                     tx: link_tx.clone(),
                 },
@@ -680,68 +720,29 @@ impl Broker {
     }
 
     async fn on_status(&self) -> CommsResponse {
-        let rooms = self.store.list_rooms().map(|r| r.len()).unwrap_or(0);
+        let threads = self
+            .store
+            .list_threads()
+            .map(|t| t.iter().filter(|th| th.active).count())
+            .unwrap_or(0);
         CommsResponse::Status(StatusReport {
             pid: std::process::id(),
             version: self.version.clone(),
             proto_ver: PROTO_VER,
             uptime_secs: self.started.elapsed().as_secs(),
-            rooms: u32::try_from(rooms).unwrap_or(u32::MAX),
+            threads: u32::try_from(threads).unwrap_or(u32::MAX),
             subscribers: u32::try_from(self.subscriber_count()).unwrap_or(u32::MAX),
         })
     }
 
-    /// Subscribe `agent` to every registered room whose scope matches `chain`, auto-creating
-    /// and registering a default room for the agent's repo/workspace on first sight. Logs each
-    /// auto-join.
-    /// Auto-join the agent to every scope-matching room (and the default per-repo room).
-    ///
-    /// Returns the id of the `RoomScope::Session(chain.session_id)` room the agent was joined to,
-    /// if one matched — threaded into [`Self::record_session_lineage`] so the lineage row points at
-    /// the exact room the child joined (not a re-scan that could pick a different room sharing the
-    /// scope) and the room keyspace is scanned once per `Hello` rather than twice.
-    fn auto_join(&self, agent: &AgentId, chain: &ScopeChain) -> Result<Option<RoomId>, CommsStoreError> {
-        let default = default_room_for(chain);
-        if self.store.get_room(&default.room_id)?.is_none() {
-            tracing::info!(
-                room = %default.room_id,
-                "comms: auto-creating default room for scope"
-            );
-            self.store.put_room(&default)?;
-        }
-
-        let mut session_room = None;
-        for room in self.store.list_rooms()? {
-            if scope::room_matches(&room.scope, chain) {
-                if matches!(&room.scope, RoomScope::Session(_)) {
-                    session_room = Some(room.room_id.clone());
-                }
-                let already = self.store.subscribers(&room.room_id)?.iter().any(|a| a == agent);
-                if !already {
-                    tracing::info!(
-                        agent = %agent,
-                        room = %room.room_id,
-                        "comms: auto-joining agent to scope-matching room"
-                    );
-                    self.store.subscribe(&Subscription {
-                        agent_id: agent.clone(),
-                        room: room.room_id.clone(),
-                        created_at: now_micros(),
-                    })?;
-                }
-            }
-        }
-        Ok(session_room)
-    }
-
-    /// Push a new message to every live sink subscribed to `room`. Best-effort: a sink whose
-    /// channel is full or closed is dropped (the link's reader will clean up its own sinks).
-    async fn fan_out(&self, room: &RoomId, meta: &MessageMeta) {
+    /// Push a new message to every live sink subscribed to `thread`. Best-effort: a sink whose
+    /// channel is full or closed is dropped.
+    async fn fan_out(&self, thread: &ThreadId, meta: &MessageMeta) {
         let mut dead: Vec<u64> = Vec::new();
         {
             let reg = self.registry.lock().await;
             for (sub, sink) in reg.sinks.iter() {
-                if &sink.room == room {
+                if &sink.thread == thread {
                     let note = CommsOut::Notification(CommsNotification::Message(meta.clone()));
                     if sink.tx.try_send(note).is_err() {
                         dead.push(*sub);
@@ -759,8 +760,7 @@ impl Broker {
         }
     }
 
-    /// Transition to Idle when the last subscriber leaves. Keeps the socket + flock; only
-    /// sheds the (currently negligible) in-RAM caches.
+    /// Transition to Idle when the last subscriber leaves.
     async fn maybe_idle(&self) {
         if self.subscriber_count() == 0 {
             let mut reg = self.registry.lock().await;
@@ -771,8 +771,7 @@ impl Broker {
         }
     }
 
-    /// Enter the Draining state and notify every live sink to disconnect. The front-end's
-    /// shutdown watch is what actually stops the accept loop and unbinds the socket.
+    /// Enter the Draining state and notify every live sink to disconnect.
     pub async fn begin_drain(&self) {
         let sinks: Vec<mpsc::Sender<CommsOut>> = {
             let mut reg = self.registry.lock().await;
@@ -796,12 +795,8 @@ impl Broker {
 pub struct Session {
     /// The authenticated agent id for this link.
     pub agent: Option<AgentId>,
-    /// The scope chain captured at Hello, used for auto-join.
+    /// The scope chain captured at Hello, used for path-glob discovery.
     pub chain: Option<ScopeChain>,
-    /// The terminal session id presented at Hello, if any. Drives session-scoped auto-join.
-    pub session_id: Option<String>,
-    /// The agent that spawned this one, captured at Hello for lineage bookkeeping.
-    pub parent_agent: Option<AgentId>,
 }
 
 fn need_hello() -> CommsResponse {
@@ -811,19 +806,32 @@ fn need_hello() -> CommsResponse {
     }
 }
 
+fn unknown_thread(thread: &ThreadId) -> CommsResponse {
+    CommsResponse::Error {
+        code: "unknown_thread".to_string(),
+        message: format!("no thread {}", thread.as_str()),
+    }
+}
+
+fn not_creator() -> CommsResponse {
+    CommsResponse::Error {
+        code: "not_creator".to_string(),
+        message: "only the thread creator may manage membership or archive it".to_string(),
+    }
+}
+
 fn clamp_limit(limit: Option<u32>) -> usize {
     usize::try_from(limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)).unwrap_or(DEFAULT_LIMIT as usize)
 }
 
-fn decode_after(cursor: Option<&Cursor>, room: &str) -> u64 {
+fn decode_after(cursor: Option<&Cursor>, thread: &str) -> u64 {
     match cursor.and_then(|c| c.decode().ok()) {
-        Some(pos) if pos.room == room || pos.room.is_empty() => pos.seq,
+        Some(pos) if pos.thread == thread || pos.thread.is_empty() => pos.seq,
         _ => 0,
     }
 }
 
-/// Whether a message with `ts_micros` passes the optional recency cutoff. `None` cutoff keeps
-/// everything; otherwise the message is kept iff it is at or after the cutoff (`ts >= since`).
+/// Whether a message with `ts_micros` passes the optional recency cutoff.
 fn keep_since(ts_micros: i64, since_micros: Option<i64>) -> bool {
     match since_micros {
         Some(cut) => ts_micros >= cut,
@@ -831,28 +839,27 @@ fn keep_since(ts_micros: i64, since_micros: Option<i64>) -> bool {
     }
 }
 
-/// Record the highest delivered `seq` for `room` in a small per-page accumulator.
-fn upsert_high(acc: &mut Vec<(RoomId, u64)>, room: &RoomId, seq: u64) {
-    if let Some(entry) = acc.iter_mut().find(|(r, _)| r == room) {
+/// Record the highest delivered `seq` for `thread` in a small per-page accumulator.
+fn upsert_high(acc: &mut Vec<(ThreadId, u64)>, thread: &ThreadId, seq: u64) {
+    if let Some(entry) = acc.iter_mut().find(|(t, _)| t == thread) {
         if seq > entry.1 {
             entry.1 = seq;
         }
     } else {
-        acc.push((room.clone(), seq));
+        acc.push((thread.clone(), seq));
     }
 }
 
-/// Look up the highest delivered `seq` recorded for `room`.
-fn highest_for(acc: &[(RoomId, u64)], room: &RoomId) -> Option<u64> {
-    acc.iter().find(|(r, _)| r == room).map(|(_, s)| *s)
+/// Look up the highest delivered `seq` recorded for `thread`.
+fn highest_for(acc: &[(ThreadId, u64)], thread: &ThreadId) -> Option<u64> {
+    acc.iter().find(|(t, _)| t == thread).map(|(_, s)| *s)
 }
 
-#[path = "daemon_rooms.rs"]
-mod rooms;
-pub(crate) use rooms::repo_room_for;
+#[path = "daemon_threads.rs"]
+mod threads;
 #[cfg(test)]
-use rooms::sanitize_id;
-use rooms::{build_chain, default_room_for, mint_message_id};
+use threads::sanitize_id;
+use threads::{build_chain, mint_message_id, mint_thread_id, validate_dimensions};
 
 #[cfg(test)]
 #[path = "daemon_tests.rs"]

@@ -1,8 +1,8 @@
 //! Opaque pagination cursor for comms history / inbox.
 //!
-//! A cursor encodes `(room, seq)` — the last message a page returned. Because the comms log
-//! is append-only and `seq` is monotonic per room, a cursor never invalidates: resuming from
-//! `(room, seq)` always picks up at `seq + 1`. The wire shape is a single base64url
+//! A cursor encodes `(thread, seq)` — the last message a page returned. Because the comms log
+//! is append-only and `seq` is monotonic per thread, a cursor never invalidates: resuming from
+//! `(thread, seq)` always picks up at `seq + 1`. The wire shape is a single base64url
 //! (no-pad) string so clients never look inside.
 
 use serde::{Deserialize, Serialize};
@@ -13,27 +13,27 @@ use serde::{Deserialize, Serialize};
 #[serde(transparent)]
 pub struct Cursor(pub String);
 
-/// Decoded cursor payload: the room and the last-seen `seq`.
+/// Decoded cursor payload: the thread and the last-seen `seq`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CursorPos {
-    /// Room the cursor belongs to. Empty string ⇒ a cross-room (inbox) cursor.
-    pub room: String,
+    /// Thread the cursor belongs to. Empty string ⇒ a cross-thread (inbox) cursor.
+    pub thread: String,
     /// Last `seq` the previous page returned. The next page starts at `seq + 1`.
     pub seq: u64,
 }
 
 impl Cursor {
-    /// Encode a `(room, seq)` position as an opaque cursor.
-    pub fn encode(room: &str, seq: u64) -> Self {
+    /// Encode a `(thread, seq)` position as an opaque cursor.
+    pub fn encode(thread: &str, seq: u64) -> Self {
         let payload = CursorPos {
-            room: room.to_string(),
+            thread: thread.to_string(),
             seq,
         };
-        let bytes = rmp_serde::to_vec_named(&payload).expect("encoding a (room, seq) cursor never fails");
+        let bytes = rmp_serde::to_vec_named(&payload).expect("encoding a (thread, seq) cursor never fails");
         Cursor(base64url_encode(&bytes))
     }
 
-    /// Decode a cursor back into its `(room, seq)` position.
+    /// Decode a cursor back into its `(thread, seq)` position.
     pub fn decode(&self) -> Result<CursorPos, CursorError> {
         let bytes = base64url_decode(&self.0).map_err(|_| CursorError::Malformed)?;
         rmp_serde::from_slice(&bytes).map_err(|_| CursorError::Malformed)
@@ -107,16 +107,16 @@ mod tests {
 
     #[test]
     fn cursor_round_trips() {
-        let c = Cursor::encode("room-1", 99);
+        let c = Cursor::encode("th-1", 99);
         let pos = c.decode().expect("decode");
-        assert_eq!(pos.room, "room-1");
+        assert_eq!(pos.thread, "th-1");
         assert_eq!(pos.seq, 99);
     }
 
     #[test]
-    fn inbox_cursor_has_empty_room() {
+    fn inbox_cursor_has_empty_thread() {
         let c = Cursor::encode("", 7);
-        assert_eq!(c.decode().expect("decode").room, "");
+        assert_eq!(c.decode().expect("decode").thread, "");
     }
 
     #[test]

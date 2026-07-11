@@ -2865,8 +2865,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     use basemind::comms::client::CommsClient;
     use basemind::comms::daemon::Broker;
     use basemind::comms::frontend_uds::UdsFrontend;
-    use basemind::comms::ids::{AgentId, RoomId};
-    use basemind::comms::model::RoomScope;
+    use basemind::comms::ids::AgentId;
     use basemind::comms::singleton::CommsPaths;
     use basemind::comms::store::CommsStore;
     use basemind::comms::transport::CommsFrontend;
@@ -2898,38 +2897,37 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("connect b");
 
-    let room = RoomId::parse("team").expect("room");
-    a.create_room(room.clone(), RoomScope::Global, Some("Team".to_string()))
+    // Start a thread with A as creator + B as a member (subject + members = two dimensions).
+    let thread = a
+        .start_thread(
+            Some("Team".to_string()),
+            None,
+            vec![basemind::comms::ids::AgentId::parse("agent-b").unwrap()],
+        )
         .await
-        .expect("create room");
-    b.join_room(room.clone()).await.expect("b joins");
+        .expect("start thread")
+        .id;
 
     let subject = "deploy status";
     let body = b"all systems green".to_vec();
     let message_id = a
         .post_message(
-            room.clone(),
+            thread.clone(),
             subject.to_string(),
             body.clone(),
             vec!["ops".to_string()],
             None,
-            vec!["src/**".to_string()],
         )
         .await
         .expect("post");
 
-    let (history, _next) = b.read_history(room.clone(), None, 10, None).await.expect("history");
+    let (history, _next) = b.read_history(thread.clone(), None, 10, None).await.expect("history");
     assert_eq!(history.len(), 1, "exactly one posted message");
     let seq_meta = &history[0];
     let meta = &seq_meta.meta;
-    assert_eq!(seq_meta.seq, 1, "front-matter carries the per-room seq");
+    assert_eq!(seq_meta.seq, 1, "front-matter carries the per-thread seq");
     assert_eq!(meta.subject, subject, "front-matter carries the subject");
     assert_eq!(meta.id, message_id, "front-matter id matches the posted id");
-    assert_eq!(
-        meta.scope,
-        vec!["src/**".to_string()],
-        "front-matter round-trips the posted scope"
-    );
     assert_eq!(
         meta.body_len,
         body.len() as u32,
@@ -2968,14 +2966,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     assert_eq!(unread2, 0, "unread count stays 0 after mark_read");
 
     let second_id = a
-        .post_message(
-            room.clone(),
-            "second".to_string(),
-            b"more".to_vec(),
-            vec![],
-            None,
-            vec![],
-        )
+        .post_message(thread.clone(), "second".to_string(), b"more".to_vec(), vec![], None)
         .await
         .expect("post second");
     let (inbox3, _u3, _c3) = b
@@ -2989,8 +2980,8 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     assert_eq!(acked, 1, "exactly one message acked");
     assert_eq!(
         cursors_advanced,
-        vec![("team".to_string(), 2)],
-        "ack advances B's team cursor to seq 2"
+        vec![(thread.as_str().to_string(), 2)],
+        "ack advances B's thread cursor to seq 2"
     );
 
     let (inbox4, _u4, _c4) = b
@@ -3000,7 +2991,7 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     assert!(inbox4.is_empty(), "ack removed the message from B's inbox");
 
     let (history_after, _n) = b
-        .read_history(room.clone(), None, 10, None)
+        .read_history(thread.clone(), None, 10, None)
         .await
         .expect("history after ack");
     assert_eq!(history_after.len(), 2, "ack does not delete from the shared log");

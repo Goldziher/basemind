@@ -7,16 +7,11 @@
 //! lock and clash with a running `basemind serve`; the daemon is a separate process, so a thin
 //! client is both correct and lock-free.
 //!
-//! Human output for `history` / `inbox` prints the front-matter table (subject, from, ts, id)
-//! and never bodies; `read <message_id>` is the only verb that prints a body. `--json` emits
-//! the structured response for every verb.
+//! This is also the human-admin path: a person can inspect (`threads`, `members`, `history`) and
+//! ARCHIVE any thread they created. `--json` emits the structured response for every verb.
 //!
 //! Multi-identity: the identity-bearing verbs accept `--as-agent <AGENT_ID>` to connect to the
-//! broker AS a named sub-identity instead of the CLI's default (`cli_agent_id`). Because each
-//! invocation is a ONE-SHOT process with ONE connection, "act as X" is simply "connect as X". The
-//! `dm` verb delivers a direct message to one agent's inbox via a private pairwise room
-//! (`dm:<lo>:<hi>`), hosting BOTH the sender's and the recipient's broker connections sequentially
-//! within the single process — the same trick the MCP registry uses in `run_dm_send`.
+//! broker AS a named sub-identity instead of the CLI's default (`cli_agent_id`).
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -29,21 +24,19 @@ use serde_json::json;
 
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::cursor::Cursor;
-use crate::comms::ids::{AgentId, RoomId};
-use crate::comms::model::{AgentCard, Room, RoomScope};
+use crate::comms::ids::{AgentId, ThreadId};
+use crate::comms::model::{AgentCard, Thread};
 use crate::comms::protocol::SeqMeta;
 
 /// Default page size for `history` / `inbox` when `--limit` is omitted.
 const DEFAULT_LIMIT: u32 = 100;
 /// Hard page cap, mirroring the broker's `MAX_LIMIT`.
 const MAX_LIMIT: u32 = 1000;
-/// Default recency window for `history` / `inbox` when `--since-hours` is omitted: only the last
-/// 24 hours of messages are returned. Pass `--since-hours 0` for the full log.
+/// Default recency window for `history` / `inbox` when `--since-hours` is omitted.
 const DEFAULT_SINCE_HOURS: u32 = 24;
 /// Microseconds in one hour — scale factor for `--since-hours` → absolute `since_micros` cutoff.
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
-/// Room-freshness window in hours: a room whose last post is older than this — or which has never
-/// had a post — renders as STALE in `rooms`. 168h = 7 days, matching the MCP `RoomSummary` rule.
+/// Thread-freshness window in hours: 168h = 7 days, matching the MCP `ThreadSummary` rule.
 const STALE_AFTER_HOURS: i64 = 168;
 
 /// Agent-comms verbs that talk to the broker daemon directly.
@@ -67,61 +60,98 @@ pub enum CommsAgentCmd {
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// List agents known to the broker, optionally restricted to one room.
+    /// List agents known to the broker, optionally restricted to one thread's members.
     Agents {
-        /// Restrict to subscribers of this room.
+        /// Restrict to members of this thread.
         #[arg(long)]
-        room: Option<String>,
+        thread: Option<String>,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Create (and register) a room with an explicit scope.
-    RoomCreate {
-        /// Room id to create.
-        room: String,
-        /// Scope: `global` (default), `remote:<url>`, or `path:<dir>`.
-        #[arg(long, default_value = "global")]
-        scope: String,
-        /// Human-readable title.
+    /// Start a thread addressed by at least two of subject / path / members.
+    ThreadStart {
+        /// Topic string.
         #[arg(long)]
-        title: Option<String>,
+        subject: Option<String>,
+        /// Path or GLOB pattern (globset syntax) for path-based discovery.
+        #[arg(long)]
+        path: Option<String>,
+        /// Explicit additional member agent id (repeatable; you are added automatically).
+        #[arg(long = "member")]
+        members: Vec<String>,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// List rooms whose scope matches this repo (git remote + cwd).
-    Rooms,
-    /// Resolve the repo at a path to its canonical room (by git remote, else repo path) and join
-    /// it — get-or-create. Lets an agent coordinate in ANOTHER repo's room.
-    RoomForPath {
-        /// Filesystem path inside (or naming) the target repo. Resolved to the repo root so any
-        /// subdirectory maps to a single room.
-        path: String,
+    /// List threads discoverable to this agent (member / path-match / subject filter).
+    Threads {
+        /// Case-sensitive substring filter over thread subjects.
+        #[arg(long)]
+        subject_contains: Option<String>,
+        /// Also list archived threads.
+        #[arg(long)]
+        include_archived: bool,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Subscribe this agent to a room.
+    /// Join a thread.
     Join {
-        /// Room to join.
-        room: String,
+        /// Thread to join.
+        thread: String,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Unsubscribe this agent from a room.
+    /// Leave a thread.
     Leave {
-        /// Room to leave.
-        room: String,
+        /// Thread to leave.
+        thread: String,
         /// Act as this sub-identity instead of the CLI's default agent id.
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Post a message to a room.
+    /// List the members of a thread.
+    Members {
+        /// Thread whose members to list.
+        thread: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Add a member to a thread (creator only).
+    AddMember {
+        /// Thread to modify.
+        thread: String,
+        /// Member agent id to add.
+        member: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Remove a member from a thread (creator only).
+    RemoveMember {
+        /// Thread to modify.
+        thread: String,
+        /// Member agent id to remove.
+        member: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Archive a thread (creator / human-admin only).
+    Archive {
+        /// Thread to archive.
+        thread: String,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
+    /// Post a message to a thread.
     Post {
-        /// Target room.
-        room: String,
+        /// Target thread.
+        thread: String,
         /// Subject line.
         subject: String,
         /// Message body (markdown). Empty when omitted.
@@ -137,32 +167,10 @@ pub enum CommsAgentCmd {
         #[arg(long)]
         as_agent: Option<String>,
     },
-    /// Send a direct message to one agent's inbox via a private pairwise room.
-    ///
-    /// Delivery is via a canonical `dm:<lo>:<hi>` room (the two agent ids sorted), scoped so the
-    /// broker auto-joins NOBODY — only the sender and recipient are subscribed. The message then
-    /// surfaces in the recipient's `inbox` like any other subscribed-room post.
-    Dm {
-        /// Recipient agent id (the DM lands in this agent's inbox).
-        #[arg(long)]
-        to: String,
-        /// Subject line.
-        #[arg(long)]
-        subject: String,
-        /// Message body (markdown). Empty when omitted.
-        #[arg(long)]
-        body: Option<String>,
-        /// Id of the message being replied to.
-        #[arg(long)]
-        reply_to: Option<String>,
-        /// Act as this sub-identity (the sender) instead of the CLI's default agent id.
-        #[arg(long)]
-        as_agent: Option<String>,
-    },
-    /// Read a room's history (front-matter only; bodies via `read`).
+    /// Read a thread's history (front-matter only; bodies via `read`).
     History {
-        /// Room to read.
-        room: String,
+        /// Thread to read.
+        thread: String,
         /// Resume token from a previous page's `next_cursor`.
         #[arg(long)]
         cursor: Option<String>,
@@ -181,7 +189,7 @@ pub enum CommsAgentCmd {
         /// Message id (the `id` of a front-matter row).
         message_id: String,
     },
-    /// Read this agent's inbox across subscribed rooms (front-matter only).
+    /// Read this agent's inbox across joined threads (front-matter only).
     Inbox {
         /// Resume token from a previous page's `next_cursor`.
         #[arg(long)]
@@ -201,27 +209,12 @@ pub enum CommsAgentCmd {
     },
 }
 
-/// Parse a `--scope` string into a [`RoomScope`]: `global`, `remote:<url>`, or `path:<dir>`.
-fn parse_scope(raw: &str) -> Result<RoomScope> {
-    if raw == "global" {
-        return Ok(RoomScope::Global);
-    }
-    if let Some(url) = raw.strip_prefix("remote:") {
-        return Ok(RoomScope::Remote(url.to_string()));
-    }
-    if let Some(path) = raw.strip_prefix("path:") {
-        return Ok(RoomScope::PathPrefix(std::path::PathBuf::from(path)));
-    }
-    anyhow::bail!("invalid --scope {raw:?}: expected `global`, `remote:<url>`, or `path:<dir>`")
-}
-
 /// Clamp a caller limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT)
 }
 
-/// Translate `--since-hours` into the absolute `since_micros` cutoff the broker filters on. `None`
-/// ⇒ the [`DEFAULT_SINCE_HOURS`] default; `Some(0)` ⇒ `None` (all history); otherwise `now - hours`.
+/// Translate `--since-hours` into the absolute `since_micros` cutoff the broker filters on.
 fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
     let hours = since_hours.unwrap_or(DEFAULT_SINCE_HOURS);
     if hours == 0 {
@@ -231,15 +224,8 @@ fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
     }
 }
 
-/// Resolve the CLI agent identity, tiered to MATCH the `serve` resolver so CLI-driven comms (the
-/// notification hooks + the background monitor) share the session's identity — without that, a
-/// poller would see the session's own posts as unread (server-side self-exclusion keys on the
-/// requesting agent id).
-///
-/// 1. `BASEMIND_AGENT_ID` env — explicit override.
-/// 2. The persisted `<root>/.basemind/agent-id` written by `serve` — read-only here (the CLI never
-///    mints a new identity), so polls from the same repo resolve to the running session's id.
-/// 3. `basemind-cli` — fixed fallback when no session has run in this repo.
+/// Resolve the CLI agent identity, tiered to MATCH the `serve` resolver so CLI-driven comms share
+/// the session's identity.
 fn cli_agent_id(root: &Path) -> Result<AgentId> {
     if let Ok(raw) = std::env::var("BASEMIND_AGENT_ID")
         && let Ok(id) = AgentId::parse(raw)
@@ -254,9 +240,7 @@ fn cli_agent_id(root: &Path) -> Result<AgentId> {
     AgentId::parse("basemind-cli").context("construct CLI agent id")
 }
 
-/// Dispatch one comms agent verb. Builds a small current-thread runtime, then runs the verb —
-/// each verb connects its own [`CommsClient`] (spawning the daemon on first use) AS the resolved
-/// identity, so a `--as-agent` override applies per-verb.
+/// Dispatch one comms agent verb. Builds a small current-thread runtime, then runs the verb.
 pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -268,10 +252,7 @@ pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
     })
 }
 
-/// Connect a [`CommsClient`] to the broker as a resolved identity: the `--as-agent` override
-/// (validated through [`AgentId::parse`]) when supplied, otherwise the CLI's default
-/// ([`cli_agent_id`]). Spawns the daemon on first use. Threading the override through this single
-/// helper keeps every verb's identity resolution DRY.
+/// Connect a [`CommsClient`] to the broker as a resolved identity.
 async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
     let agent = match as_agent {
         Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
@@ -281,6 +262,13 @@ async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient
     CommsClient::ensure_and_connect(agent, remote, cwd)
         .await
         .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))
+}
+
+/// Parse the repeatable `--member` args into validated [`AgentId`]s.
+fn parse_members(raw: Vec<String>) -> Result<Vec<AgentId>> {
+    raw.into_iter()
+        .map(|m| AgentId::parse(m.clone()).with_context(|| format!("invalid --member {m:?}")))
+        .collect()
 }
 
 /// Run the verb: resolve the identity, connect, call the client method, and render to `out`.
@@ -311,11 +299,11 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "registered as {agent_id}")?;
             }
         }
-        CommsAgentCmd::Agents { room, as_agent } => {
+        CommsAgentCmd::Agents { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room = room.map(RoomId::parse).transpose().context("room id")?;
+            let thread = thread.map(ThreadId::parse).transpose().context("thread id")?;
             let agents = client
-                .list_agents(room)
+                .list_agents(thread)
                 .await
                 .map_err(|e| anyhow::anyhow!("list agents: {e}"))?;
             if json {
@@ -338,81 +326,155 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 }
             }
         }
-        CommsAgentCmd::RoomCreate {
-            room,
-            scope,
-            title,
+        CommsAgentCmd::ThreadStart {
+            subject,
+            path,
+            members,
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room_id = RoomId::parse(room).context("room id")?;
-            let scope = parse_scope(&scope)?;
-            let created = client
-                .create_room(room_id, scope, title)
+            let members = parse_members(members)?;
+            let thread = client
+                .start_thread(subject, path, members)
                 .await
-                .map_err(|e| anyhow::anyhow!("create room: {e}"))?;
-            render_room(&created, json, out)?;
+                .map_err(|e| anyhow::anyhow!("thread start: {e}"))?;
+            render_thread(&thread, json, out)?;
         }
-        CommsAgentCmd::Rooms => {
-            let mut client = connect_as(root, None).await?;
+        CommsAgentCmd::Threads {
+            subject_contains,
+            include_archived,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
             let (remote, cwd) = scope_context_for(root);
-            let rooms = client
-                .list_rooms(remote, cwd)
+            let threads = client
+                .list_threads(remote, cwd, subject_contains, include_archived)
                 .await
-                .map_err(|e| anyhow::anyhow!("list rooms: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("list threads: {e}"))?;
             let now = crate::comms::model::now_micros();
             if json {
-                let rows: Vec<_> = rooms.iter().map(|r| room_json(r, now)).collect();
-                writeln!(out, "{}", json!({ "total": rows.len(), "rooms": rows }))?;
-            } else if rooms.is_empty() {
-                writeln!(out, "no rooms")?;
+                let rows: Vec<_> = threads.iter().map(|t| thread_json(t, now)).collect();
+                writeln!(out, "{}", json!({ "total": rows.len(), "threads": rows }))?;
+            } else if threads.is_empty() {
+                writeln!(out, "no threads")?;
             } else {
-                for r in &rooms {
-                    let marker = if is_stale(r, now) { "STALE" } else { "ACTIVE" };
+                for t in &threads {
+                    let marker = if is_stale(t, now) { "STALE" } else { "ACTIVE" };
+                    let state = if t.active { marker } else { "ARCHIVED" };
                     writeln!(
                         out,
                         "{}\t{}\t{}\t{}",
-                        r.room_id.as_str(),
-                        r.title,
-                        r.last_activity,
-                        marker
+                        t.id.as_str(),
+                        t.subject.as_deref().unwrap_or("-"),
+                        t.last_activity,
+                        state
                     )?;
                 }
             }
         }
-        CommsAgentCmd::RoomForPath { path, as_agent } => {
-            room_for_path(root, json, path, as_agent, out).await?;
-        }
-        CommsAgentCmd::Join { room, as_agent } => {
+        CommsAgentCmd::Join { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room_id = RoomId::parse(room).context("room id")?;
-            let label = room_id.as_str().to_string();
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let label = thread_id.as_str().to_string();
             client
-                .join_room(room_id)
+                .join_thread(thread_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("join: {e}"))?;
-            if json {
-                writeln!(out, "{}", json!({ "room": label, "joined": true }))?;
-            } else {
-                writeln!(out, "joined {label}")?;
-            }
+            render_flag(json, out, "thread", &label, "joined")?;
         }
-        CommsAgentCmd::Leave { room, as_agent } => {
+        CommsAgentCmd::Leave { thread, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room_id = RoomId::parse(room).context("room id")?;
-            let label = room_id.as_str().to_string();
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let label = thread_id.as_str().to_string();
             client
-                .leave_room(room_id)
+                .leave_thread(thread_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("leave: {e}"))?;
+            render_flag(json, out, "thread", &label, "left")?;
+        }
+        CommsAgentCmd::Members { thread, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let label = thread_id.as_str().to_string();
+            let members = client
+                .thread_members(thread_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("members: {e}"))?;
+            let ids: Vec<String> = members.iter().map(|m| m.as_str().to_string()).collect();
             if json {
-                writeln!(out, "{}", json!({ "room": label, "left": true }))?;
+                writeln!(out, "{}", json!({ "thread": label, "members": ids }))?;
+            } else if ids.is_empty() {
+                writeln!(out, "no members")?;
             } else {
-                writeln!(out, "left {label}")?;
+                for m in &ids {
+                    writeln!(out, "{m}")?;
+                }
+            }
+        }
+        CommsAgentCmd::AddMember {
+            thread,
+            member,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let member_id = AgentId::parse(member).context("member id")?;
+            let label = thread_id.as_str().to_string();
+            let member_label = member_id.as_str().to_string();
+            client
+                .add_member(thread_id, member_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("add member: {e}"))?;
+            if json {
+                writeln!(
+                    out,
+                    "{}",
+                    json!({ "thread": label, "member": member_label, "added": true })
+                )?;
+            } else {
+                writeln!(out, "added {member_label} to {label}")?;
+            }
+        }
+        CommsAgentCmd::RemoveMember {
+            thread,
+            member,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let member_id = AgentId::parse(member).context("member id")?;
+            let label = thread_id.as_str().to_string();
+            let member_label = member_id.as_str().to_string();
+            client
+                .remove_member(thread_id, member_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("remove member: {e}"))?;
+            if json {
+                writeln!(
+                    out,
+                    "{}",
+                    json!({ "thread": label, "member": member_label, "removed": true })
+                )?;
+            } else {
+                writeln!(out, "removed {member_label} from {label}")?;
+            }
+        }
+        CommsAgentCmd::Archive { thread, as_agent } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
+            let label = thread_id.as_str().to_string();
+            client
+                .archive_thread(thread_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("archive: {e}"))?;
+            if json {
+                writeln!(out, "{}", json!({ "thread": label, "archived": true }))?;
+            } else {
+                writeln!(out, "archived {label}")?;
             }
         }
         CommsAgentCmd::Post {
-            room,
+            thread,
             subject,
             body,
             tags,
@@ -420,10 +482,10 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room_id = RoomId::parse(room).context("room id")?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
             let body = body.unwrap_or_default().into_bytes();
             let message_id = client
-                .post_message(room_id, subject, body, tags, reply_to, Vec::new())
+                .post_message(thread_id, subject, body, tags, reply_to)
                 .await
                 .map_err(|e| anyhow::anyhow!("post: {e}"))?;
             if json {
@@ -432,27 +494,18 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 writeln!(out, "{message_id}")?;
             }
         }
-        CommsAgentCmd::Dm {
-            to,
-            subject,
-            body,
-            reply_to,
-            as_agent,
-        } => {
-            dm(root, json, to, subject, body, reply_to, as_agent, out).await?;
-        }
         CommsAgentCmd::History {
-            room,
+            thread,
             cursor,
             limit,
             since_hours,
             as_agent,
         } => {
             let mut client = connect_as(root, as_agent).await?;
-            let room_id = RoomId::parse(room).context("room id")?;
+            let thread_id = ThreadId::parse(thread).context("thread id")?;
             let (messages, next_cursor) = client
                 .read_history(
-                    room_id,
+                    thread_id,
                     cursor.map(Cursor),
                     clamp_limit(limit),
                     since_cutoff(since_hours),
@@ -508,146 +561,51 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
     Ok(())
 }
 
-/// Send a direct message to one agent's inbox via a private pairwise room, mirroring the MCP
-/// `run_dm_send` semantics for the one-shot CLI: derive the canonical `dm:<lo>:<hi>` room (the two
-/// ids sorted), connect as the SENDER to create + join + post, then host a SECOND connection as the
-/// RECIPIENT to join — so the DM lands in the recipient's inbox. The room is scoped to a unique
-/// `Session("dm:<lo>:<hi>")` token that auto-joins nobody; membership is explicit on both ends.
-#[allow(clippy::too_many_arguments)]
-async fn dm(
-    root: &Path,
-    json: bool,
-    to: String,
-    subject: String,
-    body: Option<String>,
-    reply_to: Option<String>,
-    as_agent: Option<String>,
-    out: &mut impl Write,
-) -> Result<()> {
-    let from_agent = match &as_agent {
-        Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
-        None => cli_agent_id(root)?,
-    };
-    let to_agent = AgentId::parse(to.clone()).with_context(|| format!("invalid --to {to:?}"))?;
-    if from_agent == to_agent {
-        anyhow::bail!("cannot dm yourself");
-    }
-
-    let (lo, hi) = if from_agent.as_str() <= to_agent.as_str() {
-        (from_agent.as_str(), to_agent.as_str())
-    } else {
-        (to_agent.as_str(), from_agent.as_str())
-    };
-    let room = RoomId::parse(format!("dm:{lo}:{hi}")).context("derive dm room id")?;
-    let dm_scope = RoomScope::Session(format!("dm:{lo}:{hi}"));
-    let title = format!("dm {lo} <-> {hi}");
-
-    let mut sender = connect_as(root, as_agent).await?;
-    sender
-        .create_room(room.clone(), dm_scope, Some(title))
-        .await
-        .map_err(|e| anyhow::anyhow!("create dm room: {e}"))?;
-    sender
-        .join_room(room.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("sender join: {e}"))?;
-
-    let mut recipient = connect_as(root, Some(to_agent.as_str().to_string())).await?;
-    recipient
-        .join_room(room.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("recipient join: {e}"))?;
-
-    let body = body.unwrap_or_default().into_bytes();
-    let message_id = sender
-        .post_message(room.clone(), subject, body, Vec::new(), reply_to, Vec::new())
-        .await
-        .map_err(|e| anyhow::anyhow!("dm post: {e}"))?;
-
-    let room_label = room.into_string();
+/// Render a `{key: value, flag: true}` JSON object (or a plain line) for a membership toggle.
+fn render_flag(json: bool, out: &mut impl Write, key: &str, value: &str, flag: &str) -> Result<()> {
     if json {
-        writeln!(out, "{}", json!({ "message_id": message_id, "room": room_label }))?;
+        writeln!(out, "{}", json!({ key: value, flag: true }))?;
     } else {
-        writeln!(out, "{message_id}\t{room_label}")?;
+        writeln!(out, "{flag} {value}")?;
     }
     Ok(())
 }
 
-/// Resolve the repo at `path` to its canonical room — keyed by git remote when present, else the
-/// repo root path — and join it, mirroring the MCP `run_get_or_create_chat_room_for_path` body.
-/// `path` is resolved to the repo ROOT so any subdirectory maps to one room; the room id / scope /
-/// title come from [`repo_room_for`](crate::comms::daemon::repo_room_for), the SAME derivation the
-/// broker's auto-join uses.
-async fn room_for_path(
-    root: &Path,
-    json: bool,
-    path: String,
-    as_agent: Option<String>,
-    out: &mut impl Write,
-) -> Result<()> {
-    let base = crate::git::Repo::discover(Path::new(&path))
-        .ok()
-        .map(|r| r.workdir().to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from(&path));
-    let (remote, cwd) = scope_context_for(&base);
-    let room = crate::comms::daemon::repo_room_for(remote, cwd);
-    let scope_label = match &room.scope {
-        RoomScope::Remote(_) => "remote",
-        RoomScope::PathPrefix(_) => "path",
-        RoomScope::Session(_) => "session",
-        RoomScope::Global => "global",
-    };
-
-    let mut client = connect_as(root, as_agent).await?;
-    client
-        .create_room(room.room_id.clone(), room.scope.clone(), Some(room.title.clone()))
-        .await
-        .map_err(|e| anyhow::anyhow!("create room: {e}"))?;
-    client
-        .join_room(room.room_id.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("join: {e}"))?;
-
-    let room_label = room.room_id.as_str().to_string();
-    if json {
-        writeln!(
-            out,
-            "{}",
-            json!({ "room": room_label, "scope": scope_label, "title": room.title })
-        )?;
-    } else {
-        writeln!(out, "{room_label}\t{scope_label}")?;
-    }
-    Ok(())
+/// Whether a thread reads as STALE at `now_micros`: no posts yet or last post older than 7 days.
+fn is_stale(thread: &Thread, now_micros: i64) -> bool {
+    thread.last_activity == 0 || (now_micros - thread.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
 }
 
-/// Whether a room reads as STALE at `now_micros`: no posts yet (`last_activity == 0`) or its last
-/// post is older than the [`STALE_AFTER_HOURS`] window. Mirrors the MCP `RoomSummary` rule.
-fn is_stale(room: &Room, now_micros: i64) -> bool {
-    room.last_activity == 0 || (now_micros - room.last_activity) > STALE_AFTER_HOURS * MICROS_PER_HOUR
-}
-
-/// JSON view of a room front-matter row, including freshness (`last_activity` + `stale`).
-fn room_json(room: &Room, now_micros: i64) -> serde_json::Value {
+/// JSON view of a thread front-matter row.
+fn thread_json(thread: &Thread, now_micros: i64) -> serde_json::Value {
     json!({
-        "room_id": room.room_id.as_str(),
-        "title": room.title,
-        "created_at": room.created_at,
-        "last_activity": room.last_activity,
-        "stale": is_stale(room, now_micros),
+        "id": thread.id.as_str(),
+        "subject": thread.subject,
+        "path": thread.path,
+        "members": thread.members.iter().map(|m| m.as_str()).collect::<Vec<_>>(),
+        "creator": thread.creator.as_str(),
+        "active": thread.active,
+        "created_at": thread.created_at,
+        "last_activity": thread.last_activity,
+        "stale": is_stale(thread, now_micros),
     })
 }
 
-/// Render a single room (created / fetched).
-fn render_room(room: &Room, json: bool, out: &mut impl Write) -> Result<()> {
+/// Render a single thread (started / fetched).
+fn render_thread(thread: &Thread, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
         writeln!(
             out,
             "{}",
-            json!({ "room": room_json(room, crate::comms::model::now_micros()) })
+            json!({ "thread": thread_json(thread, crate::comms::model::now_micros()) })
         )?;
     } else {
-        writeln!(out, "{}\t{}", room.room_id.as_str(), room.title)?;
+        writeln!(
+            out,
+            "{}\t{}",
+            thread.id.as_str(),
+            thread.subject.as_deref().unwrap_or("-")
+        )?;
     }
     Ok(())
 }
@@ -667,12 +625,11 @@ fn render_front_matter(
                 let m = &sm.meta;
                 json!({
                     "id": m.id,
-                    "room": m.room.as_str(),
+                    "thread": m.thread.as_str(),
                     "from": m.from.as_str(),
                     "ts_micros": m.ts_micros,
                     "subject": m.subject,
                     "tags": m.tags,
-                    "scope": m.scope,
                     "reply_to": m.reply_to,
                     "seq": sm.seq,
                     "body_len": m.body_len,

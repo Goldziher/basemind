@@ -1,9 +1,8 @@
 //! Agent-comms tool shims for `BasemindServer`.
 //!
 //! Kept in a separate file so `tools.rs` stays under the 1000-line cap. Each shim is a thin
-//! wrapper that delegates to a `helpers_comms::run_*` body and records telemetry; when the
-//! `comms` feature is off it returns a graceful "not enabled" MCP error (mirroring the memory
-//! tier). The whole router is registered only under `#[cfg(feature = "comms")]`.
+//! wrapper that delegates to a `helpers_comms::run_*` body and records telemetry. The whole router
+//! is registered only under `#[cfg(feature = "comms")]`.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -16,9 +15,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, DmSendParams, GetOrCreateRoomForPathParams, InboxAckParams, InboxReadParams,
-    MessageGetParams, RoomCreateParams, RoomHistoryParams, RoomJoinParams, RoomLeaveParams, RoomListParams,
-    RoomPostParams,
+    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, MessageGetParams, ThreadArchiveParams,
+    ThreadHistoryParams, ThreadJoinParams, ThreadLeaveParams, ThreadListParams, ThreadMemberParams,
+    ThreadMembersParams, ThreadPostParams, ThreadStartParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -47,7 +46,7 @@ impl BasemindServer {
 
     #[tool(
         description = "List agents known to the comms broker, optionally restricted to the \
-        subscribers of one room. Returns front-matter (id, card fields, first/last seen). \
+        members of one thread. Returns front-matter (id, card fields, first/last seen). \
         Needs --features comms.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -63,49 +62,105 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Create (and register) a comms room with an explicit scope: `remote` (a git \
-        remote — every clone auto-joins), `path_prefix` (agents at/below a path auto-join), or \
-        `global` (every agent on the machine — reserve it for MACHINE-WIDE ops coordination like \
-        CPU / resource contention, NOT per-repo chat). For work in a repo prefer \
-        get_or_create_chat_room_for_path / a repo room. Idempotent. Needs --features comms.",
+        description = "Start a conversation THREAD addressed by AT LEAST TWO of `subject` (topic \
+        string), `path` (a path or globset glob like `src/**`), and `members` (explicit agent ids). \
+        Fewer than two is rejected. You become the creator and a member. Discovery is scoped — a \
+        thread is visible only to members, to agents whose cwd matches its path glob, or via a \
+        subject filter; there is no global listing and no auto-join. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = false
         )
     )]
-    pub(crate) async fn room_create(
+    pub(crate) async fn thread_start(
         &self,
-        Parameters(p): Parameters<RoomCreateParams>,
+        Parameters(p): Parameters<ThreadStartParams>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_create(&self.state, p).await;
-        record_call(&self.state, "room_create", &__params_json, __started, &__result);
+        let __result = super::helpers_comms::run_thread_start(&self.state, p).await;
+        record_call(&self.state, "thread_start", &__params_json, __started, &__result);
         __result
     }
 
     #[tool(
-        description = "List rooms whose scope matches this server's repo (git remote + cwd). \
-        Returns room front-matter (id, title, created_at, last_activity_micros, stale). A room is \
-        `stale` when it has never had a post or its last post is older than 7 days — skip those. \
-        Needs --features comms.",
+        description = "List threads DISCOVERABLE to this agent: those it is a member of, those \
+        whose path glob matches this server's cwd, or (with `subject_contains`) those whose subject \
+        contains the filter. NEVER all threads. Archived threads are excluded unless \
+        `include_archived`. Returns front-matter (id, subject, path, members, creator, active, \
+        last_activity, stale). Needs --features comms.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    pub(crate) async fn room_list(
+    pub(crate) async fn thread_list(
         &self,
-        Parameters(p): Parameters<RoomListParams>,
+        Parameters(p): Parameters<ThreadListParams>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_list(&self.state, p).await;
-        record_call(&self.state, "room_list", &__params_json, __started, &__result);
+        let __result = super::helpers_comms::run_thread_list(&self.state, p).await;
+        record_call(&self.state, "thread_list", &__params_json, __started, &__result);
         __result
     }
 
     #[tool(
-        description = "Subscribe this agent to a room (durable membership; drives the inbox). \
+        description = "Join a thread (durable membership; drives the inbox). Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn thread_join(
+        &self,
+        Parameters(p): Parameters<ThreadJoinParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_thread_join(&self.state, p).await;
+        record_call(&self.state, "thread_join", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Leave a thread you are a member of. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn thread_leave(
+        &self,
+        Parameters(p): Parameters<ThreadLeaveParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_thread_leave(&self.state, p).await;
+        record_call(&self.state, "thread_leave", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "List the members of a thread. Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn thread_members(
+        &self,
+        Parameters(p): Parameters<ThreadMembersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_thread_members(&self.state, p).await;
+        record_call(&self.state, "thread_members", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Add a member to a thread. Only the thread CREATOR may do this. \
         Needs --features comms.",
         annotations(
             read_only_hint = false,
@@ -114,102 +169,37 @@ impl BasemindServer {
             open_world_hint = false
         )
     )]
-    pub(crate) async fn room_join(
+    pub(crate) async fn thread_add_member(
         &self,
-        Parameters(p): Parameters<RoomJoinParams>,
+        Parameters(p): Parameters<ThreadMemberParams>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_join(&self.state, p).await;
-        record_call(&self.state, "room_join", &__params_json, __started, &__result);
+        let __result = super::helpers_comms::run_thread_add_member(&self.state, p).await;
+        record_call(&self.state, "thread_add_member", &__params_json, __started, &__result);
         __result
     }
 
     #[tool(
-        description = "Unsubscribe this agent from a room. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn room_leave(
-        &self,
-        Parameters(p): Parameters<RoomLeaveParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_leave(&self.state, p).await;
-        record_call(&self.state, "room_leave", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        description = "Post a message (subject + optional markdown body + tags + reply_to) to a \
-        room. Returns the new message_id. The body is stored separately from front-matter. \
+        description = "Remove a member from a thread. Only the thread CREATOR may do this. \
         Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn room_post(
-        &self,
-        Parameters(p): Parameters<RoomPostParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_post(&self.state, p).await;
-        record_call(&self.state, "room_post", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        description = "Send a DIRECT message to one agent's inbox via a private pairwise room \
-        (`dm:<lo>:<hi>`) that both ends auto-join. Optional `as_agent` sends on behalf of a \
-        subagent. The recipient sees it in inbox_read(as_agent=<recipient>). Returns the \
-        message_id and the room. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = false,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn dm_send(&self, Parameters(p): Parameters<DmSendParams>) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_dm_send(&self.state, p).await;
-        record_call(&self.state, "dm_send", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        description = "Resolve the repo at `path` to its CANONICAL room (keyed by git remote, else \
-        the repo root path) and join it — get-or-create. Use this to coordinate in ANOTHER repo's \
-        room: it returns the same room agents working in that repo auto-join. Any subdirectory of a \
-        repo maps to one room. Optional `as_agent` joins on behalf of a subagent. Returns the room \
-        id, scope label, title, and whether it was created. Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
         )
     )]
-    pub(crate) async fn get_or_create_chat_room_for_path(
+    pub(crate) async fn thread_remove_member(
         &self,
-        Parameters(p): Parameters<GetOrCreateRoomForPathParams>,
+        Parameters(p): Parameters<ThreadMemberParams>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_get_or_create_chat_room_for_path(&self.state, p).await;
+        let __result = super::helpers_comms::run_thread_remove_member(&self.state, p).await;
         record_call(
             &self.state,
-            "get_or_create_chat_room_for_path",
+            "thread_remove_member",
             &__params_json,
             __started,
             &__result,
@@ -218,21 +208,65 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Read a room's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
-        ts, age_secs, tags) — bodies are NOT included; fetch them with message_get. Defaults to the \
-        last 24h of messages so stale chatter does not drown out current work; pass `since_hours` \
-        for a different window or `since_hours=0` for ALL history. Paginated: pass `cursor` from the \
-        previous response. Default 100 max 1000. Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
+        description = "Archive a thread. Only the thread CREATOR (or a human via the CLI) may do \
+        this; the system also auto-archives idle threads. Archived threads drop out of active \
+        listings but their history stays readable. Idempotent. Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
     )]
-    pub(crate) async fn room_history(
+    pub(crate) async fn thread_archive(
         &self,
-        Parameters(p): Parameters<RoomHistoryParams>,
+        Parameters(p): Parameters<ThreadArchiveParams>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_comms::run_room_history(&self.state, p).await;
-        record_call(&self.state, "room_history", &__params_json, __started, &__result);
+        let __result = super::helpers_comms::run_thread_archive(&self.state, p).await;
+        record_call(&self.state, "thread_archive", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Post a message (subject + optional markdown body + tags + reply_to) to a \
+        thread. Returns the new message_id. The body is stored separately from front-matter. \
+        Needs --features comms.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    pub(crate) async fn thread_post(
+        &self,
+        Parameters(p): Parameters<ThreadPostParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_thread_post(&self.state, p).await;
+        record_call(&self.state, "thread_post", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Read a thread's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
+        ts, age_secs, tags) — bodies are NOT included; fetch them with message_get. Defaults to the \
+        last 24h of messages; pass `since_hours` for a different window or `since_hours=0` for ALL \
+        history. Paginated: pass `cursor` from the previous response. Default 100 max 1000. \
+        Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn thread_history(
+        &self,
+        Parameters(p): Parameters<ThreadHistoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_thread_history(&self.state, p).await;
+        record_call(&self.state, "thread_history", &__params_json, __started, &__result);
         __result
     }
 
@@ -254,11 +288,11 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Read this agent's inbox: new FRONT-MATTER across all subscribed rooms \
-        (bodies NOT included — use message_get). Each row carries `age_secs` so you can gauge \
-        staleness. Defaults to the last 24h; pass `since_hours` for a different window or \
-        `since_hours=0` for ALL unread. `mark_read=true` advances read cursors. Returns the page \
-        plus remaining unread count. Default 100 max 1000. Needs --features comms.",
+        description = "Read this agent's inbox: new FRONT-MATTER across all JOINED threads \
+        (bodies NOT included — use message_get). Each row carries `age_secs`. Defaults to the last \
+        24h; pass `since_hours` for a different window or `since_hours=0` for ALL unread. \
+        `mark_read=true` advances read cursors. Returns the page plus remaining unread count. \
+        Default 100 max 1000. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -278,12 +312,11 @@ impl BasemindServer {
     }
 
     #[tool(
-        description = "Acknowledge inbox messages by ADVANCING this agent's per-room read cursors \
-        — it does NOT delete anything and does NOT affect the shared append-only log or any other \
-        agent's inbox (message_get and room_history still return acked messages). Two modes, \
-        combinable: pass `message_ids` to ack specific messages (each resolved to its room+seq), \
-        and/or `room` + `to_seq` to bulk-ack everything up to `to_seq` in one room (stale-room \
-        cleanup). At least one mode is required. Needs --features comms.",
+        description = "Acknowledge inbox messages by ADVANCING this agent's per-thread read \
+        cursors — it does NOT delete anything and does NOT affect the shared log or any other \
+        agent's inbox. Two modes, combinable: pass `message_ids` to ack specific messages, and/or \
+        `thread` + `to_seq` to bulk-ack everything up to `to_seq` in one thread. At least one mode \
+        is required. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

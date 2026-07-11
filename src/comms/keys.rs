@@ -2,12 +2,12 @@
 //!
 //! Mirrors the conventions of `crate::index::keys`: every variable-length component is
 //! `u16`-big-endian length-prefixed so a `Foo` prefix never spills into `Foobar`, and the
-//! per-room `seq` suffix is `u64`-big-endian so a prefix range scan over `messages_by_room`
-//! returns a room's messages in total post order.
+//! per-thread `seq` suffix is `u64`-big-endian so a prefix range scan over `messages_by_thread`
+//! returns a thread's messages in total post order.
 //!
 //! The encoders take already-validated [`AgentId`](super::ids::AgentId) /
-//! [`RoomId`](super::ids::RoomId) handles, so the only failure mode (a component exceeding the
-//! `u16` ceiling) is structurally impossible — ids are capped at 128 bytes by
+//! [`ThreadId`](super::ids::ThreadId) handles, so the only failure mode (a component exceeding
+//! the `u16` ceiling) is structurally impossible — ids are capped at 128 bytes by
 //! [`MAX_ID_LEN`](super::ids::MAX_ID_LEN). The encoders therefore return `Vec<u8>` directly.
 
 /// `u16:len ‖ bytes`. Internal helper. Ids are `<= 128` bytes, so the `u16` cast never
@@ -37,29 +37,29 @@ fn read_len_prefixed<'buf>(buf: &'buf [u8], cursor: &mut usize) -> Option<&'buf 
     Some(out)
 }
 
-/// `messages_by_room`: `u16:len(room) ‖ room ‖ seq:u64_be`.
+/// `messages_by_thread`: `u16:len(thread) ‖ thread ‖ seq:u64_be`.
 ///
-/// The big-endian `seq` suffix gives total order per room: a prefix scan over
-/// [`messages_by_room_prefix`] walks a room's messages oldest-first.
-pub fn message_by_room(room: &str, seq: u64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + room.len() + 8);
-    write_len_prefixed(&mut out, room.as_bytes());
+/// The big-endian `seq` suffix gives total order per thread: a prefix scan over
+/// [`messages_by_thread_prefix`] walks a thread's messages oldest-first.
+pub fn message_by_thread(thread: &str, seq: u64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + thread.len() + 8);
+    write_len_prefixed(&mut out, thread.as_bytes());
     out.extend_from_slice(&seq.to_be_bytes());
     out
 }
 
-/// Prefix bytes for "all messages in this room" — feed to `keyspace.prefix(..)`.
-pub fn messages_by_room_prefix(room: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + room.len());
-    write_len_prefixed(&mut out, room.as_bytes());
+/// Prefix bytes for "all messages in this thread" — feed to `keyspace.prefix(..)`.
+pub fn messages_by_thread_prefix(thread: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + thread.len());
+    write_len_prefixed(&mut out, thread.as_bytes());
     out
 }
 
-/// Decode a `messages_by_room` key back into `(room, seq)`.
-pub fn parse_message_by_room(key: &[u8]) -> Option<(String, u64)> {
+/// Decode a `messages_by_thread` key back into `(thread, seq)`.
+pub fn parse_message_by_thread(key: &[u8]) -> Option<(String, u64)> {
     let mut c = 0;
-    let room = read_len_prefixed(key, &mut c)?;
-    let room = std::str::from_utf8(room).ok()?.to_string();
+    let thread = read_len_prefixed(key, &mut c)?;
+    let thread = std::str::from_utf8(thread).ok()?.to_string();
     if key.len() < c + 8 {
         return None;
     }
@@ -73,47 +73,47 @@ pub fn parse_message_by_room(key: &[u8]) -> Option<(String, u64)> {
         key[c + 6],
         key[c + 7],
     ]);
-    Some((room, seq))
+    Some((thread, seq))
 }
 
-/// `subs_by_room`: `u16:len(room) ‖ room ‖ u16:len(agent) ‖ agent`.
-pub fn sub_by_room(room: &str, agent: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + room.len() + 2 + agent.len());
-    write_len_prefixed(&mut out, room.as_bytes());
+/// `thread_members` / `thread_subs`: `u16:len(thread) ‖ thread ‖ u16:len(agent) ‖ agent`.
+pub fn thread_agent(thread: &str, agent: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + thread.len() + 2 + agent.len());
+    write_len_prefixed(&mut out, thread.as_bytes());
     write_len_prefixed(&mut out, agent.as_bytes());
     out
 }
 
-/// Prefix bytes for "all subscribers of this room".
-pub fn subs_by_room_prefix(room: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + room.len());
-    write_len_prefixed(&mut out, room.as_bytes());
+/// Prefix bytes for "all agents in this thread".
+pub fn thread_agent_prefix(thread: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + thread.len());
+    write_len_prefixed(&mut out, thread.as_bytes());
     out
 }
 
-/// Decode a `subs_by_room` key back into `(room, agent)`.
-pub fn parse_sub_by_room(key: &[u8]) -> Option<(String, String)> {
+/// Decode a `thread_members` / `thread_subs` key back into `(thread, agent)`.
+pub fn parse_thread_agent(key: &[u8]) -> Option<(String, String)> {
     let mut c = 0;
-    let room = read_len_prefixed(key, &mut c)?;
-    let room = std::str::from_utf8(room).ok()?.to_string();
+    let thread = read_len_prefixed(key, &mut c)?;
+    let thread = std::str::from_utf8(thread).ok()?.to_string();
     let agent = read_len_prefixed(key, &mut c)?;
     let agent = std::str::from_utf8(agent).ok()?.to_string();
-    Some((room, agent))
+    Some((thread, agent))
 }
 
-/// `cursors`: `u16:len(agent) ‖ agent ‖ u16:len(room) ‖ room`. Value is the agent's last-read
-/// `seq` for that room as `u64_be`.
-pub fn cursor_key(agent: &str, room: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(2 + agent.len() + 2 + room.len());
+/// `cursors`: `u16:len(agent) ‖ agent ‖ u16:len(thread) ‖ thread`. Value is the agent's last-read
+/// `seq` for that thread as `u64_be`.
+pub fn cursor_key(agent: &str, thread: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(2 + agent.len() + 2 + thread.len());
     write_len_prefixed(&mut out, agent.as_bytes());
-    write_len_prefixed(&mut out, room.as_bytes());
+    write_len_prefixed(&mut out, thread.as_bytes());
     out
 }
 
-/// `rooms` / `agents` primary keys are the raw id bytes — no composite encoding needed, but
-/// expose helpers so callers never hand-roll the conversion.
-pub fn room_key(room: &str) -> Vec<u8> {
-    room.as_bytes().to_vec()
+/// `threads` primary key: the raw thread id bytes — no composite encoding needed, but expose a
+/// helper so callers never hand-roll the conversion.
+pub fn thread_key(thread: &str) -> Vec<u8> {
+    thread.as_bytes().to_vec()
 }
 
 /// Primary key for the `agents` keyspace.
@@ -121,18 +121,11 @@ pub fn agent_key(agent: &str) -> Vec<u8> {
     agent.as_bytes().to_vec()
 }
 
-/// `sessions` primary key: the raw `session_id` bytes. Session ids are free-form terminal ids
-/// (not [`super::ids`]-validated), so the value record carries the canonical form; the key is a
-/// direct byte mapping, mirroring `room_key` / `agent_key`.
-pub fn session_key(session_id: &str) -> Vec<u8> {
-    session_id.as_bytes().to_vec()
-}
-
-/// Per-room `seq` counter key inside the `meta` keyspace: `b"seq:" ‖ room`.
-pub fn room_seq_meta_key(room: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + room.len());
+/// Per-thread `seq` counter key inside the `meta` keyspace: `b"seq:" ‖ thread`.
+pub fn thread_seq_meta_key(thread: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + thread.len());
     out.extend_from_slice(b"seq:");
-    out.extend_from_slice(room.as_bytes());
+    out.extend_from_slice(thread.as_bytes());
     out
 }
 
@@ -141,61 +134,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn message_by_room_round_trips() {
-        for (room, seq) in [("room-1", 0u64), ("backend:team", 42), ("x", u64::MAX)] {
-            let key = message_by_room(room, seq);
-            let (r, s) = parse_message_by_room(&key).expect("parse");
-            assert_eq!(r, room);
+    fn message_by_thread_round_trips() {
+        for (thread, seq) in [("th-1", 0u64), ("backend:team", 42), ("x", u64::MAX)] {
+            let key = message_by_thread(thread, seq);
+            let (t, s) = parse_message_by_thread(&key).expect("parse");
+            assert_eq!(t, thread);
             assert_eq!(s, seq);
         }
     }
 
     #[test]
-    fn message_keys_sort_by_seq_within_a_room() {
-        let k0 = message_by_room("room", 0);
-        let k1 = message_by_room("room", 1);
-        let k2 = message_by_room("room", 256);
+    fn message_keys_sort_by_seq_within_a_thread() {
+        let k0 = message_by_thread("th", 0);
+        let k1 = message_by_thread("th", 1);
+        let k2 = message_by_thread("th", 256);
         assert!(k0 < k1, "seq 0 sorts before seq 1");
         assert!(k1 < k2, "seq 1 sorts before seq 256 (big-endian)");
     }
 
     #[test]
-    fn prefix_does_not_spill_into_sibling_room() {
-        let foo = messages_by_room_prefix("Foo");
-        let foobar_msg = message_by_room("Foobar", 0);
+    fn prefix_does_not_spill_into_sibling_thread() {
+        let foo = messages_by_thread_prefix("Foo");
+        let foobar_msg = message_by_thread("Foobar", 0);
         assert!(
             !foobar_msg.starts_with(&foo),
             "length prefix must isolate Foo from Foobar"
         );
-        let foo_msg = message_by_room("Foo", 0);
+        let foo_msg = message_by_thread("Foo", 0);
         assert!(foo_msg.starts_with(&foo), "Foo message starts with Foo prefix");
     }
 
     #[test]
-    fn sub_by_room_round_trips() {
-        let key = sub_by_room("room-1", "agent-1");
-        let (r, a) = parse_sub_by_room(&key).expect("parse");
-        assert_eq!(r, "room-1");
+    fn thread_agent_round_trips() {
+        let key = thread_agent("th-1", "agent-1");
+        let (t, a) = parse_thread_agent(&key).expect("parse");
+        assert_eq!(t, "th-1");
         assert_eq!(a, "agent-1");
     }
 
     #[test]
-    fn sub_prefix_isolates_rooms() {
-        let prefix = subs_by_room_prefix("room");
-        assert!(sub_by_room("room", "a").starts_with(&prefix));
-        assert!(!sub_by_room("roomx", "a").starts_with(&prefix));
+    fn thread_agent_prefix_isolates_threads() {
+        let prefix = thread_agent_prefix("th");
+        assert!(thread_agent("th", "a").starts_with(&prefix));
+        assert!(!thread_agent("thx", "a").starts_with(&prefix));
     }
 
     #[test]
     fn cursor_key_is_deterministic() {
-        assert_eq!(cursor_key("a", "r"), cursor_key("a", "r"));
-        assert_ne!(cursor_key("a", "r"), cursor_key("r", "a"));
+        assert_eq!(cursor_key("a", "t"), cursor_key("a", "t"));
+        assert_ne!(cursor_key("a", "t"), cursor_key("t", "a"));
     }
 
     #[test]
-    fn room_seq_meta_key_namespaced() {
-        let key = room_seq_meta_key("room-1");
+    fn thread_seq_meta_key_namespaced() {
+        let key = thread_seq_meta_key("th-1");
         assert!(key.starts_with(b"seq:"));
-        assert_eq!(&key[4..], b"room-1");
+        assert_eq!(&key[4..], b"th-1");
     }
 }

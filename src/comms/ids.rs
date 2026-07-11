@@ -1,6 +1,6 @@
 //! Validated identifier newtypes for agent-to-agent comms.
 //!
-//! [`AgentId`] and [`RoomId`] are short, opaque handles that double as **key segments** in
+//! [`AgentId`] and [`ThreadId`] are short, opaque handles that double as **key segments** in
 //! the comms Fjall store. They are length-bounded and restricted to a NUL-free ASCII
 //! alphabet so they can be embedded in length-prefixed composite keys without ambiguity, and
 //! they validate at the serde boundary (`Deserialize` runs [`AgentId::parse`]) so a malformed
@@ -119,7 +119,7 @@ id_newtype!(
     "AgentId",
     "Validated identity handle for an opaque agent (e.g. from `BASEMIND_AGENT_ID`)."
 );
-id_newtype!(RoomId, "RoomId", "Validated name of a comms room.");
+id_newtype!(ThreadId, "ThreadId", "Validated id of a comms thread.");
 
 #[cfg(test)]
 mod tests {
@@ -129,7 +129,7 @@ mod tests {
     fn accepts_valid_identifiers() {
         for s in ["agent-1", "claude_code", "team:backend", "a.b.c", "A1", "x"] {
             assert!(AgentId::parse(s).is_ok(), "{s} should be valid");
-            assert!(RoomId::parse(s).is_ok(), "{s} should be valid");
+            assert!(ThreadId::parse(s).is_ok(), "{s} should be valid");
         }
     }
 
@@ -164,10 +164,10 @@ mod tests {
 
     #[test]
     fn deserialize_validates() {
-        let ok: RoomId = serde_json::from_str("\"backend-team\"").unwrap();
+        let ok: ThreadId = serde_json::from_str("\"backend-team\"").unwrap();
         assert_eq!(ok.as_str(), "backend-team");
-        assert!(serde_json::from_str::<RoomId>("\"bad id\"").is_err());
-        assert!(serde_json::from_str::<RoomId>("\"\"").is_err());
+        assert!(serde_json::from_str::<ThreadId>("\"bad id\"").is_err());
+        assert!(serde_json::from_str::<ThreadId>("\"\"").is_err());
     }
 
     #[test]

@@ -119,8 +119,7 @@ fn current_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::comms::ids::{AgentId, RoomId};
-    use crate::comms::model::RoomScope;
+    use crate::comms::ids::{AgentId, ThreadId};
     use crate::comms::protocol::{CommsRequest, CommsResponse, PROTO_VER};
     use crate::comms::store::CommsStore;
 
@@ -133,6 +132,34 @@ mod tests {
         }
     }
 
+    async fn hello(link: &mut InProcClientLink, name: &str) {
+        link.send_request(CommsRequest::Hello {
+            agent: AgentId::parse(name).expect("agent"),
+            proto_ver: PROTO_VER,
+            remote: None,
+            cwd: None,
+        })
+        .await
+        .expect("hello");
+        assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
+    }
+
+    /// Start a thread with `writer` as creator and `members` (satisfying the ≥2-of-3 rule via
+    /// subject + members), returning its id.
+    async fn start_thread(link: &mut InProcClientLink, members: &[&str]) -> ThreadId {
+        link.send_request(CommsRequest::ThreadStart {
+            subject: Some("Team".to_string()),
+            path: None,
+            members: members.iter().map(|m| AgentId::parse(*m).expect("agent")).collect(),
+        })
+        .await
+        .expect("start");
+        match expect_response(link).await {
+            CommsResponse::Thread(t) => t.id,
+            other => panic!("expected Thread, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn two_links_post_and_read_history_and_inbox() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -142,58 +169,30 @@ mod tests {
 
         let mut writer = frontend.connect();
         let mut reader = frontend.connect();
+        hello(&mut writer, "writer").await;
+        hello(&mut reader, "reader").await;
 
-        for (link, name) in [(&mut writer, "writer"), (&mut reader, "reader")] {
-            link.send_request(CommsRequest::Hello {
-                agent: AgentId::parse(name).expect("agent"),
-                proto_ver: PROTO_VER,
-                remote: None,
-                cwd: None,
-                session_id: None,
-                parent_agent: None,
-            })
-            .await
-            .expect("hello");
-            assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
-        }
-
-        let room = RoomId::parse("team").expect("room");
-        writer
-            .send_request(CommsRequest::CreateRoom {
-                room: room.clone(),
-                scope: RoomScope::Global,
-                title: Some("Team".to_string()),
-            })
-            .await
-            .expect("create");
-        assert!(matches!(expect_response(&mut writer).await, CommsResponse::Room(_)));
-
-        reader
-            .send_request(CommsRequest::Join { room: room.clone() })
-            .await
-            .expect("join");
-        assert!(matches!(expect_response(&mut reader).await, CommsResponse::Ok));
+        // Thread with writer (creator) + reader as members.
+        let thread = start_thread(&mut writer, &["reader"]).await;
 
         writer
-            .send_request(CommsRequest::Post {
-                room: room.clone(),
+            .send_request(CommsRequest::ThreadPost {
+                thread: thread.clone(),
                 subject: "status".to_string(),
                 tags: vec!["daily".to_string()],
                 reply_to: None,
-                scope: vec![],
                 body: b"all green".to_vec(),
             })
             .await
             .expect("post");
-        let posted = expect_response(&mut writer).await;
-        let message_id = match posted {
+        let message_id = match expect_response(&mut writer).await {
             CommsResponse::Posted { message_id } => message_id,
             other => panic!("expected Posted, got {other:?}"),
         };
 
         reader
-            .send_request(CommsRequest::History {
-                room: room.clone(),
+            .send_request(CommsRequest::ThreadHistory {
+                thread: thread.clone(),
                 cursor: None,
                 limit: Some(10),
                 since_micros: None,
@@ -270,39 +269,17 @@ mod tests {
 
         let mut writer = frontend.connect();
         let mut reader = frontend.connect();
+        hello(&mut writer, "author").await;
+        hello(&mut reader, "other").await;
 
-        for (link, name) in [(&mut writer, "author"), (&mut reader, "other")] {
-            link.send_request(CommsRequest::Hello {
-                agent: AgentId::parse(name).expect("agent"),
-                proto_ver: PROTO_VER,
-                remote: None,
-                cwd: None,
-                session_id: None,
-                parent_agent: None,
-            })
-            .await
-            .expect("hello");
-            assert!(matches!(expect_response(link).await, CommsResponse::Welcome { .. }));
-        }
-
-        let room = RoomId::parse("team").expect("room");
-        writer
-            .send_request(CommsRequest::CreateRoom {
-                room: room.clone(),
-                scope: RoomScope::Global,
-                title: Some("Team".to_string()),
-            })
-            .await
-            .expect("create");
-        assert!(matches!(expect_response(&mut writer).await, CommsResponse::Room(_)));
+        let thread = start_thread(&mut writer, &["other"]).await;
 
         writer
-            .send_request(CommsRequest::Post {
-                room: room.clone(),
+            .send_request(CommsRequest::ThreadPost {
+                thread: thread.clone(),
                 subject: "mine".to_string(),
                 tags: vec![],
                 reply_to: None,
-                scope: vec![],
                 body: b"self note".to_vec(),
             })
             .await
@@ -332,8 +309,8 @@ mod tests {
         }
 
         writer
-            .send_request(CommsRequest::History {
-                room: room.clone(),
+            .send_request(CommsRequest::ThreadHistory {
+                thread: thread.clone(),
                 cursor: None,
                 limit: Some(10),
                 since_micros: None,
