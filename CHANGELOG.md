@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-07-11
+
 ### Changed
 
 - **Extracted the Hermes Agent plugin into a standalone `basemind-hermes-plugin` PyPI package.** The
@@ -27,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   into `~/.cache/basemind`, which raised `OSError: [Errno 18] Invalid cross-device link` on hosts
   where those are separate mounts. Staging now happens under the cache root so the rename stays on one
   device.
+
+### Dependencies
+
+- Bumped `xberg` to `1.0.0-rc.21` and ran `cargo upgrade --incompatible`: `crawlberg` 1.0.5,
+  `jsonschema` 0.47, `rmcp` 2.2, `regex` 1.13, `lru` 0.18.1, `tree-sitter-language-pack` 1.12.5.
+  `arrow-array`/`arrow-schema` held at 58 to stay in lockstep with `lancedb` 0.31's transitive Arrow.
+  Blob + index format unchanged (patch release).
 
 ## [0.21.0] — 2026-07-10
 
