@@ -148,7 +148,7 @@ pub(super) fn run_find_callers(
     });
 
     if let Some(sym) = symbol.as_ref()
-        && let Some(page) = resolved_callers_page(store, root, &params.path, &params.name, sym, limit)
+        && let Some(page) = resolved_callers_page(store, root, cache, &params.path, &params.name, sym, limit)
     {
         let total = page.total;
         let total_is_partial = page.total_is_partial;
@@ -205,6 +205,7 @@ pub(super) fn run_find_callers(
 fn resolved_callers_page(
     store: &crate::store::Store,
     root: &std::path::Path,
+    cache: &MapCache,
     def_path: &crate::path::RelPath,
     name: &str,
     symbol: &crate::extract::Symbol,
@@ -249,6 +250,23 @@ fn resolved_callers_page(
             }
         }
     }
+    if uses.is_empty() {
+        return None;
+    }
+
+    // find_callers reports CALL sites only, matching the name-based scan it replaces. The resolved
+    // edges also cover non-call references — chiefly the `import` binding that introduced the name —
+    // so keep only uses that coincide with an actual call site (a `calls_by_path` entry). Those
+    // dropped edges still serve `goto_definition` / `find_references`; they just aren't "callers".
+    let use_paths: ahash::AHashSet<crate::path::RelPath> = uses.iter().map(|(path, _)| path.clone()).collect();
+    let mut call_sites: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
+    for path in &use_paths {
+        let _ = for_each_call_in_file(store.index_db.as_ref(), cache, path, |_callee, start| {
+            call_sites.insert((path.clone(), start));
+            true
+        });
+    }
+    uses.retain(|use_ref| call_sites.contains(use_ref));
     if uses.is_empty() {
         return None;
     }
@@ -668,8 +686,9 @@ mod tests {
             "L1 node start_byte must differ from the resolver's def identifier byte"
         );
 
-        let page =
-            super::resolved_callers_page(&store, root, &def_path, "target", &sym, 100).expect("resolved callers found");
+        let cache = crate::mcp::MapCache::build(&store);
+        let page = super::resolved_callers_page(&store, root, &cache, &def_path, "target", &sym, 100)
+            .expect("resolved callers found");
         assert_eq!(
             page.total, 2,
             "exactly the two util.ts callers resolve to util.ts target"

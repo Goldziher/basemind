@@ -348,12 +348,15 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
                 && h.get("column").and_then(Value::as_u64) == Some(11)),
         "the real f() call site app.py:26:11 must be a resolved caller: {body}"
     );
-    // The `from mod import f` binding (line 1) is also a resolved reference to f.
+    // find_callers reports CALL sites only: the `from mod import f` binding (line 1) is a resolved
+    // *reference* to f (goto_definition / find_references see it) but NOT a caller, so it must not
+    // appear here.
     assert!(
-        hits.iter()
+        !hits
+            .iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
                 && h.get("line").and_then(Value::as_u64) == Some(1)),
-        "the import binding app.py:1 must resolve to mod.py's f too: {body}"
+        "the import statement app.py:1 is a reference, not a caller — it must be filtered out: {body}"
     );
     assert!(
         !hits
