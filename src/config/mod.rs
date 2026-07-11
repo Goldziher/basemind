@@ -23,7 +23,7 @@ pub use layered::{ConfigLayers, LoadedConfig, defaults_only, merge_layers};
 pub use overrides::DocumentsCliOverrides;
 pub use shells::{ShellsConfig, TerminalChoice, VisualMode};
 pub use source::{ConfigSource, ProvenanceMap};
-pub use v1::{ConfigV1, CrawlConfig};
+pub use v1::{CodeIntelConfig, ConfigV1, CrawlConfig};
 
 pub type Config = ConfigV1;
 
@@ -249,6 +249,21 @@ mod tests {
     fn extra_roots_defaults_to_empty() {
         let cfg = parse_str("\"$schema\" = \"v1\"\n").unwrap();
         assert!(cfg.scan.extra_roots.is_empty());
+    }
+
+    #[test]
+    fn code_intel_precise_resolution_defaults_true_and_parses_override() {
+        let default_cfg = parse_str("\"$schema\" = \"v1\"\n").unwrap();
+        assert!(
+            default_cfg.code_intel.precise_resolution,
+            "precise_resolution defaults to true when [code_intel] is absent"
+        );
+        let overridden = parse_str("\"$schema\" = \"v1\"\n[code_intel]\nprecise_resolution = false\n")
+            .expect("[code_intel] precise_resolution is a valid, schema-accepted field");
+        assert!(
+            !overridden.code_intel.precise_resolution,
+            "an explicit precise_resolution = false is honored"
+        );
     }
 
     #[test]

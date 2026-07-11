@@ -565,6 +565,12 @@ exclude = []
 # (re-)indexed on a full `basemind scan` only (not live-watched). extra_roots always follow symlinks.
 extra_roots = ["/private/var/tmp/_bazel_you/abc123/external"]
 
+[code_intel]
+# Precise, scope- and import-aware resolution (JS/TS via oxc; Python/Java via stack-graphs). On by
+# default. Set false to fall back to fast tree-sitter locals binding for every language. Applies to
+# files (re)scanned after the change.
+precise_resolution = true
+
 [documents]
 enabled = true
 # Embed documents for semantic search (ON — embeddings pay off on real prose / OCR).

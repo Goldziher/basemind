@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   these languages. Known limitations this iteration: Java cross-file resolution of *member* calls on
   an imported type (`Foo.greet()`) is not yet resolved (the imported type itself is), and a variable
   reused after a same-name Python comprehension may bind to the comprehension's own variable.
+- **`[code_intel] precise_resolution` config toggle** (default `true`). Set it to `false` in
+  `basemind.toml` to skip the precise engines (oxc + stack-graphs) and fall back to fast tree-sitter
+  `locals` scope binding for every language. Applies to files (re)scanned after the change.
 
 ### Fixed
 

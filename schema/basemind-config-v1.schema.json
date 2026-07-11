@@ -32,6 +32,12 @@
         "extra_roots": []
       }
     },
+    "code_intel": {
+      "$ref": "#/$defs/CodeIntelConfig",
+      "default": {
+        "precise_resolution": true
+      }
+    },
     "watch": {
       "$ref": "#/$defs/WatchConfig",
       "default": {
@@ -160,7 +166,7 @@
         "max_pages": 32,
         "max_depth": 2,
         "max_body_size": 4194304,
-        "user_agent": "basemind/0.20.0 (+https://github.com/Goldziher/basemind)",
+        "user_agent": "basemind/0.21.1 (+https://github.com/Goldziher/basemind)",
         "allow_private_network": false
       }
     },
@@ -260,6 +266,17 @@
             "type": "string"
           },
           "default": []
+        }
+      },
+      "additionalProperties": false
+    },
+    "CodeIntelConfig": {
+      "type": "object",
+      "properties": {
+        "precise_resolution": {
+          "description": "Master switch for precise, scope- and import-aware name resolution. When `true` (default),\nlanguages with a precise engine resolve references to their true definitions — JS/TS via oxc\n(`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so\n`find_references` / `find_callers` / `goto_definition` distinguish a shadowed local from an\nimport instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`\nscope binding for every language (the precise engines are skipped). Inert for languages with\nno precise engine regardless. Takes effect on files (re)analyzed after the change; run a full\n`basemind scan` to apply it to an already-indexed repo.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -904,7 +921,7 @@
           "description": "User-Agent header sent with every request. Override to identify your\ncrawler to operators; the default includes the basemind release\nversion + the upstream repo URL so site operators can trace traffic.",
           "type": "string",
           "minLength": 1,
-          "default": "basemind/0.20.0 (+https://github.com/Goldziher/basemind)"
+          "default": "basemind/0.21.1 (+https://github.com/Goldziher/basemind)"
         },
         "allow_private_network": {
           "description": "Allow crawling URLs that resolve to private, loopback, or link-local\naddresses (`127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, …). Default\n`false`: the engine rejects them with an SSRF-policy violation. Flip this\non only to scrape an internal docs server you control. (The\n`CRAWLBERG_ALLOW_PRIVATE_NETWORK` env var is honoured as a process-wide\noverride regardless of this setting.)",

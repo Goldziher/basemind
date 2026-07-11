@@ -14,6 +14,8 @@ pub struct ConfigV1 {
     #[serde(default)]
     pub scan: ScanConfig,
     #[serde(default)]
+    pub code_intel: CodeIntelConfig,
+    #[serde(default)]
     pub watch: WatchConfig,
     #[serde(default)]
     pub cache: CacheConfig,
@@ -147,6 +149,35 @@ impl Default for ScanConfig {
             skip_submodules: Self::default_skip_submodules(),
             eager_l2: Self::default_eager_l2(),
             extra_roots: Self::default_extra_roots(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CodeIntelConfig {
+    /// Master switch for precise, scope- and import-aware name resolution. When `true` (default),
+    /// languages with a precise engine resolve references to their true definitions — JS/TS via oxc
+    /// (`code-intel-js`), Python/Java via the stack-graphs `.tsg` engine (`code-intel-stack`) — so
+    /// `find_references` / `find_callers` / `goto_definition` distinguish a shadowed local from an
+    /// import instead of matching by name. Set to `false` to fall back to fast tree-sitter `locals`
+    /// scope binding for every language (the precise engines are skipped). Inert for languages with
+    /// no precise engine regardless. Takes effect on files (re)analyzed after the change; run a full
+    /// `basemind scan` to apply it to an already-indexed repo.
+    #[serde(default = "CodeIntelConfig::default_precise_resolution")]
+    pub precise_resolution: bool,
+}
+
+impl CodeIntelConfig {
+    fn default_precise_resolution() -> bool {
+        true
+    }
+}
+
+impl Default for CodeIntelConfig {
+    fn default() -> Self {
+        Self {
+            precise_resolution: Self::default_precise_resolution(),
         }
     }
 }
@@ -369,6 +400,7 @@ impl ConfigV1 {
         Self {
             schema: "v1".to_string(),
             scan: ScanConfig::default(),
+            code_intel: CodeIntelConfig::default(),
             watch: WatchConfig::default(),
             cache: CacheConfig::default(),
             mcp: McpConfig::default(),
