@@ -11,6 +11,9 @@
 /pip-package/build
 /pip-package/dist
 /pip-package/basemind.egg-info
+/pip-package-hermes/build
+/pip-package-hermes/dist
+/pip-package-hermes/basemind_hermes_plugin.egg-info
 /npm-package/bin/*
 !/npm-package/bin/basemind.js
 /npm-package/node_modules

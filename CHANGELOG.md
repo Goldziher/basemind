@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Extracted the Hermes Agent plugin into a standalone `basemind-hermes-plugin` PyPI package.** The
+  helper skills, slash commands, `plugin.yaml`, and the `hermes_agent.plugins` entry point now live in
+  the pure-Python `pip-package-hermes/` (import package `basemind_hermes_plugin`), which ships no
+  binary and shells out to the `basemind` on `PATH`. The `basemind` pip package is now a pure
+  binary-wrapper (no plugin, no entry point). Install the binary via Homebrew/npm/cargo/release and
+  `pip install basemind-hermes-plugin` for the plugin, then `hermes plugins enable basemind`. The
+  entry-point name stays `basemind`, so the enable command is unchanged.
+
+### Fixed
+
+- **Binary download no longer crashes when `/tmp` and `$HOME` are on different filesystems (#38).**
+  `ensure_binary` staged the extracted binary in the system temp dir and then atomically renamed it
+  into `~/.cache/basemind`, which raised `OSError: [Errno 18] Invalid cross-device link` on hosts
+  where those are separate mounts. Staging now happens under the cache root so the rename stays on one
+  device.
+
 ## [0.21.0] — 2026-07-10
 
 Minor bump: `RELEASE_MINOR` advances 20 → 21, so the `.basemind/` index + blob cache is wiped and

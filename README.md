@@ -166,14 +166,12 @@ Kimi doesn't support the comms auto-notifications, but the chat tools still work
 <details>
 <summary><strong>Hermes</strong></summary>
 
-Hermes exposes MCP servers through config, so basemind's tools are wired there while the pip
-package ships the helper skills, slash commands, and comms notifications:
+Hermes exposes MCP servers through config, so basemind's tools are wired there. Two steps — the
+binary + MCP wiring gives you the tools; a small standalone plugin package adds the helper skills,
+slash commands, and comms notifications.
 
-```bash
-pip install basemind   # binary + Hermes plugin (auto-discovered via entry point)
-```
-
-Add the server to `~/.hermes/config.yaml` (this is what gives you the 60+ tools):
+First [install the program](#install-the-program) (Homebrew / npm / cargo / release — **not** pip),
+then add the server to `~/.hermes/config.yaml` (this is what gives you the 60+ tools):
 
 ```yaml
 mcp_servers:
@@ -182,8 +180,16 @@ mcp_servers:
     args: [serve]
 ```
 
-Then enable the plugin (general plugins are opt-in): `hermes plugins enable basemind`. Comms
-auto-notifications are best-effort; the chat tools work regardless.
+For the helper skills, slash commands, and agent-comms notifications, install the standalone plugin
+into the same Python environment Hermes runs in, then enable it (general plugins are opt-in):
+
+```bash
+pip install basemind-hermes-plugin
+hermes plugins enable basemind
+```
+
+The plugin is pure-Python and ships no binary — it shells out to the `basemind` you installed above.
+Comms auto-notifications are best-effort; the chat tools work regardless.
 
 </details>
 
@@ -234,8 +240,9 @@ ones and ask before the rest. If `basemind` isn't found, use the full path from 
 - **OpenCode (without the plugin)** — `opencode.json` under key `mcp`, with `command` as an array
   `["basemind", "serve"]`.
 - **Hermes** — `mcp_servers.basemind` in `~/.hermes/config.yaml` (YAML: `command: basemind`,
-  `args: [serve]`), then `hermes plugins enable basemind`. `pip install basemind` also ships a native
-  Hermes plugin (helper skills + comms notifications) — see the Hermes plugin section above.
+  `args: [serve]`). For helper skills + comms notifications, `pip install basemind-hermes-plugin`
+  (a standalone pure-Python plugin, no binary), then `hermes plugins enable basemind` — see the
+  Hermes plugin section above.
 - **Any other tool** — point it at the command `basemind` with the argument `serve`.
 
 </details>

@@ -1,4 +1,4 @@
-"""Contract tests for the basemind Hermes Agent plugin (basemind/hermes.py).
+"""Contract tests for the basemind Hermes Agent plugin (basemind_hermes_plugin/hermes.py).
 
 These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the plugin:
 
@@ -11,13 +11,12 @@ These use a duck-typed fake ``ctx`` — no Hermes dependency — and assert the 
 from __future__ import annotations
 
 import importlib.util
-import tomllib
 from pathlib import Path
 
+import basemind_hermes_plugin
 import pytest
-
-import basemind
-from basemind import hermes
+import tomllib
+from basemind_hermes_plugin import hermes
 
 PKG_DIR = Path(hermes.__file__).resolve().parent
 PIP_PKG_ROOT = PKG_DIR.parent
@@ -46,8 +45,8 @@ class RecordingCtx:
 
 
 def test_register_is_exported_from_package():
-    assert callable(basemind.register)
-    assert basemind.register is hermes.register
+    assert callable(basemind_hermes_plugin.register)
+    assert basemind_hermes_plugin.register is hermes.register
 
 
 def test_register_wires_all_skills():
@@ -120,8 +119,8 @@ def test_delta_context_baselines_then_reports_new(monkeypatch, tmp_path):
 def test_pyproject_declares_the_hermes_entry_point():
     data = tomllib.loads((PIP_PKG_ROOT / "pyproject.toml").read_text())
     entry = data["project"]["entry-points"]["hermes_agent.plugins"]
-    assert entry == {"basemind": "basemind"}
-    pkg_data = data["tool"]["setuptools"]["package-data"]["basemind"]
+    assert entry == {"basemind": "basemind_hermes_plugin"}
+    pkg_data = data["tool"]["setuptools"]["package-data"]["basemind_hermes_plugin"]
     assert "plugin.yaml" in pkg_data
 
 
@@ -149,8 +148,8 @@ def test_built_wheel_contains_manifest_and_skills(tmp_path):
     assert wheels, "no wheel produced"
     with zipfile.ZipFile(wheels[0]) as zf:
         names = zf.namelist()
-    assert any(n.endswith("basemind/plugin.yaml") for n in names)
-    assert any("basemind/skills/" in n and n.endswith("SKILL.md") for n in names)
+    assert any(n.endswith("basemind_hermes_plugin/plugin.yaml") for n in names)
+    assert any("basemind_hermes_plugin/skills/" in n and n.endswith("SKILL.md") for n in names)
     ep = next(n for n in names if n.endswith("entry_points.txt"))
     with zipfile.ZipFile(wheels[0]) as zf:
         assert "hermes_agent.plugins" in zf.read(ep).decode()

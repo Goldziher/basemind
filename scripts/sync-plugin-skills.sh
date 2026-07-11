@@ -47,7 +47,7 @@ TREES=(
 	".codex-plugin"
 	".cursor-plugin"
 	"opencode-plugin"
-	"pip-package/basemind"
+	"pip-package-hermes/basemind_hermes_plugin"
 )
 HOOK_TREES=(
 	".codex-plugin"

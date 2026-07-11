@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "basemind"
+name = "basemind-hermes-plugin"
 version = "0.21.0"
-description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
+description = "Hermes Agent plugin for basemind — helper skills, slash commands, and agent-comms notifications over the basemind MCP server."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Na'aman Hirschfeld", email = "nhirschfeld@gmail.com" }]
@@ -14,17 +14,17 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Software Development :: Code Generators",
     "Environment :: Console",
 ]
-keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
-requires-python = ">=3.10"
-dependencies = ["certifi>=2024.7.4"]
+keywords = ["mcp", "hermes", "agent-context", "code-map", "plugin"]
+requires-python = ">=3.9"
+dependencies = []
 
 [project.urls]
 Homepage = "https://basemind.ai"
@@ -32,8 +32,11 @@ Documentation = "https://basemind.ai"
 Repository = "https://github.com/Goldziher/basemind.git"
 Issues = "https://github.com/Goldziher/basemind/issues"
 
-[project.scripts]
-basemind = "basemind.cli:main"
+[project.entry-points."hermes_agent.plugins"]
+basemind = "basemind_hermes_plugin"
 
 [tool.setuptools]
-packages = ["basemind"]
+packages = ["basemind_hermes_plugin"]
+
+[tool.setuptools.package-data]
+basemind_hermes_plugin = ["plugin.yaml", "skills/*/SKILL.md", "commands/*.md"]

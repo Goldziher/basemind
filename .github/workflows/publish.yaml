@@ -31,6 +31,7 @@ jobs:
       npm_exists: ${{ steps.published.outputs.npm_exists }}
       opencode_exists: ${{ steps.published.outputs.opencode_exists }}
       pypi_exists: ${{ steps.published.outputs.pypi_exists }}
+      pypi_hermes_exists: ${{ steps.published.outputs.pypi_hermes_exists }}
       release_assets_exist: ${{ steps.release_assets.outputs.release_assets_exist }}
     steps:
       - name: Checkout
@@ -104,6 +105,24 @@ jobs:
             init_version="$(grep -E '^__version__ = "' pip-package/basemind/__init__.py | cut -d'"' -f2)"
             if [ "$init_version" != "$target_python_version" ]; then
               echo "::error::pip-package/basemind/__init__.py version mismatch: expected $target_python_version, got $init_version"
+              exit 1
+            fi
+          fi
+
+          # Check pip-package-hermes/pyproject.toml (PyPI form)
+          if [ -f pip-package-hermes/pyproject.toml ]; then
+            hermes_pypi_version="$(grep -E '^version = "' pip-package-hermes/pyproject.toml | head -1 | cut -d'"' -f2)"
+            if [ "$hermes_pypi_version" != "$target_python_version" ]; then
+              echo "::error::pip-package-hermes/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
+              exit 1
+            fi
+          fi
+
+          # Check pip-package-hermes/basemind_hermes_plugin/__init__.py
+          if [ -f pip-package-hermes/basemind_hermes_plugin/__init__.py ]; then
+            hermes_init_version="$(grep -E '^__version__ = "' pip-package-hermes/basemind_hermes_plugin/__init__.py | cut -d'"' -f2)"
+            if [ "$hermes_init_version" != "$target_python_version" ]; then
+              echo "::error::pip-package-hermes/basemind_hermes_plugin/__init__.py version mismatch: expected $target_python_version, got $hermes_init_version"
               exit 1
             fi
           fi
@@ -199,11 +218,17 @@ jobs:
             pypi_exists=true
           fi
 
+          pypi_hermes_exists=false
+          if curl -fsS "https://pypi.org/pypi/basemind-hermes-plugin/${python_version}/json" >/dev/null; then
+            pypi_hermes_exists=true
+          fi
+
           {
             echo "crates_exists=$crates_exists"
             echo "npm_exists=$npm_exists"
             echo "opencode_exists=$opencode_exists"
             echo "pypi_exists=$pypi_exists"
+            echo "pypi_hermes_exists=$pypi_hermes_exists"
           } >> "$GITHUB_OUTPUT"
 
           echo "Already published?"
@@ -211,6 +236,7 @@ jobs:
           echo "  npm:                $npm_exists"
           echo "  npm (opencode):     $opencode_exists"
           echo "  PyPI:               $pypi_exists"
+          echo "  PyPI (hermes):      $pypi_hermes_exists"
 
       - name: Detect existing GitHub release assets
         id: release_assets
@@ -763,6 +789,37 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: pip-package/dist
+          skip-existing: true
+
+  publish_pypi_hermes:
+    name: Publish PyPI (basemind-hermes-plugin)
+    needs: [meta, finalize_release]
+    if: always() && needs.meta.outputs.pypi_hermes_exists != 'true' && needs.finalize_release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || '' }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.9"
+
+      - name: Build Python package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+          cd pip-package-hermes
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pip-package-hermes/dist
           skip-existing: true
 
   publish_homebrew:
