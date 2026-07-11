@@ -29,7 +29,6 @@
 use std::sync::OnceLock;
 
 use ahash::AHashMap;
-use stack_graphs::NoCancellation;
 use stack_graphs::arena::Handle;
 use stack_graphs::graph::{Node, StackGraph};
 use stack_graphs::partial::PartialPaths;
@@ -110,7 +109,13 @@ fn build_engine(lang: LangId) -> Option<&'static LangEngine> {
     let sgl = match StackGraphLanguage::from_str(ts_language, &source) {
         Ok(sgl) => sgl,
         Err(err) => {
-            tracing::debug!(lang, error = %err, "stackgraph: .tsg failed to compile");
+            // Whole-language degradation to the locals fallback — surface it above debug. Cached per
+            // language (see `engine`), so this fires at most once per language per process.
+            tracing::warn!(
+                lang,
+                error = %err,
+                "stackgraph: .tsg failed to compile — precise resolution disabled for this language, falling back to tree-sitter locals"
+            );
             return None;
         }
     };
@@ -139,22 +144,63 @@ pub fn resolve_stackgraph(lang: LangId, source: &[u8]) -> Option<FileResolvedRef
     Some(out)
 }
 
+/// Per-file wall-clock budget shared by the stack-graph build and both partial-path stitcher
+/// passes. The parse step is already timeout-bounded (`parse_with_default_timeout`); this bounds the
+/// graph construction + path-stitching that follow, which are worst-case combinatorial in scope
+/// nesting / reference count, so a crafted or pathological file (within `max_file_bytes`) can't pin
+/// a scanner rayon worker indefinitely. On expiry the call errors and `resolve_stackgraph` degrades
+/// to the tree-sitter `locals` fallback. Generous enough to never trip on legitimate source.
+const STACKGRAPH_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A shared wall-clock deadline implementing both the `stack_graphs` and `tree_sitter_stack_graphs`
+/// `CancellationFlag` traits (identical `check` shape, distinct error types), so one budget covers
+/// the build + both stitcher passes of a single file.
+struct Deadline {
+    limit: std::time::Duration,
+    start: std::time::Instant,
+}
+
+impl Deadline {
+    fn start(limit: std::time::Duration) -> Self {
+        Self {
+            limit,
+            start: std::time::Instant::now(),
+        }
+    }
+    fn expired(&self) -> bool {
+        self.start.elapsed() > self.limit
+    }
+}
+
+impl stack_graphs::CancellationFlag for Deadline {
+    fn check(&self, at: &'static str) -> Result<(), stack_graphs::CancellationError> {
+        if self.expired() {
+            return Err(stack_graphs::CancellationError(at));
+        }
+        Ok(())
+    }
+}
+
+impl tree_sitter_stack_graphs::CancellationFlag for Deadline {
+    fn check(&self, at: &'static str) -> Result<(), tree_sitter_stack_graphs::CancellationError> {
+        if self.expired() {
+            return Err(tree_sitter_stack_graphs::CancellationError(at));
+        }
+        Ok(())
+    }
+}
+
 /// Build the stack graph for `src` and stitch reference→definition partial paths, keeping only
 /// edges whose definition lands in THIS file.
 fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<ResolvedEdge>, String> {
     let mut graph = StackGraph::new();
     let file = graph.get_or_create_file("<file>");
     let globals = Variables::new();
+    let deadline = Deadline::start(STACKGRAPH_BUDGET);
 
     engine
         .sgl
-        .build_stack_graph_into(
-            &mut graph,
-            file,
-            src,
-            &globals,
-            &tree_sitter_stack_graphs::NoCancellation,
-        )
+        .build_stack_graph_into(&mut graph, file, src, &globals, &deadline)
         .map_err(|e| format!("build_stack_graph_into: {e}"))?;
 
     // Phase 1: minimal partial-path set for this file, loaded into a Database.
@@ -165,7 +211,7 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         &mut partials,
         file,
         StitcherConfig::default(),
-        &NoCancellation,
+        &deadline,
         |g, ps, path| {
             db.add_partial_path(g, ps, path.clone());
         },
@@ -181,7 +227,7 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         &mut DatabaseCandidates::new(&graph, &mut partials, &mut db),
         references,
         StitcherConfig::default(),
-        &NoCancellation,
+        &deadline,
         |g, _ps, path| {
             let use_node = path.start_node;
             let def_node = path.end_node;
@@ -243,28 +289,33 @@ fn span_bytes(graph: &StackGraph, node: Handle<Node>) -> Option<(u32, u32)> {
 /// Both are best-effort: a parse or query failure leaves the (already-valid) `intra`-only record
 /// untouched.
 fn populate_imports_exports(lang: LangId, source: &[u8], out: &mut FileResolvedRefs) {
-    extract_exports(lang, source, out);
-    extract_imports(lang, source, out);
+    use crate::lang::{ParseOutcome, parse_with_default_timeout, with_parser};
+
+    // Parse once and share the tree between the export and import queries — each would otherwise
+    // re-parse identical bytes. (The stack-graph build does its own parse upstream; this at least
+    // collapses the two query passes here into a single parse.)
+    let Ok(ParseOutcome::Ok(tree)) = with_parser(lang, |p| parse_with_default_timeout(p, source)) else {
+        return;
+    };
+    let root = tree.root_node();
+    extract_exports(lang, source, root, out);
+    extract_imports(lang, source, root, out);
 }
 
 /// Extract module-level export identifiers with a cached per-language tree-sitter query. Captures
 /// the export **identifier** node (not the definition node), so `name_start` is the byte the
 /// cross-file join keys on and `goto_definition` lands on.
-fn extract_exports(lang: LangId, source: &[u8], out: &mut FileResolvedRefs) {
+fn extract_exports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out: &mut FileResolvedRefs) {
     use crate::intel::model::ExportEdge;
-    use crate::lang::{ParseOutcome, parse_with_default_timeout, with_parser};
     use streaming_iterator::StreamingIterator;
 
     let Some(query) = export_query(lang) else { return };
-    let Ok(ParseOutcome::Ok(tree)) = with_parser(lang, |p| parse_with_default_timeout(p, source)) else {
-        return;
-    };
     let Some(export_idx) = query.capture_index_for_name("export") else {
         return;
     };
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(query, tree.root_node(), source);
+    let mut matches = cursor.matches(query, root, source);
     while let Some(m) = matches.next() {
         let Some(node) = m.captures.iter().find(|c| c.index == export_idx).map(|c| c.node) else {
             continue;
@@ -278,22 +329,18 @@ fn extract_exports(lang: LangId, source: &[u8], out: &mut FileResolvedRefs) {
 }
 
 /// Extract import local-name bindings with a cached per-language tree-sitter query.
-fn extract_imports(lang: LangId, source: &[u8], out: &mut FileResolvedRefs) {
+fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out: &mut FileResolvedRefs) {
     use crate::intel::model::ImportEdge;
-    use crate::lang::{ParseOutcome, parse_with_default_timeout, with_parser};
     use streaming_iterator::StreamingIterator;
 
     let Some(query) = import_query(lang) else { return };
-    let Ok(ParseOutcome::Ok(tree)) = with_parser(lang, |p| parse_with_default_timeout(p, source)) else {
-        return;
-    };
 
     let local_idx = query.capture_index_for_name("local");
     let module_idx = query.capture_index_for_name("module");
     let Some(local_idx) = local_idx else { return };
 
     let mut cursor = tree_sitter::QueryCursor::new();
-    let mut matches = cursor.matches(query, tree.root_node(), source);
+    let mut matches = cursor.matches(query, root, source);
     while let Some(m) = matches.next() {
         let local_node = m.captures.iter().find(|c| c.index == local_idx).map(|c| c.node);
         let Some(local_node) = local_node else { continue };
@@ -389,7 +436,8 @@ fn build_export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
         "java" => {
             "(program (class_declaration name: (identifier) @export))\n\
              (program (interface_declaration name: (identifier) @export))\n\
-             (program (enum_declaration name: (identifier) @export))"
+             (program (enum_declaration name: (identifier) @export))\n\
+             (program (record_declaration name: (identifier) @export))"
         }
         _ => return None,
     };
