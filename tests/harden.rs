@@ -550,6 +550,25 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     records
 }
 
+/// Whether the spawned `basemind` binary is expected to have precise Python/Java resolution
+/// (`code-intel-stack`) compiled in, derived from `BASEMIND_HARDEN_FEATURES` (which the harness
+/// builds the binary with). Unset → the harness default is `full`, which includes it. Set to `""`
+/// or a set without the code-intel stack → off, and the resolution canary is skipped rather than
+/// false-failing. This keeps the canary a stable lower bound across the harness's feature matrix.
+fn precise_resolution_expected() -> bool {
+    match std::env::var("BASEMIND_HARDEN_FEATURES") {
+        Err(_) => true,
+        Ok(features) => {
+            let features = features.trim();
+            !features.is_empty()
+                && features
+                    .split([',', ' '])
+                    .map(str::trim)
+                    .any(|f| matches!(f, "full" | "code-intel" | "code-intel-stack"))
+        }
+    }
+}
+
 /// Returns the human-readable failure summary if anything tripped; None on pass.
 fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRecord) -> Vec<String> {
     let mut failures: Vec<String> = Vec::new();
@@ -765,6 +784,25 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                 failures.push(format!(
                     "django canary: proposals_mine (default thresholds) returned {mined} candidates (expected ≥ 1)"
                 ));
+            }
+            // Only assert precise resolution when the engine is compiled into the spawned binary.
+            if precise_resolution_expected() {
+                let resolved = repo_record
+                    .canaries
+                    .get("queryset_resolved")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let cross_file = repo_record
+                    .canaries
+                    .get("queryset_cross_file_hits")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                if !resolved || cross_file < 1 {
+                    failures.push(format!(
+                        "django canary: find_callers(QuerySet) precise resolution regressed — resolved={resolved}, \
+                         cross-file hits={cross_file} (expected resolved=true and ≥ 1 cross-file caller)"
+                    ));
+                }
             }
         }
         _ => {}
@@ -1027,6 +1065,35 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                 if let Some(mined) = body.get("mined").and_then(Value::as_u64) {
                     record.canaries.insert("proposals_mined".into(), json!(mined));
                 }
+            }
+            // Precise cross-file resolution canary: `QuerySet` (defined in
+            // django/db/models/query.py) is imported and instantiated across django. With the
+            // stack-graphs engine, find_callers must resolve those call sites cross-file and report
+            // `resolved: true`. Records presence + resolved-hit count; asserted only when the engine
+            // is compiled in (see `precise_resolution_expected`). Both the symbol and its file are
+            // long-stable django fixtures, so this is a durable lower bound.
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "find_callers",
+                    &json!({ "path": "django/db/models/query.py", "name": "QuerySet", "limit": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let resolved = body.get("resolved").and_then(Value::as_bool).unwrap_or(false);
+                let cross_file_hits = body
+                    .get("hits")
+                    .and_then(Value::as_array)
+                    .map(|hits| {
+                        hits.iter()
+                            .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/db/models/query.py"))
+                            .count() as u64
+                    })
+                    .unwrap_or(0);
+                record.canaries.insert("queryset_resolved".into(), json!(resolved));
+                record
+                    .canaries
+                    .insert("queryset_cross_file_hits".into(), json!(cross_file_hits));
             }
         }
         _ => {}
