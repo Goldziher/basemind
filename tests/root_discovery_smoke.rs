@@ -4,7 +4,7 @@
 
 use std::fs;
 
-use basemind::config::{BASEMIND_DIR, discover_root_with_basemind};
+use basemind::config::{BASEMIND_DIR, discover_root_with_basemind, init_root};
 
 /// `git init` a directory so it becomes its own git repo workdir.
 fn git_init(dir: &std::path::Path) {
@@ -94,6 +94,30 @@ fn a_basemind_regular_file_is_ignored_only_a_directory_counts() {
         resolved, sub,
         ".basemind as a file is skipped; no git → start unchanged"
     );
+}
+
+#[test]
+fn init_root_anchors_to_enclosing_git_repo_not_parent_basemind() {
+    // The reported `basemind init` bug: run from inside a repo whose parent already has a
+    // `.basemind/`, and init must scaffold the CURRENT repo — never travel up to the parent.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let parent = tmp.path().canonicalize().expect("canonicalize parent");
+    fs::create_dir(parent.join(BASEMIND_DIR)).expect("mkdir parent .basemind");
+    let repo = parent.join("project");
+    fs::create_dir(&repo).expect("mkdir repo");
+    git_init(&repo);
+    let sub = repo.join("src");
+    fs::create_dir(&sub).expect("mkdir repo subfolder");
+
+    assert_eq!(init_root(&sub), repo, "init anchors to the enclosing git repo, not the parent");
+    assert_eq!(init_root(&repo), repo, "init at the repo root stays put");
+}
+
+#[test]
+fn init_root_falls_back_to_start_when_not_in_a_git_repo() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let start = tmp.path().canonicalize().expect("canonicalize start");
+    assert_eq!(init_root(&start), start, "no git repo → init targets the start dir (cwd)");
 }
 
 #[test]

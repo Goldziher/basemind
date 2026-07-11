@@ -145,6 +145,23 @@ pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
     git_root.unwrap_or_else(|| start.to_path_buf())
 }
 
+/// Root for `basemind init`: the project you are initializing, never a parent that merely already
+/// holds a `.basemind/`.
+///
+/// This is deliberately NOT [`discover_root_with_basemind`]. That function *attaches* to an existing
+/// index and so walks up to an ancestor `.basemind/`; using it for `init` makes `init` "travel" to a
+/// parent polyrepo's root and scaffold there instead of in the current repo. `init` *creates* config,
+/// so it anchors to the closest enclosing git repository (the committed repo root the scaffold is
+/// meant for), falling back to `start` (typically the cwd) when not inside a git repo.
+///
+/// Assumes `start` is already canonicalized by the caller.
+pub fn init_root(start: &Path) -> PathBuf {
+    match crate::git::Repo::discover(start) {
+        Ok(repo) => repo.workdir().to_path_buf(),
+        Err(_) => start.to_path_buf(),
+    }
+}
+
 /// Canonical (write) location of the config: `<root>/basemind.toml`.
 ///
 /// The config moved from inside `.basemind/` to the repo root so it can be committed — the

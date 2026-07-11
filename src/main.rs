@@ -281,7 +281,10 @@ fn main() -> Result<()> {
     warn_ignored_global_flags(&cli.cmd, json, &view);
     let dispatch = |tc| basemind::cli::run(&root, &view, DocumentsCliOverrides::default(), json, tc);
     match cli.cmd {
-        Cmd::Init(args) => basemind::cli::init::run(&root, &args),
+        // `init` anchors to the current repo (git root, else cwd) — NOT the ancestor-`.basemind`
+        // walk `root` uses — so it scaffolds the project you're in, never a parent that already
+        // has a `.basemind/`.
+        Cmd::Init(args) => basemind::cli::init::run(&basemind::config::init_root(&start), &args),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
         Cmd::Rescan(args) => cmd_rescan(&root, &args, verbosity, no_color),
         Cmd::Watch => cmd_watch(&root, verbosity, no_color),

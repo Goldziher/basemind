@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`basemind init` no longer scaffolds into a parent directory.** `init` resolved its target with
+  the same ancestor-`.basemind/` walk the other commands use to *attach* to an existing index, so
+  running it inside a repo whose parent already had a `.basemind/` wrote `basemind.toml`, `.gitignore`,
+  and the rules block into the parent instead of the current repo. `init` now anchors to the closest
+  enclosing git repository (falling back to the working directory when not in a repo), so it always
+  scaffolds the project you run it in.
 - **Root discovery no longer climbs across a nested subrepo boundary.** `discover_root_with_basemind`
   walked up looking for an ancestor `.basemind/` without a ceiling, so running from inside a nested
   git subrepo (checked out under a polyrepo that has its own root `.basemind/`) wrongly attached to
