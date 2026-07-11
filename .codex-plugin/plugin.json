@@ -12,7 +12,7 @@
   "license": "MIT",
   "keywords": ["mcp", "agent-context", "rag", "code-map", "tree-sitter"],
   "skills": "./skills/",
-  "mcpServers": "./.codex-plugin/.mcp.json",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "basemind",
     "shortDescription": "Code-map MCP server for navigating large codebases",

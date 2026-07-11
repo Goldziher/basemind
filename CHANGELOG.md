@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Codex plugin MCP startup by using the required root `.mcp.json` shape and resolving the
+  launcher relative to the installed plugin instead of an unsupported `${PLUGIN_ROOT}` placeholder.
+
 ## [0.21.1] — 2026-07-11
 
 ### Changed
