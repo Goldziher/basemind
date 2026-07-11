@@ -23,6 +23,7 @@ mod helpers_comms;
 mod helpers_compress;
 #[cfg(feature = "documents")]
 mod helpers_documents;
+mod helpers_files;
 mod helpers_git;
 #[cfg(feature = "memory")]
 mod helpers_governance;
@@ -111,10 +112,10 @@ pub mod params {
 
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
-        FindCallersParams, FindCommitsByPathParams, FindReferencesParams, GotoDefinitionParams, HotFilesParams,
-        ListFilesParams, OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams, SearchDocumentsParams,
-        SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams, TelemetrySummaryParams,
-        WorkingTreeStatusParams, WorkspaceGrepParams,
+        FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
+        HotFilesParams, ListFilesParams, OutlineParams, RecentChangesParams, RepoInfoParams, RescanParams,
+        SearchDocumentsParams, SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams,
+        TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     #[cfg(feature = "crawl")]
     pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};

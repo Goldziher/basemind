@@ -144,6 +144,16 @@ pub enum QueryCmd {
         #[arg(long)]
         limit: Option<u32>,
     },
+    /// Fuzzy filename/path search (fzf/fd-style), ranked by score.
+    FindFiles {
+        query: String,
+        #[arg(long)]
+        path_prefix: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+    },
     /// High-level repo + cache state.
     Status,
     /// Workdir + branch + HEAD sha.
@@ -347,6 +357,24 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
             };
             let r = run_tool("list_files", server.list_files(Parameters(p)).await)?;
             emit("list_files", &r, json, out)
+        }
+        QueryCmd::FindFiles {
+            query,
+            path_prefix,
+            language,
+            limit,
+        } => {
+            let p = FindFilesParams {
+                query,
+                path_prefix,
+                language,
+                limit,
+                max_tokens: None,
+                format: None,
+                cursor: None,
+            };
+            let r = run_tool("find_files", server.find_files(Parameters(Lenient(p))).await)?;
+            emit("find_files", &r, json, out)
         }
         QueryCmd::Status => {
             let r = run_tool("status", server.status(Parameters(StatusParams {})).await)?;

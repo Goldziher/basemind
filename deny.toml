@@ -57,6 +57,10 @@ name = "option-ext"
 allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]
+name = "nucleo-matcher"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
 name = "uluru"
 allow = ["MPL-2.0"]
 

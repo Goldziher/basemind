@@ -15,6 +15,7 @@ use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser}
 pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
 #[cfg(feature = "documents")]
 pub(super) use super::helpers_documents::format_response;
+pub(super) use super::helpers_files::{run_find_files, run_list_files};
 pub(super) use super::helpers_graph::run_call_graph;
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;

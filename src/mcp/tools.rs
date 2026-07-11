@@ -317,98 +317,33 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            use std::sync::atomic::Ordering;
-
-            self.state.await_cache_ready().await;
-            let format = super::toon::ResponseFormat::parse(params.format.as_deref());
-            let (limit, limit_clamped) = effective_list_limit(params.limit);
-            let generation = self.state.cache_generation.load(Ordering::Relaxed);
-
-            let skip = match params.cursor.as_ref() {
-                Some(c) => {
-                    let (offset, snapshot_id) = c.decode_in_memory()?;
-                    if snapshot_id != generation {
-                        return super::toon::format_result(
-                            &ListFilesResponse {
-                                total: 0,
-                                returned: 0,
-                                truncated: false,
-                                limit_clamped,
-                                budgeted: false,
-                                files: Vec::new(),
-                                next_cursor: None,
-                                cursor_invalidated: true,
-                                notice: self.state.lifecycle_notice(),
-                            },
-                            format,
-                        );
-                    }
-                    offset as usize
-                }
-                None => 0,
-            };
-            let store = self.state.store.read().await;
-
-            let path_finder = params
-                .path_contains
-                .as_ref()
-                .map(|n| memchr::memmem::Finder::new(n.as_bytes()));
-            let lang_filter = params.language.as_deref();
-
-            let mut files: Vec<ListFilesEntry> = Vec::with_capacity(limit.min(256));
-            let mut total: usize = 0;
-            let mut seen: usize = 0;
-            for (p, e) in &store.index.files {
-                let path_ok = path_finder.as_ref().is_none_or(|f| f.find(p.as_bytes()).is_some());
-                let lang_ok = lang_filter.is_none_or(|l| e.language == l);
-                if !(path_ok && lang_ok) {
-                    continue;
-                }
-                if seen < skip {
-                    seen += 1;
-                    continue;
-                }
-                seen += 1;
-                total += 1;
-                if files.len() < limit {
-                    files.push(ListFilesEntry {
-                        path: p.clone(),
-                        language: e.language.clone(),
-                        size_bytes: e.size_bytes,
-                    });
-                }
-            }
-            let truncated = total > limit;
-            let budget = super::budget::apply_budget(files, params.max_tokens);
-            let files = budget.items;
-            let budgeted = budget.budgeted;
-            let next_cursor = if total > files.len() {
-                Some(super::cursor::Cursor::encode_in_memory(
-                    (skip + files.len()) as u64,
-                    generation,
-                ))
-            } else {
-                None
-            };
-
-            super::toon::format_result(
-                &ListFilesResponse {
-                    total,
-                    returned: files.len(),
-                    truncated,
-                    limit_clamped,
-                    budgeted,
-                    files,
-                    next_cursor,
-                    cursor_invalidated: false,
-                    notice: self.state.lifecycle_notice(),
-                },
-                format,
-            )
-        }
-        .await;
+        let __result = run_list_files(&self.state, params).await;
         record_call(&self.state, "list_files", &__params_json, __started, &__result);
+        __result
+    }
+
+    /// Fuzzy filename/path search over indexed paths — an fzf/fd-style replacement for shell `find`.
+    #[tool(
+        description = "Fuzzy subsequence match of `query` against every indexed path (fzf/fd-style: \
+                       letters of `query` must appear in order, not necessarily contiguous; \
+                       case-insensitive). Ranked by `nucleo-matcher` score (path-aware bonuses for \
+                       `/`-boundary and prefix hits); non-matches are dropped, not just scored low. \
+                       Optional `path_prefix` and `language` filters are applied before scoring. \
+                       Name-only heuristic — no scope/import resolution. Default limit 200, max \
+                       5000 (a larger request is clamped, setting `limit_clamped`). `cursor` pages \
+                       results (invalidated on rescan, `cursor_invalidated`). `max_tokens` budgets \
+                       the response (sets `budgeted` + `next_cursor`). `format:\"toon\"` for compact \
+                       rows.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn find_files(
+        &self,
+        Parameters(Lenient(params)): Parameters<Lenient<FindFilesParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result = run_find_files(&self.state, params).await;
+        record_call(&self.state, "find_files", &__params_json, __started, &__result);
         __result
     }
 

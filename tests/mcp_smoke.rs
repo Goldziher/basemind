@@ -867,6 +867,84 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
+            .call_tool(call_params("find_files", json!({ "query": "cy1" })))
+            .await
+            .expect("find_files(cy1)"),
+    );
+    let files = body.get("files").and_then(Value::as_array).expect("find_files files");
+    assert_eq!(files.len(), 1, "'cy1' is a subsequence of only cyc1.rs: {body}");
+    assert_eq!(
+        files[0].get("path").and_then(Value::as_str),
+        Some("cyc1.rs"),
+        "find_files('cy1') must rank cyc1.rs: {body}"
+    );
+    assert!(
+        files[0].get("score").and_then(Value::as_u64).is_some(),
+        "find_files entries must carry a numeric score: {body}"
+    );
+    assert_eq!(
+        body.get("total").and_then(Value::as_u64),
+        Some(1),
+        "find_files('cy1') total must be exactly 1: {body}"
+    );
+    assert_eq!(
+        body.get("returned").and_then(Value::as_u64),
+        Some(1),
+        "find_files('cy1') returned must be exactly 1: {body}"
+    );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "find_files('cy1') must not be truncated: {body}"
+    );
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params("find_files", json!({ "query": "zzzznonexistentqueryxyz" })))
+            .await
+            .expect("find_files(no match)"),
+    );
+    let files = body.get("files").and_then(Value::as_array).expect("find_files files");
+    assert!(
+        files.is_empty(),
+        "a query with no subsequence match should return no files: {body}"
+    );
+    assert_eq!(
+        body.get("total").and_then(Value::as_u64),
+        Some(0),
+        "find_files(no match) total must be 0: {body}"
+    );
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_files",
+                json!({ "query": "rs", "language": "python" }),
+            ))
+            .await
+            .expect("find_files(language filter)"),
+    );
+    let files = body.get("files").and_then(Value::as_array).expect("find_files files");
+    assert!(
+        files.is_empty(),
+        "language=python filter must exclude every .rs match: {body}"
+    );
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params("find_files", json!({ "query": "d" })))
+            .await
+            .expect("find_files(d)"),
+    );
+    let files = body.get("files").and_then(Value::as_array).expect("find_files files");
+    assert_eq!(
+        files.first().and_then(|f| f.get("path")).and_then(Value::as_str),
+        Some("d.py"),
+        "find_files('d') should rank d.py first (only path starting with d): {body}"
+    );
+
+    let body = decode_text(
+        &service
             .call_tool(call_params(
                 "find_references",
                 json!({ "name": "no_such_callee_anywhere" }),
@@ -3154,7 +3232,14 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .clone()
             .unwrap_or_else(|| panic!("tool {name} must carry ToolAnnotations"))
     };
-    for read_only in ["outline", "search_symbols", "find_references", "status", "list_files"] {
+    for read_only in [
+        "outline",
+        "search_symbols",
+        "find_references",
+        "status",
+        "list_files",
+        "find_files",
+    ] {
         assert_eq!(
             annotations_of(read_only).read_only_hint,
             Some(true),

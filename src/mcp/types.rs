@@ -135,6 +135,37 @@ pub struct ListFilesParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct FindFilesParams {
+    /// Fuzzy query matched as a subsequence against each indexed path (fzf/fd-style — letters
+    /// of `query` must appear in order in the path, not necessarily contiguous). Case-insensitive.
+    #[serde(alias = "needle", alias = "pattern")]
+    pub query: String,
+    /// Optional prefix filter applied before scoring (e.g. "src/mcp/").
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    /// Filter by language (e.g. "rust", "python"), applied before scoring.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Cap. Default 200, max 5000 (same convention as `list_files`).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Optional token budget bounding the returned file list (not the whole envelope).
+    /// Entries are kept in score order until the budget is hit; the rest are dropped and the
+    /// response carries `budgeted: true` plus a `next_cursor` to page them.
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
+    /// Wire format for the response: `"json"` (default) or `"toon"`. TOON is a compact
+    /// tabular encoding of the `files` list — far fewer tokens than JSON for large listings.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
+    /// Resume token returned by the previous call's `next_cursor`. Cursors are scoped to
+    /// the in-RAM index snapshot (and the score ordering computed for `query`); a rescan
+    /// invalidates them same as `list_files`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct DependentsParams {
     /// Module / import target (e.g. "tokio::sync" or "react").
     #[serde(alias = "name", alias = "query", alias = "import")]
@@ -330,6 +361,43 @@ pub(super) struct ListFilesResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub files: Vec<ListFilesEntry>,
+    /// Opaque cursor to pass back on the next call when more results are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+    /// True when the caller passed a `cursor` minted against a different in-RAM snapshot
+    /// (a rescan happened between calls). The caller must restart pagination from the top.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_invalidated: bool,
+    /// Lifecycle notice when the server isn't fully ready (warming/building/rescanning); absent when
+    /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<LifecycleNotice>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FindFilesEntry {
+    pub path: RelPath,
+    pub language: String,
+    pub size_bytes: u64,
+    /// Fuzzy match score from `nucleo-matcher` (higher is a better match). Not comparable
+    /// across queries — only meaningful to rank entries within one response.
+    pub score: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct FindFilesResponse {
+    pub total: usize,
+    pub returned: usize,
+    pub truncated: bool,
+    /// True when the caller's requested `limit` exceeded the hard cap (`LIST_LIMIT_MAX`) and
+    /// was clamped down to it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub limit_clamped: bool,
+    /// True when a `max_tokens` budget dropped trailing files. Page the rest with `next_cursor`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub budgeted: bool,
+    /// Matches sorted by descending `score` (ties broken by path, ascending).
+    pub files: Vec<FindFilesEntry>,
     /// Opaque cursor to pass back on the next call when more results are available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,

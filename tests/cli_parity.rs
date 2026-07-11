@@ -41,6 +41,7 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("architecture_map", "query architecture-map"),
         ("workspace_grep", "query grep"),
         ("list_files", "query list-files"),
+        ("find_files", "query find-files"),
         ("dependents", "query dependents"),
         ("status", "query status"),
         ("repo_info", "query repo-info"),

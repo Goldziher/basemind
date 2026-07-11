@@ -298,6 +298,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
 
     call(svc, &mut records, "status", json!({})).await;
     call(svc, &mut records, "list_files", json!({ "limit": 50 })).await;
+    call(svc, &mut records, "find_files", json!({ "query": "src", "limit": 50 })).await;
     call(
         svc,
         &mut records,
@@ -673,6 +674,16 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: find_references(\"spawn\") returned {hits} hits (expected ≥ 50)"
                 ));
             }
+            let find_files_hits = repo_record
+                .canaries
+                .get("find_files_src_hits")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if find_files_hits < 100 {
+                failures.push(format!(
+                    "tokio canary: find_files(\"src\") returned {find_files_hits} hits (expected ≥ 100)"
+                ));
+            }
             let grep_hits = repo_record
                 .canaries
                 .get("grep_fn_spawn_hits")
@@ -901,6 +912,18 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("spawn_hits".into(), json!(hits));
+            }
+            if let Ok(out) = svc
+                .call_tool(call_params("find_files", &json!({ "query": "src", "limit": 200 })))
+                .await
+            {
+                let body = decode_text(&out);
+                let hits = body
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record.canaries.insert("find_files_src_hits".into(), json!(hits));
             }
             if let Ok(out) = svc
                 .call_tool(call_params(

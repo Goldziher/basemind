@@ -15,6 +15,7 @@ priority: high
 | `find_references` | Call sites of any callee whose identifier matches `name`. Backed by Fjall `calls_by_callee`. No scope resolution; `Foo::bar()` and `bar()` both match `name="bar"`. |
 | `find_callers` | Callers of a specific definition (path + name + optional kind). Resolves the definition first (echoed in `definition`), then runs the same name-based scan as `find_references`. |
 | `list_files` | Enumerate indexed paths, optional `path_contains` + `language` filters. |
+| `find_files` | Fuzzy subsequence filename/path search (fzf/fd-style), ranked by `nucleo-matcher` score. |
 | `dependents` | Heuristic reverse-lookup via imports. |
 | `status` / `repo_info` | Repo overview: file count, language breakdown, cache directory. |
 | `symbol_history` | Cross-commit history of a symbol's structural hash via the outline cache + structural-hash machinery. |
