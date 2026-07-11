@@ -36,6 +36,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// Two TS files each defining a `target` function: `util.ts` has two callers that resolve to its
 /// export; `other.ts` has one caller that resolves to *its own* same-named function.
 fn build_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);

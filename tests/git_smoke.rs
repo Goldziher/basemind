@@ -30,6 +30,7 @@ fn run(repo: &Path, args: &[&str]) {
 }
 
 fn init_repo() -> (TempDir, ConfigV1) {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     run(dir.path(), &["init", "-q"]);
     run(dir.path(), &["config", "commit.gpgsign", "false"]);
@@ -110,7 +111,7 @@ fn scan_rev_at_head_matches_clean_working_tree() {
 }
 
 #[test]
-fn views_live_in_separate_subdirs_under_dotbasemind() {
+fn views_live_in_separate_subdirs_under_workspace_cache() {
     let (dir, cfg) = init_repo();
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn here() {}\n").unwrap();
@@ -141,32 +142,33 @@ fn views_live_in_separate_subdirs_under_dotbasemind() {
     .unwrap();
     drop(staged);
 
-    let views_dir = root.join(".basemind").join("views");
+    // The cache is machine-global + workspace-keyed now, not `<root>/.basemind/`.
+    let cache = basemind::store::workspace_cache_dir(root);
+    let views_dir = cache.join("views");
     assert!(views_dir.join(VIEW_WORKING).join("index.msgpack").exists());
     assert!(views_dir.join(VIEW_STAGED).join("index.msgpack").exists());
-    assert!(!root.join(".basemind").join("index.msgpack").exists());
+    assert!(!cache.join("index.msgpack").exists());
+    // Nothing is written under the repo root anymore.
+    assert!(!root.join(".basemind").exists(), "no in-repo cache dir is created");
 }
 
 #[test]
-fn legacy_dotbasemind_index_is_migrated_into_working_view() {
+fn legacy_top_level_index_is_migrated_into_working_view() {
     let (dir, _cfg) = init_repo();
     let root = dir.path();
-    fs::create_dir_all(root.join(".basemind").join("blobs")).unwrap();
 
+    // Simulate a pre-views layout inside the (now global) workspace cache dir: a top-level
+    // `index.msgpack` that `Store::open` must migrate into `views/working/`.
+    let cache = basemind::store::workspace_cache_dir(root);
+    fs::create_dir_all(&cache).unwrap();
     let empty = basemind::store::Index::empty();
     let bytes = rmp_serde::to_vec_named(&empty).unwrap();
-    fs::write(root.join(".basemind").join("index.msgpack"), &bytes).unwrap();
+    fs::write(cache.join("index.msgpack"), &bytes).unwrap();
 
     let store = Store::open(root, VIEW_WORKING).expect("open should migrate");
     assert_eq!(store.index.files.len(), 0);
-    assert!(!root.join(".basemind").join("index.msgpack").exists());
-    assert!(
-        root.join(".basemind")
-            .join("views")
-            .join(VIEW_WORKING)
-            .join("index.msgpack")
-            .exists()
-    );
+    assert!(!cache.join("index.msgpack").exists());
+    assert!(cache.join("views").join(VIEW_WORKING).join("index.msgpack").exists());
 }
 
 #[test]

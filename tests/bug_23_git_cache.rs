@@ -26,6 +26,7 @@ fn run(repo: &Path, args: &[&str]) {
 
 #[test]
 fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     run(root, &["init", "-q"]);
@@ -64,6 +65,7 @@ fn git_cache_bytes_nonzero_after_disk_backed_log_call() {
 
 #[test]
 fn ram_only_git_cache_legitimately_persists_nothing() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     run(root, &["init", "-q"]);

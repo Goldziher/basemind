@@ -17,6 +17,7 @@ fn bin() -> &'static str {
 /// dispatch — so its presence/absence is independent of the command's success.
 #[test]
 fn should_not_warn_json_ineffective_on_comms() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let output = Command::new(bin())
         .args(["--root", dir.path().to_str().unwrap(), "--json", "comms", "status"])

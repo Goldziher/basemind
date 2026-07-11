@@ -99,26 +99,30 @@ pub fn load_with_overrides(
     ))
 }
 
-/// Resolve the repository root by walking UP from `start` to the nearest ancestor that already
-/// holds a `.basemind/` cache dir (monorepo/nested-git support), falling back to git discovery,
-/// then to `start` unchanged. Lets basemind commands run from a monorepo subfolder attach to the
-/// root `.basemind` index.
+/// Resolve the repository root by walking UP from `start` to the nearest ancestor that carries a
+/// committed `basemind.toml` config marker (monorepo/nested-git support), falling back to git
+/// discovery, then to `start` unchanged. Lets basemind commands run from a monorepo subfolder
+/// attach to the configured root.
 ///
-/// The upward `.basemind` search is **bounded by the closest enclosing git repository**: it never
-/// ascends above that repo's workdir. Without the bound, running from inside a nested subrepo (a
-/// git repo checked out inside a polyrepo that has its own root `.basemind`) would climb across the
-/// subrepo boundary and wrongly attach to the parent polyrepo's cache. The subrepo's own root is
+/// The cache moved out of the repo (it is a machine-global XDG store now), so there is no longer a
+/// `.basemind/` directory in the tree to anchor on — the committed `basemind.toml` is the durable
+/// in-repo marker of "this is a basemind-managed root".
+///
+/// The upward `basemind.toml` search is **bounded by the closest enclosing git repository**: it
+/// never ascends above that repo's workdir. Without the bound, running from inside a nested subrepo
+/// (a git repo checked out inside a polyrepo that has its own root `basemind.toml`) would climb
+/// across the subrepo boundary and wrongly attach to the parent polyrepo. The subrepo's own root is
 /// the ceiling.
 ///
 /// Precedence:
 /// 1. The nearest ancestor of `start` (including `start` itself, up to and including the enclosing
-///    git root) whose `.basemind/` is a directory.
+///    git root) that holds a `basemind.toml` file.
 /// 2. Else the git workdir discovered from `start`.
 /// 3. Else `start` unchanged.
 ///
 /// Assumes `start` is already canonicalized by the caller.
 pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
-    // Closest enclosing git repo workdir — the ceiling for the `.basemind` walk. Canonicalized so
+    // Closest enclosing git repo workdir — the ceiling for the config-marker walk. Canonicalized so
     // it compares equal to the canonical `current` path as we ascend. `None` when `start` is not
     // inside any git repo: then there is no repo boundary to respect and the walk runs to the
     // filesystem root (non-git monorepo case).
@@ -130,7 +134,7 @@ pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
 
     let mut current = start;
     loop {
-        if current.join(BASEMIND_DIR).is_dir() {
+        if current.join(CONFIG_FILE_NAME).is_file() {
             return current.to_path_buf();
         }
         // Stop after checking the enclosing git root — do not ascend past it into a parent repo.
@@ -267,10 +271,10 @@ mod tests {
     }
 
     #[test]
-    fn discover_root_walks_up_to_ancestor_basemind() {
+    fn discover_root_walks_up_to_ancestor_config_marker() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path().canonicalize().expect("canonicalize");
-        std::fs::create_dir(root.join(BASEMIND_DIR)).expect("mkdir .basemind");
+        std::fs::write(root.join(CONFIG_FILE_NAME), "\"$schema\" = \"v1\"\n").expect("write basemind.toml");
         let sub = root.join("a").join("b");
         std::fs::create_dir_all(&sub).expect("mkdir sub");
         assert_eq!(discover_root_with_basemind(&sub), root);

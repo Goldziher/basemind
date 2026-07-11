@@ -15,6 +15,7 @@ use tempfile::TempDir;
 /// Scan a tiny two-file repo so the Fjall `calls_by_callee` keyspace (which backs
 /// `find_references`) is populated, then drop the writer to release every lock.
 fn scanned_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("a.rs"), b"pub fn alpha() {}\n").expect("write a.rs");
@@ -45,7 +46,9 @@ fn scanned_repo() -> TempDir {
 #[test]
 fn fjall_index_rejects_a_second_concurrent_opener() {
     let dir = scanned_repo();
-    let view_dir = dir.path().join(".basemind/views/working");
+    let view_dir = basemind::store::workspace_cache_dir(dir.path())
+        .join("views")
+        .join(VIEW_WORKING);
 
     let first = IndexDb::open(&view_dir).expect("first open succeeds");
     let second = IndexDb::open(&view_dir);

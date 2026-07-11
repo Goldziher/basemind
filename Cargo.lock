@@ -718,6 +718,7 @@ dependencies = [
  "arc-swap",
  "arrow-array",
  "arrow-schema",
+ "basemind",
  "blake3",
  "bstr",
  "clap",

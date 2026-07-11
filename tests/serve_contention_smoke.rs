@@ -20,6 +20,7 @@ use basemind::store::{LockHolder, Store, VIEW_WORKING};
 /// Build a temp repo with one indexed file, then release the lock used for the initial scan so the
 /// tests below start from a clean, unlocked, already-scanned `.basemind/`.
 fn scanned_repo() -> tempfile::TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub fn beta() { alpha(); }\n").expect("write source");

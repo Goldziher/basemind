@@ -1,5 +1,9 @@
-//! WS3: linked git worktrees share ONE content-addressed blob cache (extract + embed once), and
-//! auto-GC is disabled while a shared cache exists so one worktree can't reap another's blobs.
+//! WS3: linked git worktrees share ONE content-addressed blob cache (extract + embed once).
+//!
+//! Since the blob store went machine-global, *every* workspace on the machine shares the single
+//! global `blobs/` — so a main worktree and its linked worktree dedup byte-identical files for free
+//! (no per-worktree blob dir, no re-embed). `blobs_shared` is now always `true` (auto-GC is
+//! disabled in the standalone Store because it can't see other workspaces' references).
 
 use std::fs;
 use std::path::Path;
@@ -27,7 +31,8 @@ fn canon(p: &Path) -> std::path::PathBuf {
 }
 
 #[test]
-fn linked_worktrees_share_the_blob_cache() {
+fn linked_worktrees_share_the_global_blob_cache() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let main = tmp.path().join("main");
     fs::create_dir(&main).unwrap();
@@ -35,15 +40,26 @@ fn linked_worktrees_share_the_blob_cache() {
     git(&["init", "-q", "-b", "main"], &main);
     git(&["config", "user.email", "t@example.com"], &main);
     git(&["config", "user.name", "Test"], &main);
-    fs::write(main.join("a.rs"), b"pub fn alpha() {}\n").unwrap();
+    // Test-local symbol name: the blob store is global + content-addressed, so a body shared with
+    // another test would let its blob pre-seed this one, perturbing the blob-dedup accounting.
+    fs::write(main.join("a.rs"), b"pub fn worktree_share_alpha() {}\n").unwrap();
     git(&["add", "."], &main);
     git(&["commit", "-qm", "init"], &main);
 
     let cfg = ConfigV1::with_defaults();
+    let global_blobs = basemind::store::global_blobs_dir();
 
     {
         let mut store = Store::open(&main, basemind::store::VIEW_WORKING).unwrap();
-        assert!(!store.blobs_shared, "no linked worktrees yet → not shared");
+        assert!(
+            store.blobs_shared,
+            "blobs are machine-global now → the standalone Store always flags shared (auto-GC off)"
+        );
+        assert_eq!(
+            canon(&store.blobs_dir),
+            canon(&global_blobs),
+            "the store's blob dir is the machine-global store"
+        );
         scan(
             &main,
             &mut store,
@@ -53,8 +69,16 @@ fn linked_worktrees_share_the_blob_cache() {
         )
         .unwrap();
     }
-    let main_blobs = main.join(".basemind").join("blobs");
-    assert!(main_blobs.is_dir(), "main scan wrote blobs locally");
+    // The main scan wrote its blob for `a.rs` into the ONE global store.
+    let after_main = fs::read_dir(&global_blobs)
+        .expect("global blobs dir exists")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
+        .count();
+    assert!(
+        after_main >= 1,
+        "main scan wrote its extraction blob to the global store"
+    );
 
     let wt2 = tmp.path().join("wt2");
     git(
@@ -64,25 +88,16 @@ fn linked_worktrees_share_the_blob_cache() {
 
     {
         let store2 = Store::open(&wt2, basemind::store::VIEW_WORKING).unwrap();
-        assert!(store2.blobs_shared, "linked worktree marks the blob cache shared");
         assert_eq!(
             canon(&store2.blobs_dir),
-            canon(&main_blobs),
-            "linked worktree blob dir resolves to the main worktree's blobs/"
-        );
-    }
-
-    {
-        let store_main = Store::open(&main, basemind::store::VIEW_WORKING).unwrap();
-        assert!(
-            store_main.blobs_shared,
-            "main worktree observes the linked worktree too"
+            canon(&global_blobs),
+            "the linked worktree resolves to the same global blob store"
         );
     }
 
     {
         let mut store2 = Store::open(&wt2, basemind::store::VIEW_WORKING).unwrap();
-        scan(
+        let report = scan(
             &wt2,
             &mut store2,
             &cfg,
@@ -90,15 +105,21 @@ fn linked_worktrees_share_the_blob_cache() {
             basemind::scanner::EmbedMode::Inline,
         )
         .unwrap();
+        // `a.rs` is byte-identical across the worktrees, so its blob already exists globally: the
+        // linked worktree's scan reuses the extraction instead of re-parsing/re-embedding.
+        assert_eq!(
+            report.stats.reused_extraction, 1,
+            "linked worktree reuses the main worktree's blob from the shared global store"
+        );
     }
-    let wt2_local_blobs = wt2.join(".basemind").join("blobs");
-    let wt2_local_count = fs::read_dir(&wt2_local_blobs).map(|d| d.count()).unwrap_or(0);
-    assert_eq!(
-        wt2_local_count, 0,
-        "linked worktree wrote no blobs into its own dir; they share the main cache"
+
+    // Neither worktree created an in-repo `.basemind/` — the cache is entirely out-of-repo now.
+    assert!(
+        !main.join(".basemind").exists(),
+        "no in-repo cache under the main worktree"
     );
     assert!(
-        fs::read_dir(&main_blobs).unwrap().count() >= 1,
-        "the shared blob dir holds the extraction blobs"
+        !wt2.join(".basemind").exists(),
+        "no in-repo cache under the linked worktree"
     );
 }

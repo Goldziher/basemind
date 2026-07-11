@@ -7,6 +7,7 @@ use basemind::store::Store;
 use tempfile::TempDir;
 
 fn fresh_repo() -> (TempDir, ConfigV1) {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg = ConfigV1::with_defaults();
     (dir, cfg)
@@ -47,7 +48,15 @@ fn scan_extracts_rust_symbols() {
 fn scan_reuses_extraction_across_views_sharing_blobs() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    fs::write(root.join("a.rs"), b"pub fn alpha() {}\npub struct Beta { x: i32 }\n").unwrap();
+    // Unique content: the blob store is machine-global + content-addressed, so a body shared with
+    // another test would let that test's blob pre-seed this one — breaking the `reused_extraction
+    // == 0` first-scan assertion under a parallel run. A test-local symbol name keeps the hash
+    // (hence the blob) private to this test.
+    fs::write(
+        root.join("a.rs"),
+        b"pub fn reuse_across_views_alpha() {}\npub struct ReuseAcrossViewsBeta { x: i32 }\n",
+    )
+    .unwrap();
 
     let mut working = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     let first = scan(
@@ -84,39 +93,34 @@ fn scan_reuses_extraction_across_views_sharing_blobs() {
         "extraction reused from the shared content-addressed blob instead of re-parsed"
     );
 
-    let hits = basemind::query::search_symbols(&sibling, "alpha", Some(SymbolKind::Function)).unwrap();
+    let hits =
+        basemind::query::search_symbols(&sibling, "reuse_across_views_alpha", Some(SymbolKind::Function)).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path.as_str(), Some("a.rs"));
 }
 
 #[test]
-fn store_open_writes_self_ignoring_gitignore() {
+fn store_open_writes_nothing_under_repo_root() {
     let (dir, _cfg) = fresh_repo();
     let root = dir.path();
 
     let _store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
 
-    let gitignore = root.join(".basemind").join(".gitignore");
-    assert!(gitignore.is_file(), ".basemind/.gitignore should exist");
-    let body = fs::read_to_string(&gitignore).unwrap();
+    // The cache is a machine-global XDG store now — opening a store must not create any
+    // `.basemind/` under the repo (the old in-repo `.gitignore` scaffolding is gone; the durable
+    // in-repo marker is the committed `basemind.toml`, written by `basemind init` in Track G).
     assert!(
-        body.lines().any(|l| l.trim() == "*"),
-        "gitignore should ignore the whole directory, got: {body:?}"
+        !root.join(".basemind").exists(),
+        "no in-repo .basemind/ should be created on store open"
     );
-}
-
-#[test]
-fn store_open_preserves_existing_gitignore() {
-    let (dir, _cfg) = fresh_repo();
-    let root = dir.path();
-    let basemind_dir = root.join(".basemind");
-    fs::create_dir_all(&basemind_dir).unwrap();
-    fs::write(basemind_dir.join(".gitignore"), "# custom\nblobs/\n").unwrap();
-
-    let _store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
-
-    let body = fs::read_to_string(basemind_dir.join(".gitignore")).unwrap();
-    assert_eq!(body, "# custom\nblobs/\n", "existing gitignore must be kept");
+    // The workspace's state lives under the global cache instead.
+    assert!(
+        basemind::store::workspace_cache_dir(root)
+            .join("views")
+            .join(basemind::store::VIEW_WORKING)
+            .exists(),
+        "the working view dir is created under the global workspace cache"
+    );
 }
 
 #[test]

@@ -487,7 +487,7 @@ fn open_store_for_write(root: &std::path::Path, view: &str, what: &str, holder: 
 /// error. `None` means the lock is free (proceed); the acquire still handles the probe→acquire race
 /// reactively via [`basemind::store::LOCK_CONTENTION_HELP`].
 fn writer_collision_notice(root: &std::path::Path) -> Option<String> {
-    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    let basemind_dir = basemind::store::workspace_cache_dir(root);
     match basemind::store::probe_writer_lock(&basemind_dir) {
         basemind::store::WriterProbe::Free => None,
         basemind::store::WriterProbe::Held { holder: Some(meta) } => Some(format!(
@@ -679,8 +679,7 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 
 fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
     if view != basemind::store::VIEW_WORKING {
-        let index_path = root
-            .join(basemind::config::BASEMIND_DIR)
+        let index_path = basemind::store::workspace_cache_dir(root)
             .join(basemind::store::VIEWS_DIR)
             .join(view)
             .join(basemind::store::INDEX_FILE);
@@ -709,7 +708,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         }
         Err(error) => return Err(anyhow::Error::new(error).context("open store")),
     };
-    let basemind_dir = root.join(basemind::config::BASEMIND_DIR);
+    let basemind_dir = basemind::store::workspace_cache_dir(root);
     let root_buf = root.to_path_buf();
     let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);
 

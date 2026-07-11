@@ -68,9 +68,9 @@ memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"
 
 crawl = ["documents", "dep:crawlberg", "dep:url"]
 
-comms = ["dep:directories", "dep:tokio-util"]
+comms = ["dep:tokio-util"]
 
-shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client", "dep:directories"]
+shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
 
 code-intel-js = [
     "dep:oxc_allocator",
@@ -87,6 +87,11 @@ code-intel = ["code-intel-js", "code-intel-stack"]
 
 full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
+# Exposes `store::init_isolated_cache()` so integration tests (in `tests/`) can redirect
+# `BASEMIND_DATA_HOME` to a per-process temp dir. Integration-test binaries get it via the
+# `basemind` dev-dependency below (which enables this feature).
+test-support = ["dep:tempfile"]
+
 ort-dynamic = ["xberg?/ort-dynamic"]
 
 [dependencies]
@@ -101,7 +106,7 @@ blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 crawlberg = { version = "1.0.5", default-features = false, features = ["native-runtime"], optional = true }
-directories = { version = "6", optional = true }
+directories = "6"
 fjall = "3.1.6"
 fs2 = "0.4"
 futures = { version = "0.3", optional = true }
@@ -136,6 +141,7 @@ serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
 stack-graphs = { version = "0.14", default-features = false, optional = true }
 streaming-iterator = "0.1"
+tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = [
     "rt-multi-thread",
@@ -175,6 +181,10 @@ lsp-positions = { path = "crates/lsp-positions" }
 mach2 = "0.6"
 
 [dev-dependencies]
+# The crate depends on itself with `test-support` so every integration-test binary can call
+# `basemind::store::init_isolated_cache()` to redirect `BASEMIND_DATA_HOME` at a per-process temp
+# dir — keeping tests off the real user XDG cache without each test re-declaring the plumbing.
+basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
 proptest = "1"

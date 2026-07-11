@@ -14,6 +14,7 @@ fn bin() -> &'static str {
 
 #[test]
 fn serve_errors_on_never_scanned_named_view() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     std::fs::write(root.join("a.rs"), b"pub fn a() {}\n").unwrap();

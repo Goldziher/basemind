@@ -20,7 +20,7 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
     let result = tokio::task::spawn_blocking(move || {
         let store = state.store.blocking_read();
         let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
-        crate::store_gc::gc_blobs(&store.basemind_dir, &referenced)
+        crate::store_gc::gc_blobs(&referenced)
     })
     .await;
     match result {

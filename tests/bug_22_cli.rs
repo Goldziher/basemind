@@ -35,6 +35,7 @@ fn run(root: &Path, args: &[&str]) -> std::process::Output {
 
 #[test]
 fn cache_clear_single_view_leaves_others_intact() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -46,7 +47,7 @@ fn cache_clear_single_view_leaves_others_intact() {
     assert!(run(root, &["scan"]).status.success(), "working scan");
     assert!(run(root, &["scan", "--rev", "HEAD"]).status.success(), "rev scan");
 
-    let views_dir = root.join(".basemind").join("views");
+    let views_dir = basemind::store::workspace_cache_dir(root).join("views");
     let rev_view = std::fs::read_dir(&views_dir)
         .unwrap()
         .filter_map(Result::ok)

@@ -117,6 +117,7 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
 /// Build a one-shot server over an empty tempdir just to read its advertised tool set. The working
 /// view opens read-only even when never scanned, so no fixture repo is needed.
 fn advertised_tools() -> Vec<String> {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let server =
         build_server(tmp.path(), VIEW_WORKING, DocumentsCliOverrides::default()).expect("build one-shot server");

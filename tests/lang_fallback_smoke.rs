@@ -11,6 +11,7 @@ use basemind::store::Store;
 use tempfile::TempDir;
 
 fn fresh_repo() -> (TempDir, ConfigV1) {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let cfg = ConfigV1::with_defaults();
     (dir, cfg)

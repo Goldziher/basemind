@@ -40,6 +40,7 @@ fn git_out(repo: &Path, args: &[&str]) -> String {
 }
 
 fn init_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     run(dir.path(), &["init", "-q"]);
     run(dir.path(), &["config", "commit.gpgsign", "false"]);

@@ -32,6 +32,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// Repo with one readable file (updates the index) and one unreadable file (read fail).
 fn build_repo() -> TempDir {
     use std::os::unix::fs::PermissionsExt;
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);

@@ -39,6 +39,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// The second commit modifies `alpha()` so that `symbol_history` has at least
 /// one "modified" entry to return.
 fn build_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);

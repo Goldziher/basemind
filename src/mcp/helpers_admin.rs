@@ -2,17 +2,14 @@
 //! `cache_clear`). Kept out of `helpers.rs` so that file stays under the
 //! 1000-line cap.
 //!
-//! ## In-process GC vs the offline CLI path
+//! ## GC is a non-destructive report while the blob store is machine-global
 //!
-//! `serve` holds the store's `.basemind/.lock` advisory flock for its entire
-//! lifetime (acquired by `Store::open`). [`crate::store_gc::run_gc`] re-acquires
-//! that flock, so calling it in-process would deadlock against ourselves. Instead
-//! these helpers call the *unlocked* primitives
-//! [`crate::store_gc::collect_referenced_hashes`] + [`crate::store_gc::gc_blobs`]
-//! while holding a `state.store` `RwLock` guard as the mutual-exclusion mechanism:
-//! a held read guard blocks the only in-process writer (`scan_and_refresh`, which
-//! takes `write()`), and cross-process scans are already impossible because serve
-//! holds the flock. `run_gc` remains the correct primitive for the offline CLI.
+//! The blob store is a single machine-global directory shared by every workspace, so neither the
+//! MCP `cache_gc` tool (this file) nor the offline CLI `cache gc`
+//! ([`crate::store_gc::run_gc`]) can safely mark-and-sweep: a single session enumerates only ONE
+//! workspace's references and would reap blobs other workspaces still need. Both paths therefore
+//! return a non-destructive report ([`crate::store_gc::gc_report_only`], `removed == 0`).
+//! Reference-counted GC that spans every workspace is the daemon's job (Track E).
 
 use std::sync::Arc;
 
@@ -44,19 +41,20 @@ pub(super) async fn run_cache_stats(
     json_result(&CacheStatsResponse::from(stats))
 }
 
-/// Body for the `cache_gc` MCP tool. In-process mark-and-sweep over orphaned blobs.
-/// Uses the unlocked `collect_referenced_hashes` + `gc_blobs` primitives under a
-/// `blocking_read()` guard — NEVER `run_gc` (which would deadlock on serve's flock).
+/// Body for the `cache_gc` MCP tool. Reports blob-store accounting without deleting.
+///
+/// The blob store is machine-global now (shared by every workspace), so a single serve session can
+/// only enumerate ONE workspace's references — never the full live set across all workspaces. A
+/// mark-and-sweep from here would reap blobs other workspaces still need, so the in-process GC is a
+/// non-destructive report (`removed == 0`); reference-counted GC that spans every workspace is the
+/// daemon's job (Track E). `scanned` still reflects the blobs inspected so callers see the store
+/// size.
 pub(super) async fn run_cache_gc(state: Arc<ServerState>, _params: CacheGcParams) -> Result<CallToolResult, McpError> {
-    let state_for_gc = Arc::clone(&state);
-    let report = tokio::task::spawn_blocking(move || {
-        let store = state_for_gc.store.blocking_read();
-        let referenced = store_gc::collect_referenced_hashes(&store.basemind_dir)?;
-        store_gc::gc_blobs(&store.basemind_dir, &referenced)
-    })
-    .await
-    .map_err(|e| McpError::internal_error(format!("cache_gc join: {e}"), None))?
-    .map_err(|e| McpError::internal_error(format!("cache_gc: {e}"), None))?;
+    let _ = &state;
+    let report = tokio::task::spawn_blocking(store_gc::gc_report_only)
+        .await
+        .map_err(|e| McpError::internal_error(format!("cache_gc join: {e}"), None))?
+        .map_err(|e| McpError::internal_error(format!("cache_gc: {e}"), None))?;
 
     json_result(&CacheGcResponse::from(report))
 }

@@ -26,6 +26,7 @@ fn helper_export_start(src: &str) -> u32 {
 
 #[test]
 fn scan_paths_restitches_unchanged_importer_when_dependency_export_moves() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 

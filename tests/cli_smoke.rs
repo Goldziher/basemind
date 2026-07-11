@@ -35,6 +35,7 @@ fn git(repo: &Path, args: &[&str]) {
 
 /// Build a tiny repo with a couple of Rust files and an initial commit, then scan it.
 fn build_and_scan() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -210,6 +211,7 @@ fn rescan_scoped_path_reindexes_only_that_path() {
 ///   support = 3, freq[a.rs] = 4, confidence = 3/4 = 0.75 >= 0.1.
 #[cfg(feature = "memory")]
 fn build_cochange_fixture() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);

@@ -38,6 +38,7 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn build_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -1620,10 +1621,13 @@ async fn mcp_server_exercises_representative_tools() {
         blob_count >= 1,
         "freshly-scanned fixture should have blobs on disk: {body}"
     );
-    assert_eq!(
-        body.get("orphan_blob_count").and_then(Value::as_u64),
-        Some(0),
-        "no orphans immediately after a clean scan: {body}"
+    // The blob store is machine-global now, so `orphan_blob_count` is measured across every
+    // workspace that shares the store — a clean scan of THIS workspace can still see orphans that
+    // belong to other workspaces (here, sibling tests sharing the isolated global cache). The
+    // meaningful post-scan invariant is that orphan accounting ran, not that it is zero.
+    assert!(
+        body.get("blob_accounting_ok").and_then(Value::as_bool).unwrap_or(false),
+        "orphan accounting must have run after a clean scan: {body}"
     );
     let per_view = body
         .get("per_view_file_count")
@@ -2232,6 +2236,7 @@ async fn mcp_server_exercises_representative_tools() {
 /// ≥ 5 "modified" entries. The last commit in the helper rewrites only line 1 so
 /// `paged.rs` blame partitions into ≥ 2 distinct hunks.
 fn build_paging_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -3022,8 +3027,10 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let root = dir.path();
     run_scan(root);
 
+    // Canonical committed config location (`<root>/basemind.toml`); the cache moved to a global
+    // XDG store so there is no in-repo `.basemind/` dir to hold a legacy config anymore.
     std::fs::write(
-        root.join(".basemind").join("basemind.toml"),
+        root.join("basemind.toml"),
         b"\"$schema\" = \"v1\"\n\n[shells]\nvisual = \"headless\"\n",
     )
     .expect("write headless shells config");

@@ -61,6 +61,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// With `min_support=1` / `min_confidence=0.1` the (`core.rs`, `helper.rs`) pair
 /// co-changed in commit 1, which is enough for at least one proposal.
 fn build_governance_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -124,6 +125,7 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
 }
 
 fn build_confidence_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -155,6 +157,7 @@ fn build_confidence_repo() -> TempDir {
 }
 
 fn build_bulk_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 
@@ -178,6 +181,7 @@ fn build_bulk_repo() -> TempDir {
 }
 
 fn build_two_cluster_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
 

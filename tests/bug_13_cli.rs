@@ -29,6 +29,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// Tiny repo with one Rust file; deliberately no `.basemind/basemind.toml` and a
 /// fresh index dir so the scan emits subsystem INFO ("Creating database", etc.).
 fn build_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -41,7 +42,9 @@ fn build_repo() -> TempDir {
 
 /// Run a fresh scan (wiping any prior index) and return captured stderr.
 fn scan_stderr(root: &Path, extra: &[&str], rust_log: Option<&str>) -> String {
-    let _ = std::fs::remove_dir_all(root.join(".basemind"));
+    // Wipe this workspace's (global-cache) state so the scan rebuilds the DB and emits the
+    // subsystem "Creating database" INFO lines the test observes.
+    let _ = std::fs::remove_dir_all(basemind::store::workspace_cache_dir(root));
     let mut args = vec!["--root", root.to_str().unwrap(), "scan"];
     args.extend_from_slice(extra);
     let mut cmd = Command::new(bin());

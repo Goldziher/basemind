@@ -60,22 +60,22 @@ pub const GIT_HISTORY_SCHEMA: u32 = crate::version::RELEASE_MINOR as u32 + 5;
 /// accounting in [`crate::store_gc::cache_stats`] can size it (it is a sibling of `views/`).
 pub(crate) const GIT_HISTORY_DIR: &str = "git-history.fjall";
 
-/// Resolve the `.basemind` directory that should hold the git-history index for a checkout rooted at
-/// `root`.
+/// Resolve the per-workspace cache directory that should hold the git-history index for a checkout
+/// rooted at `root`.
 ///
 /// The index is derived entirely from the shared `.git` object database — every linked worktree of a
 /// clone sees the identical commit graph — so a **linked worktree shares the MAIN worktree's index**
-/// rather than rebuilding its own. A main worktree or a plain checkout uses its own `.basemind`. This
-/// mirrors the blob-store sharing in `store::resolve_blobs_dir` and turns a per-worktree git-history
-/// rebuild (seconds to minutes on a large repo) into a one-time cost shared across every worktree.
+/// rather than rebuilding its own. It does this by keying the (now machine-global) workspace cache
+/// on the MAIN worktree root, turning a per-worktree git-history rebuild (seconds to minutes on a
+/// large repo) into a one-time cost shared across every worktree.
 ///
-/// Falls back to `root/.basemind` when `root` is not inside a git repository.
+/// Falls back to `root`'s own workspace cache dir when `root` is not inside a git repository.
 pub fn shared_history_basemind_dir(root: &std::path::Path) -> std::path::PathBuf {
     let base = match crate::git::Repo::discover(root) {
         Ok(repo) if repo.is_linked_worktree() => repo.main_worktree_root(),
         _ => root.to_path_buf(),
     };
-    base.join(crate::config::BASEMIND_DIR)
+    crate::store::workspace_cache_dir(&base)
 }
 
 /// Retry budget + backoff for a transient fjall `Locked` when opening the git-history DB. The

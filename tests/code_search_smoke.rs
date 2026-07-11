@@ -29,6 +29,7 @@ pub struct Config {\n\
 
 #[test]
 fn search_code_finds_chunk_then_get_chunk_fetches_body() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
@@ -123,9 +124,14 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
 /// sidecar is missing, even when the file content is identical to the stored blob.
 #[test]
 fn stale_sidecar_rechunked_when_content_unchanged() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
+    // Test-unique content: the `.chunk.msgpack` sidecar is content-addressed in the shared global
+    // store, so a body shared with another test would let this test delete a sibling's sidecar.
+    let fixture = format!("{FIXTURE}\n// stale-sidecar-rechunk-marker\n");
+    std::fs::write(root.join("lib.rs"), &fixture).expect("write fixture");
+    let stem = content_stem(fixture.as_bytes());
 
     let scan1 = Command::new(bin())
         .current_dir(root)
@@ -138,7 +144,7 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
         String::from_utf8_lossy(&scan1.stderr)
     );
 
-    let sidecar = find_chunk_sidecar(root);
+    let sidecar = find_chunk_sidecar(&stem);
     let Some(sidecar) = sidecar else {
         eprintln!(
             "SKIP: no .chunk.msgpack sidecar found after first scan \
@@ -183,12 +189,14 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
 /// BM25 must rank the fixture's chunk first.
 #[test]
 fn search_code_keyword_mode_ranks_by_bm25() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
-    std::fs::create_dir_all(root.join(".basemind")).expect("mkdir .basemind");
+    // Canonical committed config location; the cache moved to a global XDG store so there is no
+    // in-repo `.basemind/` dir to hold a legacy config.
     std::fs::write(
-        root.join(".basemind/basemind.toml"),
+        root.join("basemind.toml"),
         "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
     )
     .expect("write config");
@@ -273,12 +281,13 @@ fn search_code_keyword_mode_ranks_by_bm25() {
 /// owning chunk; the exact lane's 2x RRF weight must float that chunk to the top. No embedder needed.
 #[test]
 fn search_code_hybrid_ranks_exact_symbol_first() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
-    std::fs::create_dir_all(root.join(".basemind")).expect("mkdir .basemind");
+    // Canonical committed config location (see the keyword-mode test).
     std::fs::write(
-        root.join(".basemind/basemind.toml"),
+        root.join("basemind.toml"),
         "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
     )
     .expect("write config");
@@ -349,26 +358,17 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
     );
 }
 
-/// Recursively search `root/.basemind/` for the first file whose name ends with
-/// `.chunk.msgpack`. Returns `None` when no sidecar exists (clean scan or chunker disabled).
-fn find_chunk_sidecar(root: &std::path::Path) -> Option<std::path::PathBuf> {
-    fn walk(dir: &std::path::Path) -> Option<std::path::PathBuf> {
-        let entries = std::fs::read_dir(dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(found) = walk(&path) {
-                    return Some(found);
-                }
-            } else if path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.ends_with(".chunk.msgpack"))
-            {
-                return Some(path);
-            }
-        }
-        None
-    }
-    walk(&root.join(".basemind"))
+/// Find the `.chunk.msgpack` sidecar for `stem` in the machine-global blob store. The blob store
+/// is content-addressed and shared across workspaces now, so we look up THIS test's own stem rather
+/// than "the first sidecar anywhere" (which could belong to a sibling test's identical content).
+/// Returns `None` when the sidecar does not exist (clean scan or chunker disabled).
+fn find_chunk_sidecar(stem: &str) -> Option<std::path::PathBuf> {
+    let path = basemind::store::global_blobs_dir().join(format!("{stem}.chunk.msgpack"));
+    path.exists().then_some(path)
+}
+
+/// Content hash (hex stem) of `bytes` — the key under which the blob store addresses this file's
+/// sidecars. Lets a test locate exactly its own `.chunk.msgpack` in the shared global store.
+fn content_stem(bytes: &[u8]) -> String {
+    basemind::hashing::hex(&basemind::hashing::hash_bytes(bytes))
 }

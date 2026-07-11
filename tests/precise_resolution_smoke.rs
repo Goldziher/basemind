@@ -41,6 +41,7 @@ fn git(repo: &Path, args: &[&str]) {
 /// Build a throwaway git repo containing the two Python fixtures (`app.py` + `mod.py`) from
 /// `tests/fixtures/precise_resolution_py/`, copied verbatim.
 fn build_python_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);
@@ -58,6 +59,7 @@ fn build_python_repo() -> TempDir {
 /// Build a throwaway git repo containing the two Java fixtures (`App.java` + `Foo.java`) from
 /// `tests/fixtures/precise_resolution_java/`, copied verbatim.
 fn build_java_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().expect("tempdir");
     let root = dir.path();
     git(root, &["init", "-q"]);

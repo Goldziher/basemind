@@ -17,6 +17,7 @@ use tempfile::TempDir;
 
 /// A repo tempdir plus a *sibling* external dir (outside the repo root), wired into config.
 fn repo_with_external() -> (TempDir, TempDir, ConfigV1) {
+    basemind::store::init_isolated_cache();
     let repo = tempfile::tempdir().expect("repo tempdir");
     let ext = tempfile::tempdir().expect("external tempdir");
 

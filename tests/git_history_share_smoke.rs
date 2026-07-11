@@ -1,12 +1,14 @@
 //! Gap B regression: the git-history index must be **shared** across worktrees of one clone rather
 //! than rebuilt per worktree. It is derived entirely from the shared `.git` object database, so a
-//! linked worktree resolves the index to the MAIN worktree's `.basemind` (mirroring the blob-store
-//! sharing). This turns a per-worktree history rebuild into a one-time cost.
+//! linked worktree resolves the index to the MAIN worktree's workspace cache dir (keyed on the main
+//! worktree root, in the now machine-global XDG store). This turns a per-worktree history rebuild
+//! into a one-time cost.
 
 use std::path::Path;
 use std::process::Command;
 
 use basemind::git_history::shared_history_basemind_dir;
+use basemind::store::workspace_cache_dir;
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -19,6 +21,7 @@ fn git(dir: &Path, args: &[&str]) {
 
 #[test]
 fn git_history_index_is_shared_from_linked_worktree() {
+    basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let main = tmp.path().join("main");
     std::fs::create_dir(&main).unwrap();
@@ -36,17 +39,20 @@ fn git_history_index_is_shared_from_linked_worktree() {
     let main_bm = shared_history_basemind_dir(&main);
     let wt_bm = shared_history_basemind_dir(&wt);
 
-    let root_of = |bm: &Path| std::fs::canonicalize(bm.parent().unwrap()).expect("canonicalize");
-
+    // Both the main and the linked worktree must resolve the git-history index to the SAME
+    // workspace cache dir — the one keyed on the main worktree root.
     assert_eq!(
-        root_of(&wt_bm),
-        root_of(&main_bm),
-        "a linked worktree must resolve the git-history index to the MAIN worktree's .basemind"
+        wt_bm, main_bm,
+        "a linked worktree must resolve the git-history index to the MAIN worktree's workspace cache"
+    );
+    assert_eq!(
+        main_bm,
+        workspace_cache_dir(&main),
+        "the shared index lives under the main worktree's workspace cache dir"
     );
     assert_ne!(
-        root_of(&wt_bm),
-        std::fs::canonicalize(&wt).unwrap(),
-        "a linked worktree must NOT build its own per-worktree git-history index"
+        wt_bm,
+        workspace_cache_dir(&wt),
+        "a linked worktree must NOT build its own per-worktree git-history index (distinct key)"
     );
-    assert_eq!(root_of(&main_bm), std::fs::canonicalize(&main).unwrap());
 }

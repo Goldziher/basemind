@@ -12,7 +12,6 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 
-use crate::config;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 use crate::store_gc::{self, CacheComponent};
@@ -58,7 +57,7 @@ pub async fn run_telemetry(
 /// `store_gc` primitives, which is why this is the only safe place to clear the
 /// live Fjall index (`views` / `all`).
 pub fn run_cache(root: &Path, cmd: CacheCmd, json: bool, out: &mut impl Write) -> Result<()> {
-    let basemind_dir = root.join(config::BASEMIND_DIR);
+    let basemind_dir = crate::store::workspace_cache_dir(root);
     match cmd {
         CacheCmd::Gc => {
             let report = store_gc::run_gc(&basemind_dir).context("run blob GC")?;

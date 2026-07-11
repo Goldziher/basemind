@@ -24,7 +24,7 @@ use ahash::AHashSet;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::store::{BLOBS_DIR, INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, read_index, wipe_blobs};
+use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, global_blobs_dir, read_index, wipe_blobs_in};
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -229,12 +229,24 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
     Ok(referenced)
 }
 
-/// Sweep `blobs/`, deleting every blob whose hex stem is not in `referenced`.
+/// Sweep the GLOBAL blob store, deleting every blob whose hex stem is not in `referenced`.
 ///
 /// Files that do not match a known blob suffix are inspected (counted in `scanned`) but
 /// never deleted — a conservative choice so a stray file under `blobs/` is never reaped.
-pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
-    let blobs_dir = basemind_dir.join(BLOBS_DIR);
+///
+/// NOTE: the blob store is machine-global now, so `referenced` MUST be the union across every
+/// workspace that could reference a blob. A single-workspace reference set would orphan (and
+/// delete) blobs other workspaces still need — which is why the standalone in-process auto-GC is
+/// disabled (`Store::blobs_shared == true`) and cross-workspace reference-counted GC is deferred
+/// to the daemon.
+pub fn gc_blobs(referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
+    gc_blobs_in(&global_blobs_dir(), referenced)
+}
+
+/// Sweep an explicit blob directory. The seam production reaches via [`gc_blobs`] (passing the
+/// global store) and unit tests reach with a per-test temp dir, so tests never touch — nor race
+/// on — the machine-global blob store or each other.
+fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
     let mut report = GcReport {
         scanned: 0,
         removed: 0,
@@ -243,9 +255,9 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
     if !blobs_dir.exists() {
         return Ok(report);
     }
-    for entry in read_dir(&blobs_dir)? {
+    for entry in read_dir(blobs_dir)? {
         let entry = entry.map_err(|source| GcError::Io {
-            path: blobs_dir.clone(),
+            path: blobs_dir.to_path_buf(),
             source,
         })?;
         let path = entry.path();
@@ -289,40 +301,59 @@ pub fn gc_blobs(basemind_dir: &Path, referenced: &AHashSet<String>) -> Result<Gc
     Ok(report)
 }
 
-/// Race-safe blob GC: mark + sweep under the store's advisory lock.
+/// Blob GC entry point for the CLI `cache gc` / a single-workspace caller.
 ///
-/// The scanner writes a blob to disk *before* committing the index entry that references it
-/// (see `write_blob` / `process_file` in `store.rs` / `scanner.rs`). Without the lock, a GC
-/// running concurrently with a scan could observe the just-written-but-not-yet-referenced
-/// blob, find no view pointing at it, and delete it out from under the scan. Holding the
-/// exclusive `.lock` for the whole mark+sweep serializes against any concurrent
-/// `basemind scan` / `basemind watch`, so every blob a scan has written is either already
-/// referenced (committed) or invisible to GC (scan still holds the lock).
+/// The blob store is machine-global now (shared by every workspace), so a single caller can only
+/// enumerate ONE workspace's references — never the full live set across the machine. A real sweep
+/// from here would reap blobs other workspaces still need, so this is a non-destructive report
+/// (`removed == 0`) that still inspects the store (`scanned` = current blob count). Cross-workspace
+/// reference-counted GC is the daemon's job (Track E). The `basemind_dir` is taken under the
+/// store's advisory lock so the report is consistent against a concurrent scan of that workspace.
 pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
-    if let Some(workdir) = basemind_dir.parent()
-        && crate::git::Repo::discover(workdir)
-            .map(|r| r.has_linked_worktrees())
-            .unwrap_or(false)
-    {
-        tracing::warn!(
-            "blob GC skipped: clone has linked worktrees (shared blob cache); run per-clone GC is not yet worktree-aware"
-        );
-        return Ok(GcReport {
-            scanned: 0,
-            removed: 0,
-            bytes_freed: 0,
-        });
-    }
     let _lock = acquire_lock(basemind_dir)?;
-    let referenced = collect_referenced_hashes(basemind_dir)?;
-    gc_blobs(basemind_dir, &referenced)
+    gc_report_only()
+}
+
+/// Non-destructive GC report over the GLOBAL blob store: counts every blob file (`scanned`) and
+/// removes nothing. This is the safe standalone behavior while the blob store is machine-global —
+/// see [`run_gc`]. `bytes_freed` / `removed` are always `0`.
+pub fn gc_report_only() -> Result<GcReport, GcError> {
+    let blobs_dir = global_blobs_dir();
+    let mut report = GcReport {
+        scanned: 0,
+        removed: 0,
+        bytes_freed: 0,
+    };
+    if !blobs_dir.exists() {
+        return Ok(report);
+    }
+    for entry in read_dir(&blobs_dir)? {
+        let entry = entry.map_err(|source| GcError::Io {
+            path: blobs_dir.clone(),
+            source,
+        })?;
+        if entry.path().is_file() {
+            report.scanned += 1;
+        }
+    }
+    Ok(report)
 }
 
 /// Clear a whole cache component. Reuses the store's existing wipe helpers where they
 /// exist; mirrors the lance dir-wipe pattern for the (feature-gated) vector store.
+///
+/// `Blobs` clears the machine-global blob store (shared by every workspace); all other components
+/// are per-workspace under `basemind_dir`.
 pub fn clear_component(basemind_dir: &Path, component: CacheComponent) -> Result<(), GcError> {
+    clear_component_in(basemind_dir, component, &global_blobs_dir())
+}
+
+/// [`clear_component`] against an explicit blob directory (used for the `Blobs` branch). Production
+/// passes the global store; unit tests pass a per-test temp dir so a `Blobs` clear never wipes the
+/// machine-global store nor races sibling tests that rely on content-addressed blobs surviving.
+fn clear_component_in(basemind_dir: &Path, component: CacheComponent, blobs_dir: &Path) -> Result<(), GcError> {
     match component {
-        CacheComponent::Blobs => wipe_blobs(basemind_dir)?,
+        CacheComponent::Blobs => wipe_blobs_in(blobs_dir)?,
         CacheComponent::Views => remove_dir_if_exists(&basemind_dir.join(VIEWS_DIR))?,
         CacheComponent::Lance => clear_lance(basemind_dir)?,
         CacheComponent::GitCache => remove_dir_if_exists(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?,
@@ -359,7 +390,13 @@ pub fn clear_single_view(basemind_dir: &Path, name: &str) -> Result<(), GcError>
 /// Gather per-component sizes and blob accounting without mutating anything. The orphan
 /// count reuses [`collect_referenced_hashes`] but never deletes.
 pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
-    let blobs_dir = basemind_dir.join(BLOBS_DIR);
+    cache_stats_in(basemind_dir, &global_blobs_dir())
+}
+
+/// [`cache_stats`] against an explicit blob directory. Production passes the global store; unit
+/// tests pass a per-test temp dir so they neither read the machine-global blob store nor race
+/// each other on it.
+fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<CacheStats, GcError> {
     let referenced = match collect_referenced_hashes(basemind_dir) {
         Ok(set) => Some(set),
         Err(e) => {
@@ -376,9 +413,9 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
     let mut blob_count = 0usize;
     let mut orphan_blob_count = 0usize;
     if blobs_dir.exists() {
-        for entry in read_dir(&blobs_dir)? {
+        for entry in read_dir(blobs_dir)? {
             let entry = entry.map_err(|source| GcError::Io {
-                path: blobs_dir.clone(),
+                path: blobs_dir.to_path_buf(),
                 source,
             })?;
             let path = entry.path();
@@ -397,14 +434,17 @@ pub fn cache_stats(basemind_dir: &Path) -> Result<CacheStats, GcError> {
         }
     }
 
-    let blobs_bytes = dir_size(&blobs_dir)?;
+    let blobs_bytes = dir_size(blobs_dir)?;
     let views_bytes = dir_size(&basemind_dir.join(VIEWS_DIR))?;
     let lance_bytes = dir_size(&basemind_dir.join("lance"))?;
     let git_cache_bytes = dir_size(&basemind_dir.join(crate::git_cache::GIT_CACHE_DIR))?;
     let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    let total_bytes = dir_size(basemind_dir)?;
+    // Blobs live in the machine-global store now, outside this workspace's tree — so the total is
+    // the per-workspace tree PLUS the global blob store. `other_bytes` then captures anything under
+    // the workspace dir not attributed to a named component (lock/id sidecars, legacy index, …).
+    let total_bytes = dir_size(basemind_dir)? + blobs_bytes;
     let accounted = blobs_bytes + views_bytes + lance_bytes + git_cache_bytes + telemetry_bytes + git_history_bytes;
     let other_bytes = total_bytes.saturating_sub(accounted);
 
@@ -561,16 +601,22 @@ fn dir_size(dir: &Path) -> Result<u64, GcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{FileEntry, INDEX_FILE, Index};
+    use crate::store::{BLOBS_DIR, FileEntry, INDEX_FILE, Index};
     use std::fs;
     use std::path::PathBuf;
 
     /// A referenced + an orphan blob, with a hand-written `views/working/index.msgpack`
-    /// pointing only at the referenced stem. Returns `(basemind_dir, referenced_stem,
-    /// orphan_stem, orphan_byte_len)`.
+    /// pointing only at the referenced stem.
+    ///
+    /// Since the blob store went machine-global, these tests keep their blobs in a *per-fixture*
+    /// temp `blobs/` dir under `basemind_dir` and drive GC / stats through the `gc_blobs_in` /
+    /// `cache_stats_in` seams — never the real global store. That keeps each test hermetic and
+    /// parallel-safe (colliding hex stems across tests can't clobber one another).
     struct Fixture {
         _tmp: tempfile::TempDir,
         basemind_dir: PathBuf,
+        /// Per-fixture blob directory (`basemind_dir/blobs`), passed to the `_in` seams.
+        blobs_dir: PathBuf,
         referenced_stem: String,
         orphan_stem: String,
         orphan_len: u64,
@@ -608,6 +654,7 @@ mod tests {
         Fixture {
             _tmp: tmp,
             basemind_dir,
+            blobs_dir: blobs,
             referenced_stem,
             orphan_stem,
             orphan_len,
@@ -626,7 +673,7 @@ mod tests {
         let stray = b"lockmeta";
         fs::write(fx.basemind_dir.join(".lock.meta"), stray).expect("write stray");
 
-        let stats = cache_stats(&fx.basemind_dir).expect("cache_stats");
+        let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("cache_stats");
 
         assert!(
             stats.git_history_bytes >= gh_payload.len() as u64,
@@ -639,10 +686,14 @@ mod tests {
             stats.other_bytes
         );
 
+        // Blobs are global now, so the workspace tree still contains a per-fixture `blobs/` here,
+        // but `total_bytes` is defined as the workspace tree PLUS the (passed) blob store. With the
+        // fixture blobs living under the workspace dir, the global blob bytes are double-counted by
+        // construction — assert the definition directly rather than against a bare tree walk.
         assert_eq!(
             stats.total_bytes,
-            dir_size(&fx.basemind_dir).expect("dir_size"),
-            "total_bytes is the whole .basemind/ tree"
+            dir_size(&fx.basemind_dir).expect("dir_size") + stats.blobs_bytes,
+            "total_bytes is the workspace tree plus the global blob store"
         );
         let component_sum = stats.blobs_bytes
             + stats.views_bytes
@@ -668,7 +719,7 @@ mod tests {
             "an unreadable index must fail the delete-path safety check"
         );
 
-        let stats = cache_stats(&fx.basemind_dir).expect("cache_stats must not hard-fail");
+        let stats = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("cache_stats must not hard-fail");
         assert!(
             !stats.blob_accounting_ok,
             "orphan accounting must be flagged unavailable"
@@ -681,8 +732,8 @@ mod tests {
         assert!(stats.total_bytes > 0, "sizes are still reported");
         assert_eq!(
             stats.total_bytes,
-            dir_size(&fx.basemind_dir).expect("dir_size"),
-            "total still reconciles to the tree"
+            dir_size(&fx.basemind_dir).expect("dir_size") + stats.blobs_bytes,
+            "total still reconciles to the workspace tree plus the blob store"
         );
     }
 
@@ -702,7 +753,7 @@ mod tests {
     fn should_remove_only_orphan_blob() {
         let fx = build_fixture();
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        let report = gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
 
         assert_eq!(report.scanned, 2, "one ref blob + one orphan inspected");
         assert_eq!(report.removed, 1, "only the orphan removed");
@@ -734,7 +785,7 @@ mod tests {
             referenced.contains(&fx.referenced_stem),
             "stem is referenced by the live index"
         );
-        let report = gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
 
         assert_eq!(report.removed, 3, "two legacy split blobs + the orphan filemap");
         assert!(
@@ -755,7 +806,7 @@ mod tests {
     fn should_report_one_orphan_before_gc_and_zero_after() {
         let fx = build_fixture();
 
-        let before = cache_stats(&fx.basemind_dir).expect("stats before");
+        let before = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("stats before");
         assert_eq!(before.blob_count, 2, "two blob files on disk");
         assert_eq!(before.orphan_blob_count, 1, "one orphan before GC");
         assert_eq!(
@@ -764,9 +815,13 @@ mod tests {
             "single working view with one indexed file"
         );
 
-        run_gc(&fx.basemind_dir).expect("gc");
+        // Mirror `run_gc`'s mark+sweep against the per-fixture blob dir (the global-store equivalent
+        // `run_gc` takes the store lock and sweeps `global_blobs_dir()`, which these hermetic tests
+        // deliberately avoid).
+        let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+        gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
 
-        let after = cache_stats(&fx.basemind_dir).expect("stats after");
+        let after = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("stats after");
         assert_eq!(after.blob_count, 1, "orphan reaped");
         assert_eq!(after.orphan_blob_count, 0, "no orphans remain");
     }
@@ -776,10 +831,10 @@ mod tests {
         let fx = build_fixture();
         fs::write(fx.basemind_dir.join(TELEMETRY_FILENAME), b"{}\n").expect("telemetry");
 
-        clear_component(&fx.basemind_dir, CacheComponent::Blobs).expect("clear blobs");
+        clear_component_in(&fx.basemind_dir, CacheComponent::Blobs, &fx.blobs_dir).expect("clear blobs");
 
-        let blobs = fx.basemind_dir.join(BLOBS_DIR);
-        let remaining: Vec<_> = fs::read_dir(&blobs)
+        let blobs = &fx.blobs_dir;
+        let remaining: Vec<_> = fs::read_dir(blobs)
             .expect("read blobs")
             .filter_map(Result::ok)
             .collect();
@@ -872,7 +927,7 @@ mod tests {
     #[test]
     fn should_reclaim_unreferenced_chunk_and_rref_but_keep_referenced() {
         let fx = build_fixture();
-        let blobs = fx.basemind_dir.join(BLOBS_DIR);
+        let blobs = &fx.blobs_dir;
 
         fs::write(
             blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)),
@@ -884,7 +939,7 @@ mod tests {
         fs::write(blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)), b"orphan-rref").expect("orphan rref");
 
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        gc_blobs(&fx.basemind_dir, &referenced).expect("gc");
+        gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
 
         assert!(
             blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)).exists(),

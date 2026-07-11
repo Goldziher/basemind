@@ -406,10 +406,9 @@ impl BasemindServer {
             let store = match self.state.store.try_read() {
                 Ok(store) => store,
                 Err(_) => {
-                    let basemind_dir = self.state.root.join(crate::config::BASEMIND_DIR);
                     return json_result(&StatusResponse {
                         file_count: 0,
-                        blob_count: count_fm_blobs(&basemind_dir),
+                        blob_count: count_fm_blobs(),
                         note: Some(
                             "a rebuild is in progress (another basemind process holds the store \
                              lock); index counts are unavailable until it completes"
@@ -454,7 +453,7 @@ impl BasemindServer {
                 .map(|r| r.submodule_paths())
                 .unwrap_or_default();
             let file_count = store.index.files.len();
-            let blob_count = count_fm_blobs(&store.basemind_dir);
+            let blob_count = count_fm_blobs();
             let note = blob_divergence_note(file_count, blob_count);
             json_result(&StatusResponse {
                 file_count,
@@ -707,15 +706,19 @@ pub(super) fn search_max_total(limit: usize) -> usize {
     limit.saturating_mul(64).max(2_000)
 }
 
-/// Count content-addressed blobs in `<basemind_dir>/blobs/` by tallying `.fm.msgpack` files
+/// Count content-addressed blobs in the GLOBAL blob store by tallying `.fm.msgpack` files
 /// (one combined L1 + L2 filemap per indexed content hash; the `.doc` sibling shares the same
 /// stem so it is not double-counted). A single directory read — cheaper than
 /// [`crate::store_gc::cache_stats`], which also unions every view index — so it is safe to call
 /// from the `status` path.
 ///
+/// Since the blob store went machine-global this counts blobs across EVERY workspace, so the
+/// `status` divergence heuristic (empty index yet blobs on disk) can over-report on a shared
+/// machine — advisory only, as before.
+///
 /// Returns `0` when the blobs directory is absent or unreadable; the count is advisory.
-pub(super) fn count_fm_blobs(basemind_dir: &std::path::Path) -> usize {
-    let blobs_dir = basemind_dir.join(crate::store::BLOBS_DIR);
+pub(super) fn count_fm_blobs() -> usize {
+    let blobs_dir = crate::store::global_blobs_dir();
     let Ok(entries) = std::fs::read_dir(&blobs_dir) else {
         return 0;
     };

@@ -17,6 +17,7 @@ use basemind::store::{Store, VIEW_WORKING};
 
 #[test]
 fn scan_resolves_intra_file_references_for_javascript() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let src = "const count = 1;\nfunction f() {\n  return count + count;\n}\n";
@@ -64,6 +65,7 @@ fn scan_resolves_intra_file_references_for_javascript() {
 
 #[test]
 fn scan_resolves_cross_file_references_for_typescript() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let a_src = "export function helper() {\n  return 1;\n}\n";
@@ -109,6 +111,7 @@ fn scan_resolves_cross_file_references_for_typescript() {
 
 #[test]
 fn resolved_references_do_not_conflate_same_named_symbols_across_files() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let a_src = "const count = 1;\nfunction fa() {\n  return count;\n}\n";

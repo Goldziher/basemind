@@ -20,6 +20,14 @@ use crate::store_blob::{
 pub const INDEX_FILE: &str = "index.msgpack";
 pub const BLOBS_DIR: &str = "blobs";
 pub const LOCK_FILE: &str = ".lock";
+/// Environment override for the global cache root. When set, [`cache_root`] returns it verbatim
+/// instead of the XDG data dir — the single seam the test-isolation helper uses to redirect every
+/// workspace's cache into a per-process temp dir.
+pub const DATA_HOME_ENV: &str = "BASEMIND_DATA_HOME";
+/// Sub-directory of [`cache_root`] that holds all basemind cache state (`blobs/` + `workspaces/`).
+pub const CACHE_DIR: &str = "cache";
+/// Sub-directory of the cache holding per-workspace state, keyed by [`workspace_key`].
+pub const WORKSPACES_DIR: &str = "workspaces";
 /// Sidecar JSON written next to `.lock` naming the live lock holder (command + pid +
 /// timestamp). Read on contention so the error can name the *actual* holder instead of a
 /// hardcoded guess. Best-effort: a missing/corrupt sidecar degrades to a generic message.
@@ -37,6 +45,79 @@ pub const VIEW_STAGED: &str = "staged";
 /// Build the view name used for an arbitrary rev. Slash-free so it's a single directory.
 pub fn view_name_for_rev(short_sha: &str) -> String {
     format!("rev-{short_sha}")
+}
+
+/// Root of basemind's GLOBAL on-disk cache, shared across every workspace on the machine.
+///
+/// Resolution order:
+/// 1. `$BASEMIND_DATA_HOME` when set (the test-isolation seam; also a user escape hatch).
+/// 2. Else `directories::ProjectDirs::from("", "", "basemind").data_dir()` — the platform XDG
+///    data dir (`~/.local/share/basemind` on Linux, `~/Library/Application Support/basemind` on
+///    macOS, `%APPDATA%\basemind\data` on Windows).
+/// 3. Else the current directory (only when `ProjectDirs` cannot resolve a home dir — no `HOME`).
+///
+/// The cache lives under `cache_root()/cache/`: a global `blobs/` (content-addressed, shared by
+/// every workspace) plus per-workspace state under `workspaces/<workspace_key>/`.
+pub fn cache_root() -> PathBuf {
+    if let Some(explicit) = std::env::var_os(DATA_HOME_ENV) {
+        return PathBuf::from(explicit);
+    }
+    directories::ProjectDirs::from("", "", "basemind")
+        .map(|dirs| dirs.data_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Stable per-workspace key: a hex blake3 hash of the **canonicalized** worktree-root path. One
+/// key per worktree root (linked git worktrees canonicalize to distinct paths and so get distinct
+/// keys — correct, since the global blob store dedups byte-identical content across them anyway).
+///
+/// Canonicalization resolves symlinks so `/tmp/x` and `/private/tmp/x` (macOS) map to one key;
+/// a path that cannot be canonicalized (does not exist yet) falls back to its raw form so a
+/// freshly-created root still hashes deterministically.
+pub fn workspace_key(root: &Path) -> String {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    hashing::hex(&hashing::hash_bytes(canonical.as_os_str().as_encoded_bytes()))
+}
+
+/// Per-workspace cache directory for `root`: `cache_root()/cache/workspaces/<workspace_key>/`.
+/// Holds `views/<view>/`, the top-level `index.msgpack` (legacy), the LanceDB store, and the
+/// per-workspace `.lock`. Blobs are NOT here — they live in the global [`global_blobs_dir`].
+pub fn workspace_cache_dir(root: &Path) -> PathBuf {
+    cache_root()
+        .join(CACHE_DIR)
+        .join(WORKSPACES_DIR)
+        .join(workspace_key(root))
+}
+
+/// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/`. Shared across every
+/// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
+pub fn global_blobs_dir() -> PathBuf {
+    cache_root().join(CACHE_DIR).join(BLOBS_DIR)
+}
+
+/// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
+///
+/// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a leaked [`tempfile::TempDir`]
+/// so it outlives every test in the binary, and is idempotent across the many fixture constructors
+/// that call it. Workspace-keying + content-addressed blobs keep tests mutually isolated even
+/// though they share this one cache root, so all tests in a binary can safely share it — no
+/// per-test env churn, no races on `set_var`.
+#[cfg(any(feature = "test-support", test))]
+pub fn init_isolated_cache() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        // Leak the TempDir so the directory lives for the entire process; the OS reclaims it on
+        // exit. A dropped TempDir here would delete the cache out from under still-running tests.
+        let dir = Box::leak(Box::new(tempfile::tempdir().expect("create isolated cache tempdir")));
+        // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
+        // `cache_root()` (every fixture constructor calls this first). Rust 2024 marks `set_var`
+        // unsafe because concurrent get/set is UB; the single-write-before-any-read discipline
+        // here upholds that invariant.
+        unsafe {
+            std::env::set_var(DATA_HOME_ENV, dir.path());
+        }
+    });
 }
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
@@ -223,17 +304,16 @@ pub struct Store {
     pub root: PathBuf,
     pub basemind_dir: PathBuf,
     /// Directory holding the content-addressed blob cache (`<hash>.{fm,doc,rref,chunk}.msgpack`).
-    /// Normally `basemind_dir/blobs`, but for a *linked git worktree* it resolves to the MAIN
-    /// worktree's `.basemind/blobs` so byte-identical files across worktrees are extracted +
-    /// embedded once (shared cache). Views + LanceDB stay per-worktree. See
-    /// [`resolve_blobs_dir`]. When this points outside `basemind_dir`, auto-GC is skipped
-    /// ([`Store::blobs_are_shared`]) so one worktree's GC never reaps another's referenced blobs.
+    /// The GLOBAL blob store at `cache_root()/cache/blobs/`, shared by every workspace on the
+    /// machine, so byte-identical files across repositories/worktrees are extracted + embedded
+    /// exactly once. Per-workspace state (views, LanceDB, lock) lives under [`Store::basemind_dir`].
+    /// See [`global_blobs_dir`].
     pub blobs_dir: PathBuf,
-    /// True when this clone has linked git worktrees, so [`Store::blobs_dir`] is (potentially)
-    /// shared across them. Auto-GC (boot + background) is skipped in this case: a sweep sees only
-    /// one worktree's references and could reap blobs a sibling still needs. Set from EITHER side
-    /// (the main worktree also skips). Explicit worktree-spanning GC is a follow-up; the dedup win
-    /// (shared cache, no re-embed) does not depend on it.
+    /// Always `true` since the blob store went global: a standalone Store references only ONE
+    /// workspace's index, so it can never enumerate the full live blob set across all workspaces.
+    /// Auto-GC (boot + background) is therefore disabled here — reference-counted GC that spans
+    /// every workspace is the daemon's job. Retained (rather than removed) so the auto-GC skip in
+    /// `mcp::background::run_background_gc` and the boot path keep compiling unchanged.
     pub blobs_shared: bool,
     pub view_dir: PathBuf,
     pub view: String,
@@ -261,14 +341,14 @@ impl Store {
     /// Like [`Store::open`] but records which command (`serve` / `watch` / `scan` / `rescan`)
     /// is taking the lock, so a concurrent acquirer's contention error names the live holder.
     pub fn open_with_holder(root: &Path, view: &str, holder: LockHolder) -> Result<Self, StoreError> {
-        let basemind_dir = root.join(crate::config::BASEMIND_DIR);
+        let basemind_dir = workspace_cache_dir(root);
         ensure_dir(&basemind_dir)?;
-        ensure_gitignore(&basemind_dir)?;
-        let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
+        let blobs_dir = global_blobs_dir();
         ensure_dir(&blobs_dir)?;
-        if blobs_shared && let Some(shared_basemind) = blobs_dir.parent() {
-            ensure_gitignore(shared_basemind)?;
-        }
+        // Blobs are global (shared by every workspace), so a standalone Store can never see the
+        // full set of live references — auto-GC is disabled here (`blobs_shared = true`); the
+        // daemon performs reference-counted GC across all workspaces.
+        let blobs_shared = true;
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
         migrate_legacy_index_into_views(&basemind_dir)?;
 
@@ -308,11 +388,13 @@ impl Store {
 
     /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
     pub fn open_read_only(root: &Path, view: &str) -> Result<Self, StoreError> {
-        let basemind_dir = root.join(crate::config::BASEMIND_DIR);
+        let basemind_dir = workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
         }
-        let (blobs_dir, blobs_shared) = resolve_blobs_dir(root, &basemind_dir);
+        let blobs_dir = global_blobs_dir();
+        // See `open_with_holder`: blobs are global, so auto-GC is disabled in a standalone Store.
+        let blobs_shared = true;
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {
             return Err(StoreError::ViewNotScanned { view: view.to_string() });
@@ -602,54 +684,6 @@ fn ensure_dir(p: &Path) -> Result<(), StoreError> {
     })
 }
 
-/// Drop a `.gitignore` inside `.basemind/` the first time the store is created.
-/// A bare `*` makes git ignore the whole directory (this file included), so a
-/// user's repository never accidentally commits the machine-local index. Written
-/// once and never overwritten — a deliberate user edit is respected.
-fn ensure_gitignore(basemind_dir: &Path) -> Result<(), StoreError> {
-    let gitignore = basemind_dir.join(".gitignore");
-    if gitignore.exists() {
-        return Ok(());
-    }
-    std::fs::write(
-        &gitignore,
-        "# basemind's machine-local index — not version-controlled.\n*\n",
-    )
-    .map_err(|source| StoreError::Io {
-        path: gitignore,
-        source,
-    })
-}
-
-/// Resolve the blob-cache directory for `root`, and whether it is shared across worktrees.
-///
-/// - **Linked git worktree** (`git worktree add`): returns the MAIN worktree's `.basemind/blobs`
-///   with `shared = true`, so byte-identical files across worktrees are extracted + embedded once.
-/// - **Main worktree, plain checkout, or non-git dir**: returns `basemind_dir/blobs` with
-///   `shared = false` — byte-for-byte the pre-sharing behavior.
-///
-/// Detection keys off `Repo::is_linked_worktree` (git-dir ≠ common-dir), NOT a path comparison, so
-/// the macOS `/tmp`→`/private/tmp` symlink can't misclassify a main worktree as shared.
-///
-/// The returned bool is the **GC-skip** flag = `Repo::has_linked_worktrees`: true whenever the clone
-/// has any linked worktree (observed identically from the main or a linked worktree). It is broader
-/// than "am I a linked worktree" on purpose — the MAIN worktree must also skip auto-GC, or its sweep
-/// (seeing only its own references) would reap blobs a linked worktree still needs.
-fn resolve_blobs_dir(root: &Path, basemind_dir: &Path) -> (PathBuf, bool) {
-    if let Ok(repo) = crate::git::Repo::discover(root) {
-        let gc_unsafe = repo.has_linked_worktrees();
-        let dir = if repo.is_linked_worktree() {
-            repo.main_worktree_root()
-                .join(crate::config::BASEMIND_DIR)
-                .join(BLOBS_DIR)
-        } else {
-            basemind_dir.join(BLOBS_DIR)
-        };
-        return (dir, gc_unsafe);
-    }
-    (basemind_dir.join(BLOBS_DIR), false)
-}
-
 /// Delete the index file in a single view's directory.
 fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
     let index_path = view_dir.join(INDEX_FILE);
@@ -662,19 +696,24 @@ fn wipe_view(view_dir: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Wipe the shared blobs directory. Used by `store_gc::clear_component` for an explicit
-/// `Blobs` component clear (the CLI / MCP admin surface). NOT called on a schema bump:
-/// `Store::open` refreshes blobs durably in place (re-extract overwrites stale blobs;
+/// Empty an explicit blob directory (keeping the directory itself). Used by
+/// `store_gc::clear_component` for an explicit `Blobs` component clear (the CLI / MCP admin
+/// surface): production passes the GLOBAL blob store ([`global_blobs_dir`]), unit tests pass a
+/// per-test temp dir so a `Blobs` clear never wipes the machine-global store nor races sibling
+/// content-addressed-blob tests.
+///
+/// The blob store is machine-global now, so a production `Blobs` clear reaps blobs for EVERY
+/// workspace — the daemon (Track E) owns per-workspace-safe reference-counted GC. NOT called on a
+/// schema bump: `Store::open` refreshes blobs durably in place (re-extract overwrites stale blobs;
 /// orphans are reclaimed by `store_gc::run_gc`) rather than destroying the cache.
-pub(crate) fn wipe_blobs(basemind_dir: &Path) -> Result<(), StoreError> {
-    let blobs_dir = basemind_dir.join(BLOBS_DIR);
+pub(crate) fn wipe_blobs_in(blobs_dir: &Path) -> Result<(), StoreError> {
     if blobs_dir.exists() {
-        std::fs::remove_dir_all(&blobs_dir).map_err(|source| StoreError::Io {
-            path: blobs_dir.clone(),
+        std::fs::remove_dir_all(blobs_dir).map_err(|source| StoreError::Io {
+            path: blobs_dir.to_path_buf(),
             source,
         })?;
-        std::fs::create_dir_all(&blobs_dir).map_err(|source| StoreError::Io {
-            path: blobs_dir,
+        std::fs::create_dir_all(blobs_dir).map_err(|source| StoreError::Io {
+            path: blobs_dir.to_path_buf(),
             source,
         })?;
     }
@@ -791,6 +830,7 @@ mod tests {
 
     #[test]
     fn filemap_frame_round_trips_both_tiers() {
+        init_isolated_cache();
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
         let hash_hex = "a".repeat(64);
@@ -807,6 +847,7 @@ mod tests {
 
     #[test]
     fn filemap_frame_l1_only_reads_back_no_l2() {
+        init_isolated_cache();
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
         let hash_hex = "b".repeat(64);
@@ -828,6 +869,7 @@ mod tests {
     #[test]
     fn resolved_blob_round_trips_and_missing_reads_none() {
         use crate::intel::model::{ExportEdge, FileResolvedRefs, ImportEdge, ResolvedEdge};
+        init_isolated_cache();
         let tmp = tempfile::tempdir().unwrap();
         let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
         let hash_hex = "d".repeat(64);
@@ -913,6 +955,7 @@ mod tests {
 
     #[test]
     fn open_read_only_errors_on_never_scanned_named_view() {
+        init_isolated_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let err = match Store::open_read_only(tmp.path(), "rev-deadbee") {
             Ok(_) => panic!("named unscanned view must error, not silently open empty"),
@@ -930,6 +973,7 @@ mod tests {
 
     #[test]
     fn open_read_only_allows_unscanned_working_view() {
+        init_isolated_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store =
             Store::open_read_only(tmp.path(), VIEW_WORKING).expect("working view opens even when never scanned");
@@ -938,6 +982,7 @@ mod tests {
 
     #[test]
     fn open_writer_creates_named_view_for_first_scan() {
+        init_isolated_cache();
         let tmp = tempfile::tempdir().expect("tempdir");
         let store = Store::open(tmp.path(), "rev-cafe000").expect("writer creates a named view on first scan");
         assert!(store.view_dir.exists(), "named view dir created by writer");

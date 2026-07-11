@@ -27,6 +27,7 @@ fn count_def_start(src: &str) -> u32 {
 
 #[test]
 fn scan_paths_refreshes_resolved_edges_after_edit() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let before = "const count = 1;\nfunction f() {\n  return count + count;\n}\n";
@@ -81,6 +82,7 @@ fn scan_paths_refreshes_resolved_edges_after_edit() {
 
 #[test]
 fn scan_paths_purges_resolved_edges_for_removed_file() {
+    basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let src = "const count = 1;\nfunction f() {\n  return count + count;\n}\n";
