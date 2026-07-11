@@ -11,7 +11,6 @@ Cover the two behaviours that broke real installs:
 from __future__ import annotations
 
 import pytest
-
 from basemind import downloader
 
 

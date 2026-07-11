@@ -7,8 +7,8 @@ import shutil
 import ssl
 import subprocess
 import sys
-import tempfile
 import tarfile
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -281,14 +281,14 @@ def ensure_binary():
         lock_acquired = True
         os.close(lock_fd)
     except FileExistsError:
-        for attempt in range(30):
+        for _ in range(30):
             time.sleep(0.1)
             if binary_path.exists() and os.access(binary_path, os.X_OK):
                 return str(binary_path)
         raise RuntimeError(
             f"Timeout waiting for concurrent binary installation of {__version__}. "
             f"If this persists, remove {cache_dir} and retry."
-        )
+        ) from None
 
     try:
         if binary_path.exists() and os.access(binary_path, os.X_OK):
@@ -308,12 +308,12 @@ def ensure_binary():
 
             try:
                 staging_dir.replace(cache_dir)
-            except (OSError, FileExistsError):
+            except (OSError, FileExistsError) as exc:
                 if not (binary_path.exists() and os.access(binary_path, os.X_OK)):
                     shutil.rmtree(cache_dir, ignore_errors=True)
                     staging_dir.replace(cache_dir)
                 if not binary_path.exists():
-                    raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
+                    raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}") from exc
 
         if not binary_path.exists():
             raise RuntimeError(f"binary {_binary_name()} not found after extracting {asset_name}")
@@ -340,7 +340,7 @@ def run_basemind(args):
     try:
         result = subprocess.run([binary_path] + args, check=False)
         sys.exit(result.returncode)
-    except FileNotFoundError:
-        raise RuntimeError(f"Binary not found at {binary_path}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to run basemind: {e}")
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Binary not found at {binary_path}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Failed to run basemind: {exc}") from exc

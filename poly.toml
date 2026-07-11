@@ -79,7 +79,6 @@ extend_identifiers = { rela_path = "rela_path" }
 extend_exclude = ["tests/fixtures/**"]
 
 [per-file-ignores]
-"pip-package/**" = ["B007", "B904", "I001"]
 "e2e/**" = ["comment", "doc-comment"]
 "**/e2e/**" = ["comment", "doc-comment"]
 "test_apps/**" = ["comment", "doc-comment"]
