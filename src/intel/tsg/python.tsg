@@ -797,6 +797,15 @@ inherit .parent_module
   let @func.function_returns = return_value
 }
 
+;; A parameter-less lambda (`lambda: x`) has no `parameters` field, so the combined
+;; function/lambda stanza above never matches it and never creates its `.call` node — which the
+;; lambda-expression stanza (further below) then references, aborting the whole file's build. The
+;; `.` anchor matches ONLY lambdas whose first child is the body (no parameters); create the node
+;; here so the reference resolves.
+(lambda . body: (_)) @lam {
+  node @lam.call
+}
+
 (function_definition
   name: (identifier) @name
   body: (_) @body
@@ -943,7 +952,7 @@ inherit .parent_module
 
 (class_definition
   superclasses: (argument_list
-    (_) @superclass)) @class
+    [(identifier) (attribute) (subscript)] @superclass)) @class
 {
   edge @class.super_scope -> @superclass.output
 }
@@ -1293,6 +1302,18 @@ inherit .parent_module
 (case_pattern (_) @pattern) @case
 {
   edge @case.new_bindings -> @pattern.new_bindings
+}
+
+;; An assignment used as a value (chained assignment, `a = b = c`) nests: the outer assignment's
+;; `right:` is the inner `assignment` node, which is a statement and so has no `.output` — the
+;; binding stanza below then aborts the whole file. Give an assignment an `.output` that flows from
+;; its own right side; this both prevents the abort and models chaining correctly (the outer target
+;; binds to the innermost value).
+(assignment
+  right: (_) @right) @assign
+{
+  node @assign.output
+  edge @assign.output -> @right.output
 }
 
 [

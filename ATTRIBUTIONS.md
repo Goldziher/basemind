@@ -30,11 +30,18 @@ import-aware navigation for Python and Java.
   parses via `tree-sitter-language-pack` 1.12.5. Grammar-drift adaptations for node types that do not
   exist in the current grammar (e.g. Python's `except_group_clause`) are stripped at engine-build
   time in `src/intel/stackgraph.rs`.
-- Rule bug fixes for valid modern constructs are applied **directly to the rule files**. Notably the
-  Python `typed_parameter` stanza was restricted to identifier-named parameters
-  (`. (identifier) @name`) so a *typed* splat parameter (`**kwargs: T` / `*args: T`) no longer aborts
-  the whole stack-graph build — the upstream rule captured the splat pattern as a plain name and
-  failed on its undefined `.def`, silently losing all resolution for any file using typed splats.
+- Rule bug fixes for valid modern constructs are applied **directly to the rule files**. Each of the
+  following upstream rules aborted the *entire file's* stack-graph build (silently losing all
+  resolution) on a common construct; a sweep of a real Python codebase surfaced them and the fixes
+  take it to 100% of files building:
+  - `typed_parameter` restricted to identifier-named params (`. (identifier) @name`) so a *typed*
+    splat parameter (`**kwargs: T` / `*args: T`) no longer binds the splat pattern as a plain name.
+  - class superclass list restricted to `[(identifier) (attribute) (subscript)]` so a keyword-argument
+    base (`class X(TypedDict, total=False)`, `metaclass=…`) is not treated as a superclass.
+  - a parameter-less lambda (`lambda: x`) now gets its `.call` node (the combined function/lambda
+    stanza requires a `parameters` field and so skipped it).
+  - an assignment now carries an `.output` flowing from its right side, so a chained assignment
+    (`a = b = c`, which nests) no longer references an undefined `.output` on the inner assignment.
 
 ### License Compatibility
 

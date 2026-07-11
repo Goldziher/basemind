@@ -18,10 +18,11 @@
 //!
 //! ## Imports / exports
 //!
-//! `imports` and `exports` are derived from basemind's existing L1 extraction rather than mined
-//! from the stack graph: L1 already extracts imports and top-level symbols with correct identifier
-//! byte spans, and threading those through avoids re-deriving fiddly root/jump-to-scope reachability
-//! from the graph. `intra` — the hard part — comes from the stack graph.
+//! `imports` and `exports` are derived from small dedicated per-language tree-sitter queries (see
+//! [`extract_imports`] / [`extract_exports`]) rather than mined from the stack graph: the queries
+//! capture the local-name / export identifier nodes directly, so `local_start` / `name_start` are
+//! byte-precise, and this avoids re-deriving fiddly root/jump-to-scope reachability from the graph.
+//! `intra` — the hard part — comes from the stack graph.
 //!
 //! Never panics: a parse failure, `.tsg` build error, or stitch error yields `None`, so the
 //! dispatcher falls back to the tree-sitter `locals` engine.
@@ -485,6 +486,66 @@ mod tests {
             Some(import_binding),
             "imported `f` must resolve even when the function has a typed **kwargs param; edges: {:?}",
             refs.intra
+        );
+    }
+
+    /// Assert `f` (imported at `from m import f`) resolves to its import binding when used at the
+    /// `use_marker` site — i.e. the surrounding construct did not abort the whole-file build. These
+    /// lock the grammar-drift / upstream-rule fixes found by sweeping real Python (grantflow).
+    fn assert_import_resolves(src: &str, use_marker: &str) {
+        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
+            eprintln!("skip: python stack-graph engine unavailable");
+            return;
+        };
+        let import_binding =
+            src.find("from m import f").expect("import present") as u32 + "from m import ".len() as u32;
+        let use_site = src.find(use_marker).expect("use present") as u32 + (use_marker.len() - 3) as u32;
+        assert_eq!(
+            refs.intra.iter().find(|e| e.use_start == use_site).map(|e| e.def_start),
+            Some(import_binding),
+            "imported `f` must resolve (construct must not abort the build); edges: {:?}",
+            refs.intra
+        );
+    }
+
+    #[test]
+    fn class_keyword_base_does_not_abort_resolution() {
+        if skip_if_no_grammar("python") {
+            return;
+        }
+        // `class X(Base, total=False)` — a keyword-argument base used to abort the build (the .tsg
+        // treated every base as a superclass and failed on the `keyword_argument`).
+        assert_import_resolves(
+            "from m import f\n\n\nclass Cfg(dict, total=False):\n    pass\n\n\ndef g():\n    return f()\n",
+            "return f()",
+        );
+    }
+
+    #[test]
+    fn parameterless_lambda_does_not_abort_resolution() {
+        if skip_if_no_grammar("python") {
+            return;
+        }
+        // `lambda: expr` — a parameter-less lambda used to abort the WHOLE file's build (its `.call`
+        // node was never created because the function/lambda stanza requires a `parameters` field).
+        // The fix stops the abort so the rest of the file resolves; the imported `f` used elsewhere
+        // must still resolve even though the module also contains a parameter-less lambda.
+        assert_import_resolves(
+            "from m import f\n\n\nnoop = lambda: 0\n\n\ndef g():\n    return f()\n",
+            "return f()",
+        );
+    }
+
+    #[test]
+    fn chained_assignment_does_not_abort_resolution() {
+        if skip_if_no_grammar("python") {
+            return;
+        }
+        // `a = b = c` — chained assignment nests, so the outer `right:` is an `assignment` with no
+        // `.output`, which used to abort the build.
+        assert_import_resolves(
+            "from m import f\n\n\ndef g():\n    a = b = f()\n    return a\n",
+            "b = f()",
         );
     }
 
