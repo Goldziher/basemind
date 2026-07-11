@@ -85,6 +85,21 @@ impl SpecifierResolver {
             Self::Java(resolver) => resolver.resolve(root, importer_rel, import),
         }
     }
+
+    /// The export name an import with no specific `imported` symbol binds to. JS/TS default imports
+    /// (`import x from 'm'`) bind the target's `default` export, so `Js` returns `Some("default")`.
+    /// A Python `import m` or Java `import a.b.C` with `imported == None` names no single export — a
+    /// module (not one symbol) — so `Python`/`Java` return `None` and the join skips it. Without this
+    /// distinction the join would fall back to `"default"` for every language and wrongly bind a bare
+    /// Python `import m` to an unrelated `default = ...` / `def default` in the target.
+    pub(crate) fn default_export_name(&self) -> Option<&'static str> {
+        match self {
+            #[cfg(feature = "code-intel-js")]
+            Self::Js(_) => Some("default"),
+            #[cfg(feature = "code-intel-stack")]
+            Self::Python(_) | Self::Java(_) => None,
+        }
+    }
 }
 
 /// Convert an absolute path under `root` to a repo-relative [`RelPath`] (forward-slashed to match
@@ -285,6 +300,11 @@ pub(crate) mod java {
     //! convention lives at `<source-root>/com/example/Foo.java`. We try each known source root
     //! (repo root plus the standard Maven/Gradle roots) and return the first `.java` file that
     //! exists on disk. Wildcard imports (`com.example.*`) resolve to `None` (no single target).
+    //!
+    //! Known gap: **static imports** (`import static a.b.C.method;`) are not distinguished from type
+    //! imports — the trailing member is treated as a type name, so the resolver builds a
+    //! `.../C/method.java` path that does not exist and returns `None`. Static imports therefore get
+    //! no cross-file resolution today (a miss, never a wrong answer).
 
     use std::path::Path;
 
@@ -518,5 +538,22 @@ mod stack_tests {
     #[test]
     fn unknown_language_has_no_resolver() {
         assert!(SpecifierResolver::for_language("cobol").is_none());
+    }
+
+    #[test]
+    fn python_java_imports_have_no_default_export_fallback() {
+        // A bare `import m` (imported == None) must NOT fall back to a `"default"` export for
+        // Python/Java — that JS-ism would wrongly bind it to an unrelated `default` symbol in the
+        // target. The join skips these when `default_export_name()` is None.
+        assert_eq!(
+            SpecifierResolver::for_language("python").unwrap().default_export_name(),
+            None,
+            "Python has no default-export convention"
+        );
+        assert_eq!(
+            SpecifierResolver::for_language("java").unwrap().default_export_name(),
+            None,
+            "Java has no default-export convention"
+        );
     }
 }

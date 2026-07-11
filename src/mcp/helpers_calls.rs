@@ -238,10 +238,13 @@ fn resolved_callers_page(
         return None;
     }
 
+    // Popular exported symbols have many cross-file callers, so dedup via a hash set rather than a
+    // quadratic `Vec::contains` over `(RelPath, u32)` (a full path comparison each probe).
+    let mut seen: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
         for use_ref in crate::query::resolved_references(store, def_path, def_start) {
-            if !uses.contains(&use_ref) {
+            if seen.insert(use_ref.clone()) {
                 uses.push(use_ref);
             }
         }

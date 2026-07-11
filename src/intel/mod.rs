@@ -20,8 +20,9 @@ pub(crate) mod resolve_pass;
 /// shared by the cross-file stitch and its incremental re-stitch. JS/TS via oxc; Python/Java via
 /// path arithmetic over conventional package/source-root layouts.
 pub(crate) mod resolver;
-/// Stack-graph resolution engine (feature `code-intel-stack`): runs vendored `.tsg` name-binding
-/// rules to produce precise intra-file resolution for Python and Java. Populated by Track E.
+/// Stack-graph resolution engine (feature `code-intel-stack`): runs `.tsg` name-binding rules to
+/// produce precise intra-file resolution for Python and Java, plus the import/export facts the
+/// cross-file join consumes.
 #[cfg(feature = "code-intel-stack")]
 pub mod stackgraph;
 /// Cross-file resolution stitch (importer binding → resolved target export), run once at the end

@@ -42,12 +42,6 @@ pub struct FileFacts {
     pub import_uses: Vec<ResolvedEdge>,
 }
 
-/// The ES-module name a default import (`import x from ...`) binds to — its target's `default`
-/// export. Namespace imports (`import * as ns`) are dropped upstream in the oxc analysis (they bind
-/// a whole-module object with no single export site), so only genuine default imports — whose
-/// `imported` is `None` — reach this fallback.
-const DEFAULT_EXPORT_NAME: &str = "default";
-
 /// Commit the cross-file edge batch in bounded chunks, matching the primary scan's
 /// `INDEX_COMMIT_BATCH`: caps peak memory and periodically releases Fjall's write lock so a
 /// concurrent MCP reader isn't blocked for the whole stitch.
@@ -119,7 +113,13 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 continue;
             };
 
-            let wanted = import.imported.as_deref().unwrap_or(DEFAULT_EXPORT_NAME);
+            // A specific imported name (`from m import f`) joins against that export; an import with
+            // no named symbol falls back to the resolver's default-export convention (JS `default`),
+            // and `None` there means "no single export to bind" (bare Python/Java module import) — so
+            // the join is skipped rather than mis-binding to an unrelated `default` symbol.
+            let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
+                continue;
+            };
             if let Some(&name_start) = export_map.get(wanted) {
                 // Emit a cross-file edge for the import binding site itself AND for every in-file use
                 // of the imported name (calls/references whose intra `def_start` is this binding), so
