@@ -49,7 +49,7 @@ type FileSnapshot = (String, String, String);
 /// Wholesale resolve pass: (re)stage every indexed file's intra facts and (re)stitch every
 /// importer. Best-effort — any failure is logged and the scan still succeeds. No-op in a read-only
 /// (no writable index) session.
-pub(crate) fn resolve_pass(root: &Path, store: &Store) {
+pub(crate) fn resolve_pass(root: &Path, store: &Store, precise: bool) {
     let Some(index_db) = store.index_db.as_ref() else {
         return;
     };
@@ -66,7 +66,7 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store) {
         })
         .collect();
 
-    let facts = compute_facts(root, store, &files);
+    let facts = compute_facts(root, store, &files, precise);
     stage_facts(index_db, &facts);
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
@@ -81,7 +81,7 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store) {
 /// Incremental resolve pass for the watcher: only `changed` files' intra facts are restaged, and
 /// only the affected importer set is re-stitched. `changed` is the set of repo-relative paths the
 /// watcher re-indexed this event (removed files are handled by the caller's remove-mirror).
-pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[String]) {
+pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[String], precise: bool) {
     let Some(index_db) = store.index_db.as_ref() else {
         return;
     };
@@ -93,11 +93,11 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
             Some((rel.clone(), entry.hash_hex.clone(), entry.language.clone()))
         })
         .collect();
-    let changed_facts = compute_facts(root, store, &changed_snapshot);
+    let changed_facts = compute_facts(root, store, &changed_snapshot, precise);
     stage_facts(index_db, &changed_facts);
 
     #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    xfile_incremental::restitch_affected(root, store, index_db, changed);
+    xfile_incremental::restitch_affected(root, store, index_db, changed, precise);
     #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
     let _ = changed_facts;
 }
@@ -108,7 +108,7 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
 /// recomputes happen inside this parallel phase — the store is content-addressed, so distinct files
 /// write distinct paths and `write_bytes_atomic` makes duplicate-content writes idempotent. Only
 /// the small [`FileResolvedRefs`] is retained per file; source bytes are dropped immediately.
-fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot]) -> Vec<(String, FileResolvedRefs)> {
+fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bool) -> Vec<(String, FileResolvedRefs)> {
     files
         .par_iter()
         .filter_map(|(rel_str, hash_hex, language)| {
@@ -118,7 +118,7 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot]) -> Vec<(Str
                     let lang = lang::intern(language)?;
                     let abs = root.join(rel_str);
                     let bytes = std::fs::read(&abs).ok()?;
-                    let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes);
+                    let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes, precise);
                     if !computed.is_empty() {
                         let _ = store.write_resolved_hex(hash_hex, &computed);
                     }
@@ -252,7 +252,7 @@ mod xfile_incremental {
     /// Re-stitch only the importers whose cross-file resolution could have changed after `changed`
     /// was re-indexed: the changed resolver-capable files themselves plus every file that imports
     /// one.
-    pub(super) fn restitch_affected(root: &Path, store: &Store, index_db: &IndexDb, changed: &[String]) {
+    pub(super) fn restitch_affected(root: &Path, store: &Store, index_db: &IndexDb, changed: &[String], precise: bool) {
         let changed_set: AHashSet<&str> = changed
             .iter()
             .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| has_resolver(&e.language)))
@@ -319,7 +319,7 @@ mod xfile_incremental {
                 Some((k.clone(), entry.hash_hex.clone(), entry.language.clone()))
             })
             .collect();
-        let ua_facts = compute_facts(root, store, &unchanged_affected);
+        let ua_facts = compute_facts(root, store, &unchanged_affected, precise);
         stage_facts(index_db, &ua_facts);
 
         let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());

@@ -423,7 +423,8 @@ pub fn scan(
     }
 
     if matches!(source, ScanSource::WorkingTree) {
-        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store));
+        let precise = config.code_intel.precise_resolution;
+        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
     }
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
@@ -522,7 +523,8 @@ pub fn scan_paths(
         report.stats.removed += 1;
     }
 
-    scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels));
+    let precise = config.code_intel.precise_resolution;
+    scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
 
     flush_doc_batches_if_any(store, config, &scope, doc_batches);
     flush_code_batches_if_any(store, config, &scope, code_batches);

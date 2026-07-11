@@ -22,9 +22,14 @@ fn is_js_ts(lang: LangId) -> bool {
 
 /// Compute a file's resolution facts. Never fails — a parse error or unsupported language yields
 /// empty facts (the caller simply writes no resolved edges for that file).
-pub fn resolve_file(lang: LangId, path: &Path, source: &[u8]) -> FileResolvedRefs {
+///
+/// `precise` is the `[code_intel] precise_resolution` master switch: when `false`, the precise
+/// engines (oxc for JS/TS, stack-graphs for Python/Java) are skipped and every language falls back
+/// to tree-sitter `locals` scope binding.
+pub fn resolve_file(lang: LangId, path: &Path, source: &[u8], precise: bool) -> FileResolvedRefs {
     #[cfg(feature = "code-intel-js")]
-    if is_js_ts(lang)
+    if precise
+        && is_js_ts(lang)
         && let Some(refs) = resolve_js(lang, path, source)
     {
         return refs;
@@ -32,11 +37,14 @@ pub fn resolve_file(lang: LangId, path: &Path, source: &[u8]) -> FileResolvedRef
     #[cfg(not(feature = "code-intel-js"))]
     let _ = path;
     #[cfg(feature = "code-intel-stack")]
-    if crate::intel::stackgraph::has_tsg_ruleset(lang)
+    if precise
+        && crate::intel::stackgraph::has_tsg_ruleset(lang)
         && let Some(refs) = crate::intel::stackgraph::resolve_stackgraph(lang, source)
     {
         return refs;
     }
+    #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
+    let _ = precise;
     resolve_via_locals(lang, source)
 }
 
@@ -118,7 +126,7 @@ mod tests {
     #[test]
     fn resolve_file_js_yields_intra_edges_and_imports() {
         let src = b"import { helper } from './util';\nfunction f() {\n  const x = 1;\n  return x + helper();\n}\n";
-        let refs = resolve_file("typescript", Path::new("app.ts"), src);
+        let refs = resolve_file("typescript", Path::new("app.ts"), src, true);
 
         let x_def = b"import { helper } from './util';\nfunction f() {\n  const ".len() as u32;
         assert!(
@@ -171,7 +179,19 @@ mod tests {
 
     #[test]
     fn resolve_file_non_utf8_yields_empty() {
-        let refs = resolve_file("typescript", Path::new("bad.ts"), &[0xff, 0xfe, 0x00]);
+        let refs = resolve_file("typescript", Path::new("bad.ts"), &[0xff, 0xfe, 0x00], true);
         assert!(refs.is_empty(), "non-UTF-8 source must yield empty facts, not panic");
+    }
+
+    #[test]
+    fn precise_false_skips_oxc_so_no_import_edges() {
+        // The `[code_intel] precise_resolution = false` path: the oxc engine is skipped, so the
+        // import/export facts it alone produces are absent (locals binding carries no imports).
+        let src = b"import { helper } from './util';\nfunction f() { return helper(); }\n";
+        let refs = resolve_file("typescript", Path::new("app.ts"), src, false);
+        assert!(
+            refs.imports.is_empty() && refs.exports.is_empty(),
+            "precise=false must skip oxc, so no import/export edges are produced: {refs:?}"
+        );
     }
 }

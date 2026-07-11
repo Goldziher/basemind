@@ -59,6 +59,13 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # followed for these regardless of scan.follow_symlinks.
 # extra_roots = []
 
+[code_intel]
+# Precise, scope- and import-aware name resolution. On by default: JS/TS resolve via oxc, Python and
+# Java via the stack-graphs engine, so find_references / find_callers / goto_definition distinguish a
+# shadowed local from an import instead of matching by name. Set false to fall back to fast
+# tree-sitter locals binding for every language. Applies to files (re)scanned after the change.
+# precise_resolution = true
+
 [watch]
 # Coalesce filesystem events within this window (milliseconds).
 # debounce_ms = 250
