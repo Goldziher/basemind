@@ -294,7 +294,10 @@ def ensure_binary():
         if binary_path.exists() and os.access(binary_path, os.X_OK):
             return str(binary_path)
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        # Stage under the cache root, not the system temp dir: the final ~keep
+        # ``staging_dir.replace(cache_dir)`` is an atomic rename that fails with ~keep
+        # EXDEV (cross-device link) when /tmp and $HOME are on different filesystems (#38). ~keep
+        with tempfile.TemporaryDirectory(dir=cache_dir.parent) as tmpdir:
             archive_path = Path(tmpdir) / asset_name
             _download(archive_url, archive_path)
             _verify_checksum(archive_path, asset_name, checksums_url)
