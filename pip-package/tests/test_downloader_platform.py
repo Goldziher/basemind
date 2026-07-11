@@ -10,6 +10,8 @@ Cover the two behaviours that broke real installs:
 
 from __future__ import annotations
 
+import pytest
+
 from basemind import downloader
 
 
@@ -73,3 +75,27 @@ def test_prune_removes_old_versions_keeps_current(monkeypatch, tmp_path):
 def test_prune_is_noop_when_cache_absent(monkeypatch, tmp_path):
     monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
     downloader._prune_stale_versions("0.19.2")
+
+
+def test_staging_dir_is_created_on_the_cache_filesystem(monkeypatch, tmp_path):
+    """#38: staging must sit under the cache root so the final atomic rename is not a
+    cross-device (EXDEV) link when the system temp dir and $HOME are on different filesystems."""
+    monkeypatch.setattr(downloader.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.delenv("BASEMIND_BINARY", raising=False)
+
+    captured: dict[str, object] = {}
+
+    class _Sentinel(Exception):
+        pass
+
+    def fake_tempdir(*args, **kwargs):
+        captured["dir"] = kwargs.get("dir")
+        raise _Sentinel
+
+    monkeypatch.setattr(downloader.tempfile, "TemporaryDirectory", fake_tempdir)
+    monkeypatch.setattr(downloader, "_download", lambda *a, **k: None)
+
+    with pytest.raises(_Sentinel):
+        downloader.ensure_binary()
+
+    assert captured["dir"] == tmp_path / ".cache" / "basemind"
