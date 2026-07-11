@@ -69,12 +69,12 @@ pub(crate) fn resolve_pass(root: &Path, store: &Store) {
     let facts = compute_facts(root, store, &files);
     stage_facts(index_db, &facts);
 
-    #[cfg(feature = "code-intel-js")]
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     {
         let facts_map = harvest_cross_file_facts(facts);
         crate::intel::xfile::stitch_cross_file_edges(root, store, index_db, &facts_map);
     }
-    #[cfg(not(feature = "code-intel-js"))]
+    #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
     let _ = facts;
 }
 
@@ -96,9 +96,9 @@ pub(crate) fn resolve_pass_incremental(root: &Path, store: &Store, changed: &[St
     let changed_facts = compute_facts(root, store, &changed_snapshot);
     stage_facts(index_db, &changed_facts);
 
-    #[cfg(feature = "code-intel-js")]
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     xfile_incremental::restitch_affected(root, store, index_db, changed);
-    #[cfg(not(feature = "code-intel-js"))]
+    #[cfg(not(any(feature = "code-intel-js", feature = "code-intel-stack")))]
     let _ = changed_facts;
 }
 
@@ -161,9 +161,26 @@ fn stage_facts(index_db: &IndexDb, facts: &[(String, FileResolvedRefs)]) {
     }
 }
 
-/// Move the JS/TS import/export lists out of the wholesale facts into the map the cross-file stitch
-/// consumes. Only files that import or export something are kept (the join ignores the rest).
-#[cfg(feature = "code-intel-js")]
+/// This file's intra edges whose definition is one of its own import bindings — the in-file use
+/// sites of an imported name. Pre-filtered here (not in the stitch) so `FileFacts` carries only the
+/// import-relevant slice of what can be a large `intra` vector.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
+fn import_bound_edges(refs: &FileResolvedRefs) -> Vec<crate::intel::model::ResolvedEdge> {
+    if refs.imports.is_empty() || refs.intra.is_empty() {
+        return Vec::new();
+    }
+    let import_starts: ahash::AHashSet<u32> = refs.imports.iter().map(|i| i.local_start).collect();
+    refs.intra
+        .iter()
+        .filter(|e| import_starts.contains(&e.def_start))
+        .cloned()
+        .collect()
+}
+
+/// Move the import/export lists out of the wholesale facts into the map the cross-file stitch
+/// consumes. Only files that import or export something are kept (the join ignores the rest). The
+/// stitch itself picks a per-language resolver, so this harvest is language-agnostic.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 fn harvest_cross_file_facts(
     facts: Vec<(String, FileResolvedRefs)>,
 ) -> ahash::AHashMap<String, crate::intel::xfile::FileFacts> {
@@ -171,139 +188,119 @@ fn harvest_cross_file_facts(
         .into_iter()
         .filter(|(_, refs)| !refs.imports.is_empty() || !refs.exports.is_empty())
         .map(|(rel, refs)| {
+            let import_uses = import_bound_edges(&refs);
             (
                 rel,
                 crate::intel::xfile::FileFacts {
                     imports: refs.imports,
                     exports: refs.exports,
+                    import_uses,
                 },
             )
         })
         .collect()
 }
 
-/// Incremental cross-file re-stitch (JS/TS, feature `code-intel-js`).
+/// Incremental cross-file re-stitch (feature `code-intel-js` or `code-intel-stack`).
 ///
-/// Kept in a submodule so the oxc-resolver mirror of `xfile`'s configuration and the affected-set
-/// machinery are self-contained and easy to keep in sync.
-#[cfg(feature = "code-intel-js")]
+/// Kept in a submodule so the affected-set machinery is self-contained. Resolution goes through the
+/// shared per-language [`crate::intel::resolver::SpecifierResolver`], so it covers every
+/// resolver-capable language (JS/TS, Python, Java) rather than only JS/TS.
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 mod xfile_incremental {
     use std::path::Path;
 
     use ahash::{AHashMap, AHashSet};
-    use oxc_resolver::{ResolveOptions, Resolver};
     use rayon::prelude::*;
 
     use super::{FileSnapshot, compute_facts, stage_facts};
     use crate::index::IndexDb;
+    use crate::intel::resolver::SpecifierResolver;
     use crate::intel::xfile::{FileFacts, stitch_cross_file_edges};
     use crate::store::Store;
 
-    /// JS/TS pack names oxc handles (JSX lives under the `javascript` grammar). Only these files
-    /// carry import/export facts, so the reverse-import scan is restricted to them.
-    fn is_js_ts(language: &str) -> bool {
-        matches!(language, "javascript" | "typescript" | "tsx")
+    /// True if `language` has a compiled-in specifier resolver — i.e. its files can carry stitchable
+    /// import/export facts. Files in other languages never enter the affected set.
+    fn has_resolver(language: &str) -> bool {
+        SpecifierResolver::for_language(language).is_some()
     }
 
-    /// JS/TS module-resolution extensions, TS-first — mirrors `xfile::RESOLVE_EXTENSIONS`. Duplicated
-    /// here because `xfile`'s resolver builder is private and this slice may not edit `xfile`; keep
-    /// the two in sync if either changes.
-    const RESOLVE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
-
-    /// Build the TS-aware Node resolver. Mirrors `xfile::build_resolver` (see the note on
-    /// [`RESOLVE_EXTENSIONS`]). `symlinks: false` keeps `strip_prefix(root)` valid.
-    fn build_resolver() -> Resolver {
-        let ext_alias = |from: &str, to: &[&str]| (from.to_string(), to.iter().map(|s| (*s).to_string()).collect());
-        Resolver::new(ResolveOptions {
-            extensions: RESOLVE_EXTENSIONS.iter().map(|e| (*e).to_string()).collect(),
-            extension_alias: vec![
-                ext_alias(".js", &[".ts", ".tsx", ".js", ".jsx"]),
-                ext_alias(".mjs", &[".mts", ".mjs"]),
-                ext_alias(".cjs", &[".cts", ".cjs"]),
-            ],
-            condition_names: vec![
-                "node".to_string(),
-                "import".to_string(),
-                "require".to_string(),
-                "default".to_string(),
-            ],
-            symlinks: false,
-            ..ResolveOptions::default()
-        })
+    /// A file's import/export facts plus the language that selects its resolver.
+    struct FileEntry {
+        language: String,
+        facts: FileFacts,
     }
 
-    /// Repo-relative key for an absolute resolved path (forward-slashed). `None` for paths outside
-    /// `root` or non-UTF-8 paths. Mirrors `xfile::to_repo_relative`.
-    fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<String> {
-        let rel = target_abs.strip_prefix(root).ok()?;
-        Some(rel.to_str()?.replace('\\', "/"))
-    }
-
-    /// Resolve `importer`'s runtime imports to repo-relative target keys, pushing each onto `out`.
-    fn resolve_targets(root: &Path, resolver: &Resolver, importer: &str, facts: &FileFacts, out: &mut Vec<String>) {
-        let importer_abs = root.join(importer);
-        let Some(importer_dir) = importer_abs.parent() else {
+    /// Resolve `importer`'s runtime imports (using the resolver for `language`) to repo-relative
+    /// target keys, pushing each onto `out`. A language with no resolver contributes nothing.
+    fn resolve_targets(root: &Path, importer: &str, entry: &FileEntry, out: &mut Vec<String>) {
+        let Some(resolver) = SpecifierResolver::for_language(&entry.language) else {
             return;
         };
-        for import in &facts.imports {
+        for import in &entry.facts.imports {
             if import.is_type {
                 continue;
             }
-            if let Ok(resolution) = resolver.resolve(importer_dir, &import.specifier)
-                && let Some(target) = to_repo_relative(root, &resolution.full_path())
+            if let Some(target) = resolver.resolve(root, importer, import)
+                && let Some(key) = target.as_str()
             {
-                out.push(target);
+                out.push(key.to_string());
             }
         }
     }
 
     /// Re-stitch only the importers whose cross-file resolution could have changed after `changed`
-    /// was re-indexed: the changed JS/TS files themselves plus every file that imports one.
+    /// was re-indexed: the changed resolver-capable files themselves plus every file that imports
+    /// one.
     pub(super) fn restitch_affected(root: &Path, store: &Store, index_db: &IndexDb, changed: &[String]) {
         let changed_set: AHashSet<&str> = changed
             .iter()
-            .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| is_js_ts(&e.language)))
+            .filter(|rel| store.lookup(rel.as_str()).is_some_and(|e| has_resolver(&e.language)))
             .map(String::as_str)
             .collect();
         if changed_set.is_empty() {
             return;
         }
 
-        let js_files: Vec<(String, String)> = store
+        let candidate_files: Vec<(String, String, String)> = store
             .index
             .files
             .iter()
-            .filter(|(_, e)| is_js_ts(&e.language))
-            .map(|(rel, e)| (rel.to_str_lossy().into_owned(), e.hash_hex.clone()))
+            .filter(|(_, e)| has_resolver(&e.language))
+            .map(|(rel, e)| (rel.to_str_lossy().into_owned(), e.hash_hex.clone(), e.language.clone()))
             .collect();
-        let js_facts: AHashMap<String, FileFacts> = js_files
+        let entries: AHashMap<String, FileEntry> = candidate_files
             .par_iter()
-            .filter_map(|(rel, hash)| {
+            .filter_map(|(rel, hash, language)| {
                 let refs = store.read_resolved_by_hex(hash).ok()??;
-                (!refs.imports.is_empty() || !refs.exports.is_empty()).then(|| {
-                    (
-                        rel.clone(),
-                        FileFacts {
+                if refs.imports.is_empty() && refs.exports.is_empty() {
+                    return None;
+                }
+                let import_uses = super::import_bound_edges(&refs);
+                Some((
+                    rel.clone(),
+                    FileEntry {
+                        language: language.clone(),
+                        facts: FileFacts {
                             imports: refs.imports,
                             exports: refs.exports,
+                            import_uses,
                         },
-                    )
-                })
+                    },
+                ))
             })
             .collect::<Vec<_>>()
             .into_iter()
             .collect();
 
-        let resolver = build_resolver();
-
-        let importers_of_changed: Vec<String> = js_facts
+        let importers_of_changed: Vec<String> = entries
             .par_iter()
-            .filter_map(|(importer, facts)| {
-                if facts.imports.is_empty() {
+            .filter_map(|(importer, entry)| {
+                if entry.facts.imports.is_empty() {
                     return None;
                 }
                 let mut targets = Vec::new();
-                resolve_targets(root, &resolver, importer, facts, &mut targets);
+                resolve_targets(root, importer, entry, &mut targets);
                 targets
                     .iter()
                     .any(|t| changed_set.contains(t.as_str()))
@@ -327,32 +324,34 @@ mod xfile_incremental {
 
         let mut stitch_facts: AHashMap<String, FileFacts> = AHashMap::with_capacity(affected.len());
         for key in &affected {
-            if let Some(facts) = js_facts.get(key) {
+            if let Some(entry) = entries.get(key) {
                 stitch_facts.insert(
                     key.clone(),
                     FileFacts {
-                        imports: facts.imports.clone(),
-                        exports: facts.exports.clone(),
+                        imports: entry.facts.imports.clone(),
+                        exports: entry.facts.exports.clone(),
+                        import_uses: entry.facts.import_uses.clone(),
                     },
                 );
             }
         }
         let mut provider_targets: Vec<String> = Vec::new();
         for key in &affected {
-            if let Some(facts) = js_facts.get(key) {
-                resolve_targets(root, &resolver, key, facts, &mut provider_targets);
+            if let Some(entry) = entries.get(key) {
+                resolve_targets(root, key, entry, &mut provider_targets);
             }
         }
         for target in provider_targets {
             if stitch_facts.contains_key(&target) {
                 continue;
             }
-            if let Some(facts) = js_facts.get(&target) {
+            if let Some(entry) = entries.get(&target) {
                 stitch_facts.insert(
                     target,
                     FileFacts {
                         imports: Vec::new(),
-                        exports: facts.exports.clone(),
+                        exports: entry.facts.exports.clone(),
+                        import_uses: Vec::new(),
                     },
                 );
             }

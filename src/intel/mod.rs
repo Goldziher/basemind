@@ -16,7 +16,17 @@ pub mod js;
 pub mod model;
 pub mod resolve;
 pub(crate) mod resolve_pass;
-/// Cross-file JS/TS resolution stitch (importer binding → resolved target export), run once at the
-/// end of the scanner's resolve pass. oxc-backed, hence gated on `code-intel-js`.
-#[cfg(feature = "code-intel-js")]
+/// Per-language module-specifier resolution (importer specifier → repo-relative target file),
+/// shared by the cross-file stitch and its incremental re-stitch. JS/TS via oxc; Python/Java via
+/// path arithmetic over conventional package/source-root layouts.
+pub(crate) mod resolver;
+/// Stack-graph resolution engine (feature `code-intel-stack`): runs vendored `.tsg` name-binding
+/// rules to produce precise intra-file resolution for Python and Java. Populated by Track E.
+#[cfg(feature = "code-intel-stack")]
+pub mod stackgraph;
+/// Cross-file resolution stitch (importer binding → resolved target export), run once at the end
+/// of the scanner's resolve pass. Resolves each importer's specifiers via the per-language
+/// [`resolver::SpecifierResolver`], so it covers any language with a compiled-in resolver (JS/TS
+/// under `code-intel-js`; Python/Java under `code-intel-stack`).
+#[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 pub mod xfile;

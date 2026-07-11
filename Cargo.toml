@@ -1,3 +1,15 @@
+[workspace]
+members = [
+    "crates/tree-sitter-graph",
+    "crates/tree-sitter-stack-graphs",
+    "crates/lsp-positions",
+]
+
+# Shared lint policy for the owned forks under crates/*. The root basemind package opts in via
+# its own `[lints] workspace = true` below; each fork crate does the same in its Cargo.toml.
+[workspace.lints.clippy]
+all = "warn"
+
 [package]
 name = "basemind"
 version = "0.21.1"
@@ -69,7 +81,9 @@ code-intel-js = [
     "dep:oxc_resolver",
 ]
 
-code-intel = ["code-intel-js"]
+code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
+
+code-intel = ["code-intel-js", "code-intel-stack"]
 
 full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
 
@@ -119,6 +133,7 @@ schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
+stack-graphs = { version = "0.14", default-features = false, optional = true }
 streaming-iterator = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = [
@@ -138,12 +153,22 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
+tree-sitter-graph = { path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.12.5"
+tree-sitter-stack-graphs = { path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.0-rc.21", default-features = false, features = [
     "tokio-runtime",
     "simd-utf8",
 ], optional = true }
+
+# Our forked tree-sitter-stack-graphs (crates/, tree-sitter 0.26 port) and the crates.io
+# `stack-graphs` dep both use `lsp-positions`. They must resolve to the SAME crate instance
+# so their `lsp_positions::Span` types unify — and the upstream crates.io `lsp-positions`
+# pins tree-sitter 0.24, which is incompatible with basemind's 0.26. Redirect it to our
+# owned, 0.26-ported fork for the whole graph.
+[patch.crates-io]
+lsp-positions = { path = "crates/lsp-positions" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"

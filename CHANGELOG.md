@@ -10,6 +10,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> **Index rebuild on upgrade.** This release bumps the resolution/blob schema (Python and Java now
+> emit richer import/export/resolved-edge facts), so the first `basemind scan` after upgrading wipes
+> and rebuilds `.basemind/` from source. This is the intended migration path.
+
+### Added
+
+- **Precise, scope- and import-aware name resolution for Python and Java** (feature
+  `code-intel-stack`, included in `full` and the release binary). Until now only JavaScript/TypeScript
+  resolved precisely (via oxc); every other language fell back to heuristic name matching, so
+  `find_references` / `find_callers` / `goto_definition` could not tell a shadowed local from an
+  import. basemind now runs GitHub stack-graphs-style `.tsg` name-binding rules — executed by an
+  in-tree, tree-sitter-0.26 fork of the `tree-sitter-graph` / `tree-sitter-stack-graphs` engines
+  (maintained under `crates/`) — to build a per-file scope/definition graph and resolve references to
+  their true definitions. Delivers **intra-file** precision (shadowing, per-function/method parameter
+  scope, Python comprehension bindings, Java field-vs-local) and **cross-file** resolution for Python:
+  dotted and relative imports resolve to their target module, and each call site of an imported name
+  resolves *through* the import to the exported definition (reporting `resolved: true`), rather than
+  matching by name. No new MCP tools or query surface — existing navigation just gets precise for
+  these languages. Known limitations this iteration: Java cross-file resolution of *member* calls on
+  an imported type (`Foo.greet()`) is not yet resolved (the imported type itself is), and a variable
+  reused after a same-name Python comprehension may bind to the comprehension's own variable.
+
 ### Fixed
 
 - **`basemind init` no longer scaffolds into a parent directory.** `init` resolved its target with

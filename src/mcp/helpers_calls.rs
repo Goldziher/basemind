@@ -215,14 +215,24 @@ fn resolved_callers_page(
     let def_source = std::fs::read(root.join(def_path.to_path_buf())).ok()?;
 
     let mut def_starts: Vec<u32> = Vec::new();
-    for edge in &refs.intra {
-        if edge.def_start >= symbol.start_byte
-            && edge.def_start < symbol.end_byte
-            && super::helpers_intel::identifier_at(&def_source, edge.def_start) == name
-            && !def_starts.contains(&edge.def_start)
+    let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
+        if byte >= symbol.start_byte
+            && byte < symbol.end_byte
+            && super::helpers_intel::identifier_at(&def_source, byte) == name
+            && !def_starts.contains(&byte)
         {
-            def_starts.push(edge.def_start);
+            def_starts.push(byte);
         }
+    };
+    for edge in &refs.intra {
+        push_candidate(edge.def_start, &mut def_starts);
+    }
+    // Also seed from this file's exports. A definition that is exported and called only from OTHER
+    // files (e.g. a Python `def f` in a module that never calls `f` itself) has no intra edge to
+    // recover `def_start` from, so intra-only seeding would miss every cross-file caller and fall
+    // back to the name scan. The export records the identifier byte the cross-file join keyed on.
+    for export in &refs.exports {
+        push_candidate(export.name_start, &mut def_starts);
     }
     if def_starts.is_empty() {
         return None;
