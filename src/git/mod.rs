@@ -6,8 +6,10 @@
 
 mod commit;
 mod remote;
+mod worktree;
 use commit::{build_commit_info, commit_files, commit_touches_path, compute_hunks, decode_path};
 pub use remote::{normalize_remote_url, scope_key};
+pub use worktree::{BranchInfo, WorktreeInfo};
 
 use std::path::{Path, PathBuf};
 

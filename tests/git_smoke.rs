@@ -306,3 +306,76 @@ fn log_for_path_stops_at_rename_while_blame_follows() {
         "blame follows the rename and resolves the kept line"
     );
 }
+
+/// `list_local_branches` enumerates every `refs/heads/*` with its exact target sha, sorted by
+/// name. Fixture: one commit on the default branch, then a second branch created from it.
+#[test]
+fn list_local_branches_returns_names_and_shas_sorted() {
+    let (dir, _cfg) = init_repo();
+    let root = dir.path();
+    fs::write(root.join("a.rs"), b"fn a() {}\n").unwrap();
+    run(root, &["add", "a.rs"]);
+    run(root, &["commit", "-q", "-m", "initial"]);
+    run(root, &["branch", "-m", "main"]);
+    run(root, &["branch", "feature-x"]);
+
+    let repo = Repo::discover(root).expect("discover");
+    let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
+    let branches = repo.list_local_branches().expect("list branches");
+
+    let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["feature-x", "main"], "sorted by name");
+    for branch in &branches {
+        assert_eq!(branch.head_sha, head, "both branches point at the single commit");
+        assert_eq!(branch.head_sha.len(), 40, "sha is 40-hex");
+    }
+}
+
+/// `list_worktrees` reports the main worktree first, then linked worktrees sorted by name,
+/// with correct roots and branches. A `--detach`ed worktree reports `detached: true`.
+#[test]
+fn list_worktrees_reports_main_and_linked_with_branches() {
+    let parent = tempfile::tempdir().expect("tempdir");
+    let root = parent.path();
+    run(root, &["init", "-q", "-b", "main"]);
+    run(root, &["config", "commit.gpgsign", "false"]);
+    fs::write(root.join("a.rs"), b"fn a() {}\n").unwrap();
+    run(root, &["add", "a.rs"]);
+    run(root, &["commit", "-q", "-m", "initial"]);
+
+    // Linked worktree on its own branch, plus a detached-HEAD linked worktree. ~keep
+    let attached = root.join("wt-attached");
+    let detached = root.join("wt-detached");
+    run(
+        root,
+        &["worktree", "add", "-q", "-b", "feature", attached.to_str().unwrap()],
+    );
+    run(root, &["worktree", "add", "-q", "--detach", detached.to_str().unwrap()]);
+
+    let repo = Repo::discover(root).expect("discover");
+    let head = repo.resolve_rev("HEAD").expect("resolve HEAD");
+    let worktrees = repo.list_worktrees().expect("list worktrees");
+
+    assert_eq!(worktrees.len(), 3, "main + 2 linked: {worktrees:?}");
+
+    let main = &worktrees[0];
+    assert_eq!(main.name, "(main)");
+    assert_eq!(main.path, root.canonicalize().unwrap(), "main root is the repo workdir");
+    assert_eq!(main.branch.as_deref(), Some("main"));
+    assert!(!main.detached);
+
+    let by_name: std::collections::HashMap<&str, &basemind::git::WorktreeInfo> =
+        worktrees.iter().map(|w| (w.name.as_str(), w)).collect();
+
+    let a = by_name.get("wt-attached").expect("attached worktree present");
+    assert_eq!(a.path, attached.canonicalize().unwrap());
+    assert_eq!(a.branch.as_deref(), Some("feature"));
+    assert!(!a.detached, "branch checkout is not detached");
+    assert_eq!(a.head_sha.as_deref(), Some(head.as_str()));
+
+    let d = by_name.get("wt-detached").expect("detached worktree present");
+    assert_eq!(d.path, detached.canonicalize().unwrap());
+    assert!(d.detached, "--detach worktree reports detached HEAD");
+    assert_eq!(d.branch, None, "detached HEAD has no branch");
+    assert_eq!(d.head_sha.as_deref(), Some(head.as_str()));
+}
