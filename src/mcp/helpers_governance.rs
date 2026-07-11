@@ -138,22 +138,22 @@ pub(super) fn audit_one_record(
             continue;
         };
 
-        if let Some(stored_hash) = sym_ref.structural_hash {
-            if let Some(lang) = crate::lang::intern(&l1.language) {
-                let abs_path = root.join(sym_ref.path.to_path_buf());
-                if let Ok(source) = std::fs::read(&abs_path) {
-                    let entry = OutlineEntry {
-                        map: Arc::new(l1.clone()),
-                        source: Arc::new(source),
-                    };
-                    let kind_opt = sym_ref.kind.as_deref().and_then(parse_kind_opt);
-                    if let Some(current_hash) =
-                        symbol_fingerprint(&entry, &sym_ref.name, kind_opt, lang, HashMode::Structural)
-                        && current_hash != stored_hash
-                    {
-                        reasons.push(format!("symbol body changed: {}", sym_ref.name));
-                        stale = true;
-                    }
+        if let Some(stored_hash) = sym_ref.structural_hash
+            && let Some(lang) = crate::lang::intern(&l1.language)
+        {
+            let abs_path = root.join(sym_ref.path.to_path_buf());
+            if let Ok(source) = std::fs::read(&abs_path) {
+                let entry = OutlineEntry {
+                    map: Arc::new(l1.clone()),
+                    source: Arc::new(source),
+                };
+                let kind_opt = sym_ref.kind.as_deref().and_then(parse_kind_opt);
+                if let Some(current_hash) =
+                    symbol_fingerprint(&entry, &sym_ref.name, kind_opt, lang, HashMode::Structural)
+                    && current_hash != stored_hash
+                {
+                    reasons.push(format!("symbol body changed: {}", sym_ref.name));
+                    stale = true;
                 }
             }
         }
@@ -163,10 +163,8 @@ pub(super) fn audit_one_record(
     for cmd in &prov.commands {
         let first_token = cmd.split_whitespace().next().unwrap_or(cmd.as_str());
         let cmd_rel = crate::path::RelPath::from(first_token);
-        if cache.by_path.contains_key(&cmd_rel) {
-            if store.lookup(first_token).is_none() {
-                reasons.push(format!("command may be stale: {cmd}"));
-            }
+        if cache.by_path.contains_key(&cmd_rel) && store.lookup(first_token).is_none() {
+            reasons.push(format!("command may be stale: {cmd}"));
         }
     }
 

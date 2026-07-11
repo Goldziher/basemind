@@ -259,13 +259,12 @@ async fn scrape_404_does_not_silently_succeed() {
     let url = format!("{}/missing", server.uri());
     let outcome = crawlberg::scrape(&engine, &url).await;
 
-    match outcome {
-        Ok(result) => assert!(
+    if let Ok(result) = outcome {
+        assert!(
             result.status_code >= 400,
             "404 must not appear as 2xx; got status {}",
             result.status_code
-        ),
-        Err(_) => {}
+        );
     }
 }
 
@@ -282,13 +281,12 @@ async fn scrape_5xx_surfaces_status_or_error() {
     let url = format!("{}/boom", server.uri());
     let outcome = crawlberg::scrape(&engine, &url).await;
 
-    match outcome {
-        Ok(result) => assert_eq!(
+    if let Ok(result) = outcome {
+        assert_eq!(
             result.status_code, 503,
             "5xx must round-trip exact status; got {}",
             result.status_code
-        ),
-        Err(_) => {}
+        );
     }
 }
 
