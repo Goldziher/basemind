@@ -109,7 +109,11 @@ fn init_root_anchors_to_enclosing_git_repo_not_parent_basemind() {
     let sub = repo.join("src");
     fs::create_dir(&sub).expect("mkdir repo subfolder");
 
-    assert_eq!(init_root(&sub), repo, "init anchors to the enclosing git repo, not the parent");
+    assert_eq!(
+        init_root(&sub),
+        repo,
+        "init anchors to the enclosing git repo, not the parent"
+    );
     assert_eq!(init_root(&repo), repo, "init at the repo root stays put");
 }
 
@@ -117,7 +121,11 @@ fn init_root_anchors_to_enclosing_git_repo_not_parent_basemind() {
 fn init_root_falls_back_to_start_when_not_in_a_git_repo() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let start = tmp.path().canonicalize().expect("canonicalize start");
-    assert_eq!(init_root(&start), start, "no git repo → init targets the start dir (cwd)");
+    assert_eq!(
+        init_root(&start),
+        start,
+        "no git repo → init targets the start dir (cwd)"
+    );
 }
 
 #[test]

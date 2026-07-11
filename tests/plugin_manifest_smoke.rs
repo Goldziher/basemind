@@ -6,10 +6,9 @@ use serde_json::Value;
 fn codex_mcp_launcher_should_resolve_from_plugin_root() {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let plugin_manifest_path = repository_root.join(".codex-plugin/plugin.json");
-    let plugin_manifest: Value = serde_json::from_slice(
-        &std::fs::read(&plugin_manifest_path).expect("read committed Codex plugin manifest"),
-    )
-    .expect("parse committed Codex plugin manifest");
+    let plugin_manifest: Value =
+        serde_json::from_slice(&std::fs::read(&plugin_manifest_path).expect("read committed Codex plugin manifest"))
+            .expect("parse committed Codex plugin manifest");
     assert_eq!(
         plugin_manifest.get("mcpServers").and_then(Value::as_str),
         Some("./.mcp.json"),
@@ -17,10 +16,9 @@ fn codex_mcp_launcher_should_resolve_from_plugin_root() {
     );
 
     let manifest_path = repository_root.join(".mcp.json");
-    let manifest: Value = serde_json::from_slice(
-        &std::fs::read(&manifest_path).expect("read committed Codex MCP manifest"),
-    )
-    .expect("parse committed Codex MCP manifest");
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read committed Codex MCP manifest"))
+            .expect("parse committed Codex MCP manifest");
     let basemind = manifest
         .get("mcpServers")
         .and_then(|servers| servers.get("basemind"))

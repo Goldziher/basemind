@@ -351,6 +351,13 @@ activity by type, then tokens saved, then unread messages. Adjust with
 keeps the map in memory and answers questions instantly — no re-reading the project for each one.
 When files change, it updates only what changed.
 
+Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: instead of
+matching references by name, basemind resolves each use to the definition it actually binds to, so a
+shadowed local isn't confused with an import and `goto_definition` / `find_references` / `find_callers`
+report precise, `resolved` results (including across files for imports). Every other language still
+gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub stack-graphs-style
+`.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language LSP server.
+
 Markdown and Obsidian vaults are first-class: headings become navigable symbols (so `outline` and
 `search_symbols` work over a notes vault); `[[wikilinks]]`, `![[embeds]]`, and standard
 `[text](Note.md)` links all become references — so `find_references "Note"` returns that note's

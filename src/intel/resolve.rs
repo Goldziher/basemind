@@ -31,6 +31,12 @@ pub fn resolve_file(lang: LangId, path: &Path, source: &[u8]) -> FileResolvedRef
     }
     #[cfg(not(feature = "code-intel-js"))]
     let _ = path;
+    #[cfg(feature = "code-intel-stack")]
+    if crate::intel::stackgraph::has_tsg_ruleset(lang)
+        && let Some(refs) = crate::intel::stackgraph::resolve_stackgraph(lang, source)
+    {
+        return refs;
+    }
     resolve_via_locals(lang, source)
 }
 

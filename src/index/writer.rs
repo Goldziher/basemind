@@ -95,7 +95,7 @@ impl IndexWriter {
     /// has already purged the previous scan's cross-file edges for that importer. The cross-file
     /// join therefore runs *after* every importer's per-file upsert, so the importer's slate is
     /// clean before these inserts land, and a re-scan does not accumulate stale edges.
-    #[cfg(feature = "code-intel-js")]
+    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
     pub fn upsert_cross_file_edge(
         &mut self,
         def_rel: &RelPath,
