@@ -23,12 +23,18 @@ import-aware navigation for Python and Java.
 
 ### Modifications
 
-- Copied verbatim; the upstream copyright header is preserved. A `;;`-comment attribution header
-  (source, commit, license, target grammar version) is prepended to each file.
+- Derived from the upstream rule files (copyright header preserved) and now **maintained** by
+  basemind. A `;;`-comment attribution header (source, commit, license, target grammar version) is
+  prepended to each file.
 - The rules were written against `tree-sitter-python =0.23.5` / `tree-sitter-java =0.23.4`; basemind
-  parses via `tree-sitter-language-pack` 1.12.5. Grammar-drift adaptations for the node-type deltas
-  between those grammar revisions (e.g. Python's `except_group_clause`) are applied at engine-build
-  time in `src/intel/stackgraph.rs`, not by editing the vendored rule text.
+  parses via `tree-sitter-language-pack` 1.12.5. Grammar-drift adaptations for node types that do not
+  exist in the current grammar (e.g. Python's `except_group_clause`) are stripped at engine-build
+  time in `src/intel/stackgraph.rs`.
+- Rule bug fixes for valid modern constructs are applied **directly to the rule files**. Notably the
+  Python `typed_parameter` stanza was restricted to identifier-named parameters
+  (`. (identifier) @name`) so a *typed* splat parameter (`**kwargs: T` / `*args: T`) no longer aborts
+  the whole stack-graph build — the upstream rule captured the splat pattern as a plain name and
+  failed on its undefined `.def`, silently losing all resolution for any file using typed splats.
 
 ### License Compatibility
 

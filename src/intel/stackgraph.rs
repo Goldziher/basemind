@@ -463,6 +463,31 @@ mod tests {
         false
     }
 
+    #[test]
+    fn typed_splat_parameter_does_not_abort_resolution() {
+        if skip_if_no_grammar("python") {
+            return;
+        }
+        // Regression (grantflow): a typed splat parameter (`**kwargs: T` / `*args: T`) used to abort
+        // the entire stack-graph build — the upstream `.tsg` `typed_parameter` rule captured the
+        // splat pattern as a plain name and failed on its undefined `.def`. That silently lost ALL
+        // resolution for the whole file (fell back to locals, no cross-file). The imported `f` used
+        // inside such a function must still resolve to its import binding.
+        let src = "from m import f\n\n\ndef g(a: str, **kw: str) -> None:\n    return f(a)\n";
+        let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
+            eprintln!("skip: python stack-graph engine unavailable");
+            return;
+        };
+        let import_binding = src.find("from m import f").unwrap() as u32 + "from m import ".len() as u32;
+        let use_site = src.find("return f(a)").unwrap() as u32 + "return ".len() as u32;
+        assert_eq!(
+            refs.intra.iter().find(|e| e.use_start == use_site).map(|e| e.def_start),
+            Some(import_binding),
+            "imported `f` must resolve even when the function has a typed **kwargs param; edges: {:?}",
+            refs.intra
+        );
+    }
+
     /// Find the intra edge whose use starts at `use_start`; panics if absent.
     fn edge_for_use(refs: &FileResolvedRefs, use_start: u32) -> &ResolvedEdge {
         refs.intra
