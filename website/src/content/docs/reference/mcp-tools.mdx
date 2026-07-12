@@ -21,6 +21,7 @@ Query your project's structure: symbols, references, calls, and definitions acro
 | `call_graph` | Walk the call chain up or down from a symbol. `--direction` (up/down), `--max-depth`. | exact name |
 | `architecture_map` | Whole-repo overview: hub modules/files/symbols ranked by centrality (PageRank + fan-in/out) and churn, plus dependency cycles (SCCs). `granularity` (module/file/symbol), optional `focus` path-prefix. | graph-derived |
 | `find_implementations` | Types that implement or inherit from a trait/interface. | substring |
+| `find_files` | Fuzzy path search (fzf/fd-style) ranked by nucleo-matcher score. `limit`, optional `path_contains` and `language` filters. | fuzzy substring |
 | `dependents` | Heuristic reverse lookup: what imports a given module. | import-based |
 | `workspace_grep` | Pattern search with optional language and path filters. | regex |
 | `list_files` | Enumerate indexed paths, optional `path_contains` and `language` filters. | substring |
@@ -106,25 +107,41 @@ Fetch and index web pages. Results join the document search index.
 
 ## Agent Comms
 
-A shared chat layer for agents on the same repo: per-repo rooms (auto-join by scope), direct messages, and a recency-filtered inbox. Requires `--features comms`.
+A shared chat layer for agents on the same repo: explicit thread membership (repository, path-glob, or subject-scoped), private 2-member threads, and a recency-filtered inbox. Requires `--features comms`.
 
 | Tool | Purpose |
 |---|---|
-| `room_post` | Post a message to a room. Required: `room`, `subject`. Optional: `body`, `reply_to`, `tag`. |
-| `room_history` | Recent messages in a room (front-matter only). |
-| `dm_send` | Send a direct message to another agent. |
+| `thread_start` | Create a new thread, addressed by at least two of subject / path-glob / members. Required: `subject`. Optional: `path`, `members`. |
+| `thread_post` | Post a message to a thread. Required: `thread`, `subject`. Optional: `body`, `reply_to`. |
+| `thread_history` | Recent messages in a thread (front-matter only). |
+| `thread_list` | List discoverable threads and their members. |
+| `thread_join` | Join a thread explicitly. |
+| `thread_leave` | Leave a thread. |
+| `thread_members` | List current members of a thread. |
+| `thread_add_member` | Add an agent to a thread. |
+| `thread_remove_member` | Remove an agent from a thread. |
+| `thread_archive` | Archive a thread (read-only, still discoverable). |
 | `inbox_read` | Your inbox (front-matter only). |
 | `inbox_ack` | Acknowledge inbox messages so they stop resurfacing. |
 | `message_get` | Read one message in full. |
-| `room_list` | List rooms and their member counts. |
-| `get_or_create_chat_room_for_path` | Resolve (or create) the room scoped to a given path. |
-| `room_create` | Create a new room (explicit or via post to a new name). |
-| `room_join` | Join a room. |
-| `room_leave` | Leave a room. |
 | `agent_list` | Active agents in the comms system. |
 | `agent_register` | Set or update your agent handle. |
 
 See [Agent Comms capabilities](/concepts/agent-comms/) for orchestration examples.
+
+## Registry & Worktree Coordination
+
+Coordinate across multiple repos and worktrees on the same machine. The registry is daemon-managed; claims are advisory (no locking) but help avoid collisions. Requires `--features comms`.
+
+| Tool | Purpose |
+|---|---|
+| `workspaces` | List all workspaces the daemon knows about (keyed by root path). |
+| `worktrees` | List worktrees under a workspace. |
+| `branches` | List branches in a worktree. |
+| `worktree_claim` | Advisory claim on a worktree for the current agent. No locking; collision detection is cooperative. |
+| `worktree_release` | Release a claim. |
+
+See CLI: `basemind registry` (worktree/branch listing), `basemind statusline` (current status).
 
 ## Agent Shells
 

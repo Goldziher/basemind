@@ -5,35 +5,37 @@ description: How basemind is built — from scanning to serving to indexing.
 
 import { Aside, FileTree } from '@astrojs/starlight/components';
 
-basemind is a single Rust crate with one binary (`basemind`) serving two roles: **`basemind scan`** indexes a workspace, and **`basemind serve`** runs the MCP stdio server.
+basemind is a single Rust crate with one binary (`basemind`) serving three roles: **`basemind scan`** indexes a workspace, **`basemind serve`** runs the MCP stdio server, and the **daemon** (`basemind comms daemon`, auto-spawned; singleton per user) is the sole writer managing the global cache.
 
 ## High-Level Pipeline
 
 ```
 Your project (code + documents + git history)
   ↓
-basemind scan
+basemind scan (or incremental watch)
   ├─ Tree-sitter parser pool (300+ languages)
   ├─ Extract L1 (outlines: symbols, signatures, imports)
   ├─ Extract L2 (calls: callee, byte offset, line/col) [if eager_l2=true]
   ├─ Extract L3 (structural hash of symbol bodies)
-  └─ Write to local cache
-      ├─ Content-addressed msgpack blobs (.basemind/blobs/)
-      └─ Fjall LSM index (.basemind/views/<view>/index.fjall/)
+  └─ Forward writes to basemind daemon (IPC over UDS)
+      ├─ Daemon writes content-addressed msgpack blobs
+      └─ Daemon writes Fjall LSM index (sole Fjall writer per machine)
   ↓
-basemind serve
-  ├─ Load index + blobs into memory
+basemind serve (MCP stdio)
+  ├─ Load index + blobs from global cache
+  ├─ Read index concurrently (N sessions per repo, all read-only to Fjall)
+  ├─ Forward writes back to daemon
   ├─ Answer MCP tool requests instantly
-  └─ Watch filesystem for changes (auto-rescan)
+  └─ Watch filesystem for changes (signal daemon to rescan)
 ```
 
-## Storage: Blobs + Index
+## Storage: Global Cache
 
-basemind persists two complementary forms of your project:
+basemind persists project state in a machine-global cache under `~/.local/share/basemind/` (or `$BASEMIND_DATA_HOME`), keyed by workspace root. All repos/worktrees on one machine share a single content-addressed blob store and a daemon-managed Fjall writer.
 
 ### Content-Addressed Msgpack Blobs
 
-Location: `.basemind/blobs/<hash>.{l1,l2,l3}.msgpack`
+Location: `~/.local/share/basemind/blobs/<hash>.{l1,l2,l3}.msgpack`
 
 Each extraction tier is a separate msgpack blob, keyed by content hash. This enables deduplication across files with identical bodies.
 
@@ -45,9 +47,10 @@ Blobs are immutable and content-addressed, so they can be safely shared across m
 
 ### Fjall LSM Inverted Index
 
-Location: `.basemind/views/<view>/index.fjall/`
+Location: `~/.local/share/basemind/views/<workspace_hash>/<view>/index.fjall/`
 
-A disk-backed, append-only LSM tree (Fjall) provides lightning-fast lookups:
+A disk-backed, append-only LSM tree (Fjall) provides lightning-fast lookups. The daemon is the sole
+writer; all `basemind serve` sessions read concurrently from the same index via a read-only handle:
 
 | Keyspace | Purpose |
 |---|---|
@@ -69,9 +72,9 @@ Schema version is stamped in `meta`. On version mismatch, the next `basemind sca
 
 ### LanceDB Vector Store
 
-Location: `.basemind/lancedb/`
+Location: `~/.local/share/basemind/lancedb/`
 
-Powers semantic search (code search, document search, memory search). Vectors are indexed for fast KNN queries; on-disk format is LanceDB's columnar structure.
+Powers semantic search (code search, document search, memory search). Vectors are indexed for fast KNN queries; on-disk format is LanceDB's columnar structure. Writes go through the daemon.
 
 ## Scan Pipeline
 
@@ -165,7 +168,7 @@ All languages with a `tags.scm` query in TSLP (~100) work out of the box. For ri
 
 ### Git-History Index
 
-Location: `.basemind/git-cache/`
+Location: `~/.local/share/basemind/git-cache/<workspace_hash>/`
 
 Two-tier caching:
 
@@ -196,23 +199,33 @@ Two persistent schemas, both tracking `RELEASE_MINOR` from `src/version.rs`:
 
 ## Directory Layout
 
+Global cache at `~/.local/share/basemind/` (or `$BASEMIND_DATA_HOME`):
+
 ```
-.basemind/
-├── basemind.toml           # Configuration
-├── agent-id                # Persistent agent identity
+~/.local/share/basemind/
 ├── blobs/
 │   ├── abc123….l1.msgpack  # Outline: symbols, signatures, imports
 │   ├── abc123….l2.msgpack  # Calls (if eager_l2=true)
 │   └── abc123….l3.msgpack  # Structural hashes
+│   └── (shared across all repos/worktrees via content hash)
 ├── views/
-│   └── <view>/
-│       └── index.fjall/    # Fjall LSM index
+│   └── <workspace_hash>/
+│       └── <view>/
+│           └── index.fjall/    # Fjall LSM index (daemon is sole writer)
 ├── git-cache/
-│   ├── commit_files/       # Cached file lists per commit
-│   ├── log/                # Cached logs
-│   └── blame/              # Cached blame data
-└── lancedb/                # Vector store (documents, memory, code search)
+│   └── <workspace_hash>/
+│       ├── commit_files/       # Cached file lists per commit
+│       ├── log/                # Cached logs
+│       └── blame/              # Cached blame data
+├── lancedb/
+│   └── <workspace_hash>/       # Vector store (documents, memory, code search)
+└── agent-registry/             # Daemon-managed room/thread registry
+
+Per-repo configuration (repo-local):
+repo/.basemind/basemind.toml    # Configuration
 ```
+
+The daemon manages the global cache; individual repos share no per-repo `.basemind/` directory.
 
 ## MCP Surface
 
@@ -230,14 +243,15 @@ Tool bodies live in `src/mcp/helpers*.rs` (sliced by area: `helpers_documents.rs
 
 ## Agent Comms & Shared Memory
 
-A separate daemon process (singleton per user) owns a second Fjall store for agent communication:
+The background daemon (singleton per user) manages agent communication and shared state:
 
-- **Rooms**: per-repo, per-workspace, or global scope; agents auto-join based on scope chain
-- **Messages**: front-matter stored in `messages_by_room`, bodies in `message_body` (fetched on demand for efficiency)
+- **Threads**: per-repo, per-workspace, or global scope; agents join explicitly via `thread_join`
+- **Messages**: front-matter stored in `messages_by_thread`, bodies in `message_body` (fetched on demand for efficiency)
+- **Registry**: tracks active workspaces, worktrees, and advisory branch claims for collision detection
 - **Memory**: namespaced by `(scope, visibility, owner)` — group memory is shared, individual memory is private to one agent
 - **Vectors**: LanceDB stores embeddings for memory + document search
 
-Why a separate daemon? Each `basemind serve` takes an exclusive flock on `.basemind/`, so comms can't live there. The daemon is user-global and enforces singleton via socket-bind-as-lock.
+Why a daemon? Content-addressed blobs and a single Fjall writer are the key wins: all repos/worktrees on one machine share blob deduplication, and N sessions can read concurrently from a single index without downgrade-to-read-only issues. The daemon is the sole Fjall writer and enforces this via socket-bind-as-lock (singleton enforcement).
 
 <Aside>
 The architecture trades off simplicity for performance: content-addressed blobs enable deduplication, the inverted index gives instant lookups, and the git-history index makes history queries microsecond-fast. At the same time, incremental scanning and a split memory substrate support multi-agent coordination without blocking.

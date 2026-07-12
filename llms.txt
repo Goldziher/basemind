@@ -31,13 +31,13 @@ first, shell/grep/git fallback.**
 
 ## Capabilities
 
-- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, call graphs, implementations, dependents, go-to-definition, indexed regex (`search_symbols`, `outline`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `dependents`, `goto_definition`, `workspace_grep`).
+- [Code intelligence](https://basemind.ai/capabilities/code-intelligence/): Find where code is defined and used — symbol search, file outlines, references, callers, call graphs, implementations, dependents, go-to-definition, fuzzy path search, indexed regex (`search_symbols`, `outline`, `find_references`, `find_callers`, `call_graph`, `find_implementations`, `find_files`, `dependents`, `goto_definition`, `workspace_grep`).
 - [Semantic code search](https://basemind.ai/capabilities/code-search/): Search code by meaning, term, or symbol over indexed chunks — hybrid RRF fusion, vector KNN, or BM25, with optional reranking (`search_code`, `get_chunk`; requires `--features code-search`).
 - [Git intelligence](https://basemind.ai/capabilities/git-intelligence/): Recent commits, commits touching a path, per-line and per-symbol blame, structural diffs across revisions, churn ranking, symbol history, and full-text search over commit authors + messages (`recent_changes`, `commits_touching`, `blame_file`, `blame_symbol`, `diff_file`, `diff_outline`, `hot_files`, `symbol_history`, `search_git_history`).
 - [Document search](https://basemind.ai/capabilities/document-search/): Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR) plus scraped/crawled web pages, with reranking, keyword and named-entity filters, and per-document summaries (`search_documents`).
 - [Web crawl](https://basemind.ai/capabilities/web-crawl/): Fetch, crawl, and map web pages into the document index (`web_scrape`, `web_crawl`, `web_map`).
 - [Shared memory](https://basemind.ai/concepts/memory/): Per-repo key/value + semantic memory that agents read and write, shared across clones of the same repo (`memory_put`, `memory_get`, `memory_search`, `memory_list`, `memory_audit`).
-- [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents on the same repo via scoped rooms, a per-agent inbox, and two-tier messages (`room_post`, `room_history`, `inbox_read`, `message_get`, `dm_send`, `agent_list`).
+- [Agent comms](https://basemind.ai/concepts/agent-comms/): Coordinate with other agents via explicit threads (per-repo, path-scoped, or subject-based), a per-agent inbox, and two-tier messages. Advisory worktree claims for collision detection (`thread_start`, `thread_post`, `thread_history`, `thread_join`, `thread_leave`, `thread_members`, `inbox_read`, `message_get`, `worktrees`, `worktree_claim`, `agent_list`).
 - [Agent shells](https://basemind.ai/capabilities/agent-shells/): Spawn headless terminal sessions agents can drive — send stdin, capture the screen, list, kill, and broadcast (`shell_spawn`, `shell_send`, `shell_capture`, `shell_list`, `shell_kill`, `shell_broadcast`; requires `--features shells`).
 
 ## Skills
@@ -46,7 +46,7 @@ first, shell/grep/git fallback.**
 - [basemind-code-search](https://github.com/Goldziher/basemind/blob/main/skills/basemind-code-search/SKILL.md): Navigate code without reading files.
 - [basemind-git-history](https://github.com/Goldziher/basemind/blob/main/skills/basemind-git-history/SKILL.md): Git intelligence over the index.
 - [basemind-documents](https://github.com/Goldziher/basemind/blob/main/skills/basemind-documents/SKILL.md): Document RAG and web ingestion.
-- [basemind-comms](https://github.com/Goldziher/basemind/blob/main/skills/basemind-comms/SKILL.md): Agent coordination over the broker.
+- [basemind-comms](https://github.com/Goldziher/basemind/blob/main/skills/basemind-comms/SKILL.md): Agent coordination via explicit threads.
 - [basemind-cli](https://github.com/Goldziher/basemind/blob/main/skills/basemind-cli/SKILL.md): The scriptable CLI surface, at parity with the MCP tools.
 - [basemind-scan](https://github.com/Goldziher/basemind/blob/main/skills/basemind-scan/SKILL.md): Build or refresh the index with `basemind scan`.
 - [basemind-doctor](https://github.com/Goldziher/basemind/blob/main/skills/basemind-doctor/SKILL.md): Diagnose and recover basemind when it isn't working.

@@ -1,9 +1,10 @@
 # Architecture
 
 basemind is a single Rust crate that builds one binary (`basemind`) and exposes
-its internals as a library. The binary is two roles in one: `basemind scan`
-indexes a workspace into `.basemind/`; `basemind serve` runs the MCP stdio
-server over the indexed data.
+its internals as a library. The binary serves three roles: `basemind scan` indexes
+a workspace, `basemind serve` runs the MCP stdio server, and the daemon
+(`basemind comms daemon`, auto-spawned; singleton per user) is the sole writer managing a
+machine-global cache.
 
 ```text
                     ┌─────────────┐
@@ -11,27 +12,40 @@ server over the indexed data.
                     │ scan        │
                     └─────┬───────┘
                           │
-              ┌───────────┼───────────┐
-              ▼           ▼           ▼
-       Tree-sitter   Content-addr.  Fjall LSM
-       parser pool   msgpack blobs  inverted idx
-       (300+ langs)  (.basemind/    (.basemind/
-                     blobs/)        views/<view>/
-                                    index.fjall/)
-              │           │           │
-              └───────────┼───────────┘
+                          │ IPC (UDS)
                           ▼
-                    ┌─────────────┐
-                    │ basemind    │  ◀── MCP stdio (rmcp)
-                    │ serve       │
-                    └─────┬───────┘
-                          ▼
-                ┌─────────────────────┐
-                │ AI coding agent     │
-                │ (Claude Code,       │
-                │  Cursor, Continue,  │
-                │  …)                 │
-                └─────────────────────┘
+        ┌──────────────────────────────────┐
+        │  basemind daemon (per-user)      │
+        │                                  │
+        │  ┌─────────┐ ┌─────────────┐    │
+        │  │ Fjall   │ │ LanceDB     │    │
+        │  │ writer  │ │ writer      │    │
+        │  └─────────┘ └─────────────┘    │
+        │        (sole writer per machine) │
+        │  ~/.local/share/basemind/       │
+        └────┬────────────────────────┬───┘
+             │                        │
+   ┌─────────▼──────┐    ┌───────────▼────────┐
+   │ Content-addr   │    │ Fjall + LanceDB    │
+   │ msgpack blobs  │    │ (shared, read-only)│
+   │ (deduped)      │    │                    │
+   └────────────────┘    └───────────┬────────┘
+                                     │
+                   ┌─────────────────┴──────────────┐
+                   │ (all repos/worktrees share)    │
+                   ▼                                ▼
+           ┌────────────────┐              ┌─────────────────┐
+           │ basemind serve │              │ basemind serve  │
+           │ (session 1)    │  (read-only) │ (session 2)     │
+           └────────┬───────┘              └────────┬────────┘
+                    │                               │
+                    └───────────┬───────────────────┘
+                                │ MCP stdio (rmcp)
+                                ▼
+                    ┌──────────────────────┐
+                    │ AI coding agents     │
+                    │ (Claude Code, etc.)  │
+                    └──────────────────────┘
 ```
 
 ## Source layout
@@ -103,13 +117,17 @@ Walker (gitignore-aware)
         L2 calls     (eager if cfg)   — extract::l2
         Store::write_l1               — content-addressed msgpack blob
         Store::write_l2 (if eager)
-        IndexWriter::upsert_file(...) — Fjall secondary index
-        per-file commit               — atomic batch
   → collect FileResult { rel, l1_hash, l2_hash?, … }
+  → Forward to daemon via IPC (UDS)
+        IndexWriter::upsert_file(...) — Fjall secondary index
+        per-file commit               — atomic batch (daemon-side)
   → apply_outcomes:
         write Index meta
         prune deleted files via IndexWriter::remove_file
 ```
+
+The daemon is the sole writer to Fjall and LanceDB. Scan processes forward their extraction
+results to the daemon, which applies index updates atomically.
 
 Key invariants:
 
@@ -127,7 +145,8 @@ Key invariants:
 
 ## Inverted index
 
-A Fjall LSM keyspace at `.basemind/views/<view>/index.fjall/`. Source:
+A Fjall LSM keyspace at `~/.local/share/basemind/views/<workspace_hash>/<view>/index.fjall/`.
+Daemon-managed; all serving sessions read concurrently from a read-only handle. Source:
 `src/index/{mod,keys,writer}.rs`.
 
 | Keyspace | Purpose |
@@ -197,7 +216,7 @@ Conventions:
 
 ## Git layer
 
-`gix`-backed log, blame, diff, and status. The git cache at `.basemind/git-cache/`
+`gix`-backed log, blame, diff, and status. The git cache at `~/.local/share/basemind/git-cache/<workspace_hash>/`
 has two tiers:
 
 - An in-process LRU (1024 entries per category by default; tune via
@@ -233,84 +252,70 @@ Per-repo metrics land at `/tmp/basemind-harden-*.log`.
 
 ## Agent comms & split memory
 
+The daemon owns a separate Fjall store for agent communication (singleton per user):
+
 ```mermaid
 flowchart TB
-  subgraph agents["Opaque agents (same machine, multiple repos)"]
+  subgraph agents["Agents (same machine, multiple repos)"]
     A1["Agent A — repo X"]
     A2["Agent B — repo Y (same workspace)"]
     HK["SessionStart hook\n(boot-subscribe + inject)"]
   end
   subgraph serve["basemind serve (per session)"]
-    MT["MCP tools: memory_* + comms_*"]
+    MT["MCP tools: memory_* + thread_*"]
     CC["CommsClient (proxy)"]
     PEER["rmcp Peer (push, best-effort)"]
   end
-  subgraph daemon["basemind comms daemon (singleton, user-global)"]
-    FE["Front-ends: UDS · in-proc"]
-    REG["Room registry\n(scope: remote | path-prefix | global)"]
-    BR["Broker: scope-match auto-join, fan-out, refcount"]
-    CS["CommsStore (2nd Fjall):\nrooms · messages_by_room(front-matter)\n· message_body · subs · cursors · agents"]
+  subgraph daemon["basemind daemon (singleton, user-global)"]
+    FE["Front-ends: UDS"]
+    THR["Thread registry\n(scope: repo | path-glob | subject)"]
+    BR["Broker: explicit join, fan-out, refcount"]
+    CS["CommsStore (Fjall):\nthreads · members · messages_by_thread(front-matter)\n· message_body · subs · cursors · agents · registry"]
   end
-  subgraph repo["Repo .basemind/ (per serve, exclusive lock)"]
+  subgraph cache["Global cache\n~/.local/share/basemind"]
     MEM["memory_by_key (scope, visibility, owner)"]
     LAN["LanceDB memory (+agent_id +visibility)"]
   end
   A1 --> serve
   A2 -->|own serve| daemon
-  HK -->|scope chain| daemon
-  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> REG --> CS
+  HK -->|discover threads| daemon
+  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> THR --> CS
   BR -. push .-> CC -. notify .-> PEER
-  MT --> MEM
-  MT --> LAN
+  MT --> cache
 ```
 
 ### Why a separate daemon
 
-Each `basemind serve` takes an exclusive flock on the repo's `.basemind/` store, so
-the comms substrate cannot live there. It lives in a separate, user-global,
-daemon-owned second Fjall store (path via the `directories` crate;
-`BASEMIND_COMMS_DIR` overrides). The daemon is a singleton enforced by
-socket-bind-as-lock (a Unix domain socket whose successful bind IS the lock);
-stale sockets are reclaimed probe-before-unlink. It auto-starts on first need,
-goes idle with no subscribers (socket stays bound as a split-brain guard), and
-stops on explicit `comms stop`.
+The daemon is the sole Fjall writer (across all repos on the machine). This allows N `basemind serve`
+sessions on the same repo to read concurrently without downgrade-to-read-only races. The daemon is
+a singleton enforced by socket-bind-as-lock (a Unix domain socket whose successful bind IS the lock);
+stale sockets are reclaimed probe-before-unlink. It auto-starts on first need and stops on explicit `comms stop`.
 
-### Chat-server room model
+### Thread model
 
-Rooms are registered in a central registry owned by the daemon. Each room has a
-scope: a git remote, a path prefix, or global (`RoomScope = Remote | PathPrefix
-| Global`). At boot an agent computes its scope chain (repo remote + cwd +
-ancestor dirs up to a workspace/`$HOME` boundary) and auto-joins every
-registered room whose scope covers it — so per-repo rooms, workspace rooms
-spanning sibling repos (horizontal monorepo), and nested repos all work via
-ancestor/prefix matching. Agents can also explicitly create/list/join rooms
-across repos.
+Threads are registered in a central registry owned by the daemon. Each thread has explicit membership
+(list of agents) and at least one of: a subject, a scope (repo remote or path-glob), or named members.
+Agents join threads explicitly via `thread_join` or `thread_start`; no auto-join. Group scopes (path-glob,
+repo) help agents discover relevant threads, but joining is always explicit.
 
 ### Condensed two-tier messages
 
-A message is a front-matter envelope (`id, room, from, ts_micros, subject, tags,
-reply_to, body_len, body_sha`) stored in `messages_by_room`, plus a
-separately-stored body in `message_body` keyed by message id. `room_history` and
-`inbox_read` scan front-matter ONLY — never the body — to stay token-frugal; the
-body is fetched on demand by `message_get {message_id}`. Poster supplies a
-required short `subject` plus an optional long body.
+A message is a front-matter envelope (`id, thread, from, ts_micros, subject, reply_to, body_len, body_sha`)
+stored in `messages_by_thread`, plus a separately-stored body in `message_body` keyed by message id.
+`thread_history` and `inbox_read` scan front-matter ONLY — never the body — to stay token-frugal;
+the body is fetched on demand by `message_get {message_id}`. Poster supplies a required short `subject`
+plus an optional long body.
 
 ### Split memory
 
-Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key`
-Fjall key is `(scope, vis_byte, owner, key)` and the LanceDB memory table gained
-`agent_id` + `visibility` columns. Group memory (`visibility=group`, default,
-`owner=""`) is shared across agents in a repo; individual memory
-(`visibility=individual`, `owner=agent_id`) is private to one agent. Default is
-`group` for back-compat. Schema is guarded by `MEMORY_SCHEMA_VER` (derives from
-`RELEASE_MINOR`); a mismatch wipes and rebuilds.
+Repo memory is namespaced by `(scope, visibility, owner)`: the `memory_by_key` Fjall key is
+`(scope, vis_byte, owner, key)` and the LanceDB memory table has `agent_id` + `visibility` columns.
+Group memory (`visibility=group`, default, `owner=""`) is shared across agents in a repo; individual
+memory (`visibility=individual`, `owner=agent_id`) is private to one agent. Schema is guarded by
+`MEMORY_SCHEMA_VER` (derives from `RELEASE_MINOR`); a mismatch wipes and rebuilds.
 
-### Identity & delivery
+### Worktree registry
 
-Agent identity resolves as `BASEMIND_AGENT_ID` env → `config.comms.agent_id` →
-a persisted per-repo `.basemind/agent-id` (`session-<pid>-<nanos>`) → `anon`.
-Notification delivery is hook-driven: the SessionStart hook boot-subscribes and
-injects the comms levers + condensed recent history; a `UserPromptSubmit` hook
-(`inbox-notify`) injects messages newer than a per-session high-water mark each
-turn. MCP push via the rmcp `Peer` is best-effort/secondary (Claude Code only
-surfaces `list_changed`).
+The daemon maintains an advisory registry of active worktrees and branches per workspace. Agents can
+claim a worktree+branch via `worktree_claim` and release via `worktree_release`. Claims are advisory
+(no locking); the registry helps avoid collisions and is read-only to serving sessions.

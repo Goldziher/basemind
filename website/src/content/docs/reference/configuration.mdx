@@ -307,8 +307,8 @@ Prebuilt downloads (GitHub releases, Homebrew, npm, pip) include the full featur
 
 basemind uses `RELEASE_MINOR` from `src/version.rs` as the single source of truth for both:
 
-- **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`.basemind/views/<view>/index.fjall/`)
-- **`SCHEMA_VER`** — msgpack blob format (`.basemind/blobs/<hash>.{l1,l2,l3}.msgpack`)
+- **`INDEX_SCHEMA_VER`** — Fjall keyspace format (`<cache>/workspaces/<key>/views/<view>/index.fjall/`)
+- **`SCHEMA_VER`** — msgpack blob format (`<cache>/blobs/<hash>.{l1,l2,l3}.msgpack`, global + content-addressed)
 
 When either schema changes (typically on minor version bumps), the next `basemind scan` automatically wipes the old caches and rebuilds from source. Patch releases are always cache-compatible.
 

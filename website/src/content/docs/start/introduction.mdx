@@ -67,10 +67,11 @@ basemind is built on one discipline: **prefer structure over content**.
 
 ### 1. Indexed context layer
 
-`basemind scan` reads your project once, in parallel, and saves the result to a
-local cache in `.basemind/`. After that, `basemind serve` keeps the map in memory
-and answers questions instantly — no re-reading the project for each one. When
-files change, it updates only what changed.
+`basemind scan` reads your project once, in parallel, and forwards the result to a
+background daemon that manages a machine-global cache under `~/.local/share/basemind/`.
+All repos/worktrees on one machine share this cache. After scanning, `basemind serve`
+loads the map into memory and answers questions instantly — no re-reading the project
+for each one. When files change, it signals the daemon to update only what changed.
 
 Outlines are held in RAM. Git history is precomputed and indexed. Documents are
 vectorized once and cached. The result: most code questions answer in **under a
@@ -79,11 +80,11 @@ in around 200 ms.
 
 ### 2. Multi-agent comms
 
-A single shared service in the background lets agents talk to each other — even
-across different tools and different repos on the same machine. Agents join
-**rooms** automatically based on what they're working on, and each has a personal
-**inbox**. Messages come in two parts: a short headline (cheap to skim) and the
-full body (fetched only when an agent wants to read it).
+A single shared background daemon lets agents coordinate — even across different
+tools and repos on the same machine. Agents join **threads** explicitly by subject,
+scope, or membership, and each has a personal **inbox**. Messages come in two parts:
+a short headline (cheap to skim) and the full body (fetched only when an agent wants
+to read it). The daemon also tracks worktrees and branches for optional collision detection.
 
 ## How to use it
 
