@@ -139,6 +139,178 @@ fn init_git_repo(main: &Path) {
     git(&["commit", "-qm", "init"], main);
 }
 
+/// A committed git repo with `n_files` small Rust sources under `src/`, so a rescan does real
+/// per-file extraction work — the substrate for the concurrency stress (vs the single-file
+/// [`init_git_repo`]).
+fn init_bulk_git_repo(main: &Path, n_files: usize) {
+    std::fs::create_dir_all(main.join("src")).expect("mkdir src");
+    git(&["init", "-q", "-b", "main"], main);
+    git(&["config", "user.email", "t@example.com"], main);
+    git(&["config", "user.name", "Test"], main);
+    for i in 0..n_files {
+        let body = format!(
+            "pub fn f{i}() -> u32 {{ {i} }}\npub struct S{i};\nimpl S{i} {{ pub fn m{i}(&self) -> u32 {{ f{i}() }} }}\n"
+        );
+        std::fs::write(main.join("src").join(format!("m{i}.rs")), body).expect("write src file");
+    }
+    git(&["add", "."], main);
+    git(&["commit", "-qm", "bulk"], main);
+}
+
+/// Read a positive-integer stress knob from the environment, defaulting when unset or unparseable.
+/// Lets the concurrency stress be cranked far harder on a big machine (`BASEMIND_STRESS_CLIENTS=64`).
+fn stress_knob(var: &str, default: usize) -> usize {
+    std::env::var(var)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(default)
+}
+
+/// Regression: concurrent FIRST-touch rescans of the same COLD workspace must all succeed. The
+/// daemon's workspace pool opens each cold store under fjall's exclusive index lock; before the open
+/// was serialized, two rescans racing that cold open left the loser ERRORing on the lock ("another
+/// basemind process holds the lock") instead of sharing the winner's pooled entry — the post-open
+/// reconciliation never ran because the loser failed inside `Store::open`. Two agents auto-scanning
+/// the same repo at the same instant is exactly this race. Surfaced by the concurrency stress below.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_cold_rescans_open_the_workspace_once_and_all_succeed() {
+    const RACERS: usize = 6;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    // Connect every client first (Hello registers the workspace but leaves its store COLD)...
+    let mut clients = Vec::with_capacity(RACERS);
+    for c in 0..RACERS {
+        clients.push(connect(&socket, &format!("agent-race-{c}"), &repo).await);
+    }
+    // ...then fire every client's first rescan at once, so the ONLY thing racing is the cold open.
+    let mut tasks = Vec::with_capacity(RACERS);
+    for (c, mut client) in clients.into_iter().enumerate() {
+        let repo = repo.clone();
+        tasks.push(tokio::spawn(async move {
+            client
+                .rescan(repo, None, true)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("racer {c}: {e}"))
+        }));
+    }
+    for task in tasks {
+        match task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => panic!("a cold-open racer must succeed, not fail on the lock: {message}"),
+            Err(join) => panic!("a cold-open racer panicked: {join}"),
+        }
+    }
+    daemon.stop();
+}
+
+/// Sustained multi-session stress against ONE daemon: many concurrent clients, each running its own
+/// interleaved loop of full rescans + registry reads + advisory claim/release churn, all funneled
+/// through the daemon's sole-writer workspace pool (the whole rearchitecture's promise — N sessions
+/// on one repo all read AND write with no fjall lock downgrade). Asserts the daemon serves every
+/// request with no torn index, no deadlock, and no panic, then stays responsive and consistent
+/// afterward. `#[ignore]` (heavy); tune with `BASEMIND_STRESS_{CLIENTS,ITERS,FILES}`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "stress: many concurrent clients hammer one daemon; run with --ignored"]
+async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
+    let clients = stress_knob("BASEMIND_STRESS_CLIENTS", 8);
+    let iters = stress_knob("BASEMIND_STRESS_ITERS", 8);
+    let files = stress_knob("BASEMIND_STRESS_FILES", 150);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_bulk_git_repo(&repo, files);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    // Bootstrap client: its Hello registers the workspace; grab the repo id for the claim churn.
+    let mut boot = connect(&socket, "agent-stress-boot", &repo).await;
+    let repo_id = boot.list_workspaces().await.expect("list workspaces")[0]
+        .repo_id
+        .clone()
+        .expect("git workspace has a repo id");
+    drop(boot);
+
+    let mut tasks = Vec::with_capacity(clients);
+    for c in 0..clients {
+        let socket = socket.clone();
+        let repo = repo.clone();
+        let repo_id = repo_id.clone();
+        tasks.push(tokio::spawn(async move {
+            let agent = format!("agent-stress-{c}");
+            let mut client = connect(&socket, &agent, &repo).await;
+            for _ in 0..iters {
+                // Write: forward a full rescan to the sole writer (serialized per-workspace).
+                client
+                    .rescan(repo.clone(), None, true)
+                    .await
+                    .map_err(|e| format!("{agent} rescan: {e}"))?;
+                // Read: the machine registry must never lose the workspace mid-storm.
+                let workspaces = client
+                    .list_workspaces()
+                    .await
+                    .map_err(|e| format!("{agent} list_workspaces: {e}"))?;
+                if workspaces.is_empty() {
+                    return Err(format!("{agent}: registry lost the workspace mid-storm"));
+                }
+                // Contended advisory-claim churn on a per-client worktree name.
+                let name = format!("wt-{c}");
+                let _ = client
+                    .claim_worktree(repo_id.clone(), name.clone(), agent.clone())
+                    .await;
+                let _ = client.release_worktree(repo_id.clone(), name, agent.clone()).await;
+            }
+            Ok::<(), String>(())
+        }));
+    }
+
+    // Every client task must complete within a generous ceiling — a daemon deadlock trips the timeout.
+    let join_all = async {
+        let mut outcomes = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            outcomes.push(task.await);
+        }
+        outcomes
+    };
+    let outcomes = tokio::time::timeout(Duration::from_secs(180), join_all)
+        .await
+        .expect("all stress clients must finish within 180s (no daemon deadlock)");
+    for (i, outcome) in outcomes.into_iter().enumerate() {
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => panic!("stress client {i} failed: {message}"),
+            Err(join) => panic!("stress client {i} panicked: {join}"),
+        }
+    }
+
+    // The daemon survived the storm: still responsive, registry still consistent, index not torn.
+    let mut after = connect(&socket, "agent-stress-after", &repo).await;
+    let workspaces = after.list_workspaces().await.expect("post-storm list_workspaces");
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "exactly one workspace must remain registered after the storm, got {}",
+        workspaces.len()
+    );
+    let report = after.rescan(repo.clone(), None, true).await.expect("post-storm rescan");
+    assert!(
+        report.scanned >= 1,
+        "a post-storm rescan must still do real work (index not torn), got scanned={}",
+        report.scanned
+    );
+    drop(after);
+    daemon.stop();
+}
+
 /// Regression for the `comms stop` no-op (#34): a `Stop` RPC must actually terminate the daemon by
 /// firing the accept-loop shutdown signal — not merely ack while the process lingers, which left
 /// orphaned daemons piling up across sessions, reaped only by an external kill. This spawns a real

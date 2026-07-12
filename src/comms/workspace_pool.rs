@@ -90,6 +90,13 @@ pub(crate) struct WorkspacePool {
     /// Hot entries keyed by [`store::workspace_key`]. The lock guards the map structure only —
     /// scans run against a cloned `Arc<WorkspaceEntry>` after the lock is released.
     map: Mutex<AHashMap<String, std::sync::Arc<WorkspaceEntry>>>,
+    /// Serializes COLD opens against each other. fjall's index lock is exclusive, so two threads
+    /// opening the SAME cold workspace concurrently would leave the loser ERRORing on the lock — not
+    /// merely losing the insert race — because the failure happens inside `Store::open`, before the
+    /// post-open "prefer the stored entry" reconciliation can run. Holding this across the open (with
+    /// a re-check under it) guarantees exactly one opener per key. Opens are one-time-per-workspace
+    /// and fast, so serializing them across workspaces too is a non-issue; it never wraps a scan.
+    open_lock: Mutex<()>,
     /// Maximum hot entries; opening past this evicts the least-recently-used.
     cap: usize,
 }
@@ -99,6 +106,7 @@ impl WorkspacePool {
     pub(crate) fn new(cap: usize) -> Self {
         Self {
             map: Mutex::new(AHashMap::new()),
+            open_lock: Mutex::new(()),
             cap: cap.max(1),
         }
     }
@@ -167,8 +175,19 @@ impl WorkspacePool {
                 return Ok(entry.clone());
             }
         }
-        // Open outside the lock: opening touches the filesystem and can block. A concurrent opener ~keep
-        // of the same key may win the race; we resolve that below by preferring the stored entry. ~keep
+        // Serialize the cold open. fjall's exclusive index lock means two concurrent opens of the
+        // same key would leave the loser ERRORing on the lock (inside `Store::open`, before the
+        // post-open reconciliation), so the open itself — not just the insert — must be single.
+        // Take the open lock OUTSIDE the map lock (opening touches the filesystem and can block; the
+        // map lock must stay free for hot-path lookups), then re-check the map under it: a peer that
+        // just opened this key while we waited already published its entry, and we return that.
+        let _opening = self.open_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        {
+            let map = self.lock_map();
+            if let Some(entry) = map.get(&key) {
+                return Ok(entry.clone());
+            }
+        }
         let store = Store::open_with_holder(root, VIEW_WORKING, LockHolder::Rescan)?;
         let config = load_config(root)?;
         let entry = std::sync::Arc::new(WorkspaceEntry {
@@ -179,12 +198,8 @@ impl WorkspacePool {
             last_used: Mutex::new(Instant::now()),
         });
 
+        // We hold `open_lock`, so no peer can have opened this key while we did; insert directly.
         let mut map = self.lock_map();
-        // Lost the open race — a peer inserted this key first. Drop our fresh store (releasing the ~keep
-        // duplicate lock) and use theirs. ~keep
-        if let Some(existing) = map.get(&key) {
-            return Ok(existing.clone());
-        }
         while map.len() >= self.cap {
             let victim = map.values().min_by_key(|e| e.last_used()).map(|e| e.key.clone());
             match victim {
