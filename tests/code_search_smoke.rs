@@ -214,13 +214,19 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
 
     // Pass 1 — Deferred: writes the chunk-only sidecar (no vectors).
     let s1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred scan");
-    assert_eq!(s1.stats.updated, 1, "the one source file is newly indexed by the deferred pass");
+    assert_eq!(
+        s1.stats.updated, 1,
+        "the one source file is newly indexed by the deferred pass"
+    );
     let blob = store
         .read_chunks_by_hex(&stem)
         .expect("read chunk sidecar")
         .expect("deferred pass persists a chunk-only sidecar");
     assert!(!blob.chunks.is_empty(), "the fixture yields at least one chunk");
-    assert_eq!(blob.embedding_dim, 0, "the deferred pass writes chunks only — no vectors yet");
+    assert_eq!(
+        blob.embedding_dim, 0,
+        "the deferred pass writes chunks only — no vectors yet"
+    );
 
     // A second Deferred pass is idempotent: the chunk-only sidecar satisfies the unchanged check.
     let s1b = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred rescan");
@@ -237,7 +243,10 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
         s2.stats.skipped_unchanged, 0,
         "the inline embed pass must re-process a chunk-only file, not skip it as unchanged"
     );
-    assert_eq!(s2.stats.updated, 1, "the inline pass re-processes the file to fill vectors");
+    assert_eq!(
+        s2.stats.updated, 1,
+        "the inline pass re-processes the file to fill vectors"
+    );
 
     // When the embedder is available the sidecar is upgraded in place to carry vectors; offline it
     // stays chunk-only (BM25 fallback). The re-process assertion above pins the fix either way.
