@@ -77,18 +77,19 @@ pub fn run() -> Result<()> {
         let broker = Arc::new(Broker::with_registry(store.clone(), machine_registry));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        // Hand the accept-loop shutdown signal to the broker so every drain path — a `Stop` RPC,
+        // SIGTERM, the idle reaper, the ownership watchdog — terminates the front-end through the
+        // single `begin_drain` seam instead of each racing its own `send(true)`.
+        broker.install_shutdown(shutdown_tx);
 
         let broker_for_signal = broker.clone();
-        let shutdown_for_signal = shutdown_tx.clone();
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
             tracing::info!("comms: shutdown signal received; draining");
             broker_for_signal.begin_drain().await;
-            let _ = shutdown_for_signal.send(true);
         });
 
         let broker_for_reaper = broker.clone();
-        let shutdown_for_reaper = shutdown_tx.clone();
         tokio::spawn(async move {
             use crate::comms::daemon::{IDLE_REAP_AFTER, IDLE_REAP_CHECK_EVERY};
             let mut tick = tokio::time::interval(IDLE_REAP_CHECK_EVERY);
@@ -98,7 +99,6 @@ pub fn run() -> Result<()> {
                 if broker_for_reaper.is_idle_for(IDLE_REAP_AFTER).await {
                     tracing::info!("comms: idle with no clients past the reap window; self-terminating");
                     broker_for_reaper.begin_drain().await;
-                    let _ = shutdown_for_reaper.send(true);
                     break;
                 }
             }
@@ -152,7 +152,6 @@ pub fn run() -> Result<()> {
         #[cfg(unix)]
         if let Some(bound_inode) = socket_inode(&paths.socket_path) {
             let broker_for_owner = broker.clone();
-            let shutdown_for_owner = shutdown_tx.clone();
             let socket = paths.socket_path.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(OWNERSHIP_CHECK_EVERY);
@@ -165,7 +164,6 @@ pub fn run() -> Result<()> {
                             "comms: socket unlinked or replaced by another daemon; self-terminating"
                         );
                         broker_for_owner.begin_drain().await;
-                        let _ = shutdown_for_owner.send(true);
                         break;
                     }
                 }

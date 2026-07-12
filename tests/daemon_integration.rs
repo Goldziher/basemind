@@ -139,6 +139,70 @@ fn init_git_repo(main: &Path) {
     git(&["commit", "-qm", "init"], main);
 }
 
+/// Regression for the `comms stop` no-op (#34): a `Stop` RPC must actually terminate the daemon by
+/// firing the accept-loop shutdown signal — not merely ack while the process lingers, which left
+/// orphaned daemons piling up across sessions, reaped only by an external kill. This spawns a real
+/// daemon, sends `basemind comms stop`, and asserts the process exits ON ITS OWN within a tight
+/// window, WITHOUT the test ever killing it. Before the fix the broker held no shutdown sender, so
+/// `begin_drain` set `Draining` but never broke the accept loop and this would time out.
+#[test]
+fn comms_stop_terminates_the_daemon_without_an_external_kill() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    std::fs::create_dir_all(&comms_dir).expect("mkdir comms");
+    let socket = comms_socket_path(&comms_dir);
+
+    let mut child = Command::new(BIN)
+        .args(["comms", "daemon"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn comms daemon");
+
+    let ready_by = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < ready_by && !probe_alive(&socket) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(probe_alive(&socket), "daemon did not become ready");
+
+    // Issue the Stop RPC over the CLI (connect-only; it never respawns a daemon).
+    let stop = Command::new(BIN)
+        .args(["comms", "stop"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .output()
+        .expect("run comms stop");
+    assert!(
+        stop.status.success(),
+        "comms stop failed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+
+    // The daemon must exit on its OWN — poll `try_wait`, and only kill (to avoid a zombie) if the
+    // fix regressed and it never self-terminated.
+    let exit_by = Instant::now() + Duration::from_secs(10);
+    let mut exited = false;
+    while Instant::now() < exit_by {
+        if child.try_wait().expect("try_wait").is_some() {
+            exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("daemon did not self-terminate after `comms stop` within 10s (the #34 no-op bug)");
+    }
+    let _ = child.wait();
+    assert!(
+        !probe_alive(&socket),
+        "the socket must be released once the daemon self-terminates"
+    );
+}
+
 /// The machine registry and an advisory worktree claim are a durable msgpack snapshot: both must
 /// survive the daemon exiting and a fresh daemon reloading the same `BASEMIND_DATA_HOME`, and the
 /// reload must not clobber the live claim when a new session's Hello re-enumerates the repo.
@@ -556,18 +620,14 @@ async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
 /// `comms_dir` reloads the registry snapshot intact, proving the stop did not corrupt durable
 /// state.
 ///
-/// NOTE: `CommsRequest::Stop` marks the broker `Draining` and notifies connected clients
-/// (`Broker::begin_drain`, `src/comms/daemon.rs`), but nothing wires that state back to the
-/// `shutdown_tx` watch channel the accept loop selects on (`src/cli/comms_daemon.rs`) — only a
-/// SIGTERM/Ctrl-C or the (30-minute) idle reaper actually flips it, and the idle reaper explicitly
-/// no-ops once `Draining` (`Broker::is_idle_for`). Confirmed by manual reproduction: after
-/// `basemind comms stop` returns `Ok`, the process keeps running and the socket keeps answering
-/// indefinitely. So this test cannot assert "the socket goes dead after `comms stop`" as a
-/// currently-true invariant — that would be asserting a behavior the code does not have. Instead
-/// it asserts the weaker, currently-true invariants: the `Stop` RPC itself succeeds, an in-flight
-/// rescan resolves cleanly (no panic/hang) rather than being torn down mid-write, and — using the
-/// harness's `Daemon::stop()` (RPC + reap-by-kill, not a pure drain) to actually end the process —
-/// a fresh daemon on the same `comms_dir` reloads the registry snapshot intact.
+/// `CommsRequest::Stop` routes through `Broker::begin_drain` (`src/comms/daemon.rs`), which now
+/// fires the accept-loop shutdown signal the daemon entry point installed, so the process actually
+/// self-terminates (its dedicated regression is
+/// `comms_stop_terminates_the_daemon_without_an_external_kill`). This test pins the harder property
+/// under that shutdown: a rescan in flight when the stop lands still resolves cleanly — it finishes
+/// before the runtime tears down, or the link breaks and the client surfaces a clean `Err` — never
+/// a panic and never a hang. A fresh daemon on the same `comms_dir` then reloads the registry
+/// snapshot intact, proving the abrupt stop left no torn durable state.
 #[tokio::test(flavor = "multi_thread")]
 async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after_restart() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -624,7 +684,7 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
         }
         Err(join_error) => panic!("rescan task must not panic, got: {join_error}"),
     }
-    drop(daemon); // Drop's `comms stop` + reap-by-kill actually ends the process (see NOTE above).
+    daemon.stop(); // The `Stop` RPC self-terminates the daemon; wait for the socket to go dead.
 
     // Restart on the same comms_dir: the registry snapshot must reload intact.
     let daemon = Daemon::start(&comms_dir);
