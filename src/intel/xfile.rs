@@ -47,6 +47,58 @@ pub struct FileFacts {
 /// concurrent MCP reader isn't blocked for the whole stitch.
 const COMMIT_BATCH: usize = 256;
 
+/// How far the join follows a re-export chain before giving up. A name imported through a package
+/// `__init__.py` / a TS barrel that itself re-imports it from the defining module is one hop; real
+/// chains are shallow, so a small bound keeps a pathological or cyclic chain from spinning while
+/// covering every practical re-export (django's `from django.db.models import QuerySet`, etc.).
+const MAX_REEXPORT_HOPS: usize = 8;
+
+/// Resolve `wanted` to its ultimate exported definition starting from `target_rel`, transparently
+/// following re-export chains: a file that does not directly export `wanted` but IMPORTS it (a
+/// package `__init__.py` re-export, a TS barrel) forwards to that import's target, and so on.
+/// Returns `(defining_file, name_start)` — the file that actually defines the export and the byte
+/// the join keys on — or `None` when the name is neither a direct export nor a followable re-export
+/// within [`MAX_REEXPORT_HOPS`]. Cycle-guarded on `(file, name)`.
+///
+/// Re-exports stay within one language (a Python import resolves to a Python file), so the importer's
+/// `resolver` is valid for every hop; each hop resolves relative to the current file in the chain.
+fn resolve_export_transitively(
+    root: &Path,
+    store: &Store,
+    facts: &AHashMap<String, FileFacts>,
+    export_maps: &AHashMap<&str, AHashMap<&str, u32>>,
+    resolver: &SpecifierResolver,
+    target_rel: crate::path::RelPath,
+    wanted: &str,
+) -> Option<(crate::path::RelPath, u32)> {
+    let mut current_rel = target_rel;
+    let mut wanted = wanted.to_string();
+    let mut visited: ahash::AHashSet<(String, String)> = ahash::AHashSet::new();
+    for _ in 0..MAX_REEXPORT_HOPS {
+        let current_key = current_rel.as_str()?.to_string();
+        if !visited.insert((current_key.clone(), wanted.clone())) {
+            return None; // re-export cycle — bail rather than loop.
+        }
+        if let Some(&name_start) = export_maps
+            .get(current_key.as_str())
+            .and_then(|m| m.get(wanted.as_str()))
+        {
+            return Some((current_rel, name_start));
+        }
+        // Not a direct export: is `wanted` re-exported here (imported under that local name)? Follow it.
+        let reexport = facts
+            .get(&current_key)?
+            .imports
+            .iter()
+            .find(|import| !import.is_type && import.local == wanted)?;
+        let next_rel = resolver.resolve(root, &current_key, reexport)?;
+        store.lookup(&next_rel)?; // the re-export target must be indexed to have an export list.
+        wanted = reexport.imported.clone().unwrap_or(wanted);
+        current_rel = next_rel;
+    }
+    None
+}
+
 /// Stitch cross-file resolved edges for every importer in `facts` into the index.
 ///
 /// Runs after the resolve pass's per-file upserts have committed, so each importer's previous-scan
@@ -106,12 +158,6 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
             if store.lookup(&target_rel).is_none() {
                 continue;
             }
-            let Some(target_key) = target_rel.as_str() else {
-                continue;
-            };
-            let Some(export_map) = export_maps.get(target_key) else {
-                continue;
-            };
 
             // A specific imported name (`from m import f`) joins against that export; an import with
             // no named symbol falls back to the resolver's default-export convention (JS `default`),
@@ -120,35 +166,41 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
             let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
                 continue;
             };
-            if let Some(&name_start) = export_map.get(wanted) {
-                // Emit a cross-file edge for the import binding site itself AND for every in-file use
-                // of the imported name (calls/references whose intra `def_start` is this binding), so
-                // `find_callers` / `goto_definition` resolve the real call sites across the boundary,
-                // not just the `import` statement.
-                let mut use_starts: Vec<u32> = vec![import.local_start];
-                for edge in &importer_facts.import_uses {
-                    if edge.def_start == import.local_start && !use_starts.contains(&edge.use_start) {
-                        use_starts.push(edge.use_start);
-                    }
+            // Resolve to the DEFINING file, following re-export chains so an import through a package
+            // `__init__.py` / barrel binds to the real definition (`from pkg import QuerySet` →
+            // `pkg/query.py`), not the intermediate re-exporter (which carries no direct export).
+            let Some((def_rel, name_start)) =
+                resolve_export_transitively(root, store, facts, &export_maps, resolver, target_rel, wanted)
+            else {
+                continue;
+            };
+            // Emit a cross-file edge for the import binding site itself AND for every in-file use
+            // of the imported name (calls/references whose intra `def_start` is this binding), so
+            // `find_callers` / `goto_definition` resolve the real call sites across the boundary,
+            // not just the `import` statement.
+            let mut use_starts: Vec<u32> = vec![import.local_start];
+            for edge in &importer_facts.import_uses {
+                if edge.def_start == import.local_start && !use_starts.contains(&edge.use_start) {
+                    use_starts.push(edge.use_start);
                 }
-                for use_start in use_starts {
-                    match writer.upsert_cross_file_edge(&target_rel, name_start, &importer_rel, use_start) {
-                        Ok(()) => {
-                            edges += 1;
-                            if edges.is_multiple_of(COMMIT_BATCH) {
-                                if let Err(error) = writer.commit() {
-                                    tracing::warn!(%error, "cross-file stitch: batch commit failed — navigation may be stale");
-                                }
-                                writer = index_db.writer();
+            }
+            for use_start in use_starts {
+                match writer.upsert_cross_file_edge(&def_rel, name_start, &importer_rel, use_start) {
+                    Ok(()) => {
+                        edges += 1;
+                        if edges.is_multiple_of(COMMIT_BATCH) {
+                            if let Err(error) = writer.commit() {
+                                tracing::warn!(%error, "cross-file stitch: batch commit failed — navigation may be stale");
                             }
+                            writer = index_db.writer();
                         }
-                        Err(error) => tracing::warn!(
-                            importer = %importer_rel,
-                            target = %target_rel,
-                            %error,
-                            "cross-file stitch: failed to stage edge — skipping"
-                        ),
                     }
+                    Err(error) => tracing::warn!(
+                        importer = %importer_rel,
+                        target = %def_rel,
+                        %error,
+                        "cross-file stitch: failed to stage edge — skipping"
+                    ),
                 }
             }
         }
