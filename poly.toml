@@ -156,4 +156,8 @@ run = "bash tests/statusline_smoke.sh"
 
 [hooks.pre-commit.scripts.sync_plugin_skills]
 run = "bash scripts/sync-plugin-skills.sh"
-
+[[hooks.sources]]
+id = "ai-rulez"
+git = "https://github.com/Goldziher/ai-rulez.git"
+revision = "v4.9.3"
+hooks = ["ai-rulez-validate", "ai-rulez-plugin-verify"]
