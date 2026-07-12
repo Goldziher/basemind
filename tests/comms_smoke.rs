@@ -38,6 +38,9 @@ impl Daemon {
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
+            // Isolate the daemon's workspace index writes to the same tempdir so a `rescan` RPC ~keep
+            // never touches the real XDG cache. ~keep
+            .env("BASEMIND_DATA_HOME", comms_dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -440,4 +443,27 @@ async fn creator_archives_thread_and_it_leaves_active_listings() {
     let with_archived = alice.list_threads(None, None, None, true).await.expect("archived list");
     assert_eq!(with_archived.len(), 1);
     assert!(!with_archived[0].active);
+}
+
+/// The daemon is the machine's sole fjall writer: a `rescan` RPC indexes a workspace end to end
+/// through a real detached daemon, and `accessed_paths` then reports that workspace hot.
+#[tokio::test(flavor = "multi_thread")]
+async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let workspace = tmp.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace dir");
+    std::fs::write(workspace.join("lib.rs"), "pub fn indexed() -> u32 { 7 }\n").expect("write source");
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut client = connect(&socket, "agent-scan", &workspace).await;
+
+    let report = client.rescan(workspace.clone(), None, false).await.expect("rescan");
+    assert_eq!(report.scanned, 1, "the single source is considered");
+    assert_eq!(report.updated, 1, "the single source is newly indexed");
+
+    let hot = client.accessed_paths().await.expect("accessed_paths");
+    assert_eq!(hot.len(), 1, "exactly one workspace is hot");
+    assert_eq!(hot[0].root, workspace, "the scanned workspace is reported hot");
 }

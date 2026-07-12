@@ -22,6 +22,20 @@ use super::model::{AgentCard, AgentRecord, Thread};
 use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::singleton::{self, CommsPaths};
 use super::transport::MAX_FRAME_BYTES;
+use super::workspace_pool::AccessedWorkspace;
+
+/// Outcome of a daemon-side [`CommsClient::rescan`]: the scan counts plus wall-clock time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RescanReport {
+    /// Files considered by the scan.
+    pub scanned: usize,
+    /// Files whose index entries were written or refreshed.
+    pub updated: usize,
+    /// Files pruned because they no longer exist.
+    pub removed: usize,
+    /// Wall-clock scan time in milliseconds.
+    pub elapsed_ms: u64,
+}
 
 const READ_CHUNK: usize = 8 * 1024;
 
@@ -488,6 +502,40 @@ impl CommsClient {
                 Some(CommsOut::Response(_)) => continue,
                 None => return Ok(None),
             }
+        }
+    }
+
+    /// Ask the daemon (the machine's sole fjall writer) to scan or rescan a workspace. Front-ends
+    /// forward their writes here so concurrent read-only sessions never contend for the index lock.
+    /// A non-empty `paths` (with `full == false`) drives an incremental rescan; otherwise the whole
+    /// working tree is scanned. Idempotent, so the transparent reconnect-and-retry is replay-safe.
+    pub async fn rescan(
+        &mut self,
+        root: PathBuf,
+        paths: Option<Vec<PathBuf>>,
+        full: bool,
+    ) -> Result<RescanReport, CommsClientError> {
+        match self.request(CommsRequest::Rescan { root, paths, full }).await? {
+            CommsResponse::Rescanned {
+                scanned,
+                updated,
+                removed,
+                elapsed_ms,
+            } => Ok(RescanReport {
+                scanned,
+                updated,
+                removed,
+                elapsed_ms,
+            }),
+            other => Err(self.shape_err(other, "rescan")),
+        }
+    }
+
+    /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
+    pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
+        match self.request(CommsRequest::AccessedPaths).await? {
+            CommsResponse::Accessed { workspaces } => Ok(workspaces),
+            other => Err(self.shape_err(other, "accessed_paths")),
         }
     }
 
