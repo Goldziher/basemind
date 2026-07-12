@@ -16,8 +16,7 @@ use super::types::{DocumentSearchHit, SearchDocumentsParams, SearchDocumentsResp
 #[cfg(feature = "memory")]
 use super::types_memory::{
     MemoryDeleteParams, MemoryDeleteResponse, MemoryEntry, MemoryGetParams, MemoryListParams, MemoryListResponse,
-    MemoryPutParams, MemoryPutResponse, MemoryRecord, MemorySearchHit, MemorySearchParams, MemorySearchResponse,
-    Visibility,
+    MemoryPutParams, MemoryPutResponse, MemorySearchHit, MemorySearchParams, MemorySearchResponse, Visibility,
 };
 #[cfg(feature = "documents")]
 use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
@@ -72,58 +71,6 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
         .await
         .cloned()
         .map_err(|e| McpError::internal_error(e.clone(), None))
-}
-
-#[cfg(feature = "memory")]
-fn read_memory_record(
-    idx: &crate::index::IndexDb,
-    scope: &str,
-    vis_byte: u8,
-    owner: &str,
-    key: &str,
-) -> Option<MemoryRecord> {
-    let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let bytes = idx.memory_by_key.get(raw_key).ok().flatten()?;
-    rmp_serde::from_slice(&bytes).ok()
-}
-
-#[cfg(feature = "memory")]
-fn write_memory_record(
-    idx: &crate::index::IndexDb,
-    scope: &str,
-    vis_byte: u8,
-    owner: &str,
-    key: &str,
-    record: &MemoryRecord,
-) -> Result<(), McpError> {
-    let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let bytes = rmp_serde::to_vec_named(record)
-        .map_err(|e| McpError::internal_error(format!("serialize memory record: {e}"), None))?;
-    idx.memory_by_key
-        .insert(raw_key, bytes)
-        .map_err(|e| McpError::internal_error(format!("fjall insert: {e}"), None))
-}
-
-#[cfg(feature = "memory")]
-fn delete_memory_record(
-    idx: &crate::index::IndexDb,
-    scope: &str,
-    vis_byte: u8,
-    owner: &str,
-    key: &str,
-) -> Result<bool, McpError> {
-    let raw_key = crate::index::keys::memory_by_key(scope, vis_byte, owner, key);
-    let existed = idx
-        .memory_by_key
-        .get(raw_key.as_slice())
-        .map_err(|e| McpError::internal_error(format!("fjall get: {e}"), None))?
-        .is_some();
-    if existed {
-        idx.memory_by_key
-            .remove(raw_key)
-            .map_err(|e| McpError::internal_error(format!("fjall remove: {e}"), None))?;
-    }
-    Ok(existed)
 }
 
 /// Per-`(scope, key)` write serialization for `memory_put`.
@@ -194,33 +141,12 @@ fn namespace(state: &ServerState, visibility: Visibility) -> (u8, &str) {
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
-    let key_lock = memory_put_lock(&state.scope, vis_byte, owner, &params.key);
-    let _put_guard = key_lock.lock().await;
-
-    let now = crate::lance::now_micros();
     let tags = params.tags.clone().unwrap_or_default();
 
-    let created_at = {
-        let store = state.store.read().await;
-        let idx = store
-            .index_db
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-        let existing = read_memory_record(idx, &state.scope, vis_byte, owner, &params.key);
-        let created_at = existing.map(|r| r.created_at).unwrap_or(now);
-        let record = MemoryRecord {
-            value: params.value.clone(),
-            tags: tags.clone(),
-            created_at,
-            updated_at: now,
-            provenance: super::types_memory::Provenance::default(),
-            verified: super::types_memory::VerifyState::Unverified,
-            last_verified: 0,
-            importance: 0.0,
-        };
-        write_memory_record(idx, &state.scope, vis_byte, owner, &params.key, &record)?;
-        created_at
-    };
+    // Fjall RMW: forwarded to the daemon under `daemon_writer` (the sole fjall writer serializes
+    // same-workspace ops, so no per-key lock is needed there); otherwise done locally under the
+    // per-key `memory_put_lock`. Both paths return the resolved `(created_at, updated_at)`.
+    let (created_at, updated_at) = memory_put_fjall(state, vis_byte, owner, &params.key, &params.value, &tags).await?;
 
     if params.embed {
         let embedding = embed_query(state, &params.value).await?;
@@ -234,7 +160,7 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
             agent_id: owner.to_string(),
             embedding,
             created_at,
-            updated_at: now,
+            updated_at,
         };
         let lance_clone = Arc::clone(&lance);
         tokio::task::spawn_blocking(move || lance_clone.upsert_memory(row))
@@ -245,123 +171,195 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
     json_result(&MemoryPutResponse {
         key: params.key,
         created_at,
-        updated_at: now,
+        updated_at,
     })
+}
+
+/// Run the fjall half of `memory_put`, returning the resolved `(created_at, updated_at)`.
+///
+/// `daemon_writer` builds a [`MemoryOp::Put`] and forwards it (the daemon serializes same-workspace
+/// writes, so the RMW is atomic without a per-key lock). Every other build takes the per-key
+/// [`memory_put_lock`] and calls [`put_core`](super::memory_ops::put_core) against the local index.
+#[cfg(feature = "memory")]
+async fn memory_put_fjall(
+    state: &ServerState,
+    vis_byte: u8,
+    owner: &str,
+    key: &str,
+    value: &str,
+    tags: &[String],
+) -> Result<(i64, i64), McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let op = MemoryOp::Put {
+            vis_byte,
+            owner: owner.to_string(),
+            key: key.to_string(),
+            value: value.to_string(),
+            tags: tags.to_vec(),
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            MemoryOutcome::Put { created_at, updated_at } => Ok((created_at, updated_at)),
+            other => Err(McpError::internal_error(
+                format!("memory_put: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let key_lock = memory_put_lock(&state.scope, vis_byte, owner, key);
+    let _put_guard = key_lock.lock().await;
+    let store = state.store.read().await;
+    let idx = store
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    Ok(super::memory_ops::put_core(
+        idx,
+        &state.scope,
+        vis_byte,
+        owner,
+        key,
+        value,
+        tags,
+    )?)
 }
 
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
+
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let op = MemoryOp::Get {
+            vis_byte,
+            owner: owner.to_string(),
+            key: params.key.clone(),
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        let entry = match outcome {
+            MemoryOutcome::Got(entry) => entry.map(wire_to_entry),
+            other => {
+                return Err(McpError::internal_error(
+                    format!("memory_get: unexpected daemon outcome {other:?}"),
+                    None,
+                ));
+            }
+        };
+        return json_result(&entry);
+    }
+
     let store = state.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     let entry: Option<MemoryEntry> =
-        read_memory_record(idx, &state.scope, vis_byte, owner, &params.key).map(|r| MemoryEntry {
-            key: params.key.clone(),
-            value: r.value,
-            tags: r.tags,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        });
+        super::memory_ops::get_core(idx, &state.scope, vis_byte, owner, &params.key)?.map(wire_to_entry);
     json_result(&entry)
 }
 
+/// Map a wire memory entry onto the MCP [`MemoryEntry`] response shape.
 #[cfg(feature = "memory")]
-const MEMORY_PREVIEW_CHARS: usize = 200;
+fn wire_to_entry(w: super::memory_ops::WireMemoryEntry) -> MemoryEntry {
+    MemoryEntry {
+        key: w.key,
+        value: w.value,
+        tags: w.tags,
+        created_at: w.created_at,
+        updated_at: w.updated_at,
+    }
+}
 
 #[cfg(feature = "memory")]
 pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParams) -> Result<CallToolResult, McpError> {
-    use std::ops::Bound;
+    use super::cursor::Cursor;
 
-    use super::cursor::{Cursor, prefix_upper_bound};
     let limit = params
         .limit
         .unwrap_or(super::helpers::SEARCH_LIMIT_DEFAULT)
         .min(super::helpers::SEARCH_LIMIT_MAX) as usize;
     let (vis_byte, owner) = namespace(state, params.visibility);
+    let key_prefix_filter = params.prefix.clone().unwrap_or_default();
+    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
+
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let op = MemoryOp::List {
+            vis_byte,
+            owner: owner.to_string(),
+            prefix: key_prefix_filter,
+            tag: params.tag.clone(),
+            limit: limit as u32,
+            cursor: cursor_bytes,
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            MemoryOutcome::Listed {
+                entries,
+                total,
+                truncated,
+                next_cursor,
+            } => json_result(&MemoryListResponse {
+                total: total as usize,
+                truncated,
+                entries: entries.into_iter().map(wire_to_entry).collect(),
+                next_cursor: next_cursor.as_deref().map(Cursor::encode_fjall),
+            }),
+            other => Err(McpError::internal_error(
+                format!("memory_list: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
     let store = state.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(&state.scope, vis_byte, owner);
-    let upper = prefix_upper_bound(&ns_prefix);
-    let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    let lower: Bound<Vec<u8>> = match cursor_bytes.as_deref() {
-        Some(k) => Bound::Excluded(k.to_vec()),
-        None => Bound::Included(ns_prefix.clone()),
-    };
-    let upper_bound: Bound<Vec<u8>> = match upper {
-        Some(b) => Bound::Excluded(b),
-        None => Bound::Unbounded,
-    };
-    let key_prefix_filter = params.prefix.as_deref().unwrap_or("");
-    let tag_filter = params.tag.as_deref();
-    let scan_cap = limit.saturating_mul(8).max(2_000);
-    let mut entries: Vec<MemoryEntry> = Vec::with_capacity(limit.min(64));
-    let mut total: usize = 0;
-    let mut last_emitted_key: Option<Vec<u8>> = None;
-    let mut has_more = false;
-    for guard in idx.memory_by_key.range::<Vec<u8>, _>((lower, upper_bound)) {
-        let (raw_key, raw_val) = guard
-            .into_inner()
-            .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-        let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key) else {
-            continue;
-        };
-        if !key.starts_with(key_prefix_filter) {
-            continue;
-        }
-        let Ok(record): Result<MemoryRecord, _> = rmp_serde::from_slice(&raw_val) else {
-            continue;
-        };
-        if let Some(tag) = tag_filter
-            && !record.tags.iter().any(|t| t == tag)
-        {
-            continue;
-        }
-        total += 1;
-        if entries.len() < limit {
-            let value = if record.value.len() > MEMORY_PREVIEW_CHARS {
-                format!(
-                    "{}…",
-                    record
-                        .value
-                        .char_indices()
-                        .nth(MEMORY_PREVIEW_CHARS)
-                        .map(|(i, _)| &record.value[..i])
-                        .unwrap_or(&record.value)
-                )
-            } else {
-                record.value.clone()
-            };
-            entries.push(MemoryEntry {
-                key: key.to_string(),
-                value,
-                tags: record.tags,
-                created_at: record.created_at,
-                updated_at: record.updated_at,
-            });
-            last_emitted_key = Some(raw_key.to_vec());
-        } else {
-            has_more = true;
-            if total > scan_cap {
-                break;
-            }
-        }
-    }
-    let next_cursor = if has_more {
-        last_emitted_key.as_deref().map(Cursor::encode_fjall)
-    } else {
-        None
-    };
+    let result = super::memory_ops::list_core(
+        idx,
+        &state.scope,
+        &super::memory_ops::ListQuery {
+            vis_byte,
+            owner,
+            key_prefix: &key_prefix_filter,
+            tag: params.tag.as_deref(),
+            limit,
+            cursor: cursor_bytes.as_deref(),
+        },
+    )?;
     json_result(&MemoryListResponse {
-        total,
-        truncated: total > limit,
-        entries,
-        next_cursor,
+        total: result.total as usize,
+        truncated: result.truncated,
+        entries: result.entries.into_iter().map(wire_to_entry).collect(),
+        next_cursor: result.next_cursor.as_deref().map(Cursor::encode_fjall),
     })
 }
 
@@ -405,13 +403,7 @@ pub(super) async fn run_memory_delete(
     params: MemoryDeleteParams,
 ) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
-    let store = state.store.read().await;
-    let idx = store
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    let deleted_fjall = delete_memory_record(idx, &state.scope, vis_byte, owner, &params.key)?;
-    drop(store);
+    let deleted_fjall = memory_delete_fjall(state, vis_byte, owner, &params.key).await?;
     if let Some(lance) = state.lance.get() {
         let lance = Arc::clone(lance);
         let scope = state.scope.clone();
@@ -437,6 +429,45 @@ pub(super) async fn run_memory_delete(
         }
     }
     json_result(&MemoryDeleteResponse { deleted: deleted_fjall })
+}
+
+/// Run the fjall half of `memory_delete`, returning whether a record existed.
+///
+/// `daemon_writer` forwards a [`MemoryOp::Delete`]; every other build calls
+/// [`delete_core`](super::memory_ops::delete_core) against the local index.
+#[cfg(feature = "memory")]
+async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
+
+        let op = MemoryOp::Delete {
+            vis_byte,
+            owner: owner.to_string(),
+            key: key.to_string(),
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            MemoryOutcome::Deleted { deleted } => Ok(deleted),
+            other => Err(McpError::internal_error(
+                format!("memory_delete: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store = state.store.read().await;
+    let idx = store
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    Ok(super::memory_ops::delete_core(idx, &state.scope, vis_byte, owner, key)?)
 }
 
 #[cfg(feature = "documents")]

@@ -23,6 +23,8 @@ pub mod frontend_named_pipe;
 pub mod frontend_uds;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod keys;
+#[cfg(all(feature = "comms", feature = "memory"))]
+pub mod memory_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod model;
 #[cfg(all(feature = "comms", any(unix, windows)))]

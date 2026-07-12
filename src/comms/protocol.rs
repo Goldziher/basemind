@@ -213,6 +213,18 @@ pub enum CommsRequest {
         #[serde(default)]
         full: bool,
     },
+    /// Forward a CORE memory operation to the daemon (the sole fjall writer). The namespace
+    /// (`vis_byte` / `owner`) and `scope` are resolved serve-side; the daemon runs the op against
+    /// the workspace's read-write `memory_by_key` index. The vector half (LanceDB) stays on serve.
+    #[cfg(feature = "memory")]
+    Memory {
+        /// Canonical workspace root (worktree root).
+        root: std::path::PathBuf,
+        /// Memory scope resolved serve-side (git scope key or `path:<root>`).
+        scope: String,
+        /// The operation to run.
+        op: crate::comms::memory_proto::MemoryOp,
+    },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
     /// List every registered workspace in the machine registry (git + plain). Read-only.
@@ -332,6 +344,9 @@ pub enum CommsResponse {
         /// Wall-clock scan time in milliseconds.
         elapsed_ms: u64,
     },
+    /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
+    #[cfg(feature = "memory")]
+    Memory(crate::comms::memory_proto::MemoryOutcome),
     /// Reply to [`CommsRequest::AccessedPaths`]: the daemon's currently-hot workspaces.
     Accessed {
         /// One row per hot workspace, most-recently-used first.

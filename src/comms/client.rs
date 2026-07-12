@@ -531,6 +531,23 @@ impl CommsClient {
         }
     }
 
+    /// Forward a CORE memory operation to the daemon (the sole fjall writer). A `daemon_writer`
+    /// serve resolves the namespace + scope and ships the op here; the vector (LanceDB) half stays
+    /// serve-side. Idempotent for get/list/delete; `put` is a preserving RMW, so a replayed retry is
+    /// safe.
+    #[cfg(feature = "memory")]
+    pub async fn memory_op(
+        &mut self,
+        root: PathBuf,
+        scope: String,
+        op: crate::comms::memory_proto::MemoryOp,
+    ) -> Result<crate::comms::memory_proto::MemoryOutcome, CommsClientError> {
+        match self.request(CommsRequest::Memory { root, scope, op }).await? {
+            CommsResponse::Memory(outcome) => Ok(outcome),
+            other => Err(self.shape_err(other, "memory_op")),
+        }
+    }
+
     /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
     pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
         match self.request(CommsRequest::AccessedPaths).await? {

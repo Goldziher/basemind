@@ -140,6 +140,23 @@ impl WorkspacePool {
         Ok(report.stats)
     }
 
+    /// Run `f` against a workspace's open read-write [`Store`], opening it into the pool if cold.
+    ///
+    /// The per-workspace store `Mutex` is held for the whole closure, so same-workspace callers
+    /// serialize here (one writer) while distinct workspaces proceed in parallel. This is what makes
+    /// a forwarded `memory_put` read-modify-write atomic without any per-key lock daemon-side.
+    #[cfg(feature = "memory")]
+    pub(crate) fn with_workspace_mut<R>(
+        &self,
+        root: &Path,
+        f: impl FnOnce(&mut Store) -> R,
+    ) -> Result<R, WorkspacePoolError> {
+        let entry = self.get_or_open(root)?;
+        entry.touch();
+        let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(f(&mut store))
+    }
+
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
     /// cap) if cold. The returned `Arc` lets the caller run the scan after the map lock is dropped.
     fn get_or_open(&self, root: &Path) -> Result<std::sync::Arc<WorkspaceEntry>, WorkspacePoolError> {

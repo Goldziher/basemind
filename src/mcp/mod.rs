@@ -48,6 +48,8 @@ mod lean;
 mod lenient;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
+#[cfg(feature = "memory")]
+pub(crate) mod memory_ops;
 mod notifications;
 mod prompts;
 mod savings;

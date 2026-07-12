@@ -319,6 +319,8 @@ impl Broker {
             CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
+            #[cfg(feature = "memory")]
+            CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),
             CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
             CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
             CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),
@@ -370,6 +372,47 @@ impl Broker {
             },
             Err(join) => CommsResponse::Error {
                 code: "rescan_panicked".to_string(),
+                message: join.to_string(),
+            },
+        }
+    }
+
+    /// Run a forwarded CORE memory operation against the workspace's read-write index. The daemon is
+    /// the sole fjall writer, and the pool's per-workspace store lock serializes same-workspace ops,
+    /// making the forwarded `memory_put` read-modify-write atomic (no per-key lock needed here). The
+    /// fjall work is blocking, so it runs on a blocking thread. Any error becomes a
+    /// `CommsResponse::Error` (never a torn link).
+    #[cfg(feature = "memory")]
+    async fn on_memory(
+        &self,
+        root: std::path::PathBuf,
+        scope: String,
+        op: super::memory_proto::MemoryOp,
+    ) -> CommsResponse {
+        self.mark_active().await;
+        let pool = Arc::clone(&self.workspaces);
+        let outcome = tokio::task::spawn_blocking(move || {
+            pool.with_workspace_mut(&root, |store| {
+                let idx = store
+                    .index_db
+                    .as_ref()
+                    .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
+                crate::mcp::memory_ops::run_memory_op(idx, &scope, &op)
+            })
+        })
+        .await;
+        match outcome {
+            Ok(Ok(Ok(outcome))) => CommsResponse::Memory(outcome),
+            Ok(Ok(Err(error))) => CommsResponse::Error {
+                code: "memory_op_failed".to_string(),
+                message: error.to_string(),
+            },
+            Ok(Err(error)) => CommsResponse::Error {
+                code: "memory_workspace_failed".to_string(),
+                message: error.to_string(),
+            },
+            Err(join) => CommsResponse::Error {
+                code: "memory_panicked".to_string(),
                 message: join.to_string(),
             },
         }
