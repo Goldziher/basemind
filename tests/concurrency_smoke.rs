@@ -525,3 +525,80 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
     let _ = serve1.cancel().await;
     let _ = serve2.cancel().await;
 }
+
+/// Extract symbol names from a `search_symbols` response body.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn symbol_names(body: &Value) -> Vec<String> {
+    body.get("results")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|r| r.get("name").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Seam B serve-flip, end to end: a comms-build `serve` opens read-only and forwards writes to the
+/// machine daemon (the sole fjall writer). From an EMPTY index, a forwarded `rescan` makes the
+/// daemon scan and the serve rebuilds its map from what the daemon wrote, so `search_symbols`
+/// returns fresh symbols. A second serve on the same repo answers queries AND rescans too — N
+/// sessions read + write with no single-holder downgrade (the whole point of the daemon model).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
+    let dir = build_repo();
+    let root = dir.path();
+    // No run_scan: the index starts empty; the daemon must build it via the forwarded scan.
+
+    let serve_a = spawn_server(root).await;
+    let peer_a = serve_a.peer().clone();
+
+    let rescan = peer_a
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan A forwarded to daemon");
+    let scanned = decode_text(&rescan)
+        .get("scanned")
+        .and_then(Value::as_u64)
+        .expect("rescan response missing 'scanned'");
+    assert!(
+        scanned >= 4,
+        "daemon scanned the fixture's 4 source files, got {scanned}"
+    );
+
+    let search_a = peer_a
+        .call_tool(call_params("search_symbols", json!({ "needle": "alpha", "limit": 10 })))
+        .await
+        .expect("search A");
+    let names_a = symbol_names(&decode_text(&search_a));
+    assert!(
+        names_a.iter().any(|n| n == "alpha"),
+        "serve A sees 'alpha' after the daemon-forwarded scan: {names_a:?}"
+    );
+
+    // Second serve on the SAME repo: reads the shared index AND forwards its own rescan.
+    let serve_b = spawn_server(root).await;
+    let peer_b = serve_b.peer().clone();
+    let search_b = peer_b
+        .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 10 })))
+        .await
+        .expect("search B");
+    let names_b = symbol_names(&decode_text(&search_b));
+    assert!(
+        names_b.iter().any(|n| n == "Beta"),
+        "serve B reads 'Beta' from the shared index: {names_b:?}"
+    );
+    let rescan_b = peer_b
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan B also forwards + succeeds");
+    let scanned_b = decode_text(&rescan_b)
+        .get("scanned")
+        .and_then(Value::as_u64)
+        .expect("rescan B response missing 'scanned'");
+    assert!(scanned_b >= 4, "serve B rescan re-scans the fixture, got {scanned_b}");
+
+    let _ = serve_a.cancel().await;
+    let _ = serve_b.cancel().await;
+}

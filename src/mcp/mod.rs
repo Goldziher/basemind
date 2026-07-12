@@ -12,6 +12,8 @@ mod background;
 mod budget;
 mod completions;
 pub(crate) mod cursor;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_forward;
 mod helpers;
 mod helpers_admin;
 mod helpers_archmap;
@@ -282,6 +284,17 @@ pub(crate) struct ServerState {
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
     /// without the lock.
     pub(crate) read_only: bool,
+    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
+    /// instead of writing locally. The store is opened read-only, but — unlike a plain
+    /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
+    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
+    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
+    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
+    ///
+    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
+    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) daemon_writer: bool,
 }
 
 /// Upper bound a cache-reading tool waits for the deferred boot preload to finish before serving from
@@ -504,6 +517,11 @@ pub struct ServerOptions {
     /// scanning. The passive view watcher still runs, so the in-RAM map tracks
     /// the lock-holding writer's `index.msgpack` updates.
     pub read_only: bool,
+    /// When true, this serve forwards every write (auto-scan, watcher rescan, `rescan` tool) to
+    /// the machine daemon (the sole fjall writer) rather than writing locally, and rebuilds its
+    /// in-RAM map from the daemon-written `index.msgpack`. Set only by the real `serve` binary on
+    /// a `comms` build; always false for the in-process one-shot and non-comms builds.
+    pub daemon_writer: bool,
 }
 
 impl Default for ServerOptions {
@@ -512,6 +530,7 @@ impl Default for ServerOptions {
             background: true,
             watch: true,
             read_only: false,
+            daemon_writer: false,
         }
     }
 }
@@ -550,6 +569,7 @@ impl BasemindServer {
                 background: false,
                 watch: false,
                 read_only: false,
+                daemon_writer: false,
             },
         )
     }
@@ -589,8 +609,9 @@ impl BasemindServer {
             .as_ref()
             .map(|db| db.symbols_index_is_empty())
             .unwrap_or(false);
-        let needs_initial_scan =
-            !options.read_only && view_is_working && (store.index.files.is_empty() || fjall_index_empty);
+        let needs_initial_scan = (options.daemon_writer || !options.read_only)
+            && view_is_working
+            && (store.index.files.is_empty() || fjall_index_empty);
         let defer_warm = options.background && !needs_initial_scan;
         let cache = if defer_warm {
             Arc::new(MapCache::empty())
@@ -649,6 +670,8 @@ impl BasemindServer {
             cache_ready: tokio::sync::Notify::new(),
             rescan_active: std::sync::atomic::AtomicBool::new(false),
             read_only: options.read_only,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            daemon_writer: options.daemon_writer,
         });
         if options.background {
             let view_is_working = {
@@ -657,7 +680,7 @@ impl BasemindServer {
                     Err(_) => false,
                 }
             };
-            if options.watch && !options.read_only && view_is_working {
+            if options.watch && (options.daemon_writer || !options.read_only) && view_is_working {
                 background::spawn_serve_watcher(Arc::clone(&state));
             } else {
                 background::spawn_view_watcher(Arc::clone(&state));

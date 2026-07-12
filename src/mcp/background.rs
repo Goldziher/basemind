@@ -45,6 +45,31 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
 ///    pool). GC runs after it settles so the sweep reaps against the final blob set.
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        // A daemon_writer serve holds no write lock: forward the initial full scan to the daemon
+        // (the sole writer) and rebuild the read-only map from the index it writes. No local embed
+        // pass — the daemon owns index writes; vector fill is a follow-up.
+        tokio::spawn(async move {
+            use std::sync::atomic::Ordering;
+            state.initial_scan_active.store(true, Ordering::Relaxed);
+            let started = std::time::Instant::now();
+            match super::daemon_forward::forward_rescan_and_refresh(&state, None, false).await {
+                Ok(report) => tracing::info!(
+                    scanned = report.scanned,
+                    updated = report.updated,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "initial scan complete (forwarded to daemon)"
+                ),
+                Err(error) => tracing::warn!(%error, "initial forwarded scan failed"),
+            }
+            state
+                .initial_scan_ms
+                .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
+            state.initial_scan_active.store(false, Ordering::Relaxed);
+        });
+        return;
+    }
     tokio::spawn(async move {
         use std::sync::atomic::Ordering;
         state.initial_scan_active.store(true, Ordering::Relaxed);
@@ -125,6 +150,36 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
     });
 }
 
+/// Run one debounced batch of changed paths through the writer and report `(scanned, updated,
+/// removed)`. A `daemon_writer` serve forwards the batch to the daemon (the sole writer) and
+/// rebuilds its read-only map; every other serve scans locally under its own write lock. Bridges
+/// the watcher's blocking std thread to the async writer via the captured runtime `Handle`.
+fn refresh_batch(
+    handle: &tokio::runtime::Handle,
+    state: &Arc<ServerState>,
+    paths: Vec<std::path::PathBuf>,
+) -> Result<(usize, usize, usize), String> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        let report = handle
+            .block_on(super::daemon_forward::forward_rescan_and_refresh(
+                state,
+                Some(paths),
+                false,
+            ))
+            .map_err(|error| error.to_string())?;
+        return Ok((report.scanned, report.updated, report.removed));
+    }
+    let report = handle
+        .block_on(helpers::scan_and_refresh(
+            Arc::clone(state),
+            Some(paths),
+            crate::scanner::EmbedMode::Inline,
+        ))
+        .map_err(|error| error.to_string())?;
+    Ok((report.stats.scanned, report.stats.updated, report.stats.removed))
+}
+
 /// Active filesystem watcher embedded in `serve` for the working view.
 ///
 /// Unlike [`spawn_view_watcher`] (which is passive — it only reacts to an
@@ -163,19 +218,12 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
                 use std::sync::atomic::Ordering;
                 let refresh_state = Arc::clone(&state);
                 refresh_state.rescan_active.store(true, Ordering::Relaxed);
-                let outcome = handle.block_on(helpers::scan_and_refresh(
-                    Arc::clone(&refresh_state),
-                    Some(paths),
-                    crate::scanner::EmbedMode::Inline,
-                ));
+                let outcome = refresh_batch(&handle, &refresh_state, paths);
                 refresh_state.rescan_active.store(false, Ordering::Relaxed);
                 match outcome {
-                    Ok(report) => tracing::debug!(
-                        scanned = report.stats.scanned,
-                        updated = report.stats.updated,
-                        removed = report.stats.removed,
-                        "serve watcher: incremental rescan complete"
-                    ),
+                    Ok((scanned, updated, removed)) => {
+                        tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
+                    }
                     Err(error) => tracing::warn!(
                         %error,
                         "serve watcher: incremental rescan failed (watcher continues)"
@@ -188,6 +236,17 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
             tracing::info!("serve watcher: exiting");
         })
         .ok();
+}
+
+/// Reopen the working store read-only for a MapCache rebuild. A `daemon_writer` serve opens
+/// blobs-only (never the fjall index) so it can't steal the exclusive index lock from its own
+/// daemon (the sole writer); every other serve opens the index normally.
+fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Store, crate::store::StoreError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        return crate::store::Store::open_read_only_no_index(state.root.as_path(), view);
+    }
+    crate::store::Store::open_read_only(state.root.as_path(), view)
 }
 
 pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
@@ -230,10 +289,8 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                 if !touches_index {
                     continue;
                 }
-                let new_store = match crate::store::Store::open_read_only(
-                    state.root.as_path(),
-                    &state.store.try_read().map(|g| g.view.clone()).unwrap_or_default(),
-                ) {
+                let view = state.store.try_read().map(|g| g.view.clone()).unwrap_or_default();
+                let new_store = match reopen_read_only(&state, &view) {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!(error = %e, "view watcher: store reopen failed");

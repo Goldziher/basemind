@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 
 use basemind::config::{self, Config, DocumentsCliOverrides};
 use basemind::render::{self, Verbosity};
-use basemind::store::{LockHolder, Store, StoreError};
+use basemind::store::{LockHolder, Store};
 use basemind::watcher::{BatchKind, WatchBatch};
 
 mod lang_cli;
@@ -746,11 +746,26 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
             );
         }
     }
-    let (store, read_only) = match Store::open_with_holder(root, view, LockHolder::Serve) {
-        Ok(store) => (store, false),
+    // On a comms build the machine daemon is the sole fjall writer: this serve opens the store
+    // READ-ONLY and forwards every write (auto-scan, watcher rescan, `rescan` tool) to the daemon
+    // over the socket (see `mcp::daemon_forward`), so N sessions on one repo all read + write
+    // without the single-holder downgrade. Without comms there is no daemon, so serve is the local
+    // writer exactly as before: take the write lock, or fall back read-only if another serve holds it.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    let (store, read_only, daemon_writer) = (
+        // Blobs-only open: the daemon is the sole fjall writer, and fjall's directory lock is
+        // exclusive even for a read-only open, so opening the index here would steal the lock the
+        // daemon needs. Reads come from the shared blobs / in-RAM map instead.
+        Store::open_read_only_no_index(root, view).context("open store read-only")?,
+        true,
+        true,
+    );
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let (store, read_only, daemon_writer) = match Store::open_with_holder(root, view, LockHolder::Serve) {
+        Ok(store) => (store, false, false),
         Err(error) if error.is_lock_contention() => {
             match &error {
-                StoreError::Locked { .. } => tracing::warn!(
+                basemind::store::StoreError::Locked { .. } => tracing::warn!(
                     %error,
                     "store write-lock held by another basemind process; starting read-only (reads from the shared index)"
                 ),
@@ -760,7 +775,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
                 ),
             }
             let store = Store::open_read_only(root, view).context("open store read-only")?;
-            (store, true)
+            (store, true, false)
         }
         Err(error) => return Err(anyhow::Error::new(error).context("open store")),
     };
@@ -783,6 +798,7 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         background: true,
         watch: !args.no_watch,
         read_only,
+        daemon_writer,
     };
     tracing::info!(
         pid = std::process::id(),

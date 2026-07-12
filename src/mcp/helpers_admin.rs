@@ -175,7 +175,10 @@ pub(super) async fn run_rescan(
         super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
     }
 
-    let report = scan_and_refresh(Arc::clone(&state), scoped_paths, crate::scanner::EmbedMode::Inline).await?;
+    // A `daemon_writer` serve owns no write lock: it forwards the scan to the machine daemon (the
+    // sole fjall writer) and rebuilds its read-only map from the daemon-written index. The daemon's
+    // reply carries the core counts; the per-file skip breakdown is not on that RPC, so it reads 0.
+    let stats = fetch_rescan_stats(&state, scoped_paths).await?;
 
     #[allow(deprecated)]
     super::notifications::emit_log(
@@ -185,34 +188,79 @@ pub(super) async fn run_rescan(
         "basemind.rescan",
         serde_json::json!({
             "event": "rescan_complete",
-            "scanned": report.stats.scanned,
-            "updated": report.stats.updated,
-            "removed": report.stats.removed,
-            "extract_failed": report.stats.extract_failed,
+            "scanned": stats.scanned,
+            "updated": stats.updated,
+            "removed": stats.removed,
+            "extract_failed": stats.extract_failed,
             "elapsed_ms": started.elapsed().as_millis() as u64,
         }),
     )
     .await;
     if let Some(token) = progress_token {
-        let scanned = report.stats.scanned as f64;
+        let scanned = stats.scanned as f64;
         super::notifications::emit_progress(
             peer,
             token,
             scanned,
             Some(scanned),
-            format!("rescan: done, {} files", report.stats.scanned),
+            format!("rescan: done, {} files", stats.scanned),
         )
         .await;
     }
 
     json_result(&super::types::RescanResponse {
+        scanned: stats.scanned,
+        updated: stats.updated,
+        removed: stats.removed,
+        skipped_unchanged: stats.skipped_unchanged,
+        skipped_no_lang: stats.skipped_no_lang,
+        extract_failed: stats.extract_failed,
+        elapsed_ms: started.elapsed().as_millis(),
+        root,
+    })
+}
+
+/// The `rescan` counts a [`RescanResponse`](super::types::RescanResponse) reports, sourced either
+/// from a local in-process scan or a scan forwarded to the daemon.
+struct RescanStats {
+    scanned: usize,
+    updated: usize,
+    removed: usize,
+    skipped_unchanged: usize,
+    skipped_no_lang: usize,
+    extract_failed: usize,
+}
+
+/// Run the rescan and return its counts. A `daemon_writer` serve forwards the scan to the daemon
+/// and rebuilds its read-only map (the daemon RPC carries no per-file skip breakdown, so those read
+/// 0); every other serve scans locally under its own write lock via [`scan_and_refresh`].
+///
+/// `scoped_paths` already encodes the caller's `full` flag — it is `None` for a full working-tree
+/// scan (which the daemon likewise treats as "scan everything") and `Some` only for an incremental
+/// rescan — so no separate `full` argument is threaded here.
+async fn fetch_rescan_stats(
+    state: &Arc<ServerState>,
+    scoped_paths: Option<Vec<std::path::PathBuf>>,
+) -> Result<RescanStats, McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        let report = super::daemon_forward::forward_rescan_and_refresh(state, scoped_paths, false).await?;
+        return Ok(RescanStats {
+            scanned: report.scanned,
+            updated: report.updated,
+            removed: report.removed,
+            skipped_unchanged: 0,
+            skipped_no_lang: 0,
+            extract_failed: 0,
+        });
+    }
+    let report = scan_and_refresh(Arc::clone(state), scoped_paths, crate::scanner::EmbedMode::Inline).await?;
+    Ok(RescanStats {
         scanned: report.stats.scanned,
         updated: report.stats.updated,
         removed: report.stats.removed,
         skipped_unchanged: report.stats.skipped_unchanged,
         skipped_no_lang: report.stats.skipped_no_lang,
         extract_failed: report.stats.extract_failed,
-        elapsed_ms: started.elapsed().as_millis(),
-        root,
     })
 }

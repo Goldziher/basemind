@@ -102,6 +102,11 @@ pub fn global_blobs_dir() -> PathBuf {
 /// that call it. Workspace-keying + content-addressed blobs keep tests mutually isolated even
 /// though they share this one cache root, so all tests in a binary can safely share it — no
 /// per-test env churn, no races on `set_var`.
+///
+/// Also pins `$BASEMIND_COMMS_DIR` under the same tempdir. On a `comms` build the real `basemind
+/// serve` binary is a `daemon_writer` that forwards every write to the machine daemon (auto-spawned
+/// on first use); a test that spawns `serve` inherits this env, so its daemon binds an ISOLATED
+/// socket under the tempdir instead of touching the user's real machine daemon.
 #[cfg(any(feature = "test-support", test))]
 pub fn init_isolated_cache() {
     use std::sync::Once;
@@ -110,12 +115,14 @@ pub fn init_isolated_cache() {
         // Leak the TempDir so the directory lives for the entire process; the OS reclaims it on
         // exit. A dropped TempDir here would delete the cache out from under still-running tests.
         let dir = Box::leak(Box::new(tempfile::tempdir().expect("create isolated cache tempdir")));
+        let comms_dir = dir.path().join("comms");
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
         // `cache_root()` (every fixture constructor calls this first). Rust 2024 marks `set_var`
         // unsafe because concurrent get/set is UB; the single-write-before-any-read discipline
-        // here upholds that invariant.
+        // here upholds that invariant. `BASEMIND_COMMS_DIR` is inert on non-comms builds.
         unsafe {
             std::env::set_var(DATA_HOME_ENV, dir.path());
+            std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
         }
     });
 }
@@ -387,7 +394,26 @@ impl Store {
     }
 
     /// Open without taking the exclusive lock. Use for read-only consumers (CLI query, MCP).
+    ///
+    /// Opens the Fjall index for reads when the writer lock is free; falls back to blob-only reads
+    /// when the index is held or unreadable.
     pub fn open_read_only(root: &Path, view: &str) -> Result<Self, StoreError> {
+        Self::open_read_only_inner(root, view, true)
+    }
+
+    /// Open read-only WITHOUT ever touching the Fjall index (`index_db` is always `None`, so reads
+    /// come purely from the shared blobs / in-RAM `MapCache`).
+    ///
+    /// This is the `daemon_writer` serve path: Fjall's directory lock is exclusive even for a
+    /// read-only open, so a serve that opened the index would steal the lock its own machine daemon
+    /// (the sole writer) needs. Skipping the index entirely leaves the daemon free to hold it.
+    pub fn open_read_only_no_index(root: &Path, view: &str) -> Result<Self, StoreError> {
+        Self::open_read_only_inner(root, view, false)
+    }
+
+    /// Shared body for the read-only opens. `allow_index_db` gates whether the Fjall index is opened
+    /// (see [`Store::open_read_only`] vs [`Store::open_read_only_no_index`]).
+    fn open_read_only_inner(root: &Path, view: &str, allow_index_db: bool) -> Result<Self, StoreError> {
         let basemind_dir = workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
@@ -412,7 +438,7 @@ impl Store {
             }
             Err(e) => return Err(e),
         };
-        let index_db = if schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
+        let index_db = if allow_index_db && schema_ok && view_dir.exists() && !writer_lock_is_held(&basemind_dir) {
             match IndexDb::open(&view_dir) {
                 Ok(db) => Some(db),
                 Err(IndexError::Fjall(fjall::Error::Locked)) => None,
