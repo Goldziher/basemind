@@ -45,6 +45,12 @@ pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
 /// (`archive_idle`) applies this; the creator or a human can archive sooner.
 pub const THREAD_IDLE_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
+/// How long an ARCHIVED thread's storage is retained before the daemon permanently reclaims it
+/// (row + messages + members + cursors). The retention tail after [`THREAD_IDLE_TTL`]: a thread
+/// first drops out of active listings, then, once archived and untouched for this far-longer
+/// window, its storage is freed. Conservative so a thread stays recoverable well past archival.
+pub const THREAD_RETENTION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
 /// How long a hot workspace may sit unrequested before the daemon sheds it from RAM. Its on-disk
 /// cache survives; the next request re-opens it lazily. Well below [`IDLE_REAP_AFTER`] so cold
 /// workspaces free memory long before the whole daemon self-terminates.
@@ -166,6 +172,13 @@ impl Broker {
     /// store error is surfaced to the caller (the daemon logs it). This is the reaper hook.
     pub fn archive_idle_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
         self.store.archive_idle(ttl)
+    }
+
+    /// Permanently reclaim archived threads idle past `ttl` (row + messages + members + cursors).
+    /// Returns the count purged. The retention tail after [`archive_idle_threads`](Self::archive_idle_threads);
+    /// a store error is surfaced to the caller (the daemon logs it).
+    pub fn purge_archived_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
+        self.store.purge_archived(ttl)
     }
 
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
