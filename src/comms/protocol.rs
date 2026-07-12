@@ -22,7 +22,11 @@ pub const PROTO_VER: u32 = 2;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` is intentionally dropped: the `Governance` variant carries a `ProposalRecord` (and, via the
+// promote op, a `MemoryRecord`) whose git-derived `confidence` / `importance` are `f32`, which is not
+// `Eq`. `Eq` was never load-bearing here (no HashMap/HashSet keys, no `assert_eq!` on the wire); only
+// mpsc channels + serde use these enums, both of which need `PartialEq` at most.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum CommsRequest {
     /// First frame on a link: announce identity and negotiate protocol version. Carries the
@@ -225,6 +229,19 @@ pub enum CommsRequest {
         /// The operation to run.
         op: crate::comms::memory_proto::MemoryOp,
     },
+    /// Forward a PROPOSAL governance operation to the daemon (the sole fjall writer). The `scope` is
+    /// resolved serve-side; the daemon runs the fjall reads/writes against the workspace's read-write
+    /// `proposals` (and, for a promote, `memory_by_key`) index. The compute halves — git-log mining,
+    /// the audit verdict, and the LanceDB embed — stay on serve.
+    #[cfg(feature = "memory")]
+    Governance {
+        /// Canonical workspace root (worktree root).
+        root: std::path::PathBuf,
+        /// Memory scope resolved serve-side (git scope key or `path:<root>`).
+        scope: String,
+        /// The operation to run.
+        op: crate::comms::proposals_proto::GovernanceOp,
+    },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
     /// List every registered workspace in the machine registry (git + plain). Read-only.
@@ -266,7 +283,9 @@ pub enum CommsRequest {
 }
 
 /// A response from the broker to a [`CommsRequest`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` dropped for the same reason as [`CommsRequest`]: the `Governance` outcome carries an
+// `f32`-bearing `ProposalRecord`. `PartialEq` is retained (used by tests + serde round-trips).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum CommsResponse {
     /// Reply to [`CommsRequest::Hello`]: the daemon's protocol version + accept/reject.
@@ -347,6 +366,9 @@ pub enum CommsResponse {
     /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
     #[cfg(feature = "memory")]
     Memory(crate::comms::memory_proto::MemoryOutcome),
+    /// Reply to [`CommsRequest::Governance`]: the outcome of the forwarded proposal operation.
+    #[cfg(feature = "memory")]
+    Governance(crate::comms::proposals_proto::GovernanceOutcome),
     /// Reply to [`CommsRequest::AccessedPaths`]: the daemon's currently-hot workspaces.
     Accessed {
         /// One row per hot workspace, most-recently-used first.
@@ -425,7 +447,9 @@ pub enum CommsNotification {
 
 /// A frame sent from broker → client: either a direct response to a request or an
 /// out-of-band notification. Both ride the same link.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+// `Eq` dropped because it wraps [`CommsResponse`], which is no longer `Eq` (its `Governance` outcome
+// carries an `f32`-bearing `ProposalRecord`). `PartialEq` is retained for the round-trip tests.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommsOut {
     /// A reply to a specific request.

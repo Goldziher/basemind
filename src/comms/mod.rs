@@ -27,6 +27,8 @@ pub mod keys;
 pub mod memory_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod model;
+#[cfg(all(feature = "comms", feature = "memory"))]
+pub mod proposals_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]

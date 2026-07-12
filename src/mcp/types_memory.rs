@@ -154,10 +154,12 @@ pub(super) struct MemoryDeleteResponse {
 /// Verification verdict of a memory's code references against the live index, set by the
 /// W10 audit engine. `#[serde(default)]` on the record field means pre-W10 blobs (written
 /// before this existed) decode as `Unverified` — no schema bump required.
+// `pub` so it can nest inside `MemoryRecord` on the daemon wire (see `MemoryRecord`); crate-internal
+// in practice because `types_memory` is `pub(crate)`.
 #[cfg(feature = "memory")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub(super) enum VerifyState {
+pub enum VerifyState {
     /// Never audited — the default for legacy records and freshly-written memories.
     #[default]
     Unverified,
@@ -171,8 +173,8 @@ pub(super) enum VerifyState {
 /// `structural_hash` mismatch is what flags the memory `Stale` ("the body this note describes
 /// changed") — the code-grounded signal no other memory system has.
 #[cfg(feature = "memory")]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(super) struct SymbolRef {
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SymbolRef {
     pub path: crate::path::RelPath,
     pub name: String,
     #[serde(default)]
@@ -185,8 +187,8 @@ pub(super) struct SymbolRef {
 /// What a memory claims about the codebase — the surface the audit engine verifies. All fields
 /// default-empty so a legacy `MemoryRecord` decodes cleanly and simply has nothing to verify.
 #[cfg(feature = "memory")]
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(super) struct Provenance {
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Provenance {
     #[serde(default)]
     pub symbols: Vec<SymbolRef>,
     #[serde(default)]
@@ -195,9 +197,11 @@ pub(super) struct Provenance {
     pub commands: Vec<String>,
 }
 
+// `pub` so it can ride the daemon wire in `comms::proposals_proto::GovernanceOp::ProposalPromote`;
+// crate-internal in practice because `types_memory` is `pub(crate)`.
 #[cfg(feature = "memory")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct MemoryRecord {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryRecord {
     pub value: String,
     pub tags: Vec<String>,
     pub created_at: i64,

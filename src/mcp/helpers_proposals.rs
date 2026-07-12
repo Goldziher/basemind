@@ -45,7 +45,7 @@ use super::types_governance::{
 #[cfg(feature = "memory")]
 use super::types_memory::{MemoryRecord, Provenance, VerifyState};
 #[cfg(feature = "memory")]
-use crate::index::keys::{PROPOSAL_KIND_SKILL, PROPOSAL_KIND_TOMBSTONE};
+use crate::index::keys::PROPOSAL_KIND_SKILL;
 #[cfg(feature = "memory")]
 use crate::path::RelPath;
 
@@ -259,15 +259,12 @@ pub(super) async fn run_proposals_mine(
         }
     }
 
-    let store_guard = state.store.read().await;
-    let idx = store_guard
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-
+    // Build every mined candidate serve-side (pure compute — no fjall). The tombstone-check that
+    // filters already-rejected ids lives in `apply_mine_core`, so both the local and the
+    // daemon-forwarded apply paths see one consistent fjall view when they write.
     let now = crate::lance::now_micros();
     let mut seen_ids: AHashSet<String> = AHashSet::new();
-    let mut mined: usize = 0;
+    let mut candidates: Vec<(String, ProposalRecord)> = Vec::new();
 
     for &anchor in &anchor_candidates {
         let anchor_path = &files[anchor];
@@ -278,16 +275,6 @@ pub(super) async fn run_proposals_mine(
 
         let id = proposal_id(&cluster);
         if !seen_ids.insert(id.clone()) {
-            continue;
-        }
-
-        let tombstone_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &id);
-        let has_tombstone = idx
-            .proposals
-            .get(&tombstone_key)
-            .map_err(|e| McpError::internal_error(format!("proposals get: {e}"), None))?
-            .is_some();
-        if has_tombstone {
             continue;
         }
 
@@ -319,21 +306,55 @@ pub(super) async fn run_proposals_mine(
             importance,
             created_at: now,
         };
-
-        let raw_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &id);
-        let bytes = rmp_serde::to_vec_named(&record)
-            .map_err(|e| McpError::internal_error(format!("serialize proposal: {e}"), None))?;
-        idx.proposals
-            .insert(raw_key, bytes)
-            .map_err(|e| McpError::internal_error(format!("proposals insert: {e}"), None))?;
-        mined += 1;
+        candidates.push((id, record));
     }
+
+    let mined = apply_mined_candidates(state, candidates).await? as usize;
 
     json_result(&ProposalsMineResponse {
         mined,
         window_inspected: window,
         skipped_bulk,
     })
+}
+
+/// Apply mined candidates to the `proposals` keyspace, returning the number written.
+///
+/// `daemon_writer` forwards a [`GovernanceOp::ProposalsMineApply`] (the daemon filters tombstones +
+/// inserts as the sole fjall writer); every other build calls
+/// [`apply_mine_core`](super::proposals_ops::apply_mine_core) against the local index.
+#[cfg(feature = "memory")]
+async fn apply_mined_candidates(
+    state: &ServerState,
+    candidates: Vec<(String, ProposalRecord)>,
+) -> Result<u32, McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::ProposalsMineApply { candidates };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::Mined { count } => Ok(count),
+            other => Err(McpError::internal_error(
+                format!("proposals_mine: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store_guard = state.store.read().await;
+    let idx = store_guard
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
+    Ok(super::proposals_ops::apply_mine_core(idx, &state.scope, &candidates)?)
 }
 
 /// List pending proposals for the current scope, optionally filtered by kind.
@@ -343,10 +364,6 @@ pub(super) async fn run_proposals_list(
     state: &ServerState,
     params: ProposalsListParams,
 ) -> Result<CallToolResult, McpError> {
-    use std::ops::Bound;
-
-    use super::cursor::prefix_upper_bound;
-
     let limit = params.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT) as usize;
     let scan_cap = limit.saturating_mul(8).max(1_000);
 
@@ -356,63 +373,13 @@ pub(super) async fn run_proposals_list(
         None | Some(_) => vec![crate::index::keys::PROPOSAL_KIND_MEMORY, PROPOSAL_KIND_SKILL],
     };
 
-    let store_guard = state.store.read().await;
-    let idx = store_guard
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
+    let cursor_bytes: Option<Vec<u8>> = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
-    let mut proposals: Vec<ProposalEntry> = Vec::new();
-    let mut truncated = false;
-    let mut last_key_bytes: Option<Vec<u8>> = None;
-
-    let resume_key: Option<Vec<u8>> = if let Some(c) = &params.cursor {
-        Some(c.decode_fjall()?)
-    } else {
-        None
-    };
-
-    'outer: for kind_byte in kind_bytes {
-        let prefix = crate::index::keys::proposal_ns_prefix(&state.scope, kind_byte);
-        let upper = prefix_upper_bound(&prefix);
-
-        let lower_bound: Bound<Vec<u8>> = if let Some(ref key) = resume_key {
-            if key.starts_with(&prefix) {
-                Bound::Excluded(key.clone())
-            } else {
-                Bound::Included(prefix.clone())
-            }
-        } else {
-            Bound::Included(prefix.clone())
-        };
-
-        let upper_bound: Bound<Vec<u8>> = match upper {
-            Some(u) => Bound::Excluded(u),
-            None => Bound::Unbounded,
-        };
-
-        let iter = idx.proposals.range::<Vec<u8>, _>((lower_bound, upper_bound));
-
-        for (scanned, guard) in iter.enumerate() {
-            if scanned >= scan_cap {
-                truncated = true;
-                break 'outer;
-            }
-            if proposals.len() >= limit {
-                truncated = true;
-                break 'outer;
-            }
-            let (raw_key, raw_val) = guard
-                .into_inner()
-                .map_err(|e| McpError::internal_error(format!("proposals iter: {e}"), None))?;
-            let Some((_, _, id)) = crate::index::keys::parse_proposal_by_id(&raw_key) else {
-                continue;
-            };
-            let Ok(record) = rmp_serde::from_slice::<ProposalRecord>(&raw_val) else {
-                continue;
-            };
-            last_key_bytes = Some(raw_key.to_vec());
-            proposals.push(ProposalEntry {
+    // Shared post-scan shaping: map `(id, record)` items onto the MCP response.
+    let to_response = |items: Vec<(String, ProposalRecord)>, truncated: bool, next_cursor: Option<Vec<u8>>| {
+        let proposals: Vec<ProposalEntry> = items
+            .into_iter()
+            .map(|(id, record)| ProposalEntry {
                 id,
                 kind: record.kind,
                 files: record.files,
@@ -422,23 +389,54 @@ pub(super) async fn run_proposals_list(
                 description: record.description,
                 importance: record.importance,
                 created_at: record.created_at,
-            });
+            })
+            .collect();
+        ProposalsListResponse {
+            total: proposals.len(),
+            truncated,
+            proposals,
+            next_cursor: next_cursor.as_deref().map(super::cursor::Cursor::encode_fjall),
         }
-    }
-
-    let total = proposals.len();
-    let next_cursor = if truncated {
-        last_key_bytes.map(|k| super::cursor::Cursor::encode_fjall(&k))
-    } else {
-        None
     };
 
-    json_result(&ProposalsListResponse {
-        total,
-        truncated,
-        proposals,
-        next_cursor,
-    })
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::ProposalsList {
+            kind_bytes,
+            limit: limit as u32,
+            scan_cap: scan_cap as u32,
+            cursor: cursor_bytes,
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::ProposalsListed {
+                items,
+                truncated,
+                next_cursor,
+            } => json_result(&to_response(items, truncated, next_cursor)),
+            other => Err(McpError::internal_error(
+                format!("proposals_list: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store_guard = state.store.read().await;
+    let idx = store_guard
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
+    let result =
+        super::proposals_ops::list_core(idx, &state.scope, &kind_bytes, limit, scan_cap, cursor_bytes.as_deref())?;
+    json_result(&to_response(result.items, result.truncated, result.next_cursor))
 }
 
 /// Accept a proposal: promote it to a `MemoryRecord` (Fjall + LanceDB), then delete the
@@ -453,22 +451,10 @@ pub(super) async fn run_proposal_accept(
     state: &ServerState,
     params: ProposalAcceptParams,
 ) -> Result<CallToolResult, McpError> {
-    let raw_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &params.id);
-
-    let proposal: ProposalRecord = {
-        let store_guard = state.store.read().await;
-        let idx = store_guard
-            .index_db
-            .as_ref()
-            .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-        let raw = idx
-            .proposals
-            .get(&raw_key)
-            .map_err(|e| McpError::internal_error(format!("proposals get: {e}"), None))?
-            .ok_or_else(|| McpError::invalid_params(format!("proposal not found: {}", params.id), None))?;
-        rmp_serde::from_slice::<ProposalRecord>(&raw)
-            .map_err(|e| McpError::internal_error(format!("decode proposal: {e}"), None))?
-    };
+    // Read the proposal (fjall): forwarded under `daemon_writer`, local otherwise.
+    let proposal = read_proposal(state, &params.id)
+        .await?
+        .ok_or_else(|| McpError::invalid_params(format!("proposal not found: {}", params.id), None))?;
 
     let memory_key = params.key.clone().unwrap_or_else(|| {
         let short = &params.id[..params.id.len().min(SHORT_ID_LEN)];
@@ -494,32 +480,20 @@ pub(super) async fn run_proposal_accept(
         importance: proposal.importance,
     };
 
-    let cache = state.cache.load_full();
-    let root = state.root.clone();
-    let store_guard = state.store.read().await;
-    let verdict = super::helpers_governance::audit_one_record(&cache, &store_guard, &root, &record);
-    record.verified = verdict.state;
-    record.last_verified = now;
+    // Compute the audit verdict LOCALLY — serve keeps its blobs-backed `MapCache` + read-only store,
+    // so `audit_one_record` works even under `daemon_writer` (the store's read-only, but readable).
+    {
+        let cache = state.cache.load_full();
+        let root = state.root.clone();
+        let store_guard = state.store.read().await;
+        let verdict = super::helpers_governance::audit_one_record(&cache, &store_guard, &root, &record);
+        record.verified = verdict.state;
+        record.last_verified = now;
+    }
 
-    let idx = store_guard
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-
-    super::helpers_governance::write_live(
-        idx,
-        &state.scope,
-        crate::index::keys::MEMORY_VIS_GROUP,
-        "",
-        &memory_key,
-        &record,
-    )?;
-
-    idx.proposals
-        .remove(&raw_key)
-        .map_err(|e| McpError::internal_error(format!("proposals remove: {e}"), None))?;
-
-    drop(store_guard);
+    // Promote (fjall): write the audited memory record + remove the proposal. Forwarded under
+    // `daemon_writer`, local otherwise.
+    promote_proposal(state, &params.id, &memory_key, &record).await?;
 
     {
         let embedding = super::memory::embed_query(state, &proposal.description).await?;
@@ -548,6 +522,88 @@ pub(super) async fn run_proposal_accept(
     })
 }
 
+/// Read a skill proposal by id (fjall). `daemon_writer` forwards a [`GovernanceOp::ProposalGet`];
+/// every other build calls [`get_core`](super::proposals_ops::get_core) against the local index.
+#[cfg(feature = "memory")]
+async fn read_proposal(state: &ServerState, id: &str) -> Result<Option<ProposalRecord>, McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::ProposalGet { id: id.to_string() };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::Proposal(record) => Ok(record),
+            other => Err(McpError::internal_error(
+                format!("proposal_accept: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store_guard = state.store.read().await;
+    let idx = store_guard
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
+    Ok(super::proposals_ops::get_core(idx, &state.scope, id)?)
+}
+
+/// Promote an accepted proposal (fjall): write the audited memory `record` into the live keyspace and
+/// remove the proposal. `daemon_writer` forwards a [`GovernanceOp::ProposalPromote`]; every other
+/// build calls [`promote_core`](super::proposals_ops::promote_core) against the local index.
+#[cfg(feature = "memory")]
+async fn promote_proposal(
+    state: &ServerState,
+    proposal_id: &str,
+    memory_key: &str,
+    record: &MemoryRecord,
+) -> Result<(), McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::ProposalPromote {
+            proposal_id: proposal_id.to_string(),
+            memory_key: memory_key.to_string(),
+            record: record.clone(),
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::Promoted => Ok(()),
+            other => Err(McpError::internal_error(
+                format!("proposal_accept: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let store_guard = state.store.read().await;
+    let idx = store_guard
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    Ok(super::proposals_ops::promote_core(
+        idx,
+        &state.scope,
+        memory_key,
+        record,
+        proposal_id,
+    )?)
+}
+
 /// Reject a proposal: delete it from the `proposals` keyspace and write a tombstone so
 /// re-mining will not resurface the same candidate.
 #[cfg(feature = "memory")]
@@ -559,22 +615,33 @@ pub(super) async fn run_proposal_reject(
         tracing::info!(id = %params.id, reason = %reason, "proposal rejected");
     }
 
-    let proposal_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_SKILL, &params.id);
-    let tombstone_key = crate::index::keys::proposal_by_id(&state.scope, PROPOSAL_KIND_TOMBSTONE, &params.id);
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::ProposalReject { id: params.id.clone() };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::Rejected => json_result(&ProposalRejectResponse { rejected: true }),
+            other => Err(McpError::internal_error(
+                format!("proposal_reject: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
 
     let store_guard = state.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-
-    idx.proposals
-        .remove(&proposal_key)
-        .map_err(|e| McpError::internal_error(format!("proposals remove: {e}"), None))?;
-
-    idx.proposals
-        .insert(tombstone_key, b"")
-        .map_err(|e| McpError::internal_error(format!("tombstone insert: {e}"), None))?;
+    super::proposals_ops::reject_core(idx, &state.scope, &params.id)?;
 
     json_result(&ProposalRejectResponse { rejected: true })
 }

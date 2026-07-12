@@ -548,6 +548,23 @@ impl CommsClient {
         }
     }
 
+    /// Forward a PROPOSAL governance operation to the daemon (the sole fjall writer). A
+    /// `daemon_writer` serve does the git-log mining / audit verdict / LanceDB embed on its side and
+    /// ships only the fjall reads/writes here. Idempotent for list/get; reject + promote are
+    /// terminal writes and mine-apply is tombstone-guarded, so a replayed retry is safe.
+    #[cfg(feature = "memory")]
+    pub async fn governance_op(
+        &mut self,
+        root: PathBuf,
+        scope: String,
+        op: crate::comms::proposals_proto::GovernanceOp,
+    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, CommsClientError> {
+        match self.request(CommsRequest::Governance { root, scope, op }).await? {
+            CommsResponse::Governance(outcome) => Ok(outcome),
+            other => Err(self.shape_err(other, "governance_op")),
+        }
+    }
+
     /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
     pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
         match self.request(CommsRequest::AccessedPaths).await? {

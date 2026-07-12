@@ -321,6 +321,8 @@ impl Broker {
             CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
             #[cfg(feature = "memory")]
             CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),
+            #[cfg(feature = "memory")]
+            CommsRequest::Governance { root, scope, op } => Ok(self.on_governance(root, scope, op).await),
             CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
             CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
             CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),
@@ -413,6 +415,47 @@ impl Broker {
             },
             Err(join) => CommsResponse::Error {
                 code: "memory_panicked".to_string(),
+                message: join.to_string(),
+            },
+        }
+    }
+
+    /// Run a forwarded PROPOSAL governance operation against the workspace's read-write index. Same
+    /// contract as [`on_memory`](Self::on_memory): the daemon is the sole fjall writer, the pool's
+    /// per-workspace store lock serializes same-workspace ops (so the mine-apply tombstone-check +
+    /// insert see one consistent view), the fjall work runs on a blocking thread, and any error
+    /// becomes a `CommsResponse::Error` (never a torn link).
+    #[cfg(feature = "memory")]
+    async fn on_governance(
+        &self,
+        root: std::path::PathBuf,
+        scope: String,
+        op: super::proposals_proto::GovernanceOp,
+    ) -> CommsResponse {
+        self.mark_active().await;
+        let pool = Arc::clone(&self.workspaces);
+        let outcome = tokio::task::spawn_blocking(move || {
+            pool.with_workspace_mut(&root, |store| {
+                let idx = store
+                    .index_db
+                    .as_ref()
+                    .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
+                crate::mcp::proposals_ops::run_governance_op(idx, &scope, &op)
+            })
+        })
+        .await;
+        match outcome {
+            Ok(Ok(Ok(outcome))) => CommsResponse::Governance(outcome),
+            Ok(Ok(Err(error))) => CommsResponse::Error {
+                code: "governance_op_failed".to_string(),
+                message: error.to_string(),
+            },
+            Ok(Err(error)) => CommsResponse::Error {
+                code: "governance_workspace_failed".to_string(),
+                message: error.to_string(),
+            },
+            Err(join) => CommsResponse::Error {
+                code: "governance_panicked".to_string(),
                 message: join.to_string(),
             },
         }

@@ -52,6 +52,8 @@ mod memory;
 pub(crate) mod memory_ops;
 mod notifications;
 mod prompts;
+#[cfg(feature = "memory")]
+pub(crate) mod proposals_ops;
 mod savings;
 mod telemetry;
 mod tokens;
@@ -81,10 +83,10 @@ mod types_comms;
 mod types_compress;
 mod types_documents;
 mod types_git;
-mod types_governance;
+pub(crate) mod types_governance;
 mod types_graph;
 mod types_impls;
-mod types_memory;
+pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod types_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
