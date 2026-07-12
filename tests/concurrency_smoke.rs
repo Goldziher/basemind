@@ -678,3 +678,61 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
 
     let _ = serve.cancel().await;
 }
+
+/// The same cross-file `find_callers` resolution, but for PYTHON (the tsg stack-graph engine) —
+/// `lib.py` defines `target`, `main.py` imports and calls it. Proves the daemon read-forward path
+/// restores precise cross-file resolution for the stack-graph languages too (the grantflow target),
+/// not just oxc JS/TS. Gated on `code-intel-stack`, so it only runs where the Python engine is in.
+#[cfg(all(feature = "comms", feature = "code-intel-stack", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daemon() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("lib.py"), b"def target():\n    return 1\n").unwrap();
+    std::fs::write(root.join("main.py"), b"from lib import target\ntarget()\ntarget()\n").unwrap();
+    git(root, &["add", "lib.py", "main.py"]);
+    git(root, &["commit", "-qm", "init"]);
+
+    let serve = spawn_server(root).await;
+    let peer = serve.peer().clone();
+
+    let rescan = peer
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan forwarded to daemon");
+    let scanned = decode_text(&rescan).get("scanned").and_then(Value::as_u64).unwrap_or(0);
+    assert!(scanned >= 2, "daemon scanned both Python files, got {scanned}");
+
+    let body = decode_text(
+        &peer
+            .call_tool(call_params(
+                "find_callers",
+                json!({ "path": "lib.py", "name": "target", "limit": 50 }),
+            ))
+            .await
+            .expect("find_callers on the cross-file Python definition"),
+    );
+    assert_eq!(
+        body.get("resolved").and_then(Value::as_bool),
+        Some(true),
+        "Python find_callers must resolve cross-file through the daemon: {body}"
+    );
+    let hit_paths: Vec<String> = body
+        .get("hits")
+        .and_then(Value::as_array)
+        .map(|hits| {
+            hits.iter()
+                .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        hit_paths.iter().any(|p| p == "main.py"),
+        "the resolved caller in main.py must be reported, got hit paths: {hit_paths:?}"
+    );
+
+    let _ = serve.cancel().await;
+}
