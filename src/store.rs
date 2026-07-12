@@ -618,12 +618,14 @@ impl Store {
         self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
     }
 
-    /// Write a file's code-chunk sidecar. Content-addressed skip on matching schema (identical
-    /// source bytes already chunked + embedded) — this is what lets an unchanged file skip
-    /// re-embedding. Otherwise serialize + atomic write; mirrors `write_doc`.
+    /// Write a file's code-chunk sidecar. Always overwrites: unlike the other content-addressed
+    /// blobs, a chunk sidecar's embedding payload varies for the SAME content hash — a `Deferred`
+    /// pass writes it chunk-only (`embedding_dim: 0`) and a later `Inline` pass upgrades it in place.
+    /// A schema-only skip would keep the unembedded blob. Re-embedding of a genuinely-unchanged file
+    /// is prevented upstream by `embed_state_satisfied`, not here.
     #[cfg(feature = "code-search")]
     pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
-        write_blob(self.blob_path_chunk_hex(hash_hex), blob)
+        crate::store_blob::write_blob_overwrite(self.blob_path_chunk_hex(hash_hex), blob)
     }
 
     /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never

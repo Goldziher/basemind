@@ -100,17 +100,21 @@ pub(crate) fn chunk_and_embed(
             Some(blob) => blob.chunks,
             None => {
                 let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
-                if matches!(mode, EmbedMode::Inline) {
-                    let blob = CodeChunkBlob {
-                        schema_ver: SCHEMA_VER,
-                        embedding_dim: 0,
-                        embedding_model: String::new(),
-                        chunks: chunks.clone(),
-                        embeddings: Vec::new(),
-                    };
-                    if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
-                        tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
-                    }
+                // Persist the chunk-only sidecar for BOTH Deferred and Inline. It is the keyword
+                // (BM25) lane's on-disk form, so writing it is what makes a re-scan idempotent:
+                // `extraction_sidecars_present` requires this blob, and the daemon's rescan path
+                // scans Deferred with no Inline follow-up — gating the write on Inline left the
+                // sidecar absent, so every daemon rescan re-processed every file. A later Inline
+                // embed pass still re-embeds (its `embedding_dim: 0` fails `code_cache_is_reusable`).
+                let blob = CodeChunkBlob {
+                    schema_ver: SCHEMA_VER,
+                    embedding_dim: 0,
+                    embedding_model: String::new(),
+                    chunks: chunks.clone(),
+                    embeddings: Vec::new(),
+                };
+                if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
+                    tracing::warn!(rel, ?error, "write code-chunk sidecar (chunk-only) failed");
                 }
                 chunks
             }

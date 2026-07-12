@@ -692,6 +692,44 @@ fn extraction_sidecars_present(store: &Store, config: &Config, hash_hex: &str) -
     true
 }
 
+/// True when the on-disk chunk sidecar already satisfies THIS scan's embedding requirement, so an
+/// otherwise-unchanged file may be short-circuited as `Unchanged`.
+///
+/// This is distinct from [`extraction_sidecars_present`] (blob *presence*, which governs l1/l2/chunk
+/// reuse): a chunk-only sidecar is present but carries no vectors. A `Deferred` pass never embeds, so
+/// any present sidecar satisfies it; an `Inline` pass over an embed-eligible file requires embeddings
+/// for the current preset to already exist, else the file must be re-processed to fill them. The
+/// daemon writes chunk-only sidecars in `Deferred`, which a later `Inline` pass upgrades in place —
+/// without this gate the Inline pass would short-circuit past `chunk_and_embed` and never embed.
+#[cfg(feature = "code-search")]
+fn embed_state_satisfied(store: &Store, config: &Config, rel: &str, hash_hex: &str, mode: EmbedMode) -> bool {
+    if !matches!(mode, EmbedMode::Inline) {
+        return true;
+    }
+    let cfg = &config.code_search;
+    if !cfg.embed || crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude) {
+        return true;
+    }
+    match store.read_chunks_by_hex(hash_hex) {
+        // A file with no chunks has nothing to embed; anything with vectors for the active preset is
+        // already satisfied. A non-empty, unembedded (dim-0) sidecar must be re-processed.
+        Ok(Some(blob)) => {
+            blob.chunks.is_empty()
+                || (blob.embedding_dim > 0
+                    && blob.embedding_model == config.documents.embedding_preset
+                    && blob.embeddings.len() == blob.chunks.len())
+        }
+        _ => false,
+    }
+}
+
+/// Without `code-search` there is no embedding tier, so every scan's embed requirement is trivially
+/// satisfied.
+#[cfg(not(feature = "code-search"))]
+fn embed_state_satisfied(_store: &Store, _config: &Config, _rel: &str, _hash_hex: &str, _mode: EmbedMode) -> bool {
+    true
+}
+
 /// Process a single relative path. Returns a `FileResult`; if the file is being
 /// updated, the new `FileEntry` is attached via `FileResult::upsert` so the caller
 /// can apply it to the store from the single-threaded apply loop.
@@ -737,6 +775,7 @@ fn process_file(
         if meta.len() == existing.size_bytes
             && mtime == existing.mtime
             && extraction_sidecars_present(store, config, &existing.hash_hex)
+            && embed_state_satisfied(store, config, rel, &existing.hash_hex, embed)
         {
             return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
         }
@@ -779,6 +818,7 @@ fn process_file(
     if let Some(existing) = store.lookup(rel)
         && existing.hash_hex == hash_hex_str
         && sidecars_present
+        && embed_state_satisfied(store, config, rel, hash_hex_str, embed)
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }

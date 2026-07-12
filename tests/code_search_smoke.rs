@@ -181,6 +181,79 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
     );
 }
 
+/// Regression guard for the Deferred→Inline embedding upgrade.
+///
+/// The daemon rescans with [`EmbedMode::Deferred`], which writes the code map + BM25 keyword lane +
+/// a chunk-only (`embedding_dim: 0`) sidecar but no vectors. A later [`EmbedMode::Inline`] pass over
+/// the SAME content must NOT short-circuit on the unchanged check — it has to re-process the file to
+/// fill vectors. A mode-blind check would treat the chunk-only sidecar as "already indexed", skip
+/// `chunk_and_embed`, and leave `search_code` serving zero vectors forever. Two invariants are pinned
+/// here without depending on the embedder (which may be offline): (1) a second Deferred pass IS
+/// idempotent; (2) an embed-eligible Inline pass re-processes the chunk-only file rather than
+/// skipping it.
+#[test]
+fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
+    use basemind::config::ConfigV1;
+    use basemind::scanner::{EmbedMode, ScanSource, scan};
+    use basemind::store::{Store, VIEW_WORKING};
+
+    basemind::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = tmp.path();
+    // Test-unique content so this test's content-addressed sidecar can't collide with a sibling's.
+    let fixture = format!("{FIXTURE}\n// deferred-inline-embed-marker\n");
+    std::fs::write(root.join("lib.rs"), &fixture).expect("write fixture");
+    let stem = content_stem(fixture.as_bytes());
+
+    let mut cfg = ConfigV1::with_defaults();
+    // Chunking is on by default; opt into embeddings so the file is embed-eligible (the path the
+    // regression lives on). The embedder may still be offline — the assertions below don't need it.
+    cfg.code_search.embed = true;
+
+    let mut store = Store::open(root, VIEW_WORKING).expect("open store");
+
+    // Pass 1 — Deferred: writes the chunk-only sidecar (no vectors).
+    let s1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred scan");
+    assert_eq!(s1.stats.updated, 1, "the one source file is newly indexed by the deferred pass");
+    let blob = store
+        .read_chunks_by_hex(&stem)
+        .expect("read chunk sidecar")
+        .expect("deferred pass persists a chunk-only sidecar");
+    assert!(!blob.chunks.is_empty(), "the fixture yields at least one chunk");
+    assert_eq!(blob.embedding_dim, 0, "the deferred pass writes chunks only — no vectors yet");
+
+    // A second Deferred pass is idempotent: the chunk-only sidecar satisfies the unchanged check.
+    let s1b = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred rescan");
+    assert_eq!(s1b.stats.updated, 0, "a second deferred pass changes nothing");
+    assert_eq!(
+        s1b.stats.skipped_unchanged, 1,
+        "the file is skipped as unchanged on the second deferred pass"
+    );
+
+    // Pass 2 — Inline over the SAME content must re-process, not skip: the dim-0 sidecar does not
+    // satisfy an embed-eligible Inline scan. This is the regression guard.
+    let s2 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan");
+    assert_eq!(
+        s2.stats.skipped_unchanged, 0,
+        "the inline embed pass must re-process a chunk-only file, not skip it as unchanged"
+    );
+    assert_eq!(s2.stats.updated, 1, "the inline pass re-processes the file to fill vectors");
+
+    // When the embedder is available the sidecar is upgraded in place to carry vectors; offline it
+    // stays chunk-only (BM25 fallback). The re-process assertion above pins the fix either way.
+    let after = store
+        .read_chunks_by_hex(&stem)
+        .expect("read chunk sidecar")
+        .expect("chunk sidecar still present");
+    if after.embedding_dim > 0 {
+        assert_eq!(
+            after.embeddings.len(),
+            after.chunks.len(),
+            "every chunk gets a vector once embedded"
+        );
+    }
+}
+
 /// End-to-end test for the BM25 keyword lane (`search_code --mode keyword`).
 ///
 /// Unlike the semantic lane, keyword search needs no embedder — postings are pure Fjall + sidecar —

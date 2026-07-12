@@ -154,3 +154,13 @@ pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Resul
     let bytes = rmp_serde::to_vec_named(value)?;
     write_bytes_atomic(path, &bytes)
 }
+
+/// Like [`write_blob`] but always (re)writes, even when a same-schema blob already exists. The
+/// code-chunk sidecar's embedding payload can change for the SAME content hash — a chunk-only
+/// `Deferred` blob (`embedding_dim: 0`) later upgraded to an embedded `Inline` blob — so a
+/// schema-only skip would wrongly keep the unembedded blob and `search_code` would serve no vectors.
+#[cfg(feature = "code-search")]
+pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
+    let bytes = rmp_serde::to_vec_named(value)?;
+    write_bytes_atomic(path, &bytes)
+}
