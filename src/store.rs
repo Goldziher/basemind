@@ -642,6 +642,22 @@ impl Store {
         Ok(Some(blob))
     }
 
+    /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
+    /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
+    /// blob, a schema mismatch surfaces as an error — but decodes only the counts + embedding
+    /// dim/model via [`CodeChunkBlobPeek`](crate::chunk::CodeChunkBlobPeek), skipping the heavy
+    /// chunk/embedding element contents. Backs the `embed_state_satisfied` unchanged-file fast path.
+    #[cfg(feature = "code-search")]
+    pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
+        let path = self.blob_path_chunk_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let peek: crate::chunk::CodeChunkBlobPeek = rmp_serde::from_slice(&bytes)?;
+        check_schema(peek.schema_ver)?;
+        Ok(Some(peek))
+    }
+
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.index.files.insert(rel.into(), entry);
     }

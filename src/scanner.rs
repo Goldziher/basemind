@@ -710,14 +710,16 @@ fn embed_state_satisfied(store: &Store, config: &Config, rel: &str, hash_hex: &s
     if !cfg.embed || crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude) {
         return true;
     }
-    match store.read_chunks_by_hex(hash_hex) {
+    // A schema/state peek is enough here — this is a stat-only fast path, so avoid the full
+    // chunk-text decode `read_chunks_by_hex` would pay for on every unchanged, embed-eligible file.
+    match store.peek_chunk_state(hash_hex) {
         // A file with no chunks has nothing to embed; anything with vectors for the active preset is
         // already satisfied. A non-empty, unembedded (dim-0) sidecar must be re-processed.
-        Ok(Some(blob)) => {
-            blob.chunks.is_empty()
-                || (blob.embedding_dim > 0
-                    && blob.embedding_model == config.documents.embedding_preset
-                    && blob.embeddings.len() == blob.chunks.len())
+        Ok(Some(peek)) => {
+            peek.chunks.is_empty()
+                || (peek.embedding_dim > 0
+                    && peek.embedding_model == config.documents.embedding_preset
+                    && peek.embeddings.len() == peek.chunks.len())
         }
         _ => false,
     }

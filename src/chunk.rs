@@ -96,6 +96,29 @@ pub struct CodeChunkBlob {
     pub embeddings: Vec<Vec<f32>>,
 }
 
+/// A cheap partial decode of a [`CodeChunkBlob`] sidecar: only what `embed_state_satisfied` needs to
+/// decide whether an unchanged file's embedding requirement is already met — without allocating the
+/// (potentially large) chunk text / `searchable_text` strings.
+///
+/// The sidecar is a `to_vec_named` msgpack map, so serde matches these fields by name and skips the
+/// unrequested ones. The heavy `chunks` / `embeddings` fields deserialize as `Vec<IgnoredAny>`: each
+/// element is walked to preserve the count but its contents are discarded, never heap-allocated. Field
+/// names MUST stay in lock-step with [`CodeChunkBlob`].
+#[derive(Debug, Deserialize)]
+pub struct CodeChunkBlobPeek {
+    /// Blob schema version — checked against the current release schema, same as the full decode.
+    pub schema_ver: u16,
+    /// Embedding dimensionality; `0` for a chunk-only (unembedded) sidecar.
+    pub embedding_dim: u16,
+    /// The embedding preset the vectors were produced with; `""` when chunk-only.
+    #[serde(default)]
+    pub embedding_model: String,
+    /// Chunk count only — element contents discarded.
+    pub chunks: Vec<serde::de::IgnoredAny>,
+    /// Embedding count only — element contents discarded.
+    pub embeddings: Vec<serde::de::IgnoredAny>,
+}
+
 /// A chunk before line numbers / ids / searchable_text are finalized.
 struct RawChunk {
     kind: Option<&'static str>,
