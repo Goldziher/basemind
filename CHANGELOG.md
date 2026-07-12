@@ -10,12 +10,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> **Index rebuild on upgrade.** This release bumps the resolution/blob schema (Python and Java now
-> emit richer import/export/resolved-edge facts), so the first `basemind scan` after upgrading wipes
-> and rebuilds `.basemind/` from source. This is the intended migration path.
+## [0.22.0] — 2026-07-12
+
+> **Index rebuild on upgrade.** This release bumps the index/blob/comms schema (21 → 22), so every
+> existing `.basemind/` (legacy, per-repo) and the new global cache wipe and rebuild from source on
+> the next `basemind scan`. The cache location itself also moves: state no longer lives under a
+> repo's `.basemind/` — it lives in a single global, content-addressed store under the XDG data
+> directory (see below). This is the intended migration path; nothing you need to do beyond letting
+> the next scan run.
 
 ### Added
 
+- **Machine-wide daemon — concurrent sessions now read AND write.** A single background daemon per
+  machine is the sole fjall writer for the index. Previously, one `serve` process per repo held the
+  repo's fjall write-lock, so a second session on the same repo silently fell back to a read-only,
+  increasingly stale view. `serve` now opens its store read-only (blobs only) and forwards writes
+  (scan / rescan) to the daemon over a Unix domain socket (named pipe on Windows); the daemon starts
+  on demand and is shared by every session on the machine. N sessions on one repo now all read and
+  write without downgrade.
+- **Global XDG cache + `BASEMIND_DATA_HOME`.** Index data (content-addressed blobs, per-workspace
+  views, LanceDB) moves out of the repo and into `~/.local/share/basemind/` (overridable with
+  `BASEMIND_DATA_HOME`), keyed by workspace. The blob store is now a single global, content-addressed
+  cache that dedupes identical files across **every** repo and worktree on the machine, not just
+  within one repo. `.basemind/` is no longer created in repos — the gitignore dance from `init` is
+  gone.
+- **Registry + worktree coordination tools.** The daemon keeps a cheap, always-on registry of
+  repos, worktrees, and branches built from git plumbing, exposed as new MCP tools: `workspaces`
+  (known repos on the machine), `worktrees` (linked worktrees for a repo), `branches` (branches per
+  worktree), and `worktree_claim` / `worktree_release` — an advisory claim so multiple agent sessions
+  don't collide working the same worktree at once.
+- **`find_files`** — fuzzy, fzf/fd-style filename/path search across indexed files, ranked by match
+  score. Complements the existing substring `list_files`.
+- **`basemind statusline`** — a CLI subcommand that queries the daemon for the workspaces currently
+  active and prints a compact status line; prints nothing (idle) when no daemon is running.
+- **Thread comms replace room comms.** Agent coordination now uses threads instead of rooms: each
+  thread is addressed by at least two of subject / path-glob / members, discovered by scope (member,
+  cwd path-match, or subject filter — never global), with idle threads auto-archiving. See
+  `thread_start` / `thread_post` / `thread_list` / `inbox_read` / `agent_list` in the MCP tool table.
 - **Precise, scope- and import-aware name resolution for Python and Java** (feature
   `code-intel-stack`, included in `full` and the release binary). Until now only JavaScript/TypeScript
   resolved precisely (via oxc); every other language fell back to heuristic name matching, so
@@ -34,6 +65,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`[code_intel] precise_resolution` config toggle** (default `true`). Set it to `false` in
   `basemind.toml` to skip the precise engines (oxc + stack-graphs) and fall back to fast tree-sitter
   `locals` scope binding for every language. Applies to files (re)scanned after the change.
+
+### Changed
+
+- **Cache moved out of the repo.** Everything the scanner and index used to write under a repo's
+  `.basemind/` now lives under the global XDG cache, keyed by workspace — a repo checkout no longer
+  gains any basemind-owned files or directories.
+- **Blobs are global and deduped across repos.** The content-addressed blob store used to be
+  per-repo; it is now one machine-wide store, so identical file content scanned from different repos
+  or worktrees is extracted and stored once.
+
+### Removed
+
+- **Per-repo `.basemind/` writes.** basemind no longer creates or gitignores a `.basemind/` directory
+  inside a repo; `basemind init` no longer adds it to `.gitignore`.
+- **Room comms API.** `room_list` / `room_join` / `room_leave` / `room_post` / `room_history` and the
+  CLI `basemind comms rooms` / `join` / `leave` / `room-create` / `post` / `history` surface are
+  replaced by thread comms (see Added above).
 
 ### Fixed
 

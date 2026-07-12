@@ -44,7 +44,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Find where things are defined, what calls what, who implements what, how calls chain, and the overall architecture (hub modules + dependency cycles) — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `architecture_map` · `find_implementations` · `workspace_grep` |
+| **Code intelligence** | Find where things are defined, what calls what, who implements what, how calls chain, and the overall architecture (hub modules + dependency cycles) — across [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `architecture_map` · `find_implementations` · `find_files` · `workspace_grep` |
 | **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and full-text search commit authors + messages. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` · `search_git_history` |
 | **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. | `search_documents` |
 | **Code search** | Find source code by meaning, term, or symbol — `mode` picks the strategy: `hybrid` (default, RRF fusion of vector + BM25 + exact-symbol lanes), `semantic` (vector KNN), or `keyword` (native BM25); optional `rerank` cross-encoder pass. Returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
@@ -55,6 +55,7 @@ about your code costs a small fraction of the tokens it takes to read the source
 | **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
 | **Token saving** | Hand an agent a file's outline instead of its full text, pull back only the one function it needs, diff a re-read instead of resending it whole, checkpoint a session, and flag wasteful tool use. | `compress` · `expand` · `delta` · `checkpoint` · `detect_waste` |
 | **Admin** | Refresh the index, see what's been queried, and check or clean up the on-disk cache. | `rescan` · `telemetry_summary` · `cache_stats` |
+| **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspaces` · `worktrees` · `branches` · `worktree_claim` · `worktree_release` |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -347,9 +348,12 @@ activity by type, then tokens saved, then unread messages. Adjust with
 
 `basemind scan` reads your project once, in parallel. It maps your code with
 [tree-sitter] (across [300+ languages][tslp]) and pulls text out of your documents with
-[xberg], then saves the result to a local cache in `.basemind/`. After that, `basemind serve`
-keeps the map in memory and answers questions instantly — no re-reading the project for each one.
-When files change, it updates only what changed.
+[xberg], then saves the result to a global cache under the XDG data directory, keyed by workspace —
+nothing is written into your repo. After that, `basemind serve` keeps the map in memory and answers
+questions instantly — no re-reading the project for each one. When files change, it updates only what
+changed. A single background daemon on the machine is the sole writer to that cache, so multiple
+`serve` sessions on the same repo (or on different worktrees of it) all read and write concurrently
+instead of one falling back read-only. See [Global cache & the daemon](#how-it-works) below.
 
 Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: instead of
 matching references by name, basemind resolves each use to the definition it actually binds to, so a
@@ -369,7 +373,7 @@ flowchart LR
   A(["Coding agent"])
   R["Your project<br/>code · documents · git"]
   S["basemind scan<br/>map code & read documents"]
-  D[(".basemind/<br/>local index")]
+  D[("Global cache<br/>~/.local/share/basemind")]
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V
@@ -395,7 +399,7 @@ object — `{ state, message, retry }` — instead of (or alongside) their norma
 | `state` | Meaning | `retry` |
 |---|---|---|
 | `warming_up` | Loading an existing index into memory. | `true` |
-| `building_index` | Indexing from scratch (no `.basemind/` yet). | `true` |
+| `building_index` | Indexing from scratch (no cache entry for this workspace yet). | `true` |
 | `rescanning` | Incremental rescan after a file change; current results are usable but may be stale. | `false` |
 
 Treat an empty or partial result carrying a `notice` as "retry shortly," not "no matches" — poll
@@ -404,13 +408,35 @@ Treat an empty or partial result carrying a `notice` as "retry shortly," not "no
 </details>
 
 <details>
+<summary><strong>Global cache &amp; the daemon</strong></summary>
+
+Index state lives under a single global cache — `~/.local/share/basemind/` on Linux/macOS
+(override with `BASEMIND_DATA_HOME`) — keyed by workspace, never inside your repo. The
+content-addressed blob store is machine-wide too: identical file content scanned from different repos
+or worktrees is extracted and stored once.
+
+A single background daemon per machine is the sole writer to that cache. `basemind serve` opens its
+store read-only and forwards writes (scan / rescan) to the daemon over a local socket, so N `serve`
+sessions on the same repo — or on different worktrees of it — all read and write concurrently instead
+of a second session silently falling back to a stale, read-only view. The daemon also keeps a cheap,
+always-on registry of repos, worktrees, and branches (`workspaces` / `worktrees` / `branches`), and
+`worktree_claim` / `worktree_release` give agent sessions an advisory way to avoid colliding on the
+same worktree.
+
+`basemind statusline` queries the daemon for the workspaces currently active and prints a compact
+line for your shell prompt; it prints nothing when no daemon is running.
+
+</details>
+
+<details>
 <summary><strong>How agents coordinate</strong></summary>
 
 A single shared service in the background lets agents talk to each other — even across different
-tools and different repos on the same machine. Agents join **rooms** automatically based on what
-they're working on, and each has a personal **inbox**. Messages come in two parts: a short headline
-(subject and sender) that's cheap to skim, and the full body, fetched only when an agent wants to
-read it. An agent never sees its own posts in its inbox.
+tools and different repos on the same machine. Agents coordinate in **threads** — each addressed by
+at least two of subject / path-glob / members, discovered by scope rather than joined globally — and
+each has a personal **inbox**. Messages come in two parts: a short headline (subject and sender)
+that's cheap to skim, and the full body, fetched only when an agent wants to read it. An agent never
+sees its own posts in its inbox. Idle threads auto-archive.
 
 The plugin makes sure agents notice messages without being asked — through the built-in instructions,
 a notice at session start and each turn, and a quiet background check every few seconds.
@@ -419,7 +445,7 @@ a notice at session start and each turn, and a quiet background check every few 
 flowchart LR
   A["Agent A<br/>Claude Code · repo X"]
   B["Agent B<br/>Cursor · repo Y"]
-  BR["Shared comms service<br/>rooms · inboxes"]
+  BR["Shared comms service<br/>threads · inboxes"]
   A <-->|post · read| BR
   B <-->|post · read| BR
   classDef accent fill:#2563eb,stroke:#1e40af,color:#fff
@@ -539,12 +565,12 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 <details>
 <summary><strong>Config file &amp; overrides</strong></summary>
 
-The config lives at the **repo root** as `basemind.toml` (committed). The `.basemind/` cache it
-drives is derived state — gitignored and wiped on schema bumps — so config never belongs there.
-Run `basemind init` to drop a fully-commented scaffold (documenting every option) at the root and
-add `.basemind/` to your `.gitignore`. The legacy in-cache path (`.basemind/basemind.toml`) is still
-read as a fallback for older checkouts. The full schema is at
-`schema/basemind-config-v1.schema.json`:
+The config lives at the **repo root** as `basemind.toml` (committed). The cache it drives is derived
+state — held in the global cache under the XDG data directory, wiped and rebuilt on schema bumps —
+so config never belongs there and nothing basemind-owned is written into your repo. Run
+`basemind init` to drop a fully-commented scaffold (documenting every option) at the root. The legacy
+in-cache path (`.basemind/basemind.toml`, from before the global-cache move) is still read as a
+fallback for older checkouts. The full schema is at `schema/basemind-config-v1.schema.json`:
 
 ```toml
 # basemind.toml  (repo root — commit this)
