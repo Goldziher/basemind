@@ -22,6 +22,7 @@ use ahash::AHashMap;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 
 use super::cursor::Cursor;
 use super::ids::{AgentId, ThreadId};
@@ -109,6 +110,11 @@ pub struct Broker {
     /// and reap them — a first-ever scan (no prior index) could lose ALL its blobs. This lock keeps
     /// the two mutually exclusive without blocking concurrent rescans of different workspaces.
     blob_gc_lock: RwLock<()>,
+    /// The accept-loop shutdown signal, installed by the daemon entry point after it builds the
+    /// `watch` channel. `begin_drain` fires it so a `Stop` RPC (or any drain) actually breaks the
+    /// front-end accept loop — not just notifies connected sinks. Absent in tests that drive the
+    /// broker directly, where `begin_drain` still transitions state and notifies sinks.
+    shutdown: std::sync::OnceLock<watch::Sender<bool>>,
     subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     last_activity_ms: AtomicU64,
@@ -146,6 +152,7 @@ impl Broker {
             }),
             machine_registry: Mutex::new(machine_registry),
             blob_gc_lock: RwLock::new(()),
+            shutdown: std::sync::OnceLock::new(),
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
@@ -153,6 +160,13 @@ impl Broker {
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
+    }
+
+    /// Install the accept-loop shutdown signal. Called once by the daemon entry point after it
+    /// builds the `watch` channel whose receiver drives the front-end accept loop. Idempotent: a
+    /// second call is ignored (the first sender wins), so re-installation cannot orphan the loop.
+    pub fn install_shutdown(&self, shutdown: watch::Sender<bool>) {
+        let _ = self.shutdown.set(shutdown);
     }
 
     /// Mark the broker Active once front-ends are accepting.
@@ -1037,7 +1051,11 @@ impl Broker {
         }
     }
 
-    /// Enter the Draining state and notify every live sink to disconnect.
+    /// Enter the Draining state, notify every live sink to disconnect, and fire the accept-loop
+    /// shutdown signal so the front-end stops accepting. Firing the signal is what makes a `Stop`
+    /// RPC (and SIGTERM/idle-reap/ownership-loss, which all route here) actually terminate the
+    /// daemon rather than merely notify connected clients. Idempotent — repeated drains re-send
+    /// `true`, which the watch receiver already holds.
     pub async fn begin_drain(&self) {
         let sinks: Vec<mpsc::Sender<CommsOut>> = {
             let mut reg = self.registry.lock().await;
@@ -1046,6 +1064,9 @@ impl Broker {
         };
         for tx in sinks {
             let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
+        }
+        if let Some(shutdown) = self.shutdown.get() {
+            let _ = shutdown.send(true);
         }
     }
 
