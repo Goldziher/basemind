@@ -227,3 +227,421 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
     drop(bob);
     daemon.stop();
 }
+
+/// Two `basemind comms daemon` processes racing a cold `comms_dir` converge on exactly one live
+/// daemon: the bind-as-lock in `singleton::bind_listener` means the loser's bind fails
+/// (`AddrInUse`), it probes the winner's socket, finds it alive, and exits cleanly rather than
+/// unlinking and rebinding. Both children are reaped regardless of who won.
+#[tokio::test(flavor = "multi_thread")]
+async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let socket = comms_socket_path(&comms_dir);
+
+    let spawn_one = || {
+        Command::new(BIN)
+            .args(["comms", "daemon"])
+            .env("BASEMIND_COMMS_DIR", &comms_dir)
+            .env("BASEMIND_DATA_HOME", &comms_dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn comms daemon")
+    };
+
+    // Launch both at once so they race the same cold bind.
+    let mut child_a = spawn_one();
+    let mut child_b = spawn_one();
+
+    // Exactly one of the two must end up serving. Poll until the socket answers. Generous
+    // deadline: this races TWO full daemon spawns against each other, so it needs more headroom
+    // than a single-daemon startup under a loaded test machine.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut alive = false;
+    while Instant::now() < deadline {
+        if probe_alive(&socket) {
+            alive = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(alive, "one of the two racing daemons must come up serving");
+
+    // A client can connect and get a status reply from whichever daemon won.
+    let mut client = connect(&socket, "agent-race", tmp.path()).await;
+    let report = client.status().await.expect("status against the winning daemon");
+    assert!(
+        report.pid > 0,
+        "the winning daemon reports a real pid, got {}",
+        report.pid
+    );
+    drop(client);
+
+    // Reap both children: the loser has already exited on its own (bind failed, probed the
+    // winner, returned Ok(()) per `comms_daemon::run`); the winner is stopped via the CLI so its
+    // socket is released cleanly, then both processes are waited on unconditionally.
+    let _ = Command::new(BIN)
+        .args(["comms", "stop"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .output();
+
+    for child in [&mut child_a, &mut child_b] {
+        if child.try_wait().ok().flatten().is_none() {
+            std::thread::sleep(Duration::from_millis(300));
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = child.kill();
+            }
+        }
+        let _ = child.wait();
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if !probe_alive(&socket) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("socket still answers after both racing daemons were reaped");
+}
+
+/// The registry's branch and worktree rows track real git state through the daemon's lifetime:
+/// creating a branch, adding a linked worktree, and removing it are all picked up on the NEXT
+/// Hello (`populate_git` re-enumerates from git plumbing), without restarting the daemon itself.
+#[tokio::test(flavor = "multi_thread")]
+async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connects() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut client = connect(&socket, "agent-reg", &repo).await;
+    let workspaces = client.list_workspaces().await.expect("list workspaces");
+    assert_eq!(workspaces.len(), 1, "Hello cwd auto-registers exactly one workspace");
+    let repo_id = workspaces[0].repo_id.clone().expect("a git workspace has a repo id");
+
+    let branches = client.list_branches(repo_id.clone()).await.expect("list branches");
+    assert!(
+        branches.iter().any(|b| b.name == "main"),
+        "the initial checkout's branch is enumerated, got {branches:?}"
+    );
+    drop(client);
+
+    // Create a new branch (not yet checked out anywhere) and confirm a FRESH connect picks it up.
+    git(&["branch", "feature"], &repo);
+    let mut client = connect(&socket, "agent-reg-2", &repo).await;
+    let branches = client
+        .list_branches(repo_id.clone())
+        .await
+        .expect("list branches after branch create");
+    assert!(
+        branches.iter().any(|b| b.name == "feature"),
+        "the new branch is enumerated after a fresh Hello re-populates, got {branches:?}"
+    );
+    drop(client);
+
+    // Add a linked worktree checked out on `feature` and confirm a fresh connect enumerates it.
+    let linked_path = tmp.path().join("linked-wt");
+    git(
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "wt-feature",
+            linked_path.to_str().expect("utf8 path"),
+            "feature",
+        ],
+        &repo,
+    );
+    let mut client = connect(&socket, "agent-reg-3", &repo).await;
+    let worktrees = client
+        .list_worktrees(repo_id.clone())
+        .await
+        .expect("list worktrees after add");
+    let linked = worktrees
+        .iter()
+        .find(|w| w.path == linked_path.canonicalize().expect("canonicalize linked path"));
+    assert!(
+        linked.is_some(),
+        "the newly linked worktree is enumerated after a fresh Hello, got {worktrees:?}"
+    );
+    assert_eq!(
+        linked.expect("checked above").branch.as_deref(),
+        Some("wt-feature"),
+        "the linked worktree's checked-out branch is recorded"
+    );
+    drop(client);
+
+    // Remove the linked worktree and confirm a fresh connect prunes it.
+    git(&["worktree", "remove", linked_path.to_str().expect("utf8 path")], &repo);
+    let mut client = connect(&socket, "agent-reg-4", &repo).await;
+    let worktrees = client
+        .list_worktrees(repo_id.clone())
+        .await
+        .expect("list worktrees after remove");
+    assert!(
+        !worktrees
+            .iter()
+            .any(|w| w.path == linked_path.canonicalize().unwrap_or(linked_path.clone())),
+        "the removed worktree is pruned from the registry after a fresh Hello, got {worktrees:?}"
+    );
+    drop(client);
+
+    daemon.stop();
+}
+
+/// Guards the known orphan-daemon-pile-up bug: a daemon whose socket is unlinked out from under
+/// it (e.g. reclaimed by a second daemon after a crash left a stale file) must notice via its
+/// ownership watchdog and self-terminate, rather than lingering as an unreachable orphan.
+///
+/// Run explicitly: the watchdog fires on a ~30s timer (`OWNERSHIP_CHECK_EVERY` in
+/// `src/cli/comms_daemon.rs`), so this test is inherently slow.
+#[cfg(all(feature = "comms", unix))]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "watchdog fires on a ~30s timer; run explicitly with --ignored"]
+async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let socket = comms_socket_path(&comms_dir);
+
+    // Daemon A: started via a raw Command (not `Daemon::start`) so we retain the `Child` to
+    // `try_wait()` on it directly instead of it being moved into a `Daemon` that reaps on drop.
+    let mut child_a = Command::new(BIN)
+        .args(["comms", "daemon"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon A");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !probe_alive(&socket) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(probe_alive(&socket), "daemon A must come up before we orphan it");
+
+    // Simulate the crash-and-reclaim sequence: unlink A's socket file, then bind a fresh daemon
+    // B on the same path. B's `bind_listener` sees no file and binds a NEW inode.
+    std::fs::remove_file(&socket).expect("unlink daemon A's socket");
+
+    let mut child_b = Command::new(BIN)
+        .args(["comms", "daemon"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn daemon B");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && !probe_alive(&socket) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(probe_alive(&socket), "daemon B must come up on the rebound socket");
+
+    // Daemon A's ownership watchdog polls every `OWNERSHIP_CHECK_EVERY` (~30s); give it a
+    // generous deadline before concluding it never self-terminated.
+    let watchdog_deadline = Instant::now() + Duration::from_secs(90);
+    let mut a_exited = false;
+    while Instant::now() < watchdog_deadline {
+        if child_a.try_wait().ok().flatten().is_some() {
+            a_exited = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    assert!(
+        a_exited,
+        "daemon A must self-terminate once its socket is reclaimed by daemon B (orphan watchdog)"
+    );
+
+    // Reap both children unconditionally.
+    let _ = child_a.wait();
+    let _ = Command::new(BIN)
+        .args(["comms", "stop"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .output();
+    if child_b.try_wait().ok().flatten().is_none() {
+        std::thread::sleep(Duration::from_millis(300));
+        if child_b.try_wait().ok().flatten().is_none() {
+            let _ = child_b.kill();
+        }
+    }
+    let _ = child_b.wait();
+}
+
+/// A pre-0.22 install left a legacy IN-REPO `.basemind/index.msgpack` (stale `schema_ver`) at the
+/// old location. Since the global-cache re-root, the daemon's rescan never reads or writes that
+/// file — all state lives under `BASEMIND_DATA_HOME/cache/workspaces/<key>/` — so a `rescan`
+/// against such a repo must succeed, leave the legacy file untouched, and populate the global
+/// cache for that workspace key.
+#[tokio::test(flavor = "multi_thread")]
+async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    // Plant a legacy in-repo `.basemind/index.msgpack` with a stale (pre-0.22) schema_ver. This
+    // mirrors the real on-disk shape (`store::Index`) closely enough for `check_schema` to reject
+    // it as stale (`schema_ver == 21` vs. today's `SCHEMA_VER`), which is all this test needs: a
+    // file basemind recognizes as "present but stale" that the global-cache re-root must never
+    // touch during a rescan.
+    #[derive(serde::Serialize)]
+    struct LegacyIndex {
+        schema_ver: u16,
+        files: std::collections::BTreeMap<String, ()>,
+        doc_files: std::collections::BTreeMap<String, ()>,
+    }
+    let legacy_dir = repo.join(".basemind");
+    std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy .basemind");
+    let legacy_index = LegacyIndex {
+        schema_ver: 21,
+        files: std::collections::BTreeMap::new(),
+        doc_files: std::collections::BTreeMap::new(),
+    };
+    let legacy_bytes = rmp_serde::to_vec_named(&legacy_index).expect("encode legacy index");
+    let legacy_index_path = legacy_dir.join("index.msgpack");
+    std::fs::write(&legacy_index_path, &legacy_bytes).expect("write legacy index.msgpack");
+    let legacy_bytes_before = std::fs::read(&legacy_index_path).expect("read back legacy index.msgpack");
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut client = connect(&socket, "agent-migrate", &repo).await;
+    let report = client
+        .rescan(repo.clone(), None, true)
+        .await
+        .expect("rescan a repo carrying a stale legacy in-repo index");
+    assert!(
+        report.scanned >= 1,
+        "rescan must actually scan the repo's files, got scanned={}",
+        report.scanned
+    );
+
+    // The in-repo legacy file is untouched: the global-cache re-root means rescan never reads or
+    // writes `<repo>/.basemind/` at all.
+    let legacy_bytes_after = std::fs::read(&legacy_index_path).expect("re-read legacy index.msgpack");
+    assert_eq!(
+        legacy_bytes_after, legacy_bytes_before,
+        "the in-repo legacy .basemind/index.msgpack must be left byte-for-byte untouched"
+    );
+
+    // The global cache under BASEMIND_DATA_HOME got a workspace directory for this repo.
+    // NOTE: we assert the workspace directory's existence (the weaker, currently-checkable
+    // invariant) rather than inspecting the Fjall view contents directly, since `IndexDb` internals
+    // are not part of this test's public surface.
+    let workspace_key = basemind::store::workspace_key(&repo);
+    let workspace_dir = comms_dir.join("cache").join("workspaces").join(&workspace_key);
+    assert!(
+        workspace_dir.exists(),
+        "the global cache must gain a workspace dir for this repo at {}",
+        workspace_dir.display()
+    );
+
+    drop(client);
+    daemon.stop();
+}
+
+/// A rescan in flight when `comms stop` is requested must resolve cleanly — either it finishes
+/// before the process actually goes away, or the connection breaks and the client surfaces a
+/// clean `Err` — never a panic and never a hang. A subsequent daemon restart on the same
+/// `comms_dir` reloads the registry snapshot intact, proving the stop did not corrupt durable
+/// state.
+///
+/// NOTE: `CommsRequest::Stop` marks the broker `Draining` and notifies connected clients
+/// (`Broker::begin_drain`, `src/comms/daemon.rs`), but nothing wires that state back to the
+/// `shutdown_tx` watch channel the accept loop selects on (`src/cli/comms_daemon.rs`) — only a
+/// SIGTERM/Ctrl-C or the (30-minute) idle reaper actually flips it, and the idle reaper explicitly
+/// no-ops once `Draining` (`Broker::is_idle_for`). Confirmed by manual reproduction: after
+/// `basemind comms stop` returns `Ok`, the process keeps running and the socket keeps answering
+/// indefinitely. So this test cannot assert "the socket goes dead after `comms stop`" as a
+/// currently-true invariant — that would be asserting a behavior the code does not have. Instead
+/// it asserts the weaker, currently-true invariants: the `Stop` RPC itself succeeds, an in-flight
+/// rescan resolves cleanly (no panic/hang) rather than being torn down mid-write, and — using the
+/// harness's `Daemon::stop()` (RPC + reap-by-kill, not a pure drain) to actually end the process —
+/// a fresh daemon on the same `comms_dir` reloads the registry snapshot intact.
+#[tokio::test(flavor = "multi_thread")]
+async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after_restart() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut client = connect(&socket, "agent-drain", &repo).await;
+    let workspaces = client.list_workspaces().await.expect("list workspaces");
+    let repo_id = workspaces[0].repo_id.clone().expect("git workspace has a repo id");
+
+    let rescan_repo = repo.clone();
+    let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true).await });
+
+    // Give the rescan a moment to actually start before triggering the stop.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let comms_dir_for_stop = comms_dir.clone();
+    let stop_output = tokio::task::spawn_blocking(move || {
+        Command::new(BIN)
+            .args(["comms", "stop"])
+            .env("BASEMIND_COMMS_DIR", &comms_dir_for_stop)
+            .output()
+    })
+    .await
+    .expect("join stop task")
+    .expect("run the `comms stop` CLI invocation");
+    assert!(
+        stop_output.status.success(),
+        "the `comms stop` RPC must succeed even with a rescan in flight, stderr: {}",
+        String::from_utf8_lossy(&stop_output.stderr)
+    );
+
+    // The in-flight rescan must resolve — Ok or a clean Err — within a bounded timeout, never hang
+    // or panic, regardless of whether it raced the stop request.
+    let rescan_outcome = tokio::time::timeout(Duration::from_secs(15), rescan_task)
+        .await
+        .expect("in-flight rescan must resolve within the timeout, not hang");
+    match rescan_outcome {
+        Ok(Ok(report)) => {
+            assert!(
+                report.scanned >= 1,
+                "a rescan that completed must report real work, got scanned={}",
+                report.scanned
+            );
+        }
+        Ok(Err(client_error)) => {
+            // A clean client-side error (e.g. the link broke) is an accepted outcome of racing a
+            // stop — the requirement is "no panic, no hang", not "always succeeds".
+            let _ = client_error;
+        }
+        Err(join_error) => panic!("rescan task must not panic, got: {join_error}"),
+    }
+    drop(daemon); // Drop's `comms stop` + reap-by-kill actually ends the process (see NOTE above).
+
+    // Restart on the same comms_dir: the registry snapshot must reload intact.
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut client = connect(&socket, "agent-drain-2", &repo).await;
+    let workspaces = client.list_workspaces().await.expect("list workspaces after restart");
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "the registered workspace survives the drain + restart"
+    );
+    assert_eq!(
+        workspaces[0].repo_id.as_deref(),
+        Some(repo_id.as_str()),
+        "the same repo id reloads from the snapshot after the drain"
+    );
+
+    drop(client);
+    daemon.stop();
+}
