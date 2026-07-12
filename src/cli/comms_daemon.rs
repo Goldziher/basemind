@@ -63,7 +63,18 @@ pub fn run() -> Result<()> {
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "comms: startup message prune failed"),
         }
-        let broker = Arc::new(Broker::new(store.clone()));
+        // Open the machine registry (the sole writer is this daemon). A failure degrades to an empty
+        // in-memory registry so the daemon still serves comms + rescan; coordination tools return
+        // empty until a workspace registers.
+        let machine_registry = match crate::registry::Registry::from_data_home() {
+            Ok(registry) => registry,
+            Err(error) => {
+                tracing::warn!(%error, "comms: machine registry open failed; coordination tools degrade to empty");
+                crate::registry::Registry::open(&paths.comms_dir.join("registry-fallback"))
+                    .context("open fallback machine registry")?
+            }
+        };
+        let broker = Arc::new(Broker::with_registry(store.clone(), machine_registry));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 

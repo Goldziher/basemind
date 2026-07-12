@@ -35,6 +35,8 @@ mod helpers_impls;
 mod helpers_intel;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod helpers_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod helpers_shells;
 mod helpers_telemetry;
@@ -61,6 +63,8 @@ mod tools_compress;
 mod tools_git;
 mod tools_governance;
 mod tools_memory;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod tools_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod tools_shells;
 #[cfg(feature = "crawl")]
@@ -79,6 +83,8 @@ mod types_governance;
 mod types_graph;
 mod types_impls;
 mod types_memory;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod types_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod types_shells;
 
@@ -726,6 +732,7 @@ impl BasemindServer {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         {
             router += Self::tool_router_comms();
+            router += Self::tool_router_registry();
         }
         #[cfg(all(feature = "shells", any(unix, windows)))]
         {

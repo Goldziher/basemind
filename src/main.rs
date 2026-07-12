@@ -130,6 +130,13 @@ enum Cmd {
         #[command(subcommand)]
         action: CommsLifecycleCmd,
     },
+    /// Machine-registry coordination: workspaces / worktrees / branches / advisory claims (needs
+    /// `--features comms`). Talks to the broker daemon directly, like `comms`.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Registry {
+        #[command(subcommand)]
+        action: basemind::cli::registry::RegistryCmd,
+    },
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -320,6 +327,8 @@ fn main() -> Result<()> {
         Cmd::Statusline => cmd_statusline(),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => cmd_comms(&root, action, json),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        Cmd::Registry { action } => basemind::cli::registry::run(&root, json, action),
     }
 }
 
@@ -481,7 +490,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             | Cmd::Cache(_)
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. });
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Registry { .. });
     #[cfg(all(feature = "shells", any(unix, windows)))]
     let consumes_json = consumes_json || matches!(cmd, Cmd::Shells(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));

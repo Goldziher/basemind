@@ -215,6 +215,36 @@ pub enum CommsRequest {
     },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
+    /// List every registered workspace in the machine registry (git + plain). Read-only.
+    WorkspacesList,
+    /// List the worktrees of a registered repo, by [`crate::registry::RepoId`]. Read-only.
+    WorktreesList {
+        /// The repo id (normalized remote URL or `path:<root>`) whose worktrees to list.
+        repo_id: String,
+    },
+    /// List the local branches of a registered repo, by [`crate::registry::RepoId`]. Read-only.
+    BranchesList {
+        /// The repo id whose branches to list.
+        repo_id: String,
+    },
+    /// Advisory-claim a worktree for a claimant. Returns whether the claim is now held by them.
+    WorktreeClaim {
+        /// The owning repo id.
+        repo_id: String,
+        /// The worktree name (`"(main)"` or the linked-worktree directory name).
+        name: String,
+        /// The claimant id (an agent/session id) taking the advisory claim.
+        claimant: String,
+    },
+    /// Release an advisory worktree claim held by `claimant`.
+    WorktreeRelease {
+        /// The owning repo id.
+        repo_id: String,
+        /// The worktree name whose claim to release.
+        name: String,
+        /// The claimant id releasing its own claim.
+        claimant: String,
+    },
     /// Liveness probe. The daemon replies [`CommsResponse::Pong`].
     Ping,
     /// Ask the daemon to drain and stop. Used by `basemind comms stop`.
@@ -306,6 +336,27 @@ pub enum CommsResponse {
     Accessed {
         /// One row per hot workspace, most-recently-used first.
         workspaces: Vec<crate::comms::workspace_pool::AccessedWorkspace>,
+    },
+    /// Reply to [`CommsRequest::WorkspacesList`]: every registered workspace.
+    Workspaces {
+        /// The workspace rows, sorted by key.
+        workspaces: Vec<crate::registry::WorkspaceRecord>,
+    },
+    /// Reply to [`CommsRequest::WorktreesList`]: the requested repo's worktrees.
+    Worktrees {
+        /// The worktree rows, sorted by name.
+        worktrees: Vec<crate::registry::WorktreeRecord>,
+    },
+    /// Reply to [`CommsRequest::BranchesList`]: the requested repo's local branches.
+    Branches {
+        /// The branch rows, sorted by name.
+        branches: Vec<crate::registry::BranchRecord>,
+    },
+    /// Reply to [`CommsRequest::WorktreeClaim`] / [`CommsRequest::WorktreeRelease`]: the outcome.
+    ClaimOutcome {
+        /// For a claim: `true` when the claim is now held by the claimant. For a release: `true`
+        /// when a claim by the claimant was cleared. `false` otherwise (unknown or held by another).
+        held: bool,
     },
     /// A request failed. `code` is a stable machine token; `message` is human detail.
     Error {
