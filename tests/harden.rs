@@ -800,17 +800,17 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
             if precise_resolution_expected() {
                 let resolved = repo_record
                     .canaries
-                    .get("queryset_resolved")
+                    .get("force_str_resolved")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 let cross_file = repo_record
                     .canaries
-                    .get("queryset_cross_file_hits")
+                    .get("force_str_cross_file_hits")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if !resolved || cross_file < 1 {
                     failures.push(format!(
-                        "django canary: find_callers(QuerySet) precise resolution regressed — resolved={resolved}, \
+                        "django canary: find_callers(force_str) precise resolution regressed — resolved={resolved}, \
                          cross-file hits={cross_file} (expected resolved=true and ≥ 1 cross-file caller)"
                     ));
                 }
@@ -1089,16 +1089,18 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     record.canaries.insert("proposals_mined".into(), json!(mined));
                 }
             }
-            // Precise cross-file resolution canary: `QuerySet` (defined in
-            // django/db/models/query.py) is imported and instantiated across django. With the
-            // stack-graphs engine, find_callers must resolve those call sites cross-file and report
-            // `resolved: true`. Records presence + resolved-hit count; asserted only when the engine
+            // Precise cross-file resolution canary: `force_str` (a function defined in
+            // django/utils/encoding.py) is imported and CALLED across dozens of django modules — so
+            // `find_callers` (which reports CALL sites) must resolve those calls cross-file and report
+            // `resolved: true`. Deliberately a called FUNCTION, not a base class like `QuerySet`
+            // (which is subclassed/annotated but never instantiated, so it correctly has no resolved
+            // call-site callers). Records presence + resolved-hit count; asserted only when the engine
             // is compiled in (see `precise_resolution_expected`). Both the symbol and its file are
             // long-stable django fixtures, so this is a durable lower bound.
             if let Ok(out) = svc
                 .call_tool(call_params(
                     "find_callers",
-                    &json!({ "path": "django/db/models/query.py", "name": "QuerySet", "limit": 200 }),
+                    &json!({ "path": "django/utils/encoding.py", "name": "force_str", "limit": 200 }),
                 ))
                 .await
             {
@@ -1109,14 +1111,14 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .and_then(Value::as_array)
                     .map(|hits| {
                         hits.iter()
-                            .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/db/models/query.py"))
+                            .filter(|h| h.get("path").and_then(Value::as_str) != Some("django/utils/encoding.py"))
                             .count() as u64
                     })
                     .unwrap_or(0);
-                record.canaries.insert("queryset_resolved".into(), json!(resolved));
+                record.canaries.insert("force_str_resolved".into(), json!(resolved));
                 record
                     .canaries
-                    .insert("queryset_cross_file_hits".into(), json!(cross_file_hits));
+                    .insert("force_str_cross_file_hits".into(), json!(cross_file_hits));
             }
         }
         _ => {}
