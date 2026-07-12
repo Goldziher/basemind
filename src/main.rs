@@ -118,6 +118,9 @@ enum Cmd {
     DetectWaste(basemind::textcompress::cli::DetectWasteArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
+    /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
+    /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
+    Statusline,
     /// Manage the `.basemind/` caches (gc / stats / clear). Offline path.
     #[command(subcommand)]
     Cache(basemind::cli::admin::CacheCmd),
@@ -314,9 +317,61 @@ fn main() -> Result<()> {
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
+        Cmd::Statusline => cmd_statusline(),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => cmd_comms(&root, action, json),
     }
+}
+
+/// Print a compact statusline of the daemon's hot workspaces. Fast and silent by design: a missing
+/// daemon (or any error) prints nothing and exits 0 so a shell statusline degrades cleanly. Without
+/// the `comms` feature there is no daemon, so it is a no-op.
+fn cmd_statusline() -> Result<()> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    {
+        use basemind::comms::client::CommsClient;
+        use basemind::comms::ids::AgentId;
+        use basemind::comms::singleton;
+
+        let line = (|| -> Option<String> {
+            let paths = singleton::resolve_paths().ok()?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            runtime.block_on(async move {
+                let agent = AgentId::parse("basemind-statusline").ok()?;
+                let mut client = CommsClient::connect(&paths, agent, None, None).await.ok()?;
+                let hot = client.accessed_paths().await.ok()?;
+                Some(format_statusline(&hot))
+            })
+        })();
+        if let Some(line) = line {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+/// Render the daemon's hot-workspace snapshot into one compact line (e.g. `bm: web · api +2 · 5
+/// hot`). An empty set — daemon up but nothing hot — reads `bm: idle`. Names are the workspace
+/// directory basenames; the list is capped so the line stays short regardless of the hot count.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn format_statusline(workspaces: &[basemind::comms::workspace_pool::AccessedWorkspace]) -> String {
+    if workspaces.is_empty() {
+        return "bm: idle".to_string();
+    }
+    const MAX_NAMES: usize = 3;
+    let names: Vec<&str> = workspaces
+        .iter()
+        .take(MAX_NAMES)
+        .map(|w| w.root.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+        .collect();
+    let mut label = names.join(" · ");
+    if workspaces.len() > MAX_NAMES {
+        label.push_str(&format!(" +{}", workspaces.len() - MAX_NAMES));
+    }
+    format!("bm: {label} · {} hot", workspaces.len())
 }
 
 /// Dispatch a comms lifecycle subcommand. Each command drives a small current-thread tokio
@@ -781,4 +836,36 @@ exec basemind scan --staged --quiet
     }
     println!("installed pre-commit hook at {}", hook_path.display());
     Ok(())
+}
+
+#[cfg(all(test, feature = "comms", any(unix, windows)))]
+mod statusline_tests {
+    use std::path::PathBuf;
+
+    use basemind::comms::workspace_pool::AccessedWorkspace;
+
+    fn ws(root: &str) -> AccessedWorkspace {
+        AccessedWorkspace {
+            root: PathBuf::from(root),
+            key: "k".to_string(),
+            idle_secs: 0,
+        }
+    }
+
+    #[test]
+    fn empty_hot_set_reads_idle() {
+        assert_eq!(super::format_statusline(&[]), "bm: idle");
+    }
+
+    #[test]
+    fn lists_workspace_basenames_and_the_hot_count() {
+        let hot = [ws("/repos/web"), ws("/repos/api")];
+        assert_eq!(super::format_statusline(&hot), "bm: web · api · 2 hot");
+    }
+
+    #[test]
+    fn caps_the_name_list_with_an_overflow_marker() {
+        let hot = [ws("/a/one"), ws("/a/two"), ws("/a/three"), ws("/a/four"), ws("/a/five")];
+        assert_eq!(super::format_statusline(&hot), "bm: one · two · three +2 · 5 hot");
+    }
 }
