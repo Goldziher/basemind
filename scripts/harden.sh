@@ -10,6 +10,18 @@ if [ -n "${FEATURES}" ]; then feature_args=(--features "${FEATURES}"); fi
 mkdir -p "${ROOT}"
 : >"${RESULTS}"
 
+# Isolate the index cache AND any comms daemon a `full` (comms) build spawns to a harness-owned
+# directory, so a hardening run never writes 8 giant OSS repos into the developer's live global
+# cache (~/Library/Application Support/basemind) or collides with their running daemon. The index no
+# longer lives in each repo's `.basemind/` — it is machine-global under `BASEMIND_DATA_HOME`, keyed
+# by workspace path — so a clean run wipes THAT, not a per-repo directory. Both are overridable.
+export BASEMIND_DATA_HOME="${BASEMIND_DATA_HOME:-${ROOT}/cache}"
+export BASEMIND_COMMS_DIR="${BASEMIND_COMMS_DIR:-${ROOT}/comms}"
+if [ -z "${BASEMIND_HARDEN_KEEP:-}" ]; then
+	echo "==> wiping prior global index cache at ${BASEMIND_DATA_HOME}"
+	rm -rf "${BASEMIND_DATA_HOME}"
+fi
+
 REPOS=(
 	"ripgrep|https://github.com/BurntSushi/ripgrep.git|"
 	"tokio|https://github.com/tokio-rs/tokio.git|--depth=2000"
@@ -53,11 +65,6 @@ for entry in "${REPOS[@]}"; do
 		git clone ${extra} "${url}" "${dest}"
 	else
 		echo "==> reusing existing clone at ${dest}"
-	fi
-
-	if [ -z "${BASEMIND_HARDEN_KEEP:-}" ] && [ -d "${dest}/.basemind" ]; then
-		echo "==> wiping prior .basemind/ index"
-		rm -rf "${dest}/.basemind"
 	fi
 
 	if BASEMIND_HARDEN_REPO="${dest}" \
