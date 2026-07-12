@@ -17,6 +17,51 @@ use crate::extract::Call;
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
+/// How `find_callers` fetches the cross-file resolved uses of a definition. The precise
+/// (`resolved: true`) path needs the fjall `refs_by_def` reverse index; under Seam B a
+/// `daemon_writer` serve has no open index, so it forwards the lookup to the machine daemon (the
+/// sole fjall writer, which holds it). Every other serve resolves locally from its open index — or,
+/// read-only without a daemon, the intra-file `.rref` blobs.
+pub(super) enum RefsSource<'a> {
+    /// Resolve against this serve's own store: the open fjall index, else intra-file `.rref` blobs.
+    Local(&'a crate::store::Store),
+    /// Forward the lookup to the machine daemon — the `daemon_writer` (read-only serve) path.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Daemon {
+        /// Cached broker client for this session's identity.
+        client: std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
+        /// Canonical workspace root, selecting the daemon's hot workspace.
+        root: std::path::PathBuf,
+    },
+}
+
+impl RefsSource<'_> {
+    /// The resolved uses of the definition at `(def_path, def_start)`. On the daemon path a forward
+    /// failure degrades to empty — `find_callers` then falls back to the name-based scan, exactly as
+    /// a resolution miss does — so a transient daemon hiccup never errors the tool.
+    async fn references_to(&self, def_path: &RelPath, def_start: u32) -> Vec<(RelPath, u32)> {
+        match self {
+            RefsSource::Local(store) => crate::query::resolved_references(store, def_path, def_start),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            RefsSource::Daemon { client, root } => {
+                use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
+                let query = ResolvedRefQuery::ReferencesTo {
+                    def_path: def_path.clone(),
+                    def_start,
+                };
+                match client.lock().await.resolved_refs(root.clone(), query).await {
+                    Ok(ResolvedRefResult::References(uses)) => uses,
+                    Ok(_) => Vec::new(),
+                    Err(error) => {
+                        tracing::debug!(%error, "find_callers: daemon resolved-refs forward failed; name-based fallback");
+                        Vec::new()
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Invoke `f(callee, start_byte)` for every call site in `path`, from whichever backend
 /// is live (Fjall index when open, in-RAM call index for read-only sessions). Returning
 /// `false` from `f` stops iteration early — used to enforce per-file scan caps.
@@ -123,8 +168,9 @@ pub(super) fn run_find_references(
 /// Holds the store read guard for the call (like `goto_definition`): the resolved path reads the
 /// concurrently-readable `.rref` blobs plus, when open, the Fjall index; the fallback reads
 /// `store.index_db` or the in-RAM call cache for a read-only multi-session serve.
-pub(super) fn run_find_callers(
+pub(super) async fn run_find_callers(
     store: &crate::store::Store,
+    refs: RefsSource<'_>,
     root: &std::path::Path,
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
@@ -148,7 +194,7 @@ pub(super) fn run_find_callers(
     });
 
     if let Some(sym) = symbol.as_ref()
-        && let Some(page) = resolved_callers_page(store, root, cache, &params.path, &params.name, sym, limit)
+        && let Some(page) = resolved_callers_page(store, &refs, root, cache, &params.path, sym, limit).await
     {
         let total = page.total;
         let total_is_partial = page.total_is_partial;
@@ -188,26 +234,26 @@ pub(super) fn run_find_callers(
     })
 }
 
-/// Build a scope/import-resolved caller page for the definition `symbol` (named `name`) in
+/// Build a scope/import-resolved caller page for the definition `symbol` in
 /// `def_path`, or `None` when it has no resolved uses (the caller then falls back to the name
-/// scan with no regression). Cross-file callers are included when the Fjall index is open; a
-/// read-only multi-session serve sees intra-file callers from the `.rref` blob only.
+/// scan with no regression). Cross-file callers come from the index via [`RefsSource`]: read
+/// locally when it is open, else forwarded to the machine daemon on a `daemon_writer` serve.
 ///
 /// Offset alignment (verified empirically, see the unit test): the resolver records `def_start`
 /// as the definition *identifier* byte, which is NOT the L1 `Symbol.start_byte` (the definition
 /// *node* start — e.g. the `function`/`export` keyword). So the true `def_start`(s) are recovered
 /// from the file's resolution blob: intra edges whose `def_start` falls inside the symbol's node
-/// span `[start_byte, end_byte)` AND whose identifier text equals `name`. That both bridges the
+/// span `[start_byte, end_byte)` AND whose identifier text equals `symbol.name`. That both bridges the
 /// offset gap and disambiguates same-named definitions living in other scopes.
 ///
 /// Resolved caller sets are scope-bounded (small), so the page is returned whole — capped at
 /// `limit` with `total_is_partial` when exceeded, and no `next_cursor` (unlike the name scan).
-fn resolved_callers_page(
+async fn resolved_callers_page(
     store: &crate::store::Store,
+    ref_source: &RefsSource<'_>,
     root: &std::path::Path,
     cache: &MapCache,
     def_path: &crate::path::RelPath,
-    name: &str,
     symbol: &crate::extract::Symbol,
     limit: usize,
 ) -> Option<CallScanPage> {
@@ -219,7 +265,7 @@ fn resolved_callers_page(
     let push_candidate = |byte: u32, def_starts: &mut Vec<u32>| {
         if byte >= symbol.start_byte
             && byte < symbol.end_byte
-            && super::helpers_intel::identifier_at(&def_source, byte) == name
+            && super::helpers_intel::identifier_at(&def_source, byte) == symbol.name.as_str()
             && !def_starts.contains(&byte)
         {
             def_starts.push(byte);
@@ -244,7 +290,7 @@ fn resolved_callers_page(
     let mut seen: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
-        for use_ref in crate::query::resolved_references(store, def_path, def_start) {
+        for use_ref in ref_source.references_to(def_path, def_start).await {
             if seen.insert(use_ref.clone()) {
                 uses.push(use_ref);
             }
@@ -687,7 +733,23 @@ mod tests {
         );
 
         let cache = crate::mcp::MapCache::build(&store);
-        let page = super::resolved_callers_page(&store, root, &cache, &def_path, "target", &sym, 100)
+        // `resolved_callers_page` is async (the daemon-forward path awaits a socket); drive it on a
+        // throwaway current-thread runtime so `scan` above stays OUTSIDE any runtime (a scan that
+        // flushes vectors block_on's its own runtime — nesting would panic). Local resolver: this
+        // store has an open index, so the resolution reads it directly with no daemon involved.
+        let page = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(super::resolved_callers_page(
+                &store,
+                &super::RefsSource::Local(&store),
+                root,
+                &cache,
+                &def_path,
+                &sym,
+                100,
+            ))
             .expect("resolved callers found");
         assert_eq!(
             page.total, 2,

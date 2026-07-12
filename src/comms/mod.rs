@@ -32,6 +32,8 @@ pub mod proposals_proto;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod protocol;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod resolved_proto;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod scope;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod singleton;

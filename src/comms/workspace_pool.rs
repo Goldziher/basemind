@@ -148,6 +148,18 @@ impl WorkspacePool {
         Ok(report.stats)
     }
 
+    /// Run `f` against a workspace's open read-write [`Store`] (immutable borrow), opening it into
+    /// the pool if cold. Reads that only need the fjall index — the forwarded resolved-reference
+    /// lookups (`references_to` / `definition_of`) — use this; it shares the same per-workspace
+    /// open-and-LRU path as [`Self::with_workspace_mut`]. The store `Mutex` is held for the closure,
+    /// so it briefly serializes against a same-workspace scan, fine for a fast prefix scan.
+    pub(crate) fn with_workspace<R>(&self, root: &Path, f: impl FnOnce(&Store) -> R) -> Result<R, WorkspacePoolError> {
+        let entry = self.get_or_open(root)?;
+        entry.touch();
+        let store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(f(&store))
+    }
+
     /// Run `f` against a workspace's open read-write [`Store`], opening it into the pool if cold.
     ///
     /// The per-workspace store `Mutex` is held for the whole closure, so same-workspace callers

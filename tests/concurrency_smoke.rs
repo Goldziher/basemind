@@ -602,3 +602,79 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     let _ = serve_a.cancel().await;
     let _ = serve_b.cancel().await;
 }
+
+/// A 2-file TypeScript repo with a genuine CROSS-FILE resolved reference: `lib.ts` exports
+/// `target`, `main.ts` imports it and calls it twice. oxc (code-intel-js) records those calls in the
+/// cross-file `refs_by_def` reverse index at scan time.
+#[cfg(all(feature = "comms", feature = "code-intel-js", any(unix, windows)))]
+fn build_ts_crossfile_repo() -> TempDir {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("lib.ts"), b"export function target() { return 1; }\n").unwrap();
+    std::fs::write(
+        root.join("main.ts"),
+        b"import { target } from \"./lib\";\ntarget();\ntarget();\n",
+    )
+    .unwrap();
+    git(root, &["add", "lib.ts", "main.ts"]);
+    git(root, &["commit", "-qm", "init"]);
+    dir
+}
+
+/// Regression for the daemon-era tsg/code-intel loss: a `daemon_writer` serve holds no fjall index,
+/// so the cross-file `refs_by_def` reverse index (written by the scanner's resolve pass, held only
+/// in the daemon's index) was unreachable — precise `find_callers` degraded to `resolved: false`
+/// with only the name-based scan. With the resolved-reference read forwarded to the daemon, the
+/// serve recovers the cross-file callers and reports `resolved: true` again. Uses TypeScript (oxc)
+/// so it runs on any `code-intel-js` build without the heavier Python/Java stack-graph engine.
+#[cfg(all(feature = "comms", feature = "code-intel-js", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
+    let dir = build_ts_crossfile_repo();
+    let root = dir.path();
+
+    let serve = spawn_server(root).await;
+    let peer = serve.peer().clone();
+
+    // Forward the scan to the daemon (the sole writer), which resolves + writes `refs_by_def`.
+    let rescan = peer
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan forwarded to daemon");
+    let scanned = decode_text(&rescan).get("scanned").and_then(Value::as_u64).unwrap_or(0);
+    assert!(scanned >= 2, "daemon scanned both TS files, got {scanned}");
+
+    let body = decode_text(
+        &peer
+            .call_tool(call_params(
+                "find_callers",
+                json!({ "path": "lib.ts", "name": "target", "limit": 50 }),
+            ))
+            .await
+            .expect("find_callers on the cross-file definition"),
+    );
+
+    assert_eq!(
+        body.get("resolved").and_then(Value::as_bool),
+        Some(true),
+        "find_callers must resolve cross-file through the daemon (not degrade to the name scan): {body}"
+    );
+    let hit_paths: Vec<String> = body
+        .get("hits")
+        .and_then(Value::as_array)
+        .map(|hits| {
+            hits.iter()
+                .filter_map(|h| h.get("path").and_then(Value::as_str).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        hit_paths.iter().any(|p| p == "main.ts"),
+        "the resolved caller in main.ts must be reported, got hit paths: {hit_paths:?}"
+    );
+
+    let _ = serve.cancel().await;
+}

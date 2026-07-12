@@ -8,7 +8,8 @@
 //! a **cross-file** hop through the Fjall `refs_by_path` partition when the in-file definition is
 //! itself an import binding that resolves across modules. Blobs are concurrently readable, so the
 //! in-file path answers even in a read-only session that lost the single-holder Fjall lock; the
-//! cross-file hop additionally needs the index open.
+//! cross-file hop reads the index — locally when open, else forwarded to the machine daemon (the
+//! sole fjall writer) on a `daemon_writer` serve, so precise cross-file resolution holds there too.
 
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
@@ -58,10 +59,11 @@ pub(super) async fn run_goto_definition(
             .map(|e| e.def_start);
         match intra_def {
             Some(def_start) => Some(
-                crate::query::definition_of(&store, &params.path, def_start)
+                resolve_definition(state, &store, &params.path, def_start)
+                    .await
                     .unwrap_or((params.path.clone(), def_start)),
             ),
-            None => crate::query::definition_of(&store, &params.path, pos),
+            None => resolve_definition(state, &store, &params.path, pos).await,
         }
     };
 
@@ -75,6 +77,46 @@ pub(super) async fn run_goto_definition(
         column,
         definition,
     })
+}
+
+/// The definition the use at `(use_path, use_start)` binds to. A `daemon_writer` serve has no open
+/// index, so the cross-file hop (`refs_by_path`) forwards to the machine daemon — the sole fjall
+/// writer, which holds it; every other serve reads its open index or the intra-file `.rref` blob
+/// locally. A daemon-forward failure degrades to `None`: goto then reports no binding for the
+/// position, exactly as a genuine unresolved use does, rather than erroring the tool.
+async fn resolve_definition(
+    state: &ServerState,
+    store: &crate::store::Store,
+    use_path: &RelPath,
+    use_start: u32,
+) -> Option<(RelPath, u32)> {
+    // `state` drives only the daemon-forward branch below; on a non-comms build there is no daemon.
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    let _ = state;
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
+        let client = match super::helpers_comms::resolve_comms_client(state, None).await {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::debug!(%error, "goto_definition: daemon client unavailable; no cross-file binding");
+                return None;
+            }
+        };
+        let query = ResolvedRefQuery::DefinitionOf {
+            use_path: use_path.clone(),
+            use_start,
+        };
+        return match client.lock().await.resolved_refs(state.root.clone(), query).await {
+            Ok(ResolvedRefResult::Definition(definition)) => definition,
+            Ok(_) => None,
+            Err(error) => {
+                tracing::debug!(%error, "goto_definition: daemon resolved-refs forward failed; no cross-file binding");
+                None
+            }
+        };
+    }
+    crate::query::definition_of(store, use_path, use_start)
 }
 
 /// Build a [`DefinitionLocation`] for a resolved `(def_path, def_start)`. Reuses the already-read

@@ -12,7 +12,7 @@ use super::{OutlineCache, OutlineEntry, ServerState};
 use crate::extract::SymbolKind;
 use crate::lang::{LangId, ParseOutcome, parse_with_default_timeout, with_parser};
 
-pub(super) use super::helpers_calls::{run_find_callers, run_find_references};
+pub(super) use super::helpers_calls::{RefsSource, run_find_callers, run_find_references};
 #[cfg(feature = "documents")]
 pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_files::{run_find_files, run_list_files};

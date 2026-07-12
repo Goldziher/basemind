@@ -242,6 +242,16 @@ pub enum CommsRequest {
         /// The operation to run.
         op: crate::comms::proposals_proto::GovernanceOp,
     },
+    /// Forward a precise resolved-reference read to the daemon. A `daemon_writer` serve holds no
+    /// fjall index, so the cross-file `refs_by_def` / `refs_by_path` edges live only daemon-side;
+    /// this fetches them so `find_callers` / `goto_definition` keep their precise (`resolved: true`)
+    /// cross-file resolution instead of degrading to the name-based fallback. A pure read.
+    ResolvedRefs {
+        /// Canonical workspace root, selecting the daemon's hot workspace.
+        root: std::path::PathBuf,
+        /// The lookup to run against that workspace's read-write index.
+        query: crate::comms::resolved_proto::ResolvedRefQuery,
+    },
     /// Report the workspaces the daemon currently holds hot (drives the statusline).
     AccessedPaths,
     /// List every registered workspace in the machine registry (git + plain). Read-only.
@@ -363,6 +373,8 @@ pub enum CommsResponse {
         /// Wall-clock scan time in milliseconds.
         elapsed_ms: u64,
     },
+    /// Reply to [`CommsRequest::ResolvedRefs`]: the resolved edges.
+    ResolvedRefs(crate::comms::resolved_proto::ResolvedRefResult),
     /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
     #[cfg(feature = "memory")]
     Memory(crate::comms::memory_proto::MemoryOutcome),

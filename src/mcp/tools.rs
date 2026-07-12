@@ -514,8 +514,9 @@ impl BasemindServer {
                        Resolves it via the symbols index (echoed in `definition`), then PREFERS \
                        scope/import-resolved edges: when the definition resolves, returns only \
                        precise, scope-correct callers (never conflates same-named symbols) and \
-                       sets `resolved: true` — cross-file callers need the index open, a read-only \
-                       multi-session serve sees intra-file callers from the resolution blobs. \
+                       sets `resolved: true` — cross-file callers come from the index (read locally, \
+                       or forwarded to the machine daemon on a read-only serve, so precise \
+                       resolution holds there too). \
                        Falls back to the same name-based scan as `find_references` (name-only, \
                        no-scope) when nothing resolves. Default limit 100, max 1000. `cursor` \
                        pages the name-scan fallback (resolved results return in one page). \
@@ -532,7 +533,29 @@ impl BasemindServer {
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let cache = self.state.cache.load_full();
-            run_find_callers(&store, &self.state.root, &cache, params, self.state.lifecycle_notice())
+            // A `daemon_writer` serve has no open index, so the precise cross-file resolution forwards
+            // to the daemon (the sole fjall writer); every other serve resolves locally.
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            let refs = if self.state.daemon_writer {
+                let client = super::helpers_comms::resolve_comms_client(&self.state, None).await?;
+                RefsSource::Daemon {
+                    client,
+                    root: self.state.root.clone(),
+                }
+            } else {
+                RefsSource::Local(&store)
+            };
+            #[cfg(not(all(feature = "comms", any(unix, windows))))]
+            let refs = RefsSource::Local(&store);
+            run_find_callers(
+                &store,
+                refs,
+                &self.state.root,
+                &cache,
+                params,
+                self.state.lifecycle_notice(),
+            )
+            .await
         }
         .await;
         record_call(&self.state, "find_callers", &__params_json, __started, &__result);
@@ -550,8 +573,8 @@ impl BasemindServer {
                        bytes; any byte inside the identifier resolves for span-aware engines (oxc \
                        JS/TS), the tree-sitter `locals` fallback + the cross-file hop match the \
                        identifier's start byte. The in-file hop reads the content-addressed blobs \
-                       (answers even in a read-only session); the cross-file hop also needs the \
-                       index open.",
+                       (answers even in a read-only session); the cross-file hop reads the index — \
+                       locally, or forwarded to the machine daemon on a read-only serve.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn goto_definition(

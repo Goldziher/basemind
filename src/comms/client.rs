@@ -565,6 +565,21 @@ impl CommsClient {
         }
     }
 
+    /// Forward a precise resolved-reference read to the daemon (the sole fjall writer, holding the
+    /// cross-file `refs_by_def` / `refs_by_path` index a `daemon_writer` serve cannot see). Backs
+    /// the precise cross-file `find_callers` / `goto_definition` path. A pure read, so the
+    /// transparent reconnect-and-retry is replay-safe.
+    pub async fn resolved_refs(
+        &mut self,
+        root: PathBuf,
+        query: crate::comms::resolved_proto::ResolvedRefQuery,
+    ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, CommsClientError> {
+        match self.request(CommsRequest::ResolvedRefs { root, query }).await? {
+            CommsResponse::ResolvedRefs(result) => Ok(result),
+            other => Err(self.shape_err(other, "resolved_refs")),
+        }
+    }
+
     /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
     pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
         match self.request(CommsRequest::AccessedPaths).await? {
