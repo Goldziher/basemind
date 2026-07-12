@@ -49,22 +49,9 @@ if [[ -f pip-package/basemind/__init__.py ]]; then
 	rm pip-package/basemind/__init__.py.bak
 fi
 
-if [[ -f pip-package-hermes/pyproject.toml ]]; then
-	echo "→ pip-package-hermes → $PY_VERSION"
-	sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$PY_VERSION\"/" pip-package-hermes/pyproject.toml
-	rm pip-package-hermes/pyproject.toml.bak
-fi
-
-if [[ -f pip-package-hermes/basemind_hermes_plugin/__init__.py ]]; then
-	sed -i.bak -E "s/^__version__ = \"[^\"]+\"$/__version__ = \"$PY_VERSION\"/" pip-package-hermes/basemind_hermes_plugin/__init__.py
-	rm pip-package-hermes/basemind_hermes_plugin/__init__.py.bak
-fi
-
-if [[ -f pip-package-hermes/basemind_hermes_plugin/plugin.yaml ]]; then
-	echo "→ pip-package-hermes/basemind_hermes_plugin/plugin.yaml → $VERSION"
-	sed -i.bak -E "s/^version: .*/version: \"$VERSION\"/" pip-package-hermes/basemind_hermes_plugin/plugin.yaml
-	rm pip-package-hermes/basemind_hermes_plugin/plugin.yaml.bak
-fi
+echo "→ Hermes ai-rulez source → $VERSION"
+VERSION="$VERSION" perl -0pi -e \
+	's/(\[plugin\][^\[]*?\nversion\s*=\s*")[^"]+(")/$1$ENV{VERSION}$2/s' .ai-rulez/config.toml
 
 bump_json_version() {
 	local file="$1"
@@ -83,6 +70,13 @@ bump_json_version gemini-extension.json
 bump_json_version kimi.plugin.json
 bump_json_version .claude-plugin/marketplace.json
 bump_json_version .agents/plugins/marketplace.json
+
+AI_RULEZ="${AI_RULEZ:-ai-rulez}"
+command -v "$AI_RULEZ" >/dev/null 2>&1 || {
+	echo "error: ai-rulez is required to regenerate the Hermes package" >&2
+	exit 1
+}
+"$AI_RULEZ" generate --plugin
 
 if [[ "$CURRENT_RELEASE_MINOR" != "$RELEASE_MINOR" ]]; then
 	echo "→ RELEASE_MINOR      $CURRENT_RELEASE_MINOR → $RELEASE_MINOR (minor bump — schema wipe on next scan)"
@@ -128,26 +122,18 @@ if [ -f pip-package/basemind/__init__.py ]; then
 	fi
 fi
 
-if [ -f pip-package-hermes/pyproject.toml ]; then
-	hermes_pypi_version="$(grep -E '^version = "' pip-package-hermes/pyproject.toml | head -1 | cut -d'"' -f2)"
+if [ -f .hermes/package/pyproject.toml ]; then
+	hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' .hermes/package/pyproject.toml)"
 	if [ "$hermes_pypi_version" != "$PY_VERSION" ]; then
-		echo "✗ pip-package-hermes/pyproject.toml: expected $PY_VERSION, got $hermes_pypi_version"
+		echo "✗ .hermes/package/pyproject.toml: expected $PY_VERSION, got $hermes_pypi_version"
 		validation_failed=1
 	fi
 fi
 
-if [ -f pip-package-hermes/basemind_hermes_plugin/__init__.py ]; then
-	hermes_init_version="$(grep -E '^__version__ = "' pip-package-hermes/basemind_hermes_plugin/__init__.py | cut -d'"' -f2)"
-	if [ "$hermes_init_version" != "$PY_VERSION" ]; then
-		echo "✗ pip-package-hermes/basemind_hermes_plugin/__init__.py: expected $PY_VERSION, got $hermes_init_version"
-		validation_failed=1
-	fi
-fi
-
-if [ -f pip-package-hermes/basemind_hermes_plugin/plugin.yaml ]; then
-	hermes_plugin_version="$(grep -E '^version: ' pip-package-hermes/basemind_hermes_plugin/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
+if [ -f .hermes/package/src/basemind_hermes_plugin/plugin.yaml ]; then
+	hermes_plugin_version="$(grep -E '^version: ' .hermes/package/src/basemind_hermes_plugin/plugin.yaml | head -1 | sed -E 's/^version: "?([^"]+)"?/\1/')"
 	if [ "$hermes_plugin_version" != "$VERSION" ]; then
-		echo "✗ pip-package-hermes/basemind_hermes_plugin/plugin.yaml: expected $VERSION, got $hermes_plugin_version"
+		echo "✗ Hermes plugin.yaml: expected $VERSION, got $hermes_plugin_version"
 		validation_failed=1
 	fi
 fi

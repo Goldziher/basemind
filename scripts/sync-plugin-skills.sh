@@ -47,7 +47,6 @@ TREES=(
 	".codex-plugin"
 	".cursor-plugin"
 	"opencode-plugin"
-	"pip-package-hermes/basemind_hermes_plugin"
 )
 HOOK_TREES=(
 	".codex-plugin"
@@ -65,6 +64,13 @@ for tree in "${TREES[@]}"; do
 	done
 	printf 'sync-plugin-skills: %s ← skills + commands\n' "$tree"
 done
+
+AI_RULEZ="${AI_RULEZ:-ai-rulez}"
+command -v "$AI_RULEZ" >/dev/null 2>&1 || {
+	printf 'sync-plugin-skills: ai-rulez is required to generate Hermes packages\n' >&2
+	exit 1
+}
+"$AI_RULEZ" generate --plugin
 
 for tree in "${HOOK_TREES[@]}"; do
 	mkdir -p "$tree/hooks"

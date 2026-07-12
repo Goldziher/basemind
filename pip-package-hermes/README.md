@@ -50,7 +50,8 @@ Restart your Hermes session so it re-reads the config and loads the plugin.
 ## What it registers
 
 - **Skills** — `basemind`, `basemind-code-search`, `basemind-git-history`, `basemind-documents`,
-  `basemind-comms`, `basemind-cli`, `basemind-doctor`, `basemind-scan`, `basemind-stats`.
+  `basemind-comms`, `basemind-cli`, `basemind-doctor`, `basemind-scan`, `basemind-stats`,
+  `multi-agent-room`.
 - **Slash commands** — `bm`, `bm-init`, `bm-scan`, `bm-doctor`, `bm-stats`, `bm-statusline`.
 - **Hooks** — `on_session_start` (operating discipline + condensed comms inbox) and `pre_llm_call`
   (per-turn agent-comms deltas). Best-effort; the MCP tools work regardless.

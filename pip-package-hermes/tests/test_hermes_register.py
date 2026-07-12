@@ -16,10 +16,14 @@ from pathlib import Path
 import basemind_hermes_plugin
 import pytest
 import tomllib
-from basemind_hermes_plugin import hermes
+
+try:
+    from basemind_hermes_plugin import hermes
+except ImportError:
+    hermes = basemind_hermes_plugin
 
 PKG_DIR = Path(hermes.__file__).resolve().parent
-PIP_PKG_ROOT = PKG_DIR.parent
+PIP_PKG_ROOT = PKG_DIR.parents[1] if PKG_DIR.parent.name == "src" else PKG_DIR.parent
 
 
 class RecordingCtx:
@@ -120,8 +124,12 @@ def test_pyproject_declares_the_hermes_entry_point():
     data = tomllib.loads((PIP_PKG_ROOT / "pyproject.toml").read_text())
     entry = data["project"]["entry-points"]["hermes_agent.plugins"]
     assert entry == {"basemind": "basemind_hermes_plugin"}
-    pkg_data = data["tool"]["setuptools"]["package-data"]["basemind_hermes_plugin"]
-    assert "plugin.yaml" in pkg_data
+    if "setuptools" in data["tool"]:
+        pkg_data = data["tool"]["setuptools"]["package-data"]["basemind_hermes_plugin"]
+        assert "plugin.yaml" in pkg_data
+    else:
+        packages = data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"]
+        assert packages == ["src/basemind_hermes_plugin"]
 
 
 def test_bundled_assets_match_package_data_globs():

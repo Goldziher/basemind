@@ -1,6 +1,0 @@
-name: basemind
-version: "0.21.1"
-description: Tree-sitter code-map + git history/blame + document RAG + shared agent memory, over MCP.
-provides_hooks:
-  - on_session_start
-  - pre_llm_call

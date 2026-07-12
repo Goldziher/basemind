@@ -7,6 +7,29 @@ presets = ["claude", "codex"]
 
 builtins = ["rust", "cicd", "documentation", "observability", "default-commands"]
 
+[plugin]
+name = "basemind"
+version = "0.21.1"
+display_name = "basemind"
+description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
+homepage = "https://github.com/Goldziher/basemind"
+repository = "https://github.com/Goldziher/basemind"
+license = "MIT"
+category = "developer-tools"
+keywords = ["mcp", "agent-context", "rag", "code-map", "tree-sitter"]
+tags = ["mcp", "code-intelligence", "rag", "tree-sitter", "git", "embeddings"]
+runtimes = ["hermes"]
+content_root = "."
+
+[plugin.author]
+name = "Na'aman Hirschfeld"
+email = "nhirschfeld@gmail.com"
+url = "https://github.com/Goldziher"
+
+[plugin.hermes]
+source = "pip-package-hermes/basemind_hermes_plugin/hermes.py"
+requires_python = ">=3.9"
+
 
 [[mcp_servers]]
 name = "ai-rulez"

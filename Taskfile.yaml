@@ -22,6 +22,16 @@ tasks:
     desc: Run all tests
     cmds:
       - cargo test --workspace
+      - task: hermes:test
+
+  hermes:test:
+    desc: Validate and build the generated Hermes plugin package
+    env:
+      PYTHONPATH: .hermes/package/src
+    cmds:
+      - uv run --with pytest python -m pytest pip-package-hermes/tests/test_hermes_register.py
+      - rm -rf /tmp/basemind-hermes-wheel
+      - uv build --wheel --out-dir /tmp/basemind-hermes-wheel .hermes/package
 
   test:verbose:
     desc: Run tests with verbose output

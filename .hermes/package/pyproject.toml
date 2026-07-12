@@ -1,0 +1,25 @@
+[build-system]
+requires = ['hatchling>=1.27']
+build-backend = 'hatchling.build'
+
+[project]
+name = 'basemind-hermes-plugin'
+version = '0.21.1'
+description = 'Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB.'
+requires-python = '>=3.9'
+keywords = ['mcp', 'agent-context', 'rag', 'code-map', 'tree-sitter']
+
+[project.entry-points]
+[project.entry-points.'hermes_agent.plugins']
+basemind = 'basemind_hermes_plugin'
+
+[project.urls]
+Homepage = 'https://github.com/Goldziher/basemind'
+Repository = 'https://github.com/Goldziher/basemind'
+
+[tool]
+[tool.hatch]
+[tool.hatch.build]
+[tool.hatch.build.targets]
+[tool.hatch.build.targets.wheel]
+packages = ['src/basemind_hermes_plugin']

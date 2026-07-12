@@ -109,20 +109,11 @@ jobs:
             fi
           fi
 
-          # Check pip-package-hermes/pyproject.toml (PyPI form)
-          if [ -f pip-package-hermes/pyproject.toml ]; then
-            hermes_pypi_version="$(grep -E '^version = "' pip-package-hermes/pyproject.toml | head -1 | cut -d'"' -f2)"
+          # Check generated Hermes PyPI package.
+          if [ -f .hermes/package/pyproject.toml ]; then
+            hermes_pypi_version="$(awk '/^version = / {value=$3; gsub(/[\"\047]/, "", value); print value; exit}' .hermes/package/pyproject.toml)"
             if [ "$hermes_pypi_version" != "$target_python_version" ]; then
-              echo "::error::pip-package-hermes/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
-              exit 1
-            fi
-          fi
-
-          # Check pip-package-hermes/basemind_hermes_plugin/__init__.py
-          if [ -f pip-package-hermes/basemind_hermes_plugin/__init__.py ]; then
-            hermes_init_version="$(grep -E '^__version__ = "' pip-package-hermes/basemind_hermes_plugin/__init__.py | cut -d'"' -f2)"
-            if [ "$hermes_init_version" != "$target_python_version" ]; then
-              echo "::error::pip-package-hermes/basemind_hermes_plugin/__init__.py version mismatch: expected $target_python_version, got $hermes_init_version"
+              echo "::error::.hermes/package/pyproject.toml version mismatch: expected $target_python_version, got $hermes_pypi_version"
               exit 1
             fi
           fi
@@ -807,19 +798,19 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.9"
+          python-version: "3.11"
 
       - name: Build Python package
         run: |
           python -m pip install --upgrade pip
           python -m pip install build
-          cd pip-package-hermes
+          cd .hermes/package
           python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: pip-package-hermes/dist
+          packages-dir: .hermes/package/dist
           skip-existing: true
 
   publish_homebrew:
