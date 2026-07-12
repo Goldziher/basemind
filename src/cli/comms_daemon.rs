@@ -94,7 +94,9 @@ pub fn run() -> Result<()> {
         });
 
         let store_for_prune = store.clone();
+        let broker_for_prune = broker.clone();
         tokio::spawn(async move {
+            use crate::comms::daemon::WORKSPACE_HOT_TTL;
             let mut tick = tokio::time::interval(PRUNE_EVERY);
             tick.tick().await;
             loop {
@@ -103,6 +105,10 @@ pub fn run() -> Result<()> {
                     Ok(n) if n > 0 => tracing::info!(pruned = n, "comms: pruned expired messages"),
                     Ok(_) => {}
                     Err(error) => tracing::warn!(%error, "comms: periodic message prune failed"),
+                }
+                let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
+                if evicted > 0 {
+                    tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
             }
         });

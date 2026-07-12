@@ -626,3 +626,42 @@ async fn archive_idle_threads_flips_stale_active_threads() {
     assert_eq!(archived, 1);
     assert!(!broker.store.get_thread(&thread).unwrap().unwrap().active);
 }
+
+#[tokio::test]
+async fn rescan_request_indexes_a_workspace_and_surfaces_it_as_accessed() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+    let mut session = Session::default();
+
+    let ws = tempfile::tempdir().expect("workspace");
+    std::fs::write(ws.path().join("lib.rs"), "pub fn indexed() -> u32 { 7 }\n").expect("write source");
+
+    let resp = broker
+        .handle(
+            CommsRequest::Rescan {
+                root: ws.path().to_path_buf(),
+                paths: None,
+                full: false,
+            },
+            &mut session,
+            &tx,
+        )
+        .await;
+    match resp {
+        CommsResponse::Rescanned { scanned, updated, .. } => {
+            assert_eq!(scanned, 1);
+            assert_eq!(updated, 1);
+        }
+        other => panic!("expected Rescanned, got {other:?}"),
+    }
+
+    let accessed = broker.handle(CommsRequest::AccessedPaths, &mut session, &tx).await;
+    match accessed {
+        CommsResponse::Accessed { workspaces } => {
+            assert_eq!(workspaces.len(), 1);
+            assert_eq!(workspaces[0].root, ws.path());
+        }
+        other => panic!("expected Accessed, got {other:?}"),
+    }
+}
