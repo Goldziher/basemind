@@ -635,6 +635,67 @@ async fn blob_gc_waits_for_an_in_flight_rescan() {
     gc.await.expect("blob GC runs once no rescan holds the read lock");
 }
 
+/// End-to-end correctness (not just lock timing): racing a real full rescan against the destructive
+/// global blob sweep, repeatedly, must never leave the index pointing at a reaped blob. A rescan
+/// writes fresh content-addressed blobs but only rewrites `index.msgpack` (which the sweep
+/// reference-counts) at completion, so its just-written blobs are unreferenced for the whole scan;
+/// without the `blob_gc_lock` serialization a sweep landing mid-scan would reap them. The invariant
+/// checked here is the outcome, which holds under any interleaving: every blob the final index
+/// references still exists on disk.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+
+    let ws = tempfile::tempdir().expect("workspace");
+    for i in 0..12 {
+        std::fs::write(
+            ws.path().join(format!("m{i}.rs")),
+            format!("pub fn f{i}() -> u32 {{ {i} }}\npub struct S{i};\n"),
+        )
+        .expect("write source");
+    }
+    let root = ws.path().to_path_buf();
+
+    // Interleave the two under load: each round races a full rescan against a full sweep.
+    for _ in 0..6 {
+        let mut session = Session::default();
+        let rescan = broker.handle(
+            CommsRequest::Rescan {
+                root: root.clone(),
+                paths: None,
+                full: true,
+            },
+            &mut session,
+            &tx,
+        );
+        let (rescan_resp, gc_res) = tokio::join!(rescan, broker.run_blob_gc());
+        assert!(
+            matches!(rescan_resp, CommsResponse::Rescanned { .. }),
+            "each raced rescan must succeed, got {rescan_resp:?}"
+        );
+        gc_res.expect("blob GC must succeed under a concurrent rescan");
+    }
+
+    // Every blob the surviving index references must still be present — no live blob was reaped.
+    let basemind_dir = crate::store::workspace_cache_dir(&root);
+    let referenced = crate::store_gc::collect_referenced_hashes(&basemind_dir).expect("collect referenced hashes");
+    assert!(
+        !referenced.is_empty(),
+        "the scanned workspace must reference at least one blob"
+    );
+    let blobs_dir = crate::store::global_blobs_dir();
+    for stem in &referenced {
+        let prefix = format!("{stem}.");
+        let present = std::fs::read_dir(&blobs_dir)
+            .expect("read blobs dir")
+            .flatten()
+            .any(|entry| entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix)));
+        assert!(present, "referenced blob {stem} was reaped by a concurrent GC sweep");
+    }
+}
+
 /// The system auto-archive sweep flips an idle active thread; a fresh one stays active.
 #[tokio::test]
 async fn archive_idle_threads_flips_stale_active_threads() {
