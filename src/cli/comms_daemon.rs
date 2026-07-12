@@ -135,8 +135,9 @@ pub fn run() -> Result<()> {
                 }
                 // Cross-workspace blob GC over the machine-global store: reference-count against ~keep
                 // EVERY workspace and reap blobs no workspace points at. Safe only here — the daemon ~keep
-                // is the sole caller that sees all references. ~keep
-                match crate::store_gc::gc_global_blobs() {
+                // is the sole caller that sees all references. Routed through the broker so it takes ~keep
+                // the blob-GC write lock and never sweeps while a rescan is writing fresh blobs. ~keep
+                match broker_for_prune.run_blob_gc().await {
                     Ok(report) if report.removed > 0 => tracing::info!(
                         removed = report.removed,
                         bytes_freed = report.bytes_freed,

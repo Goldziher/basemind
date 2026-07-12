@@ -609,6 +609,32 @@ async fn idle_reaper_tracks_links_and_activity() {
     assert!(!broker.is_idle_for(Duration::ZERO).await);
 }
 
+/// The destructive global blob GC must not sweep while a rescan is in flight: a rescan writes new
+/// content-addressed blobs before its `index.msgpack` (which the GC reference-counts) is rewritten,
+/// so a mid-rescan sweep would see those blobs as orphans and reap them. `on_rescan` holds the
+/// blob-GC READ lock for the whole scan; `run_blob_gc` takes the WRITE lock — so the sweep blocks
+/// until the rescan releases.
+#[tokio::test]
+async fn blob_gc_waits_for_an_in_flight_rescan() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+
+    // Hold the READ side exactly as `on_rescan` does, simulating a scan in flight.
+    let rescan_guard = broker.blob_gc_lock.read().await;
+
+    // The GC sweep must block on the WRITE side while the read is held.
+    let mut gc = std::pin::pin!(broker.run_blob_gc());
+    tokio::select! {
+        biased;
+        _ = &mut gc => panic!("blob GC swept while a rescan held the blob-GC read lock"),
+        _ = tokio::time::sleep(Duration::from_millis(150)) => {}
+    }
+
+    // Once the rescan releases the read lock, the sweep proceeds.
+    drop(rescan_guard);
+    gc.await.expect("blob GC runs once no rescan holds the read lock");
+}
+
 /// The system auto-archive sweep flips an idle active thread; a fresh one stays active.
 #[tokio::test]
 async fn archive_idle_threads_flips_stale_active_threads() {

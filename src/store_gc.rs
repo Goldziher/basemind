@@ -65,6 +65,9 @@ pub enum GcError {
         #[source]
         source: std::io::Error,
     },
+    /// The blocking GC task panicked or was cancelled before returning a report.
+    #[error("blob GC task failed to join: {0}")]
+    Join(String),
 }
 
 /// A clearable component of the `.basemind/` cache directory.

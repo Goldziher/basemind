@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
 use super::cursor::Cursor;
@@ -101,6 +102,13 @@ pub struct Broker {
     /// The machine-wide repo/worktree/branch/workspace registry (distinct from the `registry` sink
     /// map above). The daemon is its sole writer; coordination tools read/mutate through it.
     machine_registry: Mutex<MachineRegistry>,
+    /// Serializes destructive global blob GC against in-flight rescans. Rescans take the READ side
+    /// (many workspaces rescan concurrently); the GC sweep takes the WRITE side. A rescan writes new
+    /// content-addressed blobs BEFORE its `index.msgpack` (which `collect_referenced_hashes` reads)
+    /// is rewritten, so a GC that reference-counts mid-rescan would see those fresh blobs as orphans
+    /// and reap them — a first-ever scan (no prior index) could lose ALL its blobs. This lock keeps
+    /// the two mutually exclusive without blocking concurrent rescans of different workspaces.
+    blob_gc_lock: RwLock<()>,
     subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     last_activity_ms: AtomicU64,
@@ -137,6 +145,7 @@ impl Broker {
                 state: LifecycleState::Starting,
             }),
             machine_registry: Mutex::new(machine_registry),
+            blob_gc_lock: RwLock::new(()),
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
@@ -207,6 +216,17 @@ impl Broker {
     /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
     pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
         self.workspaces.evict_idle(ttl)
+    }
+
+    /// Reference-count the machine-global blob store across every workspace and reap orphans, under
+    /// the WRITE side of [`Broker::blob_gc_lock`] so no rescan is writing blobs mid-sweep. Only the
+    /// daemon calls this — it alone sees every workspace's references, the precondition for a safe
+    /// cross-workspace sweep. The blocking filesystem work runs off the reactor.
+    pub async fn run_blob_gc(&self) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
+        let _sweep_guard = self.blob_gc_lock.write().await;
+        tokio::task::spawn_blocking(crate::store_gc::gc_global_blobs)
+            .await
+            .map_err(|join| crate::store_gc::GcError::Join(join.to_string()))?
     }
 
     /// Handle one request on a link. Returns the direct response.
@@ -332,6 +352,9 @@ impl Broker {
         full: bool,
     ) -> CommsResponse {
         self.mark_active().await;
+        // Hold the READ side across the whole scan so a concurrent blob GC (WRITE side) cannot
+        // reference-count and reap this rescan's freshly-written blobs before its index.msgpack lands.
+        let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let started = Instant::now();
         match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full)).await {
