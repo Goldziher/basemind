@@ -103,6 +103,11 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("message_get", "comms read"),
         ("inbox_read", "comms inbox"),
         ("inbox_ack", "comms inbox"),
+        ("workspaces", "registry workspaces"),
+        ("worktrees", "registry worktrees"),
+        ("branches", "registry branches"),
+        ("worktree_claim", "registry claim"),
+        ("worktree_release", "registry release"),
     ]);
     #[cfg(all(feature = "shells", any(unix, windows)))]
     m.extend([

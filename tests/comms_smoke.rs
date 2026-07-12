@@ -101,6 +101,32 @@ fn agent(a: &str) -> AgentId {
     AgentId::parse(a).expect("agent")
 }
 
+/// Run a git command in `cwd`, asserting success. Used to build a real repo the daemon's machine
+/// registry can enumerate when a client Hello auto-registers its cwd.
+fn git(args: &[&str], cwd: &Path) {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A committed git repo on branch `main` with one source file, rooted at `main`.
+fn init_git_repo(main: &Path) {
+    std::fs::create_dir_all(main).expect("mkdir main");
+    git(&["init", "-q", "-b", "main"], main);
+    git(&["config", "user.email", "t@example.com"], main);
+    git(&["config", "user.name", "Test"], main);
+    std::fs::write(main.join("a.rs"), b"pub fn alpha() {}\n").expect("write a.rs");
+    git(&["add", "."], main);
+    git(&["commit", "-qm", "init"], main);
+}
+
 /// `thread_start` needs at least two addressing dimensions; one is rejected.
 #[tokio::test(flavor = "multi_thread")]
 async fn thread_start_enforces_two_of_three_dimensions() {
@@ -466,4 +492,83 @@ async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
     let hot = client.accessed_paths().await.expect("accessed_paths");
     assert_eq!(hot.len(), 1, "exactly one workspace is hot");
     assert_eq!(hot[0].root, workspace, "the scanned workspace is reported hot");
+}
+
+/// Connecting a client with a git-repo cwd auto-registers it in the daemon's machine registry, so
+/// `list_workspaces` / `list_worktrees` surface the repo, and a two-claimant worktree race resolves
+/// to exactly one holder. The daemon's registry is isolated to the tempdir via `BASEMIND_DATA_HOME`.
+#[tokio::test(flavor = "multi_thread")]
+async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let repo = tmp.path().join("repo");
+    init_git_repo(&repo);
+
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    // The Hello handshake carries the repo root as cwd; the daemon auto-registers it.
+    let mut alice = connect(&socket, "agent-alice", &repo).await;
+
+    let workspaces = alice.list_workspaces().await.expect("list workspaces");
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "the connecting repo is the only registered workspace"
+    );
+    let ws = &workspaces[0];
+    assert_eq!(ws.root, repo, "the registered root is the repo root");
+    let repo_id = ws.repo_id.clone().expect("a git workspace has a repo id");
+
+    let worktrees = alice.list_worktrees(repo_id.clone()).await.expect("list worktrees");
+    assert_eq!(worktrees.len(), 1, "one (main) worktree");
+    assert_eq!(worktrees[0].name, "(main)", "the main worktree name");
+    assert_eq!(worktrees[0].claimed_by, None, "unclaimed at first");
+
+    let branches = alice.list_branches(repo_id.clone()).await.expect("list branches");
+    assert_eq!(branches.len(), 1, "one local branch");
+    assert_eq!(branches[0].name, "main", "the main branch");
+
+    // Two claimants race for the (main) worktree; exactly one wins.
+    let mut bob = connect(&socket, "agent-bob", &repo).await;
+    let a_won = alice
+        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
+        .await
+        .expect("alice claim");
+    let b_won = bob
+        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
+        .await
+        .expect("bob claim");
+    assert!(a_won, "alice's first claim wins");
+    assert!(!b_won, "bob cannot claim a worktree alice holds");
+
+    // The registry now reflects the holder.
+    let worktrees = alice
+        .list_worktrees(repo_id.clone())
+        .await
+        .expect("list worktrees after claim");
+    assert_eq!(
+        worktrees[0].claimed_by.as_deref(),
+        Some("agent-alice"),
+        "the (main) worktree is claimed by alice"
+    );
+
+    // Alice releases; bob can then claim.
+    let released = alice
+        .release_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
+        .await
+        .expect("alice release");
+    assert!(released, "alice releases her own claim");
+    let b_won_now = bob
+        .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
+        .await
+        .expect("bob claim after release");
+    assert!(b_won_now, "bob claims once the worktree is freed");
+
+    // An unknown worktree name is not a hard error; it just fails to claim.
+    let unknown = bob
+        .claim_worktree(repo_id.clone(), "no-such-worktree".to_string(), "agent-bob".to_string())
+        .await
+        .expect("claim of unknown worktree returns Ok(false)");
+    assert!(!unknown, "an unknown worktree cannot be claimed");
 }

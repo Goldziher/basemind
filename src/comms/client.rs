@@ -539,6 +539,79 @@ impl CommsClient {
         }
     }
 
+    /// List every registered workspace in the daemon's machine registry (git + plain). Read-only.
+    pub async fn list_workspaces(&mut self) -> Result<Vec<crate::registry::WorkspaceRecord>, CommsClientError> {
+        match self.request(CommsRequest::WorkspacesList).await? {
+            CommsResponse::Workspaces { workspaces } => Ok(workspaces),
+            other => Err(self.shape_err(other, "list_workspaces")),
+        }
+    }
+
+    /// List the worktrees of a registered repo by id. An unknown repo id returns an empty list.
+    pub async fn list_worktrees(
+        &mut self,
+        repo_id: String,
+    ) -> Result<Vec<crate::registry::WorktreeRecord>, CommsClientError> {
+        match self.request(CommsRequest::WorktreesList { repo_id }).await? {
+            CommsResponse::Worktrees { worktrees } => Ok(worktrees),
+            other => Err(self.shape_err(other, "list_worktrees")),
+        }
+    }
+
+    /// List the local branches of a registered repo by id. An unknown repo id returns an empty list.
+    pub async fn list_branches(
+        &mut self,
+        repo_id: String,
+    ) -> Result<Vec<crate::registry::BranchRecord>, CommsClientError> {
+        match self.request(CommsRequest::BranchesList { repo_id }).await? {
+            CommsResponse::Branches { branches } => Ok(branches),
+            other => Err(self.shape_err(other, "list_branches")),
+        }
+    }
+
+    /// Advisory-claim a worktree for `claimant`. Returns `true` when the claim is now held by
+    /// `claimant` (freshly taken or already theirs), `false` when another claimant holds it or the
+    /// worktree is unknown.
+    pub async fn claim_worktree(
+        &mut self,
+        repo_id: String,
+        name: String,
+        claimant: String,
+    ) -> Result<bool, CommsClientError> {
+        match self
+            .request(CommsRequest::WorktreeClaim {
+                repo_id,
+                name,
+                claimant,
+            })
+            .await?
+        {
+            CommsResponse::ClaimOutcome { held } => Ok(held),
+            other => Err(self.shape_err(other, "claim_worktree")),
+        }
+    }
+
+    /// Release an advisory worktree claim held by `claimant`. Returns `true` when a claim by
+    /// `claimant` was cleared, `false` otherwise.
+    pub async fn release_worktree(
+        &mut self,
+        repo_id: String,
+        name: String,
+        claimant: String,
+    ) -> Result<bool, CommsClientError> {
+        match self
+            .request(CommsRequest::WorktreeRelease {
+                repo_id,
+                name,
+                claimant,
+            })
+            .await?
+        {
+            CommsResponse::ClaimOutcome { held } => Ok(held),
+            other => Err(self.shape_err(other, "release_worktree")),
+        }
+    }
+
     async fn expect_ok(&mut self, req: CommsRequest, label: &'static str) -> Result<(), CommsClientError> {
         match self.request(req).await? {
             CommsResponse::Ok => Ok(()),

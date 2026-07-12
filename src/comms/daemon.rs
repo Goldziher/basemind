@@ -29,6 +29,7 @@ use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, 
 use super::scope::{self, ScopeChain};
 use super::store::{self, CommsStore, CommsStoreError};
 use super::workspace_pool::{self, WorkspacePool};
+use crate::registry::Registry as MachineRegistry;
 
 /// Default page size when a client omits `limit`.
 pub const DEFAULT_LIMIT: u32 = 100;
@@ -97,6 +98,9 @@ pub struct Broker {
     /// forward their scans/rescans here so concurrent read-only sessions never contend for the lock.
     workspaces: Arc<WorkspacePool>,
     registry: Mutex<Registry>,
+    /// The machine-wide repo/worktree/branch/workspace registry (distinct from the `registry` sink
+    /// map above). The daemon is its sole writer; coordination tools read/mutate through it.
+    machine_registry: Mutex<MachineRegistry>,
     subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     last_activity_ms: AtomicU64,
@@ -106,8 +110,25 @@ pub struct Broker {
 }
 
 impl Broker {
-    /// Construct a broker over an already-opened store.
+    /// Construct a broker over an already-opened store, opening the machine registry from the
+    /// machine-global cache. A registry-open failure degrades to an empty in-memory registry (rooted
+    /// at a throwaway path) rather than failing the daemon — coordination tools then return empty
+    /// until a workspace registers. Use [`Broker::with_registry`] to inject a registry (tests).
     pub fn new(store: Arc<CommsStore>) -> Self {
+        let registry = MachineRegistry::from_data_home().unwrap_or_else(|error| {
+            tracing::warn!(%error, "comms: machine registry open failed; using an empty in-memory registry");
+            MachineRegistry::open(
+                &std::env::temp_dir().join(format!("basemind-registry-fallback-{}", std::process::id())),
+            )
+            .expect("open fallback registry in temp dir")
+        });
+        Self::with_registry(store, registry)
+    }
+
+    /// Construct a broker over an already-opened store and an explicit machine registry. The daemon
+    /// owns the registry as its sole writer; the coordination tools read/mutate through it. Tests
+    /// inject an isolated registry here.
+    pub fn with_registry(store: Arc<CommsStore>, machine_registry: MachineRegistry) -> Self {
         Self {
             store,
             workspaces: Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP)),
@@ -115,6 +136,7 @@ impl Broker {
                 sinks: AHashMap::new(),
                 state: LifecycleState::Starting,
             }),
+            machine_registry: Mutex::new(machine_registry),
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
@@ -216,7 +238,19 @@ impl Broker {
                 proto_ver,
                 remote,
                 cwd,
-            } => self.on_hello(agent, proto_ver, remote, cwd, session),
+            } => {
+                let resp = self.on_hello(agent, proto_ver, remote, cwd.clone(), session)?;
+                // Best-effort: registering a serve session's cwd populates the machine registry so
+                // the coordination tools see the repo without a separate register step. A discovery
+                // or persist failure is logged and ignored — Hello must not fail on it.
+                if let (CommsResponse::Welcome { .. }, Some(root)) = (&resp, cwd) {
+                    let mut registry = self.machine_registry.lock().await;
+                    if let Err(error) = registry.register_workspace(&root) {
+                        tracing::warn!(%error, root = %root.display(), "comms: registry auto-register failed");
+                    }
+                }
+                Ok(resp)
+            }
             CommsRequest::Register { card } => self.on_register(session, card),
             CommsRequest::ListAgents { thread } => self.on_list_agents(thread),
             CommsRequest::ThreadStart { subject, path, members } => {
@@ -266,6 +300,19 @@ impl Broker {
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
             CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
+            CommsRequest::WorkspacesList => Ok(self.on_workspaces_list().await),
+            CommsRequest::WorktreesList { repo_id } => Ok(self.on_worktrees_list(repo_id).await),
+            CommsRequest::BranchesList { repo_id } => Ok(self.on_branches_list(repo_id).await),
+            CommsRequest::WorktreeClaim {
+                repo_id,
+                name,
+                claimant,
+            } => Ok(self.on_worktree_claim(repo_id, name, claimant).await),
+            CommsRequest::WorktreeRelease {
+                repo_id,
+                name,
+                claimant,
+            } => Ok(self.on_worktree_release(repo_id, name, claimant).await),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
             CommsRequest::Stop => {
@@ -309,6 +356,48 @@ impl Broker {
     fn on_accessed_paths(&self) -> CommsResponse {
         CommsResponse::Accessed {
             workspaces: self.workspaces.accessed(),
+        }
+    }
+
+    /// List every registered workspace in the machine registry.
+    async fn on_workspaces_list(&self) -> CommsResponse {
+        let registry = self.machine_registry.lock().await;
+        CommsResponse::Workspaces {
+            workspaces: registry.workspaces(),
+        }
+    }
+
+    /// List a registered repo's worktrees. An unknown repo id yields an empty list.
+    async fn on_worktrees_list(&self, repo_id: String) -> CommsResponse {
+        let registry = self.machine_registry.lock().await;
+        CommsResponse::Worktrees {
+            worktrees: registry.worktrees(&repo_id),
+        }
+    }
+
+    /// List a registered repo's local branches. An unknown repo id yields an empty list.
+    async fn on_branches_list(&self, repo_id: String) -> CommsResponse {
+        let registry = self.machine_registry.lock().await;
+        CommsResponse::Branches {
+            branches: registry.branches(&repo_id),
+        }
+    }
+
+    /// Advisory-claim a worktree. An unknown `(repo_id, name)` returns `held = false`.
+    async fn on_worktree_claim(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
+        let mut registry = self.machine_registry.lock().await;
+        match registry.claim_worktree(&repo_id, &name, &claimant) {
+            Ok(held) => CommsResponse::ClaimOutcome { held },
+            Err(error) => registry_error(error),
+        }
+    }
+
+    /// Release an advisory worktree claim held by `claimant`.
+    async fn on_worktree_release(&self, repo_id: String, name: String, claimant: String) -> CommsResponse {
+        let mut registry = self.machine_registry.lock().await;
+        match registry.release_worktree(&repo_id, &name, &claimant) {
+            Ok(held) => CommsResponse::ClaimOutcome { held },
+            Err(error) => registry_error(error),
         }
     }
 
@@ -885,6 +974,15 @@ fn not_creator() -> CommsResponse {
     CommsResponse::Error {
         code: "not_creator".to_string(),
         message: "only the thread creator may manage membership or archive it".to_string(),
+    }
+}
+
+/// Map a [`RegistryError`](crate::registry::RegistryError) (only surfaced on a claim/release
+/// persist failure) into a stable-token error response.
+fn registry_error(error: crate::registry::RegistryError) -> CommsResponse {
+    CommsResponse::Error {
+        code: "registry_error".to_string(),
+        message: error.to_string(),
     }
 }
 

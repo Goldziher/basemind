@@ -175,6 +175,86 @@ fn prune_missing_drops_a_deleted_worktree() {
 }
 
 #[test]
+fn refresh_from_root_adds_new_and_drops_stale_rows() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let main = tmp.path().join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    let key = registry.register_workspace(&main).expect("register");
+    let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
+    assert_eq!(registry.branches(&repo_id).len(), 1, "only main branch at first");
+    assert_eq!(registry.worktrees(&repo_id).len(), 1, "only main worktree at first");
+
+    // Add a branch and a linked worktree with real git plumbing, then refresh from the root.
+    git(&["branch", "feature"], &main);
+    let wt = tmp.path().join("wt");
+    git(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "feature"], &main);
+    registry.refresh_from_root(&main).expect("refresh from root");
+
+    let branches = registry.branches(&repo_id);
+    let branch_names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
+    assert!(branch_names.contains(&"main"), "main branch present: {branch_names:?}");
+    assert!(
+        branch_names.contains(&"feature"),
+        "new feature branch surfaced after refresh: {branch_names:?}"
+    );
+    let worktree_names: Vec<String> = registry.worktrees(&repo_id).iter().map(|w| w.name.clone()).collect();
+    assert!(
+        worktree_names.contains(&"wt".to_string()),
+        "new linked worktree surfaced after refresh: {worktree_names:?}"
+    );
+
+    // Delete the feature branch and drop the worktree; refresh must reconcile the stale rows away.
+    git(&["worktree", "remove", "--force", wt.to_str().expect("utf8")], &main);
+    git(&["branch", "-D", "feature"], &main);
+    registry.refresh_from_root(&main).expect("refresh after deletions");
+
+    let branch_names: Vec<String> = registry.branches(&repo_id).iter().map(|b| b.name.clone()).collect();
+    assert!(
+        !branch_names.contains(&"feature".to_string()),
+        "deleted branch dropped after refresh: {branch_names:?}"
+    );
+    let worktree_names: Vec<String> = registry.worktrees(&repo_id).iter().map(|w| w.name.clone()).collect();
+    assert!(
+        !worktree_names.contains(&"wt".to_string()),
+        "removed worktree dropped after refresh: {worktree_names:?}"
+    );
+    assert_eq!(registry.worktrees(&repo_id).len(), 1, "only the main worktree survives");
+}
+
+#[test]
+fn refresh_repo_by_id_reconciles_from_recorded_main_root() {
+    crate::store::init_isolated_cache();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    // Register the canonical path so the repo id computed at register time equals the one
+    // `refresh_repo` re-derives from the recorded (canonical) main root — otherwise a symlinked
+    // tempdir (`/var` vs `/private/var` on macOS) yields two ids and the refresh writes a new row.
+    let main = tmp.path().canonicalize().expect("canonicalize tmp").join("main");
+    init_repo(&main);
+
+    let mut registry = Registry::open(&tmp.path().join("registry")).expect("open registry");
+    let key = registry.register_workspace(&main).expect("register");
+    let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
+    assert_eq!(registry.branches(&repo_id).len(), 1, "only main branch at first");
+
+    // Create a new branch, then refresh by id (not root): the recorded main root is re-enumerated.
+    git(&["branch", "topic"], &main);
+    registry.refresh_repo(&repo_id).expect("refresh by id");
+    let branch_names: Vec<String> = registry.branches(&repo_id).iter().map(|b| b.name.clone()).collect();
+    assert!(
+        branch_names.contains(&"topic".to_string()),
+        "refresh_repo surfaced the new branch: {branch_names:?}"
+    );
+
+    // An unknown id is a no-op (must not error).
+    registry
+        .refresh_repo(&"path:/definitely/not/a/repo".to_string())
+        .expect("refresh of an unknown id is a no-op");
+}
+
+#[test]
 fn reopen_sees_persisted_rows() {
     crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
