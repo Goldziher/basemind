@@ -294,10 +294,6 @@ pub(super) async fn run_memory_audit(
     let root = state.root.clone();
 
     let store_guard = state.store.read().await;
-    let idx = store_guard
-        .index_db
-        .as_ref()
-        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
 
     let now = crate::lance::now_micros();
     let ctx = AuditCtx {
@@ -307,79 +303,224 @@ pub(super) async fn run_memory_audit(
         dry_run: params.dry_run,
         now,
     };
-    let mut results: Vec<AuditResult> = Vec::new();
 
-    if let Some(ref single_key) = params.key {
-        let raw_key = crate::index::keys::memory_by_key(&state.scope, vis_byte, owner, single_key);
-        let keyspace = if params.include_archived {
-            &idx.memory_archive
-        } else {
-            &idx.memory_by_key
-        };
-        let raw_val_opt = keyspace
-            .get(&raw_key)
-            .map_err(|e| McpError::internal_error(format!("fjall get: {e}"), None))?;
-        if let Some(raw_val) = raw_val_opt
-            && let Some(outcome) = evaluate_one(&ctx, single_key, &raw_val, params.include_archived)
-        {
-            if !ctx.dry_run {
-                if outcome.audit_result.archived {
-                    write_archive(idx, &state.scope, vis_byte, owner, single_key, &outcome.record)?;
-                    delete_live(idx, &state.scope, vis_byte, owner, single_key)?;
-                } else {
-                    write_live(idx, &state.scope, vis_byte, owner, single_key, &outcome.record)?;
-                }
+    // Gather the raw `(key, value, from_archive, persist)` records to audit. Single-key reads one
+    // keyspace and always writes back; the range path scans live (writes back) then — only if room
+    // remains under the shared `limit` — archive (read-only, never written back). Under
+    // `daemon_writer` the fjall reads/writes forward to the daemon; the audit verdict itself
+    // (`evaluate_one`, cache + read-only store) is always computed here.
+    let records = gather_audit_records(state, &store_guard, &params, vis_byte, owner, limit, scan_cap).await?;
+
+    let mut results: Vec<AuditResult> = Vec::new();
+    let mut actions: Vec<PersistAction> = Vec::new();
+    for (key, raw_val, from_archive, persist) in records {
+        if let Some(outcome) = evaluate_one(&ctx, &key, &raw_val, from_archive) {
+            if !params.dry_run && persist {
+                actions.push(PersistAction {
+                    vis_byte,
+                    owner: owner.to_string(),
+                    key,
+                    record: outcome.record,
+                    archive: outcome.audit_result.archived,
+                });
             }
             results.push(outcome.audit_result);
         }
-    } else {
-        let ns_prefix = crate::index::keys::memory_by_key_ns_prefix(&state.scope, vis_byte, owner);
+    }
 
-        for (scanned, guard) in idx.memory_by_key.prefix(&ns_prefix).enumerate() {
-            if results.len() >= limit || scanned >= scan_cap {
-                break;
-            }
-            let (raw_key_bytes, raw_val) = guard
-                .into_inner()
-                .map_err(|e| McpError::internal_error(format!("index iter: {e}"), None))?;
-            let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key_bytes) else {
-                continue;
-            };
-            let key_str = key.to_string();
-            if let Some(outcome) = evaluate_one(&ctx, &key_str, &raw_val, false) {
-                if !ctx.dry_run {
-                    if outcome.audit_result.archived {
-                        write_archive(idx, &state.scope, vis_byte, owner, &key_str, &outcome.record)?;
-                        delete_live(idx, &state.scope, vis_byte, owner, &key_str)?;
-                    } else {
-                        write_live(idx, &state.scope, vis_byte, owner, &key_str, &outcome.record)?;
-                    }
-                }
-                results.push(outcome.audit_result);
-            }
-        }
-
-        if params.include_archived {
-            for (arch_scanned, guard) in idx.memory_archive.prefix(&ns_prefix).enumerate() {
-                if results.len() >= limit || arch_scanned >= scan_cap {
-                    break;
-                }
-                let (raw_key_bytes, raw_val) = guard
-                    .into_inner()
-                    .map_err(|e| McpError::internal_error(format!("archive iter: {e}"), None))?;
-                let Some(key) = crate::index::keys::parse_memory_key_only(&raw_key_bytes) else {
-                    continue;
-                };
-                let key_str = key.to_string();
-                if let Some(outcome) = evaluate_one(&ctx, &key_str, &raw_val, true) {
-                    results.push(outcome.audit_result);
-                }
-            }
-        }
+    if !params.dry_run && !actions.is_empty() {
+        persist_audit_actions(state, &store_guard, actions).await?;
     }
 
     let audited = results.len();
     json_result(&MemoryAuditResponse { audited, results })
+}
+
+/// A serve-computed audit verdict awaiting persistence. Deliberately NOT the comms-only
+/// `AuditMutation` wire struct: the local (non-comms) persist path builds and consumes these too, so
+/// the shared code must not name a `comms`-gated type. The `daemon_writer` branch maps it to
+/// `AuditMutation` before forwarding.
+#[cfg(feature = "memory")]
+struct PersistAction {
+    vis_byte: u8,
+    owner: String,
+    key: String,
+    record: MemoryRecord,
+    archive: bool,
+}
+
+/// Gather the raw `(key, value, from_archive, persist)` records to audit, forwarding the fjall scan
+/// under `daemon_writer` and reading the local index otherwise. Faithful to `run_memory_audit`'s
+/// original keyspace semantics: single-key always persists; the range path scans live (persist) then
+/// archive (no persist), sharing one record `limit`.
+#[cfg(feature = "memory")]
+async fn gather_audit_records(
+    state: &ServerState,
+    store: &crate::store::Store,
+    params: &MemoryAuditParams,
+    vis_byte: u8,
+    owner: &str,
+    limit: usize,
+    scan_cap: usize,
+) -> Result<Vec<(String, Vec<u8>, bool, bool)>, McpError> {
+    use super::proposals_ops::AuditScanArgs;
+
+    let mut out: Vec<(String, Vec<u8>, bool, bool)> = Vec::new();
+
+    if let Some(single_key) = params.key.as_deref() {
+        let args = AuditScanArgs {
+            vis_byte,
+            owner,
+            key: Some(single_key),
+            from_archive: params.include_archived,
+            limit: 1,
+            scan_cap,
+        };
+        for (key, value) in scan_audit_keyspace(state, store, &args).await? {
+            out.push((key, value, params.include_archived, true));
+        }
+        return Ok(out);
+    }
+
+    let live_args = AuditScanArgs {
+        vis_byte,
+        owner,
+        key: None,
+        from_archive: false,
+        limit,
+        scan_cap,
+    };
+    let live = scan_audit_keyspace(state, store, &live_args).await?;
+    let live_count = live.len();
+    for (key, value) in live {
+        out.push((key, value, false, true));
+    }
+
+    if params.include_archived && live_count < limit {
+        let archive_args = AuditScanArgs {
+            vis_byte,
+            owner,
+            key: None,
+            from_archive: true,
+            limit: limit - live_count,
+            scan_cap,
+        };
+        for (key, value) in scan_audit_keyspace(state, store, &archive_args).await? {
+            out.push((key, value, true, false));
+        }
+    }
+    Ok(out)
+}
+
+/// Scan one memory keyspace (live or archive) for `memory_audit`, forwarding to the daemon under
+/// `daemon_writer` and reading the local index otherwise. `args.key = Some` fetches one record.
+#[cfg(feature = "memory")]
+async fn scan_audit_keyspace(
+    state: &ServerState,
+    store: &crate::store::Store,
+    args: &super::proposals_ops::AuditScanArgs<'_>,
+) -> Result<Vec<(String, Vec<u8>)>, McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
+
+        let op = GovernanceOp::AuditScan {
+            vis_byte: args.vis_byte,
+            owner: args.owner.to_string(),
+            key: args.key.map(str::to_string),
+            from_archive: args.from_archive,
+            limit: args.limit as u32,
+            scan_cap: args.scan_cap as u32,
+        };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::AuditScanned { items } => Ok(items),
+            other => Err(McpError::internal_error(
+                format!("memory_audit: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let idx = store
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    Ok(super::proposals_ops::audit_scan_core(idx, &state.scope, args)?)
+}
+
+/// Persist serve-computed audit verdicts, forwarding under `daemon_writer` and writing the local
+/// index otherwise (reusing `write_live` / `write_archive` / `delete_live`).
+#[cfg(feature = "memory")]
+async fn persist_audit_actions(
+    state: &ServerState,
+    store: &crate::store::Store,
+    actions: Vec<PersistAction>,
+) -> Result<(), McpError> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    if state.daemon_writer {
+        use super::helpers_comms::{comms_err, resolve_comms_client};
+        use crate::comms::proposals_proto::{AuditMutation, GovernanceOp, GovernanceOutcome};
+
+        let mutations: Vec<AuditMutation> = actions
+            .into_iter()
+            .map(|action| AuditMutation {
+                vis_byte: action.vis_byte,
+                owner: action.owner,
+                key: action.key,
+                record: action.record,
+                archive: action.archive,
+            })
+            .collect();
+        let op = GovernanceOp::AuditPersist { mutations };
+        let client = resolve_comms_client(state, None).await?;
+        let mut guard = client.lock().await;
+        let outcome = guard
+            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .await
+            .map_err(comms_err)?;
+        return match outcome {
+            GovernanceOutcome::AuditPersisted => Ok(()),
+            other => Err(McpError::internal_error(
+                format!("memory_audit: unexpected daemon outcome {other:?}"),
+                None,
+            )),
+        };
+    }
+
+    let idx = store
+        .index_db
+        .as_ref()
+        .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
+    for action in actions {
+        if action.archive {
+            write_archive(
+                idx,
+                &state.scope,
+                action.vis_byte,
+                &action.owner,
+                &action.key,
+                &action.record,
+            )?;
+            delete_live(idx, &state.scope, action.vis_byte, &action.owner, &action.key)?;
+        } else {
+            write_live(
+                idx,
+                &state.scope,
+                action.vis_byte,
+                &action.owner,
+                &action.key,
+                &action.record,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, feature = "memory"))]

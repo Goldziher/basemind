@@ -66,6 +66,47 @@ pub enum GovernanceOp {
         /// The fully-stamped memory record (verdict + timestamps applied serve-side).
         record: MemoryRecord,
     },
+    /// Scan one memory keyspace (live or archive) for `memory_audit`, returning the raw records so
+    /// serve can run the (cache + store-backed) audit verdict locally. The daemon does no compute —
+    /// it only reads fjall. Returns [`GovernanceOutcome::AuditScanned`]. A single-keyspace scan; the
+    /// live-then-archive orchestration (and the shared `limit`) lives serve-side.
+    AuditScan {
+        /// Visibility byte (group / individual), resolved serve-side.
+        vis_byte: u8,
+        /// Owner segment (`""` for group, the agent id for individual).
+        owner: String,
+        /// A specific key to fetch, or `None` to prefix-scan the whole `(scope, vis, owner)` range.
+        key: Option<String>,
+        /// Read from `memory_archive` when true, else `memory_by_key`.
+        from_archive: bool,
+        /// Max records to return.
+        limit: u32,
+        /// Scan cap bounding work on a large keyspace.
+        scan_cap: u32,
+    },
+    /// Persist a batch of serve-computed audit verdicts. Each mutation either rewrites the live
+    /// record or archives it (write archive + delete live). Returns [`GovernanceOutcome::AuditPersisted`].
+    AuditPersist {
+        /// The verdict-driven writes to apply, in order.
+        mutations: Vec<AuditMutation>,
+    },
+}
+
+/// One serve-computed audit verdict to persist daemon-side. Float-bearing (`MemoryRecord` carries an
+/// `f32` importance), which is why the governance wire enums are `PartialEq` but not `Eq`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AuditMutation {
+    /// Visibility byte the record lives under.
+    pub vis_byte: u8,
+    /// Owner segment.
+    pub owner: String,
+    /// The memory key.
+    pub key: String,
+    /// The mutated record (verdict + timestamps + decay applied serve-side).
+    pub record: MemoryRecord,
+    /// When true, move the record to `memory_archive` (write archive + delete live) instead of
+    /// rewriting it live.
+    pub archive: bool,
 }
 
 /// The daemon's reply to a [`GovernanceOp`].
@@ -92,4 +133,12 @@ pub enum GovernanceOutcome {
     Proposal(Option<ProposalRecord>),
     /// Reply to [`GovernanceOp::ProposalPromote`]: the memory was written + the proposal removed.
     Promoted,
+    /// Reply to [`GovernanceOp::AuditScan`]: the raw `(key, msgpack-bytes)` records to audit. Bytes
+    /// (not decoded records) so serve's `evaluate_one` stays the single decode + verdict site.
+    AuditScanned {
+        /// One `(key, raw msgpack value)` per scanned record.
+        items: Vec<(String, Vec<u8>)>,
+    },
+    /// Reply to [`GovernanceOp::AuditPersist`]: the verdict mutations were applied.
+    AuditPersisted,
 }

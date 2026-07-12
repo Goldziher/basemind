@@ -169,6 +169,101 @@ pub(crate) fn promote_core(
         .map_err(|source| MemoryOpError::Fjall { op: "remove", source })
 }
 
+/// Bundled scan parameters for [`audit_scan_core`] (and the serve-side `scan_audit_keyspace`
+/// forwarder), keeping both call sites under clippy's argument-count limit. Borrowed so it costs
+/// nothing to thread through.
+pub(crate) struct AuditScanArgs<'a> {
+    /// Visibility byte (group / individual).
+    pub vis_byte: u8,
+    /// Owner segment (`""` for group).
+    pub owner: &'a str,
+    /// A specific key to fetch, or `None` to prefix-scan the whole `(scope, vis, owner)` range.
+    pub key: Option<&'a str>,
+    /// Read from `memory_archive` when true, else `memory_by_key`.
+    pub from_archive: bool,
+    /// Max records to return.
+    pub limit: usize,
+    /// Scan cap bounding work on a large keyspace.
+    pub scan_cap: usize,
+}
+
+/// Scan core for `memory_audit`: read one memory keyspace (live or archive) and return the raw
+/// `(key, msgpack-value)` records so serve can run the cache + store-backed audit verdict locally.
+/// A single-keyspace scan — the live-then-archive orchestration and the shared record limit stay
+/// serve-side. `key = Some` fetches one record; `key = None` prefix-scans the `(scope, vis, owner)`
+/// range up to `limit` / `scan_cap`. Mirrors the fjall reads in `run_memory_audit`.
+pub(crate) fn audit_scan_core(
+    idx: &IndexDb,
+    scope: &str,
+    args: &AuditScanArgs<'_>,
+) -> Result<Vec<(String, Vec<u8>)>, MemoryOpError> {
+    use crate::index::keys::{memory_by_key, memory_by_key_ns_prefix, parse_memory_key_only};
+
+    let keyspace = if args.from_archive {
+        &idx.memory_archive
+    } else {
+        &idx.memory_by_key
+    };
+
+    if let Some(single_key) = args.key {
+        let raw_key = memory_by_key(scope, args.vis_byte, args.owner, single_key);
+        let value = keyspace
+            .get(raw_key)
+            .map_err(|source| MemoryOpError::Fjall { op: "get", source })?;
+        return Ok(value
+            .map(|v| vec![(single_key.to_string(), v.to_vec())])
+            .unwrap_or_default());
+    }
+
+    let ns_prefix = memory_by_key_ns_prefix(scope, args.vis_byte, args.owner);
+    let mut items: Vec<(String, Vec<u8>)> = Vec::new();
+    for (scanned, guard) in keyspace.prefix(&ns_prefix).enumerate() {
+        if items.len() >= args.limit || scanned >= args.scan_cap {
+            break;
+        }
+        let (raw_key_bytes, raw_val) = guard
+            .into_inner()
+            .map_err(|source| MemoryOpError::Fjall { op: "iter", source })?;
+        let Some(parsed_key) = parse_memory_key_only(&raw_key_bytes) else {
+            continue;
+        };
+        items.push((parsed_key.to_string(), raw_val.to_vec()));
+    }
+    Ok(items)
+}
+
+/// Persist core for `memory_audit`: apply serve-computed verdicts. Each mutation either rewrites the
+/// live record (`archive = false`) or moves it to `memory_archive` (write archive + delete live).
+/// Inlines the same fjall writes as `helpers_governance::{write_live, write_archive, delete_live}`
+/// (in `MemoryOpError` terms), matching the `promote_core` precedent of not crossing the McpError
+/// boundary from the daemon path.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn audit_persist_core(
+    idx: &IndexDb,
+    scope: &str,
+    mutations: &[crate::comms::proposals_proto::AuditMutation],
+) -> Result<(), MemoryOpError> {
+    use crate::index::keys::memory_by_key;
+
+    for mutation in mutations {
+        let raw_key = memory_by_key(scope, mutation.vis_byte, &mutation.owner, &mutation.key);
+        let bytes = rmp_serde::to_vec_named(&mutation.record).map_err(MemoryOpError::Serialize)?;
+        if mutation.archive {
+            idx.memory_archive
+                .insert(&raw_key, bytes)
+                .map_err(|source| MemoryOpError::Fjall { op: "insert", source })?;
+            idx.memory_by_key
+                .remove(&raw_key)
+                .map_err(|source| MemoryOpError::Fjall { op: "remove", source })?;
+        } else {
+            idx.memory_by_key
+                .insert(&raw_key, bytes)
+                .map_err(|source| MemoryOpError::Fjall { op: "insert", source })?;
+        }
+    }
+    Ok(())
+}
+
 /// Dispatch a wire [`GovernanceOp`](crate::comms::proposals_proto::GovernanceOp) against a
 /// workspace's read-write index, returning the wire outcome. This is the entry point the daemon
 /// calls; the local serve path calls the per-op cores directly so it can interleave the git + audit +
@@ -219,6 +314,29 @@ pub(crate) fn run_governance_op(
         } => {
             promote_core(idx, scope, memory_key, record, proposal_id)?;
             Ok(GovernanceOutcome::Promoted)
+        }
+        GovernanceOp::AuditScan {
+            vis_byte,
+            owner,
+            key,
+            from_archive,
+            limit,
+            scan_cap,
+        } => {
+            let args = AuditScanArgs {
+                vis_byte: *vis_byte,
+                owner,
+                key: key.as_deref(),
+                from_archive: *from_archive,
+                limit: *limit as usize,
+                scan_cap: *scan_cap as usize,
+            };
+            let items = audit_scan_core(idx, scope, &args)?;
+            Ok(GovernanceOutcome::AuditScanned { items })
+        }
+        GovernanceOp::AuditPersist { mutations } => {
+            audit_persist_core(idx, scope, mutations)?;
+            Ok(GovernanceOutcome::AuditPersisted)
         }
     }
 }

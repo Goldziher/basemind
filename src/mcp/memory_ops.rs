@@ -49,6 +49,10 @@ pub(crate) const MEMORY_PREVIEW_CHARS: usize = 200;
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MemoryOpError {
     /// The read-write `memory_by_key` index was not available (should never happen daemon-side).
+    /// Constructed only when the daemon resolves a workspace whose store has no index, so it is
+    /// gated on the daemon build — under a `memory`-only (no-`comms`) build there is no daemon path
+    /// and the variant would be dead.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     #[error("memory_by_key index not available")]
     IndexUnavailable,
     /// A fjall get / insert / remove failed.
