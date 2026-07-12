@@ -96,7 +96,7 @@ pub fn run() -> Result<()> {
         let store_for_prune = store.clone();
         let broker_for_prune = broker.clone();
         tokio::spawn(async move {
-            use crate::comms::daemon::WORKSPACE_HOT_TTL;
+            use crate::comms::daemon::{THREAD_IDLE_TTL, THREAD_RETENTION_TTL, WORKSPACE_HOT_TTL};
             let mut tick = tokio::time::interval(PRUNE_EVERY);
             tick.tick().await;
             loop {
@@ -106,9 +106,33 @@ pub fn run() -> Result<()> {
                     Ok(_) => {}
                     Err(error) => tracing::warn!(%error, "comms: periodic message prune failed"),
                 }
+                // Thread lifecycle: auto-archive idle active threads, then reclaim the storage of ~keep
+                // threads that have been archived well past the retention window. ~keep
+                match broker_for_prune.archive_idle_threads(THREAD_IDLE_TTL) {
+                    Ok(n) if n > 0 => tracing::info!(archived = n, "comms: archived idle threads"),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "comms: periodic thread archive failed"),
+                }
+                match broker_for_prune.purge_archived_threads(THREAD_RETENTION_TTL) {
+                    Ok(n) if n > 0 => tracing::info!(purged = n, "comms: purged expired archived threads"),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "comms: periodic archived-thread purge failed"),
+                }
                 let evicted = broker_for_prune.evict_idle_workspaces(WORKSPACE_HOT_TTL);
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
+                }
+                // Cross-workspace blob GC over the machine-global store: reference-count against ~keep
+                // EVERY workspace and reap blobs no workspace points at. Safe only here — the daemon ~keep
+                // is the sole caller that sees all references. ~keep
+                match crate::store_gc::gc_global_blobs() {
+                    Ok(report) if report.removed > 0 => tracing::info!(
+                        removed = report.removed,
+                        bytes_freed = report.bytes_freed,
+                        "daemon: reclaimed orphaned global blobs"
+                    ),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "daemon: global blob GC failed"),
                 }
             }
         });

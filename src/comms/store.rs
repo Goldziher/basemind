@@ -397,6 +397,71 @@ impl CommsStore {
         Ok(archived)
     }
 
+    /// Permanently delete every ARCHIVED thread whose last activity (or creation, if it never had a
+    /// post) predates `now - older_than`, removing the thread row plus ALL of its messages, bodies,
+    /// memberships, subscriptions, read cursors, and seq counter in one atomic batch. Returns the
+    /// count of threads purged. Active threads are never touched — this is the retention tail after
+    /// [`archive_idle`](Self::archive_idle): a thread first drops out of active listings, then, once
+    /// it has been idle for the far-longer retention window, its storage is reclaimed.
+    pub fn purge_archived(&self, older_than: std::time::Duration) -> Result<usize, CommsStoreError> {
+        let ttl_micros = i64::try_from(older_than.as_micros()).unwrap_or(i64::MAX);
+        let cutoff = now_micros().saturating_sub(ttl_micros);
+        let doomed: Vec<ThreadId> = self
+            .list_threads()?
+            .into_iter()
+            .filter(|thread| !thread.active)
+            .filter(|thread| {
+                let last = if thread.last_activity > 0 {
+                    thread.last_activity
+                } else {
+                    thread.created_at
+                };
+                last < cutoff
+            })
+            .map(|thread| thread.id)
+            .collect();
+        if doomed.is_empty() {
+            return Ok(0);
+        }
+        let doomed_set: ahash::AHashSet<&str> = doomed.iter().map(ThreadId::as_str).collect();
+
+        let mut batch = self.db.batch();
+        for guard in self.messages_by_thread.iter() {
+            let (k, v) = guard.into_inner()?;
+            let Some((thread, _seq)) = keys::parse_message_by_thread(&k) else {
+                continue;
+            };
+            if doomed_set.contains(thread.as_str()) {
+                let meta: MessageMeta = rmp_serde::from_slice(&v)?;
+                batch.remove(&self.messages_by_thread, k.to_vec());
+                batch.remove(&self.message_body, meta.id.as_bytes().to_vec());
+            }
+        }
+        for guard in self.thread_members.iter() {
+            let (k, _) = guard.into_inner()?;
+            if let Some((thread, _agent)) = keys::parse_thread_agent(&k)
+                && doomed_set.contains(thread.as_str())
+            {
+                batch.remove(&self.thread_members, k.to_vec());
+                batch.remove(&self.thread_subs, k.to_vec());
+            }
+        }
+        for guard in self.cursors.iter() {
+            let (k, _) = guard.into_inner()?;
+            if let Some((_agent, thread)) = keys::parse_cursor_key(&k)
+                && doomed_set.contains(thread.as_str())
+            {
+                batch.remove(&self.cursors, k.to_vec());
+            }
+        }
+        for thread in &doomed {
+            batch.remove(&self.meta, keys::thread_seq_meta_key(thread.as_str()));
+            batch.remove(&self.threads, keys::thread_key(thread.as_str()));
+        }
+        batch.commit()?;
+        Ok(doomed.len())
+    }
+
     /// Fetch a message body by id from `message_body`. The ONLY path that touches a body.
     pub fn get_body(&self, message_id: &str) -> Result<Option<Vec<u8>>, CommsStoreError> {
         match self.message_body.get(message_id.as_bytes())? {
@@ -706,6 +771,91 @@ mod tests {
                 .expect("archive again"),
             0
         );
+    }
+
+    #[test]
+    fn purge_archived_reaps_stale_archived_threads_and_all_their_rows_only() {
+        let (_d, store) = temp_store();
+        let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60); // 30-day retention
+        let sixty_days_micros = 60 * 24 * 60 * 60 * 1_000_000i64;
+
+        // (1) stale ARCHIVED thread — last activity 60 days ago → purged, with all its rows.
+        let stale_id = thread_id("th-stale");
+        let mut stale = sample_thread("th-stale");
+        stale.active = false;
+        stale.last_activity = now_micros() - sixty_days_micros;
+        store.put_thread(&stale).expect("put stale");
+        store
+            .add_member(&Membership {
+                agent_id: agent_id("a"),
+                thread: stale_id.clone(),
+                created_at: now_micros() - sixty_days_micros,
+            })
+            .expect("add member");
+        let body = b"stale-msg".to_vec();
+        let meta = build_meta(
+            "s-1".to_string(),
+            stale_id.clone(),
+            agent_id("a"),
+            "s".to_string(),
+            vec![],
+            None,
+            &body,
+        );
+        store.post(&stale_id, meta, MessageBody(body)).expect("post stale");
+        store.set_read_cursor(&agent_id("a"), &stale_id, 1).expect("cursor");
+
+        // (2) recently-ARCHIVED thread — archived but active within the TTL → survives.
+        let mut fresh_archived = sample_thread("th-fresh-archived");
+        fresh_archived.active = false;
+        fresh_archived.last_activity = now_micros();
+        store.put_thread(&fresh_archived).expect("put fresh-archived");
+
+        // (3) ACTIVE stale thread — old but still active → never touched by purge.
+        let mut active_old = sample_thread("th-active-old");
+        active_old.last_activity = now_micros() - sixty_days_micros;
+        store.put_thread(&active_old).expect("put active-old");
+
+        let purged = store.purge_archived(ttl).expect("purge");
+        assert_eq!(purged, 1, "only the stale ARCHIVED thread is purged");
+
+        assert!(
+            store.get_thread(&stale_id).expect("get stale").is_none(),
+            "stale thread row deleted"
+        );
+        assert!(
+            store.get_body("s-1").expect("get body").is_none(),
+            "stale message body deleted"
+        );
+        assert_eq!(
+            store.history(&stale_id, 0, 10).expect("history").messages.len(),
+            0,
+            "stale message front-matter deleted"
+        );
+        assert!(
+            store.members(&stale_id).expect("members").is_empty(),
+            "stale membership + subs deleted"
+        );
+        assert_eq!(
+            store.read_cursor(&agent_id("a"), &stale_id).expect("cursor"),
+            0,
+            "stale read cursor deleted"
+        );
+
+        assert!(
+            store
+                .get_thread(&thread_id("th-fresh-archived"))
+                .expect("get")
+                .is_some(),
+            "recently-archived thread survives the retention window"
+        );
+        assert!(
+            store.get_thread(&thread_id("th-active-old")).expect("get").is_some(),
+            "an active thread is never purged, however stale"
+        );
+
+        // Idempotent: nothing left to purge on a second pass.
+        assert_eq!(store.purge_archived(ttl).expect("purge again"), 0);
     }
 
     #[test]

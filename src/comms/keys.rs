@@ -110,6 +110,17 @@ pub fn cursor_key(agent: &str, thread: &str) -> Vec<u8> {
     out
 }
 
+/// Decode a `cursors` key back into `(agent, thread)`. Inverse of [`cursor_key`]; used by the
+/// archived-thread retention sweep to drop a purged thread's read cursors.
+pub fn parse_cursor_key(key: &[u8]) -> Option<(String, String)> {
+    let mut c = 0;
+    let agent = read_len_prefixed(key, &mut c)?;
+    let agent = std::str::from_utf8(agent).ok()?.to_string();
+    let thread = read_len_prefixed(key, &mut c)?;
+    let thread = std::str::from_utf8(thread).ok()?.to_string();
+    Some((agent, thread))
+}
+
 /// `threads` primary key: the raw thread id bytes — no composite encoding needed, but expose a
 /// helper so callers never hand-roll the conversion.
 pub fn thread_key(thread: &str) -> Vec<u8> {
@@ -183,6 +194,14 @@ mod tests {
     fn cursor_key_is_deterministic() {
         assert_eq!(cursor_key("a", "t"), cursor_key("a", "t"));
         assert_ne!(cursor_key("a", "t"), cursor_key("t", "a"));
+    }
+
+    #[test]
+    fn cursor_key_round_trips_agent_then_thread() {
+        let key = cursor_key("agent-1", "th-42");
+        let (agent, thread) = parse_cursor_key(&key).expect("parse");
+        assert_eq!(agent, "agent-1");
+        assert_eq!(thread, "th-42");
     }
 
     #[test]

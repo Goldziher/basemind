@@ -24,7 +24,10 @@ use ahash::AHashSet;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::store::{INDEX_FILE, StoreError, VIEWS_DIR, acquire_lock, global_blobs_dir, read_index, wipe_blobs_in};
+use crate::store::{
+    CACHE_DIR, INDEX_FILE, StoreError, VIEWS_DIR, WORKSPACES_DIR, acquire_lock, cache_root, global_blobs_dir,
+    read_index, wipe_blobs_in,
+};
 
 /// The blob filename suffixes the scanner emits today, all keyed by one content hash.
 /// Used to strip the suffix off a blob filename to recover its hex stem. The four suffixes are
@@ -299,6 +302,55 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>) -> Result<GcRepo
         report.bytes_freed += size;
     }
     Ok(report)
+}
+
+/// Union the referenced blob stems across EVERY workspace index under the machine-global cache.
+///
+/// The blob store is content-addressed and shared by every workspace, so a blob is live iff *any*
+/// workspace references it. This enumerates `cache_root()/cache/workspaces/<key>/` and unions
+/// [`collect_referenced_hashes`] over each — the complete cross-workspace live set the daemon (the
+/// sole fjall writer, which alone sees every workspace) sweeps against. An unreadable workspace
+/// index propagates the error exactly like the single-workspace collector: an incomplete live set
+/// must never drive a delete.
+pub fn collect_referenced_hashes_global() -> Result<AHashSet<String>, GcError> {
+    collect_referenced_hashes_global_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR))
+}
+
+/// [`collect_referenced_hashes_global`] against an explicit workspaces directory. Production passes
+/// the global `cache/workspaces`; unit tests pass a per-test temp dir so they never read (nor race
+/// on) the machine-global cache.
+fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Result<AHashSet<String>, GcError> {
+    let mut referenced = AHashSet::new();
+    if !workspaces_dir.exists() {
+        return Ok(referenced);
+    }
+    for entry in read_dir(workspaces_dir)? {
+        let entry = entry.map_err(|source| GcError::Io {
+            path: workspaces_dir.to_path_buf(),
+            source,
+        })?;
+        let workspace_dir = entry.path();
+        if !workspace_dir.is_dir() {
+            continue;
+        }
+        referenced.extend(collect_referenced_hashes(&workspace_dir)?);
+    }
+    Ok(referenced)
+}
+
+/// Cross-workspace reference-counted GC over the machine-global blob store: reference-count against
+/// EVERY workspace and reap blobs no workspace points at. This is the destructive counterpart to
+/// [`gc_report_only`] — safe ONLY because the daemon (the sole writer) is the single caller that can
+/// enumerate every workspace's references at once. Returns the sweep report.
+pub fn gc_global_blobs() -> Result<GcReport, GcError> {
+    gc_global_blobs_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR), &global_blobs_dir())
+}
+
+/// [`gc_global_blobs`] against explicit workspaces + blobs directories, so tests reference-count and
+/// sweep a per-fixture cache instead of the machine-global store.
+fn gc_global_blobs_in(workspaces_dir: &Path, blobs_dir: &Path) -> Result<GcReport, GcError> {
+    let referenced = collect_referenced_hashes_global_in(workspaces_dir)?;
+    gc_blobs_in(blobs_dir, &referenced)
 }
 
 /// Blob GC entry point for the CLI `cache gc` / a single-workspace caller.
@@ -956,6 +1008,80 @@ mod tests {
         assert!(
             !blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)).exists(),
             "orphan rref reclaimed"
+        );
+    }
+
+    /// Build a workspace dir (`<workspaces>/<key>/views/working/index.msgpack`) whose index
+    /// references each stem in `stems`. Mirrors the global cache's per-workspace layout.
+    fn seed_workspace(workspaces_dir: &Path, key: &str, stems: &[&str]) {
+        let working = workspaces_dir.join(key).join(VIEWS_DIR).join("working");
+        fs::create_dir_all(&working).expect("mk workspace view");
+        let mut index = Index::empty();
+        for (i, stem) in stems.iter().enumerate() {
+            index.files.insert(
+                crate::path::RelPath::from(format!("src/f{i}.rs").as_str()),
+                FileEntry {
+                    hash_hex: (*stem).to_string(),
+                    language: "rust".to_string(),
+                    size_bytes: 2,
+                    mtime: 0,
+                },
+            );
+        }
+        let bytes = rmp_serde::to_vec_named(&index).expect("encode index");
+        fs::write(working.join(INDEX_FILE), bytes).expect("write index");
+    }
+
+    #[test]
+    fn global_gc_keeps_a_blob_referenced_by_any_workspace_and_reaps_the_orphan() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let blobs = tmp.path().join("blobs");
+        fs::create_dir_all(&blobs).expect("mk blobs");
+
+        let stem_a = "a".repeat(64); // referenced by workspace A only
+        let stem_b = "b".repeat(64); // referenced by workspace B only
+        let orphan = "c".repeat(64); // referenced by NEITHER
+        fs::write(blobs.join(format!("{stem_a}.fm.msgpack")), b"fm-a").expect("blob a");
+        fs::write(blobs.join(format!("{stem_b}.fm.msgpack")), b"fm-b").expect("blob b");
+        let orphan_bytes = b"orphan-blob-bytes";
+        fs::write(blobs.join(format!("{orphan}.fm.msgpack")), orphan_bytes).expect("orphan blob");
+
+        seed_workspace(&workspaces, "key-a", &[&stem_a]);
+        seed_workspace(&workspaces, "key-b", &[&stem_b]);
+
+        let referenced = collect_referenced_hashes_global_in(&workspaces).expect("union");
+        assert_eq!(referenced.len(), 2, "the union spans both workspaces");
+        assert!(referenced.contains(&stem_a) && referenced.contains(&stem_b));
+        assert!(!referenced.contains(&orphan), "orphan referenced by no workspace");
+
+        let report = gc_global_blobs_in(&workspaces, &blobs).expect("global gc");
+        assert_eq!(report.scanned, 3, "all three blobs inspected");
+        assert_eq!(report.removed, 1, "only the cross-workspace orphan reaped");
+        assert_eq!(report.bytes_freed, orphan_bytes.len() as u64);
+
+        assert!(
+            blobs.join(format!("{stem_a}.fm.msgpack")).exists(),
+            "blob referenced by workspace A survives"
+        );
+        assert!(
+            blobs.join(format!("{stem_b}.fm.msgpack")).exists(),
+            "blob referenced by workspace B survives (union, not per-workspace)"
+        );
+        assert!(!blobs.join(format!("{orphan}.fm.msgpack")).exists(), "orphan reaped");
+    }
+
+    #[test]
+    fn global_gc_propagates_an_unreadable_workspace_index() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspaces = tmp.path().join("workspaces");
+        let working = workspaces.join("key-a").join(VIEWS_DIR).join("working");
+        fs::create_dir_all(&working).expect("mk view");
+        fs::write(working.join(INDEX_FILE), b"\xff\xff not-msgpack \x00").expect("corrupt index");
+
+        assert!(
+            collect_referenced_hashes_global_in(&workspaces).is_err(),
+            "an unreadable workspace index must fail the union (never drive a partial delete)"
         );
     }
 
