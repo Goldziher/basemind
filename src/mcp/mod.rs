@@ -869,10 +869,14 @@ impl ServerHandler for BasemindServer {
              tree-sitter code map across 300+ languages (symbols, references, callers, call \
              graphs, implementations), git history + blame at symbol resolution, full-text + \
              semantic search, document RAG over 90+ file formats, and shared cross-session \
-             memory. basemind first, shell/grep/git fallback: prefer these tools over reading \
-             files, over grep, and over naked `git` — and use them for document extraction, web \
-             crawling, and code parsing too. You may be one of several agents in this repo: on \
-             start, check the comms room and post status as you work (see Agent comms below).\n\
+             memory. The index lives in a machine-global cache (`~/.local/share/basemind/`, \
+             override `BASEMIND_DATA_HOME`) keyed by workspace — nothing is written into the \
+             repo — and a background daemon is the sole writer, so any number of sessions on \
+             this repo read and write concurrently. basemind first, shell/grep/git fallback: \
+             prefer these tools over reading files, over grep, and over naked `git` — and use \
+             them for document extraction, web crawling, and code parsing too. You may be one of \
+             several agents in this repo: on start, check your inbox and the threads scoped to \
+             where you're working, and post status as you go (see Agent comms below).\n\
              Context economy — these tools return paths, line numbers, and signatures, not \
              file bodies, so they cost a fraction of the tokens of reading source. Default to \
              them: `outline` a file before you open it (then read only the span you need); \
@@ -899,13 +903,20 @@ impl ServerHandler for BasemindServer {
              \"refresh the index after editing code?\" → `rescan` (or `rescan { paths: [...] }` \
              to limit to changed files); \
              \"any other agents working here / leave a note for the next session?\" → \
-             `room_list` / `inbox_read` / `room_post`.\n\
+             `inbox_read` / `thread_list` / `thread_post`.\n\
+             \"find a file by name/path when I only remember a fragment?\" → `find_files` \
+             (fuzzy, fzf/fd-style).\n\
+             \"which repos/worktrees/branches does the daemon know?\" → `workspaces` / \
+             `worktrees` / `branches`; claim a worktree so sessions don't collide with \
+             `worktree_claim` (release with `worktree_release`).\n\
              \"got a truncated result? fetch the next page?\" → pass `next_cursor` from the prior \
              response back as `cursor`.\n\
              \"need regex over file contents?\" → `workspace_grep`.\n\
              Code-map tools: `outline`, `search_symbols`, `find_references`, `find_callers`, \
-             `list_files`, `workspace_grep`, `dependents`, `status`, `repo_info`, \
+             `list_files`, `find_files`, `workspace_grep`, `dependents`, `status`, `repo_info`, \
              `symbol_history`. \
+             Coordination tools: `workspaces`, `worktrees`, `branches`, `worktree_claim`, \
+             `worktree_release` (advisory claims across the daemon's known worktrees). \
              Git tools (inside a repo): `working_tree_status`, `recent_changes`, `commits_touching`, \
              `find_commits_by_path`, `hot_files`, `diff_outline`, `diff_file`, `blame_file`, \
              `blame_symbol`. \
@@ -916,15 +927,22 @@ impl ServerHandler for BasemindServer {
              `web_crawl` (follow links from a seed URL), `web_map` (sitemap-only discovery). \
              Crawled pages land in the same LanceDB documents table as on-disk docs, scoped \
              under `web:<host>` — find them later with `search_documents`. \
-             Agent comms (require build with `--features comms`): you may share this repo's \
-             rooms with other agents working alongside you. On start, check `room_list` + \
-             `inbox_read` (and recent `room_history`) for what's been said; `room_history` and \
-             `inbox_read` return front-matter only (subject / from / id) — call `message_get` \
-             with an id for a body. Post a concise `room_post {room, subject, body, reply_to?}` \
-             when you begin, finish, or hit a decision, and reply (`reply_to`) to messages \
-             about your work — do not stay silent when collaborating. Tools: `room_list`, \
-             `room_join`, `room_post`, `room_history`, `inbox_read`, `message_get`, \
-             `room_create`, `room_leave`, `agent_register`, `agent_list`. \
+             Agent comms (require build with `--features comms`): coordinate with other agents \
+             via THREADS — scoped conversations addressed by at least two of {subject, \
+             path-glob, members}. Threads are discovered by scope (you're a member, your cwd \
+             matches the thread's path-glob, or a subject filter) — never globally — and you \
+             must explicitly `thread_join` to participate; there is no auto-join. On start, \
+             `inbox_read` (front-matter only: subject / from / id — call `message_get` with an \
+             id for a body) and `thread_list` to see threads in scope; skim `thread_history` on \
+             the relevant one. `thread_start {subject, path_glob?, members?}` opens a thread \
+             (you're the creator/admin; a human is also admin); `thread_post {thread, subject, \
+             body, reply_to?}` when you begin, finish, or hit a decision, and reply \
+             (`reply_to`) to messages about your work — do not stay silent when collaborating. \
+             `inbox_ack` clears read messages. Idle threads auto-archive; `thread_archive` \
+             closes one explicitly. Tools: `thread_start`, `thread_list`, `thread_join`, \
+             `thread_leave`, `thread_members`, `thread_add_member`, `thread_remove_member`, \
+             `thread_archive`, `thread_post`, `thread_history`, `message_get`, `inbox_read`, \
+             `inbox_ack`, `agent_register`, `agent_list`. \
              All paths are repository-relative with forward-slash separators. \
              If a tool reports \"no indexed files\", run `basemind scan` in the repo first.",
         )

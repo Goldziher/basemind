@@ -99,7 +99,7 @@ const hooks = ({ client, directory } = {}) => {
         }
         commsHighWaterMicros = Math.max(commsHighWaterMicros, ...messages.map((message) => message.ts_micros ?? 0));
         await surface(
-          `agent-comms: ${messages.length} recent message(s). Use room_post / message_get to participate.\n${formatMessages(messages)}`,
+          `agent-comms: ${messages.length} recent message(s). Use thread_post / message_get to participate.\n${formatMessages(messages)}`,
         );
         return;
       }
@@ -113,7 +113,7 @@ const hooks = ({ client, directory } = {}) => {
         }
         commsHighWaterMicros = Math.max(commsHighWaterMicros, ...fresh.map((message) => message.ts_micros ?? 0));
         await surface(
-          `agent-comms: ${fresh.length} new message(s) since last turn. Reply with room_post {reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
+          `agent-comms: ${fresh.length} new message(s) since last turn. Reply with thread_post {reply_to:<id>} if warranted.\n${formatMessages(fresh)}`,
         );
       }
     },

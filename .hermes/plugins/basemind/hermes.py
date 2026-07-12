@@ -1,6 +1,6 @@
 # AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-# Content-Hash: blake3:28de1ba174c0bd78b067979b60b678776fc85948ddf57e59a3937d03ab812d53
-# Source-Hash: blake3:3064b5fd10cef141442fffc95286794c0eb9b534f2465e5f7f5e9d78384364cf
+# Content-Hash: blake3:ee4622d491e93cef4b66ab6911bfae9feb739f612cb0f5ac8bccebd8fff72c70
+# Source-Hash: blake3:ca37d0bd1accfd4a3156158a1f47fd4568c00994d83f95330f41124a857f34dc
 # Schema-Version: v1
 
 """Hermes Agent plugin registration for basemind.
@@ -47,13 +47,15 @@ _DISCIPLINE = (
 
 _COMMS_TOOLS = (
     "basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for "
-    "docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — a shared "
-    "multi-agent chat. You have auto-joined every room scoped to this workspace. Levers: room_post "
-    "{room, subject, body, reply_to?} to send (always give a short subject; the body holds the "
-    "detail); room_history {room} and inbox_read to scan messages (these return front-matter only — "
-    "subject/from/id — never bodies, to stay token-frugal); message_get {message_id} to read one "
-    "body on demand; room_list to see rooms, room_join to join another. Prefer posting a concise "
-    "status/question over staying silent when collaborating."
+    "docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — coordinate "
+    "with other agents via THREADS: scoped conversations addressed by at least two of {subject, "
+    "path-glob, members}, discovered by scope (you're a member, your cwd matches the path-glob, or a "
+    "subject filter) — never globally — and joined explicitly (no auto-join). Levers: thread_list to "
+    "see threads in scope and thread_history to skim one; inbox_read to scan your inbox (front-matter "
+    "only — subject/from/id — never bodies, to stay token-frugal); message_get {message_id} to read "
+    "one body on demand; thread_start {subject, path?, members?} to open a thread; thread_post "
+    "{thread, subject, body, reply_to?} to send (always give a short subject; the body holds the "
+    "detail). Prefer posting a concise status/question over staying silent when collaborating."
 )
 
 
@@ -138,7 +140,7 @@ def _session_start_context(cwd: str) -> str:
             "Recent messages (front-matter only; call message_get with an id to read a body):\n"
             f"{_format_lines(messages)}"
         )
-    return f"{_DISCIPLINE} {_COMMS_TOOLS} No messages in your rooms yet — post one to kick things off."
+    return f"{_DISCIPLINE} {_COMMS_TOOLS} No messages in your threads yet — start one to kick things off."
 
 
 def _delta_context(cwd: str, session_id: str) -> str | None:
@@ -160,7 +162,7 @@ def _delta_context(cwd: str, session_id: str) -> str | None:
         "New basemind agent-comms message(s) since your last turn (front-matter only — call "
         "message_get with an id to read a body):\n"
         f"{_format_lines(fresh)}\n"
-        "Reply with room_post {room, subject, body, reply_to:<id>} if a response is warranted."
+        "Reply with thread_post {thread, subject, body, reply_to:<id>} if a response is warranted."
     )
 
 

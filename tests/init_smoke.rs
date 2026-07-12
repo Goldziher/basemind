@@ -1,8 +1,9 @@
 //! End-to-end smoke tests for `basemind init` — the re-runnable onboarding flow.
 //!
 //! These shell the built binary (`CARGO_BIN_EXE_basemind`) against a tempdir and assert the
-//! observable filesystem effects: the `basemind.toml` scaffold, the `.gitignore` entry, and the
-//! idempotent delimited rules block injected into CLAUDE.md / AGENTS.md / an ai-rulez rule file.
+//! observable filesystem effects: the `basemind.toml` scaffold and the idempotent delimited rules
+//! block injected into CLAUDE.md / AGENTS.md / an ai-rulez rule file. Init no longer writes a
+//! `.gitignore` entry — the index cache is machine-global and out-of-repo.
 
 use std::path::Path;
 use std::process::Command;
@@ -37,7 +38,7 @@ fn count_markers(haystack: &str) -> usize {
 }
 
 #[test]
-fn fresh_dir_writes_config_gitignore_and_claude_block() {
+fn fresh_dir_writes_config_and_claude_block_without_gitignore() {
     let dir = tmpdir();
     let root = dir.path();
     run_init(root, &["--yes"]);
@@ -47,10 +48,10 @@ fn fresh_dir_writes_config_gitignore_and_claude_block() {
     let config_text = std::fs::read_to_string(&config).expect("read config");
     assert!(config_text.contains("[scan]"), "scaffold content present");
 
-    let gitignore = std::fs::read_to_string(root.join(".gitignore")).expect("read .gitignore");
+    // ~keep The index cache is machine-global and out-of-repo, so init writes no `.gitignore`.
     assert!(
-        gitignore.lines().any(|l| l.trim().trim_matches('/') == ".basemind"),
-        ".basemind should be gitignored, got:\n{gitignore}"
+        !root.join(".gitignore").exists(),
+        "init must not create a .gitignore for a nonexistent in-repo cache"
     );
 
     let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("CLAUDE.md created");

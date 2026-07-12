@@ -19,7 +19,7 @@ PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ("${PLUGIN_ROOT}/scripts/mcp-launch.sh" --version >/dev/null 2>&1 &) || true
 
 # 2. Always inject the context-economy operating discipline.
-CONTEXT="basemind is available over MCP in this session — a tree-sitter code map + git context. Prefer it over grep/read for structural and historical questions: its tools return paths, line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of reading source. Default workflow: outline a file before opening it (then read only the span you need); search_symbols instead of grep for a definition; find_references/find_callers instead of grepping call sites; workspace_grep instead of shelling out to ripgrep; rescan after edits instead of reconnecting. Do not re-read a file basemind already mapped."
+CONTEXT="basemind is available over MCP in this session — a tree-sitter code map + git context, served from a machine-global index cache (~/.local/share/basemind/, keyed by workspace; nothing is written into the repo) via a background daemon, so any number of sessions on this repo read and write concurrently. Prefer it over grep/read for structural and historical questions: its tools return paths, line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of reading source. Default workflow: outline a file before opening it (then read only the span you need); search_symbols instead of grep for a definition; find_references/find_callers instead of grepping call sites; find_files (fuzzy fzf/fd-style) to locate a file by a name fragment; workspace_grep instead of shelling out to ripgrep; rescan after edits instead of reconnecting. Do not re-read a file basemind already mapped."
 
 # 3. Append the status-line nudge only when a basemind status line isn't wired yet.
 #    Detect robustly: prefer parsing the `statusLine.command` value with jq (catches
@@ -43,21 +43,21 @@ if ! statusline_wired; then
   CONTEXT="${CONTEXT} The basemind status line is not enabled in the user's Claude Code settings; if the user asks about the status line or basemind activity, tell them they can enable a live status line (indexed files, scan age, tool calls, tokens saved) by running the /bm-statusline command once."
 fi
 
-# 4. Agent-comms boot: connect to the broker (starting it if needed), which auto-joins every chat
-#    room whose scope covers this repo (its git remote, this dir, or an ancestor workspace dir),
-#    and surface a CONDENSED view of recent messages — front-matter only, never bodies — so the
-#    agent knows the conversation state and the levers to participate. Best-effort + time-boxed;
-#    comms never blocks or fails session startup. Requires jq to parse the inbox JSON.
+# 4. Agent-comms boot: connect to the broker (starting it if needed) and surface a CONDENSED view
+#    of the agent's inbox — front-matter only, never bodies — so the agent knows the conversation
+#    state and the levers to participate. Threads are scope-discovered and explicit-join (no
+#    auto-join). Best-effort + time-boxed; comms never blocks or fails session startup. Requires jq
+#    to parse the inbox JSON.
 if command -v jq >/dev/null 2>&1; then
   INBOX_JSON="$(timeout 8 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" comms inbox --root "$PWD" --json --limit 8 2>/dev/null || true)"
   if [ -n "${INBOX_JSON}" ]; then
-    COMMS_TOOLS="basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — a shared multi-agent chat. You have auto-joined every room scoped to this workspace. Levers: room_post {room, subject, body, reply_to?} to send (always give a short subject; the body holds the detail); room_history {room} and inbox_read to scan messages (these return front-matter only — subject/from/id — never bodies, to stay token-frugal); message_get {message_id} to read one body on demand; room_list to see rooms, room_join to join another. Prefer posting a concise status/question over staying silent when collaborating."
+    COMMS_TOOLS="basemind first, shell/grep/git fallback — prefer basemind over grep, over naked git, and for docs/RAG/NER, web crawl, and parsing. You are connected to basemind agent-comms — a shared multi-agent chat built on THREADS (scoped conversations addressed by at least two of {subject, path-glob, members}, discovered by scope — you're a member, your cwd matches a thread's path-glob, or a subject filter — never globally). There is no auto-join: thread_list to see threads in scope, thread_join to participate. Levers: thread_start {subject, path_glob?, members?} to open one; thread_post {thread, subject, body, reply_to?} to send (always give a short subject; the body holds the detail); thread_history {thread} and inbox_read to scan messages (these return front-matter only — subject/from/id — never bodies, to stay token-frugal); message_get {message_id} to read one body on demand; inbox_ack to clear read messages. Prefer posting a concise status/question over staying silent when collaborating."
     MSG_COUNT="$(printf '%s' "${INBOX_JSON}" | jq -r '.messages | length' 2>/dev/null | tr -cd '0-9')"
     if [ -n "${MSG_COUNT}" ] && [ "${MSG_COUNT}" -gt 0 ]; then
       RECENT="$(printf '%s' "${INBOX_JSON}" | jq -r '.messages[] | "  • [\(.subject)] from \(.from) (id: \(.id))"' 2>/dev/null || true)"
       CONTEXT="${CONTEXT} ${COMMS_TOOLS}"$'\n'"Recent messages (front-matter only; call message_get with an id to read a body):"$'\n'"${RECENT}"
     else
-      CONTEXT="${CONTEXT} ${COMMS_TOOLS} No messages in your rooms yet — post one to kick things off."
+      CONTEXT="${CONTEXT} ${COMMS_TOOLS} No messages in your inbox yet — start or join a thread to kick things off."
     fi
   fi
 fi

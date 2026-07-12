@@ -644,7 +644,7 @@ impl CommsClient {
     /// shared, persistent Fjall log and *then* crashed before its reply reached us: because the
     /// reconnected daemon reads that same log, the replay would append a SECOND copy. This window
     /// is narrow (a crash between store-commit and socket-write) and the worst case is a duplicate
-    /// coordination message — not corruption — which is an accepted trade-off for making `room_post`
+    /// coordination message — not corruption — which is an accepted trade-off for making `thread_post`
     /// survive the daemon dying at all. (A client-supplied idempotency key would close it; deferred.)
     async fn request(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
         match self.send_and_await(req.clone()).await {

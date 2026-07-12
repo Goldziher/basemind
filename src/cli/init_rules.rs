@@ -22,8 +22,12 @@ pub enum Capability {
     CodeMappingArchitecture,
     /// `recent_changes` / `blame_symbol` / `commits_touching` — git history without shelling out.
     GitHistory,
-    /// `room_post` / `inbox_read` — multi-agent coordination.
+    /// `find_files` — fuzzy fzf/fd-style filename / path search.
+    FileFinding,
+    /// `thread_post` / `inbox_read` — multi-agent thread coordination.
     AgentComms,
+    /// `workspaces` / `worktrees` / `worktree_claim` — daemon registry + worktree coordination.
+    WorktreeCoordination,
     /// `search_documents` — RAG over PDFs / Office / HTML / the web.
     DocumentsRag,
     /// Semantic (vector) code search over the same index.
@@ -32,11 +36,13 @@ pub enum Capability {
 
 impl Capability {
     /// Every capability, in display order. The canonical selection universe.
-    pub const ALL: [Capability; 6] = [
+    pub const ALL: [Capability; 8] = [
         Capability::CodeSearchNavigation,
         Capability::CodeMappingArchitecture,
         Capability::GitHistory,
+        Capability::FileFinding,
         Capability::AgentComms,
+        Capability::WorktreeCoordination,
         Capability::DocumentsRag,
         Capability::SemanticSearch,
     ];
@@ -47,7 +53,9 @@ impl Capability {
             Capability::CodeSearchNavigation => "code-search-navigation",
             Capability::CodeMappingArchitecture => "code-mapping-architecture",
             Capability::GitHistory => "git-history",
+            Capability::FileFinding => "file-finding",
             Capability::AgentComms => "agent-comms",
+            Capability::WorktreeCoordination => "worktree-coordination",
             Capability::DocumentsRag => "documents-rag",
             Capability::SemanticSearch => "semantic-search",
         }
@@ -59,7 +67,11 @@ impl Capability {
             Capability::CodeSearchNavigation => "Code search & navigation (symbols, references, callers, grep)",
             Capability::CodeMappingArchitecture => "Code mapping & architecture (file outlines, architecture map)",
             Capability::GitHistory => "Git history (recent changes, blame, commits-touching)",
-            Capability::AgentComms => "Agent comms (multi-agent rooms + inbox)",
+            Capability::FileFinding => "File finding (fuzzy fzf/fd-style filename & path search)",
+            Capability::AgentComms => "Agent comms (multi-agent threads + inbox)",
+            Capability::WorktreeCoordination => {
+                "Worktree coordination (daemon registry: workspaces, worktrees, advisory claims)"
+            }
             Capability::DocumentsRag => "Documents & RAG (PDF / Office / HTML / web search)",
             Capability::SemanticSearch => "Semantic (vector) code search",
         }
@@ -85,9 +97,17 @@ impl Capability {
                 "`recent_changes` / `blame_symbol` / `commits_touching` / `diff_file`",
                 "`git log` / `git blame` / `git diff`",
             ),
+            Capability::FileFinding => (
+                "`find_files` (fuzzy path search)",
+                "`find` / `fd` / `ls -R` to locate a file by name",
+            ),
             Capability::AgentComms => (
-                "`room_post` / `inbox_read` / `room_history`",
+                "`thread_post` / `inbox_read` / `thread_list`",
                 "assuming you're the only agent in the repo",
+            ),
+            Capability::WorktreeCoordination => (
+                "`workspaces` / `worktrees` / `worktree_claim`",
+                "editing a worktree another session may already own",
             ),
             Capability::DocumentsRag => (
                 "`search_documents` / `web_scrape` / `web_crawl` / `web_map`",

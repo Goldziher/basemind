@@ -22,7 +22,7 @@ SID="$(printf '%s' "$STDIN_JSON" | jq -r '.session_id // "default"' 2>/dev/null 
 [ -n "$SID" ] || SID="default"
 HWM_FILE="${TMPDIR:-/tmp}/basemind-comms-hwm-${SID}"
 
-# Pull recent inbox front-matter (across auto-joined rooms). mark_read stays false so the hook
+# Pull recent inbox front-matter (across the agent's threads). mark_read stays false so the hook
 # never consumes the agent's own inbox state — its own cursor is the hwm file below.
 INBOX_JSON="$(timeout 6 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" comms inbox --root "$PWD" --json --limit 30 2>/dev/null)" || exit 0
 [ -n "$INBOX_JSON" ] || exit 0
@@ -50,7 +50,7 @@ printf '%s' "$MAXTS" >"$HWM_FILE" 2>/dev/null || true
 
 CONTEXT="New basemind agent-comms message(s) since your last turn (front-matter only — call message_get with an id to read a body):
 ${NEW_LINES}
-Reply with room_post {room, subject, body, reply_to:<id>} if a response is warranted."
+Reply with thread_post {thread, subject, body, reply_to:<id>} if a response is warranted."
 
 # Escape for JSON embedding (single-pass parameter substitutions; mirrors session-start).
 escape_for_json() {

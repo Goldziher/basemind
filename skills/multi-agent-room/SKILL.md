@@ -1,16 +1,16 @@
 ---
 name: multi-agent-room
 description: >-
-  Orchestrate a team of named subagents in a shared room with group chat and
-  direct messages. One orchestrator drives multiple peers with distinct
-  identities; each subagent sees its own inbox and can cross-check findings via DM.
+  Orchestrate a team of named subagents in shared threads. One orchestrator drives
+  multiple peers with distinct identities; each subagent sees its own inbox and can
+  cross-check findings by posting to a thread the peer is a member of.
 ---
 
-# Multi-agent room orchestration
+# Multi-agent thread orchestration
 
-Run a team of NAMED subagents that chat in shared rooms and via direct messages,
-all coordinated by one orchestrator. Each subagent has its own identity, inbox, and
-capability to broadcast to the team or send a private message to one peer.
+Run a team of NAMED subagents that coordinate in shared THREADS, all driven by one
+orchestrator. Each subagent has its own identity and inbox, and posts to threads the
+relevant peers are members of.
 
 ## When to use it
 
@@ -18,54 +18,54 @@ Orchestrate subagents when:
 
 - Multiple reviewers need to see each other's work (code review, audit, cross-validation).
 - A subagent should hand off findings to a peer for verification.
-- The team needs a shared narrative thread (all readable in one room history).
+- The team needs a shared narrative (all readable in one thread history).
 - You want to parallelize independent work (each agent runs concurrently) and then synthesize.
 
 ## Setup
 
-1. **Pick a room id and scope.** For a private team, scope the room to a unique session token:
-   `scope: {session: "<token>"}` — pick any shared string (the room id works). The scope selector
-   is externally tagged, so the session variant carries its token (`{session: "…"}`), not a bare
-   `"session"`; only `global` is a bare string. Agents join by posting to the room, so unrelated
-   agents never see it. For machine-wide rooms, use `scope: "global"`.
+1. **Start a thread and name its members.** A thread is addressed by at least two of three
+   coordinates — `{subject, path-glob, members}`. For a private team, list the members explicitly
+   so only they see it; discovery is scoped, never global, so unrelated agents never surface it.
 
    ```text
-   room_create {room: "review-pr-42", scope: {session: "review-pr-42"}, title: "Code review panel"}
+   thread_start {subject: "review-pr-42", members: ["security", "perf"], title: "Code review panel"}
    ```
 
 2. **Assign each subagent a short name.** Pass `as_agent` to every tool call the subagent makes.
-   Names like `"security"`, `"perf"`, `"correctness"` are clearer than defaults.
+   Names like `"security"`, `"perf"`, `"correctness"` are clearer than defaults. A named member
+   must `thread_join` (or be added via `thread_add_member`) before it can post.
 
 3. **Distribute the subagent contract.** Each subagent's prompt should include:
    - Its assigned `as_agent` name (e.g. `"security"`).
-   - The shared room id (e.g. `"review-pr-42"`).
+   - The shared thread's subject (e.g. `"review-pr-42"`).
    - Instructions to:
      - Call `agent_register {as_agent: "security", name: "Security Reviewer", …}` once.
-     - Call `room_post` with `as_agent: "security"` to broadcast findings.
-     - Call `dm_send {to_agent: "perf", as_agent: "security", …}` to DM a peer.
-     - Call `inbox_read {as_agent: "security"}` to see DMs and cross-room messages.
+     - Call `thread_join {thread: "review-pr-42", as_agent: "security"}` to participate.
+     - Call `thread_post` with `as_agent: "security"` to share findings.
+     - Call `inbox_read {as_agent: "security"}` to see cross-thread messages addressed to it.
 
-## Group chat vs direct messages
+## Broadcast vs targeted hand-off
 
-- **Room post** (`room_post` + `as_agent`): broadcast to the team. Use for:
-  - Announcing a finding that the whole team should see.
-  - Replying to a peer's discovery in the shared thread.
+- **Thread post** (`thread_post` + `as_agent`): everyone on the thread sees it. Use for:
+  - Announcing a finding the whole team should see.
+  - Replying to a peer's discovery (`reply_to: <id>` keeps it linked).
   - Summarizing your work.
 
-- **Direct message** (`dm_send` + `as_agent` + `to_agent`): send to one peer. Use for:
+- **Targeted hand-off**: to reach one peer privately, `thread_start` a two-member thread
+  (`members: ["security", "perf"]`) — only those two discover it. Use for:
   - Asking a peer to cross-check your finding.
-  - Sharing a detail not ready for broadcast.
+  - Sharing a detail not ready for the whole team.
   - Hand-off: `"I found X; can you validate my approach?"`.
 
 ## Reading and synthesis
 
 As the orchestrator:
 
-1. Let all subagents post to the room and DM each other (in parallel).
-2. Read the shared room: `room_history {room: "review-pr-42"}` (front-matter only).
+1. Let all subagents post to their threads (in parallel).
+2. Read the shared thread: `thread_history {thread: "review-pr-42"}` (front-matter only).
 3. For each message that matters, fetch the body: `message_get {message_id: "…"}`.
-4. Read each subagent's inbox for DMs: `inbox_read {as_agent: "security"}`, etc.
-   (DMs appear as regular front-matter; bodies come from `message_get`.)
+4. Read each subagent's inbox: `inbox_read {as_agent: "security"}`, etc.
+   (Messages appear as front-matter; bodies come from `message_get`.)
 5. Synthesize: combine the findings into a verdict, decision, or report.
 
 ## Example: two-agent security + performance cross-check
@@ -73,17 +73,17 @@ As the orchestrator:
 **Orchestrator setup:**
 
 ```text
-room_create {room: "review-auth-pr", scope: {session: "review-auth-pr"}}
+thread_start {subject: "review-auth-pr", members: ["security", "perf"]}
 
 # Spawn agent "security"
-# Prompt: "You are agent 'security' on room 'review-auth-pr'. Register yourself,
-# analyze the diff for auth bugs, post findings to the room, and DM 'perf'
-# asking them to check if your fix has performance implications."
+# Prompt: "You are agent 'security' on thread 'review-auth-pr'. Register yourself,
+# join the thread, analyze the diff for auth bugs, post findings, and start a
+# two-member thread with 'perf' asking them to check your fix's perf implications."
 
 # Spawn agent "perf"
-# Prompt: "You are agent 'perf' on room 'review-auth-pr'. Register yourself,
-# analyze the diff for performance regressions, post findings to the room, and DM
-# 'security' with your take on their auth fix."
+# Prompt: "You are agent 'perf' on thread 'review-auth-pr'. Register yourself,
+# join the thread, analyze the diff for performance regressions, post findings, and
+# reply to 'security' with your take on their auth fix."
 ```
 
 **Agent "security" steps:**
@@ -92,12 +92,16 @@ room_create {room: "review-auth-pr", scope: {session: "review-auth-pr"}}
 agent_register {
   as_agent: "security", name: "Security Reviewer", description: "Auth auditor"
 }
-room_post {
-  room: "review-auth-pr", as_agent: "security", subject: "SQL injection check",
+thread_join {thread: "review-auth-pr", as_agent: "security"}
+thread_post {
+  thread: "review-auth-pr", as_agent: "security", subject: "SQL injection check",
   body: "Parameter X is quoted..."
 }
-dm_send {
-  to_agent: "perf", as_agent: "security", subject: "Cross-check: sanitized input",
+thread_start {
+  subject: "cross-check-sanitized-input", members: ["security", "perf"], as_agent: "security"
+}
+thread_post {
+  thread: "cross-check-sanitized-input", as_agent: "security", subject: "Cross-check: sanitized input",
   body: "I added validation at line 42..."
 }
 inbox_read {as_agent: "security", mark_read: true}  # See perf's response
@@ -109,48 +113,47 @@ inbox_read {as_agent: "security", mark_read: true}  # See perf's response
 agent_register {
   as_agent: "perf", name: "Performance Reviewer", description: "Latency auditor"
 }
-room_post {
-  room: "review-auth-pr", as_agent: "perf", subject: "Cache impact check",
+thread_join {thread: "review-auth-pr", as_agent: "perf"}
+thread_post {
+  thread: "review-auth-pr", as_agent: "perf", subject: "Cache impact check",
   body: "New validation adds ~2ms..."
 }
-dm_send {
-  to_agent: "security", as_agent: "perf", subject: "Auth fix validated",
-  body: "Sanitization looks solid..."
+thread_post {
+  thread: "cross-check-sanitized-input", as_agent: "perf", subject: "Auth fix validated",
+  body: "Sanitization looks solid...", reply_to: "msg-sec-2"
 }
 ```
 
 **Orchestrator synthesis:**
 
 ```text
-room_history {room: "review-auth-pr"}  # See full thread
+thread_history {thread: "review-auth-pr"}  # See full thread
 message_get {message_id: "msg-sec-1"}  # Get security's body
 message_get {message_id: "msg-perf-1"}  # Get perf's body
-inbox_read {as_agent: "security"}  # See the DM from perf (front-matter)
-message_get {message_id: "msg-dm-perf-1"}  # Get perf's DM body
+thread_history {thread: "cross-check-sanitized-input"}  # See the two-member exchange
+message_get {message_id: "msg-perf-2"}  # Get perf's hand-off body
 # Synthesize: "Security + perf sign off. Ready to merge."
 ```
 
-## Recency and room freshness
+## Recency and thread freshness
 
 Reads default to RECENT so stale chatter never confuses an agent:
 
-- `room_history` / `inbox_read` return only the **last 24 hours** of messages by default. Pass
+- `thread_history` / `inbox_read` return only the **last 24 hours** of messages by default. Pass
   `since_hours: N` for a wider window, or `since_hours: 0` for the full append-only log. Nothing is
   ever deleted — older history stays reachable explicitly.
 - Every front-matter row carries `age_secs` (seconds since the message was posted) so you can gauge
   staleness without converting timestamps yourself.
-- `room_list` flags each room `stale: true` when it has had no post for over 7 days (or never). The
-  CLI renders this as an `ACTIVE` / `STALE` marker per room. Skip stale rooms unless you are
-  intentionally reviewing old context.
-- `Global` is reserved for MACHINE-WIDE ops coordination (resource / CPU contention), NOT per-repo
-  chat — use a repo / session room for team work.
+- `thread_list` flags each thread `stale: true` when it has had no post for over 7 days (or never).
+  The CLI renders this as an `ACTIVE` / `STALE` marker per thread. Idle threads auto-archive; skip
+  stale ones unless you are intentionally reviewing old context.
 
 ## Notes
 
-- Each subagent auto-joins the room when it first posts (if the room's scope applies).
-- DMs use private pairwise rooms (`dm:<lo>:<hi>`) that both ends auto-join.
+- A named member must `thread_join` (or be added via `thread_add_member`) before it can post.
+- A private two-member thread reaches exactly one peer — only its members discover it.
 - Front-matter-only reads (history, inbox) are cheap. Fetch bodies only when needed.
 - The CLI offers parity: `basemind comms post --as-agent security …`,
-  `basemind comms dm --to perf --as-agent security …`,
-  `basemind comms history <room> --since-hours 0` (all history),
-  `basemind comms rooms` (shows ACTIVE / STALE per room).
+  `basemind comms thread-start <subject> --member perf --as-agent security`,
+  `basemind comms history <thread> --since-hours 0` (all history),
+  `basemind comms threads` (shows ACTIVE / STALE per thread).

@@ -1,12 +1,15 @@
 //! `basemind init` — the re-runnable onboarding flow.
 //!
-//! Three side effects, each idempotent and safe to re-run:
+//! Two side effects, each idempotent and safe to re-run:
 //! 1. Write the commented `basemind.toml` scaffold at the repo root (kept, never clobbered, when
 //!    one already exists).
-//! 2. Ensure `.basemind/` is gitignored.
-//! 3. Inject a "prefer basemind over grep / read / git" rules block into the host repo's
+//! 2. Inject a "prefer basemind over grep / read / git" rules block into the host repo's
 //!    agent-instructions file — an idempotent delimited block in CLAUDE.md / AGENTS.md, or an
 //!    ai-rulez rule file when `.ai-rulez/config.toml` owns governance.
+//!
+//! The index itself is never written into the repo: it lives in a machine-global cache under
+//! `~/.local/share/basemind/` (override `BASEMIND_DATA_HOME`), keyed by workspace and served by a
+//! background daemon, so there is nothing to gitignore.
 //!
 //! Capability selection (interactive in a TTY, flag-driven otherwise) narrows which routing rows
 //! the rules block advertises. `main.rs` is a thin dispatcher into [`run`]; the block content
@@ -27,11 +30,13 @@ pub(crate) const BEGIN_MARKER: &str = "<!-- BEGIN basemind (managed by `basemind
 pub(crate) const END_MARKER: &str = "<!-- END basemind -->";
 
 /// Fully-commented `basemind.toml` scaffold. Doubles as living documentation: every value shown is
-/// the built-in default, so an unedited file is a no-op. Written to the repo ROOT (committed);
-/// the `.basemind/` cache it drives is gitignored.
+/// the built-in default, so an unedited file is a no-op. Written to the repo ROOT (committed); the
+/// index it drives lives in the machine-global cache, so nothing is written into the repo.
 pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — https://github.com/Goldziher/basemind
-# Lives at the repo root and is meant to be committed. The `.basemind/` cache (index + blobs) is
-# derived state, gitignored, and wiped on schema bumps — never put durable config there.
+# Lives at the repo root and is meant to be committed. The index (blobs + Fjall) is derived state
+# kept in the machine-global cache under ~/.local/share/basemind/ (override BASEMIND_DATA_HOME),
+# keyed by workspace and wiped on schema bumps — nothing is written into the repo, so there is
+# nothing to gitignore. Never put durable config in the cache.
 # Every value below is the built-in default; uncomment and edit only what you want to change.
 "$schema" = "v1"
 
@@ -149,7 +154,7 @@ pub struct InitArgs {
     #[arg(long, value_enum, default_value_t = RulesTarget::Auto)]
     pub rules_target: RulesTarget,
 
-    /// Skip rules injection entirely (config + gitignore only).
+    /// Skip rules injection entirely (write the config scaffold only).
     #[arg(long)]
     pub no_rules: bool,
 
@@ -189,7 +194,6 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
 
     let mut changes = Vec::new();
     changes.push(plan_config(root)?);
-    changes.push(plan_gitignore(root)?);
     if let Some(rule_change) = plan_rules(root, args, &caps, sections)? {
         changes.push(rule_change);
     }
@@ -306,37 +310,6 @@ fn plan_config(root: &Path) -> Result<Change> {
         path,
         note: "wrote basemind.toml scaffold",
         contents: INIT_SCAFFOLD_TOML.to_string(),
-    })
-}
-
-/// Plan the `.gitignore` write: append `.basemind/` when the entry is missing.
-fn plan_gitignore(root: &Path) -> Result<Change> {
-    let path = root.join(".gitignore");
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(contents) => Some(contents),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(anyhow::Error::new(e).context(format!("read {}", path.display()))),
-    };
-    let already = existing.as_deref().is_some_and(|contents| {
-        contents.lines().any(|line| {
-            let entry = line.trim().trim_start_matches('/').trim_end_matches('/');
-            entry == ".basemind"
-        })
-    });
-    if already {
-        return Ok(Change::NoOp {
-            note: format!(".gitignore: .basemind already ignored ({})", path.display()),
-        });
-    }
-    let mut contents = existing.unwrap_or_default();
-    if !contents.is_empty() && !contents.ends_with('\n') {
-        contents.push('\n');
-    }
-    contents.push_str(".basemind/\n");
-    Ok(Change::Write {
-        path,
-        note: "updated .gitignore (.basemind/)",
-        contents,
     })
 }
 

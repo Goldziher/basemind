@@ -1,6 +1,7 @@
 //! Smoke tests for the root-relocated config: `basemind.toml` at the repo root is the canonical
 //! location, the legacy `.basemind/basemind.toml` is still read as a fallback, and `basemind init`
-//! scaffolds the root file + gitignores the `.basemind/` cache. Also covers the new scan/embed
+//! scaffolds the root file without touching `.gitignore` (the index cache is machine-global and
+//! out-of-repo, so there is nothing to ignore). Also covers the new scan/embed
 //! config fields introduced alongside the relocation (`follow_symlinks`, `embed_exclude`,
 //! `extract_archives`, and `code_search.embed` defaulting off).
 
@@ -98,7 +99,7 @@ fn embed_exclude_parses_on_both_tiers() {
 }
 
 #[test]
-fn init_writes_root_config_and_gitignores_cache() {
+fn init_writes_root_config_and_leaves_no_gitignore() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     let status = Command::new(env!("CARGO_BIN_EXE_basemind"))
@@ -113,12 +114,11 @@ fn init_writes_root_config_and_gitignores_cache() {
     let cfg = config::load(root).expect("scaffolded config loads + validates");
     assert_eq!(cfg.schema, "v1");
 
-    let gitignore = fs::read_to_string(root.join(".gitignore")).expect("gitignore written");
+    // ~keep The index lives in the machine-global XDG cache, not an in-repo `.basemind/`, so init
+    // ~keep no longer touches `.gitignore` — there is nothing in the repo to ignore.
     assert!(
-        gitignore
-            .lines()
-            .any(|l| l.trim().trim_start_matches('/') == ".basemind/"),
-        "init must ignore the .basemind/ cache, got: {gitignore:?}"
+        !root.join(".gitignore").exists(),
+        "init must not create a .gitignore for a nonexistent in-repo cache"
     );
 }
 
@@ -162,7 +162,7 @@ fn init_refuses_to_shadow_a_legacy_in_cache_config() {
 }
 
 #[test]
-fn init_appends_to_existing_gitignore_without_duplicating() {
+fn init_leaves_an_existing_gitignore_untouched() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     fs::write(root.join(".gitignore"), "target/\n").expect("seed gitignore");
@@ -173,11 +173,9 @@ fn init_appends_to_existing_gitignore_without_duplicating() {
         .status()
         .expect("run init");
     assert!(ok.success());
+    // ~keep init no longer writes a cache entry (the cache is out-of-repo), so a pre-existing
+    // ~keep `.gitignore` is preserved verbatim and never grows a `.basemind/` line.
     let after = fs::read_to_string(root.join(".gitignore")).expect("read gitignore");
-    assert!(after.contains("target/"), "existing entries preserved");
-    assert_eq!(
-        after.matches(".basemind/").count(),
-        1,
-        "exactly one .basemind/ entry, got: {after:?}"
-    );
+    assert_eq!(after, "target/\n", "existing .gitignore left byte-for-byte untouched");
+    assert!(!after.contains(".basemind"), "no .basemind entry added, got: {after:?}");
 }

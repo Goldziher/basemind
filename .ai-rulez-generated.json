@@ -1,6 +1,6 @@
 {
   "schema_version": "v1",
-  "source_hash": "blake3:3064b5fd10cef141442fffc95286794c0eb9b534f2465e5f7f5e9d78384364cf",
+  "source_hash": "blake3:ca37d0bd1accfd4a3156158a1f47fd4568c00994d83f95330f41124a857f34dc",
   "outputs": {
     ".hermes/package/pyproject.toml": {
       "content_hash": "blake3:64c4fed15e22e74ae7fb24b3fecef0be1d8b7863262c2a3331ee2d1b676a6b9d"
@@ -27,7 +27,7 @@
       "content_hash": "blake3:8cdc39a2516f7fe0af441ddb5d47404d8716818b40f9967a10e907690e537e38"
     },
     ".hermes/package/src/basemind_hermes_plugin/hermes.py": {
-      "content_hash": "blake3:28de1ba174c0bd78b067979b60b678776fc85948ddf57e59a3937d03ab812d53"
+      "content_hash": "blake3:ee4622d491e93cef4b66ab6911bfae9feb739f612cb0f5ac8bccebd8fff72c70"
     },
     ".hermes/package/src/basemind_hermes_plugin/plugin.yaml": {
       "content_hash": "blake3:f93f6a21c75e682f8d794f8ca72aa02f8960b342459434aead7fef7c3f3a4f82"
@@ -39,7 +39,7 @@
       "content_hash": "blake3:d2b8f9fca3f729aeae8987600ecbe190271b7240e9cb2aa51b832c4cb4e06cce"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:ea3f7e6e23fcf43282d7102e90b27aa474080a1c96fb2c27fa585009225e705f"
+      "content_hash": "blake3:f68f41182a2a47651f258f3559fa01a2aeb6c50e2fcdd5790f94c2a17053ea92"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/basemind-doctor/SKILL.md": {
       "content_hash": "blake3:893d9f311f747516616d4a75fbe555fe343bf4f4b2cefa88d3f508036b64a758"
@@ -60,7 +60,7 @@
       "content_hash": "blake3:70f3e3ffddfa914e775879f78876f79c3536ca80f262fa87d0209b9b37b7a51c"
     },
     ".hermes/package/src/basemind_hermes_plugin/skills/multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:1e4457a97d9d111f393599ec4d0c00e1301f9356b7f4dec70419799cec3a47da"
+      "content_hash": "blake3:525b3f8031902107da61ff0f2a5e71f24e1e3bc25f8b5a39bcef00c712bc8894"
     },
     ".hermes/plugins/basemind/__init__.py": {
       "content_hash": "blake3:11e276321c89897fcb3514317d4fdfad5224fc29ddf19260eabe06edbc305fd5"
@@ -84,7 +84,7 @@
       "content_hash": "blake3:8cdc39a2516f7fe0af441ddb5d47404d8716818b40f9967a10e907690e537e38"
     },
     ".hermes/plugins/basemind/hermes.py": {
-      "content_hash": "blake3:28de1ba174c0bd78b067979b60b678776fc85948ddf57e59a3937d03ab812d53"
+      "content_hash": "blake3:ee4622d491e93cef4b66ab6911bfae9feb739f612cb0f5ac8bccebd8fff72c70"
     },
     ".hermes/plugins/basemind/plugin.yaml": {
       "content_hash": "blake3:f93f6a21c75e682f8d794f8ca72aa02f8960b342459434aead7fef7c3f3a4f82"
@@ -96,7 +96,7 @@
       "content_hash": "blake3:d2b8f9fca3f729aeae8987600ecbe190271b7240e9cb2aa51b832c4cb4e06cce"
     },
     ".hermes/plugins/basemind/skills/basemind-comms/SKILL.md": {
-      "content_hash": "blake3:ea3f7e6e23fcf43282d7102e90b27aa474080a1c96fb2c27fa585009225e705f"
+      "content_hash": "blake3:f68f41182a2a47651f258f3559fa01a2aeb6c50e2fcdd5790f94c2a17053ea92"
     },
     ".hermes/plugins/basemind/skills/basemind-doctor/SKILL.md": {
       "content_hash": "blake3:893d9f311f747516616d4a75fbe555fe343bf4f4b2cefa88d3f508036b64a758"
@@ -117,7 +117,7 @@
       "content_hash": "blake3:70f3e3ffddfa914e775879f78876f79c3536ca80f262fa87d0209b9b37b7a51c"
     },
     ".hermes/plugins/basemind/skills/multi-agent-room/SKILL.md": {
-      "content_hash": "blake3:1e4457a97d9d111f393599ec4d0c00e1301f9356b7f4dec70419799cec3a47da"
+      "content_hash": "blake3:525b3f8031902107da61ff0f2a5e71f24e1e3bc25f8b5a39bcef00c712bc8894"
     }
   }
 }
