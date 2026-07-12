@@ -201,6 +201,20 @@ pub enum CommsRequest {
         /// The subscription handle returned by `Subscribe`.
         sub: u64,
     },
+    /// Scan or rescan a workspace. The daemon is the sole fjall writer; front-ends forward their
+    /// writes here so concurrent read-only sessions never contend for the index lock.
+    Rescan {
+        /// Canonical workspace root (worktree root).
+        root: std::path::PathBuf,
+        /// Restrict to these paths (incremental). `None`/empty or `full` → full working-tree scan.
+        #[serde(default)]
+        paths: Option<Vec<std::path::PathBuf>>,
+        /// Force a complete re-index (overrides `paths`).
+        #[serde(default)]
+        full: bool,
+    },
+    /// Report the workspaces the daemon currently holds hot (drives the statusline).
+    AccessedPaths,
     /// Liveness probe. The daemon replies [`CommsResponse::Pong`].
     Ping,
     /// Ask the daemon to drain and stop. Used by `basemind comms stop`.
@@ -277,6 +291,22 @@ pub enum CommsResponse {
     Pong,
     /// Reply to [`CommsRequest::Status`].
     Status(StatusReport),
+    /// Reply to [`CommsRequest::Rescan`]: the scan outcome.
+    Rescanned {
+        /// Files considered by the scan.
+        scanned: usize,
+        /// Files whose index entries were written or refreshed.
+        updated: usize,
+        /// Files pruned because they no longer exist.
+        removed: usize,
+        /// Wall-clock scan time in milliseconds.
+        elapsed_ms: u64,
+    },
+    /// Reply to [`CommsRequest::AccessedPaths`]: the daemon's currently-hot workspaces.
+    Accessed {
+        /// One row per hot workspace, most-recently-used first.
+        workspaces: Vec<crate::comms::workspace_pool::AccessedWorkspace>,
+    },
     /// A request failed. `code` is a stable machine token; `message` is human detail.
     Error {
         /// Stable error token (e.g. `proto_skew`, `unknown_thread`, `not_creator`).

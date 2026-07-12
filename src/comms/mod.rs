@@ -35,6 +35,8 @@ pub mod singleton;
 pub mod store;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod transport;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod workspace_pool;
 
 /// Schema version for the comms store, bound to the release minor exactly like
 /// `INDEX_SCHEMA_VER` and the blob `SCHEMA_VER`. A mismatch wipes the comms store and the

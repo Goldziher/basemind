@@ -28,6 +28,7 @@ use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, M
 use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
 use super::scope::{self, ScopeChain};
 use super::store::{self, CommsStore, CommsStoreError};
+use super::workspace_pool::{self, WorkspacePool};
 
 /// Default page size when a client omits `limit`.
 pub const DEFAULT_LIMIT: u32 = 100;
@@ -43,6 +44,11 @@ pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
 /// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
 /// (`archive_idle`) applies this; the creator or a human can archive sooner.
 pub const THREAD_IDLE_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+
+/// How long a hot workspace may sit unrequested before the daemon sheds it from RAM. Its on-disk
+/// cache survives; the next request re-opens it lazily. Well below [`IDLE_REAP_AFTER`] so cold
+/// workspaces free memory long before the whole daemon self-terminates.
+pub const WORKSPACE_HOT_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Lifecycle state of the broker. See the module docs for the transition rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +87,9 @@ struct Registry {
 /// The broker. Cheap to share via `Arc`; every front-end and link holds one.
 pub struct Broker {
     store: Arc<CommsStore>,
+    /// Hot read-write workspace indexes. The daemon is the machine's sole fjall writer; front-ends
+    /// forward their scans/rescans here so concurrent read-only sessions never contend for the lock.
+    workspaces: Arc<WorkspacePool>,
     registry: Mutex<Registry>,
     subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
@@ -95,6 +104,7 @@ impl Broker {
     pub fn new(store: Arc<CommsStore>) -> Self {
         Self {
             store,
+            workspaces: Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP)),
             registry: Mutex::new(Registry {
                 sinks: AHashMap::new(),
                 state: LifecycleState::Starting,
@@ -156,6 +166,12 @@ impl Broker {
     /// store error is surfaced to the caller (the daemon logs it). This is the reaper hook.
     pub fn archive_idle_threads(&self, ttl: Duration) -> Result<usize, CommsStoreError> {
         self.store.archive_idle(ttl)
+    }
+
+    /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
+    /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
+    pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
+        self.workspaces.evict_idle(ttl)
     }
 
     /// Handle one request on a link. Returns the direct response.
@@ -235,12 +251,51 @@ impl Broker {
             } => self.on_ack(session, message_ids, thread, to_seq),
             CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
+            CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
+            CommsRequest::AccessedPaths => Ok(self.on_accessed_paths()),
             CommsRequest::Ping => Ok(CommsResponse::Pong),
             CommsRequest::Status => Ok(self.on_status().await),
             CommsRequest::Stop => {
                 self.begin_drain().await;
                 Ok(CommsResponse::Ok)
             }
+        }
+    }
+
+    /// Scan/rescan a workspace on the sole-writer pool. The scan is CPU-bound, so it runs on a
+    /// blocking thread while the reactor keeps serving other links. A scan/store error becomes a
+    /// `CommsResponse::Error` (never a torn link).
+    async fn on_rescan(
+        &self,
+        root: std::path::PathBuf,
+        paths: Option<Vec<std::path::PathBuf>>,
+        full: bool,
+    ) -> CommsResponse {
+        self.mark_active().await;
+        let pool = Arc::clone(&self.workspaces);
+        let started = Instant::now();
+        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full)).await {
+            Ok(Ok(stats)) => CommsResponse::Rescanned {
+                scanned: stats.scanned,
+                updated: stats.updated,
+                removed: stats.removed,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            },
+            Ok(Err(error)) => CommsResponse::Error {
+                code: "rescan_failed".to_string(),
+                message: error.to_string(),
+            },
+            Err(join) => CommsResponse::Error {
+                code: "rescan_panicked".to_string(),
+                message: join.to_string(),
+            },
+        }
+    }
+
+    /// Report the daemon's currently-hot workspaces for the statusline.
+    fn on_accessed_paths(&self) -> CommsResponse {
+        CommsResponse::Accessed {
+            workspaces: self.workspaces.accessed(),
         }
     }
 
