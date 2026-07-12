@@ -23,6 +23,7 @@ pub mod lang;
 pub mod mcp;
 pub mod path;
 pub mod query;
+pub mod registry;
 pub mod render;
 pub mod scanner;
 #[cfg(feature = "code-search")]
