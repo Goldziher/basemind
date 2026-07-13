@@ -28,7 +28,11 @@ pub enum RebuildOutcome {
 /// Bring the index up to date with `repo`'s current HEAD, running the revalidation decision tree.
 /// Best-effort callers ignore the error; the index simply stays stale and tools fall back to the
 /// live walk until the next successful sync.
+/// Only the process that HOLDS the fjall database may build it. A daemon-backed handle (a
+/// `daemon_writer` serve) has no database to write, and building one would steal the lock the daemon
+/// needs; such a caller forwards [`GitHistoryOp::Sync`](super::proto::GitHistoryOp::Sync) instead.
 pub fn sync(index: &GitHistoryIndex, repo: &Repo, basemind_dir: &Path) -> Result<RebuildOutcome, GitHistoryError> {
+    index.require_local()?;
     let head = match repo.resolve_rev("HEAD") {
         Ok(h) => h,
         Err(_) => return Ok(RebuildOutcome::Fresh),
@@ -81,7 +85,7 @@ fn rebuild(index: &GitHistoryIndex, repo: &Repo, reason: &'static str) -> Result
     let mut interner = PathInterner::new(index, 0);
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
-    let mut writer = index.writer();
+    let mut writer = index.writer()?;
 
     let written = fold_chunked(
         index,
@@ -122,7 +126,7 @@ fn append_since(
     let start_ord = index.next_ord();
 
     if new_newest_first.is_empty() {
-        let writer = index.writer();
+        let writer = index.writer()?;
         writer.finish_meta(&head20, &root20, start_ord, index.next_path_id(), index.commit_count())?;
         return Ok(RebuildOutcome::Incremental { added: 0 });
     }
@@ -131,7 +135,7 @@ fn append_since(
     let mut interner = PathInterner::new(index, index.next_path_id());
     let mut postings: AHashMap<u32, Vec<u32>> = AHashMap::new();
     let mut term_postings: AHashMap<Vec<u8>, Vec<u32>> = AHashMap::new();
-    let mut writer = index.writer();
+    let mut writer = index.writer()?;
 
     let added = fold_chunked(
         index,

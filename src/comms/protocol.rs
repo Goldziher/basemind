@@ -242,6 +242,21 @@ pub enum CommsRequest {
         /// The operation to run.
         op: crate::comms::proposals_proto::GovernanceOp,
     },
+    /// Forward a git-history operation to the daemon. `git-history.fjall/` is a fjall database, and
+    /// fjall's directory lock is exclusive — so exactly ONE process may hold a repo's history index.
+    /// Under this model that process is the daemon: it BUILDS the index ([`GitHistoryOp::Sync`],
+    /// serialized per repo so N sessions produce one build) and answers the front-ends' history
+    /// reads from it. A `daemon_writer` serve therefore never opens the database — building it there
+    /// would both steal the daemon's lock and run a multi-GB, minutes-long history walk inside the
+    /// process an agent is actively querying.
+    ///
+    /// [`GitHistoryOp`]: crate::git_history::proto::GitHistoryOp
+    GitHistory {
+        /// Canonical workspace root (worktree root), selecting the repo's index.
+        root: std::path::PathBuf,
+        /// The operation to run.
+        op: crate::git_history::proto::GitHistoryOp,
+    },
     /// Forward a precise resolved-reference read to the daemon. A `daemon_writer` serve holds no
     /// fjall index, so the cross-file `refs_by_def` / `refs_by_path` edges live only daemon-side;
     /// this fetches them so `find_callers` / `goto_definition` keep their precise (`resolved: true`)
@@ -375,6 +390,9 @@ pub enum CommsResponse {
     },
     /// Reply to [`CommsRequest::ResolvedRefs`]: the resolved edges.
     ResolvedRefs(crate::comms::resolved_proto::ResolvedRefResult),
+    /// Reply to [`CommsRequest::GitHistory`]: the sync outcome, the indexed HEAD, or a page of
+    /// commits, per the op.
+    GitHistory(crate::git_history::proto::GitHistoryReply),
     /// Reply to [`CommsRequest::Memory`]: the outcome of the forwarded memory operation.
     #[cfg(feature = "memory")]
     Memory(crate::comms::memory_proto::MemoryOutcome),

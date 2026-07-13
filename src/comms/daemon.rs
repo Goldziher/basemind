@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio::sync::watch;
 
 use super::cursor::Cursor;
+use super::git_history_ops::HistoryEntry;
 use super::ids::{AgentId, ThreadId};
 use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
 use super::protocol::{CommsNotification, CommsOut, CommsRequest, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
@@ -99,6 +100,15 @@ pub struct Broker {
     /// Hot read-write workspace indexes. The daemon is the machine's sole fjall writer; front-ends
     /// forward their scans/rescans here so concurrent read-only sessions never contend for the lock.
     workspaces: Arc<WorkspacePool>,
+    /// Open git-history indexes, keyed by the repo's SHARED history cache dir (every linked worktree
+    /// of a clone maps to one entry — the commit graph is identical). Same rationale as
+    /// [`workspaces`](Self::workspaces): fjall's directory lock is exclusive, so the daemon holds
+    /// these and front-ends forward their history ops — the BUILD and the reads — over the socket.
+    /// See [`git_history_ops`](super::git_history_ops).
+    pub(super) git_history: std::sync::Mutex<AHashMap<std::path::PathBuf, Arc<HistoryEntry>>>,
+    /// Serializes the COLD open of a git-history index (fjall's directory lock is exclusive, so two
+    /// racing opens of the same database leave the loser failing on the lock).
+    pub(super) git_history_open_lock: Mutex<()>,
     registry: Mutex<Registry>,
     /// The machine-wide repo/worktree/branch/workspace registry (distinct from the `registry` sink
     /// map above). The daemon is its sole writer; coordination tools read/mutate through it.
@@ -146,6 +156,8 @@ impl Broker {
         Self {
             store,
             workspaces: Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP)),
+            git_history: std::sync::Mutex::new(AHashMap::new()),
+            git_history_open_lock: Mutex::new(()),
             registry: Mutex::new(Registry {
                 sinks: AHashMap::new(),
                 state: LifecycleState::Starting,
@@ -229,6 +241,12 @@ impl Broker {
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
     /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
     pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
+        // Shedding a git-history entry also RELEASES its fjall lock, so a cold repo's index becomes
+        // openable again by a standalone `basemind scan` / `rescan` on the same machine.
+        self.git_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|_, entry| entry.idle_for() < ttl);
         self.workspaces.evict_idle(ttl)
     }
 
@@ -339,6 +357,7 @@ impl Broker {
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
             CommsRequest::ResolvedRefs { root, query } => Ok(self.on_resolved_refs(root, query).await),
+            CommsRequest::GitHistory { root, op } => Ok(self.on_git_history(root, op).await),
             #[cfg(feature = "memory")]
             CommsRequest::Memory { root, scope, op } => Ok(self.on_memory(root, scope, op).await),
             #[cfg(feature = "memory")]
