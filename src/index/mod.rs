@@ -51,6 +51,90 @@ const META_BM25_TOTAL_LEN: &[u8] = b"code_bm25_total_len";
 
 const INDEX_DIR: &str = "index.fjall";
 
+/// Floor for the Fjall block cache, in bytes. Matches the size fjall itself defaults to when
+/// left unconfigured (32 MiB — see `fjall::db_config::Config::new`), so a small or freshly
+/// created index is never worse off than before this module started sizing the cache
+/// deliberately.
+const INDEX_CACHE_FLOOR_BYTES: u64 = 32 * 1_024 * 1_024;
+
+/// Ceiling for the Fjall block cache, in bytes, **per opened `IndexDb`**. The daemon's
+/// `WorkspacePool` (see `src/comms/daemon.rs`) holds up to 16 workspaces at once under LRU
+/// eviction, each owning one `IndexDb`. This ceiling is the load-bearing memory bound: in the
+/// pathological worst case where all 16 pooled slots simultaneously hold a huge, cache-
+/// saturating monorepo index (this repo's own `armis` hardening fixture: 82 k files, a 3.1 GB
+/// on-disk index), total block-cache memory across the whole pool is bounded at
+/// `16 * INDEX_CACHE_CEILING_BYTES` = 4 GiB. That is a deliberately conservative, explicit bound
+/// (not unbounded, unlike the previous zero-configuration state) — the common case is far below
+/// it, because [`index_cache_bytes`] scales the cache down for small/medium indexes instead of
+/// defaulting every pooled slot to the ceiling.
+const INDEX_CACHE_CEILING_BYTES: u64 = 256 * 1_024 * 1_024;
+
+/// Fraction of the on-disk `index.fjall` size to budget for the block cache before clamping to
+/// the floor/ceiling above. 20% mirrors fjall's own single-tenant guidance ("configure the block
+/// cache capacity to be ~20-25% of the available memory — or more if the data set fully fits in
+/// memory" — `fjall::Builder::cache_size` doc), applied to the dataset size rather than total
+/// system RAM, since basemind opens many of these concurrently (see the ceiling above) and the
+/// per-DB share of RAM is not a stable per-DB quantity the way the on-disk index size is.
+const INDEX_CACHE_DISK_FRACTION: f64 = 0.20;
+
+/// Overrides the computed Fjall block cache size outright (bytes), bypassing the floor/fraction/
+/// ceiling heuristic in [`index_cache_bytes`]. Mirrors the `BASEMIND_GIT_CACHE_LOG_MAX_BYTES` /
+/// `BASEMIND_BLAME_MAX_BYTES` env-var escape hatches used elsewhere for cache/budget tuning.
+const INDEX_CACHE_BYTES_ENV: &str = "BASEMIND_INDEX_CACHE_BYTES";
+
+/// Best-effort recursive sum of file sizes under `dir`. Errors (directory not yet created,
+/// permission denied, a race with Fjall's own background compaction renaming/removing files
+/// mid-walk) are swallowed — this only feeds the cache-size heuristic below, not correctness, so
+/// an undercount just means a smaller (still-floored) cache rather than a failed `open`.
+fn dir_size_bytes(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if file_type.is_file()
+                && let Ok(metadata) = entry.metadata()
+            {
+                total += metadata.len();
+            }
+        }
+    }
+    total
+}
+
+/// Computes the Fjall block cache size (bytes) for opening the index at `dir` — the
+/// `index.fjall` directory itself, whether it already exists or is about to be created fresh.
+///
+/// Workload-driven, not a magic constant: sizes the cache as [`INDEX_CACHE_DISK_FRACTION`] of the
+/// *current* on-disk index size, clamped between [`INDEX_CACHE_FLOOR_BYTES`] and
+/// [`INDEX_CACHE_CEILING_BYTES`]. A fresh/tiny repo's empty-or-small `index.fjall` clamps to the
+/// floor (unchanged from fjall's own unconfigured default); a huge monorepo clamps to the
+/// ceiling instead of trying to cache gigabytes. `INDEX_CACHE_BYTES_ENV` overrides this entirely
+/// for operators who want to tune past the heuristic.
+fn index_cache_bytes(dir: &Path) -> u64 {
+    if let Some(bytes) = std::env::var(INDEX_CACHE_BYTES_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return bytes;
+    }
+    let disk_bytes = dir_size_bytes(dir);
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let scaled_bytes = (disk_bytes as f64 * INDEX_CACHE_DISK_FRACTION) as u64;
+    scaled_bytes.clamp(INDEX_CACHE_FLOOR_BYTES, INDEX_CACHE_CEILING_BYTES)
+}
+
 #[derive(Debug, Error)]
 pub enum IndexError {
     #[error("fjall error: {0}")]
@@ -134,7 +218,8 @@ impl IndexDb {
             path: dir.clone(),
             source,
         })?;
-        let mut db = Database::builder(&dir).open()?;
+        let cache_bytes = index_cache_bytes(&dir);
+        let mut db = Database::builder(&dir).cache_size(cache_bytes).open()?;
         let mut meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         let on_disk_ver = meta
             .get(META_SCHEMA_VER)?
@@ -151,7 +236,7 @@ impl IndexDb {
                 path: dir.clone(),
                 source,
             })?;
-            db = Database::builder(&dir).open()?;
+            db = Database::builder(&dir).cache_size(cache_bytes).open()?;
             meta = db.keyspace("meta", KeyspaceCreateOptions::default)?;
         }
         let symbols_by_path = db.keyspace("symbols_by_path", KeyspaceCreateOptions::default)?;
