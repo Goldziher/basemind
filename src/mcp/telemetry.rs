@@ -32,12 +32,37 @@ pub struct TelemetryRow {
     pub params_hash: String,
     /// Serialized response body byte count. Reused from the json_result path.
     pub resp_bytes: u64,
-    /// Wall-clock milliseconds from dispatch to response.
-    pub elapsed_ms: u64,
+    /// Wall-clock microseconds from dispatch to response.
+    ///
+    /// Microseconds, not milliseconds: the hot code-map path is routinely sub-millisecond (a warm
+    /// `search_symbols` is ~90 µs), so a millisecond reading recorded every one of those calls as
+    /// `0` — the dashboard could not tell a 90 µs query from a free one.
+    #[serde(default)]
+    pub elapsed_us: u64,
+    /// Legacy millisecond reading, as written by basemind ≤ 0.22. Deserialize-only: rows already on
+    /// disk carry `elapsed_ms`, and folding one into `elapsed_us` unconverted would understate it
+    /// 1000×. [`TelemetryRow::absorb_legacy_millis`] rescales it on read; nothing ever writes it.
+    #[serde(default, skip_serializing)]
+    elapsed_ms: Option<u64>,
     /// Estimated tokens saved vs the disclosed baseline. See `super::savings`.
     pub est_tokens_saved: u64,
     /// Disclosed baseline name (e.g. `"full_file_read"`, `"no_baseline"`).
     pub saved_baseline: String,
+}
+
+impl TelemetryRow {
+    /// Rescale a legacy `elapsed_ms` row into `elapsed_us`.
+    ///
+    /// Only fires when the row carries no `elapsed_us` at all, so a new row is never touched. The
+    /// sub-millisecond precision those old rows never had is not recoverable — but the magnitude is,
+    /// and a wrong-by-1000× number in a latency dashboard is worse than a coarse one.
+    fn absorb_legacy_millis(&mut self) {
+        if let Some(ms) = self.elapsed_ms.take()
+            && self.elapsed_us == 0
+        {
+            self.elapsed_us = ms.saturating_mul(1_000);
+        }
+    }
 }
 
 /// The telemetry writer. `Telemetry::record` is cheap and lock-protected — concurrent in-flight
@@ -64,13 +89,14 @@ impl Telemetry {
 
     /// Record one tool-call row. Errors are logged via `tracing::warn!` and swallowed — telemetry
     /// is best-effort and must not affect tool response semantics.
-    pub fn record(&self, tool: &str, params: &Value, resp_bytes: u64, elapsed_ms: u64, savings: &SavingsRow) {
+    pub fn record(&self, tool: &str, params: &Value, resp_bytes: u64, elapsed_us: u64, savings: &SavingsRow) {
         let row = TelemetryRow {
             ts_micros: now_micros(),
             tool: tool.to_string(),
             params_hash: hash_params(params),
             resp_bytes,
-            elapsed_ms,
+            elapsed_us,
+            elapsed_ms: None,
             est_tokens_saved: savings.est_tokens_saved,
             saved_baseline: savings.baseline.to_string(),
         };
@@ -179,7 +205,7 @@ pub(super) async fn summarize(
                 ts_micros: row.ts_micros,
                 tool: row.tool.clone(),
                 resp_bytes: row.resp_bytes,
-                elapsed_ms: row.elapsed_ms,
+                elapsed_us: row.elapsed_us,
                 est_tokens_saved: row.est_tokens_saved,
             });
         }
@@ -252,7 +278,8 @@ fn read_telemetry_tail(path: &std::path::Path) -> Result<Vec<TelemetryRow>, std:
         if line.trim().is_empty() {
             continue;
         }
-        if let Ok(row) = serde_json::from_str::<TelemetryRow>(&line) {
+        if let Ok(mut row) = serde_json::from_str::<TelemetryRow>(&line) {
+            row.absorb_legacy_millis();
             if rows.len() == TELEMETRY_SUMMARY_READ_CAP {
                 rows.pop_front();
             }
@@ -293,6 +320,77 @@ mod tests {
         assert_eq!(first.est_tokens_saved, 400);
         assert_eq!(first.saved_baseline, "full_file_read");
         assert_eq!(first.params_hash.len(), 16);
+    }
+
+    /// The whole point of the microsecond switch: a sub-millisecond call must not record as `0`.
+    /// With `as_millis` every warm code-map query (~90 µs) landed in `telemetry.jsonl` as a free
+    /// one, so the dashboard could not distinguish a fast tool from an uninstrumented one.
+    #[test]
+    fn a_sub_millisecond_call_records_a_nonzero_duration() {
+        let dir = tempdir().unwrap();
+        let tel = Telemetry::new(dir.path());
+        let savings = SavingsRow {
+            baseline_tokens: 500,
+            actual_tokens: 100,
+            est_tokens_saved: 400,
+            baseline: "full_file_read",
+        };
+        tel.record("search_symbols", &json!({ "name": "x" }), 400, 94, &savings);
+
+        let rows = read_telemetry_tail(&dir.path().join(TELEMETRY_FILENAME)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].elapsed_us, 94,
+            "a 94 µs call must round-trip as 94 µs, not collapse to 0"
+        );
+    }
+
+    /// A `telemetry.jsonl` written by basemind ≤ 0.22 carries `elapsed_ms` and no `elapsed_us`.
+    /// Reading that row's millisecond value straight into a microsecond field would understate it
+    /// 1000× — a 12 ms git walk would show up as 12 µs, faster than an in-RAM lookup. Rescale it.
+    #[test]
+    fn a_legacy_millisecond_row_is_rescaled_not_misread() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(TELEMETRY_FILENAME);
+        let legacy = json!({
+            "ts_micros": 1_700_000_000_000_000i64,
+            "tool": "commits_touching",
+            "params_hash": "0123456789abcdef",
+            "resp_bytes": 900,
+            "elapsed_ms": 12,
+            "est_tokens_saved": 300,
+            "saved_baseline": "git_log",
+        });
+        std::fs::write(&path, format!("{legacy}\n")).unwrap();
+
+        let rows = read_telemetry_tail(&path).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].elapsed_us, 12_000,
+            "a legacy 12 ms row must read as 12000 µs, not 12 µs"
+        );
+    }
+
+    /// The rescale must never touch a row that already speaks microseconds, even one that also
+    /// carries a stale `elapsed_ms` key (a row written across an upgrade boundary).
+    #[test]
+    fn a_microsecond_row_is_never_rescaled() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join(TELEMETRY_FILENAME);
+        let both = json!({
+            "ts_micros": 1_700_000_000_000_000i64,
+            "tool": "outline",
+            "params_hash": "0123456789abcdef",
+            "resp_bytes": 900,
+            "elapsed_ms": 12,
+            "elapsed_us": 94,
+            "est_tokens_saved": 300,
+            "saved_baseline": "full_file_read",
+        });
+        std::fs::write(&path, format!("{both}\n")).unwrap();
+
+        let rows = read_telemetry_tail(&path).unwrap();
+        assert_eq!(rows[0].elapsed_us, 94, "an explicit µs reading always wins");
     }
 
     #[test]

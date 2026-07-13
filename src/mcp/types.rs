@@ -792,7 +792,8 @@ pub(super) struct RecentCallView {
     pub ts_micros: i64,
     pub tool: String,
     pub resp_bytes: u64,
-    pub elapsed_ms: u64,
+    /// Wall-clock microseconds the call took. Matches the `elapsed_us` the tool itself returned.
+    pub elapsed_us: u64,
     pub est_tokens_saved: u64,
 }
 
