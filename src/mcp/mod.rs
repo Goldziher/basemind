@@ -290,6 +290,18 @@ pub(crate) struct ServerState {
     /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
     /// a moment stale" rather than treating a mid-rescan snapshot as final.
     pub(crate) rescan_active: std::sync::atomic::AtomicBool,
+    /// True when the in-RAM code map is built ON DEMAND — at the first
+    /// [`await_cache_ready`](Self::await_cache_ready) barrier — instead of at construction.
+    ///
+    /// Set only for the one-shot CLI. A CLI process answers exactly one tool call and exits, and
+    /// most tools (`repo_info`, `status`, every git tool) never read the map at all — yet
+    /// [`MapCache::build`] deserializes EVERY indexed file's L1 blob, so those tools were paying
+    /// seconds of whole-corpus startup for data they never touch. `serve` keeps eager/background
+    /// warming: it is long-lived, so the build amortizes over the session.
+    pub(crate) lazy_cache: bool,
+    /// Gates the one-time on-demand build under [`lazy_cache`](Self::lazy_cache). Concurrent
+    /// callers of the barrier all await the single build rather than racing to rebuild the map.
+    pub(crate) lazy_cache_built: tokio::sync::OnceCell<()>,
     /// True when this serve fell back to a read-only store because another serve owns the
     /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
     /// behind the `rescan` tool) checks this and returns a clean error rather than writing
@@ -356,12 +368,25 @@ impl ServerState {
         )
     }
 
-    /// Block a cache-reading tool until the deferred boot preload has published the full map, bounded by
-    /// [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path). Does NOT wait on
-    /// [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for minutes, so those tools return the
-    /// partial index plus a [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
+    /// Barrier every cache-reading tool crosses before it touches [`ServerState::cache`].
+    ///
+    /// Two regimes:
+    ///
+    /// * **One-shot ([`lazy_cache`](Self::lazy_cache))** — build the map HERE, on demand, once. The
+    ///   cost then falls only on tools that actually read the map; `repo_info` / `status` / the git
+    ///   tools never reach this barrier and so never pay it.
+    /// * **`serve`** — wait for the background preload to publish the full map, bounded by
+    ///   [`CACHE_WARM_WAIT_CAP`]. No-op once warm (the common path).
+    ///
+    /// Neither regime waits on [`Lifecycle::BuildingIndex`] — a from-scratch scan can run for
+    /// minutes, so those tools return the partial index plus a
+    /// [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
+        if self.lazy_cache {
+            self.build_cache_on_demand().await;
+            return;
+        }
         if !self.cache_warming.load(Relaxed) {
             return;
         }
@@ -370,6 +395,38 @@ impl ServerState {
             return;
         }
         let _ = tokio::time::timeout(CACHE_WARM_WAIT_CAP, notified).await;
+    }
+
+    /// Build the whole-corpus in-RAM map and publish it — exactly once, however many callers race
+    /// the barrier.
+    ///
+    /// [`MapCache::build`] is CPU- and IO-bound (a rayon `par_iter` over every L1 blob), so it must
+    /// not run on the async reactor. It is handed to [`tokio::task::block_in_place`], which requires
+    /// the multi-thread runtime the CLI builds; off one (a `current_thread` test) we call it
+    /// directly, which is safe precisely because such a runtime has no other task to starve. Mirrors
+    /// the runtime check in [`crate::git_history::remote`].
+    async fn build_cache_on_demand(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.lazy_cache_built
+            .get_or_init(|| async {
+                let started = std::time::Instant::now();
+                let store = self.store.read().await;
+                let multi_thread = tokio::runtime::Handle::try_current()
+                    .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+                    .unwrap_or(false);
+                let cache = if multi_thread {
+                    tokio::task::block_in_place(|| MapCache::build(&store))
+                } else {
+                    MapCache::build(&store)
+                };
+                let files = cache.by_path.len();
+                self.cache.store(Arc::new(cache));
+                self.cache_generation.fetch_add(1, Relaxed);
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                self.cache_warm_ms.store(elapsed_ms, Relaxed);
+                tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
+            })
+            .await;
     }
 
     /// A [`LifecycleNotice`](types::LifecycleNotice) to attach to a tool response, or `None` when
@@ -533,6 +590,10 @@ pub struct ServerOptions {
     /// in-RAM map from the daemon-written `index.msgpack`. Set only by the real `serve` binary on
     /// a `comms` build; always false for the in-process one-shot and non-comms builds.
     pub daemon_writer: bool,
+    /// When true, defer [`MapCache::build`] to the first tool that actually reads the map, instead
+    /// of running it at construction. Set only for the one-shot CLI — see
+    /// [`ServerState::lazy_cache`].
+    pub lazy_cache: bool,
 }
 
 impl Default for ServerOptions {
@@ -542,6 +603,7 @@ impl Default for ServerOptions {
             watch: true,
             read_only: false,
             daemon_writer: false,
+            lazy_cache: false,
         }
     }
 }
@@ -560,9 +622,12 @@ impl BasemindServer {
 
     /// Construct a one-shot server with every background facility disabled.
     ///
-    /// Used by the `basemind` CLI to run a single MCP tool in-process and exit —
-    /// no auto-scan, no view watcher, no background GC. The in-RAM map cache is
-    /// still preloaded so the tool sees the same data an MCP client would.
+    /// Used by the `basemind` CLI to run a single MCP tool in-process and exit — no auto-scan, no
+    /// view watcher, no background GC. The in-RAM map cache is built LAZILY: a CLI process answers
+    /// one tool call, and most tools never read the map, so preloading it charged every invocation
+    /// the whole-corpus blob-deserialization cost (seconds on a large monorepo) for nothing. The
+    /// first tool that does read the map still builds it in full, so results are identical to what
+    /// an MCP client would see.
     pub fn new_oneshot(
         store: Store,
         root: PathBuf,
@@ -581,6 +646,7 @@ impl BasemindServer {
                 watch: false,
                 read_only: false,
                 daemon_writer: false,
+                lazy_cache: true,
             },
         )
     }
@@ -617,7 +683,9 @@ impl BasemindServer {
             && view_is_working
             && (store.index.files.is_empty() || fjall_index_empty);
         let defer_warm = options.background && !needs_initial_scan;
-        let cache = if defer_warm {
+        // Empty for BOTH deferred regimes: `serve` warms it on a background task, the one-shot CLI
+        // builds it at the first barrier that needs it (and often never does).
+        let cache = if defer_warm || options.lazy_cache {
             Arc::new(MapCache::empty())
         } else {
             Arc::new(MapCache::build(&store))
@@ -628,7 +696,8 @@ impl BasemindServer {
             git = repo.is_some(),
             scope = %scope,
             deferred_warm = defer_warm,
-            "code map ready for MCP server (preloaded, or warming in background)"
+            lazy_cache = options.lazy_cache,
+            "code map ready for MCP server (preloaded, warming in background, or lazy)"
         );
         let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
             NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
@@ -673,6 +742,8 @@ impl BasemindServer {
             cache_warm_ms: std::sync::atomic::AtomicU64::new(0),
             cache_ready: tokio::sync::Notify::new(),
             rescan_active: std::sync::atomic::AtomicBool::new(false),
+            lazy_cache: options.lazy_cache,
+            lazy_cache_built: tokio::sync::OnceCell::new(),
             read_only: options.read_only,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_writer: options.daemon_writer,
@@ -916,6 +987,11 @@ impl ServerHandler for BasemindServer {
         request: CompleteRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CompleteResult, rmcp::ErrorData> {
+        // `complete_argument` scans the in-RAM map, so it must take the same barrier every other
+        // cache-reading tool takes. Without it, a completion arriving before the background warm
+        // publishes silently reads the empty placeholder and returns zero candidates — and under
+        // `lazy_cache`, where the barrier is what BUILDS the map, it would return zero forever.
+        self.state.await_cache_ready().await;
         Ok(self.complete_argument(&request))
     }
 
@@ -1013,6 +1089,10 @@ impl ServerHandler for BasemindServer {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "lazy_cache_tests.rs"]
+mod lazy_cache_tests;
 
 #[cfg(test)]
 mod map_cache_tests {
