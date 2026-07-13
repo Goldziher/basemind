@@ -91,7 +91,7 @@ pub(crate) struct WorkspacePool {
     /// scans run against a cloned `Arc<WorkspaceEntry>` after the lock is released.
     map: Mutex<AHashMap<String, std::sync::Arc<WorkspaceEntry>>>,
     /// Serializes COLD opens against each other. fjall's index lock is exclusive, so two threads
-    /// opening the SAME cold workspace concurrently would leave the loser ERRORing on the lock — not
+    /// opening the SAME cold workspace concurrently would leave the loser failing on the lock — not
     /// merely losing the insert race — because the failure happens inside `Store::open`, before the
     /// post-open "prefer the stored entry" reconciliation can run. Holding this across the open (with
     /// a re-check under it) guarantees exactly one opener per key. Opens are one-time-per-workspace
@@ -188,7 +188,7 @@ impl WorkspacePool {
             }
         }
         // Serialize the cold open. fjall's exclusive index lock means two concurrent opens of the
-        // same key would leave the loser ERRORing on the lock (inside `Store::open`, before the
+        // same key would leave the loser failing on the lock (inside `Store::open`, before the
         // post-open reconciliation), so the open itself — not just the insert — must be single.
         // Take the open lock OUTSIDE the map lock (opening touches the filesystem and can block; the
         // map lock must stay free for hot-path lookups), then re-check the map under it: a peer that

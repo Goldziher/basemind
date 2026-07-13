@@ -57,9 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their true definitions. Delivers **intra-file** precision (shadowing, per-function/method parameter
   scope, Python comprehension bindings, Java field-vs-local) and **cross-file** resolution for Python:
   dotted and relative imports resolve to their target module, and each call site of an imported name
-  resolves *through* the import to the exported definition (reporting `resolved: true`), rather than
+  resolves _through_ the import to the exported definition (reporting `resolved: true`), rather than
   matching by name. No new MCP tools or query surface — existing navigation just gets precise for
-  these languages. Known limitations this iteration: Java cross-file resolution of *member* calls on
+  these languages. Known limitations this iteration: Java cross-file resolution of _member_ calls on
   an imported type (`Foo.greet()`) is not yet resolved (the imported type itself is), and a variable
   reused after a same-name Python comprehension may bind to the comprehension's own variable.
 - **`[code_intel] precise_resolution` config toggle** (default `true`). Set it to `false` in
@@ -86,7 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`basemind init` no longer scaffolds into a parent directory.** `init` resolved its target with
-  the same ancestor-`.basemind/` walk the other commands use to *attach* to an existing index, so
+  the same ancestor-`.basemind/` walk the other commands use to _attach_ to an existing index, so
   running it inside a repo whose parent already had a `.basemind/` wrote `basemind.toml`, `.gitignore`,
   and the rules block into the parent instead of the current repo. `init` now anchors to the closest
   enclosing git repository (falling back to the working directory when not in a repo), so it always

@@ -39,6 +39,8 @@ Updated the `tree-sitter` dependency to include the required minimal patch versi
 
 ## v0.10.5 -- 2023-06-26
 
+### Library
+
 #### Fixed
 
 - A panic that sometimes occurred in lazy execution mode.
@@ -49,7 +51,7 @@ Updated the `tree-sitter` dependency to include the required minimal patch versi
 
 #### Added
 
-- Several errors include more context in the error message: Duplicate errors report both statements using source snippets. Edge statements report which argument (the source or the sink) triggered an evluation error.
+- Several errors include more context in the error message: Duplicate errors report both statements using source snippets. Edge statements report which argument (the source or the sink) triggered an evaluation error.
 
 #### Fixed
 
@@ -273,11 +275,11 @@ Updated the `tree-sitter` dependency to include the required minimal patch versi
 
 - Calls to `execute` will fail with a runtime error if declared global variables are missing in the global environment.
 - Calls to `execute` will not fail early on parse trees with errors. Errors may occur during query execution if matched parts of the tree are missing.
-- The seperate arguments to `execute` are replaced by a single `ExecutionConfig` argument, which makes it easier to add optional arguments without breaking all use sites.
+- The separate arguments to `execute` are replaced by a single `ExecutionConfig` argument, which makes it easier to add optional arguments without breaking all use sites.
 
 #### Removed
 
-- The `execute_lazy` method has been removed. Lazy evalaution is enabled by setting the `lazy` flag in the `ExecutionConfig`.
+- The `execute_lazy` method has been removed. Lazy evaluation is enabled by setting the `lazy` flag in the `ExecutionConfig`.
 
 ### CLI
 

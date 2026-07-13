@@ -162,7 +162,7 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
             // A specific imported name (`from m import f`) joins against that export; an import with
             // no named symbol falls back to the resolver's default-export convention (JS `default`),
             // and `None` there means "no single export to bind" (bare Python/Java module import) — so
-            // the join is skipped rather than mis-binding to an unrelated `default` symbol.
+            // the join is skipped rather than binding to an unrelated `default` symbol.
             let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
                 continue;
             };

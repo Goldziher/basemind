@@ -169,7 +169,7 @@ fn stress_knob(var: &str, default: usize) -> usize {
 
 /// Regression: concurrent FIRST-touch rescans of the same COLD workspace must all succeed. The
 /// daemon's workspace pool opens each cold store under fjall's exclusive index lock; before the open
-/// was serialized, two rescans racing that cold open left the loser ERRORing on the lock ("another
+/// was serialized, two rescans racing that cold open left the loser failing on the lock ("another
 /// basemind process holds the lock") instead of sharing the winner's pooled entry — the post-open
 /// reconciliation never ran because the loser failed inside `Store::open`. Two agents auto-scanning
 /// the same repo at the same instant is exactly this race. Surfaced by the concurrency stress below.
