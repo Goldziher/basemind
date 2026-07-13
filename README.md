@@ -355,12 +355,20 @@ changed. A single background daemon on the machine is the sole writer to that ca
 `serve` sessions on the same repo (or on different worktrees of it) all read and write concurrently
 instead of one falling back read-only. See [Global cache & the daemon](#how-it-works) below.
 
-Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: instead of
-matching references by name, basemind resolves each use to the definition it actually binds to, so a
-shadowed local isn't confused with an import and `goto_definition` / `find_references` / `find_callers`
-report precise, `resolved` results (including across files for imports). Every other language still
-gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub stack-graphs-style
-`.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language LSP server.
+Navigation is **scope- and import-aware** for JavaScript/TypeScript, **Python, and Java**: basemind
+resolves each use to the definition it actually binds to, so a shadowed local isn't confused with an
+import and `goto_definition` lands on the right target (including across files for imports). Every
+other language still gets fast tree-sitter scope binding. Precise Python/Java resolution runs GitHub
+stack-graphs-style `.tsg` name-binding rules via an in-tree engine (`crates/`), with no per-language
+LSP server.
+
+Resolution **refines, but never shrinks, a result set.** `find_callers` reports every call site whose
+callee matches the name — the same sound floor `find_references` uses — and marks each hit `resolved`
+when resolution proved it binds to that definition (`resolved_total` counts them). It deliberately
+does *not* return only the resolved subset: resolution cannot see through a module-object import
+(`from pkg import mod` then `mod.f()`) or an unresolvable path alias, so filtering to it would drop
+real callers and report the remainder as complete. Filter on `resolved` when you want precision; trust
+`total` when you need completeness.
 
 Markdown and Obsidian vaults are first-class: headings become navigable symbols (so `outline` and
 `search_symbols` work over a notes vault); `[[wikilinks]]`, `![[embeds]]`, and standard

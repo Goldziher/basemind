@@ -1,9 +1,14 @@
 //! Focused end-to-end smoke test for the scope-resolved `find_callers` path.
 //!
 //! Mirrors `mcp_smoke.rs`: scan a tiny fixture in-process, spawn `basemind serve`, and drive the
-//! `find_callers` tool over the rmcp child-process transport. This one exercises the *resolved*
-//! mode — `find_callers` prefers the scope/import-resolved edges over the name scan, so a caller of
-//! a same-named function in another file is never conflated.
+//! `find_callers` tool over the rmcp child-process transport. This one exercises the *resolution*
+//! layer — which ANNOTATES the name scan rather than replacing it.
+//!
+//! It used to assert that resolution *replaced* the name scan (returning only the resolved edges and
+//! setting `resolved: true`). That was the P0: resolution silently dropped every caller it could not
+//! bind — module-object imports, unresolvable path aliases — and reported the remainder as the
+//! complete answer, with no truncation flag. Precision now travels as a per-hit `resolved` flag, so a
+//! same-named symbol in another scope is still *distinguishable* without being *dropped*.
 //!
 //! Gated on `code-intel-js`: only the oxc JS/TS engine resolves top-level function calls to their
 //! definition today, so under default features the whole test compiles out (graceful skip).
@@ -91,7 +96,7 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn find_callers_resolves_scope_and_ignores_same_named_symbol() {
+async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
@@ -121,20 +126,35 @@ async fn find_callers_resolves_scope_and_ignores_same_named_symbol() {
         "definition should resolve to util.ts target"
     );
     assert_eq!(
-        body.get("resolved").and_then(Value::as_bool),
-        Some(true),
-        "hits must come from the scope-resolved edges, not the name scan: {body}"
+        body.get("resolved_total").and_then(Value::as_u64),
+        Some(2),
+        "exactly the two util.ts callers are PROVEN to bind to util.ts target: {body}"
+    );
+    assert_eq!(
+        body.get("total").and_then(Value::as_u64),
+        Some(3),
+        "the name scan is the floor: the other.ts site is reported too, never silently dropped: {body}"
     );
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    let proven: Vec<&str> = hits
+        .iter()
+        .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(true))
+        .filter_map(|h| h.get("path").and_then(Value::as_str))
+        .collect();
     assert_eq!(
-        hits.len(),
-        2,
-        "exactly the two util.ts callers resolve to util.ts target"
+        proven,
+        vec!["util.ts", "util.ts"],
+        "other.ts target() (same name, different scope) must NOT be conflated INTO the proven set: {body}"
     );
-    assert!(
-        hits.iter()
-            .all(|h| h.get("path").and_then(Value::as_str) == Some("util.ts")),
-        "other.ts target() (same name, different scope) must NOT be conflated: {body}"
+    let unproven: Vec<&str> = hits
+        .iter()
+        .filter(|h| h.get("resolved").and_then(Value::as_bool) == Some(false))
+        .filter_map(|h| h.get("path").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        unproven,
+        vec!["other.ts"],
+        "the same-name site is surfaced as unproven so a caller can filter it, not omitted: {body}"
     );
 
     service.cancel().await.expect("shutdown");

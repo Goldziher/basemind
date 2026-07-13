@@ -3904,3 +3904,99 @@ fn grep_keys(body: &Value) -> Vec<(String, u64)> {
         })
         .collect()
 }
+
+/// **P0 contract, at the MCP surface.** `find_callers` must never present a resolution-limited
+/// subset as the complete caller set.
+///
+/// The fixture is the shape that broke in production: `pkg/mod.py` defines `target` and calls it
+/// itself (so intra-file resolution "succeeds"), while two other files reach it through
+/// `from pkg import mod` + `mod.target()` — a module-object import, which binds a module rather than
+/// the function, so the cross-file join has no export to bind and those callers are invisible to
+/// resolution. `find_callers` used to return only the resolvable subset with no truncation flag; an
+/// agent asking "what calls this?" before a refactor got a confident, precise-looking, wrong answer.
+///
+/// The name scan is the sound floor, so `find_callers` and `find_references` must AGREE on the count
+/// for this unambiguous name, and `resolved_total` may only ever be a subset of `total`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::create_dir(root.join("pkg")).expect("pkg dir");
+    std::fs::write(root.join("pkg/__init__.py"), b"").unwrap();
+    std::fs::write(
+        root.join("pkg/mod.py"),
+        b"def target():\n    return 1\n\n\ndef seed():\n    return target()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("caller_a.py"),
+        b"from pkg import mod\n\n\ndef go():\n    return mod.target()\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("caller_b.py"),
+        b"from pkg import mod\n\n\ndef go2():\n    return mod.target() + mod.target()\n",
+    )
+    .unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "init"]);
+    run_scan(root);
+
+    let bin = env!("CARGO_BIN_EXE_basemind");
+    let cmd = AsyncCommand::new(bin).configure(|c| {
+        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
+    });
+    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let references = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_references",
+                json!({ "name": "target", "limit": 500 }),
+            ))
+            .await
+            .expect("find_references"),
+    );
+    let reference_total = references.get("total").and_then(Value::as_u64).expect("total");
+    assert_eq!(
+        reference_total, 4,
+        "ground truth: 4 target() call sites across the fixture: {references}"
+    );
+
+    let callers = decode_text(
+        &service
+            .call_tool(call_params(
+                "find_callers",
+                json!({ "path": "pkg/mod.py", "name": "target", "limit": 500 }),
+            ))
+            .await
+            .expect("find_callers"),
+    );
+    assert_eq!(
+        callers.get("total").and_then(Value::as_u64),
+        Some(reference_total),
+        "find_callers must agree with find_references on an unambiguous name — never a subset: {callers}"
+    );
+    let hits = callers.get("hits").and_then(Value::as_array).expect("hits");
+    let paths: Vec<&str> = hits
+        .iter()
+        .filter_map(|h| h.get("path").and_then(Value::as_str))
+        .collect();
+    assert!(
+        paths.contains(&"caller_a.py") && paths.contains(&"caller_b.py"),
+        "callers reached through an unresolvable module import must still be reported: {paths:?}"
+    );
+    let resolved_total = callers
+        .get("resolved_total")
+        .and_then(Value::as_u64)
+        .expect("resolved_total must always be reported so the agent can tell proven from complete");
+    assert!(
+        resolved_total <= reference_total,
+        "resolved_total is a LOWER BOUND on the truth — it may never exceed total: {callers}"
+    );
+    let _ = service.cancel().await;
+}
