@@ -151,7 +151,7 @@ struct ExecutionContext<'a, 'c, 'g, 'tree> {
     cancellation_flag: &'a dyn CancellationFlag,
 }
 
-/// Context for evaluation, which evalautes the lazy graph to build the actual graph
+/// Context for evaluation, which evaluates the lazy graph to build the actual graph
 struct EvaluationContext<'a, 'tree> {
     pub source: &'tree str,
     pub graph: &'a mut Graph<'tree>,

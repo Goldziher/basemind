@@ -139,7 +139,7 @@ Patch release to update *all* version numbers.
 
 #### Changed
 
-- The default values for the `init` commmand changed to match naming conventions.
+- The default values for the `init` command changed to match naming conventions.
 - After `init` read all user input, it presents an overview of selected settings and asks for user confirmation before creating any files.
 
 ### Fixed
@@ -187,7 +187,7 @@ Depend on `tree-sitter-graph` version 0.7.
 #### Added
 
 - The `StackGraphLanguage::builder_into_stack_graph` method can be used to
-  create a `Builer` that allows injecting preexisting `StackGraph` nodes
+  create a `Builder` that allows injecting preexisting `StackGraph` nodes
   using `Builder::inject_node` to obtain `tree_sitter_graph::graph::Value`
   instances. These can be used for global variables such that the TSG
   rules can refer to stack graph nodes that were not created by them.

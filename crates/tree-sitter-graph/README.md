@@ -25,9 +25,9 @@ tree-sitter-graph = "0.12"
 
 To use it as a program, install it via `cargo install`:
 
-```
-$ cargo install --features cli tree-sitter-graph
-$ tree-sitter-graph --help
+```bash
+cargo install --features cli tree-sitter-graph
+tree-sitter-graph --help
 ```
 
 ## Development
@@ -39,14 +39,14 @@ Rust can be installed and updated using [rustup][].
 
 Build the project by running:
 
-```
-$ cargo build
+```bash
+cargo build
 ```
 
 Run the tests by running:
 
-```
-$ cargo test
+```bash
+cargo test
 ```
 
 The project consists of a library and a CLI.
@@ -55,6 +55,6 @@ To run `cargo` commands on the CLI as well, add `--features cli` or `--all-featu
 
 Sources are formatted using the standard Rust formatted, which is applied by running:
 
-```
-$ cargo fmt
+```bash
+cargo fmt
 ```

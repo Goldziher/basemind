@@ -268,7 +268,7 @@ flowchart TB
   end
   subgraph daemon["basemind daemon (singleton, user-global)"]
     FE["Front-ends: UDS"]
-    THR["Thread registry\n(scope: repo | path-glob | subject)"]
+    THREADS["Thread registry\n(scope: repo | path-glob | subject)"]
     BR["Broker: explicit join, fan-out, refcount"]
     CS["CommsStore (Fjall):\nthreads · members · messages_by_thread(front-matter)\n· message_body · subs · cursors · agents · registry"]
   end
@@ -279,7 +279,7 @@ flowchart TB
   A1 --> serve
   A2 -->|own serve| daemon
   HK -->|discover threads| daemon
-  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> THR --> CS
+  CC -->|len-prefixed msgpack / JSON-RPC over UDS| FE --> BR --> THREADS --> CS
   BR -. push .-> CC -. notify .-> PEER
   MT --> cache
 ```
