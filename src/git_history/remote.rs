@@ -121,6 +121,34 @@ impl RemoteHistory {
     }
 }
 
+/// Whether a machine daemon is up — and therefore holds this machine's git-history databases.
+///
+/// This is the ROUTING question for a process that does not already know the answer. `serve` knows it
+/// by construction (it is the process that brings the daemon up, and carries `daemon_writer`); the
+/// one-shot CLI does not, and must not guess. Guessing wrong is the whole failure: with a daemon up,
+/// a local open can never win fjall's exclusive directory lock, so the CLI burns the retry ladder
+/// (`GH_OPEN_RETRIES` × `GH_OPEN_BACKOFF`, ~1.3 s on every invocation, git or not) and then silently
+/// live-walks — on the exact machine whose index is built, fresh, and hundreds of times faster.
+///
+/// Cheap by design, because it sits on the startup path of every CLI invocation:
+///
+/// * no endpoint on disk ⇒ no daemon, decided by one `stat` (Unix). This is the standalone case, and
+///   it must stay free: [`probe_alive`](crate::comms::singleton::probe_alive) retries four times with
+///   a 100 ms backoff before declaring a daemon dead — right for reclaiming a socket, a ~300 ms tax
+///   here on a machine that simply has no daemon.
+/// * otherwise one connect + ping. A live daemon answers on the first attempt; only an ORPHANED
+///   socket (a crashed daemon) pays the full probe, and it is then correctly judged dead.
+pub fn daemon_is_up() -> bool {
+    let Ok(paths) = crate::comms::singleton::resolve_paths() else {
+        return false;
+    };
+    #[cfg(unix)]
+    if !paths.socket_path.exists() {
+        return false;
+    }
+    crate::comms::singleton::probe_alive(&paths.socket_path)
+}
+
 /// Backoff schedule for the startup sync. The first session on a cold machine SPAWNS the daemon, and
 /// a daemon that is still coming up answers nothing — a one-shot sync would then leave that session's
 /// history tools live-walking for its entire life (the index would only get built by whoever came

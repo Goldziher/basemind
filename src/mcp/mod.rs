@@ -760,7 +760,7 @@ impl BasemindServer {
             } else {
                 background::spawn_view_watcher(Arc::clone(&state));
             }
-            Self::spawn_git_history_sync(&state, &history_dir, &options);
+            Self::spawn_git_history_sync(&state, &history_dir);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -802,18 +802,22 @@ impl BasemindServer {
         }
     }
 
-    /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive, so
-    /// `git-history.fjall/` has exactly one holder; who that is decides what serve may do:
+    /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive — even a
+    /// read-only open takes it — so `git-history.fjall/` has exactly one holder machine-wide, and the
+    /// only question here is whether that holder is us or the daemon:
     ///
-    /// * **`daemon_writer`** (a `comms` build): the DAEMON holds the database. Serve takes a
-    ///   forwarding handle — it must not open (let alone build) the index, which would steal the
-    ///   daemon's lock and run a multi-GB, minutes-long history walk inside the process an agent is
-    ///   actively querying, once per session.
-    /// * **local writer** (no daemon): serve holds the database and builds it in-process, as before.
-    ///   The least-surprising standalone behavior: nobody else can do it, and history tools would
+    /// * **a daemon is up**: the DAEMON holds the database, so every session — a `daemon_writer`
+    ///   serve, and equally the one-shot CLI, which runs these same tool bodies in-process — takes a
+    ///   forwarding handle. It must not try to open the index: it cannot win the lock, so it would
+    ///   burn the retry ladder on every invocation and then silently live-walk, on the exact machine
+    ///   where the index is built and fresh. Serve knows a daemon is up by construction (it brings
+    ///   one up); the CLI has to ask, which is one `stat` when there is no daemon and one ping when
+    ///   there is (see [`crate::git_history::remote::daemon_is_up`]).
+    /// * **no daemon** (a standalone process, or a non-`comms` build): this process holds the
+    ///   database and builds it in-process, as before. Nobody else can, and history tools would
     ///   otherwise permanently live-walk.
     /// * **read-only fallback** (another process owns the write lock, no daemon): no handle — history
-    ///   tools live-walk. Unchanged.
+    ///   tools live-walk, visibly (`partial: true`). Unchanged.
     fn open_git_history(
         root: &std::path::Path,
         history_dir: &std::path::Path,
@@ -825,7 +829,7 @@ impl BasemindServer {
             return None;
         }
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if options.daemon_writer {
+        if options.daemon_writer || crate::git_history::remote::daemon_is_up() {
             let agent = crate::comms::ids::AgentId::parse(agent_id.to_string())
                 .inspect_err(|error| tracing::warn!(%error, "git-history: bad agent id; tools will live-walk"))
                 .ok()?;
@@ -847,15 +851,24 @@ impl BasemindServer {
         }
     }
 
-    /// Kick the git-history index up to date, off the MCP thread. A `daemon_writer` session ASKS the
-    /// daemon to do it (which serializes the build per repo, so N sessions cause one walk); a
-    /// standalone writer does it in-process, as it always has.
-    fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path, options: &ServerOptions) {
-        if state.git_history.is_none() {
+    /// Kick the git-history index up to date, off the MCP thread. A session whose handle is
+    /// daemon-backed ASKS the daemon to do it (which serializes the build per repo, so N sessions
+    /// cause one walk); a session that holds the database does it in-process, as it always has.
+    ///
+    /// Keyed off the handle the routing above actually produced, not off `daemon_writer`: a
+    /// non-`daemon_writer` session that found a live daemon also holds a forwarding handle, and
+    /// asking the builder to write through it is a guaranteed
+    /// [`NotLocal`](crate::git_history::GitHistoryError::NotLocal).
+    ///
+    /// Only ever reached with `background: true` (i.e. `serve`). The one-shot CLI requests no sync at
+    /// all: it exits in milliseconds, and a first build on a deep repo is a minutes-long walk.
+    fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path) {
+        let Some(index) = state.git_history.as_deref() else {
             return;
-        }
+        };
+        let _ = index;
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        if options.daemon_writer {
+        if index.is_daemon_backed() {
             let root = state.root.clone();
             let agent_id = state.agent_id.clone();
             tokio::spawn(async move {
@@ -869,7 +882,6 @@ impl BasemindServer {
             });
             return;
         }
-        let _ = options;
         if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
             let history_dir = history_dir.to_path_buf();
             tokio::task::spawn_blocking(move || {
