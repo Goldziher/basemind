@@ -32,8 +32,10 @@ pub struct CommsConfig {
     #[serde(default = "CommsConfig::default_enabled")]
     pub enabled: bool,
     /// Stable identity this process presents to the broker. When unset, the identity resolver
-    /// falls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-session id, then
-    /// `"anon"`. Validated through [`crate::comms::ids::AgentId`] at resolution time.
+    /// falls back to `BASEMIND_AGENT_ID`, then a generated-and-persisted per-workspace id, then a
+    /// process-unique generated id. It never falls back to a shared constant: two agents that
+    /// collapse onto one id also share one inbox, and each then sees the other's messages as its
+    /// own. Validated through [`crate::comms::ids::AgentId`] at resolution time.
     #[serde(default)]
     pub agent_id: Option<String>,
     /// Seconds of zero-subscriber idle before the broker sheds caches. Keeps the socket bound.

@@ -224,20 +224,11 @@ fn since_cutoff(since_hours: Option<u32>) -> Option<i64> {
     }
 }
 
-/// Resolve the CLI agent identity, tiered to MATCH the `serve` resolver so CLI-driven comms share
-/// the session's identity.
-fn cli_agent_id(root: &Path) -> Result<AgentId> {
-    if let Ok(raw) = std::env::var("BASEMIND_AGENT_ID")
-        && let Ok(id) = AgentId::parse(raw)
-    {
-        return Ok(id);
-    }
-    if let Ok(existing) = std::fs::read_to_string(root.join(".basemind").join("agent-id"))
-        && let Ok(id) = AgentId::parse(existing.trim())
-    {
-        return Ok(id);
-    }
-    AgentId::parse("basemind-cli").context("construct CLI agent id")
+/// Resolve the CLI agent identity through the ONE shared resolver
+/// ([`crate::comms::identity::cli_agent_id`]) so a CLI verb and the `serve` session in the SAME
+/// workspace share an identity — and two different workspaces never do.
+fn cli_agent_id(root: &Path) -> AgentId {
+    crate::comms::identity::cli_agent_id(root)
 }
 
 /// Dispatch one comms agent verb. Builds a small current-thread runtime, then runs the verb.
@@ -256,7 +247,7 @@ pub fn run(root: &Path, json: bool, cmd: CommsAgentCmd) -> Result<()> {
 async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
     let agent = match as_agent {
         Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
-        None => cli_agent_id(root)?,
+        None => cli_agent_id(root),
     };
     let (remote, cwd) = scope_context_for(root);
     CommsClient::ensure_and_connect(agent, remote, cwd)

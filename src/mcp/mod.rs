@@ -227,9 +227,10 @@ pub(crate) struct ServerState {
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
     pub(crate) scope: String,
-    /// Owner segment for the individual-memory tier. Resolved once at boot from
-    /// `BASEMIND_AGENT_ID` (validated through [`crate::comms::ids::AgentId`] so it is
-    /// NUL-free) or `"anon"` when unset/invalid. Group-tier writes ignore it.
+    /// Owner segment for the individual-memory tier. Resolved once at boot by
+    /// [`crate::comms::identity`] (validated through [`crate::comms::ids::AgentId`] so it is
+    /// NUL-free), which never yields a shared constant — so two sessions cannot land on one
+    /// memory owner. Group-tier writes ignore it.
     #[allow(dead_code)]
     pub(crate) agent_id: String,
     /// LanceDB vector store. Lazy-init on first memory/document/code-search call.

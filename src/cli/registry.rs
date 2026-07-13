@@ -70,27 +70,18 @@ pub enum RegistryCmd {
     },
 }
 
-/// Resolve the CLI agent identity, tiered to MATCH the `serve` / `comms` resolver so CLI-driven
-/// registry calls share the session's identity.
-fn cli_agent_id(root: &Path) -> Result<AgentId> {
-    if let Ok(raw) = std::env::var("BASEMIND_AGENT_ID")
-        && let Ok(id) = AgentId::parse(raw)
-    {
-        return Ok(id);
-    }
-    if let Ok(existing) = std::fs::read_to_string(root.join(".basemind").join("agent-id"))
-        && let Ok(id) = AgentId::parse(existing.trim())
-    {
-        return Ok(id);
-    }
-    AgentId::parse("basemind-cli").context("construct CLI agent id")
+/// Resolve the CLI agent identity through the ONE shared resolver
+/// ([`crate::comms::identity::cli_agent_id`]) — the same identity the `serve` session in this
+/// workspace uses.
+fn cli_agent_id(root: &Path) -> AgentId {
+    crate::comms::identity::cli_agent_id(root)
 }
 
 /// Connect a [`CommsClient`] to the broker as a resolved identity.
 async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient> {
     let agent = match as_agent {
         Some(raw) => AgentId::parse(raw.clone()).with_context(|| format!("invalid --as-agent {raw:?}"))?,
-        None => cli_agent_id(root)?,
+        None => cli_agent_id(root),
     };
     let (remote, cwd) = scope_context_for(root);
     CommsClient::ensure_and_connect(agent, remote, cwd)

@@ -7,6 +7,7 @@
 //! comms store; the rest of the module adds the transport traits, the second Fjall-backed
 //! `CommsStore`, the broker, and the front-ends (Unix socket, in-process, future A2A HTTP).
 
+pub mod identity;
 pub mod ids;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
