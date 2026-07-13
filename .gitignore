@@ -37,6 +37,28 @@ __pycache__/
 !.agents/plugins/
 !.agents/plugins/marketplace.json
 
+poly.local.toml
+
+# ai-rulez harness outputs left over from a wider `presets` set than the current one
+# (config.toml now generates only "claude" + "codex", which the managed block below covers).
+# Every file here carries the "AI-RULEZ :: GENERATED FILE" header — it is derived from
+# .ai-rulez/, regenerable, and machine-local, so it stays out of git like the rest of the
+# generated harness surface. Kept on disk because these are the live rule files for whichever
+# editors a contributor happens to run.
+.cline/
+.clinerules/
+.continue/
+.cursor/
+.gemini/
+.junie/
+.opencode/
+.windsurf/
+GEMINI.md
+.github/copilot-instructions.md
+.github/agents/
+.github/commands/
+.github/skills/
+
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
 .ai-rulez/.generated-manifest.json
 .claude/
@@ -45,4 +67,3 @@ __pycache__/
 AGENTS.md
 CLAUDE.md
 # END ai-rulez
-poly.local.toml
