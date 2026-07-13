@@ -53,10 +53,10 @@ pub(super) fn record_call(
     result: &Result<CallToolResult, McpError>,
 ) {
     let Ok(r) = result else { return };
-    let elapsed_ms: u64 = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let elapsed_us: u64 = started.elapsed().as_micros().try_into().unwrap_or(u64::MAX);
     let resp_text = result_text(r);
     let resp_bytes = resp_text.len() as u64;
     let corpus = state.corpus_bytes.load(std::sync::atomic::Ordering::Relaxed);
     let savings = super::savings::estimate_from_text(tool, corpus, resp_text.as_ref());
-    state.telemetry.record(tool, params, resp_bytes, elapsed_ms, &savings);
+    state.telemetry.record(tool, params, resp_bytes, elapsed_us, &savings);
 }

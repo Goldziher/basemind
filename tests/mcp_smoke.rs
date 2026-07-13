@@ -1604,6 +1604,49 @@ async fn mcp_server_exercises_representative_tools() {
     );
     let per_tool = body.get("per_tool").and_then(Value::as_array).expect("per_tool array");
     assert!(!per_tool.is_empty(), "per_tool histogram must not be empty");
+
+    // Telemetry rows must be recorded in microseconds. Every call above is a warm in-RAM lookup
+    // against a fixture repo, so all of them complete in well under a millisecond: when the row was
+    // stamped with `as_millis` this histogram was a column of zeros, and a fast tool was
+    // indistinguishable from an uninstrumented one. At least one real call must show a duration.
+    let recent = body.get("recent").and_then(Value::as_array).expect("recent array");
+    assert!(!recent.is_empty(), "recent calls must not be empty");
+    for call in recent {
+        assert!(
+            call.get("elapsed_us").and_then(Value::as_u64).is_some(),
+            "every telemetry row must carry an `elapsed_us` reading, got {call}"
+        );
+    }
+    // The bug this guards: these fixture tools are pure in-RAM lookups that complete in tens of
+    // microseconds (`find_files` ~15 us, `find_references` ~47 us, `workspace_grep` ~78 us), so a
+    // row stamped with `as_millis` recorded every one of them as `0` — a fast tool was
+    // indistinguishable from an uninstrumented one. Asserting "some call is non-zero" would NOT
+    // catch it (a `rescan` in the same window takes ~20 ms and stays non-zero either way); the
+    // discriminating property is that a SUB-MILLISECOND tool reports a duration at all.
+    const SUB_MS_TOOLS: [&str; 5] = [
+        "find_files",
+        "find_references",
+        "search_symbols",
+        "workspace_grep",
+        "outline",
+    ];
+    let sub_ms: Vec<u64> = recent
+        .iter()
+        .filter(|c| {
+            c.get("tool")
+                .and_then(Value::as_str)
+                .is_some_and(|t| SUB_MS_TOOLS.contains(&t))
+        })
+        .filter_map(|c| c.get("elapsed_us").and_then(Value::as_u64))
+        .collect();
+    assert!(
+        !sub_ms.is_empty(),
+        "fixture must exercise at least one sub-millisecond tool: {recent:?}"
+    );
+    assert!(
+        sub_ms.iter().any(|&us| us > 0),
+        "every sub-millisecond tool recorded 0 — telemetry is truncating to milliseconds: {sub_ms:?}"
+    );
     let savings_note = body.get("savings_note").and_then(Value::as_str).unwrap_or_default();
     assert!(
         savings_note.contains("estimate") || savings_note.contains("heuristic"),
