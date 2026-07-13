@@ -12,7 +12,7 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 
-use super::render::emit;
+use super::render::{Emit, emit};
 use super::run_tool;
 
 #[derive(Subcommand, Debug)]
@@ -78,7 +78,7 @@ pub enum GovernanceCmd {
     },
 }
 
-pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, json: bool, out: &mut impl Write) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         GovernanceCmd::Mine {
             window,
@@ -93,7 +93,7 @@ pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, json: bool, out: &
                 max_files_per_commit,
             };
             let r = run_tool("proposals_mine", server.proposals_mine(Parameters(p)).await)?;
-            emit("proposals_mine", &r, json, out)
+            emit("proposals_mine", &r, opts, out)
         }
         GovernanceCmd::Proposals { kind, limit } => {
             let p = ProposalsListParams {
@@ -102,17 +102,17 @@ pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, json: bool, out: &
                 cursor: None,
             };
             let r = run_tool("proposals_list", server.proposals_list(Parameters(p)).await)?;
-            emit("proposals_list", &r, json, out)
+            emit("proposals_list", &r, opts, out)
         }
         GovernanceCmd::Accept { id, key } => {
             let p = ProposalAcceptParams { id, key };
             let r = run_tool("proposal_accept", server.proposal_accept(Parameters(p)).await)?;
-            emit("proposal_accept", &r, json, out)
+            emit("proposal_accept", &r, opts, out)
         }
         GovernanceCmd::Reject { id, reason } => {
             let p = ProposalRejectParams { id, reason };
             let r = run_tool("proposal_reject", server.proposal_reject(Parameters(p)).await)?;
-            emit("proposal_reject", &r, json, out)
+            emit("proposal_reject", &r, opts, out)
         }
         GovernanceCmd::Audit {
             key,
@@ -133,7 +133,7 @@ pub async fn run(server: &BasemindServer, cmd: GovernanceCmd, json: bool, out: &
                 include_archived,
             };
             let r = run_tool("memory_audit", server.memory_audit(Parameters(p)).await)?;
-            emit("memory_audit", &r, json, out)
+            emit("memory_audit", &r, opts, out)
         }
     }
 }

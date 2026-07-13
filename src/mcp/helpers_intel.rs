@@ -27,6 +27,8 @@ pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
+    // The `goto_definition` shim delegates immediately, so this IS the first statement of the body.
+    let started = std::time::Instant::now();
     let abs = state.root.join(params.path.to_path_buf());
     let source = std::fs::read(&abs)
         .map_err(|e| McpError::invalid_params(format!("goto_definition: read {}: {e}", params.path), None))?;
@@ -76,6 +78,7 @@ pub(super) async fn run_goto_definition(
         line,
         column,
         definition,
+        elapsed_us: super::helpers::elapsed_us(started),
     })
 }
 

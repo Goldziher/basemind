@@ -3316,9 +3316,25 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .await
             .expect("lean invoke_tool"),
     );
+    // `elapsed_us` is a per-call latency reading, so it is legitimately different between any two
+    // calls (these are even two separate server processes). Assert both carry it, then compare the
+    // rest of the payload structurally — that is what this test is actually about: the lean
+    // `invoke_tool` wrapper must not alter the response it forwards.
+    let mut via_invoke = via_invoke;
+    let mut direct = direct;
+    for (label, body) in [("invoke_tool", &mut via_invoke), ("direct", &mut direct)] {
+        let removed = body
+            .as_object_mut()
+            .expect("response is a JSON object")
+            .remove("elapsed_us");
+        assert!(
+            removed.is_some_and(|v| v.as_u64().is_some()),
+            "{label} search_symbols response must carry an `elapsed_us` reading"
+        );
+    }
     assert_eq!(
         via_invoke, direct,
-        "invoke_tool result must match a direct search_symbols call"
+        "invoke_tool result must match a direct search_symbols call (latency field aside)"
     );
 
     let bad = lean
@@ -3525,4 +3541,152 @@ async fn rescan_emits_logging_and_progress_notifications() {
     );
 
     let _ = server.cancel().await;
+}
+
+/// Sane upper bound for one tool call against the tiny in-test fixture: 60 seconds expressed in
+/// microseconds. Deliberately generous — the point is not to assert a performance target (that
+/// belongs in `harden.rs`), but to catch a unit error. If `elapsed_us` were ever populated with
+/// nanoseconds, or with a raw `Duration` debug value, a real call against a 1-file repo would blow
+/// past this; a genuine microsecond reading cannot.
+const SANE_ELAPSED_US_MAX: u64 = 60_000_000;
+
+/// Extract `elapsed_us` from a tool response, asserting it is present and plausibly a microsecond
+/// reading.
+///
+/// Deliberately does NOT assert `> 0`. A genuinely sub-microsecond operation — an `outline` served
+/// straight from the warm in-RAM map, say — truncates to `0` honestly, so a blanket non-zero
+/// assertion would test something the contract does not promise and would flake on a fast machine.
+/// Callers that perform work with a hard floor above a microsecond (a store read, a git walk) assert
+/// `> 0` themselves via [`assert_stamped`].
+fn assert_sane_elapsed_us(tool: &str, body: &Value) -> u64 {
+    let us = body
+        .get("elapsed_us")
+        .unwrap_or_else(|| panic!("{tool}: response must carry `elapsed_us`: {body}"))
+        .as_u64()
+        .unwrap_or_else(|| panic!("{tool}: `elapsed_us` must be an unsigned integer: {body}"));
+    assert!(
+        us < SANE_ELAPSED_US_MAX,
+        "{tool}: `elapsed_us` = {us} is not a plausible microsecond reading (unit error?)"
+    );
+    us
+}
+
+/// Assert `elapsed_us` was actually stamped from the body timer rather than left at the `0`
+/// initializer. Only valid for tools whose measured region contains work with a floor comfortably
+/// above one microsecond (reading a blob off disk, walking git history).
+fn assert_stamped(tool: &str, body: &Value) {
+    let us = assert_sane_elapsed_us(tool, body);
+    assert!(
+        us > 0,
+        "{tool}: `elapsed_us` is 0 — the body timer was never stamped into the response \
+         (this tool reads from disk / walks git, so it cannot honestly take under 1 µs)"
+    );
+}
+
+/// The timing contract: every latency-relevant tool reports its own server-side handler latency in
+/// microseconds, on both the code-map and the git surface.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn latency_tools_report_microsecond_elapsed_us() {
+    let (_dir, service) = spawn_paging_server().await;
+
+    // Representative code-map tool: index-backed, the microsecond-scale hot path.
+    let search = decode_text(
+        &service
+            .call_tool(call_params("search_symbols", json!({ "needle": "paged" })))
+            .await
+            .expect("search_symbols"),
+    );
+    assert!(
+        search.get("total").and_then(Value::as_u64).unwrap_or(0) >= 1,
+        "fixture should match the `paged` symbol: {search}"
+    );
+    assert_sane_elapsed_us("search_symbols", &search);
+
+    // Representative git tool: walks real history, a different code path entirely.
+    let recent = decode_text(
+        &service
+            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .await
+            .expect("recent_changes"),
+    );
+    assert_eq!(commit_shas(&recent).len(), 2, "fixture has 5 commits; asked for 2");
+    assert_stamped("recent_changes", &recent);
+
+    // `outline` is the one tool that builds its response with an `elapsed_us: 0` placeholder and
+    // overwrites it just before serialization, so it is the tool most able to regress into shipping
+    // a hardcoded 0 — assert it explicitly.
+    //
+    // Use the `l2: true` path deliberately: it reads an L2 blob from the store, so it always costs
+    // more than a microsecond. The warm in-RAM path (`l2: false`) can legitimately complete in under
+    // 1 µs on a tiny fixture and truncate to 0, which would make a `> 0` assertion flaky rather than
+    // meaningful. Both paths share the same post-hoc stamp, so this still covers the placeholder.
+    let outline = decode_text(
+        &service
+            .call_tool(call_params("outline", json!({ "path": "paged.rs", "l2": true })))
+            .await
+            .expect("outline"),
+    );
+    assert!(
+        outline
+            .get("symbols")
+            .and_then(Value::as_array)
+            .is_some_and(|s| !s.is_empty()),
+        "fixture outline should carry symbols: {outline}"
+    );
+    assert_stamped("outline", &outline);
+
+    let _ = service.cancel().await;
+}
+
+/// `elapsed_us` is an ADDITIVE field: a client built against the previous response shape — one that
+/// has never heard of `elapsed_us` — must still deserialize the new response unchanged.
+///
+/// This is the compatibility guarantee the repo's schema convention requires (new response fields
+/// are additive). It holds because no response struct sets `deny_unknown_fields`, so serde skips
+/// keys the old client doesn't know.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn elapsed_us_is_additive_for_older_clients() {
+    /// A verbatim copy of the pre-`elapsed_us` `search_symbols` response shape.
+    #[derive(serde::Deserialize)]
+    struct LegacySearchResponse {
+        total: usize,
+        truncated: bool,
+        results: Vec<Value>,
+    }
+
+    /// A pre-`elapsed_us` git response shape.
+    #[derive(serde::Deserialize)]
+    struct LegacyRecentChangesResponse {
+        commits: Vec<Value>,
+    }
+
+    let (_dir, service) = spawn_paging_server().await;
+
+    let search = decode_text(
+        &service
+            .call_tool(call_params("search_symbols", json!({ "needle": "paged" })))
+            .await
+            .expect("search_symbols"),
+    );
+    assert!(
+        search.get("elapsed_us").is_some(),
+        "precondition: the new response really does carry the new field"
+    );
+    let legacy: LegacySearchResponse =
+        serde_json::from_value(search).expect("an older client must still deserialize the response");
+    assert!(legacy.total >= 1, "old client still reads `total`");
+    assert!(!legacy.truncated, "old client still reads `truncated`");
+    assert_eq!(legacy.results.len(), legacy.total, "old client still reads `results`");
+
+    let recent = decode_text(
+        &service
+            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .await
+            .expect("recent_changes"),
+    );
+    let legacy: LegacyRecentChangesResponse =
+        serde_json::from_value(recent).expect("an older client must still deserialize the git response");
+    assert_eq!(legacy.commits.len(), 2, "old client still reads `commits`");
+
+    let _ = service.cancel().await;
 }

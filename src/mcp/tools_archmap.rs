@@ -26,7 +26,8 @@ impl BasemindServer {
                        tier returns hub functions with signatures + their edges. Edges are \
                        name-based (like call_graph): overloaded names may produce a few spurious \
                        edges — discount by `weight`. Deterministic, no LLM. Results are knee-cut \
-                       to the significant head and capped (`max_nodes`, `max_edges`, `max_tokens`).",
+                       to the significant head and capped (`max_nodes`, `max_edges`, `max_tokens`). \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn architecture_map(
@@ -36,6 +37,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
@@ -53,6 +55,7 @@ impl BasemindServer {
                 churn.as_ref(),
                 params,
                 self.state.lifecycle_notice(),
+                __body,
             )
         }
         .await;

@@ -212,6 +212,13 @@ pub(in crate::mcp) struct SearchGitHistoryResponse {
     pub next_cursor: Option<Cursor>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -222,6 +229,13 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     pub modified: Vec<RelPath>,
     pub untracked: Vec<RelPath>,
     pub is_clean: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -240,6 +254,13 @@ pub(in crate::mcp) struct RecentChangesResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -257,6 +278,13 @@ pub(in crate::mcp) struct CommitsTouchingResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,6 +302,13 @@ pub(in crate::mcp) struct DiffOutlineResponse {
     pub common: Vec<DiffSymbolView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -303,6 +338,13 @@ pub(in crate::mcp) struct BlameResponse {
     /// the last-returned hunk's `start_line` so the next page resumes immediately after.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -322,6 +364,13 @@ pub(in crate::mcp) struct BlameSymbolResponse {
     /// the last-returned hunk's `start_line` so the next page resumes immediately after.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -336,6 +385,13 @@ pub(in crate::mcp) struct FindCommitsByPathResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,6 +408,13 @@ pub(in crate::mcp) struct HotFilesResponse {
     pub window_inspected: u32,
     pub total_files_changed: u32,
     pub files: Vec<HotFileEntry>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -372,6 +435,13 @@ pub(in crate::mcp) struct DiffFileResponse {
     pub present_at_old: bool,
     pub present_at_new: bool,
     pub hunks: Vec<HunkView>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -431,4 +501,11 @@ pub(in crate::mcp) struct SymbolHistoryResponse {
     /// moved between calls). The caller must restart pagination from the top.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub cursor_invalidated: bool,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git walk /
+    /// index lookup + response construction), excluding MCP transport, argument deserialization,
+    /// and response serialization. A first call against a cold server also includes lazily
+    /// building or loading the git-history index. See [`crate::mcp::helpers::timing`] for the
+    /// full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }

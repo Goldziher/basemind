@@ -104,6 +104,13 @@ pub(super) struct MemoryListResponse {
     /// Stable across rescans.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Cursor>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
+    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up; such responses carry a `notice`. See
+    /// [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -134,6 +141,13 @@ pub(super) struct MemorySearchHit {
 pub(super) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
+    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up; such responses carry a `notice`. See
+    /// [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

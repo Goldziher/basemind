@@ -136,6 +136,7 @@ pub(super) fn run_find_references(
     params: super::types::FindReferencesParams,
     cache: &super::MapCache,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::FindReferencesResponse;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
@@ -154,6 +155,7 @@ pub(super) fn run_find_references(
             hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
             notice,
+            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )
@@ -175,6 +177,7 @@ pub(super) async fn run_find_callers(
     cache: &super::MapCache,
     params: super::types::FindCallersParams,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     use super::types::{DefinitionView, FindCallersResponse};
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
@@ -208,6 +211,7 @@ pub(super) async fn run_find_callers(
             hits: budgeted.hits,
             next_cursor: budgeted.next_cursor,
             notice,
+            elapsed_us: super::helpers::elapsed_us(started),
         });
     }
 
@@ -231,6 +235,7 @@ pub(super) async fn run_find_callers(
         hits: budgeted.hits,
         next_cursor: budgeted.next_cursor,
         notice,
+        elapsed_us: super::helpers::elapsed_us(started),
     })
 }
 

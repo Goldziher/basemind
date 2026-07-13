@@ -110,6 +110,13 @@ pub(crate) struct SearchCodeResponse {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
     pub hits: Vec<CodeSearchHit>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
+    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up; such responses carry a `notice`. See
+    /// [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 /// Response for `get_chunk` — the full chunk body plus its metadata.
@@ -132,4 +139,11 @@ pub(crate) struct GetChunkResponse {
     pub byte_start: u32,
     pub byte_end: u32,
     pub text: String,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
+    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up; such responses carry a `notice`. See
+    /// [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }

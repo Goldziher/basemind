@@ -52,6 +52,13 @@ pub struct CallGraphResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / vector
+    /// search / graph walk + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up; such responses carry a `notice`. See
+    /// [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

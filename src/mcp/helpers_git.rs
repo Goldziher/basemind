@@ -7,8 +7,8 @@ use rmcp::model::CallToolResult;
 
 use super::ServerState;
 use super::helpers::{
-    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, git_history_if_fresh, head_sha, head_snapshot_id, json_result,
-    require_git_repo,
+    LOG_LIMIT_DEFAULT, LOG_LIMIT_MAX, LOG_WALK_MAX, elapsed_us, git_history_if_fresh, head_sha, head_snapshot_id,
+    json_result, require_git_repo,
 };
 use super::types::{GitCommitHit, SearchGitHistoryParams, SearchGitHistoryResponse};
 use crate::git::CommitInfo;
@@ -39,6 +39,7 @@ pub(super) fn run_search_git_history(
     state: &ServerState,
     params: SearchGitHistoryParams,
 ) -> Result<CallToolResult, McpError> {
+    let __body = std::time::Instant::now();
     let repo = require_git_repo(state)?;
     let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
     let scope = FtsScope::parse(params.field.as_deref());
@@ -54,6 +55,7 @@ pub(super) fn run_search_git_history(
                     partial: false,
                     next_cursor: None,
                     cursor_invalidated: true,
+                    elapsed_us: elapsed_us(__body),
                 });
             }
             offset as usize
@@ -93,6 +95,7 @@ pub(super) fn run_search_git_history(
         partial,
         next_cursor,
         cursor_invalidated: false,
+        elapsed_us: elapsed_us(__body),
     })
 }
 

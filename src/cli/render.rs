@@ -17,18 +17,76 @@ use serde_json::Value;
 const MAX_INLINE_LEN: usize = 200;
 /// Maximum number of array items rendered in human mode before a summary line.
 const MAX_HUMAN_ITEMS: usize = 1000;
+/// Below this many microseconds a duration renders as `N µs`; at or above it, as `N.N ms`.
+const MS_THRESHOLD_US: u64 = 1_000;
+
+/// Output options for one CLI tool invocation, plus the startup cost the CLI can attribute
+/// to itself.
+///
+/// The tool's own latency (`elapsed_us`) is reported by the tool body and arrives inside the
+/// response. `startup_us` is the *other* half of what a shell `time basemind …` measures — and
+/// reporting the two separately is the whole point: it tells you how much of a wrapped `time`
+/// measurement was never the query.
+pub struct Emit {
+    /// The `--json` switch.
+    pub json: bool,
+    /// Microseconds from `main()` entry to the instant the tool body is invoked: clap parsing,
+    /// tracing setup, repo-root discovery, grammar check, the tokio runtime build, the read-only
+    /// store open, the config load, and the git-cache open.
+    ///
+    /// Excludes pre-`main` process cost (exec, dynamic linking, Rust runtime init), which a
+    /// process cannot observe about itself — so `startup_us + elapsed_us` is a lower bound on,
+    /// not an exact reproduction of, an external `time` measurement.
+    ///
+    /// A long-running `basemind serve` (and therefore every MCP call) pays this **once** at boot,
+    /// not per query. It is a CLI-only cost.
+    pub startup_us: u64,
+}
+
+/// Render a duration compactly: `285 µs`, or `41.2 ms` once it reaches a millisecond.
+fn format_us(us: u64) -> String {
+    if us < MS_THRESHOLD_US {
+        format!("{us} µs")
+    } else {
+        format!("{:.1} ms", us as f64 / 1_000.0)
+    }
+}
 
 /// Render a tool result to the writer, honoring the `--json` switch.
 ///
 /// `tool_name` selects the human special-case renderer. On a tool error the
 /// `McpError` is surfaced as an `anyhow` error by the caller before this runs.
-pub fn emit(tool_name: &str, result: &CallToolResult, json: bool, out: &mut impl Write) -> Result<()> {
-    let value = result_to_value(result)?;
-    if json {
-        render_json(&value, out)
-    } else {
-        render_human(tool_name, &value, out)
+///
+/// In `--json` mode the tool's own `elapsed_us` is passed through untouched and `startup_us` is
+/// added alongside it. In human mode both are lifted out of the payload and printed as a compact
+/// trailing timing line, so they don't clutter the key/value dump.
+pub fn emit(tool_name: &str, result: &CallToolResult, opts: &Emit, out: &mut impl Write) -> Result<()> {
+    let mut value = result_to_value(result)?;
+    if opts.json {
+        if let Value::Object(map) = &mut value {
+            map.insert("startup_us".to_string(), Value::from(opts.startup_us));
+        }
+        return render_json(&value, out);
     }
+
+    // Human mode: lift `elapsed_us` out of the payload so the generic renderer doesn't print it
+    // as just another scalar row, then report it in the timing footer.
+    let elapsed_us = match &mut value {
+        Value::Object(map) => map.remove("elapsed_us").and_then(|v| v.as_u64()),
+        _ => None,
+    };
+    render_human(tool_name, &value, out)?;
+    match elapsed_us {
+        Some(us) => writeln!(
+            out,
+            "\n({} query · {} startup)",
+            format_us(us),
+            format_us(opts.startup_us)
+        )?,
+        // The tool reports no latency (a non-instrumented tool) — report only what we do know.
+        None => writeln!(out, "\n({} startup)", format_us(opts.startup_us))?,
+    }
+    Ok(())
 }
 
 /// Extract the JSON payload from a tool result.

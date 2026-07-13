@@ -16,7 +16,7 @@ use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 use crate::store_gc::{self, CacheComponent};
 
-use super::render::{emit, render_human, render_json};
+use super::render::{Emit, emit, render_human, render_json};
 use super::run_tool;
 
 #[derive(Subcommand, Debug)]
@@ -43,12 +43,12 @@ pub async fn run_telemetry(
     server: &BasemindServer,
     window: Option<String>,
     tool: Option<String>,
-    json: bool,
+    opts: &Emit,
     out: &mut impl Write,
 ) -> Result<()> {
     let p = TelemetrySummaryParams { window, tool };
     let r = run_tool("telemetry_summary", server.telemetry_summary(Parameters(p)).await)?;
-    emit("telemetry_summary", &r, json, out)
+    emit("telemetry_summary", &r, opts, out)
 }
 
 /// Dispatch a `cache` subcommand against the on-disk `.basemind/` directory.

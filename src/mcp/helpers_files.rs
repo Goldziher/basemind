@@ -18,6 +18,9 @@ use super::types::{
 /// Body of the `list_files` MCP tool: enumerate indexed paths with optional substring
 /// (`path_contains`) and `language` filters, then paginate.
 pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams) -> Result<CallToolResult, McpError> {
+    // The `list_files` shim delegates immediately, so this IS the first statement of the tool body:
+    // the cache-ready wait below is inside the measured region.
+    let started = std::time::Instant::now();
     state.await_cache_ready().await;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
@@ -38,6 +41,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
                         next_cursor: None,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
+                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -101,6 +105,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
             next_cursor,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
+            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )
@@ -113,6 +118,9 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
 /// `await_cache_ready()` call above guarantees it is populated before this runs. Paths that
 /// aren't valid UTF-8 are skipped — `nucleo-matcher` scores `str`, not raw bytes.
 pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams) -> Result<CallToolResult, McpError> {
+    // The `find_files` shim delegates immediately, so this IS the first statement of the tool body:
+    // the cache-ready wait below is inside the measured region.
+    let started = std::time::Instant::now();
     state.await_cache_ready().await;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
@@ -133,6 +141,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
                         next_cursor: None,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
+                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -216,6 +225,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
             next_cursor,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
+            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )

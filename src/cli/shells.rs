@@ -15,7 +15,7 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 
-use super::render::emit;
+use super::render::{Emit, emit};
 use super::run_tool;
 
 #[derive(Subcommand, Debug)]
@@ -84,7 +84,7 @@ fn parse_env(raw: &str) -> Result<ShellEnv> {
     })
 }
 
-pub async fn run(server: &BasemindServer, cmd: ShellsCmd, json: bool, out: &mut impl Write) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: ShellsCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         ShellsCmd::Spawn {
             command,
@@ -104,7 +104,7 @@ pub async fn run(server: &BasemindServer, cmd: ShellsCmd, json: bool, out: &mut 
                 title,
             };
             let r = run_tool("shell_spawn", server.shell_spawn(Parameters(p)).await)?;
-            emit("shell_spawn", &r, json, out)
+            emit("shell_spawn", &r, opts, out)
         }
         ShellsCmd::Send {
             session_id,
@@ -117,17 +117,17 @@ pub async fn run(server: &BasemindServer, cmd: ShellsCmd, json: bool, out: &mut 
                 enter: !no_enter,
             };
             let r = run_tool("shell_send", server.shell_send(Parameters(p)).await)?;
-            emit("shell_send", &r, json, out)
+            emit("shell_send", &r, opts, out)
         }
         ShellsCmd::Capture { session_id, lines } => {
             let p = ShellCaptureParams { session_id, lines };
             let r = run_tool("shell_capture", server.shell_capture(Parameters(p)).await)?;
-            emit("shell_capture", &r, json, out)
+            emit("shell_capture", &r, opts, out)
         }
         ShellsCmd::Kill { session_id } => {
             let p = ShellKillParams { session_id };
             let r = run_tool("shell_kill", server.shell_kill(Parameters(p)).await)?;
-            emit("shell_kill", &r, json, out)
+            emit("shell_kill", &r, opts, out)
         }
         ShellsCmd::Broadcast {
             text,
@@ -140,12 +140,12 @@ pub async fn run(server: &BasemindServer, cmd: ShellsCmd, json: bool, out: &mut 
                 enter: !no_enter,
             };
             let r = run_tool("shell_broadcast", server.shell_broadcast(Parameters(p)).await)?;
-            emit("shell_broadcast", &r, json, out)
+            emit("shell_broadcast", &r, opts, out)
         }
         ShellsCmd::List => {
             let p = ShellListParams {};
             let r = run_tool("shell_list", server.shell_list(Parameters(p)).await)?;
-            emit("shell_list", &r, json, out)
+            emit("shell_list", &r, opts, out)
         }
     }
 }

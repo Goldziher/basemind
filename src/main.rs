@@ -257,6 +257,11 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 }
 
 fn main() -> Result<()> {
+    // Earliest observable point in the process. Everything from here to the first tool call is
+    // charged to `startup_us` (see `cli::render::Emit`), so a CLI caller can see exactly how much
+    // of a wrapped `time basemind …` was process startup rather than the query. Pre-`main` cost
+    // (exec, dynamic linking, runtime init) is not observable from inside the process.
+    let process_started = std::time::Instant::now();
     #[cfg(all(feature = "shells", any(unix, windows)))]
     if let Some(result) = basemind::shells::intercept_internal_reexec() {
         return result;
@@ -290,7 +295,16 @@ fn main() -> Result<()> {
     let json = cli.json;
     let view = cli.view.clone();
     warn_ignored_global_flags(&cli.cmd, json, &view);
-    let dispatch = |tc| basemind::cli::run(&root, &view, DocumentsCliOverrides::default(), json, tc);
+    let dispatch = |tc| {
+        basemind::cli::run(
+            &root,
+            &view,
+            DocumentsCliOverrides::default(),
+            json,
+            process_started,
+            tc,
+        )
+    };
     match cli.cmd {
         // `init` anchors to the current repo (git root, else cwd) — NOT the ancestor-`.basemind`
         // walk `root` uses — so it scaffolds the project you're in, never a parent that already

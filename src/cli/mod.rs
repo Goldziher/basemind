@@ -32,12 +32,14 @@ pub mod web;
 
 use std::io::Write;
 use std::path::Path;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
+use crate::cli::render::Emit;
 use crate::config::DocumentsCliOverrides;
 
 /// Tool subcommand groups dispatched through the in-process server.
@@ -86,9 +88,22 @@ pub fn run_tool(tool: &str, result: Result<CallToolResult, McpError>) -> Result<
 /// (reused across the single call) and discovers the git repo + config the same
 /// way `serve` does.
 ///
+/// `process_started` is captured at `main()` entry. Everything from there up to the tool call —
+/// clap parsing, root discovery, the tokio runtime build, the read-only store open, config load,
+/// git-cache open — is charged to [`Emit::startup_us`], NOT to the tool's own `elapsed_us`. That
+/// split is the point: it separates the per-process cost the CLI pays (and a long-lived `serve`
+/// does not) from the cost of the query itself.
+///
 /// `cache` commands are dispatched separately by the caller via
 /// [`admin::run_cache`] because they are the offline path and need no server.
-pub fn run(root: &Path, view: &str, documents: DocumentsCliOverrides, json: bool, cmd: ToolCmd) -> Result<()> {
+pub fn run(
+    root: &Path,
+    view: &str,
+    documents: DocumentsCliOverrides,
+    json: bool,
+    process_started: Instant,
+    cmd: ToolCmd,
+) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -98,15 +113,21 @@ pub fn run(root: &Path, view: &str, documents: DocumentsCliOverrides, json: bool
         let server = context::build_server(root, view, documents)?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
+        // Sampled immediately before the first tool call: everything the process did to get here
+        // is startup, everything the tool does from here is the query.
+        let opts = Emit {
+            json,
+            startup_us: u64::try_from(process_started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        };
         match cmd {
-            ToolCmd::Query(q) => codemap::run(&server, q, json, &mut out).await?,
-            ToolCmd::Git(g) => git::run(&server, g, json, &mut out).await?,
-            ToolCmd::Memory(m) => memory::run(&server, m, json, &mut out).await?,
-            ToolCmd::Governance(g) => governance::run(&server, g, json, &mut out).await?,
-            ToolCmd::Web(w) => web::run(&server, w, json, &mut out).await?,
+            ToolCmd::Query(q) => codemap::run(&server, q, &opts, &mut out).await?,
+            ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
+            ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
+            ToolCmd::Governance(g) => governance::run(&server, g, &opts, &mut out).await?,
+            ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]
-            ToolCmd::Shells(s) => shells::run(&server, s, json, &mut out).await?,
-            ToolCmd::Telemetry { window, tool } => admin::run_telemetry(&server, window, tool, json, &mut out).await?,
+            ToolCmd::Shells(s) => shells::run(&server, s, &opts, &mut out).await?,
+            ToolCmd::Telemetry { window, tool } => admin::run_telemetry(&server, window, tool, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

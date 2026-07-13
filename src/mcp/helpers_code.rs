@@ -11,7 +11,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
-use super::helpers::json_result;
+use super::helpers::{elapsed_us, json_result};
 use super::memory::{embed_query, lance_store};
 use super::types_code::{CodeSearchHit, GetChunkParams, GetChunkResponse, SearchCodeParams, SearchCodeResponse};
 use crate::search::bm25::bm25_search;
@@ -45,6 +45,7 @@ fn wants_toon(state: &ServerState, format: Option<&str>) -> bool {
 }
 
 pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParams) -> Result<CallToolResult, McpError> {
+    let __body = std::time::Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let want_toon = wants_toon(state, params.format.as_deref());
 
@@ -81,6 +82,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
             query: params.query,
             budgeted: budget.budgeted,
             hits: budget.items,
+            elapsed_us: elapsed_us(__body),
         },
         want_toon,
     )
@@ -301,6 +303,7 @@ async fn rerank_hits(
 }
 
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
+    let __body = std::time::Instant::now();
     let blob = {
         let store = state.store.read().await;
         let entry = store
@@ -368,5 +371,6 @@ pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -
         byte_start: chunk.byte_start,
         byte_end: chunk.byte_end,
         text: chunk.text.clone(),
+        elapsed_us: elapsed_us(__body),
     })
 }
