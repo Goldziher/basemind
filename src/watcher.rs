@@ -217,13 +217,25 @@ mod tests {
             })
         });
 
-        std::thread::sleep(Duration::from_millis(500));
+        // Re-write until the watcher observes it, rather than writing once after a fixed sleep and
+        // hoping the fsevents stream was already registered. A stream only delivers events from its
+        // own start point, so a write that lands before registration is lost FOREVER — no timeout
+        // can recover it. That startup race, not slowness, is what made this test flaky under load:
+        // a busy machine delays registration past the sleep and the single write vanishes.
         let target = root.join("hello.rs");
-        std::fs::write(&target, b"fn main() {}\n").expect("write file");
-
-        let received = path_rx
-            .recv_timeout(Duration::from_secs(10))
-            .expect("changed path within window");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let received = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher never reported hello.rs within 30s"
+            );
+            std::fs::write(&target, b"fn main() {}\n").expect("write file");
+            match path_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(paths) => break paths,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+            }
+        };
         assert!(
             received.iter().any(|p| p.ends_with("hello.rs")),
             "expected hello.rs in {received:?}"
