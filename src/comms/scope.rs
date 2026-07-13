@@ -36,32 +36,48 @@ pub fn scope_chain(cwd: &Path, repo: Option<&Repo>) -> ScopeChain {
 
 /// True when an agent whose cwd is `cwd` should discover a thread whose path is `pattern`.
 ///
-/// `pattern` is a path or GLOB matched with `globset`. Matching is tried three ways so both a
+/// `pattern` is a path or GLOB matched with `globset`. Matching is tried four ways so both a
 /// literal repo path and a repo-relative glob (`src/**`) resolve intuitively:
 /// * the compiled glob is tested against the absolute `cwd`;
 /// * and against every ancestor path component of `cwd` (so a glob naming an ancestor dir
 ///   still covers a nested agent);
+/// * a trailing `/**` is stripped and the base retried, so `<dir>/**` also covers `<dir>` itself;
 /// * a non-glob literal also matches when it is a path prefix of `cwd` (the ancestor-room case).
 ///
 /// A pattern that fails to compile as a glob never matches (returns `false`) rather than erroring —
 /// discovery is best-effort and a malformed pattern should not fail a listing.
 pub fn path_matches(pattern: &str, cwd: &Path) -> bool {
-    let cwd_str = cwd.to_string_lossy();
-    if let Ok(glob) = Glob::new(pattern) {
-        let matcher = glob.compile_matcher();
-        if matcher.is_match(cwd.as_os_str()) || matcher.is_match(cwd_str.as_ref()) {
-            return true;
-        }
-        for ancestor in cwd.ancestors() {
-            if matcher.is_match(ancestor.as_os_str()) {
-                return true;
-            }
-        }
+    if glob_covers(pattern, cwd) {
+        return true;
+    }
+    // `<dir>/**` must also cover an agent sitting AT `<dir>`. globset's `**` requires at least one
+    // path component after the slash, so the recursive form never matches its own base — which left
+    // a thread scoped to `<repo>/**` invisible to an agent whose cwd IS `<repo>`, the most common
+    // cwd there is, while still being visible from every subdirectory. Retrying the stripped base
+    // covers the root without widening the glob (`/repo/**` still rejects `/repo2`).
+    if let Some(base) = pattern.strip_suffix("/**")
+        && !base.is_empty()
+        && glob_covers(base, cwd)
+    {
+        return true;
     }
     // Literal path-prefix fallback: a plain directory pattern covers agents at or below it.
     let literal = Path::new(pattern);
     let literal = literal.canonicalize().unwrap_or_else(|_| literal.to_path_buf());
     cwd.starts_with(&literal)
+}
+
+/// Compile `pattern` as a glob and test it against `cwd` and each of `cwd`'s ancestors. A pattern
+/// that does not compile matches nothing.
+fn glob_covers(pattern: &str, cwd: &Path) -> bool {
+    let Ok(glob) = Glob::new(pattern) else {
+        return false;
+    };
+    let matcher = glob.compile_matcher();
+    if matcher.is_match(cwd.as_os_str()) || matcher.is_match(cwd.to_string_lossy().as_ref()) {
+        return true;
+    }
+    cwd.ancestors().any(|ancestor| matcher.is_match(ancestor.as_os_str()))
 }
 
 #[cfg(test)]
@@ -92,6 +108,32 @@ mod tests {
             path_matches("**/monorepo", &cwd),
             "a glob naming an ancestor dir matches"
         );
+    }
+
+    #[test]
+    fn recursive_glob_covers_an_agent_at_its_own_base_dir() {
+        // `<repo>/**` is the natural way to scope a thread to a repo, and an agent's cwd usually IS
+        // the repo root. globset's `**` requires at least one component after the slash, so the raw
+        // pattern never matches its own base — leaving a thread scoped to `<repo>/**` invisible from
+        // `<repo>` itself, the single most common cwd there is.
+        assert!(
+            path_matches("/home/u/repo/**", &PathBuf::from("/home/u/repo")),
+            "a `<dir>/**` thread must be discoverable by an agent sitting AT `<dir>`"
+        );
+    }
+
+    #[test]
+    fn recursive_glob_still_covers_nested_and_still_excludes_siblings() {
+        assert!(path_matches("/home/u/repo/**", &PathBuf::from("/home/u/repo/src/api")));
+        assert!(
+            !path_matches("/home/u/repo/**", &PathBuf::from("/home/u/repo2")),
+            "matching the base dir must not widen the glob into sibling paths"
+        );
+    }
+
+    #[test]
+    fn recursive_glob_over_a_globbed_base_covers_that_base() {
+        assert!(path_matches("**/monorepo/**", &PathBuf::from("/home/u/monorepo")));
     }
 
     #[test]
