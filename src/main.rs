@@ -825,6 +825,9 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         watch: !args.no_watch,
         read_only,
         daemon_writer,
+        // `serve` is long-lived, so the whole-corpus map build amortizes over the session and is
+        // warmed off the startup path already. Laziness is a one-shot-CLI concern.
+        lazy_cache: false,
     };
     tracing::info!(
         pid = std::process::id(),
