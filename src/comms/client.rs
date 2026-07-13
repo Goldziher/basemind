@@ -580,6 +580,25 @@ impl CommsClient {
         }
     }
 
+    /// Forward a git-history operation to the daemon — the sole holder of `git-history.fjall/`
+    /// (fjall's directory lock is exclusive, so no front-end may open it). Backs both the index
+    /// BUILD a `daemon_writer` serve requests at startup instead of running it in-process, and the
+    /// history reads its `recent_changes` / `commits_touching` / `hot_files` / `search_git_history`
+    /// tools would otherwise have to degrade to a live walk.
+    ///
+    /// Every op is idempotent — the reads are pure and `Sync` is freshness-checked (a replayed sync
+    /// against an up-to-date index is a no-op) — so the transparent reconnect-and-retry is safe.
+    pub async fn git_history(
+        &mut self,
+        root: PathBuf,
+        op: crate::git_history::proto::GitHistoryOp,
+    ) -> Result<crate::git_history::proto::GitHistoryReply, CommsClientError> {
+        match self.request(CommsRequest::GitHistory { root, op }).await? {
+            CommsResponse::GitHistory(reply) => Ok(reply),
+            other => Err(self.shape_err(other, "git_history")),
+        }
+    }
+
     /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
     pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
         match self.request(CommsRequest::AccessedPaths).await? {

@@ -8,7 +8,10 @@
 
 use ahash::{AHashMap, AHashSet};
 
-use super::{GitHistoryIndex, encoding, keys};
+use serde::{Deserialize, Serialize};
+
+use super::proto::GitHistoryOp;
+use super::{GitHistoryIndex, LocalDb, encoding, keys};
 use crate::git::CommitInfo;
 
 /// Field tag stored as the leading byte of a `gh_term_to_ords` key. Stable, append-only — the byte
@@ -22,7 +25,10 @@ pub const FIELD_MESSAGE: u8 = 1;
 const MAX_TERM_LEN: usize = 128;
 
 /// Which field(s) a search covers. `All` unions the author and message posting lists per term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Serializable so a `daemon_writer` serve can forward a scoped search to the daemon that holds the
+/// index (see [`super::proto::GitHistoryOp::SearchCommits`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FtsScope {
     Author,
     Message,
@@ -151,6 +157,21 @@ impl GitHistoryIndex {
     /// queries; a very common single token over a huge repo pays for the whole posting list per
     /// page. Acceptable for now — revisit with a lazy/most-selective-term iterator if it bites.
     pub fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
+        match self.local() {
+            Some(db) => db.search_commits(query, scope, skip, take),
+            None => self.forward(GitHistoryOp::SearchCommits {
+                query: query.to_string(),
+                scope,
+                skip,
+                take,
+            }),
+        }
+    }
+}
+
+impl LocalDb {
+    /// The local half of [`GitHistoryIndex::search_commits`].
+    fn search_commits(&self, query: &str, scope: FtsScope, skip: usize, take: usize) -> Vec<CommitInfo> {
         let mut query_terms: AHashSet<String> = AHashSet::new();
         tokenize(query, &mut query_terms);
         if query_terms.is_empty() || take == 0 {

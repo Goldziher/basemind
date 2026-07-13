@@ -600,19 +600,12 @@ impl BasemindServer {
             .as_ref()
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
-        let basemind_dir = store.basemind_dir.clone();
-        let git_history = if !options.read_only && repo.is_some() && crate::git_history::index_enabled() {
-            match crate::git_history::GitHistoryIndex::open(&basemind_dir) {
-                Ok(idx) => Some(Arc::new(idx)),
-                Err(error) => {
-                    tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
-                    None
-                }
-            }
-        } else {
-            None
-        };
         let agent_id = identity::resolve_agent_id(&config, &store);
+        // A linked worktree shares the MAIN worktree's history index (identical commit graph), which
+        // is also the directory the `scan` CLI and the daemon build into. Keying off `root`'s own
+        // cache dir instead would have a worktree read an index nobody writes.
+        let history_dir = crate::git_history::shared_history_basemind_dir(&root);
+        let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         let view_is_working = store.view == crate::store::VIEW_WORKING;
         let fjall_index_empty = store
@@ -696,19 +689,7 @@ impl BasemindServer {
             } else {
                 background::spawn_view_watcher(Arc::clone(&state));
             }
-            if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
-                let basemind_dir = basemind_dir.clone();
-                tokio::task::spawn_blocking(move || {
-                    match crate::git_history::builder::sync(&git_history, &repo, &basemind_dir) {
-                        Ok(outcome) => {
-                            tracing::info!(?outcome, "git-history index sync complete")
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "git-history index sync failed; tools live-walk")
-                        }
-                    }
-                });
-            }
+            Self::spawn_git_history_sync(&state, &history_dir, &options);
             if needs_initial_scan {
                 background::spawn_initial_scan(Arc::clone(&state));
             } else {
@@ -747,6 +728,85 @@ impl BasemindServer {
             state,
             tool_router: router,
             prompt_router: Self::prompt_router(),
+        }
+    }
+
+    /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive, so
+    /// `git-history.fjall/` has exactly one holder; who that is decides what serve may do:
+    ///
+    /// * **`daemon_writer`** (a `comms` build): the DAEMON holds the database. Serve takes a
+    ///   forwarding handle — it must not open (let alone build) the index, which would steal the
+    ///   daemon's lock and run a multi-GB, minutes-long history walk inside the process an agent is
+    ///   actively querying, once per session.
+    /// * **local writer** (no daemon): serve holds the database and builds it in-process, as before.
+    ///   The least-surprising standalone behavior: nobody else can do it, and history tools would
+    ///   otherwise permanently live-walk.
+    /// * **read-only fallback** (another process owns the write lock, no daemon): no handle — history
+    ///   tools live-walk. Unchanged.
+    fn open_git_history(
+        root: &std::path::Path,
+        history_dir: &std::path::Path,
+        has_repo: bool,
+        agent_id: &str,
+        options: &ServerOptions,
+    ) -> Option<Arc<crate::git_history::GitHistoryIndex>> {
+        if !has_repo || !crate::git_history::index_enabled() {
+            return None;
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if options.daemon_writer {
+            let agent = crate::comms::ids::AgentId::parse(agent_id.to_string())
+                .inspect_err(|error| tracing::warn!(%error, "git-history: bad agent id; tools will live-walk"))
+                .ok()?;
+            return Some(Arc::new(crate::git_history::GitHistoryIndex::remote(
+                root.to_path_buf(),
+                agent,
+            )));
+        }
+        let _ = (root, agent_id);
+        if options.read_only {
+            return None;
+        }
+        match crate::git_history::GitHistoryIndex::open(history_dir) {
+            Ok(index) => Some(Arc::new(index)),
+            Err(error) => {
+                tracing::warn!(?error, "git-history index unavailable; tools will live-walk");
+                None
+            }
+        }
+    }
+
+    /// Kick the git-history index up to date, off the MCP thread. A `daemon_writer` session ASKS the
+    /// daemon to do it (which serializes the build per repo, so N sessions cause one walk); a
+    /// standalone writer does it in-process, as it always has.
+    fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path, options: &ServerOptions) {
+        if state.git_history.is_none() {
+            return;
+        }
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if options.daemon_writer {
+            let root = state.root.clone();
+            let agent_id = state.agent_id.clone();
+            tokio::spawn(async move {
+                let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
+                    return;
+                };
+                match crate::git_history::remote::request_sync(root, agent).await {
+                    Some(outcome) => tracing::info!(?outcome, "git-history index synced by the daemon"),
+                    None => tracing::warn!("git-history index sync unavailable; history tools live-walk"),
+                }
+            });
+            return;
+        }
+        let _ = options;
+        if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
+            let history_dir = history_dir.to_path_buf();
+            tokio::task::spawn_blocking(move || {
+                match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {
+                    Ok(outcome) => tracing::info!(?outcome, "git-history index sync complete"),
+                    Err(error) => tracing::warn!(%error, "git-history index sync failed; tools live-walk"),
+                }
+            });
         }
     }
 

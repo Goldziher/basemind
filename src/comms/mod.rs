@@ -22,6 +22,9 @@ pub mod frontend_inproc;
 pub mod frontend_named_pipe;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_uds;
+/// The daemon's git-history half: the pool of open per-repo indexes + the forwarded-op handler.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) mod git_history_ops;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod keys;
 #[cfg(all(feature = "comms", feature = "memory"))]

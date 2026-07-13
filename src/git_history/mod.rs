@@ -11,13 +11,23 @@
 //! and survives an `INDEX_SCHEMA_VER` bump — a code-map schema change must never throw away the
 //! expensive 200k-commit walk.
 //!
-//! ## Single-writer
+//! ## Single-writer, and who holds the lock
 //!
-//! Fjall takes an exclusive per-directory process lock, so only the process holding
-//! `.basemind/.lock` (a `scan`/`rescan`, or a writable `serve`) opens this DB. A read-only serve
-//! keeps `git_history: None` and falls back to the (now-fast) live walk. The index is a pure
-//! accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise live-walk, so it
-//! can never serve stale or incorrect results.
+//! Fjall takes an exclusive per-directory process lock — even a read-only open takes it — so exactly
+//! ONE process may hold this DB. Which process that is depends on the deployment:
+//!
+//! * **Standalone** (`scan` / `rescan`, or a `serve` that is itself the writer): that process opens
+//!   the DB locally ([`Backend::Local`]) and builds it in-process.
+//! * **Daemon** (a `comms` build, where `serve` opens its store read-only and forwards writes): the
+//!   DAEMON holds the DB and builds it. A `daemon_writer` serve holds no handle; its index is a
+//!   [`Backend::Remote`] proxy that forwards each history query over the socket. Building it in the
+//!   serve process would be doubly wrong — it would steal the lock the daemon (and every peer
+//!   session) needs, and it would run a multi-GB, minutes-long walk inside the process an agent is
+//!   actively querying.
+//!
+//! A serve that can reach neither keeps `git_history: None` and falls back to the live walk. The
+//! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
+//! live-walk, so it can never serve stale or incorrect results.
 //!
 //! ## Partitions
 //!
@@ -36,7 +46,10 @@ pub mod builder;
 pub mod encoding;
 pub mod fts;
 pub mod keys;
+pub mod proto;
 pub mod reader;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod remote;
 
 use std::path::{Path, PathBuf};
 
@@ -107,6 +120,11 @@ pub enum GitHistoryError {
     Decode(#[from] rmp_serde::decode::Error),
     #[error("git error: {0}")]
     Git(#[from] crate::git::GitError),
+    /// A write (or a builder read) was attempted against a DAEMON-BACKED handle. The daemon is the
+    /// sole holder of the git-history database in that deployment; front-ends forward their sync
+    /// request to it instead of building locally. Never reached from a standalone process.
+    #[error("git-history index is daemon-backed; this process cannot write it")]
+    NotLocal,
 }
 
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
@@ -124,9 +142,20 @@ pub struct CommitMeta {
     pub files: Vec<(u32, u8)>,
 }
 
+/// Where a [`GitHistoryIndex`]'s data actually lives. See the module docs for which process holds
+/// the (single-holder) fjall database in each deployment.
+#[derive(Clone)]
+enum Backend {
+    /// This process holds the fjall database.
+    Local(LocalDb),
+    /// The daemon holds it; every read is a forwarded RPC.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Remote(remote::RemoteHistory),
+}
+
 /// Handle to every git-history partition. Cloned cheaply (each `Keyspace` is `Arc`'d by Fjall).
 #[derive(Clone)]
-pub struct GitHistoryIndex {
+pub(crate) struct LocalDb {
     db: Database,
     meta: Keyspace,
     commit_by_ord: Keyspace,
@@ -143,10 +172,19 @@ pub struct GitHistoryIndex {
     term_to_ords: Keyspace,
 }
 
+/// The git-history index as its callers see it: the same read API whether the data sits in a fjall
+/// database this process holds or behind the daemon that holds it.
+#[derive(Clone)]
+pub struct GitHistoryIndex {
+    backend: Backend,
+}
+
 impl GitHistoryIndex {
-    /// Open (or create) `.basemind/git-history.fjall/`. On schema mismatch the directory is wiped
-    /// and recreated empty (the caller rebuilds via the builder). Returns `Err` if another process
-    /// holds the Fjall lock — read-only callers swallow that to `None`.
+    /// Open (or create) `.basemind/git-history.fjall/` LOCALLY, taking fjall's exclusive lock. Only
+    /// the process that owns the index may call this: a standalone `scan` / `rescan` / writable
+    /// `serve`, or the daemon. On schema mismatch the directory is wiped and recreated empty (the
+    /// caller rebuilds via the builder). Returns `Err` if another process holds the Fjall lock —
+    /// read-only callers swallow that to `None`.
     pub fn open(basemind_dir: &Path) -> Result<Self, GitHistoryError> {
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
         let mut attempt = 0;
@@ -160,6 +198,30 @@ impl GitHistoryIndex {
                 Err(other) => return Err(other),
             }
         }
+    }
+
+    /// A handle backed by the DAEMON's index for the repo at `root`. Takes no lock and performs no
+    /// IO: this is what a `daemon_writer` serve holds instead of opening the database itself.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub fn remote(root: std::path::PathBuf, agent: crate::comms::ids::AgentId) -> Self {
+        Self {
+            backend: Backend::Remote(remote::RemoteHistory::new(root, agent)),
+        }
+    }
+
+    /// The local database, or `None` for a daemon-backed handle. Every write path (the builder) and
+    /// every low-level point read goes through this.
+    pub(crate) fn local(&self) -> Option<&LocalDb> {
+        match &self.backend {
+            Backend::Local(db) => Some(db),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            Backend::Remote(_) => None,
+        }
+    }
+
+    /// The local database, or [`GitHistoryError::NotLocal`] — the writer-side accessor.
+    pub(crate) fn require_local(&self) -> Result<&LocalDb, GitHistoryError> {
+        self.local().ok_or(GitHistoryError::NotLocal)
     }
 
     fn open_at(dir: &Path) -> Result<Self, GitHistoryError> {
@@ -193,15 +255,17 @@ impl GitHistoryIndex {
         let term_to_ords = db.keyspace("gh_term_to_ords", KeyspaceCreateOptions::default)?;
         meta.insert(keys::META_SCHEMA_VER, GIT_HISTORY_SCHEMA.to_be_bytes())?;
         Ok(Self {
-            db,
-            meta,
-            commit_by_ord,
-            ord_by_sha,
-            path_id_by_path,
-            path_by_id,
-            path_to_ords,
-            commit_text_by_ord,
-            term_to_ords,
+            backend: Backend::Local(LocalDb {
+                db,
+                meta,
+                commit_by_ord,
+                ord_by_sha,
+                path_id_by_path,
+                path_by_id,
+                path_to_ords,
+                commit_text_by_ord,
+                term_to_ords,
+            }),
         })
     }
 
@@ -209,6 +273,85 @@ impl GitHistoryIndex {
     /// history rewrite is detected and by the manual force-rebuild path. Safe because only the
     /// `.basemind/.lock` holder ever opens this DB, so no other process holds a handle.
     pub fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
+        self.require_local()?.clear(basemind_dir)
+    }
+
+    /// A batched writer over the underlying Fjall database. Only a local index has one.
+    pub fn writer(&self) -> Result<GitHistoryWriter, GitHistoryError> {
+        let db = self.require_local()?;
+        Ok(GitHistoryWriter {
+            db: db.clone(),
+            batch: db.db.batch(),
+            staged: 0,
+        })
+    }
+
+    /// Last HEAD the index was synced to (20 raw sha bytes), or `None` if never built. Local only —
+    /// the raw form is a builder-side detail; the forwarded path uses
+    /// [`last_indexed_head_hex`](Self::last_indexed_head_hex).
+    pub fn last_indexed_head(&self) -> Option<[u8; 20]> {
+        self.local()?.meta_sha(keys::META_LAST_HEAD)
+    }
+
+    /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
+    /// On a daemon-backed handle this is one forwarded round trip; an unreachable daemon answers
+    /// `None`, which fails the freshness check closed (the caller live-walks).
+    pub fn last_indexed_head_hex(&self) -> Option<String> {
+        match &self.backend {
+            Backend::Local(db) => db.meta_sha(keys::META_LAST_HEAD).map(|s| keys::sha_raw_to_hex(&s)),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            Backend::Remote(remote) => remote.indexed_head(),
+        }
+    }
+
+    /// Next free commit ordinal (also the count of indexed commits).
+    pub fn next_ord(&self) -> u32 {
+        self.local().map(|db| db.meta_u32(keys::META_NEXT_ORD)).unwrap_or(0)
+    }
+
+    /// Next free path id.
+    pub fn next_path_id(&self) -> u32 {
+        self.local().map(|db| db.meta_u32(keys::META_NEXT_PATH_ID)).unwrap_or(0)
+    }
+
+    /// Fingerprint: sha of the oldest reachable (root) commit at build time.
+    pub fn root_sha(&self) -> Option<[u8; 20]> {
+        self.local()?.meta_sha(keys::META_ROOT_SHA)
+    }
+
+    /// Fingerprint: number of commits indexed.
+    pub fn commit_count(&self) -> u32 {
+        self.local().map(|db| db.meta_u32(keys::META_COMMIT_COUNT)).unwrap_or(0)
+    }
+
+    /// True when nothing has been indexed yet.
+    pub fn is_empty(&self) -> bool {
+        self.last_indexed_head_hex().is_none()
+    }
+
+    /// Builder-side point reads. Local only: the builder runs in the process that holds the
+    /// database (a daemon-backed handle is rejected up front by [`builder::sync`]), so a `None` here
+    /// means "not indexed", never "ask the daemon".
+    pub(crate) fn ord_for_sha(&self, sha20: &[u8; 20]) -> Option<u32> {
+        self.local()?.ord_for_sha(sha20)
+    }
+
+    pub(crate) fn path_id(&self, rel: &RelPath) -> Option<u32> {
+        self.local()?.path_id(rel)
+    }
+
+    pub(crate) fn posting_bytes(&self, path_id: u32) -> Option<fjall::Slice> {
+        self.local()?.posting_bytes(path_id)
+    }
+
+    pub(crate) fn term_posting_bytes(&self, term_key: &[u8]) -> Option<fjall::Slice> {
+        self.local()?.term_posting_bytes(term_key)
+    }
+}
+
+impl LocalDb {
+    /// Drop all data and reset to an empty index at the current schema.
+    fn clear(&self, basemind_dir: &Path) -> Result<(), GitHistoryError> {
         let dir = basemind_dir.join(GIT_HISTORY_DIR);
         for ks in [
             &self.commit_by_ord,
@@ -252,15 +395,6 @@ impl GitHistoryIndex {
         Ok(())
     }
 
-    /// A batched writer over the underlying Fjall database.
-    pub fn writer(&self) -> GitHistoryWriter {
-        GitHistoryWriter {
-            index: self.clone(),
-            batch: self.db.batch(),
-            staged: 0,
-        }
-    }
-
     fn meta_u32(&self, key: &[u8]) -> u32 {
         self.meta
             .get(key)
@@ -273,41 +407,6 @@ impl GitHistoryIndex {
     fn meta_sha(&self, key: &[u8]) -> Option<[u8; 20]> {
         let bytes = self.meta.get(key).ok().flatten()?;
         <[u8; 20]>::try_from(bytes.as_ref()).ok()
-    }
-
-    /// Last HEAD the index was synced to (20 raw sha bytes), or `None` if never built.
-    pub fn last_indexed_head(&self) -> Option<[u8; 20]> {
-        self.meta_sha(keys::META_LAST_HEAD)
-    }
-
-    /// Last indexed HEAD as a 40-char hex string — the freshness key the MCP tools compare HEAD to.
-    pub fn last_indexed_head_hex(&self) -> Option<String> {
-        self.last_indexed_head().map(|s| keys::sha_raw_to_hex(&s))
-    }
-
-    /// Next free commit ordinal (also the count of indexed commits).
-    pub fn next_ord(&self) -> u32 {
-        self.meta_u32(keys::META_NEXT_ORD)
-    }
-
-    /// Next free path id.
-    pub fn next_path_id(&self) -> u32 {
-        self.meta_u32(keys::META_NEXT_PATH_ID)
-    }
-
-    /// Fingerprint: sha of the oldest reachable (root) commit at build time.
-    pub fn root_sha(&self) -> Option<[u8; 20]> {
-        self.meta_sha(keys::META_ROOT_SHA)
-    }
-
-    /// Fingerprint: number of commits indexed.
-    pub fn commit_count(&self) -> u32 {
-        self.meta_u32(keys::META_COMMIT_COUNT)
-    }
-
-    /// True when nothing has been indexed yet.
-    pub fn is_empty(&self) -> bool {
-        self.last_indexed_head().is_none()
     }
 
     /// Point-read one commit's stored metadata. `want_files=false` decodes only the head fields
@@ -395,7 +494,7 @@ fn decode_commit_value(bytes: &[u8], want_files: bool) -> Option<CommitMeta> {
 /// `COMMIT_BATCH` staged operations so a 200k-commit rebuild doesn't hold the whole write set in
 /// memory. Callers must call `GitHistoryWriter::commit` at the end to flush the tail.
 pub struct GitHistoryWriter {
-    index: GitHistoryIndex,
+    db: LocalDb,
     batch: OwnedWriteBatch,
     staged: usize,
 }
@@ -414,42 +513,41 @@ impl GitHistoryWriter {
             meta.summary.as_bytes(),
             &meta.files,
         );
-        self.batch.insert(&self.index.commit_by_ord, keys::u32_key(ord), value);
+        self.batch.insert(&self.db.commit_by_ord, keys::u32_key(ord), value);
         self.maybe_flush()
     }
 
     pub fn put_ord_for_sha(&mut self, sha20: &[u8; 20], ord: u32) -> Result<(), GitHistoryError> {
-        self.batch.insert(&self.index.ord_by_sha, *sha20, keys::u32_key(ord));
+        self.batch.insert(&self.db.ord_by_sha, *sha20, keys::u32_key(ord));
         self.maybe_flush()
     }
 
     pub fn put_path(&mut self, rel: &RelPath, path_id: u32) -> Result<(), GitHistoryError> {
         if let Some(key) = keys::path_id_by_path_key(rel) {
-            self.batch
-                .insert(&self.index.path_id_by_path, key, keys::u32_key(path_id));
+            self.batch.insert(&self.db.path_id_by_path, key, keys::u32_key(path_id));
         }
         self.batch
-            .insert(&self.index.path_by_id, keys::u32_key(path_id), rel.as_bytes().to_vec());
+            .insert(&self.db.path_by_id, keys::u32_key(path_id), rel.as_bytes().to_vec());
         self.maybe_flush()
     }
 
     pub fn put_posting(&mut self, path_id: u32, encoded: &[u8]) -> Result<(), GitHistoryError> {
         self.batch
-            .insert(&self.index.path_to_ords, keys::u32_key(path_id), encoded.to_vec());
+            .insert(&self.db.path_to_ords, keys::u32_key(path_id), encoded.to_vec());
         self.maybe_flush()
     }
 
     /// Store one commit's full message body (skipped by the caller when empty).
     pub fn put_commit_text(&mut self, ord: u32, body: &[u8]) -> Result<(), GitHistoryError> {
         self.batch
-            .insert(&self.index.commit_text_by_ord, keys::u32_key(ord), body.to_vec());
+            .insert(&self.db.commit_text_by_ord, keys::u32_key(ord), body.to_vec());
         self.maybe_flush()
     }
 
     /// Store the newest-first posting list for one `(field, term)` search key.
     pub fn put_term_posting(&mut self, term_key: &[u8], encoded: &[u8]) -> Result<(), GitHistoryError> {
         self.batch
-            .insert(&self.index.term_to_ords, term_key.to_vec(), encoded.to_vec());
+            .insert(&self.db.term_to_ords, term_key.to_vec(), encoded.to_vec());
         self.maybe_flush()
     }
 
@@ -462,7 +560,7 @@ impl GitHistoryWriter {
     }
 
     fn flush(&mut self) -> Result<(), GitHistoryError> {
-        let batch = std::mem::replace(&mut self.batch, self.index.db.batch());
+        let batch = std::mem::replace(&mut self.batch, self.db.db.batch());
         batch.commit()?;
         self.staged = 0;
         Ok(())
@@ -480,14 +578,14 @@ impl GitHistoryWriter {
         commit_count: u32,
     ) -> Result<(), GitHistoryError> {
         self.flush()?;
-        let mut meta = self.index.db.batch();
-        meta.insert(&self.index.meta, keys::META_NEXT_ORD, next_ord.to_be_bytes());
-        meta.insert(&self.index.meta, keys::META_NEXT_PATH_ID, next_path_id.to_be_bytes());
-        meta.insert(&self.index.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
-        meta.insert(&self.index.meta, keys::META_ROOT_SHA, root.to_vec());
-        meta.insert(&self.index.meta, keys::META_LAST_HEAD, head.to_vec());
+        let mut meta = self.db.db.batch();
+        meta.insert(&self.db.meta, keys::META_NEXT_ORD, next_ord.to_be_bytes());
+        meta.insert(&self.db.meta, keys::META_NEXT_PATH_ID, next_path_id.to_be_bytes());
+        meta.insert(&self.db.meta, keys::META_COMMIT_COUNT, commit_count.to_be_bytes());
+        meta.insert(&self.db.meta, keys::META_ROOT_SHA, root.to_vec());
+        meta.insert(&self.db.meta, keys::META_LAST_HEAD, head.to_vec());
         meta.commit()?;
-        self.index.compact()?;
+        self.db.compact()?;
         Ok(())
     }
 }
