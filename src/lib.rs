@@ -30,6 +30,7 @@ pub mod scanner;
 pub mod scanner_code;
 #[cfg(feature = "documents")]
 pub mod scanner_docs;
+pub mod scanner_file;
 pub(crate) mod scanner_filter;
 pub mod scanner_lanes;
 pub mod search;
@@ -37,8 +38,10 @@ pub mod search;
 pub mod shells;
 pub mod store;
 pub mod store_blob;
+pub mod store_cache_admin;
 pub mod store_gc;
 pub mod store_gc_workspace;
+pub mod store_layout;
 mod store_lock;
 pub mod sysres;
 pub mod textcompress;
