@@ -1007,6 +1007,19 @@ async fn mcp_server_exercises_representative_tools() {
     let hits_with_limit = body.get("hits").and_then(Value::as_array).expect("hits");
     assert_eq!(hits_with_limit.len(), 1, "limit=1 should return exactly 1 hit");
     assert!(truncated, "limit=1 with multiple matches should set truncated=true");
+    assert_eq!(
+        body.get("truncation_reason").and_then(Value::as_str),
+        Some("limit"),
+        "a truncated grep must name the bound that cut it: {body}"
+    );
+    let capped_total = body
+        .get("total_matches")
+        .and_then(Value::as_u64)
+        .expect("total_matches");
+    assert_eq!(
+        capped_total, total_matches,
+        "`limit` caps hits, never the scan: the match count is the same as the unlimited call"
+    );
 
     let invalid_result = service
         .call_tool(call_params("workspace_grep", json!({ "pattern": "[invalid_regex(" })))
@@ -3732,4 +3745,162 @@ async fn elapsed_us_is_additive_for_older_clients() {
     assert_eq!(legacy.commits.len(), 2, "old client still reads `commits`");
 
     let _ = service.cancel().await;
+}
+
+/// A repo wide enough to exceed the old `scan_cap = max(limit * 8, 2000)` files-visited bound,
+/// with the only occurrence of a rare token in the last file by path order (`by_path` is a
+/// `BTreeMap`, so `zzz/` sorts after `src/`). That placement is the whole point: a rare
+/// identifier — precisely what one greps for — is exactly what does not live in the first
+/// 2000 files.
+fn build_wide_repo(files: usize, rare_token: &str) -> TempDir {
+    basemind::store::init_isolated_cache();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("mkdir src");
+    for i in 0..files {
+        std::fs::write(src.join(format!("f{i:05}.rs")), format!("pub fn filler{i}() {{}}\n")).expect("write filler");
+    }
+    let far = root.join("zzz");
+    std::fs::create_dir_all(&far).expect("mkdir zzz");
+    std::fs::write(far.join("rare.rs"), format!("pub fn {rare_token}() {{}}\n")).expect("write rare");
+
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "wide"]);
+    dir
+}
+
+/// Regression: `workspace_grep` must scan the whole indexed corpus, not the first
+/// `limit * 8` files.
+///
+/// The old bound was a files-VISITED cap, which is the wrong bound for a linear content scan:
+/// a default `limit = 100` grep visited 2000 files of a 68 k-file monorepo (2.9 %, in path order)
+/// and returned a fast, confident, wrong zero for any token that lived past the cut. `limit` caps
+/// HITS; the corpus is always fully scanned (subject to the `language` / `path_contains` filters).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_grep_finds_a_rare_token_past_the_old_scan_cap() {
+    const RARE: &str = "OptimizationStatusZQX";
+    let dir = build_wide_repo(2_100, RARE);
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root, None).await;
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "workspace_grep",
+                json!({ "pattern": RARE, "include_context": false }),
+            ))
+            .await
+            .expect("workspace_grep"),
+    );
+
+    let hits = body.get("hits").and_then(Value::as_array).expect("hits");
+    assert_eq!(
+        hits.len(),
+        1,
+        "the rare token lives past the old 2000-file scan cap and must still be found: {body}"
+    );
+    assert_eq!(
+        hits[0].get("path").and_then(Value::as_str),
+        Some("zzz/rare.rs"),
+        "hit must point at the far file: {body}"
+    );
+    assert_eq!(
+        body.get("total_matches").and_then(Value::as_u64),
+        Some(1),
+        "a full-corpus scan reports the exact match count: {body}"
+    );
+    assert_eq!(
+        body.get("total_files_matched").and_then(Value::as_u64),
+        Some(1),
+        "exactly one file contains the rare token: {body}"
+    );
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "every match was returned, so nothing was truncated: {body}"
+    );
+
+    let _ = service.cancel().await;
+}
+
+/// `limit` cuts a page, it does not cut the corpus — so paging with `next_cursor` must reconstruct
+/// the complete result exactly: no hit dropped, no hit served twice.
+///
+/// The interesting case is a file holding more matches than `limit` (the fixture's `a.rs` has
+/// several `pub fn` occurrences). A file-granular cursor would either replay that file's leading
+/// hits forever or skip its tail, so the cursor resolves to a HIT, not to a file. Paged with
+/// `limit = 1`, every step exercises a mid-file resume.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn paging_a_grep_one_hit_at_a_time_reconstructs_the_whole_result() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+    let service = spawn_serve(root, None).await;
+
+    let whole = decode_text(
+        &service
+            .call_tool(call_params(
+                "workspace_grep",
+                json!({ "pattern": "pub fn", "include_context": false, "limit": 1000 }),
+            ))
+            .await
+            .expect("workspace_grep(unpaged)"),
+    );
+    assert_eq!(
+        whole.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "limit=1000 covers the fixture, so the baseline must be complete: {whole}"
+    );
+    let expected: Vec<(String, u64)> = grep_keys(&whole);
+    assert!(
+        expected.len() >= 3,
+        "fixture must hold several 'pub fn' matches to make paging meaningful, got {expected:?}"
+    );
+
+    let mut paged: Vec<(String, u64)> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..(expected.len() + 1) {
+        let mut args = json!({ "pattern": "pub fn", "include_context": false, "limit": 1 });
+        if let Some(c) = &cursor {
+            args["cursor"] = Value::String(c.clone());
+        }
+        let page = decode_text(
+            &service
+                .call_tool(call_params("workspace_grep", args))
+                .await
+                .expect("workspace_grep(page)"),
+        );
+        paged.extend(grep_keys(&page));
+        match page.get("next_cursor").and_then(Value::as_str) {
+            Some(next) => cursor = Some(next.to_string()),
+            None => break,
+        }
+    }
+
+    assert_eq!(
+        paged, expected,
+        "paging one hit at a time must reproduce the unpaged result exactly — no loss, no replay"
+    );
+
+    let _ = service.cancel().await;
+}
+
+/// `(path, line_num)` of every hit in a grep response, in response order.
+fn grep_keys(body: &Value) -> Vec<(String, u64)> {
+    body.get("hits")
+        .and_then(Value::as_array)
+        .expect("hits")
+        .iter()
+        .map(|h| {
+            (
+                h.get("path").and_then(Value::as_str).unwrap_or_default().to_string(),
+                h.get("line_num").and_then(Value::as_u64).unwrap_or_default(),
+            )
+        })
+        .collect()
 }
