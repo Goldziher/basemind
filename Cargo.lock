@@ -573,15 +573,6 @@ dependencies = [
 
 [[package]]
 name = "atoi_simd"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ad17c7c205c2c28b527b9845eeb91cf1b4d008b438f98ce0e628227a822758e"
-dependencies = [
- "debug_unsafe",
-]
-
-[[package]]
-name = "atoi_simd"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3cdb3708a128e559a30fb830e8a77a5022ee6902806925c216658652b452a44"
@@ -1204,20 +1195,20 @@ dependencies = [
 
 [[package]]
 name = "calamine"
-version = "0.35.0"
+version = "0.36.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8822fe6253ca47aa5ad9a3be09f6fe7cd20c6a74e41b0aa42e8f4e3d523508df"
+checksum = "6975084f43060e56343ffba7f9731fa52a7dcf2e1cd8e2459fd4c6bf4a1bff59"
 dependencies = [
- "atoi_simd 0.17.0",
+ "atoi_simd",
  "byteorder",
  "chrono",
  "codepage",
  "encoding_rs",
  "fast-float2",
  "log",
- "quick-xml 0.39.4",
+ "quick-xml 0.41.0",
  "serde",
- "zip 7.2.0",
+ "zip 8.6.0",
 ]
 
 [[package]]
@@ -7908,7 +7899,7 @@ version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af473f543db2d69584f3bc3a12358420c4c0111b163c8dfbc96c1717ff725e3"
 dependencies = [
- "atoi_simd 0.18.1",
+ "atoi_simd",
  "encoding_rs",
  "fast-float2",
  "libc",
@@ -9084,20 +9075,11 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
-dependencies = [
- "encoding_rs",
- "memchr",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
+ "encoding_rs",
  "memchr",
  "serde",
 ]
@@ -13046,9 +13028,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0-rc.26"
+version = "1.0.0-rc.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04bf2f30f741afced8dbc65d0522c571abdb6bfa696eb128ab2b6f10d1cca6b3"
+checksum = "96185f00bfee2ee8d013e00021d377fa8b40e228c9a68be2b35eb1291109e8d3"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -13109,6 +13091,7 @@ dependencies = [
  "rake",
  "rayon",
  "regex",
+ "reqwest 0.13.4",
  "resvg",
  "rmp-serde",
  "roxmltree 0.21.1",
@@ -13147,9 +13130,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.0-rc.26"
+version = "1.0.0-rc.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e878c2c7d8868d35c39111edcbcb33c70320a32b45fd68705f1e58a22be9c424"
+checksum = "06bdace4641dfeb4a1da23cf4a6c25a9a71e203b0a3aae22439ab9ea44f98772"
 dependencies = [
  "ndarray 0.17.2",
  "ort",
@@ -13161,9 +13144,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.0-rc.26"
+version = "1.0.0-rc.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "051e0b6c30f65bd28c08e06d44c682bcc99f2a5feb97e69b709e883495576ef1"
+checksum = "b336bc1dc38877a03843f4a56604e3538ad35b204299182d769123b80ba72fff"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -13174,9 +13157,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.0-rc.26"
+version = "1.0.0-rc.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d67b0fd26415009c5944037edffb85c998cc48ef7b975cd4119dc60cefdf22b"
+checksum = "cdb1e9df476fa8139f1a7642829e81baa2b9434e69f0ddbe7537339c81fee96e"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -13191,9 +13174,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.0-rc.26"
+version = "1.0.0-rc.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8271a26ac526e9e4330600abacc3dc754db8c1ec1640675968bdc0a148a832c"
+checksum = "9b28b0f57f11f7971bdb487be85f61c96732e59a9f8deeabc84e60e1452f2a1e"
 dependencies = [
  "cc",
  "cmake",
@@ -13527,20 +13510,6 @@ dependencies = [
  "zeroize",
  "zopfli",
  "zstd",
-]
-
-[[package]]
-name = "zip"
-version = "7.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "typed-path",
- "zopfli",
 ]
 
 [[package]]

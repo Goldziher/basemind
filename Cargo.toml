@@ -168,7 +168,7 @@ tree-sitter-graph = { path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.12.5"
 tree-sitter-stack-graphs = { path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.26", default-features = false, features = [
+xberg = { version = "1.0.0-rc.28", default-features = false, features = [
     "tokio-runtime",
     "simd-utf8",
 ], optional = true }
