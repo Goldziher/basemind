@@ -539,16 +539,23 @@ impl BasemindServer {
     /// Callers of a specific definition (path + name + optional kind).
     #[tool(
         description = "Call sites of a specific definition (`path` + `name` + optional kind). \
-                       Resolves it via the symbols index (echoed in `definition`), then PREFERS \
-                       scope/import-resolved edges: when the definition resolves, returns only \
-                       precise, scope-correct callers (never conflates same-named symbols) and \
-                       sets `resolved: true` — cross-file callers come from the index (read locally, \
-                       or forwarded to the machine daemon on a read-only serve, so precise \
-                       resolution holds there too). \
-                       Falls back to the same name-based scan as `find_references` (name-only, \
-                       no-scope) when nothing resolves. Default limit 100, max 1000. `cursor` \
-                       pages the name-scan fallback (resolved results return in one page). \
-                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`). \
+                       Resolves the definition via the symbols index (echoed in `definition`), then \
+                       reports EVERY call site whose callee matches `name` — the same name-based, \
+                       no-scope scan `find_references` runs, so the two AGREE on `total` for an \
+                       unambiguous name. That set is the answer to \"what calls this?\"; it is \
+                       complete unless `total_is_partial`. \
+                       Scope/import resolution REFINES it, never shrinks it: each hit carries \
+                       `resolved` (true = resolution PROVED it binds to this definition), and \
+                       `resolved_total` counts the proven ones. `resolved: false` is NOT evidence a \
+                       hit isn't a caller — resolution cannot see through a module-object import \
+                       (`from pkg import mod` then `mod.f()`) or an unresolvable path alias, and \
+                       every caller behind one lands there. Filter on `resolved` when you want \
+                       precision (e.g. same-name symbols in other scopes); trust `total`, not \
+                       `resolved_total`, when you need completeness — before a refactor, assume any \
+                       hit may be a real caller. Resolution can also ADD sites the name scan cannot \
+                       see (a binding renamed at the import, `import {f as g}` then `g()`). \
+                       Default limit 100, max 1000. `cursor` pages results; `max_tokens` budgets the \
+                       response (sets `budgeted` + `next_cursor`). \
                        `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]

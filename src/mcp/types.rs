@@ -521,6 +521,19 @@ pub(super) struct ReferenceHit {
     pub column: u32,
     /// The exact callee identifier the index captured.
     pub callee: String,
+    /// `find_callers` only. `true` when scope/import resolution PROVED this call site binds to the
+    /// definition being asked about; `false` when it could not.
+    ///
+    /// `false` is NOT evidence that the site isn't a caller. Resolution has blind spots it cannot
+    /// detect (a module-object import — `from pkg import mod` then `mod.f()` — binds a module, not
+    /// `f`, so the cross-file join has no export to bind; likewise unresolvable path aliases), and
+    /// every caller behind one lands here. It means exactly: "a call to this name that resolution
+    /// could not tie to this definition — it is either a real caller through an import form the
+    /// resolver does not model, or a call to a different, same-named symbol."
+    ///
+    /// Absent on `find_references`, which is name-only by contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -554,11 +567,18 @@ pub(super) struct FindReferencesResponse {
 pub(super) struct FindCallersResponse {
     /// Echo of the definition we resolved before scanning for callers.
     pub definition: Option<DefinitionView>,
-    /// True when `hits` came from the scope/import-resolved edges — precise callers that never
-    /// conflate same-named symbols in other scopes. Absent/false when they came from the
-    /// name-based callee scan (the fallback used when the definition doesn't resolve).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub resolved: bool,
+    /// How many of the `total` reported call sites scope/import resolution PROVED bind to this
+    /// definition. A LOWER BOUND on the true caller count, never the answer to "what calls this?" —
+    /// `total` is. `resolved_total < total` is the normal case, not a warning sign: it means the
+    /// rest are call sites of this name that resolution could not bind (see `ReferenceHit::resolved`).
+    ///
+    /// Resolution cannot prove a negative, so it is never used to DROP a hit. A resolution-limited
+    /// subset is never reported as if it were the complete set — that made `find_callers` answer
+    /// "2 callers" for a symbol with 172, with no truncation flag, which is worse than an error.
+    pub resolved_total: u32,
+    /// Every call site whose callee identifier matches `name` — the same sound floor
+    /// `find_references` reports, so the two agree on an unambiguous name. Complete unless
+    /// `total_is_partial`.
     pub total: u32,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub total_is_partial: bool,
