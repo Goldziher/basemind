@@ -166,6 +166,8 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
                 writeln!(out, "\n{key} ({} items):", items.len())?;
                 render_table(tool_name, items, out)?;
             }
+
+            render_grep_truncation(tool_name, map, out)?;
         }
         Value::Array(items) if items.first().is_some_and(|i| i.is_object()) => {
             render_table(tool_name, items, out)?;
@@ -176,6 +178,33 @@ pub fn render_human(tool_name: &str, value: &Value, out: &mut impl Write) -> Res
             }
         }
         other => writeln!(out, "{}", scalar_to_string(other))?,
+    }
+    Ok(())
+}
+
+/// Warn, in prose, when a grep result is not the whole truth.
+///
+/// A bare `truncated: true` row in the generic key/value dump is a signal nobody reads — and for
+/// grep, a partial result is indistinguishable from a complete one at a glance, which is how a
+/// truncated grep gets mistaken for "no such symbol in the repo". So the bound gets its own line,
+/// naming the count that was withheld and the way to get it.
+fn render_grep_truncation(tool_name: &str, map: &serde_json::Map<String, Value>, out: &mut impl Write) -> Result<()> {
+    if tool_name != "workspace_grep" || map.get("truncated").and_then(Value::as_bool) != Some(true) {
+        return Ok(());
+    }
+    let shown = map.get("hits").and_then(Value::as_array).map_or(0, Vec::len);
+    let total = map.get("total_matches").and_then(Value::as_u64).unwrap_or(0);
+    match map.get("truncation_reason").and_then(Value::as_str) {
+        Some("byte_budget") => writeln!(
+            out,
+            "\nwarning: TRUNCATED — the corpus exceeds what one grep may read, so files were left \
+             unscanned. Narrow with --path-contains / --language."
+        )?,
+        _ => writeln!(
+            out,
+            "\nwarning: TRUNCATED — showing {shown} of {total} matches. Raise --limit, or narrow \
+             with --path-contains / --language."
+        )?,
     }
     Ok(())
 }
@@ -291,6 +320,42 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         render_human("diff_outline", value, &mut buf).expect("render");
         String::from_utf8(buf).expect("utf8")
+    }
+
+    fn render_grep(value: &serde_json::Value) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        render_human("workspace_grep", value, &mut buf).expect("render");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn warns_in_prose_when_a_grep_result_is_truncated_by_the_limit() {
+        let out = render_grep(&json!({
+            "pattern": "OptimizationStatus",
+            "total_matches": 101,
+            "truncated": true,
+            "truncation_reason": "limit",
+            "hits": [{"path": "a.rs", "line_num": 1, "column": 0, "matched_text": "OptimizationStatus"}],
+        }));
+        assert!(
+            out.contains("TRUNCATED"),
+            "truncation must be shouted, not buried: {out}"
+        );
+        assert!(
+            out.contains("showing 1 of 101 matches"),
+            "must name the withheld count: {out}"
+        );
+    }
+
+    #[test]
+    fn a_complete_grep_result_carries_no_warning() {
+        let out = render_grep(&json!({
+            "pattern": "OptimizationStatus",
+            "total_matches": 1,
+            "truncated": false,
+            "hits": [{"path": "a.rs", "line_num": 1, "column": 0, "matched_text": "OptimizationStatus"}],
+        }));
+        assert!(!out.contains("TRUNCATED"), "a complete result must not cry wolf: {out}");
     }
 
     #[test]

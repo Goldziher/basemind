@@ -648,8 +648,9 @@ pub struct WorkspaceGrepParams {
     /// Optional substring filter on path. Same convention as `list_files`.
     #[serde(default)]
     pub path_contains: Option<String>,
-    /// Max number of hits returned. Default 100, max 1000. Files visited are bounded
-    /// by `scan_cap = limit * 8`.
+    /// Max number of HITS returned. Default 100, max 1000. It does not bound the files scanned:
+    /// grep always sweeps the whole indexed corpus (after the `language` / `path_contains`
+    /// filters), so a rare token is found wherever it lives.
     #[serde(default)]
     pub limit: Option<u32>,
     /// Optional token budget bounding the returned `hits` list (not the whole envelope).
@@ -687,16 +688,34 @@ pub(super) struct GrepHit {
     pub context_after: Option<String>,
 }
 
+/// Why a `workspace_grep` result was cut short. Present only when `truncated` is true — a grep that
+/// returned every match carries no reason, so an agent can tell a complete zero from a bounded one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum GrepTruncation {
+    /// More matches exist than `limit` allowed. Raise `limit` or page with `next_cursor`;
+    /// `total_matches` is the exact count that was available.
+    Limit,
+    /// The corpus was larger than one call may read. Narrow with `path_contains` / `language`, or
+    /// page with `next_cursor`. Only reachable on workspaces of multiple gigabytes of source.
+    ByteBudget,
+}
+
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspaceGrepResponse {
     /// Echoed pattern from the request.
     pub pattern: String,
-    /// Number of files that had at least one match.
+    /// Number of files that had at least one match. Exact: every candidate file is scanned.
     pub total_files_matched: usize,
-    /// Total hit count across all visited files (may exceed `hits.len()` when truncated).
+    /// Exact hit count across the whole scanned corpus — not just the returned page. Exceeds
+    /// `hits.len()` when `limit` truncated the result, which is what makes `truncated` actionable.
     pub total_matches: u32,
-    /// True when the result was cut short by `limit` or `scan_cap`.
+    /// True when matches exist that this response does not carry. Never true merely because the
+    /// corpus is large: grep scans every candidate file.
     pub truncated: bool,
+    /// Which bound cut the result, when `truncated` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncation_reason: Option<GrepTruncation>,
     /// True when a `max_tokens` budget dropped trailing `hits`. Page the rest with `next_cursor`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub budgeted: bool,
