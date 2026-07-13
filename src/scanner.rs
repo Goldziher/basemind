@@ -17,6 +17,11 @@ use crate::scanner_code::PendingCodeBatch;
 #[cfg(feature = "documents")]
 use crate::scanner_docs::{PendingDocBatch, extract_and_persist_doc, flush_document_batches, should_extract_document};
 use crate::scanner_filter::{Filters, IndexFilter, ignore_walk_builder};
+#[cfg(feature = "documents")]
+use crate::scanner_lanes::LANE_DOC_REMOVALS;
+use crate::scanner_lanes::{
+    LANE_BM25_STATS, LANE_CODE_BATCHES, LANE_CODE_REMOVALS, LANE_DOC_BATCHES, LANE_RESOLVE, run_optional_lane,
+};
 use crate::store::{FileEntry, Store, StoreError};
 
 /// Number of files whose index entries are accumulated into one Fjall write batch before
@@ -422,19 +427,52 @@ pub fn scan(
         report.stats.removed += 1;
     }
 
+    flush_code_map(store)?;
+
     if matches!(source, ScanSource::WorkingTree) {
         let precise = config.code_intel.precise_resolution;
-        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
+        run_optional_lane(LANE_RESOLVE, || {
+            scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
+        });
     }
 
-    flush_doc_batches_if_any(store, config, &scope, doc_batches);
-    flush_code_batches_if_any(store, config, &scope, code_batches);
-    flush_code_removals_if_any(store, config, &scope, &stale);
+    run_optional_lane(LANE_DOC_BATCHES, || {
+        flush_doc_batches_if_any(store, config, &scope, doc_batches);
+    });
+    run_optional_lane(LANE_CODE_BATCHES, || {
+        flush_code_batches_if_any(store, config, &scope, code_batches);
+    });
+    run_optional_lane(LANE_CODE_REMOVALS, || {
+        flush_code_removals_if_any(store, config, &scope, &stale);
+    });
     #[cfg(feature = "documents")]
-    flush_doc_removals_if_any(store, config, &scope, &doc_stale);
-    finalize_bm25_stats_if_any(store, config);
-    store.flush()?;
+    if !doc_stale.is_empty() {
+        run_optional_lane(LANE_DOC_REMOVALS, || {
+            flush_doc_removals_if_any(store, config, &scope, &doc_stale);
+        });
+        // The doc-removal lane is the ONE post-barrier lane that edits `store.index` (it drops the
+        // `doc_files` entries it purges from LanceDB), so its edits need a second flush.
+        store.flush()?;
+    }
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
     Ok(report)
+}
+
+/// Persist the file map (`index.msgpack`) — the durability barrier that must run BEFORE the optional
+/// post-extraction lanes.
+///
+/// Blobs and the Fjall index are committed per file, but the file map is a single msgpack rewrite at
+/// the end. When it was written *after* the optional lanes, any lane that panicked (the
+/// `stack-graphs` stitcher) or hung until the operator killed the process (the embedding-model
+/// download on a blackholed IPv6 route) left the workspace with gigabytes of committed blobs beside
+/// an `index.msgpack` reporting `file_count: 0` — a silently empty code map that forced a full
+/// re-scan on every launch. Flushing here makes the code map durable the moment it is complete;
+/// every lane after this point is enrichment, and a lane that dies costs only its own tier.
+///
+/// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
+fn flush_code_map(store: &Store) -> Result<(), ScanError> {
+    store.flush()?;
+    Ok(())
 }
 
 /// Incremental scan: process only the given absolute paths. Used by the watcher
@@ -523,16 +561,31 @@ pub fn scan_paths(
         report.stats.removed += 1;
     }
 
-    let precise = config.code_intel.precise_resolution;
-    scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
+    flush_code_map(store)?;
 
-    flush_doc_batches_if_any(store, config, &scope, doc_batches);
-    flush_code_batches_if_any(store, config, &scope, code_batches);
-    flush_code_removals_if_any(store, config, &scope, &removed);
+    let precise = config.code_intel.precise_resolution;
+    run_optional_lane(LANE_RESOLVE, || {
+        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
+    });
+
+    run_optional_lane(LANE_DOC_BATCHES, || {
+        flush_doc_batches_if_any(store, config, &scope, doc_batches);
+    });
+    run_optional_lane(LANE_CODE_BATCHES, || {
+        flush_code_batches_if_any(store, config, &scope, code_batches);
+    });
+    run_optional_lane(LANE_CODE_REMOVALS, || {
+        flush_code_removals_if_any(store, config, &scope, &removed);
+    });
     #[cfg(feature = "documents")]
-    flush_doc_removals_if_any(store, config, &scope, &doc_removed);
-    finalize_bm25_stats_if_any(store, config);
-    store.flush()?;
+    if !doc_removed.is_empty() {
+        run_optional_lane(LANE_DOC_REMOVALS, || {
+            flush_doc_removals_if_any(store, config, &scope, &doc_removed);
+        });
+        // See `flush_code_map`: the doc-removal lane is the only post-barrier `store.index` mutator.
+        store.flush()?;
+    }
+    run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
     Ok(report)
 }
 
@@ -1162,6 +1215,41 @@ mod tests {
         assert!(!is_unsupported_format_error(
             "document extract: OCR engine returned no text"
         ));
+    }
+
+    /// The containment fix rests on rayon re-raising a worker's panic on the thread that called
+    /// `ThreadPool::install`. If that ever stopped holding, `run_optional_lane` would be catching
+    /// nothing and a panicking resolve pass would abort the scan again — so pin it directly.
+    #[test]
+    fn rayon_install_reraises_a_worker_panic_on_the_calling_thread() {
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            scanner_pool().install(|| {
+                (0..64u32).into_par_iter().for_each(|i| {
+                    assert_ne!(i, 17, "worker panic");
+                });
+            });
+        }));
+        assert!(caught.is_err(), "a panic on a rayon worker must unwind into `install`");
+    }
+
+    /// The lane guard is what turns that re-raised panic into a logged degradation: the body runs,
+    /// it panics on a worker, and control still returns to the caller.
+    #[test]
+    fn run_optional_lane_contains_a_panicking_rayon_lane() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let entered = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&entered);
+        run_optional_lane("test_lane", move || {
+            flag.store(true, Ordering::SeqCst);
+            scanner_pool().install(|| {
+                (0..64u32).into_par_iter().for_each(|i| {
+                    assert_ne!(i, 17, "worker panic");
+                });
+            });
+            unreachable!("the rayon lane above must have panicked");
+        });
+        assert!(entered.load(Ordering::SeqCst), "the lane body must have run");
     }
 
     #[test]
