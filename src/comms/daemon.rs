@@ -232,13 +232,18 @@ impl Broker {
         self.workspaces.evict_idle(ttl)
     }
 
-    /// Reference-count the machine-global blob store across every workspace and reap orphans, under
-    /// the WRITE side of [`Broker::blob_gc_lock`] so no rescan is writing blobs mid-sweep. Only the
-    /// daemon calls this — it alone sees every workspace's references, the precondition for a safe
-    /// cross-workspace sweep. The blocking filesystem work runs off the reactor.
+    /// Reap orphaned workspace cache dirs, then reference-count the machine-global blob store across
+    /// every *surviving* workspace and reap orphan blobs — both under the WRITE side of
+    /// [`Broker::blob_gc_lock`], so no rescan is writing blobs mid-sweep. Only the daemon calls this:
+    /// it alone sees every workspace, the precondition for a safe cross-workspace sweep.
+    ///
+    /// The workspace reap runs FIRST and inside the same guard on purpose. A workspace whose worktree
+    /// was deleted still votes in the blob GC's live set, pinning its blobs in the global store
+    /// forever; dropping its vote in the same sweep means those blobs are reclaimed immediately
+    /// instead of surviving until the next cycle. The blocking filesystem work runs off the reactor.
     pub async fn run_blob_gc(&self) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
         let _sweep_guard = self.blob_gc_lock.write().await;
-        tokio::task::spawn_blocking(crate::store_gc::gc_global_blobs)
+        tokio::task::spawn_blocking(crate::store_gc::reap_and_gc_global)
             .await
             .map_err(|join| crate::store_gc::GcError::Join(join.to_string()))?
     }
