@@ -38,6 +38,7 @@ pub mod shells;
 pub mod store;
 pub mod store_blob;
 pub mod store_gc;
+pub mod store_gc_workspace;
 mod store_lock;
 pub mod sysres;
 pub mod textcompress;

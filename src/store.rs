@@ -32,6 +32,15 @@ pub const WORKSPACES_DIR: &str = "workspaces";
 /// timestamp). Read on contention so the error can name the *actual* holder instead of a
 /// hardcoded guess. Best-effort: a missing/corrupt sidecar degrades to a generic message.
 pub const LOCK_META_FILE: &str = ".lock.meta";
+/// Sidecar JSON written next to `.lock` recording the canonical worktree root a workspace cache dir
+/// was keyed from. The dir name is a ONE-WAY blake3 of that path ([`workspace_key`]), so without
+/// this marker nothing can tell whether a workspace's repo still exists — and an orphaned workspace
+/// keeps voting in the daemon's cross-workspace blob GC, pinning its blobs in the machine-global
+/// store forever (the cache then only ever grows). See [`crate::store_gc_workspace`], which reads it
+/// to reap orphans. Written idempotently on every store open so pre-existing (pre-marker) workspace
+/// dirs self-heal; best-effort and non-load-bearing, exactly like `.lock.meta` — a missing marker
+/// only means the dir is unverifiable, and the reaper's conservative policy keeps it.
+pub const WORKSPACE_MARKER_FILE: &str = "workspace.json";
 pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
@@ -93,6 +102,52 @@ pub fn workspace_cache_dir(root: &Path) -> PathBuf {
 /// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
 pub fn global_blobs_dir() -> PathBuf {
     cache_root().join(CACHE_DIR).join(BLOBS_DIR)
+}
+
+/// The `workspace.json` sidecar: the canonical worktree root a workspace cache dir was keyed from.
+/// See [`WORKSPACE_MARKER_FILE`] for why it exists (the dir name is a one-way hash, so an orphan is
+/// otherwise undetectable — and an undetectable orphan pins global blobs forever).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceMarker {
+    /// The canonicalized worktree root this cache dir belongs to. `exists()` on it is the single
+    /// liveness test the orphan reaper runs.
+    pub root: PathBuf,
+    /// Unix-epoch seconds when the marker was (re)written. Diagnostics only.
+    pub updated_unix: i64,
+}
+
+/// Idempotently record `root` in `basemind_dir/workspace.json`.
+///
+/// A no-op when the marker already names the same canonical root, so the frequent read-only opens
+/// don't rewrite it on every MCP call. Best-effort: an I/O failure (or a root path that is not valid
+/// UTF-8, which JSON cannot encode) leaves the dir unverifiable, which the reaper treats as
+/// "keep" — never as "delete". Errors are swallowed deliberately, mirroring the `.lock.meta` writer.
+pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    if let Some(existing) = read_workspace_marker(basemind_dir)
+        && existing.root == canonical
+    {
+        return;
+    }
+    let updated_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let marker = WorkspaceMarker {
+        root: canonical,
+        updated_unix,
+    };
+    let Ok(bytes) = serde_json::to_vec(&marker) else {
+        return;
+    };
+    let _ = write_bytes_atomic(basemind_dir.join(WORKSPACE_MARKER_FILE), &bytes);
+}
+
+/// Read the `workspace.json` marker. `None` when it is absent or unparsable — the caller must then
+/// treat the workspace as *unverifiable* (never as orphaned).
+pub fn read_workspace_marker(basemind_dir: &Path) -> Option<WorkspaceMarker> {
+    let bytes = std::fs::read(basemind_dir.join(WORKSPACE_MARKER_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 /// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
@@ -362,6 +417,9 @@ impl Store {
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         ensure_dir(&view_dir)?;
         let lock = acquire_lock_as(&basemind_dir, holder)?;
+        // Record (or self-heal) the root marker under the lock, so the orphan reaper can later tell
+        // whether this workspace's worktree still exists. See [`WORKSPACE_MARKER_FILE`].
+        ensure_workspace_marker(&basemind_dir, root);
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
             Ok(None) => Index::empty(),
@@ -417,6 +475,10 @@ impl Store {
         let basemind_dir = workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
+            // Self-heal the root marker for workspaces that predate it (a read-only open never
+            // creates the dir, so this only ever touches an existing workspace). Idempotent: a
+            // marker already naming this root is left alone.
+            ensure_workspace_marker(&basemind_dir, root);
         }
         let blobs_dir = global_blobs_dir();
         // See `open_with_holder`: blobs are global, so auto-GC is disabled in a standalone Store.

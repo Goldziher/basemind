@@ -48,6 +48,11 @@ const LEGACY_BLOB_SUFFIXES: [&str; 2] = [".l1.msgpack", ".l2.msgpack"];
 /// the MCP module from the cleanup layer.
 const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
 
+/// The orphaned-workspace reaper — the other half of keeping the machine-global cache bounded.
+/// Lives in its own module (like `store_lock.rs`) to keep this file under the module size cap;
+/// re-exported here so callers see one GC surface.
+pub use crate::store_gc_workspace::{ReapReport, reap_orphaned_workspaces};
+
 /// Errors raised by the cache GC + cleanup layer. Wraps [`StoreError`] for the shared
 /// blob/index machinery and adds a thin I/O variant for the directory walks this module
 /// performs directly.
@@ -122,7 +127,7 @@ impl std::str::FromStr for CacheComponent {
 }
 
 /// Result of a blob garbage-collection sweep.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GcReport {
     /// Total blob files inspected.
     pub scanned: usize,
@@ -130,6 +135,14 @@ pub struct GcReport {
     pub removed: usize,
     /// Bytes reclaimed by the removals (stat'd before deletion).
     pub bytes_freed: u64,
+    /// Orphaned workspace cache dirs reaped by the same sweep (see [`reap_orphaned_workspaces`]).
+    /// Additive field: `0` on every path that only sweeps blobs ([`gc_blobs`], [`gc_report_only`]).
+    #[serde(default)]
+    pub workspaces_reaped: usize,
+    /// Bytes reclaimed by reaping those workspace dirs (their `views/` trees). Disjoint from
+    /// [`Self::bytes_freed`], which counts only global-blob bytes.
+    #[serde(default)]
+    pub workspace_bytes_freed: u64,
 }
 
 /// Per-component byte sizes + blob accounting for the `.basemind/` cache.
@@ -253,11 +266,7 @@ pub fn gc_blobs(referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
 /// global store) and unit tests reach with a per-test temp dir, so tests never touch — nor race
 /// on — the machine-global blob store or each other.
 fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
-    let mut report = GcReport {
-        scanned: 0,
-        removed: 0,
-        bytes_freed: 0,
-    };
+    let mut report = GcReport::default();
     if !blobs_dir.exists() {
         return Ok(report);
     }
@@ -322,7 +331,7 @@ pub fn collect_referenced_hashes_global() -> Result<AHashSet<String>, GcError> {
 /// [`collect_referenced_hashes_global`] against an explicit workspaces directory. Production passes
 /// the global `cache/workspaces`; unit tests pass a per-test temp dir so they never read (nor race
 /// on) the machine-global cache.
-fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Result<AHashSet<String>, GcError> {
+pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Result<AHashSet<String>, GcError> {
     let mut referenced = AHashSet::new();
     if !workspaces_dir.exists() {
         return Ok(referenced);
@@ -351,9 +360,24 @@ pub fn gc_global_blobs() -> Result<GcReport, GcError> {
 
 /// [`gc_global_blobs`] against explicit workspaces + blobs directories, so tests reference-count and
 /// sweep a per-fixture cache instead of the machine-global store.
-fn gc_global_blobs_in(workspaces_dir: &Path, blobs_dir: &Path) -> Result<GcReport, GcError> {
+pub(crate) fn gc_global_blobs_in(workspaces_dir: &Path, blobs_dir: &Path) -> Result<GcReport, GcError> {
     let referenced = collect_referenced_hashes_global_in(workspaces_dir)?;
     gc_blobs_in(blobs_dir, &referenced)
+}
+
+/// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then reference-count and
+/// sweep the global blob store.
+///
+/// Order is load-bearing. An orphaned workspace (its worktree deleted) still votes in the blob GC's
+/// cross-workspace live set, so every blob it references is pinned in the machine-global store
+/// forever — the cache can only grow. Reaping first drops those votes, so the very same sweep
+/// reclaims the blobs the orphan was pinning. The returned [`GcReport`] carries both halves.
+pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
+    let reaped = reap_orphaned_workspaces()?;
+    let mut report = gc_global_blobs()?;
+    report.workspaces_reaped = reaped.reaped;
+    report.workspace_bytes_freed = reaped.bytes_freed;
+    Ok(report)
 }
 
 /// Blob GC entry point for the CLI `cache gc` / a single-workspace caller.
@@ -374,11 +398,7 @@ pub fn run_gc(basemind_dir: &Path) -> Result<GcReport, GcError> {
 /// see [`run_gc`]. `bytes_freed` / `removed` are always `0`.
 pub fn gc_report_only() -> Result<GcReport, GcError> {
     let blobs_dir = global_blobs_dir();
-    let mut report = GcReport {
-        scanned: 0,
-        removed: 0,
-        bytes_freed: 0,
-    };
+    let mut report = GcReport::default();
     if !blobs_dir.exists() {
         return Ok(report);
     }
@@ -629,7 +649,7 @@ fn file_size(path: &Path) -> Result<u64, GcError> {
 /// Recursive on-disk size of a directory tree, matching `du`: counts the allocated blocks of every
 /// entry — the directory's own inode blocks included — via [`on_disk_size`]. Returns `0` for a
 /// missing directory; follows no symlinks (counts the link entry itself, like `du` without `-L`).
-fn dir_size(dir: &Path) -> Result<u64, GcError> {
+pub(crate) fn dir_size(dir: &Path) -> Result<u64, GcError> {
     if !dir.exists() {
         return Ok(0);
     }
