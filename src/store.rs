@@ -6,181 +6,25 @@ use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::extract::{FileMapL1, FileMapL2, SCHEMA_VER};
-use crate::hashing::{self, Hash};
+use crate::extract::SCHEMA_VER;
 use crate::index::{IndexDb, IndexError};
 #[cfg(feature = "intelligence")]
 use crate::lance::LanceStore;
 use crate::path::RelPath;
-use crate::store_blob::{
-    frame_filemap, parse_filemap_l1, parse_filemap_l2, peek_filemap_schema, read_if_exists, write_blob,
-    write_bytes_atomic,
-};
 
-pub const INDEX_FILE: &str = "index.msgpack";
-pub const BLOBS_DIR: &str = "blobs";
-pub const LOCK_FILE: &str = ".lock";
-/// Environment override for the global cache root. When set, [`cache_root`] returns it verbatim
-/// instead of the XDG data dir — the single seam the test-isolation helper uses to redirect every
-/// workspace's cache into a per-process temp dir.
-pub const DATA_HOME_ENV: &str = "BASEMIND_DATA_HOME";
-/// Sub-directory of [`cache_root`] that holds all basemind cache state (`blobs/` + `workspaces/`).
-pub const CACHE_DIR: &str = "cache";
-/// Sub-directory of the cache holding per-workspace state, keyed by [`workspace_key`].
-pub const WORKSPACES_DIR: &str = "workspaces";
-/// Sidecar JSON written next to `.lock` naming the live lock holder (command + pid +
-/// timestamp). Read on contention so the error can name the *actual* holder instead of a
-/// hardcoded guess. Best-effort: a missing/corrupt sidecar degrades to a generic message.
-pub const LOCK_META_FILE: &str = ".lock.meta";
-/// Sidecar JSON written next to `.lock` recording the canonical worktree root a workspace cache dir
-/// was keyed from. The dir name is a ONE-WAY blake3 of that path ([`workspace_key`]), so without
-/// this marker nothing can tell whether a workspace's repo still exists — and an orphaned workspace
-/// keeps voting in the daemon's cross-workspace blob GC, pinning its blobs in the machine-global
-/// store forever (the cache then only ever grows). See [`crate::store_gc_workspace`], which reads it
-/// to reap orphans. Written idempotently on every store open so pre-existing (pre-marker) workspace
-/// dirs self-heal; best-effort and non-load-bearing, exactly like `.lock.meta` — a missing marker
-/// only means the dir is unverifiable, and the reaper's conservative policy keeps it.
-pub const WORKSPACE_MARKER_FILE: &str = "workspace.json";
-pub const VIEWS_DIR: &str = "views";
-/// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
+/// Cache layout: where the global cache root is, how a worktree root maps to a workspace cache
+/// dir, and the `workspace.json` marker recording that mapping. Lives in its own module (like
+/// `store_lock.rs`) to keep this file under the module size cap; re-exported here so callers keep
+/// importing every name from `crate::store`.
 #[cfg(feature = "intelligence")]
-pub const LANCE_DIR: &str = "lance";
-
-/// View name used for the working-tree index. Also the default for `basemind serve`.
-pub const VIEW_WORKING: &str = "working";
-/// View name used when scanning the staging index.
-pub const VIEW_STAGED: &str = "staged";
-
-/// Build the view name used for an arbitrary rev. Slash-free so it's a single directory.
-pub fn view_name_for_rev(short_sha: &str) -> String {
-    format!("rev-{short_sha}")
-}
-
-/// Root of basemind's GLOBAL on-disk cache, shared across every workspace on the machine.
-///
-/// Resolution order:
-/// 1. `$BASEMIND_DATA_HOME` when set (the test-isolation seam; also a user escape hatch).
-/// 2. Else `directories::ProjectDirs::from("", "", "basemind").data_dir()` — the platform XDG
-///    data dir (`~/.local/share/basemind` on Linux, `~/Library/Application Support/basemind` on
-///    macOS, `%APPDATA%\basemind\data` on Windows).
-/// 3. Else the current directory (only when `ProjectDirs` cannot resolve a home dir — no `HOME`).
-///
-/// The cache lives under `cache_root()/cache/`: a global `blobs/` (content-addressed, shared by
-/// every workspace) plus per-workspace state under `workspaces/<workspace_key>/`.
-pub fn cache_root() -> PathBuf {
-    if let Some(explicit) = std::env::var_os(DATA_HOME_ENV) {
-        return PathBuf::from(explicit);
-    }
-    directories::ProjectDirs::from("", "", "basemind")
-        .map(|dirs| dirs.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// Stable per-workspace key: a hex blake3 hash of the **canonicalized** worktree-root path. One
-/// key per worktree root (linked git worktrees canonicalize to distinct paths and so get distinct
-/// keys — correct, since the global blob store dedups byte-identical content across them anyway).
-///
-/// Canonicalization resolves symlinks so `/tmp/x` and `/private/tmp/x` (macOS) map to one key;
-/// a path that cannot be canonicalized (does not exist yet) falls back to its raw form so a
-/// freshly-created root still hashes deterministically.
-pub fn workspace_key(root: &Path) -> String {
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    hashing::hex(&hashing::hash_bytes(canonical.as_os_str().as_encoded_bytes()))
-}
-
-/// Per-workspace cache directory for `root`: `cache_root()/cache/workspaces/<workspace_key>/`.
-/// Holds `views/<view>/`, the top-level `index.msgpack` (legacy), the LanceDB store, and the
-/// per-workspace `.lock`. Blobs are NOT here — they live in the global [`global_blobs_dir`].
-pub fn workspace_cache_dir(root: &Path) -> PathBuf {
-    cache_root()
-        .join(CACHE_DIR)
-        .join(WORKSPACES_DIR)
-        .join(workspace_key(root))
-}
-
-/// The GLOBAL content-addressed blob store: `cache_root()/cache/blobs/`. Shared across every
-/// workspace on the machine, so byte-identical files are extracted + embedded exactly once.
-pub fn global_blobs_dir() -> PathBuf {
-    cache_root().join(CACHE_DIR).join(BLOBS_DIR)
-}
-
-/// The `workspace.json` sidecar: the canonical worktree root a workspace cache dir was keyed from.
-/// See [`WORKSPACE_MARKER_FILE`] for why it exists (the dir name is a one-way hash, so an orphan is
-/// otherwise undetectable — and an undetectable orphan pins global blobs forever).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkspaceMarker {
-    /// The canonicalized worktree root this cache dir belongs to. `exists()` on it is the single
-    /// liveness test the orphan reaper runs.
-    pub root: PathBuf,
-    /// Unix-epoch seconds when the marker was (re)written. Diagnostics only.
-    pub updated_unix: i64,
-}
-
-/// Idempotently record `root` in `basemind_dir/workspace.json`.
-///
-/// A no-op when the marker already names the same canonical root, so the frequent read-only opens
-/// don't rewrite it on every MCP call. Best-effort: an I/O failure (or a root path that is not valid
-/// UTF-8, which JSON cannot encode) leaves the dir unverifiable, which the reaper treats as
-/// "keep" — never as "delete". Errors are swallowed deliberately, mirroring the `.lock.meta` writer.
-pub fn ensure_workspace_marker(basemind_dir: &Path, root: &Path) {
-    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if let Some(existing) = read_workspace_marker(basemind_dir)
-        && existing.root == canonical
-    {
-        return;
-    }
-    let updated_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let marker = WorkspaceMarker {
-        root: canonical,
-        updated_unix,
-    };
-    let Ok(bytes) = serde_json::to_vec(&marker) else {
-        return;
-    };
-    let _ = write_bytes_atomic(basemind_dir.join(WORKSPACE_MARKER_FILE), &bytes);
-}
-
-/// Read the `workspace.json` marker. `None` when it is absent or unparsable — the caller must then
-/// treat the workspace as *unverifiable* (never as orphaned).
-pub fn read_workspace_marker(basemind_dir: &Path) -> Option<WorkspaceMarker> {
-    let bytes = std::fs::read(basemind_dir.join(WORKSPACE_MARKER_FILE)).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-/// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
-///
-/// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a leaked [`tempfile::TempDir`]
-/// so it outlives every test in the binary, and is idempotent across the many fixture constructors
-/// that call it. Workspace-keying + content-addressed blobs keep tests mutually isolated even
-/// though they share this one cache root, so all tests in a binary can safely share it — no
-/// per-test env churn, no races on `set_var`.
-///
-/// Also pins `$BASEMIND_COMMS_DIR` under the same tempdir. On a `comms` build the real `basemind
-/// serve` binary is a `daemon_writer` that forwards every write to the machine daemon (auto-spawned
-/// on first use); a test that spawns `serve` inherits this env, so its daemon binds an ISOLATED
-/// socket under the tempdir instead of touching the user's real machine daemon.
+pub use crate::store_layout::LANCE_DIR;
 #[cfg(any(feature = "test-support", test))]
-pub fn init_isolated_cache() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        // Leak the TempDir so the directory lives for the entire process; the OS reclaims it on
-        // exit. A dropped TempDir here would delete the cache out from under still-running tests.
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("create isolated cache tempdir")));
-        let comms_dir = dir.path().join("comms");
-        // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
-        // `cache_root()` (every fixture constructor calls this first). Rust 2024 marks `set_var`
-        // unsafe because concurrent get/set is UB; the single-write-before-any-read discipline
-        // here upholds that invariant. `BASEMIND_COMMS_DIR` is inert on non-comms builds.
-        unsafe {
-            std::env::set_var(DATA_HOME_ENV, dir.path());
-            std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
-        }
-    });
-}
+pub use crate::store_layout::init_isolated_cache;
+pub use crate::store_layout::{
+    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR,
+    WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, ensure_workspace_marker, global_blobs_dir,
+    read_workspace_marker, view_name_for_rev, workspace_cache_dir, workspace_key,
+};
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
 /// (`scan` / `rescan` / `watch` / `serve`) into [`Store::open_with_holder`] so a lock
@@ -553,173 +397,6 @@ impl Store {
         self.basemind_dir.join(LANCE_DIR).exists()
     }
 
-    pub fn blob_path_fm(&self, hash: &Hash) -> PathBuf {
-        let buf = hashing::hex_buf(hash);
-        self.blob_path_fm_hex(hashing::hex_str(&buf))
-    }
-
-    /// Build the combined-filemap blob path from an already-hex-encoded hash. One blob per
-    /// source file holds both the L1 outline and (when extracted) the L2 calls, framed as
-    /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
-    /// the caller starts from a `FileEntry::hash_hex`.
-    pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"))
-    }
-
-    #[cfg(feature = "documents")]
-    pub fn blob_path_doc(&self, hash: &Hash) -> PathBuf {
-        let buf = hashing::hex_buf(hash);
-        self.blob_path_doc_hex(hashing::hex_str(&buf))
-    }
-
-    #[cfg(feature = "documents")]
-    pub fn blob_path_doc_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.doc.msgpack"))
-    }
-
-    /// Read the L1 outline from the combined-filemap blob. Deserializes only the L1 slice of
-    /// the frame — the trailing L2 bytes are read off disk but never decoded, so the common
-    /// outline-only read path (`MapCache` build, `search_symbols`) pays no L2 decode cost.
-    pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
-        let path = self.blob_path_fm_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let map = parse_filemap_l1(&path, &bytes)?;
-        check_schema(map.schema_ver)?;
-        Ok(Some(map))
-    }
-
-    /// Read the L2 calls from the combined-filemap blob. Returns `Ok(None)` both when the blob
-    /// is absent and when it carries no L2 tier (the file was scanned with `eager_l2 = false`
-    /// or L2 extraction failed) — callers escalate via `query::file_outline_l2`.
-    pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
-        let path = self.blob_path_fm_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        match parse_filemap_l2(&path, &bytes)? {
-            Some(map) => {
-                check_schema(map.schema_ver)?;
-                Ok(Some(map))
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed
-    /// blob (`[l1_len][l1][l2|empty]`), so the default eager-L2 scan does one `open` + `write`
-    /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
-    pub fn write_filemap_hex(&self, hash_hex: &str, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), StoreError> {
-        let path = self.blob_path_fm_hex(hash_hex);
-        if path.exists() && peek_filemap_schema(&path) == Some(SCHEMA_VER) {
-            return Ok(());
-        }
-        let bytes = frame_filemap(l1, l2)?;
-        write_bytes_atomic(path, &bytes)
-    }
-
-    #[cfg(feature = "documents")]
-    pub fn write_doc(&self, hash: &Hash, map: &crate::extract::doc::FileMapDoc) -> Result<(), StoreError> {
-        write_blob(self.blob_path_doc(hash), map)
-    }
-
-    #[cfg(feature = "documents")]
-    pub fn read_doc_by_hex(&self, hash_hex: &str) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
-        let path = self.blob_path_doc_hex(hash_hex);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&bytes)?;
-        check_schema(map.schema_ver)?;
-        Ok(Some(map))
-    }
-
-    /// Path of a file's resolution blob (`<hash>.rref.msgpack`) — the per-file code-intelligence
-    /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
-    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
-    pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
-    }
-
-    /// Write a file's resolution facts. Content-addressed skip on matching schema (identical
-    /// source bytes already analyzed), else serialize + atomic write — mirrors `write_doc`.
-    pub fn write_resolved_hex(
-        &self,
-        hash_hex: &str,
-        refs: &crate::intel::model::FileResolvedRefs,
-    ) -> Result<(), StoreError> {
-        write_blob(self.blob_path_rref_hex(hash_hex), refs)
-    }
-
-    /// Read a file's resolution facts. `Ok(None)` when the file has no resolution blob (never
-    /// analyzed, or produced no facts). A schema mismatch surfaces as an error so the second pass
-    /// recomputes rather than trusting a stale blob.
-    pub fn read_resolved_by_hex(
-        &self,
-        hash_hex: &str,
-    ) -> Result<Option<crate::intel::model::FileResolvedRefs>, StoreError> {
-        let path = self.blob_path_rref_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&bytes)?;
-        check_schema(refs.schema_ver)?;
-        Ok(Some(refs))
-    }
-
-    /// Path of a file's code-chunk sidecar (`<hash>.chunk.msgpack`) — the per-file chunk list +
-    /// embeddings that back the semantic code-search tier. A sibling of the `.fm`/`.doc`/`.rref`
-    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
-    #[cfg(feature = "code-search")]
-    pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
-        self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
-    }
-
-    /// Write a file's code-chunk sidecar. Always overwrites: unlike the other content-addressed
-    /// blobs, a chunk sidecar's embedding payload varies for the SAME content hash — a `Deferred`
-    /// pass writes it chunk-only (`embedding_dim: 0`) and a later `Inline` pass upgrades it in place.
-    /// A schema-only skip would keep the unembedded blob. Re-embedding of a genuinely-unchanged file
-    /// is prevented upstream by `embed_state_satisfied`, not here.
-    #[cfg(feature = "code-search")]
-    pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
-        crate::store_blob::write_blob_overwrite(self.blob_path_chunk_hex(hash_hex), blob)
-    }
-
-    /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never
-    /// chunked, or produced no chunks). A schema mismatch surfaces as an error so the scanner
-    /// re-chunks rather than trusting a stale blob.
-    #[cfg(feature = "code-search")]
-    pub fn read_chunks_by_hex(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlob>, StoreError> {
-        let path = self.blob_path_chunk_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let blob: crate::chunk::CodeChunkBlob = rmp_serde::from_slice(&bytes)?;
-        check_schema(blob.schema_ver)?;
-        Ok(Some(blob))
-    }
-
-    /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
-    /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
-    /// blob, a schema mismatch surfaces as an error — but decodes only the counts + embedding
-    /// dim/model via [`CodeChunkBlobPeek`](crate::chunk::CodeChunkBlobPeek), skipping the heavy
-    /// chunk/embedding element contents. Backs the `embed_state_satisfied` unchanged-file fast path.
-    #[cfg(feature = "code-search")]
-    pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
-        let path = self.blob_path_chunk_hex(hash_hex);
-        let Some(bytes) = read_if_exists(&path)? else {
-            return Ok(None);
-        };
-        let peek: crate::chunk::CodeChunkBlobPeek = rmp_serde::from_slice(&bytes)?;
-        check_schema(peek.schema_ver)?;
-        Ok(Some(peek))
-    }
-
     pub fn upsert(&mut self, rel: impl Into<RelPath>, entry: FileEntry) {
         self.index.files.insert(rel.into(), entry);
     }
@@ -897,7 +574,9 @@ pub(crate) fn open_index_with_retry(view_dir: &Path) -> Result<IndexDb, IndexErr
     }
 }
 
-fn check_schema(found: u16) -> Result<(), StoreError> {
+/// Guard every blob / index read against a stale on-disk schema. `pub(crate)` because the blob
+/// accessors that call it live in [`crate::store_blob`].
+pub(crate) fn check_schema(found: u16) -> Result<(), StoreError> {
     if found == SCHEMA_VER {
         Ok(())
     } else {
@@ -911,101 +590,6 @@ fn check_schema(found: u16) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample_l1() -> FileMapL1 {
-        FileMapL1 {
-            schema_ver: SCHEMA_VER,
-            language: "rust".to_string(),
-            size_bytes: 42,
-            had_errors: false,
-            error_count: 0,
-            symbols: Vec::new(),
-            imports: Vec::new(),
-            implementations: Vec::new(),
-        }
-    }
-
-    fn sample_l2() -> FileMapL2 {
-        FileMapL2 {
-            schema_ver: SCHEMA_VER,
-            language: "rust".to_string(),
-            calls: Vec::new(),
-            docs: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn filemap_frame_round_trips_both_tiers() {
-        init_isolated_cache();
-        let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
-        let hash_hex = "a".repeat(64);
-
-        store
-            .write_filemap_hex(&hash_hex, &sample_l1(), Some(&sample_l2()))
-            .expect("write combined frame");
-
-        let l1 = store.read_l1_by_hex(&hash_hex).expect("read l1");
-        assert_eq!(l1.map(|m| m.size_bytes), Some(42), "L1 slice round-trips");
-        let l2 = store.read_l2_by_hex(&hash_hex).expect("read l2");
-        assert_eq!(l2.map(|m| m.language), Some("rust".to_string()), "L2 present");
-    }
-
-    #[test]
-    fn filemap_frame_l1_only_reads_back_no_l2() {
-        init_isolated_cache();
-        let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
-        let hash_hex = "b".repeat(64);
-
-        store
-            .write_filemap_hex(&hash_hex, &sample_l1(), None)
-            .expect("write L1-only frame");
-
-        assert!(
-            store.read_l1_by_hex(&hash_hex).expect("read l1").is_some(),
-            "L1 present in an L1-only frame"
-        );
-        assert!(
-            store.read_l2_by_hex(&hash_hex).expect("read l2").is_none(),
-            "L2 absent in an L1-only frame (escalation will extract on demand)"
-        );
-    }
-
-    #[test]
-    fn resolved_blob_round_trips_and_missing_reads_none() {
-        use crate::intel::model::{ExportEdge, FileResolvedRefs, ImportEdge, ResolvedEdge};
-        init_isolated_cache();
-        let tmp = tempfile::tempdir().unwrap();
-        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
-        let hash_hex = "d".repeat(64);
-
-        let mut refs = FileResolvedRefs::new("typescript");
-        refs.intra.push(ResolvedEdge {
-            use_start: 40,
-            use_end: 43,
-            def_start: 4,
-            def_end: 7,
-        });
-        refs.imports.push(ImportEdge {
-            local: "foo".to_string(),
-            specifier: "./bar".to_string(),
-            imported: Some("baz".to_string()),
-            is_type: false,
-            local_start: 9,
-        });
-        refs.exports.push(ExportEdge {
-            name: "alpha".to_string(),
-            name_start: 20,
-        });
-
-        store.write_resolved_hex(&hash_hex, &refs).expect("write resolved blob");
-        let read = store.read_resolved_by_hex(&hash_hex).expect("read resolved blob");
-        assert_eq!(read.as_ref(), Some(&refs), "resolution blob round-trips exactly");
-
-        let missing = store.read_resolved_by_hex(&"e".repeat(64)).expect("read missing");
-        assert_eq!(missing, None, "absent resolution blob reads back as None");
-    }
 
     #[test]
     fn locked_display_names_the_serve_holder() {

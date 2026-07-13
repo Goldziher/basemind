@@ -1,4 +1,5 @@
-//! Blob (de)framing + atomic write for the content-addressed extraction store.
+//! Blob (de)framing + atomic write for the content-addressed extraction store, and the
+//! [`Store`] accessors layered over them.
 //!
 //! Each indexed source file persists one combined-filemap blob `<hash>.fm.msgpack`, framed
 //! `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]` — the L1 outline and (when extracted
@@ -6,6 +7,11 @@
 //! per-file blob writes (`open` + atomic `rename`) on the default eager-L2 scan; the
 //! length-prefix lets the common outline-only read decode just the L1 slice without touching
 //! L2. The doc tier (`write_blob`) stays a plain unframed msgpack blob.
+//!
+//! The per-tier `Store::{blob_path,read,write}_*` methods moved here from `store.rs` (which was
+//! over the 1000-line module cap): they are the blob store's read/write surface — one tier per
+//! blob suffix (`.fm` / `.doc` / `.rref` / `.chunk`) — and change for the same reason the framing
+//! does. They stay inherent methods on [`Store`], so every call site is unaffected by the move.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +19,8 @@ use serde::Deserialize;
 
 use crate::extract::SCHEMA_VER;
 use crate::extract::{FileMapL1, FileMapL2};
-use crate::store::StoreError;
+use crate::hashing::{self, Hash};
+use crate::store::{Store, StoreError, check_schema};
 
 /// Minimal peek struct: decode only a blob's leading `schema_ver` field. Every blob map
 /// (`FileMapL1` / `FileMapL2` / `FileMapDoc`) carries `schema_ver: u16` first; rmp-serde
@@ -163,4 +170,276 @@ pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Resul
 pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     let bytes = rmp_serde::to_vec_named(value)?;
     write_bytes_atomic(path, &bytes)
+}
+
+/// The blob store's read/write surface: one accessor group per content-addressed tier, all keyed
+/// by the source file's content hash under [`Store::blobs_dir`].
+impl Store {
+    pub fn blob_path_fm(&self, hash: &Hash) -> PathBuf {
+        let buf = hashing::hex_buf(hash);
+        self.blob_path_fm_hex(hashing::hex_str(&buf))
+    }
+
+    /// Build the combined-filemap blob path from an already-hex-encoded hash. One blob per
+    /// source file holds both the L1 outline and (when extracted) the L2 calls, framed as
+    /// `[l1_len: u32 LE][l1 msgpack][l2 msgpack | empty]`. Skips the encode round-trip when
+    /// the caller starts from a `FileEntry::hash_hex`.
+    pub fn blob_path_fm_hex(&self, hash_hex: &str) -> PathBuf {
+        self.blobs_dir.join(format!("{hash_hex}.fm.msgpack"))
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn blob_path_doc(&self, hash: &Hash) -> PathBuf {
+        let buf = hashing::hex_buf(hash);
+        self.blob_path_doc_hex(hashing::hex_str(&buf))
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn blob_path_doc_hex(&self, hash_hex: &str) -> PathBuf {
+        self.blobs_dir.join(format!("{hash_hex}.doc.msgpack"))
+    }
+
+    /// Read the L1 outline from the combined-filemap blob. Deserializes only the L1 slice of
+    /// the frame — the trailing L2 bytes are read off disk but never decoded, so the common
+    /// outline-only read path (`MapCache` build, `search_symbols`) pays no L2 decode cost.
+    pub fn read_l1_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL1>, StoreError> {
+        let path = self.blob_path_fm_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let map = parse_filemap_l1(&path, &bytes)?;
+        check_schema(map.schema_ver)?;
+        Ok(Some(map))
+    }
+
+    /// Read the L2 calls from the combined-filemap blob. Returns `Ok(None)` both when the blob
+    /// is absent and when it carries no L2 tier (the file was scanned with `eager_l2 = false`
+    /// or L2 extraction failed) — callers escalate via `query::file_outline_l2`.
+    pub fn read_l2_by_hex(&self, hash_hex: &str) -> Result<Option<FileMapL2>, StoreError> {
+        let path = self.blob_path_fm_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        match parse_filemap_l2(&path, &bytes)? {
+            Some(map) => {
+                check_schema(map.schema_ver)?;
+                Ok(Some(map))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Write the combined-filemap blob for a file. Holds both tiers in one content-addressed
+    /// blob (`[l1_len][l1][l2|empty]`), so the default eager-L2 scan does one `open` + `write`
+    /// + atomic `rename` per file instead of two. `l2 = None` writes an L1-only frame.
+    pub fn write_filemap_hex(&self, hash_hex: &str, l1: &FileMapL1, l2: Option<&FileMapL2>) -> Result<(), StoreError> {
+        let path = self.blob_path_fm_hex(hash_hex);
+        if path.exists() && peek_filemap_schema(&path) == Some(SCHEMA_VER) {
+            return Ok(());
+        }
+        let bytes = frame_filemap(l1, l2)?;
+        write_bytes_atomic(path, &bytes)
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn write_doc(&self, hash: &Hash, map: &crate::extract::doc::FileMapDoc) -> Result<(), StoreError> {
+        write_blob(self.blob_path_doc(hash), map)
+    }
+
+    #[cfg(feature = "documents")]
+    pub fn read_doc_by_hex(&self, hash_hex: &str) -> Result<Option<crate::extract::doc::FileMapDoc>, StoreError> {
+        let path = self.blob_path_doc_hex(hash_hex);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let bytes = std::fs::read(&path).map_err(|source| StoreError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let map: crate::extract::doc::FileMapDoc = rmp_serde::from_slice(&bytes)?;
+        check_schema(map.schema_ver)?;
+        Ok(Some(map))
+    }
+
+    /// Path of a file's resolution blob (`<hash>.rref.msgpack`) — the per-file code-intelligence
+    /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
+    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    pub fn blob_path_rref_hex(&self, hash_hex: &str) -> PathBuf {
+        self.blobs_dir.join(format!("{hash_hex}.rref.msgpack"))
+    }
+
+    /// Write a file's resolution facts. Content-addressed skip on matching schema (identical
+    /// source bytes already analyzed), else serialize + atomic write — mirrors `write_doc`.
+    pub fn write_resolved_hex(
+        &self,
+        hash_hex: &str,
+        refs: &crate::intel::model::FileResolvedRefs,
+    ) -> Result<(), StoreError> {
+        write_blob(self.blob_path_rref_hex(hash_hex), refs)
+    }
+
+    /// Read a file's resolution facts. `Ok(None)` when the file has no resolution blob (never
+    /// analyzed, or produced no facts). A schema mismatch surfaces as an error so the second pass
+    /// recomputes rather than trusting a stale blob.
+    pub fn read_resolved_by_hex(
+        &self,
+        hash_hex: &str,
+    ) -> Result<Option<crate::intel::model::FileResolvedRefs>, StoreError> {
+        let path = self.blob_path_rref_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let refs: crate::intel::model::FileResolvedRefs = rmp_serde::from_slice(&bytes)?;
+        check_schema(refs.schema_ver)?;
+        Ok(Some(refs))
+    }
+
+    /// Path of a file's code-chunk sidecar (`<hash>.chunk.msgpack`) — the per-file chunk list +
+    /// embeddings that back the semantic code-search tier. A sibling of the `.fm`/`.doc`/`.rref`
+    /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.
+    #[cfg(feature = "code-search")]
+    pub fn blob_path_chunk_hex(&self, hash_hex: &str) -> PathBuf {
+        self.blobs_dir.join(format!("{hash_hex}.chunk.msgpack"))
+    }
+
+    /// Write a file's code-chunk sidecar. Always overwrites: unlike the other content-addressed
+    /// blobs, a chunk sidecar's embedding payload varies for the SAME content hash — a `Deferred`
+    /// pass writes it chunk-only (`embedding_dim: 0`) and a later `Inline` pass upgrades it in place.
+    /// A schema-only skip would keep the unembedded blob. Re-embedding of a genuinely-unchanged file
+    /// is prevented upstream by `embed_state_satisfied`, not here.
+    #[cfg(feature = "code-search")]
+    pub fn write_chunks_hex(&self, hash_hex: &str, blob: &crate::chunk::CodeChunkBlob) -> Result<(), StoreError> {
+        write_blob_overwrite(self.blob_path_chunk_hex(hash_hex), blob)
+    }
+
+    /// Read a file's code-chunk sidecar. `Ok(None)` when the file has no chunk blob (never
+    /// chunked, or produced no chunks). A schema mismatch surfaces as an error so the scanner
+    /// re-chunks rather than trusting a stale blob.
+    #[cfg(feature = "code-search")]
+    pub fn read_chunks_by_hex(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlob>, StoreError> {
+        let path = self.blob_path_chunk_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let blob: crate::chunk::CodeChunkBlob = rmp_serde::from_slice(&bytes)?;
+        check_schema(blob.schema_ver)?;
+        Ok(Some(blob))
+    }
+
+    /// Cheaply read a chunk sidecar's embedding state without decoding the chunk text. Same contract
+    /// as [`read_chunks_by_hex`](Self::read_chunks_by_hex) — `Ok(None)` when the file has no chunk
+    /// blob, a schema mismatch surfaces as an error — but decodes only the counts + embedding
+    /// dim/model via [`CodeChunkBlobPeek`](crate::chunk::CodeChunkBlobPeek), skipping the heavy
+    /// chunk/embedding element contents. Backs the `embed_state_satisfied` unchanged-file fast path.
+    #[cfg(feature = "code-search")]
+    pub fn peek_chunk_state(&self, hash_hex: &str) -> Result<Option<crate::chunk::CodeChunkBlobPeek>, StoreError> {
+        let path = self.blob_path_chunk_hex(hash_hex);
+        let Some(bytes) = read_if_exists(&path)? else {
+            return Ok(None);
+        };
+        let peek: crate::chunk::CodeChunkBlobPeek = rmp_serde::from_slice(&bytes)?;
+        check_schema(peek.schema_ver)?;
+        Ok(Some(peek))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{VIEW_WORKING, init_isolated_cache};
+
+    fn sample_l1() -> FileMapL1 {
+        FileMapL1 {
+            schema_ver: SCHEMA_VER,
+            language: "rust".to_string(),
+            size_bytes: 42,
+            had_errors: false,
+            error_count: 0,
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            implementations: Vec::new(),
+        }
+    }
+
+    fn sample_l2() -> FileMapL2 {
+        FileMapL2 {
+            schema_ver: SCHEMA_VER,
+            language: "rust".to_string(),
+            calls: Vec::new(),
+            docs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn filemap_frame_round_trips_both_tiers() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "a".repeat(64);
+
+        store
+            .write_filemap_hex(&hash_hex, &sample_l1(), Some(&sample_l2()))
+            .expect("write combined frame");
+
+        let l1 = store.read_l1_by_hex(&hash_hex).expect("read l1");
+        assert_eq!(l1.map(|m| m.size_bytes), Some(42), "L1 slice round-trips");
+        let l2 = store.read_l2_by_hex(&hash_hex).expect("read l2");
+        assert_eq!(l2.map(|m| m.language), Some("rust".to_string()), "L2 present");
+    }
+
+    #[test]
+    fn filemap_frame_l1_only_reads_back_no_l2() {
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "b".repeat(64);
+
+        store
+            .write_filemap_hex(&hash_hex, &sample_l1(), None)
+            .expect("write L1-only frame");
+
+        assert!(
+            store.read_l1_by_hex(&hash_hex).expect("read l1").is_some(),
+            "L1 present in an L1-only frame"
+        );
+        assert!(
+            store.read_l2_by_hex(&hash_hex).expect("read l2").is_none(),
+            "L2 absent in an L1-only frame (escalation will extract on demand)"
+        );
+    }
+
+    #[test]
+    fn resolved_blob_round_trips_and_missing_reads_none() {
+        use crate::intel::model::{ExportEdge, FileResolvedRefs, ImportEdge, ResolvedEdge};
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash_hex = "d".repeat(64);
+
+        let mut refs = FileResolvedRefs::new("typescript");
+        refs.intra.push(ResolvedEdge {
+            use_start: 40,
+            use_end: 43,
+            def_start: 4,
+            def_end: 7,
+        });
+        refs.imports.push(ImportEdge {
+            local: "foo".to_string(),
+            specifier: "./bar".to_string(),
+            imported: Some("baz".to_string()),
+            is_type: false,
+            local_start: 9,
+        });
+        refs.exports.push(ExportEdge {
+            name: "alpha".to_string(),
+            name_start: 20,
+        });
+
+        store.write_resolved_hex(&hash_hex, &refs).expect("write resolved blob");
+        let read = store.read_resolved_by_hex(&hash_hex).expect("read resolved blob");
+        assert_eq!(read.as_ref(), Some(&refs), "resolution blob round-trips exactly");
+
+        let missing = store.read_resolved_by_hex(&"e".repeat(64)).expect("read missing");
+        assert_eq!(missing, None, "absent resolution blob reads back as None");
+    }
 }
