@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/stack-graphs",
     "crates/tree-sitter-graph",
     "crates/tree-sitter-stack-graphs",
     "crates/lsp-positions",
@@ -139,7 +140,7 @@ schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
-stack-graphs = { version = "0.14", default-features = false, optional = true }
+stack-graphs = { path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
@@ -169,9 +170,9 @@ xberg = { version = "1.0.0-rc.21", default-features = false, features = [
     "simd-utf8",
 ], optional = true }
 
-# Our forked tree-sitter-stack-graphs (crates/, tree-sitter 0.26 port) and the crates.io
-# `stack-graphs` dep both use `lsp-positions`. They must resolve to the SAME crate instance
-# so their `lsp_positions::Span` types unify — and the upstream crates.io `lsp-positions`
+# The whole stack-graph stack is forked under crates/ (stack-graphs, tree-sitter-stack-graphs,
+# tree-sitter-graph, lsp-positions) and every member must resolve to the SAME `lsp-positions`
+# instance so their `lsp_positions::Span` types unify — and the upstream crates.io `lsp-positions`
 # pins tree-sitter 0.24, which is incompatible with basemind's 0.26. Redirect it to our
 # owned, 0.26-ported fork for the whole graph.
 [patch.crates-io]
