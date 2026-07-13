@@ -36,7 +36,10 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
+            // No `await_cache_ready` barrier: `outline` is path-keyed, and both branches below
+            // already fall back to reading the file's single L1 blob from the store when the in-RAM
+            // map misses. Waiting on (or forcing) the whole-corpus build to read ONE file would make
+            // the commonest navigation call pay the cost of every other file in the repo.
             fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
                 let symbols = l1
                     .symbols
@@ -622,8 +625,10 @@ impl BasemindServer {
         description = "Regex search across indexed files (`pattern` is Rust regex syntax). Returns \
                        line + column + matched text plus optional 1-line context. Prefer \
                        `search_symbols` for a plain substring identifier (index-backed, faster). \
-                       Bounded by `scan_cap = limit * 8` files; narrow with `language` / \
-                       `path_contains`. Default limit 100, max 1000. `cursor` pages results \
+                       Scans EVERY indexed file, so a rare token is found wherever it lives; \
+                       `limit` caps hits, not files, and `total_matches` is exact. Narrow with \
+                       `language` / `path_contains` to cut the work. \
+                       Default limit 100, max 1000. `cursor` pages results \
                        (invalidate on rescan). `max_tokens` budgets the response (sets `budgeted` \
                        + `next_cursor`). `format:\"toon\"` for compact rows. \
                        `elapsed_us` = server-side handler latency in µs (excludes transport).",
