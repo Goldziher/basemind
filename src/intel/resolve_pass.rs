@@ -33,6 +33,7 @@ use crate::index::IndexDb;
 use crate::intel::model::FileResolvedRefs;
 use crate::lang;
 use crate::path::RelPath;
+use crate::scanner_lanes::contain_panic;
 use crate::store::Store;
 
 /// Files staged into one Fjall write batch before committing. Mirrors the primary scan's
@@ -118,7 +119,23 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bo
                     let lang = lang::intern(language)?;
                     let abs = root.join(rel_str);
                     let bytes = std::fs::read(&abs).ok()?;
-                    let computed = crate::intel::resolve::resolve_file(lang, &abs, &bytes, precise);
+                    // Per-file panic containment: the precise engines are third-party (the
+                    // `stack-graphs` partial-path stitcher has panicked with an out-of-bounds index
+                    // and a failed cyclic test on real inputs). One pathological file must cost only
+                    // its own resolved edges, not the other tens of thousands of files in the pass.
+                    let computed = match contain_panic(|| crate::intel::resolve::resolve_file(lang, &abs, &bytes, precise))
+                    {
+                        Ok(computed) => computed,
+                        Err(reason) => {
+                            tracing::warn!(
+                                path = rel_str,
+                                lang,
+                                reason,
+                                "resolve pass: resolver panicked on this file — skipping it; its navigation stays name-only"
+                            );
+                            return None;
+                        }
+                    };
                     if !computed.is_empty() {
                         let _ = store.write_resolved_hex(hash_hex, &computed);
                     }
