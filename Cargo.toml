@@ -101,6 +101,9 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.2"
+# Pinned to 58 deliberately: lancedb 0.31 links arrow 58, and bumping ours to 59 puts two arrow
+# versions in the graph — `RecordBatch` then no longer satisfies lancedb's `Scannable`. Bump only
+# in lock-step with lancedb.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
 blake3 = "1"
@@ -165,7 +168,7 @@ tree-sitter-graph = { path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.12.5"
 tree-sitter-stack-graphs = { path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.21", default-features = false, features = [
+xberg = { version = "1.0.0-rc.26", default-features = false, features = [
     "tokio-runtime",
     "simd-utf8",
 ], optional = true }
