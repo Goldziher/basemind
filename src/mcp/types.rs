@@ -268,6 +268,12 @@ pub(super) struct OutlineResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -339,6 +345,12 @@ pub(super) struct SearchResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -372,6 +384,12 @@ pub(super) struct ListFilesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -409,6 +427,12 @@ pub(super) struct FindFilesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -419,6 +443,12 @@ pub(super) struct DependentsResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -474,6 +504,12 @@ pub(super) struct StatusResponse {
     /// submodules and for non-repo serves.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub submodules: Vec<RelPath>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. Distinct from `index_build_ms` / `warm_ms`, which report the
+    /// one-time boot-scan and preload costs. See [`crate::mcp::helpers::timing`] for the contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -506,6 +542,12 @@ pub(super) struct FindReferencesResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -532,6 +574,12 @@ pub(super) struct FindCallersResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -567,6 +615,12 @@ pub(super) struct GotoDefinitionResponse {
     /// (module-global, unresolved name, or a language without resolution coverage).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition: Option<DefinitionLocation>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (scope
+    /// resolution + index lookup + response construction), excluding MCP transport, argument
+    /// deserialization, and response serialization. A first call against a cold server also
+    /// includes index warm-up. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -575,6 +629,11 @@ pub(super) struct RepoInfoResponse {
     pub head_sha: Option<String>,
     pub head_short_sha: Option<String>,
     pub branch: Option<String>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (git HEAD
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -653,6 +712,12 @@ pub(super) struct WorkspaceGrepResponse {
     /// ready. Lets a caller tell "index still loading — retry" from a genuine empty result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<LifecycleNotice>,
+    /// Server-side handler latency in microseconds — the tool body's own execution (index / store
+    /// lookup + response construction), excluding MCP transport, argument deserialization, and
+    /// response serialization. A first call against a cold server also includes index warm-up;
+    /// such responses carry a `notice`. See [`crate::mcp::helpers::timing`] for the full contract.
+    #[serde(default)]
+    pub elapsed_us: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

@@ -121,6 +121,67 @@ pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, Mcp
     Ok(CallToolResult::success(vec![content]))
 }
 
+pub(super) use timing::elapsed_us;
+
+/// Canonical contract for the `elapsed_us` field carried by every latency-relevant response.
+///
+/// basemind's index-backed queries are genuinely microsecond-scale (an indexed `commits_touching`
+/// is ~37 µs against ~2 ms for the equivalent live git walk), so latency is reported in
+/// **microseconds**. Millisecond granularity would round most of the hot path to `0`.
+///
+/// # What `elapsed_us` measures
+///
+/// The **tool body's own execution**. A monotonic [`Instant`] is taken as the first statement of the
+/// tool body and read just before the response is serialized, so it covers exactly the work basemind
+/// does to answer the call — index and store lookups, git walks, ranking, and building the response.
+///
+/// "Tool body" means the `async` block inside the `#[tool]` shim when there is one, and otherwise the
+/// first statement of the `run_*` helper it delegates to. The distinction matters: several shims
+/// (`find_references`, `find_callers`, `workspace_grep`, `find_implementations`, `call_graph`,
+/// `architecture_map`) await the in-RAM map and acquire the store lock *in the shim* before calling
+/// their helper. Those shims start the timer themselves and pass the [`Instant`] down, so the wait and
+/// the lock acquisition are inside the measured region rather than silently omitted from it.
+///
+/// The timer is deliberately NOT the `__started` instant the shim hands to `record_call`: that one is
+/// taken before the telemetry params snapshot, which is not part of answering the query.
+///
+/// # What it excludes
+///
+/// - MCP / JSON-RPC transport (the server never observes it).
+/// - Deserialization of the tool's arguments, and the telemetry params snapshot taken by the shim.
+/// - Serialization of the response itself (JSON or TOON encoding), which happens after the read.
+///
+/// Excluding serialization is deliberate: it keeps the number comparable across `format: "json"`
+/// and `format: "toon"`, and across result-set sizes, so it reports *query* cost rather than
+/// *encoding* cost.
+///
+/// # Cold-start caveat — the number is not identical on the first call
+///
+/// Most read tools begin by awaiting the in-RAM code map (`await_cache_ready`), and the git tools
+/// lazily build or load the git-history index on first use. Both of those waits happen **inside**
+/// the measured region. So a first call issued against a cold server can be orders of magnitude
+/// slower than the steady-state call that follows, and the two numbers mean different things.
+///
+/// This is disclosed rather than hidden: when the server is still warming up or (re)building, the
+/// response's `notice` field carries a [`LifecycleNotice`](super::types::LifecycleNotice) whose
+/// `state` is `"warming_up"` / `"building_index"` / `"rescanning"`. **A caller benchmarking steady-state
+/// query latency should discard any sample whose response carried a `notice`.**
+///
+/// # Overhead
+///
+/// Two [`Instant::now`] reads per call (tens of nanoseconds) at the tool boundary only. Nothing in
+/// this module is called from a scanner or extraction inner loop.
+pub(super) mod timing {
+    use std::time::Instant;
+
+    /// Microseconds elapsed since `started`, saturating at [`u64::MAX`] rather than wrapping.
+    ///
+    /// See the [module docs](self) for exactly what the resulting number does and does not include.
+    pub(in crate::mcp) fn elapsed_us(started: Instant) -> u64 {
+        u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+    }
+}
+
 pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> CommitView {
     let files = if include_files {
         Some(
@@ -376,6 +437,7 @@ pub(super) fn blame_too_large_response(
     path: &crate::path::RelPath,
     suspect_sha: &str,
     err: &crate::git_cache::CacheError,
+    started: std::time::Instant,
 ) -> Option<BlameResponse> {
     if matches!(
         err,
@@ -388,6 +450,7 @@ pub(super) fn blame_too_large_response(
             truncated: true,
             truncated_reason: Some("too_large"),
             next_cursor: None,
+            elapsed_us: elapsed_us(started),
         })
     } else {
         None
@@ -402,6 +465,7 @@ pub(super) fn blame_symbol_too_large_response(
     line_start: u32,
     line_end: u32,
     err: &crate::git_cache::CacheError,
+    started: std::time::Instant,
 ) -> Option<BlameSymbolResponse> {
     if matches!(
         err,
@@ -418,6 +482,7 @@ pub(super) fn blame_symbol_too_large_response(
             truncated: true,
             truncated_reason: Some("too_large"),
             next_cursor: None,
+            elapsed_us: elapsed_us(started),
         })
     } else {
         None

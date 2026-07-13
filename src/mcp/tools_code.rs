@@ -45,7 +45,8 @@ impl BasemindServer {
         Returns POINTERS (path + line/byte \
         range + symbol + kind), NOT bodies — call `get_chunk` to fetch a chunk's source. Default 10, \
         max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`). `format:\"toon\"` for \
-        compact rows. Needs --features code-search.",
+        compact rows. `elapsed_us` = server-side handler latency in µs (excludes transport). Needs \
+        --features code-search.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_code(
@@ -77,7 +78,8 @@ impl BasemindServer {
         Disambiguate within a file with `chunk_id` or `byte_start`; both may be omitted when the \
         file has a single chunk. Returns the chunk text plus its symbol, signature, doc, and \
         line/byte range. The fetch half of the `search_code` → `get_chunk` two-call pattern. \
-        Needs --features code-search.",
+        `elapsed_us` = server-side handler latency in µs (excludes transport). Needs --features \
+        code-search.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn get_chunk(

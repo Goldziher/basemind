@@ -13,7 +13,7 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 
-use super::render::emit;
+use super::render::{Emit, emit};
 use super::run_tool;
 
 /// Map the `--individual` CLI flag onto a [`Visibility`]. Absent = group (shared) tier.
@@ -87,7 +87,7 @@ pub enum MemoryCmd {
     },
 }
 
-pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut impl Write) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         MemoryCmd::Put {
             key,
@@ -104,7 +104,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 visibility: visibility(individual),
             };
             let r = run_tool("memory_put", server.memory_put(Parameters(p)).await)?;
-            emit("memory_put", &r, json, out)
+            emit("memory_put", &r, opts, out)
         }
         MemoryCmd::Get { key, individual } => {
             let p = MemoryGetParams {
@@ -112,7 +112,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 visibility: visibility(individual),
             };
             let r = run_tool("memory_get", server.memory_get(Parameters(p)).await)?;
-            emit("memory_get", &r, json, out)
+            emit("memory_get", &r, opts, out)
         }
         MemoryCmd::List {
             prefix,
@@ -128,7 +128,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 visibility: visibility(individual),
             };
             let r = run_tool("memory_list", server.memory_list(Parameters(p)).await)?;
-            emit("memory_list", &r, json, out)
+            emit("memory_list", &r, opts, out)
         }
         MemoryCmd::Search {
             query,
@@ -143,7 +143,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 visibility: visibility(individual),
             };
             let r = run_tool("memory_search", server.memory_search(Parameters(p)).await)?;
-            emit("memory_search", &r, json, out)
+            emit("memory_search", &r, opts, out)
         }
         MemoryCmd::Delete { key, individual } => {
             let p = MemoryDeleteParams {
@@ -151,7 +151,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 visibility: visibility(individual),
             };
             let r = run_tool("memory_delete", server.memory_delete(Parameters(p)).await)?;
-            emit("memory_delete", &r, json, out)
+            emit("memory_delete", &r, opts, out)
         }
         MemoryCmd::SearchDocuments {
             query,
@@ -172,7 +172,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, json: bool, out: &mut 
                 "search_documents",
                 server.search_documents(Parameters(Lenient(p))).await,
             )?;
-            emit("search_documents", &r, json, out)
+            emit("search_documents", &r, opts, out)
         }
     }
 }

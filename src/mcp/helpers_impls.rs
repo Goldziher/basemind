@@ -11,7 +11,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::cursor::Cursor;
-use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, json_result};
+use super::helpers::{SEARCH_LIMIT_DEFAULT, SEARCH_LIMIT_MAX, elapsed_us, json_result};
 use super::types_impls::{FindImplementationsParams, FindImplementationsResponse, ImplementationHit};
 
 /// Body of the `find_implementations` MCP tool. Performs a full-partition scan over the
@@ -22,11 +22,12 @@ pub(super) fn run_find_implementations(
     params: FindImplementationsParams,
     cache: &super::MapCache,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
 
     let Some(idx) = idx else {
-        return find_implementations_in_ram(cache, params, limit, notice);
+        return find_implementations_in_ram(cache, params, limit, notice, started);
     };
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
@@ -115,6 +116,7 @@ pub(super) fn run_find_implementations(
         hits,
         next_cursor,
         notice,
+        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -143,6 +145,7 @@ fn find_implementations_in_ram(
     params: FindImplementationsParams,
     limit: usize,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let Some(index) = cache.impls.as_ref() else {
         return json_result(&FindImplementationsResponse {
@@ -153,6 +156,7 @@ fn find_implementations_in_ram(
             hits: Vec::new(),
             next_cursor: None,
             notice,
+            elapsed_us: elapsed_us(started),
         });
     };
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
@@ -220,6 +224,7 @@ fn find_implementations_in_ram(
         hits,
         next_cursor,
         notice,
+        elapsed_us: elapsed_us(started),
     })
 }
 

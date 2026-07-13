@@ -13,7 +13,7 @@ use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 use crate::path::{RelPath, normalize_query_path};
 
-use super::render::emit;
+use super::render::{Emit, emit};
 use super::run_tool;
 
 /// Resolve a user-supplied CLI path into the repo-relative `RelPath` key the
@@ -201,7 +201,7 @@ pub enum QueryCmd {
     },
 }
 
-pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut impl Write) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         QueryCmd::Outline { path, l2 } => {
             let p = OutlineParams {
@@ -211,7 +211,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 format: None,
             };
             let r = run_tool("outline", server.outline(Parameters(Lenient(p))).await)?;
-            emit("outline", &r, json, out)
+            emit("outline", &r, opts, out)
         }
         QueryCmd::Symbol { needle, kind, limit } | QueryCmd::Search { needle, kind, limit } => {
             let p = SearchSymbolsParams {
@@ -223,7 +223,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("search_symbols", server.search_symbols(Parameters(Lenient(p))).await)?;
-            emit("search_symbols", &r, json, out)
+            emit("search_symbols", &r, opts, out)
         }
         QueryCmd::References { name, limit } => {
             let p = FindReferencesParams {
@@ -234,7 +234,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("find_references", server.find_references(Parameters(Lenient(p))).await)?;
-            emit("find_references", &r, json, out)
+            emit("find_references", &r, opts, out)
         }
         QueryCmd::Callers {
             path,
@@ -251,7 +251,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("find_callers", server.find_callers(Parameters(Lenient(p))).await)?;
-            emit("find_callers", &r, json, out)
+            emit("find_callers", &r, opts, out)
         }
         QueryCmd::GotoDefinition { path, line, column } => {
             let p = GotoDefinitionParams {
@@ -260,7 +260,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 column,
             };
             let r = run_tool("goto_definition", server.goto_definition(Parameters(Lenient(p))).await)?;
-            emit("goto_definition", &r, json, out)
+            emit("goto_definition", &r, opts, out)
         }
         QueryCmd::Implementations {
             trait_name,
@@ -278,7 +278,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 "find_implementations",
                 server.find_implementations(Parameters(Lenient(p))).await,
             )?;
-            emit("find_implementations", &r, json, out)
+            emit("find_implementations", &r, opts, out)
         }
         QueryCmd::CallGraph {
             name,
@@ -295,7 +295,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 max_nodes,
             };
             let r = run_tool("call_graph", server.call_graph(Parameters(p)).await)?;
-            emit("call_graph", &r, json, out)
+            emit("call_graph", &r, opts, out)
         }
         QueryCmd::ArchitectureMap {
             granularity,
@@ -320,7 +320,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 max_tokens,
             };
             let r = run_tool("architecture_map", server.architecture_map(Parameters(p)).await)?;
-            emit("architecture_map", &r, json, out)
+            emit("architecture_map", &r, opts, out)
         }
         QueryCmd::Grep {
             pattern,
@@ -340,7 +340,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("workspace_grep", server.workspace_grep(Parameters(Lenient(p))).await)?;
-            emit("workspace_grep", &r, json, out)
+            emit("workspace_grep", &r, opts, out)
         }
         QueryCmd::ListFiles {
             path_contains,
@@ -356,7 +356,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("list_files", server.list_files(Parameters(p)).await)?;
-            emit("list_files", &r, json, out)
+            emit("list_files", &r, opts, out)
         }
         QueryCmd::FindFiles {
             query,
@@ -374,20 +374,20 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 cursor: None,
             };
             let r = run_tool("find_files", server.find_files(Parameters(Lenient(p))).await)?;
-            emit("find_files", &r, json, out)
+            emit("find_files", &r, opts, out)
         }
         QueryCmd::Status => {
             let r = run_tool("status", server.status(Parameters(StatusParams {})).await)?;
-            emit("status", &r, json, out)
+            emit("status", &r, opts, out)
         }
         QueryCmd::RepoInfo => {
             let r = run_tool("repo_info", server.repo_info(Parameters(RepoInfoParams {})).await)?;
-            emit("repo_info", &r, json, out)
+            emit("repo_info", &r, opts, out)
         }
         QueryCmd::Dependents { module } => {
             let p = DependentsParams { module };
             let r = run_tool("dependents", server.dependents(Parameters(Lenient(p))).await)?;
-            emit("dependents", &r, json, out)
+            emit("dependents", &r, opts, out)
         }
         QueryCmd::SearchCode {
             query,
@@ -408,7 +408,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 format,
             };
             let r = run_tool("search_code", server.search_code(Parameters(Lenient(p))).await)?;
-            emit("search_code", &r, json, out)
+            emit("search_code", &r, opts, out)
         }
         QueryCmd::GetChunk {
             path,
@@ -421,7 +421,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 byte_start,
             };
             let r = run_tool("get_chunk", server.get_chunk(Parameters(Lenient(p))).await)?;
-            emit("get_chunk", &r, json, out)
+            emit("get_chunk", &r, opts, out)
         }
         QueryCmd::Expand { path, name, kind } => {
             let p = ExpandParams {
@@ -430,7 +430,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, json: bool, out: &mut i
                 kind,
             };
             let r = run_tool("expand", server.expand(Parameters(p)).await)?;
-            emit("expand", &r, json, out)
+            emit("expand", &r, opts, out)
         }
     }
 }

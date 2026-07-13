@@ -7,6 +7,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::ServerState;
+#[cfg(any(feature = "memory", feature = "documents"))]
+use super::helpers::elapsed_us;
 #[cfg(feature = "documents")]
 use super::helpers::format_response;
 #[cfg(feature = "memory")]
@@ -292,6 +294,7 @@ fn wire_to_entry(w: super::memory_ops::WireMemoryEntry) -> MemoryEntry {
 pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParams) -> Result<CallToolResult, McpError> {
     use super::cursor::Cursor;
 
+    let __body = std::time::Instant::now();
     let limit = params
         .limit
         .unwrap_or(super::helpers::SEARCH_LIMIT_DEFAULT)
@@ -330,6 +333,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
                 truncated,
                 entries: entries.into_iter().map(wire_to_entry).collect(),
                 next_cursor: next_cursor.as_deref().map(Cursor::encode_fjall),
+                elapsed_us: elapsed_us(__body),
             }),
             other => Err(McpError::internal_error(
                 format!("memory_list: unexpected daemon outcome {other:?}"),
@@ -360,6 +364,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         truncated: result.truncated,
         entries: result.entries.into_iter().map(wire_to_entry).collect(),
         next_cursor: result.next_cursor.as_deref().map(Cursor::encode_fjall),
+        elapsed_us: elapsed_us(__body),
     })
 }
 
@@ -368,6 +373,7 @@ pub(super) async fn run_memory_search(
     state: &ServerState,
     params: MemorySearchParams,
 ) -> Result<CallToolResult, McpError> {
+    let __body = std::time::Instant::now();
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let (_, owner) = namespace(state, params.visibility);
     let visibility = lance_visibility(params.visibility).to_string();
@@ -394,6 +400,7 @@ pub(super) async fn run_memory_search(
     json_result(&MemorySearchResponse {
         query: params.query,
         hits,
+        elapsed_us: elapsed_us(__body),
     })
 }
 
@@ -475,6 +482,7 @@ pub(super) async fn run_search_documents(
     state: &ServerState,
     params: SearchDocumentsParams,
 ) -> Result<CallToolResult, McpError> {
+    let __body = std::time::Instant::now();
     let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = if params.overrides.any() {
         let mut effective = (*state.config).clone();
         crate::config::layered::apply_documents_overrides(
@@ -591,6 +599,7 @@ pub(super) async fn run_search_documents(
             query: params.query,
             budgeted: budget.budgeted,
             hits: budget.items,
+            elapsed_us: elapsed_us(__body),
         },
         output_format,
     )
