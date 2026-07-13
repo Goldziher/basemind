@@ -112,9 +112,9 @@ MIT OR Apache-2.0 is compatible with basemind's MIT license.
 ## lsp-positions (forked & maintained)
 
 LSP-compatible character positions (UTF-8 / UTF-16 / grapheme offsets). Shared by the forked
-tree-sitter-stack-graphs and the crates.io `stack-graphs` dependency; both must resolve to this one
-instance (via `[patch.crates-io]`) so their `lsp_positions::Span` types unify. basemind maintains it
-as a **fork** because the published crate pins tree-sitter 0.24, incompatible with basemind's 0.26.
+tree-sitter-stack-graphs and stack-graphs crates; all of them must resolve to this one instance (via
+`[patch.crates-io]`) so their `lsp_positions::Span` types unify. basemind maintains it as a **fork**
+because the published crate pins tree-sitter 0.24, incompatible with basemind's 0.26.
 
 - **Originally derived from**: <https://github.com/github/stack-graphs> lsp-positions v0.3.4
   (archived, read-only)
@@ -138,10 +138,42 @@ MIT OR Apache-2.0 is compatible with basemind's MIT license.
 
 ---
 
-## stack-graphs
+## stack-graphs (forked & maintained)
 
-The `stack-graphs` graph model and `ForwardPartialPathStitcher` path-finding are consumed as an
-ordinary crates.io dependency (`stack-graphs = { version = "0.14", default-features = false }`), not
-vendored — it has no tree-sitter dependency and its optional `storage` (rusqlite) feature is left
-disabled. It is noted here only because its upstream repository (<https://github.com/github/stack-graphs>)
-is archived; the crate remains published under MIT OR Apache-2.0.
+The stack-graph data model, partial paths, and the `ForwardPartialPathStitcher` path-finding that
+resolves references to definitions. Upstream is archived, and the published crate panics on real
+source code (see below), so basemind maintains it as a **fork** — a first-class workspace crate.
+
+- **Originally derived from**: <https://github.com/github/stack-graphs> (archived, read-only), the
+  published `stack-graphs` crate v0.14.1
+- **License**: MIT OR Apache-2.0 (upstream LICENSE-MIT / LICENSE-APACHE retained in the crate)
+- **Original authors**: GitHub, Inc. and the stack-graphs contributors
+- **Now maintained by**: basemind (Na'aman Hirschfeld)
+- **Location**: `crates/stack-graphs/`
+- **Purpose**: Build and stitch the stack graph that backs basemind's precise, scope- and
+  import-aware navigation.
+
+### Modifications
+
+- Modernized as an owned fork: a `crates/` workspace member, Rust edition 2024, clippy-clean under
+  the workspace `-D warnings` bar. `lsp-positions` is a path dep, so every crate in the stack-graph
+  stack shares one instance.
+- Stripped: the C FFI (`src/c.rs`, `include/stack-graphs.h`, cbindgen), the `serde`,
+  `visualization`, and `storage` (rusqlite/bincode) modules, and the unused `assert` test-runner
+  helpers. basemind builds a `StackGraph` in memory and stitches it in-process.
+- **Two panics on the stitching hot path were made recoverable.** Both fire while indexing real
+  source code, and a panic in one file must never abort the scan of an entire repository:
+  - `Database::get_incoming_path_degree` indexed the lazily-grown `incoming_paths` supplemental
+    arena directly. That arena is only sized by the largest *end node* of a partial path already in
+    the database, so any other graph node indexed out of bounds. It now answers `Degree::Zero`.
+  - `ForwardPartialPathStitcher::extend` called `.expect()` on the cycle detector. The cycle test
+    replays a suspected cycle against a path freshly minted at the cycle's end node, so the
+    fragments are re-appended against initial stack variables rather than the stacks the real path
+    carried — a reconstruction that can legitimately fail to unify (`ScopeStackUnsatisfied`). An
+    undecidable cycle test now discontinues the path, the same conservative outcome as a proven
+    cycle.
+  - Both are covered by regression tests in `crates/stack-graphs/tests/it/stitching.rs`.
+
+### License Compatibility
+
+MIT OR Apache-2.0 is compatible with basemind's MIT license.

@@ -4,9 +4,9 @@
 # Owned and modernized by basemind: ported to tree-sitter 0.26, edition 2024. The `cli` / `lsp`
 # features and the loader/test/ci/cli modules (tree-sitter-loader, tree-sitter-config, walkdir,
 # rust-ini, ...) are stripped: we only parse a .tsg string and execute it against a
-# tree_sitter::Tree to build a stack_graphs::graph::StackGraph. lsp-positions and
-# tree-sitter-graph are workspace path deps (both carry a tree-sitter 0.26 port); stack-graphs
-# stays a crates.io dep.
+# tree_sitter::Tree to build a stack_graphs::graph::StackGraph. lsp-positions, tree-sitter-graph
+# and stack-graphs are all workspace path deps — the whole stack-graph stack is forked under
+# crates/ and must resolve to a single instance of each.
 [package]
 name = "tree-sitter-stack-graphs"
 version = "0.10.0"
@@ -31,7 +31,7 @@ test = false
 controlled-option = "0.4.1"
 lsp-positions = { path = "../lsp-positions", features = ["tree-sitter"] }
 once_cell = "1"
-stack-graphs = { version = "0.14", default-features = false }
+stack-graphs = { path = "../stack-graphs" }
 thiserror = "2"
 tree-sitter = "0.26"
 tree-sitter-graph = { path = "../tree-sitter-graph" }
