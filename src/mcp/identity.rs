@@ -1,55 +1,32 @@
 //! Stable agent-identity resolution for the MCP server.
+//!
+//! A thin adapter over [`crate::comms::identity`], which is the single source of truth shared with
+//! the CLI verbs. The tiering itself lives there ON PURPOSE: `serve` and the CLI previously each
+//! carried their own copy, drifted, and the CLI copies collapsed onto one hardcoded id for every
+//! agent on the machine.
 
+use crate::comms::identity::{self, AgentIdentity, IdentityPaths, IdentityRequest};
 use crate::store::Store;
 
-/// File under `.basemind/` holding the generated-and-persisted per-session agent id. Created
-/// the first time identity resolution falls through to the generated tier, so two `serve`
-/// sessions against different repos get distinct ids while a single repo stays stable.
-const AGENT_ID_FILE: &str = "agent-id";
-
-/// Resolve this server's stable agent identity. Tiered, each candidate validated through
-/// [`crate::comms::ids::AgentId`] (an invalid candidate falls through, not fails):
+/// Resolve this server's stable agent identity. See [`crate::comms::identity`] for the tiers.
 ///
-/// 1. `BASEMIND_AGENT_ID` env — explicit per-process override.
-/// 2. `config.comms.agent_id` — workspace config.
-/// 3. A generated-and-persisted id at `.basemind/agent-id` — stable per repo across restarts,
-///    distinct across repos so two windows differ.
-/// 4. `"anon"` — the final fallback (itself a valid `AgentId`).
+/// Identity state is read from the store's own `basemind_dir` (the machine-global per-workspace
+/// cache dir), so the CLI — which computes the same path from the root without opening a
+/// [`Store`] — resolves to the SAME id in the same workspace.
 pub(super) fn resolve_agent_id(config: &crate::config::Config, store: &Store) -> String {
-    fn validated(candidate: Option<String>) -> Option<String> {
-        candidate
-            .and_then(|s| crate::comms::ids::AgentId::parse(s).ok())
-            .map(|a| a.into_string())
-    }
-
-    if let Some(id) = validated(std::env::var("BASEMIND_AGENT_ID").ok()) {
-        return id;
-    }
-    if let Some(id) = validated(config.comms.agent_id.clone()) {
-        return id;
-    }
-    if let Some(id) = validated(load_or_create_persisted_agent_id(&store.basemind_dir)) {
-        return id;
-    }
-    "anon".to_string()
+    resolve_identity(config, store).into_id().into_string()
 }
 
-/// Read the persisted per-session agent id from `<basemind_dir>/agent-id`, generating and
-/// writing a fresh one when absent or unreadable. Best-effort: any io failure returns `None`
-/// so the resolver falls through to `"anon"` rather than erroring at server boot.
-fn load_or_create_persisted_agent_id(basemind_dir: &std::path::Path) -> Option<String> {
-    let path = basemind_dir.join(AGENT_ID_FILE);
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let trimmed = existing.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let token = format!("session-{:x}-{:x}", std::process::id(), nanos);
-    let _ = std::fs::write(&path, &token);
-    Some(token)
+/// The full identity, including any cross-workspace claim collision. [`identity::resolve`] emits
+/// the collision as a `tracing::warn!`, so `serve` surfaces it through its normal log sink.
+fn resolve_identity(config: &crate::config::Config, store: &Store) -> AgentIdentity {
+    identity::resolve(&IdentityRequest {
+        root: &store.root,
+        paths: IdentityPaths {
+            workspace_cache_dir: store.basemind_dir.clone(),
+            claims_dir: identity::claims_dir(),
+        },
+        env_agent_id: std::env::var(identity::AGENT_ID_ENV).ok(),
+        config_agent_id: config.comms.agent_id.clone(),
+    })
 }

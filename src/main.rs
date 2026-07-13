@@ -426,7 +426,6 @@ fn cmd_comms_start() -> Result<()> {
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
     use basemind::comms::client::CommsClient;
-    use basemind::comms::ids::AgentId;
     use basemind::comms::singleton;
 
     let paths = singleton::resolve_paths().context("resolve comms paths")?;
@@ -436,7 +435,11 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        let agent = AgentId::parse("basemind-cli").map_err(|e| anyhow::anyhow!("agent id: {e}"))?;
+        // Identity resolves through the ONE shared resolver rather than a constant: a lifecycle
+        // RPC connects as a real agent, and a machine-wide constant is exactly what let two agents
+        // collide onto one inbox. Keyed on the cwd, so it is this workspace's agent.
+        let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let agent = basemind::comms::identity::cli_agent_id(&root);
         let mut client = CommsClient::connect(&paths, agent, None, None)
             .await
             .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))?;
