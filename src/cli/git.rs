@@ -11,7 +11,7 @@ use clap::Subcommand;
 use crate::mcp::BasemindServer;
 use crate::mcp::params::*;
 
-use super::render::emit;
+use super::render::{Emit, emit};
 use super::run_tool;
 
 #[derive(Subcommand, Debug)]
@@ -109,14 +109,14 @@ pub enum GitCmd {
     },
 }
 
-pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut impl Write) -> Result<()> {
+pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
     match cmd {
         GitCmd::WorkingTreeStatus => {
             let r = run_tool(
                 "working_tree_status",
                 server.working_tree_status(Parameters(WorkingTreeStatusParams {})).await,
             )?;
-            emit("working_tree_status", &r, json, out)
+            emit("working_tree_status", &r, opts, out)
         }
         GitCmd::RecentChanges { limit, no_files } => {
             let p = RecentChangesParams {
@@ -125,7 +125,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("recent_changes", server.recent_changes(Parameters(p)).await)?;
-            emit("recent_changes", &r, json, out)
+            emit("recent_changes", &r, opts, out)
         }
         GitCmd::Search { pattern, field, limit } => {
             let p = SearchGitHistoryParams {
@@ -135,7 +135,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("search_git_history", server.search_git_history(Parameters(p)).await)?;
-            emit("search_git_history", &r, json, out)
+            emit("search_git_history", &r, opts, out)
         }
         GitCmd::CommitsTouching { path, limit } => {
             let p = CommitsTouchingParams {
@@ -144,7 +144,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("commits_touching", server.commits_touching(Parameters(p)).await)?;
-            emit("commits_touching", &r, json, out)
+            emit("commits_touching", &r, opts, out)
         }
         GitCmd::FindCommitsByPath { pattern, window, limit } => {
             let p = FindCommitsByPathParams {
@@ -154,12 +154,12 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("find_commits_by_path", server.find_commits_by_path(Parameters(p)).await)?;
-            emit("find_commits_by_path", &r, json, out)
+            emit("find_commits_by_path", &r, opts, out)
         }
         GitCmd::HotFiles { window, top_k } => {
             let p = HotFilesParams { window, top_k };
             let r = run_tool("hot_files", server.hot_files(Parameters(p)).await)?;
-            emit("hot_files", &r, json, out)
+            emit("hot_files", &r, opts, out)
         }
         GitCmd::DiffFile { path, rev_old, rev_new } => {
             let p = DiffFileParams {
@@ -168,7 +168,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 path: path.as_str().into(),
             };
             let r = run_tool("diff_file", server.diff_file(Parameters(p)).await)?;
-            emit("diff_file", &r, json, out)
+            emit("diff_file", &r, opts, out)
         }
         GitCmd::DiffOutline { path, rev } => {
             let p = DiffOutlineParams {
@@ -176,7 +176,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 rev,
             };
             let r = run_tool("diff_outline", server.diff_outline(Parameters(p)).await)?;
-            emit("diff_outline", &r, json, out)
+            emit("diff_outline", &r, opts, out)
         }
         GitCmd::BlameFile {
             path,
@@ -194,7 +194,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("blame_file", server.blame_file(Parameters(p)).await)?;
-            emit("blame_file", &r, json, out)
+            emit("blame_file", &r, opts, out)
         }
         GitCmd::BlameSymbol {
             path,
@@ -212,7 +212,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("blame_symbol", server.blame_symbol(Parameters(p)).await)?;
-            emit("blame_symbol", &r, json, out)
+            emit("blame_symbol", &r, opts, out)
         }
         GitCmd::SymbolHistory {
             path,
@@ -230,7 +230,7 @@ pub async fn run(server: &BasemindServer, cmd: GitCmd, json: bool, out: &mut imp
                 cursor: None,
             };
             let r = run_tool("symbol_history", server.symbol_history(Parameters(p)).await)?;
-            emit("symbol_history", &r, json, out)
+            emit("symbol_history", &r, opts, out)
         }
     }
 }

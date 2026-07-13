@@ -97,7 +97,8 @@ impl BasemindServer {
     #[tool(
         description = "List scoped memory entries. `prefix` is a key-prefix filter (not \
         substring); `tag` is exact. Values truncated ~200 chars. Default 100, max 1000. \
-        `cursor` pages results. Needs --features memory.",
+        `cursor` pages results. `elapsed_us` = server-side handler latency in µs (excludes \
+        transport). Needs --features memory.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn memory_list(
@@ -127,7 +128,8 @@ impl BasemindServer {
     #[tool(
         description = "Vector KNN over stored memory. Embeds `query`, KNN in the scope-filtered \
         LanceDB memory table; `tag` is a post-KNN exact filter. Default 10, max 100 by L2 \
-        distance. Needs --features memory.",
+        distance. `elapsed_us` = server-side handler latency in µs (excludes transport). Needs \
+        --features memory.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn memory_search(
@@ -193,7 +195,8 @@ impl BasemindServer {
         `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
         filter. Default 10, max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`; \
         no cursor — raise it for more). `format:\"toon\"` for compact rows (overrides config). \
-        Needs --features documents.",
+        `elapsed_us` = server-side handler latency in µs (excludes transport). Needs --features \
+        documents.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub(crate) async fn search_documents(

@@ -16,7 +16,11 @@ use super::types::{GrepHit, WorkspaceGrepParams, WorkspaceGrepResponse};
 /// applies the compiled regex. Non-UTF-8 files are silently skipped. Returns up to `limit` hits
 /// with optional 1-line context. Supports in-memory pagination via `cursor` / `next_cursor`
 /// using the same `encode_in_memory(offset, generation)` scheme as `list_files`.
-pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParams) -> Result<CallToolResult, McpError> {
+pub(super) fn run_workspace_grep(
+    state: &ServerState,
+    params: WorkspaceGrepParams,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
     let scan_cap = limit.saturating_mul(8).max(2_000);
@@ -37,6 +41,7 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
                         next_cursor: None,
                         cursor_invalidated: true,
                         notice: state.lifecycle_notice(),
+                        elapsed_us: super::helpers::elapsed_us(started),
                     },
                     format,
                 );
@@ -178,6 +183,7 @@ pub(super) fn run_workspace_grep(state: &ServerState, params: WorkspaceGrepParam
             next_cursor,
             cursor_invalidated: false,
             notice: state.lifecycle_notice(),
+            elapsed_us: super::helpers::elapsed_us(started),
         },
         format,
     )

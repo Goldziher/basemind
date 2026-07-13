@@ -21,7 +21,7 @@ use rmcp::model::CallToolResult;
 
 use super::MapCache;
 use super::cursor::prefix_upper_bound;
-use super::helpers::{json_result, kind_to_str};
+use super::helpers::{elapsed_us, json_result, kind_to_str};
 use super::helpers_calls::for_each_call_in_file;
 use super::types_graph::{CallGraphNode, CallGraphParams, CallGraphResponse, CallGraphSite};
 use crate::extract::{FileMapL1, Symbol, SymbolKind};
@@ -49,6 +49,7 @@ pub(super) fn run_call_graph(
     params: CallGraphParams,
     cache: &MapCache,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let direction = params.direction.as_str();
     let direction_owned = match direction {
@@ -76,6 +77,7 @@ pub(super) fn run_call_graph(
         truncated: outcome.truncated,
         truncation_reason: outcome.truncation_reason,
         notice,
+        elapsed_us: elapsed_us(started),
     })
 }
 

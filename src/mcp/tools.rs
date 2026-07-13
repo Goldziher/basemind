@@ -24,7 +24,8 @@ impl BasemindServer {
         description = "Structural outline of a file: each symbol (name, kind, start row/col) plus \
                        imports. `l2: true` adds calls + doc comments (only if an L2 blob exists for \
                        the current content). `max_tokens` budgets the `symbols` list (not \
-                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows.",
+                       imports/calls/docs), setting `budgeted`. `format:\"toon\"` for compact rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn outline(
@@ -34,6 +35,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
                 let symbols = l1
@@ -79,6 +81,8 @@ impl BasemindServer {
                     docs: None,
                     l2_status: None,
                     notice: None,
+                    // Stamped unconditionally from `__body` just before serialization below.
+                    elapsed_us: 0,
                 };
                 let entry = store
                     .lookup(&params.path)
@@ -130,6 +134,8 @@ impl BasemindServer {
                         docs: None,
                         l2_status: None,
                         notice: None,
+                        // Stamped unconditionally from `__body` just before serialization below.
+                        elapsed_us: 0,
                     }
                 } else {
                     let store = self.state.store.read().await;
@@ -149,6 +155,8 @@ impl BasemindServer {
                         docs: None,
                         l2_status: None,
                         notice: None,
+                        // Stamped unconditionally from `__body` just before serialization below.
+                        elapsed_us: 0,
                     }
                 }
             };
@@ -159,6 +167,7 @@ impl BasemindServer {
                 response.symbols = budgeted.items;
                 response.budgeted = budgeted.budgeted;
             }
+            response.elapsed_us = elapsed_us(__body);
             super::toon::format_result(&response, super::toon::ResponseFormat::parse(params.format.as_deref()))
         }
         .await;
@@ -175,7 +184,8 @@ impl BasemindServer {
                        NOT the global corpus total; `total_is_partial: true` means the cap was \
                        hit and `total` is a lower bound. `cursor` pages results (invalidate on \
                        rescan, `cursor_invalidated`). `max_tokens` budgets the response (sets \
-                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows.",
+                       `budgeted` + `next_cursor`). `format:\"toon\"` for compact rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_symbols(
@@ -187,6 +197,7 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             use std::sync::atomic::Ordering;
 
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
@@ -207,6 +218,7 @@ impl BasemindServer {
                                 next_cursor: None,
                                 cursor_invalidated: true,
                                 notice: self.state.lifecycle_notice(),
+                                elapsed_us: elapsed_us(__body),
                             },
                             format,
                         );
@@ -227,6 +239,7 @@ impl BasemindServer {
                         next_cursor: None,
                         cursor_invalidated: false,
                         notice: self.state.lifecycle_notice(),
+                        elapsed_us: elapsed_us(__body),
                     },
                     format,
                 );
@@ -292,6 +305,7 @@ impl BasemindServer {
                     next_cursor,
                     cursor_invalidated: false,
                     notice: self.state.lifecycle_notice(),
+                    elapsed_us: elapsed_us(__body),
                 },
                 format,
             )
@@ -308,7 +322,8 @@ impl BasemindServer {
                        limit 200, max 5000 (a larger request is clamped, setting \
                        `limit_clamped`). `cursor` pages results (invalidate on rescan, \
                        `cursor_invalidated`). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+                       + `next_cursor`). `format:\"toon\"` for compact rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn list_files(
@@ -333,7 +348,8 @@ impl BasemindServer {
                        5000 (a larger request is clamped, setting `limit_clamped`). `cursor` pages \
                        results (invalidated on rescan, `cursor_invalidated`). `max_tokens` budgets \
                        the response (sets `budgeted` + `next_cursor`). `format:\"toon\"` for compact \
-                       rows.",
+                       rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_files(
@@ -350,7 +366,8 @@ impl BasemindServer {
     /// Heuristic reverse-dependency lookup via import statements.
     #[tool(
         description = "Indexed files whose imports mention `module`. Heuristic: substring match \
-                       against each import's recorded module path.",
+                       against each import's recorded module path. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn dependents(
@@ -360,6 +377,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let paths: Vec<crate::path::RelPath> =
                 crate::extract::l3::dependents_of(&params.module, &self.state.cache.load().imports_index)
@@ -370,6 +388,7 @@ impl BasemindServer {
                 module: params.module.clone(),
                 paths,
                 notice: self.state.lifecycle_notice(),
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -382,13 +401,15 @@ impl BasemindServer {
         description = "Indexed-repo report: file count, on-disk `blob_count`, total bytes, \
                        per-language breakdown, root path, grammar cache directory, schema \
                        version. A `note` appears when the view index is empty but blobs exist \
-                       (lost index — rescan).",
+                       (lost index — rescan). \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn status(&self, Parameters(_): Parameters<StatusParams>) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let indexing = self
                 .state
                 .initial_scan_active
@@ -433,6 +454,7 @@ impl BasemindServer {
                             .as_ref()
                             .map(|r| r.submodule_paths())
                             .unwrap_or_default(),
+                        elapsed_us: elapsed_us(__body),
                     });
                 }
             };
@@ -471,6 +493,7 @@ impl BasemindServer {
                 schema_version: crate::extract::SCHEMA_VER,
                 root: self.state.root.display().to_string(),
                 submodules,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -486,7 +509,8 @@ impl BasemindServer {
                        both match name=\"bar\". Up to `limit` hits (default 100, max 1000); scan \
                        bounded by `scan_cap = limit * 8`. Needs `eager_l2=true` (default). \
                        `cursor` pages results. `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+                       + `next_cursor`). `format:\"toon\"` for compact rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_references(
@@ -496,12 +520,13 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.cache.load_full();
-            run_find_references(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
+            run_find_references(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;
         record_call(&self.state, "find_references", &__params_json, __started, &__result);
@@ -520,7 +545,8 @@ impl BasemindServer {
                        Falls back to the same name-based scan as `find_references` (name-only, \
                        no-scope) when nothing resolves. Default limit 100, max 1000. `cursor` \
                        pages the name-scan fallback (resolved results return in one page). \
-                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`).",
+                       `max_tokens` budgets the response (sets `budgeted` + `next_cursor`). \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_callers(
@@ -530,6 +556,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let cache = self.state.cache.load_full();
@@ -554,6 +581,7 @@ impl BasemindServer {
                 &cache,
                 params,
                 self.state.lifecycle_notice(),
+                __body,
             )
             .await
         }
@@ -574,7 +602,8 @@ impl BasemindServer {
                        JS/TS), the tree-sitter `locals` fallback + the cross-file hop match the \
                        identifier's start byte. The in-file hop reads the content-addressed blobs \
                        (answers even in a read-only session); the cross-file hop reads the index — \
-                       locally, or forwarded to the machine daemon on a read-only serve.",
+                       locally, or forwarded to the machine daemon on a read-only serve. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn goto_definition(
@@ -596,7 +625,8 @@ impl BasemindServer {
                        Bounded by `scan_cap = limit * 8` files; narrow with `language` / \
                        `path_contains`. Default limit 100, max 1000. `cursor` pages results \
                        (invalidate on rescan). `max_tokens` budgets the response (sets `budgeted` \
-                       + `next_cursor`). `format:\"toon\"` for compact rows.",
+                       + `next_cursor`). `format:\"toon\"` for compact rows. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn workspace_grep(
@@ -606,8 +636,9 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            run_workspace_grep(&self.state, params)
+            run_workspace_grep(&self.state, params, __body)
         }
         .await;
         record_call(&self.state, "workspace_grep", &__params_json, __started, &__result);
@@ -622,7 +653,8 @@ impl BasemindServer {
                        TS/TSX, JS class/interface extends/implements; Go structural satisfaction \
                        not detected. Bounded by `scan_cap = limit * 8`. `cursor` pages results \
                        (Fjall-backed, stable across rescans). `max_tokens` budgets the response \
-                       (sets `budgeted` + `next_cursor`).",
+                       (sets `budgeted` + `next_cursor`). \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_implementations(
@@ -632,12 +664,13 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.cache.load_full();
-            run_find_implementations(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
+            run_find_implementations(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;
         record_call(
@@ -657,7 +690,8 @@ impl BasemindServer {
                        (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
                        and `max_nodes` (default 100, max 500). `name` is exact (not substring); \
                        use `path` to disambiguate overloads. Cycles detected; recursion surfaces \
-                       as a self-edge on the root.",
+                       as a self-edge on the root. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn call_graph(
@@ -667,12 +701,13 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.cache.load_full();
-            run_call_graph(idx.as_ref(), params, &cache, self.state.lifecycle_notice())
+            run_call_graph(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;
         record_call(&self.state, "call_graph", &__params_json, __started, &__result);
@@ -682,7 +717,8 @@ impl BasemindServer {
     /// Workdir + branch + HEAD sha.
     #[tool(
         description = "Repository identity: workdir path, current branch (if HEAD is on one), full \
-                       + short HEAD sha. Pairs with `working_tree_status`.",
+                       + short HEAD sha. Pairs with `working_tree_status`. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn repo_info(
@@ -692,6 +728,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let info = repo
                 .info()
@@ -701,6 +738,7 @@ impl BasemindServer {
                 head_sha: info.head_sha,
                 head_short_sha: info.head_short_sha,
                 branch: info.branch,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;

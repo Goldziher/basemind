@@ -558,6 +558,59 @@ when history is rewritten (filter-repo / rebase / force-push). Reproduce with
 
 </details>
 
+<details>
+<summary><strong>Measuring query latency (<code>elapsed_us</code>)</strong></summary>
+
+Every latency-relevant tool — the code-map tools (`outline`, `search_symbols`, `find_references`,
+`find_callers`, `find_files`, `list_files`, `workspace_grep`, `dependents`, `goto_definition`,
+`status`, `repo_info`, `call_graph`, `find_implementations`, `architecture_map`, `search_code`), the
+git tools (`recent_changes`, `commits_touching`, `find_commits_by_path`, `blame_file`,
+`blame_symbol`, `hot_files`, `diff_file`, `diff_outline`, `working_tree_status`, `symbol_history`,
+`search_git_history`), and the document / memory search tools — reports its own latency as
+**`elapsed_us`** on its response. Don't wrap the CLI in `time`; ask basemind.
+
+Resolution is **microseconds** on purpose: an indexed `commits_touching` is ~37 µs, so millisecond
+granularity would round the hot path to `0`.
+
+**What `elapsed_us` includes** — the tool body's own execution: index and store lookups, git walks,
+ranking, and building the response.
+
+**What it excludes** — MCP / JSON-RPC transport (which the server cannot observe), argument
+deserialization, and serialization of the response itself. Excluding encoding keeps the number
+comparable across `format: "json"` and `format: "toon"` and across result-set sizes: it reports
+*query* cost, not *encoding* cost.
+
+**The one caveat, stated plainly:** most read tools begin by awaiting the in-RAM code map, and the
+git tools lazily build their history index on first use. Both waits happen *inside* the measured
+region, so a first call against a cold server is much slower than the steady-state call after it.
+When the server is still warming or building, the response carries a `notice`
+(`warming_up` / `building_index` / `rescanning`) — **discard any sample carrying a `notice`** if you
+are measuring steady-state latency.
+
+The CLI adds a second number, `startup_us`, covering process startup: clap parsing, the tokio runtime,
+the store open, and the config/git-cache load. It is reported separately because it is exactly the
+part of a `time basemind …` measurement that was never the query — and a long-running MCP server pays
+it once at boot, not per call:
+
+```console
+$ basemind query search run_workspace_grep --limit 1 --json
+{
+  ...
+  "elapsed_us": 90,        # the query
+  "startup_us": 957887     # everything else a `time` wrapper would have charged to it
+}
+
+$ basemind query references parse_kind --limit 3
+...
+(6.5 ms query · 852.9 ms startup)
+```
+
+That first example is the whole point: the query took 90 µs, while the process spent ~0.96 s getting
+ready to run it. A `time basemind …` wrapper would have reported the second number and told you
+nothing about the first.
+
+</details>
+
 ---
 
 ## Configuration

@@ -30,7 +30,8 @@ impl BasemindServer {
                        commit. `limit` is page size (default 20, max 100); `cursor` pages results \
                        (invalidated when HEAD moves). Uses the git-history index when fresh \
                        (searches the full body); otherwise a bounded live fallback over the recent \
-                       window, flagged `partial` (author + summary only, no body).",
+                       window, flagged `partial` (author + summary only, no body). `elapsed_us` = \
+                       server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn search_git_history(
@@ -48,7 +49,8 @@ impl BasemindServer {
     #[tool(
         description = "What's dirty in the working tree: staged adds/modifies/deletes, working-tree \
                        modifications, untracked files. `is_clean: true` if all five buckets are \
-                       empty. Requires a git repo.",
+                       empty. Requires a git repo. `elapsed_us` = server-side handler latency in µs \
+                       (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn working_tree_status(
@@ -58,6 +60,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = Value::Null;
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let s = repo
                 .status_porcelain()
@@ -74,6 +77,7 @@ impl BasemindServer {
                 modified: s.modified,
                 untracked: s.untracked,
                 is_clean,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -91,7 +95,7 @@ impl BasemindServer {
                        keyword's commits anywhere in history use `search_git_history` instead \
                        (an author's last commit may be well outside this window). `cursor` pages \
                        results (invalidate when HEAD moves, `cursor_invalidated`). Cached by HEAD \
-                       sha.",
+                       sha. `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn recent_changes(
@@ -101,6 +105,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
             let head = head_sha(repo)?;
@@ -116,6 +121,7 @@ impl BasemindServer {
                             truncated_reason: None,
                             next_cursor: None,
                             cursor_invalidated: true,
+                            elapsed_us: elapsed_us(__body),
                         });
                     }
                     offset as usize
@@ -151,6 +157,7 @@ impl BasemindServer {
                 truncated_reason: truncated.then_some("shallow_clone"),
                 next_cursor,
                 cursor_invalidated: false,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -163,7 +170,8 @@ impl BasemindServer {
         description = "Commits that modified `path`, newest first. Same per-commit shape as \
                        `recent_changes` minus the per-file list (path is implicit). `limit` is \
                        page size (default 20, max 100). `cursor` pages results (invalidate when \
-                       HEAD moves).",
+                       HEAD moves). `elapsed_us` = server-side handler latency in µs (excludes \
+                       transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn commits_touching(
@@ -173,6 +181,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let limit = params.limit.unwrap_or(LOG_LIMIT_DEFAULT).min(LOG_LIMIT_MAX) as usize;
             let head = head_sha(repo)?;
@@ -189,6 +198,7 @@ impl BasemindServer {
                             truncated_reason: None,
                             next_cursor: None,
                             cursor_invalidated: true,
+                            elapsed_us: elapsed_us(__body),
                         });
                     }
                     offset as usize
@@ -225,6 +235,7 @@ impl BasemindServer {
                 truncated_reason: truncated.then_some("shallow_clone"),
                 next_cursor,
                 cursor_invalidated: false,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -236,7 +247,8 @@ impl BasemindServer {
     #[tool(
         description = "Diff the symbol set of `path` between the current view and `rev` (default \
                        HEAD): `added` (in view, not at `rev`), `removed` (at `rev`, not in view), \
-                       `common` — 'what symbols did this branch add' without reading source.",
+                       `common` — 'what symbols did this branch add' without reading source. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn diff_outline(
@@ -246,6 +258,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let rev_spec = params.rev.as_deref().unwrap_or("HEAD");
             let rev_sha = repo
@@ -348,6 +361,7 @@ impl BasemindServer {
                 removed,
                 common,
                 note,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -361,7 +375,8 @@ impl BasemindServer {
                        path matching the regex `pattern`. Matches paths only, not patch text \
                        (cheaper than `git log -G`). `limit` is page size (default 50, max 500). \
                        `cursor` pages results (invalidate when HEAD moves). Shares the \
-                       `recent_changes` commit-files cache.",
+                       `recent_changes` commit-files cache. `elapsed_us` = server-side handler \
+                       latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn find_commits_by_path(
@@ -371,6 +386,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let re = regex::Regex::new(&params.pattern)
                 .map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
@@ -390,6 +406,7 @@ impl BasemindServer {
                             commits: Vec::new(),
                             next_cursor: None,
                             cursor_invalidated: true,
+                            elapsed_us: elapsed_us(__body),
                         });
                     }
                     offset as usize
@@ -434,6 +451,7 @@ impl BasemindServer {
                 commits: hits,
                 next_cursor,
                 cursor_invalidated: false,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -451,7 +469,8 @@ impl BasemindServer {
     #[tool(
         description = "Top-K files most-frequently modified in the last `window` commits on the \
                        current branch (default 200, max 2000). Each entry: per-kind breakdown \
-                       (added/modified/deleted) — a repo churn map.",
+                       (added/modified/deleted) — a repo churn map. `elapsed_us` = server-side \
+                       handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn hot_files(
@@ -461,6 +480,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let window = params.window.unwrap_or(200).min(2000);
             let top_k = params.top_k.unwrap_or(20).min(200) as usize;
@@ -506,6 +526,7 @@ impl BasemindServer {
                 window_inspected: window,
                 total_files_changed,
                 files: ranked,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -518,7 +539,8 @@ impl BasemindServer {
         description = "Hunks for `path` between `rev_old` and `rev_new`. Each hunk: old/new 1-based \
                        line ranges plus changed text ('-'/'+' prefixed). If the file is absent on \
                        one side, `present_at_old` / `present_at_new` flag it and hunks describe \
-                       the full add/remove.",
+                       the full add/remove. `elapsed_us` = server-side handler latency in µs \
+                       (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn diff_file(
@@ -528,6 +550,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let old_sha = repo
                 .resolve_rev(&params.rev_old)
@@ -557,6 +580,7 @@ impl BasemindServer {
                 present_at_old: present_old,
                 present_at_new: present_new,
                 hunks,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -569,7 +593,8 @@ impl BasemindServer {
         description = "Commits where the named symbol's body bytes changed (or it was \
                        added/removed): `recent_changes` filtered by symbol identity, not file \
                        identity, via tree-sitter outlines. `limit` is page size (default 20, max \
-                       100). `cursor` pages results (invalidate when HEAD moves).",
+                       100). `cursor` pages results (invalidate when HEAD moves). `elapsed_us` = \
+                       server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn symbol_history(
@@ -579,6 +604,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params.limit.unwrap_or(20).min(100) as usize;
@@ -607,6 +633,7 @@ impl BasemindServer {
                             truncated_reason: None,
                             next_cursor: None,
                             cursor_invalidated: true,
+                            elapsed_us: elapsed_us(__body),
                         });
                     }
                     offset as usize
@@ -687,6 +714,7 @@ impl BasemindServer {
                 truncated_reason: truncated.then_some("shallow_clone"),
                 next_cursor,
                 cursor_invalidated: false,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -701,7 +729,8 @@ impl BasemindServer {
                        clamp a range. Each hunk: commit sha, author, unix time, summary, renamed \
                        source path if any. `limit` (default unbounded, max 1000) pages hunks; \
                        `next_cursor` encodes the last hunk's `start_line`. Cached by \
-                       (suspect_sha, path, range).",
+                       (suspect_sha, path, range). `elapsed_us` = server-side handler latency in µs \
+                       (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn blame_file(
@@ -711,6 +740,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             super::helpers_git::reject_external_path(&params.path)?;
             let suspect_sha = match params.rev.as_deref() {
@@ -736,7 +766,7 @@ impl BasemindServer {
             let result = match self.state.git_cache.blame(repo, &suspect_sha, &params.path, range) {
                 Ok(r) => r,
                 Err(e) => {
-                    if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e) {
+                    if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e, __body) {
                         return json_result(&too_large);
                     }
                     return Err(McpError::internal_error(format!("blame: {e}"), None));
@@ -756,6 +786,7 @@ impl BasemindServer {
                 truncated: truncated_reason.is_some(),
                 truncated_reason,
                 next_cursor,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;
@@ -769,7 +800,8 @@ impl BasemindServer {
                        the cached L1 outline (must be indexed in the current view) and feeds its \
                        line range to `blame_file`. `kind` disambiguates same-named symbols. \
                        `limit` (default unbounded, max 1000) pages hunks; `next_cursor` encodes \
-                       the last hunk's `start_line`.",
+                       the last hunk's `start_line`. `elapsed_us` = server-side handler latency in \
+                       µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn blame_symbol(
@@ -779,6 +811,7 @@ impl BasemindServer {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
             let repo = require_git_repo(&self.state)?;
             super::helpers_git::reject_external_path(&params.path)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
@@ -821,9 +854,15 @@ impl BasemindServer {
                 {
                     Ok(r) => r,
                     Err(e) => {
-                        if let Some(too_large) =
-                            blame_symbol_too_large_response(&params.path, &suspect_sha, sym, line_start, line_end, &e)
-                        {
+                        if let Some(too_large) = blame_symbol_too_large_response(
+                            &params.path,
+                            &suspect_sha,
+                            sym,
+                            line_start,
+                            line_end,
+                            &e,
+                            __body,
+                        ) {
                             return json_result(&too_large);
                         }
                         return Err(McpError::internal_error(format!("blame: {e}"), None));
@@ -847,6 +886,7 @@ impl BasemindServer {
                 truncated: truncated_reason.is_some(),
                 truncated_reason,
                 next_cursor,
+                elapsed_us: elapsed_us(__body),
             })
         }
         .await;

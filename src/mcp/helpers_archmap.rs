@@ -21,7 +21,7 @@ use rmcp::model::CallToolResult;
 
 use super::MapCache;
 use super::budget::apply_budget;
-use super::helpers::{json_result, kind_to_str};
+use super::helpers::{elapsed_us, json_result, kind_to_str};
 use super::helpers_calls::for_each_call_in_file;
 use super::helpers_graph::is_function_like;
 use super::kneedle::knee_cutoff;
@@ -265,6 +265,7 @@ pub(crate) fn run_architecture_map(
     churn: Option<&AHashMap<RelPath, u32>>,
     params: ArchitectureMapParams,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let max_nodes = params.max_nodes.unwrap_or(60).min(300) as usize;
     let max_edges = params.max_edges.unwrap_or(200).min(2000) as usize;
@@ -274,9 +275,21 @@ pub(crate) fn run_architecture_map(
     let rg = RepoGraph::build(idx, cache, ARCHMAP_EDGE_SCAN_CAP)?;
 
     match params.granularity.as_str() {
-        "module" => run_tier_grouped(&rg, churn, focus, Some(depth), &params, max_nodes, max_edges, notice),
-        "file" => run_tier_grouped(&rg, churn, focus, None, &params, max_nodes, max_edges, notice),
-        "symbol" => run_tier_symbol(&rg, cache, idx, churn, focus, &params, max_nodes, max_edges, notice),
+        "module" => run_tier_grouped(
+            &rg,
+            churn,
+            focus,
+            Some(depth),
+            &params,
+            max_nodes,
+            max_edges,
+            notice,
+            started,
+        ),
+        "file" => run_tier_grouped(&rg, churn, focus, None, &params, max_nodes, max_edges, notice, started),
+        "symbol" => run_tier_symbol(
+            &rg, cache, idx, churn, focus, &params, max_nodes, max_edges, notice, started,
+        ),
         other => Err(McpError::invalid_params(
             format!("granularity must be \"module\", \"file\", or \"symbol\", got {other:?}"),
             None,
@@ -321,6 +334,7 @@ fn run_tier_grouped(
     max_nodes: usize,
     max_edges: usize,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let mut group_of: Vec<Option<u32>> = vec![None; rg.files.len()];
     let mut label_to_gid: AHashMap<String, u32> = AHashMap::new();
@@ -453,6 +467,7 @@ fn run_tier_grouped(
         truncation_reason: rg.truncation_reason,
         budgeted: budgeted.budgeted,
         notice,
+        elapsed_us: elapsed_us(started),
     })
 }
 
@@ -556,6 +571,7 @@ fn run_tier_symbol(
     max_nodes: usize,
     max_edges: usize,
     notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
     let mut cands: Vec<SymCand> = Vec::new();
     for (path, l1) in &cache.by_path {
@@ -683,6 +699,7 @@ fn run_tier_symbol(
         truncation_reason: rg.truncation_reason,
         budgeted: budgeted.budgeted,
         notice,
+        elapsed_us: elapsed_us(started),
     })
 }
 
