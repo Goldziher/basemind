@@ -16,18 +16,20 @@
 //! Fjall takes an exclusive per-directory process lock — even a read-only open takes it — so exactly
 //! ONE process may hold this DB. Which process that is depends on the deployment:
 //!
-//! * **Standalone** (`scan` / `rescan`, or a `serve` that is itself the writer): that process opens
-//!   the DB locally ([`Backend::Local`]) and builds it in-process.
-//! * **Daemon** (a `comms` build, where `serve` opens its store read-only and forwards writes): the
-//!   DAEMON holds the DB and builds it. A `daemon_writer` serve holds no handle; its index is a
-//!   [`Backend::Remote`] proxy that forwards each history query over the socket. Building it in the
-//!   serve process would be doubly wrong — it would steal the lock the daemon (and every peer
-//!   session) needs, and it would run a multi-GB, minutes-long walk inside the process an agent is
-//!   actively querying.
+//! * **Standalone** (no daemon: `scan` / `rescan`, a `serve` that is itself the writer, a one-shot
+//!   CLI query): that process opens the DB locally ([`Backend::Local`]) and, if it is a writer,
+//!   builds it in-process.
+//! * **Daemon** (a `comms` build, where the daemon is the machine's sole fjall writer): the DAEMON
+//!   holds the DB and builds it, and EVERY front-end — a `daemon_writer` serve, and equally the
+//!   one-shot CLI — holds a [`Backend::Remote`] proxy that forwards each history query over the
+//!   socket. A front-end must not try to open the DB: it cannot win a lock the daemon holds, so it
+//!   would only stall on the retry ladder and then live-walk forever. And building it in a front-end
+//!   would be doubly wrong — it would steal the lock the daemon (and every peer session) needs, and
+//!   it would run a multi-GB, minutes-long walk inside the process an agent is actively querying.
 //!
-//! A serve that can reach neither keeps `git_history: None` and falls back to the live walk. The
+//! A process that can reach neither keeps `git_history: None` and falls back to the live walk. The
 //! index is a pure accelerator — tools use it only when `last_indexed_head == HEAD` and otherwise
-//! live-walk, so it can never serve stale or incorrect results.
+//! live-walk (reporting `partial: true`), so it can never serve stale or incorrect results.
 //!
 //! ## Partitions
 //!
@@ -201,12 +203,21 @@ impl GitHistoryIndex {
     }
 
     /// A handle backed by the DAEMON's index for the repo at `root`. Takes no lock and performs no
-    /// IO: this is what a `daemon_writer` serve holds instead of opening the database itself.
+    /// IO: this is what every front-end running under a live daemon holds — a `daemon_writer` serve,
+    /// and the one-shot CLI — instead of opening the database the daemon has locked.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub fn remote(root: std::path::PathBuf, agent: crate::comms::ids::AgentId) -> Self {
         Self {
             backend: Backend::Remote(remote::RemoteHistory::new(root, agent)),
         }
+    }
+
+    /// True when this handle forwards to the daemon rather than holding the database. The write side
+    /// keys off it: the builder can only run in the process that owns the lock, so a daemon-backed
+    /// session must ASK the daemon to build instead of calling the builder itself.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub fn is_daemon_backed(&self) -> bool {
+        matches!(self.backend, Backend::Remote(_))
     }
 
     /// The local database, or `None` for a daemon-backed handle. Every write path (the builder) and
