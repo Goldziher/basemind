@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 
-use super::daemon::{Broker, Session};
+use super::daemon::{Broker, LinkGuard, Session};
 use super::protocol::{CommsOut, CommsRequest};
 
 /// Notification fan-out buffer depth per served link. Shared by every socket-style front-end
@@ -69,11 +69,15 @@ pub trait CommsFrontend: Send {
 ///
 /// Shared by the Unix-socket and Windows named-pipe front-ends — both frame [`CommsRequest`] /
 /// [`CommsOut`] identically over an `AsyncRead + AsyncWrite` stream, so the only per-transport
-/// difference is the concrete [`CommsLink`]. The loop registers the link with the broker's idle
-/// reaper on entry and deregisters it on exit (an orphaned daemon with no live links and no
-/// recent activity self-terminates instead of lingering).
-pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L) {
-    broker.link_connected();
+/// difference is the concrete [`CommsLink`].
+///
+/// `guard` is the link's refcount with the idle reaper, and the caller must have taken it in the
+/// accept loop *before* spawning this task — see [`Broker::register_link`]. Holding it here for the
+/// whole session, and dropping it only when the loop exits, is what tells the reaper this daemon has
+/// someone to serve even when the client is silent for minutes (a forwarded scan or git-history
+/// build). Deregistration is the guard's `Drop`, so it survives any early `break` — and a panic.
+pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L, guard: LinkGuard) {
+    let _link_guard = guard;
     let (link_tx, mut link_rx) = mpsc::channel::<CommsOut>(LINK_CHANNEL_DEPTH);
     let mut session = Session::default();
     loop {
@@ -101,5 +105,4 @@ pub(crate) async fn serve_link<L: CommsLink>(broker: Arc<Broker>, mut link: L) {
             }
         }
     }
-    broker.link_disconnected();
 }

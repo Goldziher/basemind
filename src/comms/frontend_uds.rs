@@ -138,8 +138,11 @@ mod imp {
                             );
                             continue;
                         }
-                        let broker = broker.clone();
-                        tokio::spawn(serve_link(broker, UdsLink::new(stream, peer)));
+                        // Count the link HERE, synchronously, before it is spawned: an accepted
+                        // connection must be visible to the idle reaper the instant it exists, not
+                        // whenever its task happens to get scheduled.
+                        let guard = broker.register_link();
+                        tokio::spawn(serve_link(broker.clone(), UdsLink::new(stream, peer), guard));
                     }
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
@@ -148,7 +151,19 @@ mod imp {
                     }
                 }
             }
+            // Exit ordering, and why it is this way round:
+            //
+            // 1. Unlink the socket FIRST. From here on a client's `connect()` fails outright, so its
+            //    `ensure_daemon` spawns a fresh daemon instead of dialling a dying one. (A connection
+            //    already sitting in the kernel backlog is closed unread when the listener drops
+            //    below; the client sees EOF before any reply, and since we never read its request it
+            //    is safe for its single-shot retry to replay it against the new daemon.)
+            // 2. THEN wait out the links we already accepted, so a request in flight is answered
+            //    rather than torn. Bounded by DRAIN_GRACE so a wedged client cannot pin us forever.
+            // 3. Only then return, dropping the listener and — as the process unwinds — the fjall
+            //    handles, which is what releases the index locks cleanly for the next daemon.
             let _ = std::fs::remove_file(&self.socket_path);
+            broker.drain_links(crate::comms::daemon::DRAIN_GRACE).await;
             Ok(())
         }
     }

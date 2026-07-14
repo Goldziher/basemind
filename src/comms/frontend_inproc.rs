@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 
-use super::daemon::{Broker, Session};
+use super::daemon::{Broker, LinkGuard, Session};
 use super::protocol::{CommsOut, CommsRequest};
 use super::transport::{CommsFrontend, CommsLink, PeerCred};
 
@@ -86,8 +86,12 @@ impl InProcFrontend {
             to_client: to_client.clone(),
         };
         let broker = self.broker.clone();
+        // Counted like any other link. The in-process front-end has no idle reaper today, but the
+        // link refcount is what tells a broker it has someone to serve — leaving these invisible
+        // would mean an embedded broker could be reaped mid-session the moment one ever did.
+        let guard = broker.register_link();
         tokio::spawn(async move {
-            serve_link(broker, link, to_client).await;
+            serve_link(broker, link, to_client, guard).await;
         });
         InProcClientLink { to_broker, from_broker }
     }
@@ -101,8 +105,10 @@ impl CommsFrontend for InProcFrontend {
 }
 
 /// Drive one link: read requests, dispatch through the broker, write responses.
-/// `link_tx` is the notification sink the broker registers for `Subscribe`.
-async fn serve_link(broker: Arc<Broker>, mut link: InProcLink, link_tx: mpsc::Sender<CommsOut>) {
+/// `link_tx` is the notification sink the broker registers for `Subscribe`; `guard` is the link's
+/// refcount with the idle reaper, dropped when the session ends.
+async fn serve_link(broker: Arc<Broker>, mut link: InProcLink, link_tx: mpsc::Sender<CommsOut>, guard: LinkGuard) {
+    let _link_guard = guard;
     let mut session = Session::default();
     while let Ok(Some(req)) = link.recv().await {
         let resp = broker.handle(req, &mut session, &link_tx).await;

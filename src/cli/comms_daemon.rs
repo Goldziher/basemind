@@ -91,14 +91,18 @@ pub fn run() -> Result<()> {
 
         let broker_for_reaper = broker.clone();
         tokio::spawn(async move {
-            use crate::comms::daemon::{IDLE_REAP_AFTER, IDLE_REAP_CHECK_EVERY};
-            let mut tick = tokio::time::interval(IDLE_REAP_CHECK_EVERY);
+            let idle_after = crate::comms::daemon::idle_reap_after();
+            let mut tick = tokio::time::interval(crate::comms::daemon::idle_reap_check_every());
             tick.tick().await;
             loop {
                 tick.tick().await;
-                if broker_for_reaper.is_idle_for(IDLE_REAP_AFTER).await {
-                    tracing::info!("comms: idle with no clients past the reap window; self-terminating");
-                    broker_for_reaper.begin_drain().await;
+                // One call, not `is_idle_for` + `begin_drain`: the check and the state flip happen
+                // under the registry lock so this reaper cannot race another drain into Draining.
+                if broker_for_reaper.try_begin_idle_drain(idle_after).await {
+                    tracing::info!(
+                        idle_after_secs = idle_after.as_secs(),
+                        "comms: idle with no clients past the reap window; self-terminating"
+                    );
                     break;
                 }
             }

@@ -11,8 +11,14 @@
 //! ## Lifecycle
 //!
 //! `Starting → Active ⇄ Idle → Draining → Stopped`. The subscriber refcount drives the
-//! Active⇄Idle edge; `Draining` (a `Stop` RPC or SIGTERM) stops accepting, flushes, then releases
-//! the flock and unlinks the socket on the way to `Stopped`.
+//! Active⇄Idle edge; `Draining` stops accepting, flushes, then releases the flock and unlinks the
+//! socket on the way to `Stopped`.
+//!
+//! Four things enter `Draining`: a `Stop` RPC, SIGTERM, the socket-ownership watchdog (another
+//! daemon reclaimed our socket), and the **idle reaper** — the daemon is machine-wide and
+//! auto-spawned on demand, so a daemon nobody is using exits after [`IDLE_REAP_AFTER`] rather than
+//! lingering, and the next client that needs one respawns it. [`Broker::is_idle_for`] defines
+//! exactly what "nobody is using" means and why silence on the socket is not part of it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -39,10 +45,95 @@ pub const DEFAULT_LIMIT: u32 = 100;
 /// Hard cap on a page, mirroring the MCP `limit` ceiling.
 pub const MAX_LIMIT: u32 = 1000;
 
-/// Idle window after which a daemon with no connected links and no activity self-terminates.
+/// Idle window after which a daemon with no connected links and no work in flight self-terminates.
+///
+/// Note what "idle" costs here: nothing holds a link between requests — every caller (`serve`, the
+/// CLI verbs, the MCP comms helpers) connects, does its RPC, and drops the client — so
+/// `link_count == 0` is the steady state even DURING an active session, and this window is really
+/// "thirty minutes since anyone last called us". So each throwaway `BASEMIND_COMMS_DIR` (every test
+/// run, every CI job) leaves a daemon resident for the whole window, and a machine running the suite
+/// every few minutes carries a standing population of them — around a dozen at ~6 MB RSS each,
+/// measured. They do all exit; the unbounded growth was [`LinkGuard`] leaking its refcount on an
+/// unwind, not this constant. Shortening the window would shrink that standing population, and
+/// reaping early is cheap (a respawn re-OPENS the on-disk fjall indexes rather than rebuilding
+/// them), but that is a change to shipped behaviour and is left as a separate decision.
 pub const IDLE_REAP_AFTER: Duration = Duration::from_secs(30 * 60);
-/// How often the idle reaper re-checks the broker. Small relative to [`IDLE_REAP_AFTER`].
+/// How often the idle reaper re-checks the broker. Small relative to [`IDLE_REAP_AFTER`], so the
+/// worst-case overshoot past the window is one tick.
 pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// Env var overriding [`IDLE_REAP_AFTER`], in whole seconds. Exists so tests can exercise the reap
+/// without sleeping for half an hour; also a field escape hatch for a machine that wants daemons to
+/// linger (or vanish) more aggressively.
+pub const IDLE_REAP_AFTER_ENV: &str = "BASEMIND_COMMS_IDLE_REAP_SECS";
+/// Env var overriding [`IDLE_REAP_CHECK_EVERY`], in whole seconds. See [`IDLE_REAP_AFTER_ENV`].
+pub const IDLE_REAP_CHECK_EVERY_ENV: &str = "BASEMIND_COMMS_IDLE_CHECK_SECS";
+
+/// Read a whole-seconds [`Duration`] from `var`, falling back to `default` when it is unset, empty,
+/// unparseable, or zero. Zero is rejected on purpose: a zero check interval would spin the reaper.
+fn duration_from_env(var: &str, default: Duration) -> Duration {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => Duration::from_secs(secs),
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
+/// The effective idle window: [`IDLE_REAP_AFTER`] unless [`IDLE_REAP_AFTER_ENV`] overrides it.
+pub fn idle_reap_after() -> Duration {
+    duration_from_env(IDLE_REAP_AFTER_ENV, IDLE_REAP_AFTER)
+}
+
+/// The effective reaper cadence: [`IDLE_REAP_CHECK_EVERY`] unless [`IDLE_REAP_CHECK_EVERY_ENV`]
+/// overrides it.
+pub fn idle_reap_check_every() -> Duration {
+    duration_from_env(IDLE_REAP_CHECK_EVERY_ENV, IDLE_REAP_CHECK_EVERY)
+}
+
+/// How long a drain waits for links accepted before it started to finish their in-flight request
+/// before exiting anyway. Bounded so one wedged client cannot pin a draining daemon forever; ample
+/// for any request that is actually progressing, and the idle path normally finds zero links.
+pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
+/// Poll cadence while waiting out [`DRAIN_GRACE`].
+const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
+
+/// RAII refcount for one connected link, held for the link's whole life; see
+/// [`Broker::register_link`].
+///
+/// The guard is taken in the ACCEPT LOOP, synchronously, before the link is spawned onto its own
+/// task — not inside that task. That ordering is the point: if the increment happened inside the
+/// spawned task, there would be a window in which a connection had been accepted but was not yet
+/// counted, and an idle check landing in that window would see zero links and reap a daemon that
+/// had just taken on work.
+pub struct LinkGuard {
+    broker: Arc<Broker>,
+}
+
+impl Drop for LinkGuard {
+    fn drop(&mut self) {
+        self.broker.link_disconnected();
+    }
+}
+
+/// RAII marker that a unit of daemon-internal work is in flight; see [`Broker::begin_work`].
+///
+/// Work with a client attached is already covered by the link refcount — the client blocks on the
+/// socket for the whole RPC. This exists for the work that has NO client: the periodic
+/// cross-workspace blob GC, which the reaper must not tear down mid-sweep (it is the sole writer of
+/// the global blob store, and a half-applied sweep is exactly the torn state the reap is supposed to
+/// avoid). Dropping the guard stamps activity, so a sweep that finishes also restarts the idle clock.
+pub struct WorkGuard<'a> {
+    broker: &'a Broker,
+}
+
+impl Drop for WorkGuard<'_> {
+    fn drop(&mut self) {
+        self.broker.work_inflight.fetch_sub(1, Ordering::SeqCst);
+        self.broker.touch();
+    }
+}
 
 /// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
 /// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
@@ -56,8 +147,13 @@ pub const THREAD_IDLE_TTL: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 pub const THREAD_RETENTION_TTL: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How long a hot workspace may sit unrequested before the daemon sheds it from RAM. Its on-disk
-/// cache survives; the next request re-opens it lazily. Well below [`IDLE_REAP_AFTER`] so cold
-/// workspaces free memory long before the whole daemon self-terminates.
+/// cache survives; the next request re-opens it lazily.
+///
+/// Independent of [`IDLE_REAP_AFTER`], and no longer ordered against it: this bounds the memory of a
+/// LIVE, BUSY daemon (one serving workspace A while workspace B goes cold), whereas the reap window
+/// disposes of a daemon nobody is using at all. A daemon that is merely idle now exits before this
+/// TTL would ever fire — which is strictly better, since exiting releases the same handles plus the
+/// process.
 pub const WORKSPACE_HOT_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// Lifecycle state of the broker. See the module docs for the transition rules.
@@ -127,6 +223,10 @@ pub struct Broker {
     shutdown: std::sync::OnceLock<watch::Sender<bool>>,
     subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
+    /// Daemon-internal work units in flight (see [`Broker::begin_work`]). Distinct from
+    /// `link_count`: this covers work NO client is attached to — the blob GC above all — which the
+    /// idle reaper would otherwise be free to tear down mid-sweep.
+    work_inflight: AtomicUsize,
     last_activity_ms: AtomicU64,
     next_sub: AtomicU64,
     started: Instant,
@@ -167,6 +267,7 @@ impl Broker {
             shutdown: std::sync::OnceLock::new(),
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
+            work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
             next_sub: AtomicU64::new(1),
             started: Instant::now(),
@@ -212,17 +313,127 @@ impl Broker {
             .store(self.started.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
-    /// True when the broker has no connected links and no activity within `idle_for`.
+    /// Count a newly accepted link for as long as the returned guard lives. Call this in the accept
+    /// loop, BEFORE spawning the link's task — see [`LinkGuard`] for why the ordering matters.
+    pub fn register_link(self: &Arc<Self>) -> LinkGuard {
+        self.link_connected();
+        LinkGuard { broker: self.clone() }
+    }
+
+    /// Mark a unit of daemon-internal work as running for as long as the returned guard lives, so
+    /// the idle reaper cannot mistake it for idleness. See [`WorkGuard`].
+    pub fn begin_work(&self) -> WorkGuard<'_> {
+        self.work_inflight.fetch_add(1, Ordering::SeqCst);
+        WorkGuard { broker: self }
+    }
+
+    /// Number of daemon-internal work units currently running. Exposed for tests.
+    pub fn work_inflight(&self) -> usize {
+        self.work_inflight.load(Ordering::SeqCst)
+    }
+
+    /// What "idle" MEANS — and why each clause is here.
+    ///
+    /// A daemon is idle only when *nothing can be waiting on it*. Three independent things can make
+    /// that false, and socket traffic is NOT one of them:
+    ///
+    /// 1. **A connected link** (`link_count`). This is the load-bearing clause, and it is a
+    ///    refcount, never a timestamp, precisely because a busy daemon can be silent for minutes.
+    ///    Every client blocks on its socket for the whole RPC — a forwarded `Rescan` or a
+    ///    git-history build on a 243 k-commit repo runs ~75 s with ZERO bytes crossing the socket —
+    ///    so the link stays open and counted for the full duration of the work. Timing out on
+    ///    *silence* would kill exactly those long builds; counting *links* cannot.
+    /// 2. **Daemon-internal work** (`work_inflight`). The one class of work no link covers: sweeps
+    ///    the daemon starts on its own, above all the cross-workspace blob GC, which runs with no
+    ///    client attached and must not be torn mid-sweep. [`Broker::begin_work`] pins these.
+    /// 3. **An already-started drain.** Draining/Stopped is terminal; re-reaping is meaningless.
+    ///
+    /// Only once all three are clear does the elapsed-time test apply, and `last_activity_ms` is
+    /// stamped on every link connect/disconnect — so the window measures time since the daemon last
+    /// had anyone to serve, not time since the last packet.
     pub async fn is_idle_for(&self, idle_for: Duration) -> bool {
-        if self.link_count.load(Ordering::Relaxed) != 0 {
+        if self.link_count.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
+        if self.work_inflight.load(Ordering::SeqCst) != 0 {
             return false;
         }
         if matches!(self.state().await, LifecycleState::Draining | LifecycleState::Stopped) {
             return false;
         }
         let now_ms = self.started.elapsed().as_millis() as u64;
-        let last = self.last_activity_ms.load(Ordering::Relaxed);
+        let last = self.last_activity_ms.load(Ordering::SeqCst);
         now_ms.saturating_sub(last) >= idle_for.as_millis() as u64
+    }
+
+    /// The idle reaper's ONE entry point: re-check idleness and flip to `Draining` under the
+    /// registry lock, returning whether this call is the one that started the drain.
+    ///
+    /// The lock makes the check-and-set atomic *against other drains* — two reapers, or a reaper
+    /// racing a `Stop` RPC, cannot both decide they own the drain. It does NOT serialize against the
+    /// accept loop, which bumps `link_count` with a bare atomic and never takes this lock: a
+    /// connection can still be accepted in the instant between our zero-link read and the shutdown
+    /// signal landing.
+    ///
+    /// That residual interleaving is deliberately handled *downstream* rather than excluded here,
+    /// because it cannot be excluded here — see [`Broker::drain_links`]. The late link is counted
+    /// before its task is spawned, the front-end waits for it after it stops accepting, and so it is
+    /// served to completion instead of being torn. Excluding it up front would mean taking the
+    /// registry lock on every accept — real contention on the hot path to close a window that the
+    /// drain already closes for free.
+    pub async fn try_begin_idle_drain(&self, idle_for: Duration) -> bool {
+        let sinks: Vec<mpsc::Sender<CommsOut>> = {
+            let mut reg = self.registry.lock().await;
+            if matches!(reg.state, LifecycleState::Draining | LifecycleState::Stopped) {
+                return false;
+            }
+            if self.link_count.load(Ordering::SeqCst) != 0 || self.work_inflight.load(Ordering::SeqCst) != 0 {
+                return false;
+            }
+            let now_ms = self.started.elapsed().as_millis() as u64;
+            let last = self.last_activity_ms.load(Ordering::SeqCst);
+            if now_ms.saturating_sub(last) < idle_for.as_millis() as u64 {
+                return false;
+            }
+            reg.state = LifecycleState::Draining;
+            reg.sinks.values().map(|s| s.tx.clone()).collect()
+        };
+        self.finish_drain(sinks).await;
+        true
+    }
+
+    /// Wait for every link accepted before the drain to finish its in-flight request, up to
+    /// `grace`. Returns the number of links still open when we stopped waiting (0 on a clean drain).
+    ///
+    /// This is what makes the reap non-destructive. The front-end calls it AFTER it has unlinked the
+    /// socket and stopped accepting, which orders the two halves of the exit correctly:
+    ///
+    /// * The socket is gone first, so a client that has not connected yet fails at `connect()` and
+    ///   its `ensure_daemon` spawns a fresh daemon — it never talks to a dying one.
+    /// * A connection sitting unaccepted in the kernel backlog is closed by the listener drop. The
+    ///   client sees EOF *before any reply*, and the daemon provably never read a byte of it, so the
+    ///   client's single-shot reconnect-and-retry replays it against the fresh daemon exactly once —
+    ///   no duplicate mutation. (This backlog window is inherent: `connect()` completes in the
+    ///   kernel without the daemon's participation, so no daemon-side lock can exclude it. It is
+    ///   closed on the client, not here.)
+    /// * A link that WAS accepted is finished here rather than torn, which is what lets the retry
+    ///   above be safe: the daemon never dies holding a dispatched-but-unanswered request.
+    pub async fn drain_links(&self, grace: Duration) -> usize {
+        let deadline = Instant::now() + grace;
+        loop {
+            let open = self.link_count.load(Ordering::SeqCst);
+            if open == 0 {
+                return 0;
+            }
+            if Instant::now() >= deadline {
+                tracing::warn!(
+                    open,
+                    "comms: links still open at the end of the drain grace; exiting anyway"
+                );
+                return open;
+            }
+            tokio::time::sleep(DRAIN_POLL_EVERY).await;
+        }
     }
 
     /// Archive every active thread idle past `ttl`. Returns the count archived. Best-effort — a
@@ -259,7 +470,12 @@ impl Broker {
     /// was deleted still votes in the blob GC's live set, pinning its blobs in the global store
     /// forever; dropping its vote in the same sweep means those blobs are reclaimed immediately
     /// instead of surviving until the next cycle. The blocking filesystem work runs off the reactor.
+    ///
+    /// Held under a [`WorkGuard`] for its whole duration: this is the one long-running thing the
+    /// daemon does with no client attached, so without it the idle reaper could fire mid-sweep and
+    /// take the process down between the workspace reap and the blob reap.
     pub async fn run_blob_gc(&self) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
+        let _working = self.begin_work();
         let _sweep_guard = self.blob_gc_lock.write().await;
         tokio::task::spawn_blocking(crate::store_gc::reap_and_gc_global)
             .await
@@ -1115,6 +1331,13 @@ impl Broker {
             reg.state = LifecycleState::Draining;
             reg.sinks.values().map(|s| s.tx.clone()).collect()
         };
+        self.finish_drain(sinks).await;
+    }
+
+    /// The tail shared by [`Broker::begin_drain`] and [`Broker::try_begin_idle_drain`]: tell every
+    /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
+    /// idle path can make its decision under the registry lock without holding it across the sends.
+    async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
         for tx in sinks {
             let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
         }
