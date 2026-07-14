@@ -922,13 +922,21 @@ pub struct WebMapParams {
     /// Site to discover. Returns sitemap entries + linked URLs without
     /// fetching their bodies.
     pub url: crate::url::Url,
+    /// Cap the number of URLs returned. Default 100, max 1000. `total_urls` always
+    /// reports how many were discovered, so a capped response is never mistakable
+    /// for a complete one.
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[cfg(feature = "crawl")]
 #[derive(Debug, Serialize)]
 pub(super) struct WebMapResponse {
     pub url: String,
+    /// Every URL discovered, whether or not it survived `limit`.
     pub total_urls: usize,
+    /// `total_urls > urls.len()` — the caller is holding a page, not the site.
+    pub truncated: bool,
     pub urls: Vec<WebMapEntry>,
 }
 
