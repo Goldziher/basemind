@@ -18,6 +18,7 @@
 //! indexes) and keeps the on-disk format free to evolve.
 
 pub mod keys;
+pub mod keys_governance;
 pub mod writer;
 
 use std::path::{Path, PathBuf};
