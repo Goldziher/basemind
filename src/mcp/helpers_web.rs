@@ -346,17 +346,32 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
     })
 }
 
+/// Default / ceiling for [`WebMapParams::limit`], matching every other list-returning tool.
+const WEB_MAP_DEFAULT_LIMIT: u32 = 100;
+const WEB_MAP_MAX_LIMIT: u32 = 1000;
+
+fn web_map_limit(limit: Option<u32>) -> usize {
+    limit.unwrap_or(WEB_MAP_DEFAULT_LIMIT).min(WEB_MAP_MAX_LIMIT) as usize
+}
+
 pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
+    let limit = web_map_limit(params.limit);
 
     let map = crawlberg::map_urls(engine, &url_str)
         .await
         .map_err(|e| mcp_internal("crawlberg map_urls", e))?;
 
+    // `total_urls` counts what the site actually has; `urls` is the page we hand back. A sitemap
+    // index (docs.rs, any large docs host) runs to hundreds of thousands of entries, and returning
+    // all of them uncapped both buries the caller and serialises gigabytes. Report the true total
+    // rather than the page length, so a truncated answer can never read as a complete one.
+    let total_urls = map.urls.len();
     let urls: Vec<WebMapEntry> = map
         .urls
         .into_iter()
+        .take(limit)
         .map(|u| WebMapEntry {
             url: u.url,
             lastmod: u.lastmod,
@@ -367,7 +382,8 @@ pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Re
 
     json_result(&WebMapResponse {
         url: url_str,
-        total_urls: urls.len(),
+        total_urls,
+        truncated: total_urls > urls.len(),
         urls,
     })
 }
@@ -380,6 +396,15 @@ mod tests {
         crate::url::PRIVATE_HOSTS_ENV_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    #[test]
+    fn web_map_limit_defaults_to_100_and_ceilings_at_1000() {
+        assert_eq!(web_map_limit(None), 100);
+        assert_eq!(web_map_limit(Some(1)), 1);
+        assert_eq!(web_map_limit(Some(1000)), 1000);
+        // The ceiling is what stops docs.rs-scale sitemaps from being serialised whole.
+        assert_eq!(web_map_limit(Some(500_000)), 1000);
     }
 
     #[test]
