@@ -69,7 +69,9 @@ impl BasemindServer {
     #[tool(
         description = "Discover URLs on a site via sitemap + link map without fetching page bodies. \
         Returns each URL with lastmod / changefreq / priority hints when present. Use to scope a \
-        follow-up `web_crawl` or pick targeted `web_scrape` calls. Needs --features crawl.",
+        follow-up `web_crawl` or pick targeted `web_scrape` calls. Capped by `limit` (default 100, \
+        max 1000); `total_urls` reports every URL discovered and `truncated` says whether you are \
+        holding a page rather than the whole site. Needs --features crawl.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub(crate) async fn web_map(&self, Parameters(p): Parameters<WebMapParams>) -> Result<CallToolResult, McpError> {

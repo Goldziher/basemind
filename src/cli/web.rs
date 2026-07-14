@@ -36,7 +36,12 @@ pub enum WebCmd {
         scope: Option<String>,
     },
     /// Discover URLs on a site via sitemap + link map (no body fetch).
-    Map { url: String },
+    Map {
+        url: String,
+        /// Cap the URLs returned. Default 100, max 1000. `total_urls` still reports the full count.
+        #[arg(long)]
+        limit: Option<u32>,
+    },
 }
 
 #[cfg(feature = "crawl")]
@@ -76,8 +81,11 @@ pub async fn run(server: &BasemindServer, cmd: WebCmd, opts: &Emit, out: &mut im
             let r = run_tool("web_crawl", server.web_crawl(Parameters(p)).await)?;
             emit("web_crawl", &r, opts, out)
         }
-        WebCmd::Map { url } => {
-            let p = WebMapParams { url: parse_url(&url)? };
+        WebCmd::Map { url, limit } => {
+            let p = WebMapParams {
+                url: parse_url(&url)?,
+                limit,
+            };
             let r = run_tool("web_map", server.web_map(Parameters(p)).await)?;
             emit("web_map", &r, opts, out)
         }
