@@ -193,10 +193,12 @@ impl BasemindServer {
     #[tool(
         description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
         `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
-        filter. Default 10, max 100. `max_tokens` budgets the hits (best-first, sets `budgeted`; \
-        no cursor — raise it for more). `format:\"toon\"` for compact rows (overrides config). \
-        `elapsed_us` = server-side handler latency in µs (excludes transport). Needs --features \
-        documents.",
+        filter. `scope` selects which ingestion scope to search and defaults to this repo's — \
+        pages ingested by `web_scrape` / `web_crawl` live under `web:<host>` (those tools echo \
+        the scope back), so pass it to reach them. Default 10, max 100. `max_tokens` budgets the \
+        hits (best-first, sets `budgeted`; no cursor — raise it for more). `format:\"toon\"` for \
+        compact rows (overrides config). `elapsed_us` = server-side handler latency in µs \
+        (excludes transport). Needs --features documents.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     pub(crate) async fn search_documents(

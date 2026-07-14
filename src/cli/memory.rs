@@ -84,6 +84,10 @@ pub enum MemoryCmd {
         limit: Option<u32>,
         #[arg(long)]
         mime_type: Option<String>,
+        /// Ingestion scope to search. Defaults to this repo's. Scraped pages live under
+        /// `web:<host>`.
+        #[arg(long)]
+        scope: Option<String>,
     },
 }
 
@@ -157,6 +161,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
             query,
             limit,
             mime_type,
+            scope,
         } => {
             let p = SearchDocumentsParams {
                 query,
@@ -164,6 +169,7 @@ pub async fn run(server: &BasemindServer, cmd: MemoryCmd, opts: &Emit, out: &mut
                 max_tokens: None,
                 format: None,
                 mime_type,
+                scope,
                 entity_category: None,
                 keywords_contains: None,
                 overrides: Default::default(),

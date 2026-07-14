@@ -25,6 +25,13 @@ pub struct SearchDocumentsParams {
     pub format: Option<String>,
     #[serde(default)]
     pub mime_type: Option<String>,
+    /// Which ingestion scope to search. Defaults to this repo's scope — the one the
+    /// scanner's document lane writes under. Web pages are ingested under a **different**
+    /// scope (`web:<host>`, echoed back by `web_scrape` / `web_crawl`), so reaching them
+    /// requires naming it here; without this, a scraped page is written, stored, and then
+    /// permanently invisible to search.
+    #[serde(default)]
+    pub scope: Option<String>,
     /// Optional case-insensitive substring match against `DocEntity.category`.
     /// When set, only hits whose parent document carries at least one entity
     /// in that category are returned. Combined with `keywords_contains` via

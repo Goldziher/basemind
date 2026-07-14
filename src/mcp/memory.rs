@@ -477,6 +477,18 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
     Ok(super::memory_ops::delete_core(idx, &state.scope, vis_byte, owner, key)?)
 }
 
+/// Pick the ingestion scope to search: the caller's if they named one, else this repo's.
+///
+/// Documents are partitioned by ingestion scope, and the lanes do not agree on one: the scanner
+/// writes under the repo scope while `web_scrape` / `web_crawl` write under `web:<host>`. Reading
+/// only `state.scope`, with no way to ask for another, made every scraped page permanently
+/// invisible — the write landed, LanceDB grew on disk, and the query filtered it out and returned
+/// an empty, error-free, 14 ms answer.
+#[cfg(feature = "documents")]
+fn resolve_doc_scope(requested: Option<&str>, repo_scope: &str) -> String {
+    requested.unwrap_or(repo_scope).to_string()
+}
+
 #[cfg(feature = "documents")]
 pub(super) async fn run_search_documents(
     state: &ServerState,
@@ -506,7 +518,7 @@ pub(super) async fn run_search_documents(
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
-    let scope = state.scope.clone();
+    let scope = resolve_doc_scope(params.scope.as_deref(), &state.scope);
     let mime = params.mime_type.clone();
     let hits_raw =
         tokio::task::spawn_blocking(move || lance.search_documents(&scope, embedding, limit, mime.as_deref()))
@@ -701,4 +713,31 @@ async fn attach_doc_metadata(
         true
     });
     Ok(())
+}
+
+#[cfg(all(test, feature = "documents"))]
+mod scope_tests {
+    use super::resolve_doc_scope;
+    use crate::web::ingest::default_scope;
+
+    #[test]
+    fn defaults_to_the_repo_scope_when_the_caller_names_none() {
+        assert_eq!(resolve_doc_scope(None, "repo-abc123"), "repo-abc123");
+    }
+
+    #[test]
+    fn a_scraped_page_is_reachable_only_by_naming_its_web_scope() {
+        // The bug, stated as a test: web_scrape writes here...
+        let url = crate::url::Url::parse("https://example.com/page").unwrap();
+        let write_scope = default_scope(&url);
+        assert_eq!(write_scope, "web:example.com");
+
+        // ...and the default read looks somewhere else entirely, which is why the page came back
+        // as 0 hits however it was queried.
+        let repo_scope = "repo-abc123";
+        assert_ne!(resolve_doc_scope(None, repo_scope), write_scope);
+
+        // Naming the scope the ingest tool echoed back is what closes the loop.
+        assert_eq!(resolve_doc_scope(Some(&write_scope), repo_scope), write_scope);
+    }
 }
