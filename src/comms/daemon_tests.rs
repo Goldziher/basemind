@@ -609,6 +609,90 @@ async fn idle_reaper_tracks_links_and_activity() {
     assert!(!broker.is_idle_for(Duration::ZERO).await);
 }
 
+/// A link whose task PANICS must still give its refcount back — otherwise `link_count` never returns
+/// to zero, `is_idle_for` is false forever, and that daemon can never reap again for the rest of its
+/// life. This is the immortal-daemon bug: one panicking request handler permanently pins the process.
+///
+/// It is exactly why the refcount is an RAII [`LinkGuard`] and not a `link_disconnected()` call after
+/// the serve loop — a plain statement after the loop is skipped by an unwind, a `Drop` is not.
+#[tokio::test]
+async fn a_panicking_link_task_gives_its_refcount_back_and_the_daemon_can_still_reap() {
+    use crate::comms::transport::{CommsLink, PeerCred, serve_link};
+
+    /// A link that blows up the moment the serve loop polls it.
+    struct PanickingLink;
+
+    impl CommsLink for PanickingLink {
+        async fn recv(&mut self) -> std::io::Result<Option<CommsRequest>> {
+            panic!("handler blew up mid-request");
+        }
+        async fn send(&mut self, _out: CommsOut) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn peer_cred(&self) -> PeerCred {
+            PeerCred::default()
+        }
+    }
+
+    let (_d, broker) = temp_broker();
+    let guard = broker.register_link();
+    assert!(
+        !broker.is_idle_for(Duration::ZERO).await,
+        "a registered link means the daemon is not idle"
+    );
+
+    let joined = tokio::spawn(serve_link(broker.clone(), PanickingLink, guard)).await;
+    assert!(joined.is_err(), "the link task must actually have panicked");
+
+    assert!(
+        broker.is_idle_for(Duration::ZERO).await,
+        "the panicking link must have released its refcount on unwind — if it leaks, link_count \
+         never returns to zero and this daemon is immortal"
+    );
+    assert!(
+        broker.try_begin_idle_drain(Duration::ZERO).await,
+        "and the reaper must still be able to drain it"
+    );
+}
+
+/// Daemon-internal work with NO client attached still blocks the reap. This is the clause that keeps
+/// the idle reaper from tearing down the process mid-blob-GC: that sweep holds no link, so without
+/// the work refcount a daemon running it would look perfectly idle.
+#[tokio::test]
+async fn work_in_flight_blocks_the_idle_reap_even_with_no_links() {
+    let (_d, broker) = temp_broker();
+
+    assert!(broker.is_idle_for(Duration::ZERO).await, "no links, no work: idle");
+    assert_eq!(broker.work_inflight(), 0);
+
+    {
+        let _working = broker.begin_work();
+        assert_eq!(broker.work_inflight(), 1);
+        assert!(
+            !broker.is_idle_for(Duration::ZERO).await,
+            "work in flight must defeat idleness even though zero links are connected"
+        );
+        assert!(
+            !broker.try_begin_idle_drain(Duration::ZERO).await,
+            "the reaper must refuse to start a drain while work is in flight"
+        );
+    }
+
+    assert_eq!(broker.work_inflight(), 0, "the guard releases the count on drop");
+    assert!(
+        broker.is_idle_for(Duration::ZERO).await,
+        "once the work finishes the daemon is idle again"
+    );
+    assert!(
+        broker.try_begin_idle_drain(Duration::ZERO).await,
+        "and now the reaper may claim the drain"
+    );
+    assert!(
+        !broker.try_begin_idle_drain(Duration::ZERO).await,
+        "only one caller ever owns the drain — a second attempt is a no-op"
+    );
+}
+
 /// The destructive global blob GC must not sweep while a rescan is in flight: a rescan writes new
 /// content-addressed blobs before its `index.msgpack` (which the GC reference-counts) is rewritten,
 /// so a mid-rescan sweep would see those blobs as orphans and reap them. `on_rescan` holds the
