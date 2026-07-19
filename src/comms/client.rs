@@ -466,9 +466,86 @@ impl CommsClient {
         }
     }
 
-    /// Cancel a notification stream.
+    /// Open a notification stream for THIS agent's inbox: a push for every subsequent post to a
+    /// thread the agent is already a member of (self-authored posts excluded), or — when `thread`
+    /// is `Some` — restricted to that one thread. Passive: unlike [`CommsClient::subscribe`], it
+    /// does NOT join anything. Backs [`CommsClient::wait_inbox`].
+    pub async fn subscribe_inbox(&mut self, thread: Option<ThreadId>) -> Result<u64, CommsClientError> {
+        match self.request(CommsRequest::SubscribeInbox { thread }).await? {
+            CommsResponse::Subscribed { sub } => Ok(sub),
+            other => Err(self.shape_err(other, "subscribe_inbox")),
+        }
+    }
+
+    /// Cancel a notification stream opened by [`CommsClient::subscribe`] or
+    /// [`CommsClient::subscribe_inbox`].
     pub async fn unsubscribe(&mut self, sub: u64) -> Result<(), CommsClientError> {
         self.expect_ok(CommsRequest::Unsubscribe { sub }, "unsubscribe").await
+    }
+
+    /// Long-poll the inbox: subscribe FIRST, then do one immediate non-blocking inbox read, then —
+    /// only if that read came back empty — block on the notification stream up to `timeout`. The
+    /// subscribe-first ordering is the race fix: a post landing between the caller's last read and
+    /// this call is never lost, because the sink is already live before the immediate read runs.
+    /// Unsubscribes on EVERY exit path (early return, wake, shutdown, timeout, or error) so a
+    /// failed/aborted wait never leaks a sink.
+    ///
+    /// Returns `(timed_out, rows, unread, next_cursor)`:
+    /// * a non-empty immediate read, or a wake from a post, yields `timed_out = false` with a
+    ///   freshly re-read, consistent page (never marks read — see `inbox_ack` / `inbox_read`).
+    /// * a daemon [`CommsNotification::Shutdown`] (the link is about to die) or the socket closing
+    ///   yields `timed_out = true` with an empty page — the caller reconnects and retries.
+    /// * the `timeout` elapsing with nothing new yields `timed_out = true`, carrying the unread
+    ///   count observed by the immediate read.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn wait_inbox(
+        &mut self,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        thread: Option<ThreadId>,
+        since_micros: Option<i64>,
+        cursor: Option<Cursor>,
+        limit: u32,
+        timeout: std::time::Duration,
+    ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
+        let sub = self.subscribe_inbox(thread).await?;
+        let outcome = self
+            .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout)
+            .await;
+        // Best-effort: unsubscribe on every exit, including an error from the wait itself. A link
+        // that is already gone (the error path most likely to hit) makes this a harmless no-op.
+        let _ = self.unsubscribe(sub).await;
+        outcome
+    }
+
+    /// The body of [`CommsClient::wait_inbox`] once the sink is live: immediate check, then block.
+    /// Split out so the caller can wrap it in a single unsubscribe-on-every-exit point.
+    #[allow(clippy::too_many_arguments)]
+    async fn wait_inbox_after_subscribe(
+        &mut self,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        since_micros: Option<i64>,
+        cursor: Option<Cursor>,
+        limit: u32,
+        timeout: std::time::Duration,
+    ) -> Result<(bool, Vec<SeqMeta>, u32, Option<Cursor>), CommsClientError> {
+        let (rows, unread, next) = self
+            .read_inbox(remote.clone(), cwd.clone(), cursor.clone(), limit, false, since_micros)
+            .await?;
+        if !rows.is_empty() {
+            return Ok((false, rows, unread, next));
+        }
+
+        match tokio::time::timeout(timeout, self.poll_notification()).await {
+            Ok(Ok(Some(CommsNotification::Message(_)))) => {
+                let (rows, unread, next) = self.read_inbox(remote, cwd, cursor, limit, false, since_micros).await?;
+                Ok((false, rows, unread, next))
+            }
+            Ok(Ok(Some(CommsNotification::Shutdown))) | Ok(Ok(None)) => Ok((true, Vec::new(), 0, None)),
+            Ok(Err(err)) => Err(err),
+            Err(_elapsed) => Ok((true, Vec::new(), unread, None)),
+        }
     }
 
     /// Ask the daemon for its status snapshot.

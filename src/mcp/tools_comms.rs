@@ -15,9 +15,9 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::types_comms::{
-    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, MessageGetParams, ThreadArchiveParams,
-    ThreadHistoryParams, ThreadJoinParams, ThreadLeaveParams, ThreadListParams, ThreadMemberParams,
-    ThreadMembersParams, ThreadPostParams, ThreadStartParams,
+    AgentListParams, AgentRegisterParams, InboxAckParams, InboxReadParams, InboxWaitParams, MessageGetParams,
+    ThreadArchiveParams, ThreadHistoryParams, ThreadJoinParams, ThreadLeaveParams, ThreadListParams,
+    ThreadMemberParams, ThreadMembersParams, ThreadPostParams, ThreadStartParams,
 };
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
@@ -332,6 +332,26 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
         let __result = super::helpers_comms::run_inbox_ack(&self.state, p).await;
         record_call(&self.state, "inbox_ack", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[tool(
+        description = "Block up to `timeout_secs` (default 30, max 300) and return as soon as a \
+        peer posts to a JOINED thread — or to the single thread in `thread`, if set — or on \
+        timeout. Replaces a caller looping inbox_read / thread_list. NEVER marks read (no \
+        mark_read param); follow up with inbox_read(mark_read: true) or inbox_ack once you've \
+        handled the page. Returns `timed_out` plus the same front-matter/unread/next_cursor shape \
+        as inbox_read. Needs --features comms.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub(crate) async fn inbox_wait(
+        &self,
+        Parameters(p): Parameters<InboxWaitParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result = super::helpers_comms::run_inbox_wait(&self.state, p).await;
+        record_call(&self.state, "inbox_wait", &__params_json, __started, &__result);
         __result
     }
 }

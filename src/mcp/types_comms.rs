@@ -484,3 +484,42 @@ pub(super) struct InboxAckResponse {
     /// The `(thread, new_seq)` cursor advances this call produced.
     pub cursors_advanced: Vec<CursorAdvance>,
 }
+
+/// Params for `inbox_wait`: block until a peer posts to a joined thread (or the one thread named
+/// in `thread`), or until `timeout_secs` elapses. NEVER marks read — there is no `mark_read`
+/// param; follow up with `inbox_read(mark_read: true)` or `inbox_ack` once you've handled the
+/// page. A long-poll replacement for a caller looping `inbox_read` / `thread_list`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct InboxWaitParams {
+    /// Maximum seconds to block before returning `timed_out: true` (default 30, max 300).
+    #[serde(default)]
+    pub timeout_secs: Option<u32>,
+    /// Restrict the wake to this thread only. `None` wakes on ANY joined thread.
+    #[serde(default)]
+    pub thread: Option<ThreadId>,
+    /// Only consider messages from the last N hours; defaults to 24. Pass 0 for ALL history.
+    #[serde(default)]
+    pub since_hours: Option<u32>,
+    /// Resume token from a previous page's `next_cursor` (opaque string).
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Optional sub-identity to act as; defaults to the server's own agent.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Response for `inbox_wait`.
+#[derive(Debug, Serialize)]
+pub(super) struct InboxWaitResponse {
+    /// True when the call returned because `timeout_secs` elapsed with nothing new to report.
+    pub timed_out: bool,
+    /// Number of messages in this page.
+    pub total: usize,
+    /// Count of unread messages remaining after this page.
+    pub unread: u32,
+    /// Front-matter rows across joined threads (or the one filtered thread). NOT marked read.
+    pub messages: Vec<MessageFrontMatter>,
+    /// Opaque cursor for the next page; absent means no more results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<Cursor>,
+}

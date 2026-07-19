@@ -169,12 +169,26 @@ pub enum LifecycleState {
     Stopped,
 }
 
+/// What a [`SubSink`] wakes on. `Thread` is the original thread-scoped stream opened by
+/// [`CommsRequest::Subscribe`] (which also joins the thread); `Inbox` is the passive,
+/// membership-routed stream opened by [`CommsRequest::SubscribeInbox`] that backs `inbox_wait`.
+pub(super) enum SubScope {
+    /// Wake on every post to this one thread (the classic `Subscribe` behavior).
+    Thread(ThreadId),
+    /// Wake on a post to any thread the sink's agent is a member of, or — when `Some` — to just
+    /// that one thread. Self-authored posts never wake this scope (mirrors `on_inbox`).
+    Inbox {
+        /// Restrict the wake to this thread only. `None` = any joined thread.
+        thread: Option<ThreadId>,
+    },
+}
+
 /// A registered notification sink for one subscription. The link's writer half drains it.
 pub(super) struct SubSink {
-    /// The thread this sink streams.
-    pub(super) thread: ThreadId,
-    /// The agent owning the subscription. Retained for diagnostics; the fan-out routes by thread.
-    #[allow(dead_code)]
+    /// What this sink wakes on.
+    pub(super) scope: SubScope,
+    /// The agent owning the subscription. `Thread` sinks retain it only for diagnostics; `Inbox`
+    /// sinks use it to route by membership and to exclude the agent's own posts.
     pub(super) agent: AgentId,
     /// Where notifications are pushed.
     pub(super) tx: mpsc::Sender<CommsOut>,
@@ -568,6 +582,7 @@ impl Broker {
                 to_seq,
             } => self.on_ack(session, message_ids, thread, to_seq),
             CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
+            CommsRequest::SubscribeInbox { thread } => self.on_subscribe_inbox(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
             CommsRequest::Rescan {
                 root,

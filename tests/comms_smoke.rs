@@ -575,3 +575,89 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
         .expect("claim of unknown worktree returns Ok(false)");
     assert!(!unknown, "an unknown worktree cannot be claimed");
 }
+
+/// `inbox_wait` against a REAL detached daemon (not the in-process/UDS-in-test-process setups used
+/// elsewhere): B waits up to 10s while A posts to their shared thread within ~100ms. B must wake
+/// from the notification push, well under the timeout — proving the subscribe-then-block path
+/// works end to end against the actual daemon binary, not just an in-process broker.
+#[tokio::test(flavor = "multi_thread")]
+async fn inbox_wait_delivers_peer_post_promptly() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    let mut bob = connect(&socket, "agent-bob", &root).await;
+    let thread = alice
+        .start_thread(Some("wait-team".to_string()), None, vec![agent("agent-bob")])
+        .await
+        .expect("start thread")
+        .id;
+
+    let waiter = tokio::spawn(async move {
+        let started = Instant::now();
+        let result = bob
+            .wait_inbox(None, None, None, None, None, 100, Duration::from_secs(10))
+            .await
+            .expect("bob wait_inbox");
+        (result, started.elapsed())
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    alice
+        .post_message(
+            thread.clone(),
+            "from alice".to_string(),
+            b"hi bob".to_vec(),
+            vec![],
+            None,
+        )
+        .await
+        .expect("alice posts while bob waits");
+
+    let ((timed_out, rows, _unread, _next), elapsed) = tokio::time::timeout(Duration::from_secs(15), waiter)
+        .await
+        .expect("bob's wait_inbox task did not finish in time")
+        .expect("bob's wait_inbox task panicked");
+
+    assert!(!timed_out, "bob must wake from alice's post, not time out");
+    assert_eq!(rows.len(), 1, "bob's woken page carries alice's message");
+    assert_eq!(rows[0].meta.subject, "from alice");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "bob should wake on the push within ~100ms, not the 10s timeout: {elapsed:?}"
+    );
+}
+
+/// Companion to [`inbox_wait_delivers_peer_post_promptly`]: with no peer posting anything, a real
+/// daemon's `inbox_wait` still returns `timed_out: true` once the timeout elapses.
+#[tokio::test(flavor = "multi_thread")]
+async fn inbox_wait_with_no_peer_activity_times_out() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    let root = tmp.path().to_path_buf();
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+
+    let mut alice = connect(&socket, "agent-alice", &root).await;
+    alice
+        .start_thread(Some("lonely".to_string()), None, vec![agent("agent-bob")])
+        .await
+        .expect("start thread");
+
+    let started = Instant::now();
+    let (timed_out, rows, _unread, _next) = alice
+        .wait_inbox(None, None, None, None, None, 100, Duration::from_millis(500))
+        .await
+        .expect("wait_inbox");
+    let elapsed = started.elapsed();
+
+    assert!(timed_out, "no peer activity landed; the wait must time out");
+    assert!(rows.is_empty(), "a timed-out wait returns no rows");
+    assert!(
+        elapsed >= Duration::from_millis(500) && elapsed < Duration::from_secs(5),
+        "elapsed {elapsed:?} should be close to the 500ms timeout"
+    );
+}

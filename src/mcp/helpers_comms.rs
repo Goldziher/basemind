@@ -18,11 +18,12 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::types_comms::{
     AgentListParams, AgentListResponse, AgentRegisterParams, AgentRegisterResponse, AgentSummary, CursorAdvance,
-    InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse, MessageFrontMatter, MessageGetParams,
-    MessageGetResponse, ThreadArchiveParams, ThreadArchiveResponse, ThreadHistoryParams, ThreadHistoryResponse,
-    ThreadJoinParams, ThreadLeaveParams, ThreadListParams, ThreadListResponse, ThreadMemberChangeResponse,
-    ThreadMemberParams, ThreadMembersParams, ThreadMembersResponse, ThreadMembershipResponse, ThreadPostParams,
-    ThreadPostResponse, ThreadStartParams, ThreadStartResponse, ThreadSummary,
+    InboxAckParams, InboxAckResponse, InboxReadParams, InboxReadResponse, InboxWaitParams, InboxWaitResponse,
+    MessageFrontMatter, MessageGetParams, MessageGetResponse, ThreadArchiveParams, ThreadArchiveResponse,
+    ThreadHistoryParams, ThreadHistoryResponse, ThreadJoinParams, ThreadLeaveParams, ThreadListParams,
+    ThreadListResponse, ThreadMemberChangeResponse, ThreadMemberParams, ThreadMembersParams, ThreadMembersResponse,
+    ThreadMembershipResponse, ThreadPostParams, ThreadPostResponse, ThreadStartParams, ThreadStartResponse,
+    ThreadSummary,
 };
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::ids::AgentId;
@@ -33,6 +34,13 @@ const DEFAULT_LIMIT: u32 = 100;
 
 /// Default recency window for `thread_history` / `inbox_read` when the caller omits `since_hours`.
 const DEFAULT_SINCE_HOURS: u32 = 24;
+
+/// Default long-poll timeout for `inbox_wait` when the caller omits `timeout_secs`.
+const DEFAULT_WAIT_SECS: u32 = 30;
+
+/// Hard cap on `inbox_wait`'s `timeout_secs`. Comfortably under the daemon's 30-minute idle-reap
+/// window and short enough that one outstanding wait cannot meaningfully delay a drain.
+const MAX_WAIT_SECS: u32 = 300;
 
 /// Microseconds in one hour — the scale factor for the `since_hours` → `since_micros` cutoff.
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
@@ -380,5 +388,55 @@ pub(super) async fn run_inbox_ack(state: &ServerState, params: InboxAckParams) -
     json_result(&InboxAckResponse {
         acked: acked as usize,
         cursors_advanced,
+    })
+}
+
+/// Long-poll the inbox and return as soon as a peer posts (or on timeout).
+///
+/// LOAD-BEARING: this opens its OWN ephemeral [`CommsClient`], never the shared cached
+/// `Arc<Mutex<CommsClient>>` behind [`resolve_comms_client`]. Locking that shared client for the
+/// wait would hold its mutex for up to `timeout_secs`, head-of-line-blocking every OTHER comms
+/// tool call for this identity (agent_list, thread_post, inbox_read, …) for the whole wait. A
+/// fresh connection per wait avoids that at the cost of one extra link + broker sink per
+/// outstanding call — an accepted trade-off (see the design brief's risk notes).
+pub(super) async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams) -> Result<CallToolResult, McpError> {
+    let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
+    let cursor = params.cursor.map(crate::comms::cursor::Cursor);
+    let since = since_cutoff(params.since_hours);
+    let (remote, cwd) = scope_context_for(&state.root);
+
+    let agent = match &params.as_agent {
+        Some(raw) => AgentId::parse(raw.clone()).map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,
+        None => AgentId::parse(state.agent_id.clone())
+            .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?,
+    };
+    let mut client = CommsClient::ensure_and_connect(agent, remote.clone(), cwd.clone())
+        .await
+        .map_err(comms_err)?;
+
+    let (timed_out, metas, unread, next_cursor) = client
+        .wait_inbox(
+            remote,
+            cwd,
+            params.thread,
+            since,
+            cursor,
+            DEFAULT_LIMIT,
+            std::time::Duration::from_secs(u64::from(timeout_secs)),
+        )
+        .await
+        .map_err(comms_err)?;
+
+    let now = now_micros();
+    let messages: Vec<MessageFrontMatter> = metas
+        .iter()
+        .map(|sm| MessageFrontMatter::from_seq_meta(sm, now))
+        .collect();
+    json_result(&InboxWaitResponse {
+        timed_out,
+        total: messages.len(),
+        unread,
+        messages,
+        next_cursor,
     })
 }
