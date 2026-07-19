@@ -159,6 +159,13 @@ mod tests {
         let current = s.current_bytes.expect("current RSS should be readable on unix");
         assert!(current > 0, "current RSS must be positive, got {current}");
         let peak = s.peak_bytes.expect("peak RSS should be readable on unix");
+        assert!(peak > 0, "peak RSS must be positive, got {peak}");
+        // `peak >= current` only holds where both are read byte-granular from one source — on
+        // macOS `ru_maxrss` is in bytes. On Linux the two come from different kernel interfaces
+        // (peak from getrusage `ru_maxrss`, KB-granular high-water mark; current from
+        // /proc/self/statm, page-granular live), whose independent rounding can leave peak a page
+        // or a KB below current, so the ordering is asserted only on macOS.
+        #[cfg(target_os = "macos")]
         assert!(
             peak >= current,
             "peak RSS ({peak}) should be >= current RSS ({current})"
