@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   embed pass, and `serve` forwards a detached vector-fill follow-up after the fast initial scan — off
   the boot handshake, so startup is not blocked on ONNX. Live watcher rescans and the explicit
   `rescan` tool forward the embed pass too, matching the non-daemon path (#32).
+- **`web_crawl` stays on the seed host.** crawlberg defaults `stay_on_domain` off, so a crawl
+  followed links onto other domains and pulled in unrelated hosts. basemind now forces on-host
+  scope (subdomains still excluded) when building the crawl engine, so `web_crawl` indexes the site
+  you pointed it at and no others (#34).
 
 ## [0.22.0] — 2026-07-12
 
