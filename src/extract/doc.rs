@@ -22,8 +22,8 @@ use xberg::{ExtractInput, extract};
 
 use super::{ExtractError, SCHEMA_VER};
 use crate::config::{
-    DocLanguageConfig, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig, SummarizationConfig,
-    SummarizationStrategy,
+    DocLanguageConfig, DocumentModelProfile, KeywordAlgorithm, KeywordsConfig, LlmConfig, NerBackend, NerConfig,
+    SummarizationConfig, SummarizationStrategy,
 };
 
 /// Per-file document extraction result. Mirrors the shape of `FileMapL1` —
@@ -167,6 +167,14 @@ pub struct DocConfig {
     /// Bounded thread cap for xberg's internal ONNX embedding fan-out.
     /// `0` resolves to `max(2, cores / 4)` via `crate::embeddings::resolve_embed_threads`.
     pub embed_max_threads: usize,
+    /// Chunks embedded per ONNX call (from `[resources].embed_batch_size`). Threaded into the
+    /// xberg `EmbeddingConfig` so the document tier honours the same batch cap as the code-search
+    /// and query embed paths.
+    pub embed_batch_size: usize,
+    /// Which model families run during extraction (from `[resources].document_models`). Narrower
+    /// profiles strip enrichment / embeddings to shrink the scan-time footprint — see
+    /// [`crate::config::DocumentModelProfile`] and [`DocConfig::to_xberg`].
+    pub document_models: DocumentModelProfile,
 }
 
 impl Default for DocConfig {
@@ -182,14 +190,28 @@ impl Default for DocConfig {
             summarization: SummarizationConfig::default(),
             llm: LlmConfig::default(),
             embed_max_threads: 0,
+            embed_batch_size: 32,
+            document_models: DocumentModelProfile::default(),
         }
     }
 }
 
 impl DocConfig {
     fn to_xberg(&self) -> ExtractionConfig {
-        let embedding = if self.embed {
-            Some(EmbeddingConfig::default())
+        // PART A2 profile gating. `CodeOnly` and `None_` strip the enrichment post-processors
+        // (keywords / NER / summarisation) and disable OCR so a code-centric workspace does not
+        // pay for models it will never surface. `None_` additionally skips embeddings entirely
+        // (metadata + keyword-search only). `Full` keeps every configured capability.
+        let no_models = matches!(self.document_models, DocumentModelProfile::None_);
+        let strip_enrichment = matches!(
+            self.document_models,
+            DocumentModelProfile::CodeOnly | DocumentModelProfile::None_
+        );
+        let embedding = if self.embed && !no_models {
+            Some(EmbeddingConfig {
+                batch_size: self.embed_batch_size,
+                ..Default::default()
+            })
         } else {
             None
         };
@@ -209,9 +231,13 @@ impl DocConfig {
         } else {
             None
         };
-        let keywords = self.xberg_keywords();
-        let ner = self.xberg_ner();
-        let summarization = self.xberg_summarization();
+        let keywords = if strip_enrichment { None } else { self.xberg_keywords() };
+        let ner = if strip_enrichment { None } else { self.xberg_ner() };
+        let summarization = if strip_enrichment {
+            None
+        } else {
+            self.xberg_summarization()
+        };
         let bounded = crate::embeddings::resolve_embed_threads(self.embed_max_threads);
         let concurrency = Some(ConcurrencyConfig {
             max_threads: Some(bounded),
@@ -222,6 +248,7 @@ impl DocConfig {
             keywords,
             ner,
             summarization,
+            disable_ocr: strip_enrichment,
             concurrency,
             ..Default::default()
         }
@@ -510,5 +537,89 @@ fn metadata_pairs(metadata: &xberg::types::Metadata) -> Vec<(String, String)> {
             })
             .collect(),
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `DocConfig` with every enrichment post-processor turned on so a
+    /// profile that strips them is observable in `to_xberg`'s output.
+    fn doc_config_all_enrichment_on(profile: DocumentModelProfile) -> DocConfig {
+        DocConfig {
+            keywords: KeywordsConfig {
+                enabled: true,
+                ..KeywordsConfig::default()
+            },
+            ner: NerConfig {
+                enabled: true,
+                ..NerConfig::default()
+            },
+            summarization: SummarizationConfig {
+                enabled: true,
+                ..SummarizationConfig::default()
+            },
+            document_models: profile,
+            ..DocConfig::default()
+        }
+    }
+
+    #[test]
+    fn to_xberg_full_profile_keeps_enrichment_and_ocr() {
+        let cfg = doc_config_all_enrichment_on(DocumentModelProfile::Full);
+        let x = cfg.to_xberg();
+        assert!(x.keywords.is_some(), "Full keeps keyword extraction");
+        assert!(x.ner.is_some(), "Full keeps NER");
+        assert!(x.summarization.is_some(), "Full keeps summarisation");
+        assert!(!x.disable_ocr, "Full leaves OCR enabled");
+        assert!(
+            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_some(),
+            "Full embeds when embed = true"
+        );
+    }
+
+    #[test]
+    fn to_xberg_code_only_strips_enrichment_disables_ocr_keeps_embeddings() {
+        let cfg = doc_config_all_enrichment_on(DocumentModelProfile::CodeOnly);
+        let x = cfg.to_xberg();
+        assert!(x.keywords.is_none(), "CodeOnly forces keywords off");
+        assert!(x.ner.is_none(), "CodeOnly forces NER off");
+        assert!(x.summarization.is_none(), "CodeOnly forces summarisation off");
+        assert!(x.disable_ocr, "CodeOnly disables OCR");
+        assert!(
+            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_some(),
+            "CodeOnly still embeds (embed = true)"
+        );
+    }
+
+    #[test]
+    fn to_xberg_none_profile_strips_everything_including_embeddings() {
+        let cfg = doc_config_all_enrichment_on(DocumentModelProfile::None_);
+        let x = cfg.to_xberg();
+        assert!(x.keywords.is_none(), "None strips keywords");
+        assert!(x.ner.is_none(), "None strips NER");
+        assert!(x.summarization.is_none(), "None strips summarisation");
+        assert!(x.disable_ocr, "None disables OCR");
+        assert!(
+            x.chunking.as_ref().and_then(|c| c.embedding.as_ref()).is_none(),
+            "None skips embeddings entirely even when embed = true"
+        );
+    }
+
+    #[test]
+    fn to_xberg_threads_embed_batch_size_into_embedding_config() {
+        let cfg = DocConfig {
+            embed: true,
+            embed_batch_size: 8,
+            ..DocConfig::default()
+        };
+        let x = cfg.to_xberg();
+        let batch = x
+            .chunking
+            .as_ref()
+            .and_then(|c| c.embedding.as_ref())
+            .map(|e| e.batch_size);
+        assert_eq!(batch, Some(8), "embed_batch_size flows into EmbeddingConfig.batch_size");
     }
 }

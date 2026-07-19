@@ -126,14 +126,21 @@ const SCANNER_STACK_SIZE: usize = 256 * 1024 * 1024;
 
 /// Process-wide rayon pool the scanner runs its per-file `par_iter` on: sized like the default global
 /// pool but with a much larger per-worker stack (see [`SCANNER_STACK_SIZE`]). Lazily built once.
-pub(crate) fn scanner_pool() -> &'static rayon::ThreadPool {
+///
+/// `scan_threads` caps the pool from `[resources].scan_threads`: `0` (auto) keeps rayon's default
+/// (one worker per logical CPU); a non-zero value pins the worker count so the scan cannot saturate
+/// every core on a shared machine. The pool is built on first call and its size is then fixed for the
+/// process — the first caller's `scan_threads` wins, mirroring [`crate::embeddings::embed_pool`].
+pub(crate) fn scanner_pool(scan_threads: usize) -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
+        let mut builder = rayon::ThreadPoolBuilder::new()
             .stack_size(SCANNER_STACK_SIZE)
-            .thread_name(|i| format!("bm-scan-{i}"))
-            .build()
-            .expect("build scanner rayon pool")
+            .thread_name(|i| format!("bm-scan-{i}"));
+        if scan_threads > 0 {
+            builder = builder.num_threads(scan_threads);
+        }
+        builder.build().expect("build scanner rayon pool")
     })
 }
 
@@ -151,7 +158,7 @@ pub(crate) fn run_candidates(
     scope: &str,
     embed: EmbedMode,
 ) -> Vec<FileResult> {
-    scanner_pool().install(|| {
+    scanner_pool(config.resources.scan_threads).install(|| {
         candidates
             .par_iter()
             .fold(
@@ -465,6 +472,7 @@ fn process_doc(
         &mime_type,
         &config.documents,
         &config.llm,
+        &config.resources,
         scope,
         embed,
     ) {
@@ -598,7 +606,7 @@ mod tests {
     #[test]
     fn rayon_install_reraises_a_worker_panic_on_the_calling_thread() {
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            scanner_pool().install(|| {
+            scanner_pool(0).install(|| {
                 (0..64u32).into_par_iter().for_each(|i| {
                     assert_ne!(i, 17, "worker panic");
                 });
@@ -617,7 +625,7 @@ mod tests {
         let flag = std::sync::Arc::clone(&entered);
         run_optional_lane("test_lane", move || {
             flag.store(true, Ordering::SeqCst);
-            scanner_pool().install(|| {
+            scanner_pool(0).install(|| {
                 (0..64u32).into_par_iter().for_each(|i| {
                     assert_ne!(i, 17, "worker panic");
                 });

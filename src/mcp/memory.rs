@@ -26,11 +26,15 @@ use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
-    let max_embed_threads = state.config.documents.embed_max_threads;
+    let max_embed_threads = state
+        .config
+        .resources
+        .effective_embed_threads(state.config.documents.embed_max_threads);
+    let embed_batch_size = state.config.resources.embed_batch_size;
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads)
+            crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })
@@ -47,14 +51,18 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
-    let max_embed_threads = state.config.documents.embed_max_threads;
+    let max_embed_threads = state
+        .config
+        .resources
+        .effective_embed_threads(state.config.documents.embed_max_threads);
+    let embed_batch_size = state.config.resources.embed_batch_size;
     state
         .lance
         .get_or_try_init(|| async {
             let embedder = state
                 .embedder
                 .get_or_try_init(|| async {
-                    crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads)
+                    crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
                         .map(Arc::new)
                         .map_err(|e| format!("load embedder: {e}"))
                 })
