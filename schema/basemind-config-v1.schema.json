@@ -764,7 +764,7 @@
           "default": 0
         },
         "max_concurrent_documents": {
-          "description": "Upper bound on documents extracted concurrently. `0` (auto) leaves the\ndispatch unbounded (today's behaviour). Parsed now; the enforcing\nsemaphore around document dispatch lands with the backpressure iteration\n(#40) so the schema is stable ahead of the consumer.",
+          "description": "Upper bound on documents extracted concurrently. `0` (auto) leaves the\ndispatch unbounded (today's behaviour). Parsed now; a concurrency\nsemaphore around document dispatch is a later iteration — the field\nexists so the schema is stable ahead of the consumer. Memory is bounded\ntoday by `max_footprint_mb` rather than by an in-flight document count.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,
@@ -778,7 +778,7 @@
           "default": 32
         },
         "max_footprint_mb": {
-          "description": "Hard ceiling on process physical footprint in megabytes. `0` (disabled)\nis the default. Parsed now but NOT yet enforced — the best-effort\nbackpressure gate that samples `phys_footprint` and throttles against\nthis ceiling is the backpressure iteration (#40). The field exists today\nso operators can start setting it without a config break when the gate\nlands.",
+          "description": "Hard ceiling on process physical footprint in mebibytes. `0` (disabled)\nis the default. When set, the best-effort backpressure gate\n([`crate::backpressure::FootprintGate`]) samples\n[`crate::sysres::phys_footprint`] at the document-extraction and\nchunk-embedding admit points and parks the worker while the process is\nover this ceiling, shaving the scan's peak. It is best-effort: an\nunreadable sample or a sustained overshoot admits anyway to guarantee\nforward progress, so the ceiling shapes the peak rather than enforcing a\nhard invariant. macOS today (`phys_footprint` is a Darwin metric); a\nno-op elsewhere.",
           "type": "integer",
           "format": "uint",
           "minimum": 0,

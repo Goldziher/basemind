@@ -4,9 +4,9 @@
 //!
 //! This tier is the single place an operator bounds basemind's footprint on a
 //! constrained machine: how many threads the code-map scanner and the ONNX
-//! embedder may use, how many documents may be in flight at once, and how large
-//! a batch the embedder builds. `max_footprint_mb` is parsed today but not yet
-//! enforced — it is the ceiling a later backpressure iteration (#40) consumes.
+//! embedder may use, how large a batch the embedder builds, and the hard
+//! `max_footprint_mb` ceiling the best-effort backpressure gate
+//! ([`crate::backpressure::FootprintGate`]) throttles the scan against.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -37,9 +37,10 @@ pub struct ResourcesConfig {
     #[serde(default)]
     pub embed_threads: usize,
     /// Upper bound on documents extracted concurrently. `0` (auto) leaves the
-    /// dispatch unbounded (today's behaviour). Parsed now; the enforcing
-    /// semaphore around document dispatch lands with the backpressure iteration
-    /// (#40) so the schema is stable ahead of the consumer.
+    /// dispatch unbounded (today's behaviour). Parsed now; a concurrency
+    /// semaphore around document dispatch is a later iteration — the field
+    /// exists so the schema is stable ahead of the consumer. Memory is bounded
+    /// today by `max_footprint_mb` rather than by an in-flight document count.
     #[serde(default)]
     pub max_concurrent_documents: usize,
     /// Number of chunks the embedder submits to ONNX per batch. Larger batches
@@ -49,12 +50,16 @@ pub struct ResourcesConfig {
     /// `EmbeddingConfig`.
     #[serde(default = "ResourcesConfig::default_embed_batch_size")]
     pub embed_batch_size: usize,
-    /// Hard ceiling on process physical footprint in megabytes. `0` (disabled)
-    /// is the default. Parsed now but NOT yet enforced — the best-effort
-    /// backpressure gate that samples `phys_footprint` and throttles against
-    /// this ceiling is the backpressure iteration (#40). The field exists today
-    /// so operators can start setting it without a config break when the gate
-    /// lands.
+    /// Hard ceiling on process physical footprint in mebibytes. `0` (disabled)
+    /// is the default. When set, the best-effort backpressure gate
+    /// ([`crate::backpressure::FootprintGate`]) samples
+    /// [`crate::sysres::phys_footprint`] at the document-extraction and
+    /// chunk-embedding admit points and parks the worker while the process is
+    /// over this ceiling, shaving the scan's peak. It is best-effort: an
+    /// unreadable sample or a sustained overshoot admits anyway to guarantee
+    /// forward progress, so the ceiling shapes the peak rather than enforcing a
+    /// hard invariant. macOS today (`phys_footprint` is a Darwin metric); a
+    /// no-op elsewhere.
     #[serde(default)]
     pub max_footprint_mb: usize,
     /// Which model families run during document extraction. `Full` (default)

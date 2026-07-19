@@ -194,6 +194,10 @@ pub(crate) fn chunk_and_embed(
         return Ok(None);
     }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
+    // Best-effort memory backpressure: embedding a file's chunks drives an ONNX forward pass whose
+    // transient arenas are the other peak-memory stage of a scan. Park this worker while the process
+    // footprint is over the `[resources].max_footprint_mb` ceiling (no-op when unset) before the batch.
+    crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
     let embeddings = match embedder.embed_batch(&texts) {
         Ok(embeddings) if embeddings.len() == chunks.len() => embeddings,
         Ok(embeddings) => {

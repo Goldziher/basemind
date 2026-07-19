@@ -464,6 +464,11 @@ fn process_doc(
         size_bytes,
         mtime,
     };
+    // Best-effort memory backpressure: document extraction (xberg + optional embedding) is one of
+    // the two peak-memory stages of a scan. Park this worker while the process footprint is over
+    // the `[resources].max_footprint_mb` ceiling (no-op when unset) before admitting more work.
+    crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
+
     match extract_and_persist_doc(
         store,
         rel,
