@@ -318,10 +318,14 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
             .expect("find_callers"),
     );
 
+    // The #26 contract: the name scan is the floor (`total`) and resolution can only refine it, so
+    // there is no top-level `resolved` bool anymore — precision surfaces as `resolved_total` plus a
+    // per-hit `resolved` flag. A non-zero `resolved_total` is what proves the cross-file
+    // scope/import-resolved path ran, not the name scan alone.
     assert_eq!(
-        body.get("resolved").and_then(Value::as_bool),
-        Some(true),
-        "cross-file callers must come from the scope/import-resolved path, not the name scan: {body}"
+        body.get("resolved_total").and_then(Value::as_u64),
+        Some(1),
+        "the cross-file caller must be resolution-confirmed (resolved_total), not just a name-scan hit: {body}"
     );
     let def = body.get("definition").expect("definition echoed");
     assert_eq!(
@@ -347,7 +351,8 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         hits.iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
                 && h.get("line").and_then(Value::as_u64) == Some(26)
-                && h.get("column").and_then(Value::as_u64) == Some(11)),
+                && h.get("column").and_then(Value::as_u64) == Some(11)
+                && h.get("resolved").and_then(Value::as_bool) == Some(true)),
         "the real f() call site app.py:26:11 must be a resolved caller: {body}"
     );
     // find_callers reports CALL sites only: the `from mod import f` binding (line 1) is a resolved
