@@ -658,9 +658,10 @@ impl ServerHandler for BasemindServer {
              tree-sitter code map across 300+ languages (symbols, references, callers, call \
              graphs, implementations), git history + blame at symbol resolution, full-text + \
              semantic search, document RAG over 90+ file formats, and shared cross-session \
-             memory. The index lives in a machine-global cache (`~/.local/share/basemind/`, \
-             override `BASEMIND_DATA_HOME`) keyed by workspace — nothing is written into the \
-             repo — and a background daemon is the sole writer, so any number of sessions on \
+             memory. The index lives in a machine-global cache (the platform data directory — \
+             `~/Library/Application Support/basemind/` on macOS, `~/.local/share/basemind/` on \
+             Linux; override with `BASEMIND_DATA_HOME`) keyed by workspace — nothing is written \
+             into the repo — and a background daemon is the sole writer, so any number of sessions on \
              this repo read and write concurrently. basemind first, shell/grep/git fallback: \
              prefer these tools over reading files, over grep, and over naked `git` — and use \
              them for document extraction, web crawling, and code parsing too. You may be one of \

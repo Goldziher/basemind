@@ -86,7 +86,7 @@ impl Capability {
     fn routing_row(self) -> (&'static str, &'static str) {
         match self {
             Capability::CodeSearchNavigation => (
-                "`search_symbols` / `find_references` / `find_callers` / `workspace_grep`",
+                "`search_symbols` / `goto_definition` / `find_references` / `find_callers` / `find_implementations` / `call_graph` / `workspace_grep`",
                 "`grep` / `rg` / opening files to find a symbol",
             ),
             Capability::CodeMappingArchitecture => (

@@ -36,6 +36,8 @@ raw shell only when no tool covers the question.
 | Question | MCP tool | CLI |
 |---|---|---|
 | "Where is X defined?" | `search_symbols` (substring, optional `kind`) | `basemind query symbol "X"` |
+| "Jump to the definition of X used here?" | `goto_definition` (scope-aware, from a use site) | `basemind query goto-definition F line [--column]` |
+| "What's the high-level architecture / module map?" | `architecture_map` | `basemind query architecture-map` |
 | "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) | `basemind query outline F [--l2]` |
 | "What calls X?" (any name) | `find_references` | `basemind query references "X"` |
 | "What calls this specific definition?" | `find_callers` (path + name + optional kind) | `basemind query callers F name [--kind]` |
@@ -70,8 +72,9 @@ outline { path: "src/mcp/tools.rs" }
   `bar()` alike. There is no scope resolution — cross-check with `outline` when disambiguation matters.
 - Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8` to
   bound work on common names.
-- Needs an index at `.basemind/` — run `basemind scan` first (see the `basemind-scan` skill). "No
-  indexed files" means the scan hasn't run in this repo yet.
+- Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS
+  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) — run `basemind scan`
+  first (see the `basemind-scan` skill). "No indexed files" means the scan hasn't run in this repo yet.
 
 For git history / blame / diffs see `basemind-git-history`; for document RAG and semantic search see
 `basemind-documents`; for agent coordination see `basemind-comms`.
