@@ -657,9 +657,9 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
             .expect("find_callers on the cross-file definition"),
     );
 
-    assert_eq!(
-        body.get("resolved").and_then(Value::as_bool),
-        Some(true),
+    let resolved_total = body.get("resolved_total").and_then(Value::as_u64).unwrap_or(0);
+    assert!(
+        resolved_total >= 1,
         "find_callers must resolve cross-file through the daemon (not degrade to the name scan): {body}"
     );
     let hit_paths: Vec<String> = body
@@ -715,9 +715,9 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
             .await
             .expect("find_callers on the cross-file Python definition"),
     );
-    assert_eq!(
-        body.get("resolved").and_then(Value::as_bool),
-        Some(true),
+    let resolved_total = body.get("resolved_total").and_then(Value::as_u64).unwrap_or(0);
+    assert!(
+        resolved_total >= 1,
         "Python find_callers must resolve cross-file through the daemon: {body}"
     );
     let hit_paths: Vec<String> = body

@@ -1604,6 +1604,16 @@ async fn mcp_server_exercises_representative_tools() {
          got all-zero report {body}"
     );
 
+    // Seed a fresh sub-millisecond tool call immediately before reading telemetry. The `recent`
+    // window is a small ring (last ~10 calls); under feature sets that add fixture calls above
+    // (comms/memory/proposals) the earlier `search_symbols`/`outline` rows get flushed out of it, so
+    // pin one here rather than assume a specific earlier tool survived. This is a warm in-RAM lookup,
+    // so it is itself the sub-millisecond, non-zero-µs row the assertions below check for.
+    let _ = service
+        .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 5 })))
+        .await
+        .expect("search_symbols to seed a sub-millisecond telemetry row");
+
     let body = decode_text(
         &service
             .call_tool(call_params("telemetry_summary", json!({ "window": "all" })))
