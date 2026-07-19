@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Repo documents (and code chunks) now get embedded under the machine daemon.** On a
+  `daemon_writer` session the initial scan was forwarded to the daemon as a `Deferred` (code-map +
+  keyword) pass only — the promised follow-up vector-fill never ran, so nothing was ever written to
+  LanceDB and `search_documents` returned nothing for repository documents (`web_scrape` was
+  unaffected because it embeds inline). The daemon (the sole fjall writer) can now run an `Inline`
+  embed pass, and `serve` forwards a detached vector-fill follow-up after the fast initial scan — off
+  the boot handshake, so startup is not blocked on ONNX. Live watcher rescans and the explicit
+  `rescan` tool forward the embed pass too, matching the non-daemon path (#32).
+
 ## [0.22.0] — 2026-07-12
 
 > **Index rebuild on upgrade.** This release bumps the index/blob/comms schema (21 → 22), so every

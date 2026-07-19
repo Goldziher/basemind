@@ -485,7 +485,10 @@ async fn rescan_rpc_indexes_a_workspace_and_reports_it_hot() {
     let socket = daemon.socket().to_path_buf();
     let mut client = connect(&socket, "agent-scan", &workspace).await;
 
-    let report = client.rescan(workspace.clone(), None, false).await.expect("rescan");
+    let report = client
+        .rescan(workspace.clone(), None, false, false)
+        .await
+        .expect("rescan");
     assert_eq!(report.scanned, 1, "the single source is considered");
     assert_eq!(report.updated, 1, "the single source is newly indexed");
 

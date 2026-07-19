@@ -571,7 +571,12 @@ impl Broker {
             } => self.on_ack(session, message_ids, thread, to_seq),
             CommsRequest::Subscribe { thread } => self.on_subscribe(session, thread, link_tx).await,
             CommsRequest::Unsubscribe { sub } => self.on_unsubscribe(sub).await,
-            CommsRequest::Rescan { root, paths, full } => Ok(self.on_rescan(root, paths, full).await),
+            CommsRequest::Rescan {
+                root,
+                paths,
+                full,
+                embed,
+            } => Ok(self.on_rescan(root, paths, full, embed).await),
             CommsRequest::ResolvedRefs { root, query } => Ok(self.on_resolved_refs(root, query).await),
             CommsRequest::GitHistory { root, op } => Ok(self.on_git_history(root, op).await),
             #[cfg(feature = "memory")]
@@ -609,6 +614,7 @@ impl Broker {
         root: std::path::PathBuf,
         paths: Option<Vec<std::path::PathBuf>>,
         full: bool,
+        embed: bool,
     ) -> CommsResponse {
         self.mark_active().await;
         // Hold the READ side across the whole scan so a concurrent blob GC (WRITE side) cannot
@@ -616,7 +622,7 @@ impl Broker {
         let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let started = Instant::now();
-        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full)).await {
+        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full, embed)).await {
             Ok(Ok(stats)) => CommsResponse::Rescanned {
                 scanned: stats.scanned,
                 updated: stats.updated,

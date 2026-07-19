@@ -216,6 +216,12 @@ pub enum CommsRequest {
         /// Force a complete re-index (overrides `paths`).
         #[serde(default)]
         full: bool,
+        /// Run the scan with [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) so the daemon
+        /// fills document + code-chunk vectors into LanceDB. Defaults to `false` (the fast
+        /// `Deferred` code-map + keyword pass); front-ends request `true` for the detached
+        /// vector-fill follow-up. `#[serde(default)]` keeps older front-ends wire-compatible.
+        #[serde(default)]
+        embed: bool,
     },
     /// Forward a CORE memory operation to the daemon (the sole fjall writer). The namespace
     /// (`vis_byte` / `owner`) and `scope` are resolved serve-side; the daemon runs the op against

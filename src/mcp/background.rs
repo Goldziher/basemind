@@ -48,18 +48,23 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
         // A daemon_writer serve holds no write lock: forward the initial full scan to the daemon
-        // (the sole writer) and rebuild the read-only map from the index it writes. No local embed
-        // pass — the daemon owns index writes; vector fill is a follow-up.
+        // (the sole writer) and rebuild the read-only map from the index it writes. The fast pass is
+        // `Deferred` (code map + keyword lane, no ONNX) so the handshake is never blocked on the
+        // embedder; a detached follow-up then forwards an `embed` (Inline) scan so the daemon fills
+        // the document + code-chunk vectors the fast pass skipped. Without that follow-up nothing is
+        // ever written to LanceDB on this path and `search_documents` stays empty for repo documents
+        // (bug #32). This mirrors the non-daemon branch below (Deferred fast pass → detached Inline
+        // embed pass → GC), except the embed write is forwarded to the daemon, the sole writer.
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             state.initial_scan_active.store(true, Ordering::Relaxed);
             let started = std::time::Instant::now();
-            match super::daemon_forward::forward_rescan_and_refresh(&state, None, false).await {
+            match super::daemon_forward::forward_rescan_and_refresh(&state, None, false, false).await {
                 Ok(report) => tracing::info!(
                     scanned = report.scanned,
                     updated = report.updated,
                     elapsed_ms = started.elapsed().as_millis() as u64,
-                    "initial scan complete (forwarded to daemon)"
+                    "initial scan complete (forwarded to daemon; embeddings deferred)"
                 ),
                 Err(error) => tracing::warn!(%error, "initial forwarded scan failed"),
             }
@@ -67,6 +72,23 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
                 .initial_scan_ms
                 .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             state.initial_scan_active.store(false, Ordering::Relaxed);
+            // Detached vector-fill: forward an `embed` (Inline) scan so the daemon fills the vectors
+            // the fast pass skipped. No blob GC here — on the daemon-writer model the daemon owns
+            // reference-counted GC across all workspaces (a per-workspace serve sweep would be unsafe).
+            let embed_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                let embed_started = std::time::Instant::now();
+                tracing::info!("background embedding pass starting (forwarded to daemon)");
+                match super::daemon_forward::forward_rescan_and_refresh(&embed_state, None, false, true).await {
+                    Ok(report) => tracing::info!(
+                        scanned = report.scanned,
+                        updated = report.updated,
+                        elapsed_ms = embed_started.elapsed().as_millis() as u64,
+                        "background embedding pass complete (forwarded to daemon)"
+                    ),
+                    Err(error) => tracing::warn!(%error, "background forwarded embedding pass failed"),
+                }
+            });
         });
         return;
     }
@@ -161,11 +183,15 @@ fn refresh_batch(
 ) -> Result<(usize, usize, usize), String> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
+        // `embed: true` mirrors the non-daemon watcher below (`EmbedMode::Inline`): a document or
+        // source file added/edited after boot gets its vectors filled by the daemon, not left
+        // chunk-only forever.
         let report = handle
             .block_on(super::daemon_forward::forward_rescan_and_refresh(
                 state,
                 Some(paths),
                 false,
+                true,
             ))
             .map_err(|error| error.to_string())?;
         return Ok((report.scanned, report.updated, report.removed));

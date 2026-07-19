@@ -23,18 +23,24 @@ use crate::store::Store;
 /// index it writes.
 ///
 /// `paths` (with `full == false`) drives an incremental rescan of just those files; `None`/empty or
-/// `full` scans the whole working tree. Returns the daemon's scan counts. Errors — no daemon
-/// reachable, a scan failure, or a store reopen failure — surface as an [`McpError`] the caller maps
-/// to its own response.
+/// `full` scans the whole working tree. `embed` asks the daemon (the sole writer) to run an
+/// [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) vector-fill pass so documents + code
+/// chunks land in LanceDB; `false` is the fast code-map-only pass. Returns the daemon's scan counts.
+/// Errors — no daemon reachable, a scan failure, or a store reopen failure — surface as an
+/// [`McpError`] the caller maps to its own response.
 pub(super) async fn forward_rescan_and_refresh(
     state: &Arc<ServerState>,
     paths: Option<Vec<PathBuf>>,
     full: bool,
+    embed: bool,
 ) -> Result<RescanReport, McpError> {
     let client = resolve_comms_client(state, None).await?;
     let report = {
         let mut guard = client.lock().await;
-        guard.rescan(state.root.clone(), paths, full).await.map_err(comms_err)?
+        guard
+            .rescan(state.root.clone(), paths, full, embed)
+            .await
+            .map_err(comms_err)?
     };
     refresh_readonly_map(state).await?;
     Ok(report)

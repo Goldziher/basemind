@@ -195,7 +195,7 @@ async fn concurrent_cold_rescans_open_the_workspace_once_and_all_succeed() {
         let repo = repo.clone();
         tasks.push(tokio::spawn(async move {
             client
-                .rescan(repo, None, true)
+                .rescan(repo, None, true, false)
                 .await
                 .map(|_| ())
                 .map_err(|e| format!("racer {c}: {e}"))
@@ -251,7 +251,7 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
             for _ in 0..iters {
                 // Write: forward a full rescan to the sole writer (serialized per-workspace).
                 client
-                    .rescan(repo.clone(), None, true)
+                    .rescan(repo.clone(), None, true, false)
                     .await
                     .map_err(|e| format!("{agent} rescan: {e}"))?;
                 // Read: the machine registry must never lose the workspace mid-storm.
@@ -301,7 +301,10 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
         "exactly one workspace must remain registered after the storm, got {}",
         workspaces.len()
     );
-    let report = after.rescan(repo.clone(), None, true).await.expect("post-storm rescan");
+    let report = after
+        .rescan(repo.clone(), None, true, false)
+        .await
+        .expect("post-storm rescan");
     assert!(
         report.scanned >= 1,
         "a post-storm rescan must still do real work (index not torn), got scanned={}",
@@ -753,7 +756,7 @@ async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
 
     let mut client = connect(&socket, "agent-migrate", &repo).await;
     let report = client
-        .rescan(repo.clone(), None, true)
+        .rescan(repo.clone(), None, true, false)
         .await
         .expect("rescan a repo carrying a stale legacy in-repo index");
     assert!(
@@ -815,7 +818,7 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
     let repo_id = workspaces[0].repo_id.clone().expect("git workspace has a repo id");
 
     let rescan_repo = repo.clone();
-    let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true).await });
+    let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
 
     // Give the rescan a moment to actually start before triggering the stop.
     tokio::time::sleep(Duration::from_millis(100)).await;
