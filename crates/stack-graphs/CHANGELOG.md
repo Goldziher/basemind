@@ -167,12 +167,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- We no longer add divergent partial paths to a `Database`.  A divergent partial
-  path starts at the root node and has an empty symbol stack precondition.  That
+- We no longer add divergent partial paths to a `Database`. A divergent partial
+  path starts at the root node and has an empty symbol stack precondition. That
   empty precondition means that it can be concatenated to _any_ path that
   currently ends at the root node — including the result of that concatenation!
   That gives us a divergence, since we can continually prepend the path's
-  postcondition to the current symbol stack, forever.  To avoid this divergence,
+  postcondition to the current symbol stack, forever. To avoid this divergence,
   we skip these partial paths when constructing a database.
 
 ## stack-graphs 0.7.2 -- 2022-05-09
@@ -198,7 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This module requires the `json` feature.
 
 - The module `stack_graphs::visualization` defines rendering an interactive HTML
-  visualization of stack graphs.  This module requires the `json` feature.
+  visualization of stack graphs. This module requires the `json` feature.
 
 - Stack graph nodes can have associated `DebugInfo`, consisting of key-value pairs
   of strings.
@@ -217,7 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   In the C API, the enum values `sg_node_kind::SG_NODE_KIND_EXPORTED_SCOPE` and
   `sg_node_kind:SG_NODE_KIND_INTERNAL_SCOPE` are replaced by a single value
-  `sg_node_kind::SG_NODE_KIND_SCOPE`.  The field `sg_node::is_clickable` is renamed
+  `sg_node_kind::SG_NODE_KIND_SCOPE`. The field `sg_node::is_clickable` is renamed
   to `sg_node::is_endpoint`.
 
 ### Removed
@@ -230,9 +230,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The new `ForwardPartialPathStitcher::from_partial_paths` constructor lets you
   seed a path stitching search with a specific list of partial paths (which need
-  not be in the `Database`).  This can be used, for instance, to implement “find
+  not be in the `Database`). This can be used, for instance, to implement “find
   qualified definitions”, where we look for any definition of a fully qualified
-  name (expressed as a symbol stack).  There is a new test case that shows an
+  name (expressed as a symbol stack). There is a new test case that shows an
   example implementation.
 
 ### Changed
@@ -246,7 +246,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added the ability to bound the amount of work performed in each phase of the
-  path stitching algorithm.  Exposed in the C API via the following functions:
+  path stitching algorithm. Exposed in the C API via the following functions:
 
   - `sg_forward_path_stitcher_set_max_work_per_phase`
   - `sg_forward_partial_path_stitcher_set_max_work_per_phase`

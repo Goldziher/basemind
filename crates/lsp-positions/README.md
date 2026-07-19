@@ -4,15 +4,15 @@ The `lsp-positions` crate defines LSP-compatible positioning information for
 source code.
 
 When writing a tool that analyzes or operates on source code, there's a good
-chance you need to interoperate with the [Language Server Protocol][lsp].  This
+chance you need to interoperate with the [Language Server Protocol][lsp]. This
 seemingly simple requirement makes it surprisingly difficult to deal with
-_character locations_.  This is because Rust stores Unicode string content
+_character locations_. This is because Rust stores Unicode string content
 (i.e., the source code you're analyzing) in UTF-8, while LSP specifies character
 locations using [_UTF-16 code units_][lsp-utf16].
 
 For some background, Unicode characters, or code points, are encoded as one or
 more code units. In UTF-8 a code unit is 1 byte, and a character is encoded in
-1–4 code units (1–4 bytes).  In UTF-16 a code unit is 2 bytes, and characters
+1–4 code units (1–4 bytes). In UTF-16 a code unit is 2 bytes, and characters
 are encoded in 1–2 code units (2 or 4 bytes). Rust strings are encoded as UTF-8,
 and indexed by byte (which is the same as by code unit). Indices are only valid
 if they point to the first code unit of a code point.
