@@ -17,8 +17,10 @@ use super::model::{AgentCard, MessageMeta, Thread};
 
 /// The protocol version this build speaks. Bumped on any breaking change to the request /
 /// response / notification shapes. Negotiated in [`CommsRequest::Hello`]. Bumped 1→2 for the
-/// room→thread redesign.
-pub const PROTO_VER: u32 = 2;
+/// room→thread redesign; bumped 2→3 for [`CommsRequest::SubscribeInbox`] (an old client talking
+/// to a new daemon, or vice versa, now fails the Hello skew check instead of risking a decode
+/// error on the new variant).
+pub const PROTO_VER: u32 = 3;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
@@ -195,14 +197,28 @@ pub enum CommsRequest {
         to_seq: Option<u64>,
     },
     /// Open a notification stream for a thread (the link receives [`CommsNotification::Message`]
-    /// for every subsequent post). Returns a subscription handle.
+    /// for every subsequent post). Returns a subscription handle. Unlike [`CommsRequest::SubscribeInbox`],
+    /// this ALSO joins the thread (durable membership), matching its long-standing behavior.
     Subscribe {
         /// The thread to stream.
         thread: ThreadId,
     },
-    /// Cancel a notification stream opened by [`CommsRequest::Subscribe`].
+    /// Open a notification stream for the calling agent's INBOX: a push for every subsequent post
+    /// to a thread the agent is already a member of (self-authored posts excluded, mirroring
+    /// [`CommsRequest::Inbox`]'s self-exclusion). Passive — unlike [`CommsRequest::Subscribe`], it
+    /// does NOT join any thread. When `thread` is `Some`, the push is restricted to that one
+    /// thread (the agent must already be a member); `None` wakes on ANY joined thread. Backs
+    /// `inbox_wait` / `basemind comms wait`. Returns a subscription handle (same
+    /// [`CommsResponse::Subscribed`] shape as `Subscribe`).
+    SubscribeInbox {
+        /// Restrict the wake to this thread only. `None` = any joined thread.
+        #[serde(default)]
+        thread: Option<ThreadId>,
+    },
+    /// Cancel a notification stream opened by [`CommsRequest::Subscribe`] or
+    /// [`CommsRequest::SubscribeInbox`].
     Unsubscribe {
-        /// The subscription handle returned by `Subscribe`.
+        /// The subscription handle returned by `Subscribe` / `SubscribeInbox`.
         sub: u64,
     },
     /// Scan or rescan a workspace. The daemon is the sole fjall writer; front-ends forward their

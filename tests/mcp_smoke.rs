@@ -3066,6 +3066,91 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
     let _ = serve.await;
 }
 
+/// `inbox_wait` end to end over the same isolated UDS broker setup as the round-trip test above:
+/// agent-b posts, agent-a's `inbox_wait` (short timeout) returns promptly with the new message and
+/// `timed_out: false`; a second `inbox_wait` with nothing new posted times out.
+#[cfg(all(feature = "comms", unix))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn comms_inbox_wait_delivers_then_times_out() {
+    use std::sync::Arc;
+
+    use basemind::comms::client::CommsClient;
+    use basemind::comms::daemon::Broker;
+    use basemind::comms::frontend_uds::UdsFrontend;
+    use basemind::comms::ids::AgentId;
+    use basemind::comms::singleton::CommsPaths;
+    use basemind::comms::store::CommsStore;
+    use basemind::comms::transport::CommsFrontend;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("c.sock");
+    let paths = CommsPaths {
+        comms_dir: dir.path().to_path_buf(),
+        socket_path: socket_path.clone(),
+    };
+
+    let store = Arc::new(CommsStore::open(dir.path()).expect("open comms store"));
+    let broker = Arc::new(Broker::new(store));
+    let listener = {
+        let std_listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind temp socket");
+        std_listener.set_nonblocking(true).expect("nonblocking");
+        tokio::net::UnixListener::from_std(std_listener).expect("adopt listener")
+    };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let frontend = UdsFrontend::from_listener(listener, socket_path.clone());
+    let serve = tokio::spawn(async move { Box::new(frontend).serve(broker, shutdown_rx).await });
+
+    let agent_a = AgentId::parse("agent-a").expect("agent a");
+    let agent_b = AgentId::parse("agent-b").expect("agent b");
+    let mut a = CommsClient::connect(&paths, agent_a, None, None)
+        .await
+        .expect("connect a");
+    let mut b = CommsClient::connect(&paths, agent_b, None, None)
+        .await
+        .expect("connect b");
+
+    let thread = a
+        .start_thread(
+            Some("Team".to_string()),
+            None,
+            vec![basemind::comms::ids::AgentId::parse("agent-b").unwrap()],
+        )
+        .await
+        .expect("start thread")
+        .id;
+
+    b.post_message(
+        thread.clone(),
+        "deploy status".to_string(),
+        b"all green".to_vec(),
+        vec![],
+        None,
+    )
+    .await
+    .expect("b posts");
+
+    let (timed_out, rows, unread, _next) = a
+        .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_secs(10))
+        .await
+        .expect("first wait_inbox");
+    assert!(!timed_out, "a's wait must resolve from b's pre-existing post");
+    assert_eq!(rows.len(), 1, "exactly the one posted message");
+    assert_eq!(rows[0].meta.subject, "deploy status");
+    // `unread` is the count REMAINING beyond this page (same semantics as inbox_read): the one post
+    // came back in `rows`, so nothing remains — 0, not a running total.
+    assert_eq!(unread, 0, "the single post was returned in rows; none remain beyond this page");
+
+    let (timed_out2, rows2, _unread2, _next2) = a
+        .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_millis(300))
+        .await
+        .expect("second wait_inbox");
+    assert!(timed_out2, "no new post landed; the second wait must time out");
+    assert!(rows2.is_empty(), "a timed-out wait returns no rows");
+
+    let _ = shutdown_tx.send(true);
+    let _ = serve.await;
+}
+
 /// End-to-end MCP contract for the headless-shell tools through a real
 /// `basemind serve` child process. The child binary carries the
 /// `--__internal-daemon` intercept, so `shell_spawn` actually re-execs basemind

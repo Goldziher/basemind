@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use super::cursor::Cursor;
 use super::daemon::threads::{build_chain, mint_message_id, mint_thread_id, validate_dimensions};
-use super::daemon::{Broker, DEFAULT_LIMIT, LifecycleState, MAX_LIMIT, Session, SubSink};
+use super::daemon::{Broker, DEFAULT_LIMIT, LifecycleState, MAX_LIMIT, Session, SubScope, SubSink};
 use super::ids::{AgentId, ThreadId};
 use super::model::{AgentCard, AgentKind, AgentRecord, Membership, MessageBody, MessageMeta, Thread, now_micros};
 use super::protocol::{CommsNotification, CommsOut, CommsResponse, PROTO_VER, SeqMeta, StatusReport};
@@ -479,7 +479,48 @@ impl Broker {
             reg.sinks.insert(
                 sub,
                 SubSink {
-                    thread,
+                    scope: SubScope::Thread(thread),
+                    agent,
+                    tx: link_tx.clone(),
+                },
+            );
+            reg.state = LifecycleState::Active;
+        }
+        self.subscriber_count.fetch_add(1, Ordering::Relaxed);
+        Ok(CommsResponse::Subscribed { sub })
+    }
+
+    /// Open a passive, membership-routed inbox stream (see [`SubScope::Inbox`]). Unlike
+    /// `on_subscribe`, this does NOT join `thread` — it only verifies the calling agent is already
+    /// a member when `thread` is `Some`, so a caller cannot use it to snoop a thread it hasn't
+    /// joined.
+    pub(super) async fn on_subscribe_inbox(
+        &self,
+        session: &Session,
+        thread: Option<ThreadId>,
+        link_tx: &mpsc::Sender<CommsOut>,
+    ) -> Result<CommsResponse, CommsStoreError> {
+        let Some(agent) = session.agent.clone() else {
+            return Ok(need_hello());
+        };
+        if let Some(thread) = &thread {
+            if self.store.get_thread(thread)?.is_none() {
+                return Ok(unknown_thread(thread));
+            }
+            if !self.store.members(thread)?.contains(&agent) {
+                return Ok(CommsResponse::Error {
+                    code: "not_member".to_string(),
+                    message: format!("not a member of {}", thread.as_str()),
+                });
+            }
+        }
+        let sub = self.next_sub.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut reg = self.registry.lock().await;
+            reg.sinks.insert(
+                sub,
+                SubSink {
+                    scope: SubScope::Inbox { thread },
                     agent,
                     tx: link_tx.clone(),
                 },
@@ -518,18 +559,36 @@ impl Broker {
         })
     }
 
-    /// Push a new message to every live sink subscribed to `thread`. Best-effort: a sink whose
-    /// channel is full or closed is dropped.
+    /// Push a new message to every live sink that should wake for `thread`. [`SubScope::Thread`]
+    /// sinks wake on an exact thread match (unchanged). [`SubScope::Inbox`] sinks wake when their
+    /// own filter allows this thread, the poster isn't the sink's own agent (mirrors `on_inbox`'s
+    /// self-exclusion), and the sink's agent is a member of `thread` — membership is read ONCE per
+    /// call and reused across every inbox sink, rather than once per sink. Best-effort: a sink
+    /// whose channel is full or closed is dropped; a membership-read failure is logged and treated
+    /// as "no inbox sinks wake" for this post rather than failing the post itself.
     async fn fan_out(&self, thread: &ThreadId, meta: &MessageMeta) {
+        let members = self.store.members(thread).unwrap_or_else(|error| {
+            tracing::warn!(%error, thread = thread.as_str(), "comms: fan_out membership read failed");
+            Vec::new()
+        });
         let mut dead: Vec<u64> = Vec::new();
         {
             let reg = self.registry.lock().await;
             for (sub, sink) in reg.sinks.iter() {
-                if &sink.thread == thread {
-                    let note = CommsOut::Notification(CommsNotification::Message(meta.clone()));
-                    if sink.tx.try_send(note).is_err() {
-                        dead.push(*sub);
+                let wakes = match &sink.scope {
+                    SubScope::Thread(t) => t == thread,
+                    SubScope::Inbox { thread: filter } => {
+                        (filter.is_none() || filter.as_ref() == Some(thread))
+                            && meta.from != sink.agent
+                            && members.contains(&sink.agent)
                     }
+                };
+                if !wakes {
+                    continue;
+                }
+                let note = CommsOut::Notification(CommsNotification::Message(meta.clone()));
+                if sink.tx.try_send(note).is_err() {
+                    dead.push(*sub);
                 }
             }
         }
