@@ -111,6 +111,19 @@ pub(super) async fn resolve_comms_client(
     Ok(handle)
 }
 
+/// Open a fresh, un-cached broker connection for the server's own identity. Long forwarded
+/// operations (rescan / embed) use this instead of [`resolve_comms_client`] so they never hold the
+/// shared per-identity client mutex that interactive comms tools + `resolved_refs` reads serialize
+/// on — a multi-minute scan/embed would otherwise head-of-line-block every other comms call for
+/// that identity (observed: a peer agent's message_get / thread_join / inbox_read all stalled for
+/// minutes behind a forwarded embed pass). The returned client is owned and dropped by the caller.
+pub(super) async fn connect_ephemeral_client(state: &ServerState) -> Result<CommsClient, McpError> {
+    let target = AgentId::parse(state.agent_id.clone())
+        .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?;
+    let (remote, cwd) = scope_context_for(&state.root);
+    CommsClient::ensure_and_connect(target, remote, cwd).await.map_err(comms_err)
+}
+
 /// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_LIMIT).clamp(1, crate::comms::daemon::MAX_LIMIT)
