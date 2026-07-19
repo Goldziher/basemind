@@ -383,10 +383,15 @@ fn process_file(
         None
     };
 
+    // Stage BM25 postings into Fjall here in the worker, then clear them: they are consumed at this
+    // point, and the descriptor that follows into `FileResult` is accumulated corpus-wide, so it
+    // must stay metadata-only (see `PendingCodeBatch`).
     #[cfg(feature = "code-search")]
-    if let Some(batch) = &code_batch {
+    let code_batch = code_batch.map(|mut batch| {
         index_batch.stage_bm25(&rel_path, &batch.bm25);
-    }
+        batch.bm25 = Vec::new();
+        batch
+    });
 
     let entry = FileEntry {
         hash_hex: hash_hex_str.to_string(),
