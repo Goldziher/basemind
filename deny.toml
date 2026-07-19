@@ -15,6 +15,9 @@ ignore = [
     "RUSTSEC-2026-0192",
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # unmaintained (not a vulnerability); transitive via xberg's hf-xet / text-shaping stack
+    "RUSTSEC-2025-0057", # fxhash - no longer maintained
+    "RUSTSEC-2026-0206", # rustybuzz - unmaintained
 ]
 
 [licenses]
@@ -62,6 +65,11 @@ allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]
 name = "uluru"
+allow = ["MPL-2.0"]
+
+# colored is MPL-2.0, pulled transitively through xberg -> hf-hub -> hf-xet -> xet-runtime.
+[[licenses.exceptions]]
+name = "colored"
 allow = ["MPL-2.0"]
 
 [[licenses.exceptions]]
