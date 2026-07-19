@@ -1,7 +1,9 @@
 use basemind::config::{self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, DocumentsCliOverrides, merge_layers};
 
+#[cfg(feature = "intelligence")]
 const SCHEMA_PATH: &str = "schema/basemind-config-v1.schema.json";
 
+#[cfg(feature = "intelligence")]
 fn generate_schema_text() -> String {
     let schema = schemars::schema_for!(ConfigV1);
     let mut s = serde_json::to_string_pretty(&schema).expect("schema serializes");
@@ -11,6 +13,15 @@ fn generate_schema_text() -> String {
     s
 }
 
+// The snapshot is byte-exact, so it is only meaningful where the generated key ordering matches
+// the committed file. `schema_for!` derives the *content* of the schema feature-independently, but
+// the JSON *property ordering* is not: the `intelligence` stack (lancedb/arrow) transitively enables
+// `serde_json/preserve_order`, which switches `serde_json::Map` from sorted `BTreeMap` to
+// insertion-order `IndexMap`. The committed snapshot is insertion-order, so a default-feature build
+// (sorted) would spuriously fail the byte comparison. Gate both the check and the regenerator on
+// `intelligence` — the feature that guarantees insertion order — and regenerate under a link-safe
+// superset such as `--features code-search`.
+#[cfg(feature = "intelligence")]
 #[test]
 fn schema_snapshot_matches_derived() {
     let derived = generate_schema_text();
@@ -34,10 +45,13 @@ fn schema_snapshot_matches_derived() {
 }
 
 /// Regenerate the committed snapshot. Gated behind `#[ignore]` so updating the
-/// schema is always an explicit, audited step. Runs under any feature set: the
-/// only `#[cfg(feature)]` on the config surface gates an `impl` method, not a
-/// struct field, so `schema_for!(ConfigV1)` is feature-independent — no reason
-/// to pin schema verification to the heaviest (and least link-portable) build.
+/// schema is always an explicit, audited step, and behind `intelligence` so it
+/// only runs where `serde_json/preserve_order` yields the canonical
+/// insertion-order output (see [`schema_snapshot_matches_derived`]). Regenerate
+/// with a link-safe superset, e.g.
+/// `cargo test --no-default-features --features code-search --test config_schema
+/// -- --ignored regenerate_schema`.
+#[cfg(feature = "intelligence")]
 #[test]
 #[ignore]
 fn regenerate_schema() {
