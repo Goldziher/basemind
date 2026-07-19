@@ -14,7 +14,7 @@ use std::sync::atomic::Ordering;
 
 use rmcp::ErrorData as McpError;
 
-use super::helpers_comms::{comms_err, resolve_comms_client};
+use super::helpers_comms::{comms_err, connect_ephemeral_client};
 use super::{MapCache, ServerState};
 use crate::comms::client::RescanReport;
 use crate::store::Store;
@@ -34,14 +34,14 @@ pub(super) async fn forward_rescan_and_refresh(
     full: bool,
     embed: bool,
 ) -> Result<RescanReport, McpError> {
-    let client = resolve_comms_client(state, None).await?;
-    let report = {
-        let mut guard = client.lock().await;
-        guard
-            .rescan(state.root.clone(), paths, full, embed)
-            .await
-            .map_err(comms_err)?
-    };
+    // Dedicated, un-cached connection: a rescan/embed can run for minutes, so it must NOT hold the
+    // shared per-identity comms client mutex — doing so head-of-line-blocks every other comms tool
+    // and `resolved_refs` read for this identity until the scan finishes (#36).
+    let mut client = connect_ephemeral_client(state).await?;
+    let report = client
+        .rescan(state.root.clone(), paths, full, embed)
+        .await
+        .map_err(comms_err)?;
     refresh_readonly_map(state).await?;
     Ok(report)
 }
