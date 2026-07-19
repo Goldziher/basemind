@@ -46,6 +46,7 @@ mod identity;
 mod kneedle;
 mod lean;
 mod lenient;
+mod map_fingerprint;
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 mod memory;
 #[cfg(feature = "memory")]
@@ -453,6 +454,12 @@ pub(crate) struct MapCache {
     /// In-RAM trait→impl index, same read-only-only gating as `calls`. Backs
     /// `find_implementations` from the L1 blobs when Fjall is held elsewhere.
     pub(crate) impls: Option<helpers_impls::InRamImplIndex>,
+    /// Fingerprint of the indexed file set this map was built from — see
+    /// [`map_fingerprint::index_fingerprint`]. The refresh paths compare it against a freshly
+    /// reopened store and SKIP the whole-corpus rebuild when it matches, which is what keeps a
+    /// no-op daemon scan from transiently doubling serve's resident memory. `0` on the
+    /// [`empty`](Self::empty) boot placeholder, which never matches a populated index.
+    pub(crate) fingerprint: u64,
 }
 
 impl MapCache {
@@ -484,6 +491,7 @@ impl MapCache {
             (None, None)
         };
         Self {
+            fingerprint: map_fingerprint::index_fingerprint(store),
             by_path,
             imports_index,
             calls,
@@ -499,6 +507,9 @@ impl MapCache {
     /// the fully-built map, never this placeholder.
     fn empty() -> Self {
         Self {
+            // Never matches a populated index, so a serve still warming its map can never mistake
+            // this placeholder for a current one and skip the build.
+            fingerprint: 0,
             by_path: BTreeMap::new(),
             imports_index: Vec::new(),
             calls: None,
@@ -543,6 +554,7 @@ impl MapCache {
             .map(|(p, l1)| (p.to_path_buf(), l1.imports.clone()))
             .collect();
         Self {
+            fingerprint: map_fingerprint::index_fingerprint(store),
             by_path,
             imports_index,
             calls: None,
