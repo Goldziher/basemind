@@ -52,18 +52,29 @@ pub(super) async fn forward_rescan_and_refresh(
 async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> {
     let view = state.store.read().await.view.clone();
     let root = state.root.clone();
+    let current_fingerprint = state.cache.load().fingerprint;
     let (store, cache) = tokio::task::spawn_blocking(move || {
         // Blobs-only: never open the fjall index (the daemon holds its exclusive lock as the sole
         // writer). The rebuilt store + map read from the shared blobs the daemon just wrote.
         let store = Store::open_read_only_no_index(&root, &view)?;
-        let cache = MapCache::build(&store);
-        Ok::<(Store, MapCache), crate::store::StoreError>((store, cache))
+        // A scan that changed nothing (`updated: 0, removed: 0` — the common case under editor or
+        // gitignored churn) still rewrites `index.msgpack`. Rebuilding the whole map for it means
+        // re-reading every L1/L2 blob while the OLD map is still resident in `state.cache`, which
+        // transiently doubles serve's RSS. An unchanged fingerprint proves the content-addressed
+        // blobs behind the map are identical, so the map already in hand is still exactly correct.
+        let cache =
+            (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint).then(|| MapCache::build(&store));
+        Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
     })
     .await
     .map_err(|error| McpError::internal_error(format!("refresh map task panicked: {error}"), None))?
     .map_err(|error| McpError::internal_error(format!("reopen read-only store: {error}"), None))?;
+    // The store is swapped either way: the daemon rewrote `index.msgpack`, and store-reading tools
+    // (`status`'s `file_count`, corpus bytes) read `store.index` directly rather than the map.
     *state.store.write().await = store;
-    state.cache.store(Arc::new(cache));
-    state.cache_generation.fetch_add(1, Ordering::Relaxed);
+    if let Some(cache) = cache {
+        state.cache.store(Arc::new(cache));
+        state.cache_generation.fetch_add(1, Ordering::Relaxed);
+    }
     Ok(())
 }

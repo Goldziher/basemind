@@ -297,6 +297,16 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                         continue;
                     }
                 };
+                // `index.msgpack` being REWRITTEN does not mean any indexed file CHANGED: the daemon
+                // rewrites it after every scan, including one that touched nothing. Rebuilding the
+                // whole corpus here — re-reading every L1/L2 blob while the old map is still
+                // resident — is what made serve's RSS sawtooth. The fingerprint proves the blobs
+                // behind the map are identical, so the map we already hold is still exactly right.
+                let fingerprint = super::map_fingerprint::index_fingerprint(&new_store);
+                if fingerprint == state.cache.load().fingerprint {
+                    tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
+                    continue;
+                }
                 let new_cache = Arc::new(MapCache::build(&new_store));
                 tracing::info!(
                     files = new_cache.by_path.len(),
