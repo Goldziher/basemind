@@ -363,10 +363,19 @@ pub(crate) fn dir_size(dir: &Path) -> Result<u64, GcError> {
             source,
         })?;
         let path = entry.path();
-        let meta = entry.metadata().map_err(|source| GcError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let meta = match entry.metadata() {
+            Ok(meta) => meta,
+            // A file — typically a `*.tmp` mid atomic-rename — can vanish between `read_dir` and
+            // `metadata` under a concurrent scan/write. That's benign for a size estimate: skip it
+            // rather than failing the whole `cache_stats` call (a flaky race otherwise).
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(GcError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        };
         if meta.is_dir() {
             total += dir_size(&path)?;
         } else {
