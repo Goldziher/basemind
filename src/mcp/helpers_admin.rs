@@ -244,7 +244,9 @@ async fn fetch_rescan_stats(
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
-        let report = super::daemon_forward::forward_rescan_and_refresh(state, scoped_paths, false).await?;
+        // `embed: true` matches the local path below (`EmbedMode::Inline`): an explicit `rescan`
+        // fills document + code-chunk vectors, it isn't a code-map-only pass.
+        let report = super::daemon_forward::forward_rescan_and_refresh(state, scoped_paths, false, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,
             updated: report.updated,

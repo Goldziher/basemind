@@ -121,29 +121,31 @@ impl WorkspacePool {
     ///
     /// `full` forces a complete working-tree scan and overrides `paths`. Otherwise, a non-empty
     /// `paths` drives an incremental rescan of just those files; `None`/empty falls back to a full
-    /// working-tree scan. Embeddings are [`EmbedMode::Deferred`] — the daemon writes the code map +
-    /// keyword lane; vector fill is a serve/CLI concern and must not block the writer on ONNX.
+    /// working-tree scan.
+    ///
+    /// `embed` picks the embed mode. The default fast pass is [`EmbedMode::Deferred`] — code map +
+    /// keyword lane, no ONNX — so the boot handshake is never blocked on the embedder. Front-ends
+    /// request `embed == true` for the detached vector-fill follow-up: an [`EmbedMode::Inline`] pass
+    /// so documents and code chunks get their LanceDB vectors. The daemon is the sole fjall writer,
+    /// so this embed write must be owned here (a `Deferred`-only daemon would leave `search_documents`
+    /// permanently empty for repo documents).
     pub(crate) fn rescan(
         &self,
         root: &Path,
         paths: Option<Vec<PathBuf>>,
         full: bool,
+        embed: bool,
     ) -> Result<ScanStats, WorkspacePoolError> {
         let entry = self.get_or_open(root)?;
         entry.touch();
 
+        let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
         let report = match paths {
             Some(ref paths) if !full && !paths.is_empty() => {
-                scanner::scan_paths(&entry.root, &mut store, &entry.config, paths, EmbedMode::Deferred)?
+                scanner::scan_paths(&entry.root, &mut store, &entry.config, paths, mode)?
             }
-            _ => scanner::scan(
-                &entry.root,
-                &mut store,
-                &entry.config,
-                ScanSource::WorkingTree,
-                EmbedMode::Deferred,
-            )?,
+            _ => scanner::scan(&entry.root, &mut store, &entry.config, ScanSource::WorkingTree, mode)?,
         };
         Ok(report.stats)
     }

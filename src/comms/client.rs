@@ -508,14 +508,26 @@ impl CommsClient {
     /// Ask the daemon (the machine's sole fjall writer) to scan or rescan a workspace. Front-ends
     /// forward their writes here so concurrent read-only sessions never contend for the index lock.
     /// A non-empty `paths` (with `full == false`) drives an incremental rescan; otherwise the whole
-    /// working tree is scanned. Idempotent, so the transparent reconnect-and-retry is replay-safe.
+    /// working tree is scanned. `embed` requests an
+    /// [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) vector-fill pass (documents + code
+    /// chunks); `false` is the fast `Deferred` code-map pass. Idempotent, so the transparent
+    /// reconnect-and-retry is replay-safe.
     pub async fn rescan(
         &mut self,
         root: PathBuf,
         paths: Option<Vec<PathBuf>>,
         full: bool,
+        embed: bool,
     ) -> Result<RescanReport, CommsClientError> {
-        match self.request(CommsRequest::Rescan { root, paths, full }).await? {
+        match self
+            .request(CommsRequest::Rescan {
+                root,
+                paths,
+                full,
+                embed,
+            })
+            .await?
+        {
             CommsResponse::Rescanned {
                 scanned,
                 updated,
