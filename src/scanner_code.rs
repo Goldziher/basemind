@@ -4,11 +4,13 @@
 //! [`chunk_and_embed`] derives [`crate::chunk::CodeChunk`]s from the cached extraction + source
 //! bytes (no re-parse), embeds each chunk's `searchable_text`, persists a content-addressed
 //! `.chunk.msgpack` sidecar (the embedding cache), and hands back a [`PendingCodeBatch`] carrying
-//! the LanceDB rows. The single-threaded apply pass drains those batches and
-//! [`flush_code_batches`] pushes them into the `code_chunks` table.
+//! only lightweight metadata (path + blob hash + embedding dim) — never the LanceDB rows. The
+//! single-threaded apply pass drains those descriptors and [`flush_code_batches`] re-reads each
+//! file's sidecar to rebuild + write its rows one file at a time.
 //!
 //! The embed compute runs in the parallel per-file worker; the LanceDB write is deferred + serial
-//! — exactly the document-tier pattern.
+//! — exactly the document-tier pattern. Deferring the row-building (not just the write) keeps peak
+//! embed-write RAM at one file's rows, independent of corpus size.
 
 #![cfg(feature = "code-search")]
 
@@ -23,19 +25,28 @@ use crate::scanner::EmbedMode;
 use crate::search::bm25::{ChunkPosting, build_chunk_postings};
 use crate::store::Store;
 
-/// Per-file deferred LanceDB write for the code-search tier. Built inside the parallel worker;
-/// consumed by [`flush_code_batches`] in the single-threaded apply pass.
+/// Per-file deferred-LanceDB-write descriptor for the code-search tier. Built inside the parallel
+/// worker; consumed by [`flush_code_batches`] in the single-threaded apply pass.
+///
+/// Metadata only: it carries the content hash needed to re-read the persisted `.chunk.msgpack`
+/// sidecar at flush time, NOT the `CodeRow`s or their embedding vectors. Holding the vectors here
+/// (one `Vec<f32>` per chunk, across the whole corpus) was the memory leak this shape fixes.
+///
+/// The `bm25` postings are the exception — they are consumed by the worker itself (staged into
+/// Fjall immediately after this descriptor is built) and cleared before the descriptor is
+/// accumulated, so they never ride along the corpus-wide Vec either.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingCodeBatch {
     /// Repository-relative path, forward-slash separated.
     pub rel_path: String,
-    /// Embedding vector length; `0` when embeddings were disabled.
+    /// Content hash (hex) of the source file — the key under which the `.chunk.msgpack` sidecar is
+    /// content-addressed. The flush re-reads that sidecar to rebuild rows on demand.
+    pub blob_hash: String,
+    /// Embedding vector length; `0` when embeddings were disabled (no rows to emit — BM25-only).
     pub embedding_dim: u16,
-    /// The rows ready to land in the `code_chunks` table. Empty when embeddings were disabled.
-    /// The `scope` field on each row is filled in by [`flush_code_batches`] at write time.
-    pub rows: Vec<CodeRow>,
     /// BM25 keyword postings for this file's chunks — staged into the Fjall index by the worker
-    /// (via [`crate::index::writer::IndexWriter::upsert_bm25_file`]), independent of embeddings.
+    /// (via [`crate::index::writer::IndexWriter::upsert_bm25_file`]), independent of embeddings, then
+    /// cleared so the accumulated descriptor stays metadata-only.
     pub bm25: Vec<ChunkPosting>,
 }
 
@@ -44,17 +55,17 @@ pub(crate) fn should_chunk(config: &Config) -> bool {
     config.code_search.enabled
 }
 
-/// A rows-empty [`PendingCodeBatch`] carrying only the BM25 postings for `chunks` — the
-/// graceful-degradation result when embeddings were requested but the embedder was unavailable.
-/// `None` for a chunkless file (nothing to index).
-fn bm25_batch_from_chunks(rel: &str, chunks: &[crate::chunk::CodeChunk]) -> Option<PendingCodeBatch> {
+/// A rows-empty [`PendingCodeBatch`] (`embedding_dim: 0`) carrying only the BM25 postings for
+/// `chunks` — the graceful-degradation result when embeddings were requested but the embedder was
+/// unavailable. `None` for a chunkless file (nothing to index).
+fn bm25_batch_from_chunks(rel: &str, blob_hash: &str, chunks: &[crate::chunk::CodeChunk]) -> Option<PendingCodeBatch> {
     if chunks.is_empty() {
         return None;
     }
     Some(PendingCodeBatch {
         rel_path: rel.to_string(),
+        blob_hash: blob_hash.to_string(),
         embedding_dim: 0,
-        rows: Vec::new(),
         bm25: build_chunk_postings(chunks),
     })
 }
@@ -125,8 +136,8 @@ pub(crate) fn chunk_and_embed(
         let bm25 = build_chunk_postings(&chunks);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
+            blob_hash: hash_hex.to_string(),
             embedding_dim: 0,
-            rows: Vec::new(),
             bm25,
         }));
     }
@@ -143,7 +154,7 @@ pub(crate) fn chunk_and_embed(
                 Some(blob) if !blob.chunks.is_empty() => blob.chunks,
                 _ => chunk_file(rel, hash_hex, l1, l2, bytes, opts),
             };
-            return Ok(bm25_batch_from_chunks(rel, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
         }
     };
     let dim = embedder.dim();
@@ -151,12 +162,13 @@ pub(crate) fn chunk_and_embed(
     if let Some(blob) = &cached
         && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
     {
-        let rows = build_rows(rel, &blob.chunks, &blob.embeddings);
+        // The sidecar already carries the vectors; the flush re-reads it to build rows. Here we
+        // only stage BM25 (worker-owned) and hand back the metadata descriptor.
         let bm25 = build_chunk_postings(&blob.chunks);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
+            blob_hash: hash_hex.to_string(),
             embedding_dim: dim,
-            rows,
             bm25,
         }));
     }
@@ -185,14 +197,13 @@ pub(crate) fn chunk_and_embed(
                 want = chunks.len(),
                 "embedder returned wrong vector count; indexing BM25 keyword lane only"
             );
-            return Ok(bm25_batch_from_chunks(rel, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
         }
         Err(error) => {
             tracing::warn!(rel, ?error, "embed code chunks failed; indexing BM25 keyword lane only");
-            return Ok(bm25_batch_from_chunks(rel, &chunks));
+            return Ok(bm25_batch_from_chunks(rel, hash_hex, &chunks));
         }
     };
-    let rows = build_rows(rel, &chunks, &embeddings);
     let bm25 = build_chunk_postings(&chunks);
     let blob = CodeChunkBlob {
         schema_ver: SCHEMA_VER,
@@ -204,33 +215,40 @@ pub(crate) fn chunk_and_embed(
     if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
         tracing::warn!(rel, ?error, "write code-chunk sidecar failed; embedding cache skipped");
     }
+    // Rows are rebuilt from the sidecar we just persisted, at flush time — not held here.
     Ok(Some(PendingCodeBatch {
         rel_path: rel.to_string(),
+        blob_hash: hash_hex.to_string(),
         embedding_dim: dim,
-        rows,
         bm25,
     }))
 }
 
-/// Assemble the LanceDB rows for a file's chunks + embeddings (parallel arrays). `scope` is left
-/// empty here and stamped by [`flush_code_batches`] at write time (it is a flush-time concern).
-fn build_rows(rel: &str, chunks: &[crate::chunk::CodeChunk], embeddings: &[Vec<f32>]) -> Vec<CodeRow> {
+/// Assemble the LanceDB rows for a file's chunks + embeddings (parallel arrays), **consuming** both
+/// so the chunk text and embedding vectors move into the rows instead of being cloned. Called at
+/// flush time with the owned sidecar blob; `scope` is stamped directly (no second pass needed).
+fn build_rows_owned(
+    rel: &str,
+    scope: &str,
+    chunks: Vec<crate::chunk::CodeChunk>,
+    embeddings: Vec<Vec<f32>>,
+) -> Vec<CodeRow> {
     chunks
-        .iter()
-        .zip(embeddings.iter())
+        .into_iter()
+        .zip(embeddings)
         .map(|(c, emb)| CodeRow {
-            scope: String::new(),
+            scope: scope.to_string(),
             path: rel.to_string(),
-            chunk_id: c.chunk_id.clone(),
-            symbol: c.symbol.clone().unwrap_or_default(),
-            kind: c.kind.clone().unwrap_or_default(),
-            lang: c.lang.clone(),
+            chunk_id: c.chunk_id,
+            symbol: c.symbol.unwrap_or_default(),
+            kind: c.kind.unwrap_or_default(),
+            lang: c.lang,
             line_start: c.line_start,
             line_end: c.line_end,
             byte_start: c.byte_start,
             byte_end: c.byte_end,
-            text: c.text.clone(),
-            embedding: emb.clone(),
+            text: c.text,
+            embedding: emb,
         })
         .collect()
 }
@@ -272,10 +290,17 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
     }
 }
 
-/// Push every pending code batch into the `code_chunks` LanceDB table. Opens the store lazily —
-/// if every batch is empty (embeddings off) no LanceDB connection is made. Errors are logged and
-/// skipped per file so one malformed embedding never aborts the scan. Returns the number of files
-/// for which rows were written.
+/// Stream every pending code batch into the `code_chunks` LanceDB table, one file at a time. Opens
+/// the store lazily — if no batch carries vectors (embeddings off) no LanceDB connection is made.
+///
+/// For each embedded file this re-reads the file's already-persisted `.chunk.msgpack` sidecar,
+/// rebuilds its rows, writes them, and drops them before the next file — so peak embed-write RAM is
+/// one file's rows plus one Arrow batch, independent of corpus size. (The sidecar is guaranteed on
+/// disk here: every `embedding_dim > 0` batch either wrote it in `chunk_and_embed` or reused an
+/// existing one, both before this post-barrier lane runs.)
+///
+/// Errors are logged and skipped per file so one malformed embedding never aborts the scan. Returns
+/// the number of files for which rows were written.
 pub(crate) fn flush_code_batches(
     store: &mut Store,
     scope: &str,
@@ -311,14 +336,31 @@ pub(crate) fn flush_code_batches(
     };
 
     let mut inserted = 0usize;
-    for mut batch in batches {
-        if batch.rows.is_empty() {
+    for batch in batches {
+        if batch.embedding_dim == 0 {
             continue;
         }
-        for row in &mut batch.rows {
-            row.scope = scope.to_string();
+        let blob = match store.read_chunks_by_hex(&batch.blob_hash) {
+            Ok(Some(blob)) if blob.embedding_dim == dim && blob.embeddings.len() == blob.chunks.len() => blob,
+            Ok(Some(_)) => {
+                // Sidecar no longer carries matching vectors (e.g. overwritten chunk-only) — nothing
+                // to write for this file. BM25 was already staged in the worker.
+                continue;
+            }
+            Ok(None) => {
+                tracing::warn!(rel = %batch.rel_path, "chunk sidecar missing at flush; skipping vector rows");
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(rel = %batch.rel_path, ?error, "re-read chunk sidecar failed; skipping vector rows");
+                continue;
+            }
+        };
+        if blob.chunks.is_empty() {
+            continue;
         }
-        match lance.replace_code_chunks(scope, &batch.rel_path, batch.rows) {
+        let rows = build_rows_owned(&batch.rel_path, scope, blob.chunks, blob.embeddings);
+        match lance.replace_code_chunks(scope, &batch.rel_path, rows) {
             Ok(()) => inserted += 1,
             Err(error) => {
                 tracing::warn!(rel = %batch.rel_path, ?error, "lance replace_code_chunks failed; code search may be incomplete");
@@ -353,18 +395,36 @@ mod tests {
 
     #[test]
     fn bm25_batch_from_chunks_is_rows_empty_with_postings() {
-        let batch = bm25_batch_from_chunks("src/lib.rs", &[chunk("h:0", "alpha beta alpha")])
+        let batch = bm25_batch_from_chunks("src/lib.rs", "deadbeef", &[chunk("h:0", "alpha beta alpha")])
             .expect("non-empty chunks must yield a batch");
         assert_eq!(batch.rel_path, "src/lib.rs");
+        assert_eq!(
+            batch.blob_hash, "deadbeef",
+            "carries the content hash for the flush re-read"
+        );
         assert_eq!(batch.embedding_dim, 0, "no embeddings on the degraded path");
-        assert!(batch.rows.is_empty(), "no LanceDB rows without embeddings");
         assert_eq!(batch.bm25.len(), 1, "one posting per chunk");
         assert_eq!(batch.bm25[0].doclen, 3, "three tokens incl. the repeat");
     }
 
     #[test]
     fn bm25_batch_from_chunks_is_none_for_chunkless_file() {
-        assert!(bm25_batch_from_chunks("src/empty.rs", &[]).is_none());
+        assert!(bm25_batch_from_chunks("src/empty.rs", "deadbeef", &[]).is_none());
+    }
+
+    /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
+    /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata
+    /// fields — re-introducing a `rows: Vec<CodeRow>` (or any embedding payload) field would break
+    /// this compile, catching a regression back to the corpus-wide accumulation that leaked GBs.
+    #[test]
+    fn pending_code_batch_is_metadata_only() {
+        let batch = PendingCodeBatch {
+            rel_path: "src/lib.rs".to_string(),
+            blob_hash: "deadbeef".to_string(),
+            embedding_dim: 768,
+            bm25: Vec::new(),
+        };
+        assert_eq!(batch.embedding_dim, 768);
     }
 
     fn embedded_blob(model: &str, dim: u16) -> CodeChunkBlob {
