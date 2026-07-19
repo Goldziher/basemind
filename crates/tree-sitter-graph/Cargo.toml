@@ -24,7 +24,7 @@ test = false
 
 [dependencies]
 log = "0.4"
-regex = "1.13.0"
+regex = "1.13.1"
 serde = "1.0"
 serde_json = "1.0"
 smallvec = { version = "1.15", features = ["union"] }

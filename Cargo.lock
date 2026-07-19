@@ -1842,9 +1842,9 @@ dependencies = [
 
 [[package]]
 name = "crawlberg"
-version = "1.0.5"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2200ee1bcca212516ab5d0900a0c108c50e999295316c8351c52b7ea8e2a504c"
+checksum = "891e3e09fe06aa50b422b9c42b1393693c80a3a1bd544e9b9c7036259f470640"
 dependencies = [
  "ahash 0.8.12",
  "aho-corasick",
@@ -3418,9 +3418,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 
 [[package]]
 name = "fjall"
-version = "3.1.6"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fcdc69609906151dff9b534e30eaf8515082055d36f628e382bd0b5d6a1d362"
+checksum = "420a84699b8ccbb1ed573e38e88f4f23637b45beab6432066452f834be469c57"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -6026,9 +6026,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.47.0"
+version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "281c43ff06dcb331e9356d30e38853d559ce3d0a3f693e0b0e102667dec14fb1"
+checksum = "9baf521a926fd1e6f94af6922be9686b61c8a89a5fb7e14d6a1e21b79738d4cc"
 dependencies = [
  "ahash 0.8.12",
  "bytecount",
@@ -6055,9 +6055,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.47.0"
+version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee0b351864e7ffbc5db9273daf7fa1b4d5177b0946713d667ca571b83c0b4045"
+checksum = "d668f4775619127513d9a4f190704d20a66d20ccf0efc258f8ed42548e5fd7cd"
 dependencies = [
  "regex-syntax",
 ]
@@ -7109,9 +7109,9 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "lsm-tree"
-version = "3.1.6"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39ca67401338b98d58447387dd5230552d2241bc388206e491d137b18dfea9d6"
+checksum = "055a908d502129cf63bedae52f2db222e4436d2da32a69df9b84ac9fb9147761"
 dependencies = [
  "byteorder-lite",
  "byteview",
@@ -9490,9 +9490,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.47.0"
+version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "348e860aeb0b7bd035778fd11dd9cd5290d32e4aed3b8f2274a00287a9fd362b"
+checksum = "df843f41f0cb459649f64a8b6b10579cf454f7a7420dc702767c81a26f23d780"
 dependencies = [
  "ahash 0.8.12",
  "fluent-uri",
@@ -9507,9 +9507,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.13.0"
+version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a0e75113e14dc5acb068cd0786884f214f1312650a3d36d269f5c4f3cdee8a2"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -9519,9 +9519,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.15"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f388202e4b80542a0921078cc23b6333bcf1409c1e3f86404cae4766a6131db"
+checksum = "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -9816,9 +9816,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-client"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfef589de029a6ff0c557badbf25d3cf6aec9bddbcaec533102be5ff921369a3"
+checksum = "0229231128141add0463cd755b03ce29e3057086555f893cbe52d36705aefe3f"
 dependencies = [
  "libc",
  "rmux-core",
@@ -9835,9 +9835,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-core"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5dde1d3893d9d4644b012dd36ee80bb966bb57b7f2b016eac342c22a73410b7"
+checksum = "68d91407352626dc3edf45801a2286204fce54e79ca9b7364541c1be9bdc3bbb"
 dependencies = [
  "chrono",
  "compact_str 0.8.2",
@@ -9848,9 +9848,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-ipc"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8771b4a0193492ecf8b82a66088291656fcc4d133f4844736cc540cab643ce82"
+checksum = "7fe2a5f34a162de78371c722283439bd08954b5cda2d5d186e89ec620b26c4cf"
 dependencies = [
  "libc",
  "rmux-os",
@@ -9862,9 +9862,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-os"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04610368a0c58e2b05bfdb28e24efc969a9e238519d319bd88e91e61e04ccd25"
+checksum = "2f0ee0a472017edc4dc318b6209fe3e9a9bc30bd4326c44571549866269b9392"
 dependencies = [
  "libc",
  "rmux-types",
@@ -9874,21 +9874,22 @@ dependencies = [
 
 [[package]]
 name = "rmux-proto"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3d69422fc536bc1250db0eb1e33d6e291c1ac3b1e5953326c127f1417cacaec"
+checksum = "b3abad36a0a3601ec97c31ec5937a7199436bb7ec1333b25342c7bda1b4f5492"
 dependencies = [
  "bincode 1.3.3",
  "rmux-types",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "rmux-pty"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b1327e7c30573515b63d2bd60695e9d557bfd2682588dd41256b7022c2feb27"
+checksum = "eaff058ab6a3c75217b179320043b09d9e4dd9527f24aca691d09842767c64f3"
 dependencies = [
  "libc",
  "rmux-os",
@@ -9900,9 +9901,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-sdk"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03b6f3efa0e11cd28cad454cad68f9d2b85f28ccd91118d0a16de56d8ef4667e"
+checksum = "fa9222cf685fb3dd858b9a7e5a6eecc1ab226af0de7de972fc2c6e5183602245"
 dependencies = [
  "libc",
  "rmux-ipc",
@@ -9918,9 +9919,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-server"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66ebf9caa922e56c57e7e07037828af75f277b50df41eb07b335fe997eb5839e"
+checksum = "5b9e539353499018407a602ab5f916288bfa6b07d7a93764eeaf850effff0e8d"
 dependencies = [
  "async-recursion",
  "chrono",
@@ -9938,9 +9939,9 @@ dependencies = [
 
 [[package]]
 name = "rmux-types"
-version = "0.8.0"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c9b2e6cb80cf32aa51e70c60826c852a5d2d7e1575b739205552a8d398fd614"
+checksum = "f9bd39cffc10c08bb0e67eb4f85297ba4483f57607f4ae108be87e1ee0dba423"
 dependencies = [
  "serde",
 ]
@@ -13028,9 +13029,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.0-rc.28"
+version = "1.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96185f00bfee2ee8d013e00021d377fa8b40e228c9a68be2b35eb1291109e8d3"
+checksum = "b5d5e9543c17956764204ec0d159ae8feb44d0bc7876266e6024dfdbfb53baa1"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -13130,9 +13131,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.0-rc.28"
+version = "1.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06bdace4641dfeb4a1da23cf4a6c25a9a71e203b0a3aae22439ab9ea44f98772"
+checksum = "ac1baeb792bc149313b9cadbf98f1b4d9f94717744b6f8ee050bc4a7620be85d"
 dependencies = [
  "ndarray 0.17.2",
  "ort",
@@ -13144,9 +13145,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.0-rc.28"
+version = "1.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b336bc1dc38877a03843f4a56604e3538ad35b204299182d769123b80ba72fff"
+checksum = "f27d6475ae4917cbe2df1a09b6505d3211fe55ff44a20b7cffcbdcc768a42749"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -13157,9 +13158,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.0-rc.28"
+version = "1.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdb1e9df476fa8139f1a7642829e81baa2b9434e69f0ddbe7537339c81fee96e"
+checksum = "1e91a1baa67feb0c90ecf04e92fff8a1211d237318944f2a1cf0df605b81945d"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -13174,9 +13175,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.0-rc.28"
+version = "1.0.0-rc.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b28b0f57f11f7971bdb487be85f61c96732e59a9f8deeabc84e60e1452f2a1e"
+checksum = "6f6f94e4e8b50ab3387f5cb8793865ba0ca6862caf510a3471f4a6b84c814791"
 dependencies = [
  "cc",
  "cmake",
