@@ -10,10 +10,15 @@
 //! 2. `should_extract_document` decides whether the file qualifies for the
 //!    document tier based on `[documents]` config + MIME allowlist.
 //! 3. `extract_and_persist_doc` runs xberg, writes the msgpack blob, and
-//!    returns a `PendingDocBatch` carrying the rows that need to land in
-//!    LanceDB.
-//! 4. The single-threaded apply pass calls `flush_document_batches` to push
-//!    all pending rows into LanceDB in one pass.
+//!    returns a `PendingDocBatch` carrying only the lightweight metadata (path,
+//!    blob hash, scope, counts) needed to rebuild rows later — never the
+//!    embedding vectors themselves.
+//! 4. The single-threaded apply pass calls `flush_document_batches`, which — per
+//!    file — re-reads that file's already-persisted `.doc.msgpack` blob, builds
+//!    its LanceDB rows, writes them, and drops them before moving on. Peak embed
+//!    RAM is one file's rows, independent of corpus size (the streaming write
+//!    that replaced the old "accumulate every file's rows, then write once" pass
+//!    which held multiple GB resident on a large repo).
 
 #![cfg(feature = "documents")]
 
@@ -32,21 +37,34 @@ use crate::lance::DocumentRow;
 use crate::scanner::EmbedMode;
 use crate::store::Store;
 
-/// Per-file deferred LanceDB write. Constructed inside `process_file`'s parallel
-/// worker; consumed in the single-threaded apply pass via
-/// [`flush_document_batches`].
+/// Per-file deferred-LanceDB-write descriptor. Constructed inside `process_file`'s parallel
+/// worker; consumed in the single-threaded apply pass via [`flush_document_batches`].
+///
+/// Deliberately **metadata only** — it carries the content hash needed to re-read the persisted
+/// `.doc.msgpack` blob at flush time, NOT the chunk text or the embedding vectors. Accumulating the
+/// vectors here (one `Vec<f32>` per chunk, hundreds of chunks per document) across an entire corpus
+/// was the memory leak this shape fixes: the flush now rebuilds one file's rows at a time.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingDocBatch {
     /// Repository-relative path, forward-slash separated. Becomes the `path`
     /// column in LanceDB.
     pub rel_path: String,
+    /// Content hash (hex) of the source document — the key under which the `.doc.msgpack` blob is
+    /// content-addressed. The flush re-reads that blob to rebuild rows on demand.
+    pub blob_hash: String,
+    /// LanceDB scope stamped onto this file's emitted rows (the repo scope, or `path:<extra_root>`
+    /// for an external-root document). The delete predicate uses the scan-wide scope, mirroring the
+    /// pre-streaming behavior; only the inserted rows carry this per-file scope.
+    pub doc_scope: String,
     /// Number of chunks indexed (zero is valid — xberg may yield no chunks
     /// when the file body is empty or below the chunk threshold).
     pub chunk_count: usize,
     /// Length of each chunk's embedding vector. Zero when embeddings are off.
     pub embedding_dim: u16,
-    /// The chunks themselves, ready to be turned into [`DocumentRow`]s.
-    pub rows: Vec<DocumentRow>,
+    /// Whether this file should emit LanceDB rows at flush time. False for the no-embed, empty, and
+    /// over-`max_chunks_per_document` cases — the blob is still tracked, but nothing lands in LanceDB
+    /// (mirrors the old rows-empty batch). Decided at construction, where the document is in hand.
+    pub emit_rows: bool,
 }
 
 /// Look the configured embedding preset up in xberg's preset table and
@@ -232,7 +250,7 @@ pub(crate) fn extract_and_persist_doc(
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
         && cached_doc_is_reusable(&cached, cfg, embed)
     {
-        return Ok(Some(pending_from_doc(cached, rel, scope, cfg, embed)));
+        return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed)));
     }
 
     let doc_config = doc_config_from(cfg, llm, embed);
@@ -242,7 +260,7 @@ pub(crate) fn extract_and_persist_doc(
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    Ok(Some(pending_from_doc(doc, rel, scope, cfg, embed)))
+    Ok(Some(pending_from_doc(&doc, rel, hash_hex, scope, cfg, embed)))
 }
 
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
@@ -266,40 +284,38 @@ fn cached_doc_is_reusable(cached: &FileMapDoc, cfg: &DocumentsConfig, embed: boo
             .all(|c| c.embedding.len() == cached.embedding_dim as usize)
 }
 
-/// Assemble the deferred LanceDB batch from an extracted-or-cached document. Emits vector rows only
-/// when embedding is on, the doc has embeddings, and it is under the per-doc chunk cap; otherwise the
-/// blob is still tracked but no rows are written (the pathological / no-embed / empty cases).
-///
-/// Takes `doc` by value so that [`build_doc_rows`] can move chunk text and embedding vectors
-/// directly into the [`DocumentRow`]s instead of cloning them (the embedding `Vec<f32>` can be
-/// hundreds of kilobytes per chunk). Callers extract any fields they need before this call.
-fn pending_from_doc(doc: FileMapDoc, rel: &str, scope: &str, cfg: &DocumentsConfig, embed: bool) -> PendingDocBatch {
+/// Assemble the deferred-write descriptor from an extracted-or-cached document. Decides — while the
+/// document is in hand — whether this file will emit LanceDB rows at flush time: only when embedding
+/// is on, the doc has embeddings, it has chunks, and it is under the per-doc chunk cap. The heavy
+/// row-building (chunk text + embedding vectors) is deferred to [`flush_document_batches`], which
+/// re-reads the persisted blob per file so no embeddings are held across the corpus.
+fn pending_from_doc(
+    doc: &FileMapDoc,
+    rel: &str,
+    blob_hash: &str,
+    scope: &str,
+    cfg: &DocumentsConfig,
+    embed: bool,
+) -> PendingDocBatch {
     let chunk_count = doc.chunks.len();
     let embedding_dim = doc.embedding_dim;
-    let no_rows = PendingDocBatch {
-        rel_path: rel.to_string(),
-        chunk_count,
-        embedding_dim,
-        rows: Vec::new(),
-    };
-    if chunk_count > cfg.max_chunks_per_document {
+    let over_cap = chunk_count > cfg.max_chunks_per_document;
+    if over_cap {
         tracing::warn!(
             rel,
             chunks = chunk_count,
             cap = cfg.max_chunks_per_document,
             "document exceeds max_chunks_per_document; caching blob but skipping vector rows"
         );
-        return no_rows;
     }
-    if !embed || embedding_dim == 0 || chunk_count == 0 {
-        return no_rows;
-    }
-    let rows = build_doc_rows(doc, rel, scope);
+    let emit_rows = embed && embedding_dim > 0 && chunk_count > 0 && !over_cap;
     PendingDocBatch {
         rel_path: rel.to_string(),
-        chunk_count: rows.len(),
+        blob_hash: blob_hash.to_string(),
+        doc_scope: scope.to_string(),
+        chunk_count,
         embedding_dim,
-        rows,
+        emit_rows,
     }
 }
 
@@ -372,13 +388,17 @@ pub(crate) fn delete_stale_documents(store: &mut Store, config: &crate::config::
     }
 }
 
-/// Push every pending document batch into LanceDB. Opens the store lazily — if
-/// every batch is empty (no embeddings configured) no LanceDB connection is
-/// ever made.
+/// Stream every pending document batch into LanceDB, one file at a time. Opens the store lazily — if
+/// no batch will emit rows (no embeddings configured) no LanceDB connection is ever made.
 ///
-/// Returns the number of files for which rows were written. Errors are logged
-/// and skipped on a per-file basis so one malformed embedding doesn't abort the
-/// scan.
+/// For each row-emitting file this re-reads the file's already-persisted `.doc.msgpack` blob, builds
+/// its [`DocumentRow`]s, writes them, and drops them before the next file — so peak embed-write RAM
+/// is one document's rows plus one Arrow batch, independent of corpus size. (The blob is guaranteed
+/// on disk here: every doc that produced a batch was written by `extract_and_persist_doc` or was a
+/// cache hit, both before this post-barrier lane runs.)
+///
+/// Returns the number of files for which rows were written. Errors are logged and skipped on a
+/// per-file basis so one malformed embedding doesn't abort the scan.
 pub(crate) fn flush_document_batches(
     store: &mut Store,
     scope: &str,
@@ -386,7 +406,11 @@ pub(crate) fn flush_document_batches(
     embedding_model: &str,
 ) -> usize {
     let mut inserted = 0usize;
-    let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
+    let Some(dim) = batches
+        .iter()
+        .find(|b| b.emit_rows && b.embedding_dim > 0)
+        .map(|b| b.embedding_dim)
+    else {
         return 0;
     };
 
@@ -420,10 +444,25 @@ pub(crate) fn flush_document_batches(
     };
 
     for batch in batches {
-        if batch.rows.is_empty() {
+        if !batch.emit_rows {
             continue;
         }
-        match lance.replace_document(scope, &batch.rel_path, batch.rows) {
+        let doc = match store.read_doc_by_hex(&batch.blob_hash) {
+            Ok(Some(doc)) => doc,
+            Ok(None) => {
+                tracing::warn!(rel = %batch.rel_path, "doc blob missing at flush; skipping vector rows");
+                continue;
+            }
+            Err(error) => {
+                tracing::warn!(rel = %batch.rel_path, ?error, "re-read doc blob failed; skipping vector rows");
+                continue;
+            }
+        };
+        let rows = build_doc_rows(doc, &batch.rel_path, &batch.doc_scope);
+        if rows.is_empty() {
+            continue;
+        }
+        match lance.replace_document(scope, &batch.rel_path, rows) {
             Ok(()) => inserted += 1,
             Err(error) => {
                 tracing::warn!(
@@ -523,6 +562,25 @@ mod tests {
             cached_doc_is_reusable(&doc, &switched, false),
             "embedding off: cached doc is always reusable"
         );
+    }
+
+    /// Structural regression guard for the streaming-flush memory fix: the accumulated per-file
+    /// descriptor must stay metadata-only. This exhaustive struct literal names EXACTLY the metadata
+    /// fields — re-introducing a `rows: Vec<DocumentRow>` (or any embedding payload) field would
+    /// break this compile, catching a regression back to the corpus-wide accumulation that held
+    /// multiple GB resident on a large repo.
+    #[test]
+    fn pending_doc_batch_is_metadata_only() {
+        let batch = PendingDocBatch {
+            rel_path: "docs/manual.pdf".to_string(),
+            blob_hash: "deadbeef".to_string(),
+            doc_scope: "repo:origin".to_string(),
+            chunk_count: 3,
+            embedding_dim: 768,
+            emit_rows: true,
+        };
+        assert!(batch.emit_rows);
+        assert_eq!(batch.chunk_count, 3);
     }
 
     #[test]
