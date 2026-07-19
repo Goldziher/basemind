@@ -10,7 +10,9 @@ description: >-
 # basemind CLI — the scriptable interface
 
 basemind has two equally-weighted surfaces: MCP (interactive tool calls) and CLI (scriptable commands).
-They share the same `.basemind/` index and are safe to run alongside each other. Reach for the CLI
+They share the same machine-global cache (Linux `~/.local/share/basemind/`, macOS
+`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) and are safe to run
+alongside each other. Reach for the CLI
 when you're scripting, batching queries, running in headless environments, or CI.
 
 ## Capabilities
@@ -90,8 +92,9 @@ basemind scan
 ```
 
 This walks the tree, parses with tree-sitter, and writes the content-addressed blob store +
-Fjall inverted index under `.basemind/`. A few seconds for small repos, ~22 s for an ~80k-file
-TypeScript monorepo.
+Fjall inverted index into the machine-global cache (Linux `~/.local/share/basemind/`, macOS
+`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). A few seconds for small
+repos, ~22 s for an ~80k-file TypeScript monorepo.
 
 Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh.
 

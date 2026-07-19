@@ -85,6 +85,8 @@ git only when no basemind tool covers the question.
 | Question | Tool |
 |---|---|
 | "Where is X defined?" | `search_symbols` (substring match, optional `kind` filter) |
+| "Jump to the definition of X used here?" | `goto_definition` (scope-aware resolution from a use site) |
+| "What's the high-level architecture / module map?" | `architecture_map` |
 | "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) |
 | "What calls X?" (any name) | `find_references` |
 | "What calls this specific definition?" | `find_callers` (path + name + optional kind) |
@@ -112,14 +114,16 @@ git only when no basemind tool covers the question.
 
 ## Setup (one-time per repo)
 
-basemind needs an index at `.basemind/` before it can answer queries. From the repo root:
+basemind needs an index before it can answer queries. The index lives in a machine-global cache
+(Linux `~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
+`BASEMIND_DATA_HOME`), keyed by workspace — never inside your repo. From the repo root:
 
 ```sh
 basemind scan
 ```
 
 This walks the tree, parses with tree-sitter, and writes a content-addressed blob
-store + Fjall inverted index under `.basemind/`. A few seconds for small repos,
+store + Fjall inverted index into the machine-global cache. A few seconds for small repos,
 ~22 s for an ~80k-file TypeScript monorepo.
 
 The MCP server is launched by the host (`basemind serve` — wired up in
@@ -185,4 +189,4 @@ A 1000-line file becomes a 30-line table of contents.
   document. It searches across ALL documents and has **no `scope` parameter** — you cannot
   filter results to a single host at query time.
   robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
-  `.basemind/basemind.toml` (config-file-only) disables it.
+  the repo-root `basemind.toml` (config-file-only) disables it.

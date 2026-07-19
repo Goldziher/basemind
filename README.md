@@ -381,7 +381,7 @@ flowchart LR
   A(["Coding agent"])
   R["Your project<br/>code · documents · git"]
   S["basemind scan<br/>map code & read documents"]
-  D[("Global cache<br/>~/.local/share/basemind")]
+  D[("Global cache<br/>per-OS data dir")]
   V["basemind serve<br/>answers questions"]
   R --> S --> D --> V
   A <-->|asks questions| V
@@ -418,8 +418,9 @@ Treat an empty or partial result carrying a `notice` as "retry shortly," not "no
 <details>
 <summary><strong>Global cache &amp; the daemon</strong></summary>
 
-Index state lives under a single global cache — `~/.local/share/basemind/` on Linux/macOS
-(override with `BASEMIND_DATA_HOME`) — keyed by workspace, never inside your repo. The
+Index state lives under a single global cache — `~/.local/share/basemind/` on Linux,
+`~/Library/Application Support/basemind/` on macOS (override with `BASEMIND_DATA_HOME`) — keyed by
+workspace, never inside your repo. The
 content-addressed blob store is machine-wide too: identical file content scanned from different repos
 or worktrees is extracted and stored once.
 
