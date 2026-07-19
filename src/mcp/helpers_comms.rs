@@ -121,7 +121,9 @@ pub(super) async fn connect_ephemeral_client(state: &ServerState) -> Result<Comm
     let target = AgentId::parse(state.agent_id.clone())
         .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?;
     let (remote, cwd) = scope_context_for(&state.root);
-    CommsClient::ensure_and_connect(target, remote, cwd).await.map_err(comms_err)
+    CommsClient::ensure_and_connect(target, remote, cwd)
+        .await
+        .map_err(comms_err)
 }
 
 /// Clamp a caller-supplied limit to `[1, MAX_LIMIT]`, defaulting when absent.

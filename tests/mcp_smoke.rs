@@ -3138,7 +3138,10 @@ async fn comms_inbox_wait_delivers_then_times_out() {
     assert_eq!(rows[0].meta.subject, "deploy status");
     // `unread` is the count REMAINING beyond this page (same semantics as inbox_read): the one post
     // came back in `rows`, so nothing remains — 0, not a running total.
-    assert_eq!(unread, 0, "the single post was returned in rows; none remain beyond this page");
+    assert_eq!(
+        unread, 0,
+        "the single post was returned in rows; none remain beyond this page"
+    );
 
     let (timed_out2, rows2, _unread2, _next2) = a
         .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_millis(300))
