@@ -11,6 +11,13 @@ use crawlberg::{CrawlConfig as KcCrawlConfig, CrawlEngineHandle, SsrfPolicy, cre
 
 use crate::config::CrawlConfig;
 
+/// Hard cap on the URLs a single `web_map` fetch materializes. crawlberg 1.0.6 threads `map_limit`
+/// through the sitemap fetch loop and stops fetching + parsing once it is reached, bounding peak
+/// memory to roughly this cap plus one child sitemap (crawlberg#33). Without it a large sitemap-index
+/// host — docs.rs alone is ~482k URLs — drove serve past 5 GB and was OOM-killed. It is also the
+/// ceiling on a per-call `web_map` limit, so no request can ask for more than one bounded fetch yields.
+pub const WEB_MAP_URL_CAP: u32 = 1000;
+
 /// Translate basemind's `CrawlConfig` into crawlberg's runtime `CrawlConfig`.
 ///
 /// Pure and total (modulo the `usize` range checks) so the mapping — including
@@ -31,6 +38,10 @@ fn kc_config(cfg: &CrawlConfig) -> Result<KcCrawlConfig> {
         // Confine link-following to the seed host. crawlberg defaults this off, which let a
         // `web_crawl` wander onto other domains (bug #34); a repo/site crawl must stay on-host.
         stay_on_domain: true,
+        // Bound the sitemap fetch so a huge sitemap-index host cannot OOM the process (crawlberg#33):
+        // crawlberg stops fetching + parsing once this many URLs are collected. `web_map` caps its
+        // per-call limit at the same value, so this never truncates a result a caller could ask for.
+        map_limit: Some(WEB_MAP_URL_CAP as usize),
         ssrf: SsrfPolicy {
             deny_private: !cfg.allow_private_network,
             ..Default::default()
@@ -65,6 +76,11 @@ mod tests {
         assert!(
             !kc.allow_subdomains,
             "same-host scope excludes subdomains unless a caller widens it explicitly"
+        );
+        assert_eq!(
+            kc.map_limit,
+            Some(WEB_MAP_URL_CAP as usize),
+            "web_map must bound the sitemap fetch to cap peak memory (crawlberg#33)"
         );
     }
 }

@@ -348,7 +348,10 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
 
 /// Default / ceiling for [`WebMapParams::limit`], matching every other list-returning tool.
 const WEB_MAP_DEFAULT_LIMIT: u32 = 100;
-const WEB_MAP_MAX_LIMIT: u32 = 1000;
+/// The per-call `web_map` ceiling is the crawlberg fetch cap: crawlberg won't materialize more than
+/// [`WEB_MAP_URL_CAP`](crate::web::engine::WEB_MAP_URL_CAP) URLs (it bounds peak memory there), so a
+/// request can never ask for more than one bounded fetch yields.
+const WEB_MAP_MAX_LIMIT: u32 = crate::web::engine::WEB_MAP_URL_CAP;
 
 fn web_map_limit(limit: Option<u32>) -> usize {
     limit.unwrap_or(WEB_MAP_DEFAULT_LIMIT).min(WEB_MAP_MAX_LIMIT) as usize
@@ -363,11 +366,13 @@ pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Re
         .await
         .map_err(|e| mcp_internal("crawlberg map_urls", e))?;
 
-    // `total_urls` counts what the site actually has; `urls` is the page we hand back. A sitemap
-    // index (docs.rs, any large docs host) runs to hundreds of thousands of entries, and returning
-    // all of them uncapped both buries the caller and serialises gigabytes. Report the true total
-    // rather than the page length, so a truncated answer can never read as a complete one.
-    let total_urls = map.urls.len();
+    // crawlberg bounded the sitemap fetch at `WEB_MAP_URL_CAP` to cap peak memory (crawlberg#33), so
+    // `discovered` is a floor, not the site's true total: a host with more URLs than the cap reports
+    // exactly the cap. Hitting the cap therefore means "there is more", independent of the page
+    // `limit`; `urls` is the (further, per-call) page we hand back. Reporting the floor plus an honest
+    // `truncated` keeps a bounded answer from ever reading as a complete one.
+    let discovered = map.urls.len();
+    let hit_fetch_cap = discovered >= crate::web::engine::WEB_MAP_URL_CAP as usize;
     let urls: Vec<WebMapEntry> = map
         .urls
         .into_iter()
@@ -382,8 +387,8 @@ pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Re
 
     json_result(&WebMapResponse {
         url: url_str,
-        total_urls,
-        truncated: total_urls > urls.len(),
+        total_urls: discovered,
+        truncated: hit_fetch_cap || discovered > urls.len(),
         urls,
     })
 }
