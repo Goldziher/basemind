@@ -237,9 +237,10 @@ mod xfile_incremental {
     use crate::store::Store;
 
     /// True if `language` has a compiled-in specifier resolver — i.e. its files can carry stitchable
-    /// import/export facts. Files in other languages never enter the affected set.
+    /// import/export facts. Files in other languages never enter the affected set. This is asked once
+    /// per indexed file, so it must not construct a resolver (the JS one wraps an `oxc_resolver`).
     fn has_resolver(language: &str) -> bool {
-        SpecifierResolver::for_language(language).is_some()
+        SpecifierResolver::supports(language)
     }
 
     /// A file's import/export facts plus the language that selects its resolver.
@@ -248,10 +249,32 @@ mod xfile_incremental {
         facts: FileFacts,
     }
 
-    /// Resolve `importer`'s runtime imports (using the resolver for `language`) to repo-relative
+    /// Resolvers keyed by language, built once and shared across every importer. Building the JS
+    /// variant constructs an `oxc_resolver` (and its tsconfig cache), so it must never happen
+    /// per-file — this map is the reuse point for both the parallel and the serial passes below.
+    type ResolverCache = AHashMap<String, Option<SpecifierResolver>>;
+
+    /// Build one resolver per distinct language present in `entries`.
+    fn build_resolvers(entries: &AHashMap<String, FileEntry>) -> ResolverCache {
+        let mut cache = ResolverCache::new();
+        for entry in entries.values() {
+            if !cache.contains_key(&entry.language) {
+                cache.insert(entry.language.clone(), SpecifierResolver::for_language(&entry.language));
+            }
+        }
+        cache
+    }
+
+    /// Resolve `importer`'s runtime imports (using the resolver for its language) to repo-relative
     /// target keys, pushing each onto `out`. A language with no resolver contributes nothing.
-    fn resolve_targets(root: &Path, importer: &str, entry: &FileEntry, out: &mut Vec<String>) {
-        let Some(resolver) = SpecifierResolver::for_language(&entry.language) else {
+    fn resolve_targets(
+        root: &Path,
+        importer: &str,
+        entry: &FileEntry,
+        resolvers: &ResolverCache,
+        out: &mut Vec<String>,
+    ) {
+        let Some(Some(resolver)) = resolvers.get(&entry.language) else {
             return;
         };
         for import in &entry.facts.imports {
@@ -310,6 +333,7 @@ mod xfile_incremental {
             .into_iter()
             .collect();
 
+        let resolvers = build_resolvers(&entries);
         let importers_of_changed: Vec<String> = entries
             .par_iter()
             .filter_map(|(importer, entry)| {
@@ -317,7 +341,7 @@ mod xfile_incremental {
                     return None;
                 }
                 let mut targets = Vec::new();
-                resolve_targets(root, importer, entry, &mut targets);
+                resolve_targets(root, importer, entry, &resolvers, &mut targets);
                 targets
                     .iter()
                     .any(|t| changed_set.contains(t.as_str()))
@@ -355,7 +379,7 @@ mod xfile_incremental {
         let mut provider_targets: Vec<String> = Vec::new();
         for key in &affected {
             if let Some(entry) = entries.get(key) {
-                resolve_targets(root, key, entry, &mut provider_targets);
+                resolve_targets(root, key, entry, &resolvers, &mut provider_targets);
             }
         }
         for target in provider_targets {

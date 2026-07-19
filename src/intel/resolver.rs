@@ -57,6 +57,9 @@ impl SpecifierResolver {
     /// `"java"`), or `None` if no resolver is compiled in for it. Building is cheap for the
     /// path-based resolvers; the JS variant constructs an `oxc_resolver` — hoist it out of the
     /// importer loop and reuse it across all importers of the same language.
+    ///
+    /// To merely ask *whether* a language is resolvable, use [`supports`](Self::supports): it
+    /// answers without constructing anything.
     pub(crate) fn for_language(language: &str) -> Option<Self> {
         match language {
             #[cfg(feature = "code-intel-js")]
@@ -66,6 +69,18 @@ impl SpecifierResolver {
             #[cfg(feature = "code-intel-stack")]
             "java" => Some(Self::Java(java::JavaResolver)),
             _ => None,
+        }
+    }
+
+    /// Whether a resolver is compiled in for `language` — the capability check, with no resolver
+    /// construction. The incremental pass tests this once per indexed file, so it must stay free.
+    pub(crate) fn supports(language: &str) -> bool {
+        match language {
+            #[cfg(feature = "code-intel-js")]
+            "javascript" | "typescript" | "tsx" => true,
+            #[cfg(feature = "code-intel-stack")]
+            "python" | "java" => true,
+            _ => false,
         }
     }
 
@@ -107,7 +122,20 @@ impl SpecifierResolver {
 /// Shared by the resolver variants.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<RelPath> {
-    let rel = target_abs.strip_prefix(root).ok()?;
+    let rel = match target_abs.strip_prefix(root) {
+        Ok(rel) => rel.to_path_buf(),
+        // oxc resolves a tsconfig `paths` alias against a *canonicalized* `baseUrl`, so an aliased
+        // target comes back with symlinks resolved (e.g. `/private/var/...`) while `root` may still
+        // be the symlinked form the scanner was handed (`/var/...`). A plain `strip_prefix` then
+        // misses and the cross-file edge is silently dropped — every aliased import in a symlinked
+        // checkout goes unresolved. Retry against the canonical root so the two agree. Only runs off
+        // the happy path: a root that already equals its canonical form never reaches here, so the
+        // common (non-symlinked) case pays nothing.
+        Err(_) => {
+            let canonical_root = std::fs::canonicalize(root).ok()?;
+            target_abs.strip_prefix(&canonical_root).ok()?.to_path_buf()
+        }
+    };
     let normalized = rel.to_str()?.replace('\\', "/");
     Some(RelPath::from(normalized.as_str()))
 }
@@ -116,10 +144,30 @@ fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<RelPath> {
 pub(crate) mod js {
     //! JS/TS specifier resolution via `oxc_resolver` — the single source of truth for the oxc
     //! module-resolution config the crate uses.
+    //!
+    //! ## tsconfig path aliases
+    //!
+    //! A monorepo rarely imports by relative path. It writes `@app/hooks/useSettings`, and the
+    //! mapping from that alias to a file lives in a `tsconfig.json` (`compilerOptions.baseUrl` +
+    //! `paths`). With no tsconfig in play, oxc cannot resolve such a specifier, the cross-file stitch
+    //! emits no edge, and `goto_definition` degrades to the local import binding — a same-file answer
+    //! to a cross-file question.
+    //!
+    //! So the resolver runs with [`TsconfigDiscovery::Auto`] and resolves against the importing
+    //! **file** (`resolve_file`, the only API `Auto` applies to). oxc then walks up from that file to
+    //! the nearest `tsconfig.json` that actually *claims* it (via `files` / `include` / `exclude`, or
+    //! a matching project reference) and applies its `baseUrl` / `paths` — the same config `tsc`
+    //! would apply, including solution-style monorepo references. A file no tsconfig claims gets
+    //! plain Node resolution rather than an unrelated ancestor's `compilerOptions`, matching
+    //! `tsserver`.
+    //!
+    //! Resolution stays entirely oxc's: an alias resolves exactly when TypeScript would resolve it,
+    //! and to the same file. A specifier still only resolves when the target exists on disk, so an
+    //! alias pointing at nothing stays unresolved — a miss, never a guessed target.
 
     use std::path::Path;
 
-    use oxc_resolver::{ResolveOptions, Resolver};
+    use oxc_resolver::{ResolveOptions, Resolver, TsconfigDiscovery};
 
     use super::to_repo_relative;
     use crate::intel::model::ImportEdge;
@@ -127,18 +175,20 @@ pub(crate) mod js {
 
     /// JS/TS module-resolution extensions, TS-first so a bare `./util` specifier binds to `util.ts`
     /// before `util.js` (matching `tsc`'s module-resolution precedence).
-    const RESOLVE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+    pub(crate) const RESOLVE_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 
     /// TS-aware Node resolver wrapping [`oxc_resolver`]. Built once per stitch and reused across all
-    /// JS/TS importers.
+    /// JS/TS importers — construction is expensive (it seeds oxc's file-system cache), and that cache
+    /// is also what makes the per-file tsconfig discovery cheap, so never build one per file.
     pub(crate) struct JsResolver {
         inner: Resolver,
     }
 
     impl JsResolver {
         /// Construct the resolver. Configured for TS-aware Node resolution: TS extensions win, a
-        /// `./util.js` specifier maps back to `util.ts` (TS's rewritten-extension convention), and
-        /// the standard import/require conditions are enabled for `package.json` `exports` maps.
+        /// `./util.js` specifier maps back to `util.ts` (TS's rewritten-extension convention), the
+        /// standard import/require conditions are enabled for `package.json` `exports` maps, and
+        /// tsconfig `baseUrl` / `paths` are discovered per importing file (see the module docs).
         pub(crate) fn new() -> Self {
             let ext_alias = |from: &str, to: &[&str]| (from.to_string(), to.iter().map(|s| (*s).to_string()).collect());
             let inner = Resolver::new(ResolveOptions {
@@ -155,17 +205,21 @@ pub(crate) mod js {
                     "default".to_string(),
                 ],
                 symlinks: false,
+                tsconfig: Some(TsconfigDiscovery::Auto),
                 ..ResolveOptions::default()
             });
             Self { inner }
         }
 
-        /// Resolve `import`'s specifier relative to `importer_rel`'s directory to a repo-relative
+        /// Resolve `import`'s specifier for the importing file `importer_rel` to a repo-relative
         /// target under `root`. `None` on any oxc miss or out-of-repo path.
+        ///
+        /// Resolves against the **file** (not its directory): `TsconfigDiscovery::Auto` only applies
+        /// to `resolve_file`, and it is what lets an aliased specifier find the tsconfig that governs
+        /// this importer.
         pub(crate) fn resolve(&self, root: &Path, importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
             let importer_abs = root.join(importer_rel);
-            let importer_dir = importer_abs.parent()?;
-            let resolution = self.inner.resolve(importer_dir, &import.specifier).ok()?;
+            let resolution = self.inner.resolve_file(&importer_abs, &import.specifier).ok()?;
             to_repo_relative(root, &resolution.full_path())
         }
     }
@@ -538,6 +592,7 @@ mod stack_tests {
     #[test]
     fn unknown_language_has_no_resolver() {
         assert!(SpecifierResolver::for_language("cobol").is_none());
+        assert!(!SpecifierResolver::supports("cobol"));
     }
 
     #[test]
