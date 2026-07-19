@@ -1,10 +1,5 @@
 [workspace]
-members = [
-    "crates/stack-graphs",
-    "crates/tree-sitter-graph",
-    "crates/tree-sitter-stack-graphs",
-    "crates/lsp-positions",
-]
+members = ["crates/stack-graphs", "crates/tree-sitter-graph", "crates/tree-sitter-stack-graphs", "crates/lsp-positions"]
 
 # Shared lint policy for the owned forks under crates/*. The root basemind package opts in via
 # its own `[lints] workspace = true` below; each fork crate does the same in its Cargo.toml.

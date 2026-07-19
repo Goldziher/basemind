@@ -33,4 +33,3 @@ basemind is this repo's indexed context layer. Prefer it BEFORE grep, before rea
 - Install the basemind Claude Code plugin from its marketplace (`/plugin marketplace add Goldziher/basemind`, then install `basemind`).
 - Keep basemind current: enable plugin auto-update, or update the binary regularly so the index format and tools stay in sync.
 - Re-run `basemind init` (or `/bm-init`) after enabling new capabilities to refresh this block.
-
