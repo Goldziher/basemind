@@ -59,7 +59,11 @@ impl SharedEmbedder {
     ///
     /// `max_embed_threads` bounds the process-wide embedding pool (see
     /// [`embed_pool`]). Pass `0` to use the auto heuristic (`max(2, cores/4)`).
-    pub fn load(preset: &str, max_embed_threads: usize) -> Result<Self> {
+    ///
+    /// `batch_size` is the number of texts submitted to ONNX per embed call
+    /// (sourced from `[resources].embed_batch_size`). Larger batches amortise
+    /// per-call overhead at a higher transient memory spike.
+    pub fn load(preset: &str, max_embed_threads: usize, batch_size: usize) -> Result<Self> {
         let meta = EMBEDDING_PRESETS.iter().find(|p| p.name == preset).ok_or_else(|| {
             anyhow!(
                 "unknown embedding preset '{preset}'; \
@@ -73,7 +77,7 @@ impl SharedEmbedder {
                 name: preset.to_string(),
             },
             normalize: true,
-            batch_size: 32,
+            batch_size,
             show_download_progress: false,
             cache_dir: None,
             acceleration: None,

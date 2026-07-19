@@ -123,6 +123,18 @@
         "embed_max_threads": 0
       }
     },
+    "resources": {
+      "description": "Resource-governance knobs: scanner / embedder thread caps, document\nconcurrency, embed batch size, footprint ceiling, and the document model\nprofile. Bounds basemind's footprint on constrained machines.",
+      "$ref": "#/$defs/ResourcesConfig",
+      "default": {
+        "scan_threads": 0,
+        "embed_threads": 0,
+        "max_concurrent_documents": 0,
+        "embed_batch_size": 32,
+        "max_footprint_mb": 0,
+        "document_models": "full"
+      }
+    },
     "code_search": {
       "description": "Semantic code-search tier: chunk + embed source for the `search_code` MCP tool.\nInert unless the `code-search` cargo feature is compiled in.",
       "$ref": "#/$defs/CodeSearchConfig",
@@ -731,6 +743,73 @@
       "enum": [
         "json",
         "toon"
+      ]
+    },
+    "ResourcesConfig": {
+      "description": "Top-level `[resources]` table. Every field has `#[serde(default)]` (directly\nor via a default fn) so adding a knob never breaks an older TOML file, and an\nomitted `[resources]` section deserialises to [`ResourcesConfig::default`].\n\n`0` is the \"auto\" sentinel for the thread / concurrency caps: it means \"let\nbasemind pick a bounded fraction of the machine\" rather than \"use zero\nthreads\". This keeps the default config safe on a laptop while letting an\noperator pin an explicit budget on a shared box.",
+      "type": "object",
+      "properties": {
+        "scan_threads": {
+          "description": "Cap on the code-map scanner's rayon pool. `0` (auto) keeps rayon's\ndefault (one worker per logical CPU); a non-zero value pins the pool so\nthe scan can't saturate every core on a shared machine. First scan wins\nfor the process — the pool is built once and its size is then fixed.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "embed_threads": {
+          "description": "Cap on the ONNX embedding pool. `0` (auto) resolves to\n`max(2, logical_cpus / 4)` via `crate::embeddings::resolve_embed_threads`\n— a bounded fraction of cores so the embedder never pins the machine and\nORT arenas are not replicated across every core. This supersedes the\ndeprecated `[documents].embed_max_threads`; see\n[`ResourcesConfig::effective_embed_threads`] for the precedence.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "max_concurrent_documents": {
+          "description": "Upper bound on documents extracted concurrently. `0` (auto) leaves the\ndispatch unbounded (today's behaviour). Parsed now; the enforcing\nsemaphore around document dispatch lands with the backpressure iteration\n(#40) so the schema is stable ahead of the consumer.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "embed_batch_size": {
+          "description": "Number of chunks the embedder submits to ONNX per batch. Larger batches\namortise per-call overhead at the cost of a higher transient memory\nspike; 32 is a safe default across the preset models. Threaded into both\n`SharedEmbedder` (code-search + query paths) and the document extractor's\n`EmbeddingConfig`.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 32
+        },
+        "max_footprint_mb": {
+          "description": "Hard ceiling on process physical footprint in megabytes. `0` (disabled)\nis the default. Parsed now but NOT yet enforced — the best-effort\nbackpressure gate that samples `phys_footprint` and throttles against\nthis ceiling is the backpressure iteration (#40). The field exists today\nso operators can start setting it without a config break when the gate\nlands.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 0
+        },
+        "document_models": {
+          "description": "Which model families run during document extraction. `Full` (default)\nruns every configured post-processor; the narrower profiles strip\nenrichment / embeddings to shrink the scan-time footprint on code-centric\nworkspaces. See [`DocumentModelProfile`].",
+          "$ref": "#/$defs/DocumentModelProfile",
+          "default": "full"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DocumentModelProfile": {
+      "description": "Selects which model families run during document extraction, trading recall\nfor a smaller scan-time footprint on workspaces that are mostly source code.\n\nThe enrichment post-processors (keyword extraction, NER, summarisation) and\nOCR each pull in their own ONNX / LLM weights; a code workspace rarely wants\nany of them. Narrowing the profile lets an operator keep the code map and\n(optionally) embeddings while paying for nothing else.",
+      "oneOf": [
+        {
+          "description": "Run every configured capability (embeddings + keywords + NER +\nsummarisation + OCR). The default — no behaviour change from before this\nknob existed.",
+          "type": "string",
+          "const": "full"
+        },
+        {
+          "description": "Embeddings only: chunks are still embedded per the `[documents]` config,\nbut keyword extraction, NER, and summarisation are forced off and OCR is\ndisabled. The lever for a code-centric workspace that still wants\nsemantic document search.",
+          "type": "string",
+          "const": "code_only"
+        },
+        {
+          "description": "Metadata only: no embeddings and no enrichment post-processors, OCR\ndisabled. Documents are extracted for their text + metadata (keyword\nsearch) but never routed to any model. Serialised as `\"none\"` (the Rust\nidentifier carries a trailing underscore only because `None` collides\nwith `Option::None`).",
+          "type": "string",
+          "const": "none"
+        }
       ]
     },
     "CodeSearchConfig": {

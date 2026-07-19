@@ -293,7 +293,8 @@ pub fn scan(
     if matches!(source, ScanSource::WorkingTree) {
         let precise = config.code_intel.precise_resolution;
         run_optional_lane(LANE_RESOLVE, || {
-            scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
+            scanner_pool(config.resources.scan_threads)
+                .install(|| crate::intel::resolve_pass::resolve_pass(root, store, precise));
         });
     }
 
@@ -426,7 +427,8 @@ pub fn scan_paths(
 
     let precise = config.code_intel.precise_resolution;
     run_optional_lane(LANE_RESOLVE, || {
-        scanner_pool().install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
+        scanner_pool(config.resources.scan_threads)
+            .install(|| crate::intel::resolve_pass::resolve_pass_incremental(root, store, &rels, precise));
     });
 
     run_optional_lane(LANE_DOC_BATCHES, || {

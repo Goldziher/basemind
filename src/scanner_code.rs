@@ -142,7 +142,13 @@ pub(crate) fn chunk_and_embed(
         }));
     }
 
-    let embedder = match SharedEmbedder::load(&config.documents.embedding_preset, config.documents.embed_max_threads) {
+    let embedder = match SharedEmbedder::load(
+        &config.documents.embedding_preset,
+        config
+            .resources
+            .effective_embed_threads(config.documents.embed_max_threads),
+        config.resources.embed_batch_size,
+    ) {
         Ok(embedder) => embedder,
         Err(error) => {
             tracing::warn!(
@@ -265,7 +271,9 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
         return;
     }
     let model = &config.documents.embedding_preset;
-    let dim = match SharedEmbedder::load(model, 0) {
+    // Dim-probe only: threads and batch size are immaterial here (no embedding runs),
+    // so pass auto-threads (0) and the configured batch size for consistency.
+    let dim = match SharedEmbedder::load(model, 0, config.resources.embed_batch_size) {
         Ok(embedder) => embedder.dim(),
         Err(error) => {
             tracing::warn!(?error, preset = %model, "code-chunk stale purge: unknown embedding preset; skipping");
@@ -310,7 +318,13 @@ pub(crate) fn flush_code_batches(
     let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
         return 0;
     };
-    match SharedEmbedder::load(embedding_model, 0) {
+    // Dim-probe only (no embedding runs here), and this helper has no `Config` in scope, so
+    // pass auto-threads (0) and the default embed batch size — the value is immaterial.
+    match SharedEmbedder::load(
+        embedding_model,
+        0,
+        crate::config::ResourcesConfig::default().embed_batch_size,
+    ) {
         Ok(embedder) if embedder.dim() != dim => {
             tracing::error!(
                 preset = %embedding_model,

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use super::code::CodeSearchConfig;
 use super::comms::CommsConfig;
 use super::documents::{DocumentsConfig, LlmConfig};
+use super::resources::ResourcesConfig;
 use super::shells::ShellsConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -25,6 +26,11 @@ pub struct ConfigV1 {
     pub languages: std::collections::BTreeMap<String, LanguageConfig>,
     #[serde(default)]
     pub documents: DocumentsConfig,
+    /// Resource-governance knobs: scanner / embedder thread caps, document
+    /// concurrency, embed batch size, footprint ceiling, and the document model
+    /// profile. Bounds basemind's footprint on constrained machines.
+    #[serde(default)]
+    pub resources: ResourcesConfig,
     /// Semantic code-search tier: chunk + embed source for the `search_code` MCP tool.
     /// Inert unless the `code-search` cargo feature is compiled in.
     #[serde(default)]
@@ -406,6 +412,7 @@ impl ConfigV1 {
             mcp: McpConfig::default(),
             languages: Default::default(),
             documents: DocumentsConfig::default(),
+            resources: ResourcesConfig::default(),
             code_search: CodeSearchConfig::default(),
             memory: MemoryConfig::default(),
             comms: CommsConfig::default(),

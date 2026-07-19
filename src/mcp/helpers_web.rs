@@ -120,11 +120,15 @@ fn per_call_engine(
 
 async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> {
     let preset = state.config.documents.embedding_preset.clone();
-    let max_embed_threads = state.config.documents.embed_max_threads;
+    let max_embed_threads = state
+        .config
+        .resources
+        .effective_embed_threads(state.config.documents.embed_max_threads);
+    let embed_batch_size = state.config.resources.embed_batch_size;
     let embedder = state
         .embedder
         .get_or_try_init(|| async {
-            SharedEmbedder::load(&preset, max_embed_threads)
+            SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
                 .map(Arc::new)
                 .map_err(|e| format!("load embedder: {e}"))
         })

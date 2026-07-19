@@ -1,9 +1,7 @@
 use basemind::config::{self, ConfigError, ConfigLayers, ConfigSource, ConfigV1, DocumentsCliOverrides, merge_layers};
 
-#[cfg(feature = "full")]
 const SCHEMA_PATH: &str = "schema/basemind-config-v1.schema.json";
 
-#[cfg(feature = "full")]
 fn generate_schema_text() -> String {
     let schema = schemars::schema_for!(ConfigV1);
     let mut s = serde_json::to_string_pretty(&schema).expect("schema serializes");
@@ -13,7 +11,6 @@ fn generate_schema_text() -> String {
     s
 }
 
-#[cfg(feature = "full")]
 #[test]
 fn schema_snapshot_matches_derived() {
     let derived = generate_schema_text();
@@ -37,9 +34,10 @@ fn schema_snapshot_matches_derived() {
 }
 
 /// Regenerate the committed snapshot. Gated behind `#[ignore]` so updating the
-/// schema is always an explicit, audited step. Same `full`-feature gate as
-/// the assertion above so regen and assert see the same dep graph.
-#[cfg(feature = "full")]
+/// schema is always an explicit, audited step. Runs under any feature set: the
+/// only `#[cfg(feature)]` on the config surface gates an `impl` method, not a
+/// struct field, so `schema_for!(ConfigV1)` is feature-independent — no reason
+/// to pin schema verification to the heaviest (and least link-portable) build.
 #[test]
 #[ignore]
 fn regenerate_schema() {
