@@ -80,7 +80,13 @@ async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> 
     *state.store.write().await = store;
     if let Some(cache) = cache {
         state.cache.store(Arc::new(cache));
-        state.cache_generation.fetch_add(1, Ordering::Relaxed);
     }
+    // Bump the generation on every forwarded rescan — even when the fingerprint was unchanged and the
+    // map above was reused. `cache_generation` is the cursor-validity token, and the documented
+    // contract (matched by the local scan path in `background.rs`) is that a rescan invalidates
+    // in-flight cursors. The bump is a lone atomic add, independent of the expensive `MapCache::build`
+    // the fingerprint check still guards, so cursor invalidation stays consistent across the
+    // daemon-writer and local paths without giving up the no-op-rescan RSS optimization.
+    state.cache_generation.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
