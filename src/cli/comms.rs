@@ -207,7 +207,30 @@ pub enum CommsAgentCmd {
         #[arg(long)]
         as_agent: Option<String>,
     },
+    /// Block until a peer posts to a joined thread (or one thread), or until the timeout elapses.
+    Wait {
+        /// Restrict the wake to this thread only. Omit to wake on any joined thread.
+        #[arg(long)]
+        thread: Option<String>,
+        /// Maximum seconds to block before returning `timed_out: true` (default 30, max 300).
+        #[arg(long)]
+        timeout_secs: Option<u32>,
+        /// Only consider messages from the last N hours (default 24). Pass 0 for ALL history.
+        #[arg(long)]
+        since_hours: Option<u32>,
+        /// Resume token from a previous page's `next_cursor`.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Act as this sub-identity instead of the CLI's default agent id.
+        #[arg(long)]
+        as_agent: Option<String>,
+    },
 }
+
+/// Default long-poll timeout for `wait` when `--timeout-secs` is omitted.
+const DEFAULT_WAIT_SECS: u32 = 30;
+/// Hard cap on `wait`'s `--timeout-secs`, mirroring the MCP `inbox_wait` tool's cap.
+const MAX_WAIT_SECS: u32 = 300;
 
 /// Clamp a caller limit to `[1, MAX_LIMIT]`, defaulting when absent.
 fn clamp_limit(limit: Option<u32>) -> u32 {
@@ -547,6 +570,64 @@ async fn dispatch(root: &Path, json: bool, cmd: CommsAgentCmd, out: &mut impl Wr
                 .await
                 .map_err(|e| anyhow::anyhow!("inbox: {e}"))?;
             render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
+        }
+        CommsAgentCmd::Wait {
+            thread,
+            timeout_secs,
+            since_hours,
+            cursor,
+            as_agent,
+        } => {
+            let mut client = connect_as(root, as_agent).await?;
+            let (remote, cwd) = scope_context_for(root);
+            let thread_id = thread.map(ThreadId::parse).transpose().context("thread id")?;
+            let timeout = std::time::Duration::from_secs(u64::from(
+                timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS),
+            ));
+            let (timed_out, messages, unread, next_cursor) = client
+                .wait_inbox(
+                    remote,
+                    cwd,
+                    thread_id,
+                    since_cutoff(since_hours),
+                    cursor.map(Cursor),
+                    DEFAULT_LIMIT,
+                    timeout,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("wait: {e}"))?;
+            if json {
+                let rows: Vec<_> = messages
+                    .iter()
+                    .map(|sm| {
+                        let m = &sm.meta;
+                        json!({
+                            "id": m.id,
+                            "thread": m.thread.as_str(),
+                            "from": m.from.as_str(),
+                            "ts_micros": m.ts_micros,
+                            "subject": m.subject,
+                            "tags": m.tags,
+                            "reply_to": m.reply_to,
+                            "seq": sm.seq,
+                            "body_len": m.body_len,
+                        })
+                    })
+                    .collect();
+                let mut obj = json!({
+                    "timed_out": timed_out,
+                    "total": rows.len(),
+                    "unread": unread,
+                    "messages": rows,
+                });
+                if let Some(c) = &next_cursor {
+                    obj["next_cursor"] = json!(c.0);
+                }
+                writeln!(out, "{obj}")?;
+            } else {
+                writeln!(out, "timed_out: {timed_out}")?;
+                render_front_matter(&messages, next_cursor.as_ref(), Some(unread), json, out)?;
+            }
         }
     }
     Ok(())

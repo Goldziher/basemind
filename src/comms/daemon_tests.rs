@@ -595,6 +595,115 @@ async fn subscribe_then_post_fans_out_notification() {
     }
 }
 
+/// A passive inbox subscription (no `thread` filter) wakes on a post to EITHER of two joined
+/// threads, but stays silent for a post to a thread the subscriber is not a member of.
+#[tokio::test]
+async fn subscribe_inbox_wakes_on_any_joined_thread() {
+    let (_d, broker) = temp_broker();
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread1 = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let thread2 = start_thread(&broker, &mut alice, &tx, &["carol"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+    let mut carol = hello(&broker, &tx, "carol").await;
+    // A third thread alice is NOT a member of.
+    let thread3 = start_thread(&broker, &mut bob, &tx, &["carol"]).await;
+
+    let sub_resp = broker
+        .handle(CommsRequest::SubscribeInbox { thread: None }, &mut alice, &tx)
+        .await;
+    assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
+
+    post(&broker, &mut bob, &tx, &thread1, "from thread1").await;
+    match rx.recv().await.expect("notification for thread1") {
+        CommsOut::Notification(CommsNotification::Message(meta)) => {
+            assert_eq!(meta.thread, thread1, "wakes on any joined thread (thread1)");
+        }
+        other => panic!("expected a Message notification, got {other:?}"),
+    }
+
+    post(&broker, &mut carol, &tx, &thread2, "from thread2").await;
+    match rx.recv().await.expect("notification for thread2") {
+        CommsOut::Notification(CommsNotification::Message(meta)) => {
+            assert_eq!(meta.thread, thread2, "wakes on any joined thread (thread2)");
+        }
+        other => panic!("expected a Message notification, got {other:?}"),
+    }
+
+    post(&broker, &mut carol, &tx, &thread3, "from thread3").await;
+    assert!(
+        matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+        "a post to a thread alice never joined must not wake her inbox sink"
+    );
+}
+
+/// An inbox subscription with `thread: Some(t)` wakes ONLY for posts to `t`, staying silent for a
+/// post to another joined thread.
+#[tokio::test]
+async fn subscribe_inbox_filter_restricts_to_one_thread() {
+    let (_d, broker) = temp_broker();
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread1 = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let thread2 = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+
+    let sub_resp = broker
+        .handle(
+            CommsRequest::SubscribeInbox {
+                thread: Some(thread1.clone()),
+            },
+            &mut alice,
+            &tx,
+        )
+        .await;
+    assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
+
+    post(&broker, &mut bob, &tx, &thread2, "other thread").await;
+    assert!(
+        matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+        "the filter must not wake on a different joined thread"
+    );
+
+    post(&broker, &mut bob, &tx, &thread1, "filtered thread").await;
+    match rx.recv().await.expect("notification for the filtered thread") {
+        CommsOut::Notification(CommsNotification::Message(meta)) => {
+            assert_eq!(meta.thread, thread1, "the filter wakes on its own thread");
+        }
+        other => panic!("expected a Message notification, got {other:?}"),
+    }
+}
+
+/// An inbox subscription never wakes on the subscriber's OWN post, mirroring `on_inbox`'s
+/// self-exclusion.
+#[tokio::test]
+async fn subscribe_inbox_skips_self_authored() {
+    let (_d, broker) = temp_broker();
+    let (tx, mut rx) = mpsc::channel(8);
+    let mut alice = hello(&broker, &tx, "alice").await;
+    let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
+    let mut bob = hello(&broker, &tx, "bob").await;
+
+    let sub_resp = broker
+        .handle(CommsRequest::SubscribeInbox { thread: None }, &mut alice, &tx)
+        .await;
+    assert!(matches!(sub_resp, CommsResponse::Subscribed { .. }));
+
+    post(&broker, &mut alice, &tx, &thread, "alice's own post").await;
+    assert!(
+        matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+        "a self-authored post must not wake the author's own inbox sink"
+    );
+
+    post(&broker, &mut bob, &tx, &thread, "bob's post").await;
+    match rx.recv().await.expect("notification for bob's post") {
+        CommsOut::Notification(CommsNotification::Message(meta)) => {
+            assert_eq!(meta.subject, "bob's post");
+        }
+        other => panic!("expected a Message notification, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn idle_reaper_tracks_links_and_activity() {
     let (_d, broker) = temp_broker();

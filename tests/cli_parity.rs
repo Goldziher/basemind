@@ -103,6 +103,7 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("message_get", "comms read"),
         ("inbox_read", "comms inbox"),
         ("inbox_ack", "comms inbox"),
+        ("inbox_wait", "comms wait"),
         ("workspaces", "registry workspaces"),
         ("worktrees", "registry worktrees"),
         ("branches", "registry branches"),
