@@ -17,6 +17,8 @@ pub mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
 #[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_handlers;
+#[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_inproc;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_named_pipe;

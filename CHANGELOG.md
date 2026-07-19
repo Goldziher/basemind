@@ -24,6 +24,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed links onto other domains and pulled in unrelated hosts. basemind now forces on-host
   scope (subdomains still excluded) when building the crawl engine, so `web_crawl` indexes the site
   you pointed it at and no others (#34).
+- **`web_map` no longer risks OOM on large sitemap-index hosts.** The per-call `limit` bounded only
+  the response; crawlberg still materialized the whole sitemap first, so a host like docs.rs (~482k
+  URLs) drove peak RSS into the multiple-GB range. crawlberg 1.0.6 threads `map_limit` through the
+  sitemap fetch loop (upstream fix for the issue we filed); basemind now passes it, bounding peak to
+  roughly the cap plus one child sitemap. `total_urls` is a floor above the cap, with `truncated`
+  set (#30).
+- **A daemon-writer rescan now invalidates in-flight `search_symbols` cursors even when content is
+  unchanged.** The `cache_generation` bump was nested inside the map rebuild, which the fingerprint
+  optimization skips on a no-op rescan, so a stale cursor could read as valid — contradicting the
+  documented `invalidated on rescan` contract the local path honors. The bump is now unconditional
+  (#35).
+
+### Changed
+
+- **Enforced the 1000-line module cap.** Split `comms/daemon.rs`, `mcp/mod.rs`, `mcp/helpers_calls.rs`,
+  and `mcp/types.rs` into sibling modules, and added `tests/max_lines.rs` so `cargo test` fails if any
+  `src/**/*.rs` exceeds the cap (poly cannot count lines, so the documented `rust-max-lines` check
+  never existed). Bumped crawlberg to 1.0.6; `arrow-array`/`arrow-schema` held at 58 in lock-step with
+  lancedb (#19).
 
 ## [0.22.0] — 2026-07-12
 

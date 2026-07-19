@@ -10,7 +10,7 @@ use crate::comms::scope::{self, ScopeChain};
 
 /// Build a scope chain from the optional remote + cwd a client supplied. When `cwd` is given we
 /// attempt git discovery to enrich the chain's remote if the client did not supply one.
-pub(super) fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf>) -> ScopeChain {
+pub(crate) fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf>) -> ScopeChain {
     match cwd {
         Some(cwd) => {
             let repo = crate::git::Repo::discover(&cwd).ok();
@@ -31,7 +31,7 @@ pub(super) fn build_chain(remote: Option<String>, cwd: Option<std::path::PathBuf
 /// an implicit member, so the `members` dimension counts when there is at least one EXPLICIT extra
 /// member (a thread with only the creator is not "addressed by members"). Returns `Ok(())` when
 /// the two-of-three rule holds, else a human-readable rejection reason.
-pub(super) fn validate_dimensions(
+pub(crate) fn validate_dimensions(
     subject: Option<&str>,
     path: Option<&str>,
     members: &[AgentId],
@@ -75,7 +75,7 @@ pub(super) fn sanitize_id(s: &str) -> String {
 /// Mint a unique thread id from the creator, a microsecond timestamp, and a process counter.
 /// Collisions are structurally impossible within a single daemon because the counter is monotonic
 /// and the daemon is the sole writer.
-pub(super) fn mint_thread_id(creator: &AgentId) -> ThreadId {
+pub(crate) fn mint_thread_id(creator: &AgentId) -> ThreadId {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let raw = format!("th-{}-{}-{}", sanitize_id(creator.as_str()), now_micros(), n);
@@ -85,7 +85,7 @@ pub(super) fn mint_thread_id(creator: &AgentId) -> ThreadId {
 
 /// Mint a unique message id from the thread, agent, and a microsecond timestamp + a process
 /// counter.
-pub(super) fn mint_message_id(thread: &ThreadId, agent: &AgentId) -> String {
+pub(crate) fn mint_message_id(thread: &ThreadId, agent: &AgentId) -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{}:{}:{}:{}", thread.as_str(), agent.as_str(), now_micros(), n)
