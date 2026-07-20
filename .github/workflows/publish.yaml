@@ -662,22 +662,33 @@ jobs:
         uses: rust-lang/crates-io-auth-action@v1
         id: crates_auth
 
-      - name: Publish to crates.io
+      - name: Publish to crates.io (dependency order)
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates_auth.outputs.token }}
         run: |
           set -euo pipefail
-          if cargo publish --allow-dirty 2>cargo-publish.err; then
-            exit 0
-          fi
-
-          if grep -Eq "crate .* already exists" cargo-publish.err; then
-            echo "crate already published; skipping"
-            exit 0
-          fi
-
-          cat cargo-publish.err >&2
-          exit 1
+          # basemind depends on four vendored, in-tree crates (forks we own). crates.io is a closed
+          # registry, so each must be published — and in topological order — before the crate that
+          # depends on it: the two leaves, then stack-graphs, then tree-sitter-stack-graphs, then
+          # basemind itself last. `cargo publish` waits for each to appear in the index before
+          # returning, so the next publish resolves it.
+          publish() {
+            pkg="$1"
+            echo "::group::cargo publish -p $pkg"
+            if cargo publish -p "$pkg" --allow-dirty 2>publish.err; then
+              cat publish.err; echo "::endgroup::"; return 0
+            fi
+            # Idempotent across re-runs of the same tag: a version already on crates.io is a skip.
+            if grep -Eq "already (exists|uploaded)|is already uploaded" publish.err; then
+              echo "$pkg already published; skipping"; cat publish.err; echo "::endgroup::"; return 0
+            fi
+            cat publish.err >&2; echo "::endgroup::"; return 1
+          }
+          publish basemind-lsp-positions
+          publish basemind-tree-sitter-graph
+          publish basemind-stack-graphs
+          publish basemind-tree-sitter-stack-graphs
+          publish basemind
 
   publish_npm:
     name: Publish npm
