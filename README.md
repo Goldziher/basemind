@@ -85,9 +85,11 @@ In the session (not your shell), run in order:
 ```
 
 Restart, then run `/bm-statusline` once to turn on the live statusline (a one-time step — see
-[Statusline](#install-the-program)). Recommended: turn on auto-update for the `basemind`
-marketplace (Claude Code's plugin manager) so you always get the current index format and tool
-set — or update it regularly by hand if you'd rather control timing.
+[Statusline](#install-the-program)). **Turn on auto-update for the `basemind` marketplace**
+(Claude Code's plugin manager): the plugin then tracks each new release automatically, and the
+launcher resolves the latest *published* release, so you always get the current index format and
+tool set and startup stays reliable even during a release. Prefer to control timing? Update the
+marketplace regularly by hand instead.
 
 </details>
 
