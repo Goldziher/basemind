@@ -1,6 +1,6 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
-name = "tree-sitter-stack-graphs"
+name = "basemind-tree-sitter-stack-graphs"
 version = "0.10.0"
 description = "Create stack graphs using tree-sitter parsers (maintained basemind fork, tree-sitter 0.26 port)"
 homepage = "https://github.com/Goldziher/basemind"
@@ -9,19 +9,21 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
-publish = false
 
 [lib]
+name = "tree_sitter_stack_graphs"
 test = false
 
 [dependencies]
 controlled-option = "0.4.1"
-lsp-positions = { path = "../lsp-positions", features = ["tree-sitter"] }
+lsp-positions = { package = "basemind-lsp-positions", version = "0.3.4", path = "../lsp-positions", features = [
+    "tree-sitter",
+] }
 once_cell = "1"
-stack-graphs = { path = "../stack-graphs" }
+stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "../stack-graphs" }
 thiserror = "2"
 tree-sitter = "0.26"
-tree-sitter-graph = { path = "../tree-sitter-graph" }
+tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "../tree-sitter-graph" }
 
 [dev-dependencies]
 pretty_assertions = "1"

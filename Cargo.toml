@@ -130,7 +130,7 @@ schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_toon_format = { version = "0.1", optional = true }
-stack-graphs = { path = "crates/stack-graphs", optional = true }
+stack-graphs = { package = "basemind-stack-graphs", version = "0.14.1", path = "crates/stack-graphs", optional = true }
 streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
@@ -151,9 +151,9 @@ toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
-tree-sitter-graph = { path = "crates/tree-sitter-graph", optional = true }
+tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "crates/tree-sitter-graph", optional = true }
 tree-sitter-language-pack = "1.13.1"
-tree-sitter-stack-graphs = { path = "crates/tree-sitter-stack-graphs", optional = true }
+tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.0-rc.30", default-features = false, features = [
     "tokio-runtime",
@@ -172,9 +172,6 @@ rmcp = { version = "2.2", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
-
-[patch.crates-io]
-lsp-positions = { path = "crates/lsp-positions" }
 
 [profile.release]
 lto = "thin"

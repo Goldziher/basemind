@@ -1,6 +1,6 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
-name = "stack-graphs"
+name = "basemind-stack-graphs"
 version = "0.14.1"
 description = "Name binding for arbitrary programming languages (maintained basemind fork)"
 homepage = "https://github.com/Goldziher/basemind"
@@ -9,9 +9,9 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
-publish = false
 
 [lib]
+name = "stack_graphs"
 test = false
 
 [features]
@@ -25,7 +25,7 @@ either = "1.16"
 enumset = "1.1"
 fxhash = "0.2"
 itertools = "0.15"
-lsp-positions = { path = "../lsp-positions" }
+lsp-positions = { package = "basemind-lsp-positions", version = "0.3.4", path = "../lsp-positions" }
 smallvec = { version = "1.15", features = ["union"] }
 thiserror = "2"
 

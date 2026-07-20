@@ -1,6 +1,6 @@
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
 [package]
-name = "lsp-positions"
+name = "basemind-lsp-positions"
 version = "0.3.4"
 description = "LSP-compatible character positions (maintained basemind fork, tree-sitter 0.26 port)"
 homepage = "https://github.com/Goldziher/basemind"
@@ -9,9 +9,9 @@ readme = "README.md"
 license = "MIT OR Apache-2.0"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
-publish = false
 
 [lib]
+name = "lsp_positions"
 test = false
 
 [features]
