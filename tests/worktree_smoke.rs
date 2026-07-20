@@ -40,6 +40,10 @@ fn linked_worktrees_share_the_global_blob_cache() {
     git(&["init", "-q", "-b", "main"], &main);
     git(&["config", "user.email", "t@example.com"], &main);
     git(&["config", "user.name", "Test"], &main);
+    // Windows runners default core.autocrlf=true, so `git worktree add` would check the committed ~keep
+    // LF file out as CRLF — a different content hash that defeats the global-blob dedup this test ~keep
+    // asserts. Pin LF so the linked worktree reuses the main worktree's blob. ~keep
+    git(&["config", "core.autocrlf", "false"], &main);
     fs::write(main.join("a.rs"), b"pub fn worktree_share_alpha() {}\n").unwrap();
     git(&["add", "."], &main);
     git(&["commit", "-qm", "init"], &main);
