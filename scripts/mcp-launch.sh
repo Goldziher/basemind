@@ -52,6 +52,48 @@ prune_stale_versions() {
 	done
 }
 
+# Terminate basemind processes (serve, comms/write/shell daemons — all the same binary) that ~keep
+# belong to a DIFFERENT cached version than the one we are about to exec, so a version update ~keep
+# converges the machine on a single generation instead of leaking orphans across sessions. Matches ~keep
+# by argv[0] under the cache bin root; keeps everything under keep_dir. Unix-only and strictly ~keep
+# best-effort — it never blocks or fails the launch (Windows has no reliable ps-based reap). ~keep
+reap_other_versions() {
+	local keep_dir="$1"
+	case "$(uname -s)" in
+	MINGW* | MSYS* | CYGWIN* | Windows_NT) return 0 ;;
+	esac
+	have ps || return 0
+	local pids
+	pids="$(ps -axo pid=,args= 2>/dev/null | awk -v root="$PARENT/" -v keep="$keep_dir/" -v me="$$" '
+		{ pid = $1; path = $2 }
+		pid == me { next }
+		index(path, root) == 1 && index(path, keep) != 1 { print pid }')"
+	[ -n "$pids" ] || return 0
+	log "reaping stale-version basemind processes: $(printf '%s' "$pids" | tr '\n' ' ')"
+	printf '%s\n' "$pids" | xargs kill -TERM 2>/dev/null || true
+	local waited=0 alive p
+	while [ "$waited" -lt 20 ]; do
+		alive=0
+		for p in $pids; do kill -0 "$p" 2>/dev/null && alive=1; done
+		[ "$alive" -eq 0 ] && break
+		sleep 0.1
+		waited=$((waited + 1))
+	done
+	printf '%s\n' "$pids" | xargs kill -KILL 2>/dev/null || true
+}
+
+# Remove leftover install lock/staging dirs from other versions (crashed or superseded installs). ~keep
+# The lock for VERSION is preserved — a concurrent session may be holding it to install right now. ~keep
+cleanup_stale_state() {
+	[ -d "$PARENT" ] || return 0
+	local entry
+	for entry in "$PARENT"/.lock-* "$PARENT"/.staging-*; do
+		[ -e "$entry" ] || continue
+		[ "$entry" = "$PARENT/.lock-$VERSION" ] && continue
+		rm -rf "$entry" 2>/dev/null || true
+	done
+}
+
 # Schema minor of a version string: 0.22.1 -> 0.22, 1.3.0-rc.2 -> 1.3. Binaries that ~keep
 # share a minor share the blob + index schema (RELEASE_MINOR), so one can stand in for ~keep
 # another; a different minor would trigger a wipe-and-rebuild and must never be a fallback. ~keep
@@ -96,7 +138,9 @@ try_exec() {
 
 try_exec "${BASEMIND_BIN:-}" "$@"
 if [ -x "$MANAGED_BIN" ] && [ "$(binary_version "$MANAGED_BIN")" = "$VERSION" ]; then
+	reap_other_versions "$CACHE_ROOT"
 	prune_stale_versions
+	cleanup_stale_state
 	exec "$MANAGED_BIN" "$@"
 fi
 try_exec "$PLUGIN_ROOT/bin/$BINARY_NAME" "$@"
@@ -172,6 +216,8 @@ fallback_or_die() {
 		log "v${VERSION} not yet downloadable; falling back to compatible cached basemind $(binary_version "$fb") at $fb — run \`/plugin update\` once the release completes"
 		release_lock
 		LOCK_HELD=""
+		reap_other_versions "$(dirname "$fb")"
+		cleanup_stale_state
 		exec "$fb" "${ARGS[@]}"
 	fi
 	die_incomplete_release "$1"
@@ -239,6 +285,8 @@ TMP=""
 release_lock
 LOCK_HELD=""
 
+reap_other_versions "$CACHE_ROOT"
 prune_stale_versions
+cleanup_stale_state
 
 exec "$MANAGED_BIN" "$@"
