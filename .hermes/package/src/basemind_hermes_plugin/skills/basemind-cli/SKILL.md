@@ -9,15 +9,17 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:64088a6dd06d1efcfce022b71b4612cfca9527c153c4eda5e2e99acea131f94c
-Source-Hash: blake3:960affce8e7d6c8efa32c93ebdd7ca85100e78044731248bd9b44189655e893a
+Content-Hash: blake3:eaaff61b70bf8e01164f917b0017a0535ee9310a4c5a88a267a6debe31a33170
+Source-Hash: blake3:178bcc6ce0f1192b8cadf08e0aa7274f68b1b27837e4634363304539dccfbe6f
 Schema-Version: v1
 -->
 
 # basemind CLI — the scriptable interface
 
 basemind has two equally-weighted surfaces: MCP (interactive tool calls) and CLI (scriptable commands).
-They share the same `.basemind/` index and are safe to run alongside each other. Reach for the CLI
+They share the same machine-global cache (Linux `~/.local/share/basemind/`, macOS
+`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) and are safe to run
+alongside each other. Reach for the CLI
 when you're scripting, batching queries, running in headless environments, or CI.
 
 ## Capabilities
@@ -97,8 +99,9 @@ basemind scan
 ```
 
 This walks the tree, parses with tree-sitter, and writes the content-addressed blob store +
-Fjall inverted index under `.basemind/`. A few seconds for small repos, ~22 s for an ~80k-file
-TypeScript monorepo.
+Fjall inverted index into the machine-global cache (Linux `~/.local/share/basemind/`, macOS
+`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). A few seconds for small
+repos, ~22 s for an ~80k-file TypeScript monorepo.
 
 Re-run `basemind scan` after large changes, or run `basemind watch` to keep the index fresh.
 

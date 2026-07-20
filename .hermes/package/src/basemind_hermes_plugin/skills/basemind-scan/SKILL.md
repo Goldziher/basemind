@@ -9,14 +9,16 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:6e77dfce141eb6c2b45e6cf02f086cde1ee1ba49f3c9cfa3dca13a06e3cdf6fb
-Source-Hash: blake3:960affce8e7d6c8efa32c93ebdd7ca85100e78044731248bd9b44189655e893a
+Content-Hash: blake3:cc18219e899c00721ed5e0f02f82146c8441617be0230dedf851df0f1394c992
+Source-Hash: blake3:178bcc6ce0f1192b8cadf08e0aa7274f68b1b27837e4634363304539dccfbe6f
 Schema-Version: v1
 -->
 
 # basemind-scan — build or refresh the index (no MCP server required)
 
-basemind answers code-map questions from an index under `.basemind/`. That index is built by
+basemind answers code-map questions from an index in a machine-global cache (Linux
+`~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
+`BASEMIND_DATA_HOME`), keyed by workspace. That index is built by
 `basemind scan`. This skill runs the scan via the **CLI**, so it works even when the MCP server
 (`basemind serve`) is not running — which is exactly the situation when basemind reports
 **"no index"** or **"no indexed files"**, or when MCP tools aren't loaded in the session.
@@ -46,20 +48,20 @@ Finding the binary (in order of preference):
 
 ## Notes
 
-- The scan writes the content-addressed blob store + Fjall inverted index under `.basemind/`.
-  Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
+- The scan writes the content-addressed blob store + Fjall inverted index into the machine-global
+  cache (never inside the repo). Seconds for small repos; ~22 s for an ~80k-file TypeScript monorepo.
 - Files tree-sitter doesn't recognize as code go through the document tier; anything that isn't an
   extractable document (e.g. an exotic source file) is **skipped**, not counted as a failure.
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
   CLI `scan` will fail with a lock error. Use the `rescan` MCP tool (it re-indexes in-process)
   instead, or stop the server first.
-- **Indexing directories outside the repo** — set `scan.extra_roots` in `.basemind/basemind.toml`
+- **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and
   are (re-)indexed on a full `scan` only — the live watcher does not track them. Git tools (blame)
   don't apply to external files; the code map (symbols / references / outlines) and document search
   do.
 - After a successful scan, both the MCP tools and `basemind query …` have a fresh index.
-- The CLI shares the exact same `.basemind/` index as the MCP server — see the `basemind-cli`
+- The CLI shares the exact same machine-global cache as the MCP server — see the `basemind-cli`
   skill for the full query surface, or `basemind-code-search` / `basemind-git-history` /
   `basemind-documents` for the per-capability workflows.

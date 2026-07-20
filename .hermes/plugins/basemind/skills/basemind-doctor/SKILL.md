@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:893d9f311f747516616d4a75fbe555fe343bf4f4b2cefa88d3f508036b64a758
-Source-Hash: blake3:960affce8e7d6c8efa32c93ebdd7ca85100e78044731248bd9b44189655e893a
+Content-Hash: blake3:adec6c3eeb72a24d9c09ee89c7809151d37bf9c40592f108e30da3e0ea16f9a6
+Source-Hash: blake3:178bcc6ce0f1192b8cadf08e0aa7274f68b1b27837e4634363304539dccfbe6f
 Schema-Version: v1
 -->
 
@@ -39,17 +39,17 @@ basemind query status
 ## 2. Is a server already running (holding the lock)?
 
 If `basemind scan` fails with a lock error, a `basemind serve` (or `watch`) already owns the index
-for this repo. Check the lock holder:
-
-```sh
-cat .basemind/.lock.meta 2>/dev/null   # {"command":"basemind serve","pid":<pid>,"acquired_unix":<ts>}
-```
+for this repo. The lock-contention error itself names the live holder (command + pid) — it reads
+that from the `.lock.meta` sidecar next to the workspace `.lock`. Both live in this workspace's
+directory under the machine-global cache (Linux `~/.local/share/basemind/`, macOS
+`~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`), keyed by workspace — not
+in the repo.
 
 - If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, or the
   `rescan` MCP tool to refresh. Don't run a CLI `scan` (it will contend on the lock).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
-  the stale `.basemind/.lock.meta` to clear the advisory holder record.)
+  the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)
 
 ## 3. Rebuild the index if needed
 
@@ -69,7 +69,7 @@ basemind can't relaunch its own stdio server; trigger a reconnect in your client
 - **Cursor / others**: toggle/reconnect the basemind MCP server in the MCP settings.
 
 While disconnected, you are not blocked: use the `basemind-cli` skill (`basemind query …`,
-`basemind git …`) — it reads the same `.basemind/` index directly, no server required.
+`basemind git …`) — it reads the same machine-global cache directly, no server required.
 
 ## Agent shells (embedded rmux daemon)
 
