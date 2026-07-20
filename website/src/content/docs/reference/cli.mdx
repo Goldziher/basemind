@@ -144,35 +144,53 @@ basemind web map <url>
 
 ## Comms Commands
 
+A thread is addressed by at least two of `--subject`, `--path`, and `--member`; `thread-start`
+rejects fewer than two. Every verb below accepts `--as-agent <id>` to act as a named sub-identity
+instead of the CLI's default agent (used for orchestrating several named subagents).
+
 ```bash
-basemind comms rooms
-basemind comms join <room>
-basemind comms leave <room>
-basemind comms room-create <room>
-basemind comms post <room> <subject> [--body --reply-to --tag]
-basemind comms history <room>
-basemind comms inbox [--mark-read]
-basemind comms read <id>
-basemind comms register --name <handle>
-basemind comms agents
-basemind comms status
+basemind comms register [--name --description --version --skill]
+basemind comms agents [--thread]
+basemind comms thread-start [--subject --path --member]
+basemind comms threads [--subject-contains --include-archived]
+basemind comms join <thread>
+basemind comms leave <thread>
+basemind comms members <thread>
+basemind comms add-member <thread> <id>
+basemind comms remove-member <thread> <id>
+basemind comms archive <thread>
+basemind comms post <thread> <subject> [--body --reply-to --tag]
+basemind comms history <thread> [--cursor --limit --since-hours]
+basemind comms read <message-id>
+basemind comms inbox [--cursor --limit --mark-read --since-hours]
+basemind comms wait [--thread --timeout-secs --since-hours --cursor]
+basemind comms daemon
 basemind comms start
 basemind comms stop
+basemind comms status
 ```
 
 | Command | Purpose |
 |---|---|
-| `rooms` | List rooms. |
-| `join <room>` | Join a room. |
-| `leave <room>` | Leave a room. |
-| `room-create <room>` | Create a room. |
-| `post <room> <subject> [--body --reply-to --tag]` | Post a message. |
-| `history <room>` | Recent messages in a room (front-matter only). |
-| `inbox [--mark-read]` | Your inbox (front-matter only). |
-| `read <id>` | Read one message in full. |
-| `register --name <handle>` | Set your agent handle. |
-| `agents` | List active agents. |
-| `status` / `start` / `stop` | Check, start, or stop the shared daemon. |
+| `register [--name --description --version --skill]` | Register or update this agent's card with the broker. |
+| `agents [--thread]` | List agents known to the broker, optionally restricted to one thread's members. |
+| `thread-start [--subject --path --member]` | Start a thread addressed by at least two of subject / path / members. |
+| `threads [--subject-contains --include-archived]` | List threads discoverable to you (member, path match, or subject filter — never all threads). |
+| `join <thread>` | Join a thread. |
+| `leave <thread>` | Leave a thread. |
+| `members <thread>` | List a thread's members. |
+| `add-member <thread> <id>` | Add a member to a thread (creator only). |
+| `remove-member <thread> <id>` | Remove a member from a thread (creator only). |
+| `archive <thread>` | Archive a thread (creator only). |
+| `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
+| `history <thread> [--cursor --limit --since-hours]` | A thread's message history (front-matter only). |
+| `read <message-id>` | Print one message's body in full. |
+| `inbox [--cursor --limit --mark-read --since-hours]` | Your cross-thread inbox (front-matter only). `--mark-read` advances read cursors. |
+| `wait [--thread --timeout-secs --since-hours --cursor]` | Block until a peer posts to a joined thread (or one thread), or the timeout elapses (default 30s, max 300s). |
+| `daemon` | Run the broker loop in the foreground. |
+| `start` | Ensure the broker daemon is running. |
+| `stop` | Stop the broker daemon. |
+| `status` | Broker pid / version / uptime. |
 
 ## Shells Commands
 
@@ -231,5 +249,5 @@ basemind telemetry
 <Aside type="note">
 All commands support `--json` for machine-readable output. Query and git commands take the same
 filters as their MCP counterparts (`--limit`, `--language`, `--path-contains`, …). Cursor-based
-pagination (`--cursor`) is exposed on `comms history` and `comms inbox`.
+pagination (`--cursor`) is exposed on `comms history`, `comms inbox`, and `comms wait`.
 </Aside>

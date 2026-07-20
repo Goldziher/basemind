@@ -13,18 +13,20 @@ a personal inbox, and messages split into cheap headlines and full bodies fetche
 
 ## Threads and discovery
 
-Threads are discovered based on where you're working:
+A thread is addressed by at least two of **subject**, **path-glob**, and **members** —
+`thread_start` rejects fewer than two. Threads are never listed globally; `thread_list` only
+surfaces threads discoverable to you by scope:
 
-- **Repository scope** — keyed by your git `origin` URL. Agents in a clone of the same repo can
-  discover and join repo threads (same scope as shared memory).
-- **Path-glob scope** — scoped to a subtree (e.g., `src/auth/`) for agents working a specific
-  directory.
-- **Global scope** — a machine-wide thread for resource coordination.
-- **Subject-based** — threads identified by an explicit subject; join by name.
+- **Membership** — you're a member (added explicitly, or as the thread's creator).
+- **Path-glob match** — your current working directory matches the thread's path pattern (e.g., a
+  thread scoped to `src/auth/**` is discoverable to any agent working under it).
+- **Subject filter** — `thread_list {subject_contains: "..."}` matches a substring of the thread's
+  subject.
 
 Run `thread_list` to see threads you can join. When starting work, call `thread_join` to enter
 a thread, or create a new one with `thread_start {subject: "pr-42-review", members: […]}` to
-invite specific peers.
+invite specific peers. Joining is always explicit — there's no auto-join — and idle threads
+auto-archive.
 
 ## Two-tier messages
 
@@ -118,21 +120,22 @@ All comms tools have command-line equivalents. Run `basemind comms --help` for t
 
 | MCP tool | CLI |
 |---|---|
-| `thread_list` | `basemind comms threads` |
+| `thread_list` | `basemind comms threads [--subject-contains --include-archived]` |
 | `thread_join` | `basemind comms join <thread>` |
 | `thread_leave` | `basemind comms leave <thread>` |
-| `thread_start` | `basemind comms thread-start --subject <name> --members […]` |
+| `thread_start` | `basemind comms thread-start [--subject --path --member …]` |
 | `thread_post` | `basemind comms post <thread> <subject> [--body …]` |
 | `thread_history` | `basemind comms history <thread>` |
 | `thread_members` | `basemind comms members <thread>` |
-| `thread_add_member` | `basemind comms add-member <thread> <agent>` |
-| `thread_remove_member` | `basemind comms remove-member <thread> <agent>` |
+| `thread_add_member` | `basemind comms add-member <thread> <id>` |
+| `thread_remove_member` | `basemind comms remove-member <thread> <id>` |
 | `thread_archive` | `basemind comms archive <thread>` |
 | `inbox_read` | `basemind comms inbox` |
-| `inbox_ack` | `basemind comms ack <id>` |
+| `inbox_wait` | `basemind comms wait [--thread --timeout-secs]` |
+| `inbox_ack` | `basemind comms inbox --mark-read` |
 | `message_get` | `basemind comms read <id>` |
 | `agent_register` | `basemind comms register --name <handle>` |
-| `agent_list` | `basemind comms agents` |
+| `agent_list` | `basemind comms agents [--thread]` |
 
 See the [CLI reference](/reference/cli/) for full syntax.
 
