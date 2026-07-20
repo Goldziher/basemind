@@ -27,10 +27,28 @@ case "$(uname -s)" in
 MINGW* | MSYS* | CYGWIN* | Windows_NT) BINARY_NAME="basemind.exe" ;;
 esac
 
-MANIFEST="$PLUGIN_ROOT/.claude-plugin/plugin.json"
-[ -f "$MANIFEST" ] || die "plugin manifest not found at $MANIFEST"
-VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -n1)"
-[ -n "$VERSION" ] || die "could not read version from $MANIFEST"
+# BASEMIND_FORCE_VERSION pins the launcher to a specific version instead of the ~keep
+# manifest's. It is set only by the release-window fallback below, which re-execs this ~keep
+# script to install the latest PUBLISHED release through the normal checksum-verified path. ~keep
+FORCED_VERSION="${BASEMIND_FORCE_VERSION:-}"
+if [ -n "$FORCED_VERSION" ]; then
+	VERSION="$FORCED_VERSION"
+else
+	# The same launcher ships under every harness's plugin mirror; each mirror includes ~keep
+	# only its own manifest (the Codex package excludes the Claude one, and vice versa). Probe ~keep
+	# the known manifest locations so the launcher is harness-agnostic. Versions are lock-step, ~keep
+	# so whichever exists yields the same pinned version. ~keep
+	MANIFEST=""
+	for cand in .claude-plugin/plugin.json .codex-plugin/plugin.json .cursor-plugin/plugin.json; do
+		if [ -f "$PLUGIN_ROOT/$cand" ]; then
+			MANIFEST="$PLUGIN_ROOT/$cand"
+			break
+		fi
+	done
+	[ -n "$MANIFEST" ] || die "plugin manifest not found under $PLUGIN_ROOT (.claude-plugin/, .codex-plugin/, or .cursor-plugin/)"
+	VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" | head -n1)"
+	[ -n "$VERSION" ] || die "could not read version from $MANIFEST"
+fi
 
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/basemind/bin/$VERSION"
 MANAGED_BIN="$CACHE_ROOT/$BINARY_NAME"
@@ -205,14 +223,53 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Newest PUBLISHED release tag ("vX.Y.Z"), or empty. GitHub exposes only non-draft, ~keep
+# non-prerelease releases at /releases/latest, and the publish workflow promotes a draft ~keep
+# to published only after every platform asset + checksums file exists — so whatever this ~keep
+# resolves to is always a complete, safe-to-download release. Uses curl's redirect target ~keep
+# (no API rate limit) when available, else the releases API (works with curl or wget). ~keep
+resolve_latest_tag() {
+	local eff tmp
+	if have curl; then
+		eff="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+			"https://github.com/Goldziher/basemind/releases/latest" 2>/dev/null || true)"
+		case "$eff" in
+		*/releases/tag/*)
+			printf '%s\n' "${eff##*/tag/}"
+			return 0
+			;;
+		esac
+	fi
+	tmp="$(mktemp)"
+	if fetch "https://api.github.com/repos/Goldziher/basemind/releases/latest" "$tmp" 2>/dev/null; then
+		sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp" | head -n1
+	fi
+	rm -f "$tmp" 2>/dev/null || true
+}
+
 # The pinned v${VERSION} assets are missing (release still publishing, or genuinely ~keep
-# incomplete). Rather than leave the session with no MCP server, exec the newest cached ~keep
-# binary of the same schema minor if one exists; only give up when none is available. ~keep
+# incomplete). Keep the session working instead of leaving it with no MCP server: ~keep
+#   1. Re-exec pinned to the newest PUBLISHED release (assets-gated, so even a clean cache ~keep
+#      gets a running server); Claude Code auto-updates to v${VERSION} once it publishes. ~keep
+#      Skipped when already running a forced version, so it can never loop. ~keep
+#   2. Offline last resort: newest cached binary of the same schema minor. ~keep
+#   3. Give up with the incomplete-release message. ~keep
 fallback_or_die() {
-	local fb
+	local reason="$1" tag lver fb
+	if [ -z "$FORCED_VERSION" ]; then
+		tag="$(resolve_latest_tag)"
+		lver="${tag#v}"
+		if [ -n "$lver" ] && [ "$lver" != "$VERSION" ]; then
+			log "warning: $reason"
+			log "v${VERSION} not yet published; running the latest published basemind ${lver} — Claude Code will auto-update to v${VERSION} once its release completes"
+			release_lock
+			LOCK_HELD=""
+			exec env BASEMIND_FORCE_VERSION="$lver" "$0" "${ARGS[@]}"
+		fi
+	fi
 	fb="$(newest_compatible_cached)"
 	if [ -n "$fb" ]; then
-		log "warning: $1"
+		log "warning: $reason"
 		log "v${VERSION} not yet downloadable; falling back to compatible cached basemind $(binary_version "$fb") at $fb — run \`/plugin update\` once the release completes"
 		release_lock
 		LOCK_HELD=""
@@ -220,7 +277,7 @@ fallback_or_die() {
 		cleanup_stale_state
 		exec "$fb" "${ARGS[@]}"
 	fi
-	die_incomplete_release "$1"
+	die_incomplete_release "$reason"
 }
 
 LOCK_HELD=""
