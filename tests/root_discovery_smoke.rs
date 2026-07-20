@@ -111,12 +111,19 @@ fn init_root_anchors_to_enclosing_git_repo_not_parent_config_marker() {
     let sub = repo.join("src");
     fs::create_dir(&sub).expect("mkdir repo subfolder");
 
+    // `init_root` returns gix's workdir, whose path form (e.g. the `\\?\` verbatim prefix or
+    // casing on Windows) need not be byte-identical to the hand-built `repo`. Compare canonically.
+    let repo_canon = repo.canonicalize().expect("canonicalize repo");
     assert_eq!(
-        init_root(&sub),
-        repo,
+        init_root(&sub).canonicalize().expect("canonicalize init_root(sub)"),
+        repo_canon,
         "init anchors to the enclosing git repo, not the parent"
     );
-    assert_eq!(init_root(&repo), repo, "init at the repo root stays put");
+    assert_eq!(
+        init_root(&repo).canonicalize().expect("canonicalize init_root(repo)"),
+        repo_canon,
+        "init at the repo root stays put"
+    );
 }
 
 #[test]
