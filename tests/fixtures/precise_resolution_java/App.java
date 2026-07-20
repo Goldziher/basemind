@@ -22,6 +22,8 @@ public class App {
         return value * 2;
     }
 
+    // Decoy: a local method sharing the imported class's method name. A heuristic ~keep
+    // name-only resolver could confuse `Foo.greet()` below with this local `greet`. ~keep
     public String greet() {
         return "App.greet";
     }
