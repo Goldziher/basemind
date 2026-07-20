@@ -18,9 +18,6 @@
 //! than a wrong guess. A miss simply leaves that import unstitched (the same fallback JS had for
 //! non-JS files before this generalization).
 
-// The `SpecifierResolver` dispatch and its shared helper only exist when at least one resolver
-// backend is compiled in — its sole consumer (`xfile`) is gated the same way. Under default
-// features the module compiles to nothing.
 #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
 use std::path::Path;
 
@@ -124,13 +121,6 @@ impl SpecifierResolver {
 fn to_repo_relative(root: &Path, target_abs: &Path) -> Option<RelPath> {
     let rel = match target_abs.strip_prefix(root) {
         Ok(rel) => rel.to_path_buf(),
-        // oxc resolves a tsconfig `paths` alias against a *canonicalized* `baseUrl`, so an aliased
-        // target comes back with symlinks resolved (e.g. `/private/var/...`) while `root` may still
-        // be the symlinked form the scanner was handed (`/var/...`). A plain `strip_prefix` then
-        // misses and the cross-file edge is silently dropped — every aliased import in a symlinked
-        // checkout goes unresolved. Retry against the canonical root so the two agree. Only runs off
-        // the happy path: a root that already equals its canonical form never reaches here, so the
-        // common (non-symlinked) case pays nothing.
         Err(_) => {
             let canonical_root = std::fs::canonicalize(root).ok()?;
             target_abs.strip_prefix(&canonical_root).ok()?.to_path_buf()
@@ -288,12 +278,9 @@ pub(crate) mod python {
         /// through the dotted tail after the dots.
         fn resolve_relative(&self, root: &Path, importer_rel: &str, specifier: &str, dots: usize) -> Option<RelPath> {
             let importer_abs = root.join(importer_rel);
-            // The importer's package directory is its parent; the first dot refers to it, so we
-            // climb `dots - 1` additional parents.
             let mut base = importer_abs.parent()?.to_path_buf();
             for _ in 1..dots {
                 base = base.parent()?.to_path_buf();
-                // Never climb above the repo root.
                 if !base.starts_with(root) {
                     return None;
                 }
@@ -327,7 +314,6 @@ pub(crate) mod python {
             let init = dir.join("__init__.py");
             return init.is_file().then(|| to_repo_relative(root, &init)).flatten();
         }
-        // All but the last component must be package directories.
         for part in &parts[..parts.len() - 1] {
             dir.push(part);
         }
@@ -378,7 +364,6 @@ pub(crate) mod java {
         pub(crate) fn resolve(&self, root: &Path, _importer_rel: &str, import: &ImportEdge) -> Option<RelPath> {
             let fqn = import.specifier.as_str();
             let parts: Vec<&str> = fqn.split('.').collect();
-            // Need at least a package segment and a type; reject wildcards and malformed segments.
             if parts.len() < 2 || parts.iter().any(|p| p.is_empty() || *p == "*") {
                 return None;
             }
@@ -518,7 +503,6 @@ mod stack_tests {
         let root = tmp.path();
         write(root, "main.py", "");
         let resolver = SpecifierResolver::for_language("python").unwrap();
-        // `..x` from a top-level file would climb above root.
         let got = resolver.resolve(root, "main.py", &import("..x", Some("x")));
         assert_eq!(got, None);
     }
@@ -597,9 +581,6 @@ mod stack_tests {
 
     #[test]
     fn python_java_imports_have_no_default_export_fallback() {
-        // A bare `import m` (imported == None) must NOT fall back to a `"default"` export for
-        // Python/Java — that JS-ism would wrongly bind it to an unrelated `default` symbol in the
-        // target. The join skips these when `default_export_name()` is None.
         assert_eq!(
             SpecifierResolver::for_language("python").unwrap().default_export_name(),
             None,

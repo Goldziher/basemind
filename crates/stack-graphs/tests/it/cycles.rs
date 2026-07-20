@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2023, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -23,9 +22,6 @@ use std::time::Duration;
 use crate::util::*;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
-
-// ----------------------------------------------------------------------------
-// productive paths
 
 #[test]
 fn renaming_path_is_productive() {
@@ -140,9 +136,6 @@ fn two_steps_forward_one_step_back_path_is_cyclic() {
     );
 }
 
-// ----------------------------------------------------------------------------
-// cycle detection
-
 #[test]
 fn finding_simple_identity_cycle_is_detected() {
     let mut graph = StackGraph::new();
@@ -155,7 +148,6 @@ fn finding_simple_identity_cycle_is_detected() {
     let mut partials = PartialPaths::new();
     create_partial_path_and_edges(&mut graph, &mut partials, &[r, foo_ref, s, foo_def, r]).unwrap();
 
-    // test edge cycle detector
     {
         let mut edges = Appendables::new();
         let mut cd = AppendingCycleDetector::new();
@@ -172,7 +164,6 @@ fn finding_simple_identity_cycle_is_detected() {
         );
     }
 
-    // test termination of path finding
     {
         let mut path_count = 0usize;
         let cancellation_flag = CancelAfterDuration::new(TEST_TIMEOUT);
@@ -206,7 +197,6 @@ fn stitching_simple_identity_cycle_is_detected() {
     let p0 = db.add_partial_path(&graph, &mut partials, p0);
     let p1 = db.add_partial_path(&graph, &mut partials, p1);
 
-    // test partial path cycle detector
     {
         let mut paths = Appendables::new();
         let mut cd: AppendingCycleDetector<Handle<PartialPath>> =
@@ -238,7 +228,6 @@ fn finding_composite_identity_cycle_is_detected() {
     )
     .unwrap();
 
-    // test edge cycle detector
     {
         let mut edges = Appendables::new();
         let mut cd = AppendingCycleDetector::new();
@@ -262,7 +251,6 @@ fn finding_composite_identity_cycle_is_detected() {
         );
     }
 
-    // test termination of path finding
     {
         let mut path_count = 0usize;
         let cancellation_flag = CancelAfterDuration::new(TEST_TIMEOUT);
@@ -297,7 +285,6 @@ fn stitching_composite_identity_cycle_is_detected() {
     let p0 = db.add_partial_path(&graph, &mut partials, p0);
     let p1 = db.add_partial_path(&graph, &mut partials, p1);
 
-    // test joining cycle detector
     {
         let mut paths = Appendables::new();
         let mut cd: AppendingCycleDetector<Handle<PartialPath>> =
@@ -321,7 +308,6 @@ fn appending_eliminating_cycle_terminates() {
     let mut partials = PartialPaths::new();
     create_partial_path_and_edges(&mut graph, &mut partials, &[r, s, foo_def, s, r]).unwrap();
 
-    // test termination of path finding
     {
         let mut path_count = 0usize;
         let cancellation_flag = CancelAfterDuration::new(TEST_TIMEOUT);

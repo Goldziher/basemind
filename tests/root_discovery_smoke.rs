@@ -39,9 +39,6 @@ fn resolves_upward_to_ancestor_with_config_marker() {
 
 #[test]
 fn inner_git_repo_bounds_the_config_marker_walk() {
-    // A nested subrepo (its own git root) checked out inside a polyrepo that has a root
-    // `basemind.toml`. Invoking from a subfolder of the subrepo must NOT climb across the subrepo
-    // boundary into the outer polyrepo's config — the subrepo's own root is the ceiling.
     let tmp = tempfile::tempdir().expect("tempdir");
     let outer = tmp.path().canonicalize().expect("canonicalize outer");
     write_config_marker(&outer);
@@ -60,8 +57,6 @@ fn inner_git_repo_bounds_the_config_marker_walk() {
 
 #[test]
 fn inner_repo_own_config_marker_wins_within_its_bound() {
-    // The subrepo has its OWN `basemind.toml`: a subfolder of it resolves to the subrepo root even
-    // though an outer polyrepo also has one. Confirms the in-bound upward walk still works.
     let tmp = tempfile::tempdir().expect("tempdir");
     let outer = tmp.path().canonicalize().expect("canonicalize outer");
     write_config_marker(&outer);
@@ -107,8 +102,6 @@ fn a_config_marker_directory_is_ignored_only_a_file_counts() {
 
 #[test]
 fn init_root_anchors_to_enclosing_git_repo_not_parent_config_marker() {
-    // The reported `basemind init` bug: run from inside a repo whose parent already has a
-    // `basemind.toml`, and init must scaffold the CURRENT repo — never travel up to the parent.
     let tmp = tempfile::tempdir().expect("tempdir");
     let parent = tmp.path().canonicalize().expect("canonicalize parent");
     write_config_marker(&parent);

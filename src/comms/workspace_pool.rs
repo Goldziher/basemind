@@ -189,12 +189,6 @@ impl WorkspacePool {
                 return Ok(entry.clone());
             }
         }
-        // Serialize the cold open. fjall's exclusive index lock means two concurrent opens of the
-        // same key would leave the loser failing on the lock (inside `Store::open`, before the
-        // post-open reconciliation), so the open itself — not just the insert — must be single.
-        // Take the open lock OUTSIDE the map lock (opening touches the filesystem and can block; the
-        // map lock must stay free for hot-path lookups), then re-check the map under it: a peer that
-        // just opened this key while we waited already published its entry, and we return that.
         let _opening = self.open_lock.lock().unwrap_or_else(PoisonError::into_inner);
         {
             let map = self.lock_map();
@@ -212,7 +206,6 @@ impl WorkspacePool {
             last_used: Mutex::new(Instant::now()),
         });
 
-        // We hold `open_lock`, so no peer can have opened this key while we did; insert directly.
         let mut map = self.lock_map();
         while map.len() >= self.cap {
             let victim = map.values().min_by_key(|e| e.last_used()).map(|e| e.key.clone());

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -44,9 +43,6 @@ use controlled_option::Niche;
 
 use crate::utils::cmp_option;
 use crate::utils::equals_option;
-
-//-------------------------------------------------------------------------------------------------
-// Arenas and handles
 
 /// A handle to an instance of type `T` that was allocated from an [`Arena`][].
 ///
@@ -106,8 +102,6 @@ impl<T> Niche for Handle<T> {
 }
 
 // Normally we would #[derive] all of these traits, but the auto-derived implementations all
-// require that T implement the trait as well.  We don't store any real instances of T inside of
-// Handle, so our implementations do _not_ require that.
 
 impl<T> Clone for Handle<T> {
     fn clone(&self) -> Handle<T> {
@@ -149,9 +143,6 @@ impl<T> PartialOrd for Handle<T> {
     }
 }
 
-// Handles are always Send and Sync, even if the underlying types are not.  After all, a handle is
-// just a number!  And you _also_ need access to the Arena (which _won't_ be Send/Sync if T isn't)
-// to dereference the handle.
 unsafe impl<T> Send for Handle<T> {}
 unsafe impl<T> Sync for Handle<T> {}
 
@@ -232,9 +223,6 @@ impl<T> Arena<T> {
         self.items.len() <= 1
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Supplemental arenas
 
 /// A supplemental arena lets you store additional data about some data type that is itself stored
 /// in an [`Arena`][].
@@ -381,9 +369,6 @@ where
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Handle sets
-
 /// Contains a set of handles, encoded efficiently using a bit set.
 #[repr(C)]
 pub struct HandleSet<T> {
@@ -443,9 +428,6 @@ impl<T> Default for HandleSet<T> {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Arena-allocated lists
-
 /// An arena-allocated singly-linked list.
 ///
 /// Linked lists are often a poor choice because they aren't very cache-friendly.  However, this
@@ -454,9 +436,6 @@ impl<T> Default for HandleSet<T> {
 #[repr(C)]
 #[derive(Niche)]
 pub struct List<T> {
-    // The value of this handle will be EMPTY_LIST_HANDLE if the list is empty.  For an
-    // Option<List<T>>, the value will be zero (via the Option<NonZero> optimization) if the list
-    // is None.
     #[niche]
     cells: Handle<ListCell<T>>,
 }
@@ -465,16 +444,11 @@ pub struct List<T> {
 #[repr(C)]
 pub struct ListCell<T> {
     head: T,
-    // The value of this handle will be EMPTY_LIST_HANDLE if this is the last element of the list.
     tail: Handle<ListCell<T>>,
 }
 
 const EMPTY_LIST_HANDLE: NonZeroU32 = NonZeroU32::new(u32::MAX).unwrap();
 
-// An arena that's used to manage `List<T>` instances.
-//
-// (Note that the arena doesn't store `List<T>` itself; it stores the `ListCell<T>`s that the lists
-// are made of.)
 pub type ListArena<T> = Arena<ListCell<T>>;
 
 impl<T> List<T> {
@@ -578,8 +552,6 @@ where
 }
 
 // Normally we would #[derive] all of these traits, but the auto-derived implementations all
-// require that T implement the trait as well.  We don't store any real instances of T inside of
-// List, so our implementations do _not_ require that.
 
 impl<T> Clone for List<T> {
     fn clone(&self) -> List<T> {
@@ -588,9 +560,6 @@ impl<T> Clone for List<T> {
 }
 
 impl<T> Copy for List<T> {}
-
-//-------------------------------------------------------------------------------------------------
-// Reversible arena-allocated list
 
 /// An arena-allocated list that can be reversed.
 ///
@@ -614,10 +583,6 @@ pub struct ReversibleListCell<T> {
     reversed: Cell<Option<Handle<ReversibleListCell<T>>>>,
 }
 
-// An arena that's used to manage `ReversibleList<T>` instances.
-//
-// (Note that the arena doesn't store `ReversibleList<T>` itself; it stores the
-// `ReversibleListCell<T>`s that the lists are made of.)
 pub type ReversibleListArena<T> = Arena<ReversibleListCell<T>>;
 
 impl<T> ReversibleList<T> {
@@ -642,7 +607,6 @@ impl<T> ReversibleList<T> {
     /// Returns whether we have already calculated the reversal of this list.
     pub fn have_reversal(&self, arena: &ReversibleListArena<T>) -> bool {
         if self.is_empty() {
-            // The empty list is already reversed.
             return true;
         }
         arena.get(self.cells).reversed.get().is_some()
@@ -689,16 +653,13 @@ where
     /// when you have mutable access to the arena, so that you can then reverse and un-reverse the
     /// list later when you only have shared access to it.
     pub fn ensure_reversal_available(&mut self, arena: &mut ReversibleListArena<T>) {
-        // First check to see if the list has already been reversed.
         if self.is_empty() {
-            // The empty list is already reversed.
             return;
         }
         if arena.get(self.cells).reversed.get().is_some() {
             return;
         }
 
-        // If not, reverse the list and cache the result.
         let new_reversed = ReversibleListCell::reverse(self.cells, arena);
         arena.get(self.cells).reversed.set(Some(new_reversed));
     }
@@ -723,7 +684,6 @@ impl<T> ReversibleList<T> {
     /// return an error.
     pub fn reverse_reused(&mut self, arena: &ReversibleListArena<T>) -> Result<(), ReversalNotCached> {
         if self.is_empty() {
-            // The empty list is already reversed.
             return Ok(());
         }
         self.cells = arena.get(self.cells).reversed.get().ok_or(ReversalNotCached)?;
@@ -770,8 +730,6 @@ where
             reversed = arena.add(Self::new(
                 head,
                 reversed,
-                // The reversal of the reversal that we just calculated is our original list!  Go
-                // ahead and cache that away preemptively.
                 if ReversibleListCell::is_empty_handle(current) {
                     Some(forwards)
                 } else {
@@ -839,8 +797,6 @@ where
 }
 
 // Normally we would #[derive] all of these traits, but the auto-derived implementations all
-// require that T implement the trait as well.  We don't store any real instances of T inside of
-// ReversibleList, so our implementations do _not_ require that.
 
 impl<T> Clone for ReversibleList<T> {
     fn clone(&self) -> ReversibleList<T> {
@@ -849,9 +805,6 @@ impl<T> Clone for ReversibleList<T> {
 }
 
 impl<T> Copy for ReversibleList<T> {}
-
-//-------------------------------------------------------------------------------------------------
-// Arena-allocated deque
 
 /// An arena-allocated deque.
 ///
@@ -893,7 +846,6 @@ impl std::ops::Not for DequeDirection {
     }
 }
 
-// An arena that's used to manage `Deque<T>` instances.
 pub type DequeArena<T> = ReversibleListArena<T>;
 
 impl<T> Deque<T> {
@@ -912,10 +864,6 @@ impl<T> Deque<T> {
     pub fn empty() -> Deque<T> {
         Deque {
             list: ReversibleList::empty(),
-            // A philosophical question for you: is the empty list forwards or backwards?  It
-            // doesn't really matter which one we choose here; if we immediately start pushing onto
-            // the back, we'll "reverse" the current list before proceeding, but reversing the
-            // empty list is a no-op.
             direction: DequeDirection::Forwards,
         }
     }
@@ -1042,8 +990,6 @@ where
     where
         F: FnMut(&T, &T) -> std::cmp::Ordering,
     {
-        // To compare, we need both deques to specifically be pointing forwards, and not just in
-        // the same direction, so that we get the lexicographic comparison correct.
         self.ensure_forwards(arena);
         other.ensure_forwards(arena);
         self.list.cmp_with(arena, other.list, cmp)
@@ -1099,8 +1045,6 @@ impl<T> Deque<T> {
 }
 
 // Normally we would #[derive] all of these traits, but the auto-derived implementations all
-// require that T implement the trait as well.  We don't store any real instances of T inside of
-// Deque, so our implementations do _not_ require that.
 
 impl<T> Clone for Deque<T> {
     fn clone(&self) -> Deque<T> {

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -46,9 +45,6 @@ impl ast::File {
         Parser::new(content).parse_into_file(self)
     }
 }
-
-// ----------------------------------------------------------------------------
-// Parse errors
 
 /// An error that can occur while parsing a graph DSL file
 #[derive(Debug, Error)]
@@ -130,9 +126,6 @@ impl std::fmt::Display for DisplayParseErrorPretty<'_> {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Location
-
 /// The location of a graph DSL entity within its file
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Location {
@@ -161,9 +154,6 @@ impl Display for Location {
     }
 }
 
-// ----------------------------------------------------------------------------
-// Range
-
 /// The range of a graph DSL entity within its file
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Range {
@@ -176,9 +166,6 @@ impl Display for Range {
         write!(f, "{} - {}", self.start, self.end)
     }
 }
-
-// ----------------------------------------------------------------------------
-// Parser
 
 struct Parser<'a> {
     source: &'a str,
@@ -297,7 +284,6 @@ impl<'a> Parser<'a> {
             }
             self.consume_whitespace();
         }
-        // we can unwrap here because all queries have already been parsed before
         file.query = Some(Query::new(&file.language, &self.query_source).unwrap());
         Ok(())
     }
@@ -367,7 +353,7 @@ impl<'a> Parser<'a> {
             query,
             statements,
             full_match_stanza_capture_index,
-            full_match_file_capture_index: usize::MAX, // set in checker
+            full_match_file_capture_index: usize::MAX,
             range,
         })
     }
@@ -378,15 +364,10 @@ impl<'a> Parser<'a> {
         self.skip_query()?;
         let query_end = self.offset;
         let query_source = self.source[query_start..query_end].to_owned() + "@" + FULL_MATCH;
-        // If tree-sitter allowed us to incrementally add patterns to a query, we wouldn't need
-        // the global query_source.
         self.query_source += &query_source;
         self.query_source += "\n";
         let query = Query::new(language, &query_source).map_err(|mut e| {
-            // the column of the first row of a query pattern must be shifted by the whitespace
-            // that was already consumed
             if e.row == 0 {
-                // must come before we update e.row!
                 e.column += location.column;
             }
             e.row += location.row;
@@ -605,7 +586,6 @@ impl<'a> Parser<'a> {
         } else if keyword == "if" {
             let mut arms = Vec::new();
 
-            // if
             let location = keyword_location;
             self.consume_whitespace();
             let conditions = self.parse_conditions()?;
@@ -618,7 +598,6 @@ impl<'a> Parser<'a> {
                 location,
             });
 
-            // elif
             let mut location = self.location;
             while self.consume_token("elif").is_ok() {
                 self.consume_whitespace();
@@ -635,7 +614,6 @@ impl<'a> Parser<'a> {
                 location = self.location;
             }
 
-            // else
             let location = self.location;
             if self.consume_token("else").is_ok() {
                 let conditions = vec![];
@@ -891,15 +869,14 @@ impl<'a> Parser<'a> {
         let name = Identifier::from(&self.source[start + 1..end]);
         Ok(ast::Capture {
             name,
-            quantifier: Zero,                 // set in checker
-            file_capture_index: usize::MAX,   // set in checker
-            stanza_capture_index: usize::MAX, // set in checker
+            quantifier: Zero,
+            file_capture_index: usize::MAX,
+            stanza_capture_index: usize::MAX,
             location,
         })
     }
 
     fn parse_integer_constant(&mut self) -> Result<ast::Expression, ParseError> {
-        // We'll have already verified that the next digit is an integer.
         let start = self.offset;
         self.consume_while(|ch| ch.is_ascii_digit());
         let end = self.offset;

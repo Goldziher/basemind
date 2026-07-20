@@ -418,10 +418,6 @@ mod tests {
             stats.other_bytes
         );
 
-        // Blobs are global now, so the workspace tree still contains a per-fixture `blobs/` here,
-        // but `total_bytes` is defined as the workspace tree PLUS the (passed) blob store. With the
-        // fixture blobs living under the workspace dir, the global blob bytes are double-counted by
-        // construction — assert the definition directly rather than against a bare tree walk.
         assert_eq!(
             stats.total_bytes,
             dir_size(&fx.basemind_dir).expect("dir_size") + stats.blobs_bytes,
@@ -547,9 +543,6 @@ mod tests {
             "single working view with one indexed file"
         );
 
-        // Mirror `run_gc`'s mark+sweep against the per-fixture blob dir (the global-store equivalent
-        // `run_gc` takes the store lock and sweeps `global_blobs_dir()`, which these hermetic tests
-        // deliberately avoid).
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
         gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
 
@@ -719,9 +712,9 @@ mod tests {
         let blobs = tmp.path().join("blobs");
         fs::create_dir_all(&blobs).expect("mk blobs");
 
-        let stem_a = "a".repeat(64); // referenced by workspace A only
-        let stem_b = "b".repeat(64); // referenced by workspace B only
-        let orphan = "c".repeat(64); // referenced by NEITHER
+        let stem_a = "a".repeat(64);
+        let stem_b = "b".repeat(64);
+        let orphan = "c".repeat(64);
         fs::write(blobs.join(format!("{stem_a}.fm.msgpack")), b"fm-a").expect("blob a");
         fs::write(blobs.join(format!("{stem_b}.fm.msgpack")), b"fm-b").expect("blob b");
         let orphan_bytes = b"orphan-blob-bytes";

@@ -63,9 +63,6 @@ pub fn run() -> Result<()> {
             Ok(_) => {}
             Err(error) => tracing::warn!(%error, "comms: startup message prune failed"),
         }
-        // Open the machine registry (the sole writer is this daemon). A failure degrades to an empty
-        // in-memory registry so the daemon still serves comms + rescan; coordination tools return
-        // empty until a workspace registers.
         let machine_registry = match crate::registry::Registry::from_data_home() {
             Ok(registry) => registry,
             Err(error) => {
@@ -77,9 +74,6 @@ pub fn run() -> Result<()> {
         let broker = Arc::new(Broker::with_registry(store.clone(), machine_registry));
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        // Hand the accept-loop shutdown signal to the broker so every drain path — a `Stop` RPC,
-        // SIGTERM, the idle reaper, the ownership watchdog — terminates the front-end through the
-        // single `begin_drain` seam instead of each racing its own `send(true)`.
         broker.install_shutdown(shutdown_tx);
 
         let broker_for_signal = broker.clone();
@@ -96,8 +90,6 @@ pub fn run() -> Result<()> {
             tick.tick().await;
             loop {
                 tick.tick().await;
-                // One call, not `is_idle_for` + `begin_drain`: the check and the state flip happen
-                // under the registry lock so this reaper cannot race another drain into Draining.
                 if broker_for_reaper.try_begin_idle_drain(idle_after).await {
                     tracing::info!(
                         idle_after_secs = idle_after.as_secs(),

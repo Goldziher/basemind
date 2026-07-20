@@ -175,9 +175,6 @@ pub(super) async fn run_rescan(
         super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
     }
 
-    // A `daemon_writer` serve owns no write lock: it forwards the scan to the machine daemon (the
-    // sole fjall writer) and rebuilds its read-only map from the daemon-written index. The daemon's
-    // reply carries the core counts; the per-file skip breakdown is not on that RPC, so it reads 0.
     let stats = fetch_rescan_stats(&state, scoped_paths).await?;
 
     #[allow(deprecated)]
@@ -244,8 +241,6 @@ async fn fetch_rescan_stats(
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
-        // `embed: true` matches the local path below (`EmbedMode::Inline`): an explicit `rescan`
-        // fills document + code-chunk vectors, it isn't a code-map-only pass.
         let report = super::daemon_forward::forward_rescan_and_refresh(state, scoped_paths, false, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,

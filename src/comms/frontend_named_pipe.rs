@@ -128,8 +128,6 @@ mod imp {
                         }
                         let connected = server;
                         server = ServerOptions::new().create(&self.pipe_name)?;
-                        // Counted at accept time, before the spawn — same ordering as the UDS
-                        // front-end, and for the same reason (see `Broker::register_link`).
                         let guard = broker.register_link();
                         tokio::spawn(serve_link(broker.clone(), NamedPipeLink::new(connected), guard));
                     }
@@ -140,9 +138,6 @@ mod imp {
                     }
                 }
             }
-            // Finish the links we already accepted rather than tearing them mid-request. There is no
-            // path to unlink here — a named pipe has no filesystem entry to remove; dropping the
-            // listener instance is what stops new clients from connecting.
             broker.drain_links(crate::comms::daemon::DRAIN_GRACE).await;
             Ok(())
         }

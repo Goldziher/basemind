@@ -198,10 +198,6 @@ impl Default for DocConfig {
 
 impl DocConfig {
     fn to_xberg(&self) -> ExtractionConfig {
-        // PART A2 profile gating. `CodeOnly` and `None_` strip the enrichment post-processors
-        // (keywords / NER / summarisation) and disable OCR so a code-centric workspace does not
-        // pay for models it will never surface. `None_` additionally skips embeddings entirely
-        // (metadata + keyword-search only). `Full` keeps every configured capability.
         let no_models = matches!(self.document_models, DocumentModelProfile::None_);
         let strip_enrichment = matches!(
             self.document_models,

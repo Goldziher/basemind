@@ -370,11 +370,6 @@ pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Re
         .await
         .map_err(|e| mcp_internal("crawlberg map_urls", e))?;
 
-    // crawlberg bounded the sitemap fetch at `WEB_MAP_URL_CAP` to cap peak memory (crawlberg#33), so
-    // `discovered` is a floor, not the site's true total: a host with more URLs than the cap reports
-    // exactly the cap. Hitting the cap therefore means "there is more", independent of the page
-    // `limit`; `urls` is the (further, per-call) page we hand back. Reporting the floor plus an honest
-    // `truncated` keeps a bounded answer from ever reading as a complete one.
     let discovered = map.urls.len();
     let hit_fetch_cap = discovered >= crate::web::engine::WEB_MAP_URL_CAP as usize;
     let urls: Vec<WebMapEntry> = map
@@ -412,7 +407,6 @@ mod tests {
         assert_eq!(web_map_limit(None), 100);
         assert_eq!(web_map_limit(Some(1)), 1);
         assert_eq!(web_map_limit(Some(1000)), 1000);
-        // The ceiling is what stops docs.rs-scale sitemaps from being serialised whole.
         assert_eq!(web_map_limit(Some(500_000)), 1000);
     }
 

@@ -40,8 +40,6 @@ fn linked_worktrees_share_the_global_blob_cache() {
     git(&["init", "-q", "-b", "main"], &main);
     git(&["config", "user.email", "t@example.com"], &main);
     git(&["config", "user.name", "Test"], &main);
-    // Test-local symbol name: the blob store is global + content-addressed, so a body shared with
-    // another test would let its blob pre-seed this one, perturbing the blob-dedup accounting.
     fs::write(main.join("a.rs"), b"pub fn worktree_share_alpha() {}\n").unwrap();
     git(&["add", "."], &main);
     git(&["commit", "-qm", "init"], &main);
@@ -69,7 +67,6 @@ fn linked_worktrees_share_the_global_blob_cache() {
         )
         .unwrap();
     }
-    // The main scan wrote its blob for `a.rs` into the ONE global store.
     let after_main = fs::read_dir(&global_blobs)
         .expect("global blobs dir exists")
         .filter_map(Result::ok)
@@ -105,15 +102,12 @@ fn linked_worktrees_share_the_global_blob_cache() {
             basemind::scanner::EmbedMode::Inline,
         )
         .unwrap();
-        // `a.rs` is byte-identical across the worktrees, so its blob already exists globally: the
-        // linked worktree's scan reuses the extraction instead of re-parsing/re-embedding.
         assert_eq!(
             report.stats.reused_extraction, 1,
             "linked worktree reuses the main worktree's blob from the shared global store"
         );
     }
 
-    // Neither worktree created an in-repo `.basemind/` — the cache is entirely out-of-repo now.
     assert!(
         !main.join(".basemind").exists(),
         "no in-repo cache under the main worktree"

@@ -160,7 +160,6 @@ mod tests {
     fn resources_toml_roundtrips_embed_batch_size_override() {
         let cfg: ResourcesConfig = toml::from_str("embed_batch_size = 8\n").expect("parse [resources] body");
         assert_eq!(cfg.embed_batch_size, 8);
-        // Unset fields still take their defaults.
         assert_eq!(cfg.scan_threads, 0);
         assert_eq!(cfg.document_models, DocumentModelProfile::Full);
     }
@@ -193,16 +192,13 @@ mod tests {
 
     #[test]
     fn effective_embed_threads_prefers_resources_then_deprecated_alias() {
-        // resources wins when set
         let cfg = ResourcesConfig {
             embed_threads: 4,
             ..ResourcesConfig::default()
         };
         assert_eq!(cfg.effective_embed_threads(8), 4);
-        // falls back to the deprecated alias when resources is auto (0)
         let cfg = ResourcesConfig::default();
         assert_eq!(cfg.effective_embed_threads(8), 8);
-        // both auto → 0 (resolved downstream)
         assert_eq!(cfg.effective_embed_threads(0), 0);
     }
 }

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -64,12 +63,8 @@ use crate::arena::Arena;
 use crate::arena::Handle;
 use crate::arena::SupplementalArena;
 
-//-------------------------------------------------------------------------------------------------
-// String content
-
 #[repr(C)]
 struct InternedStringContent {
-    // See InternedStringArena below for how we fill in these fields safely.
     start: *const u8,
     len: usize,
 }
@@ -98,27 +93,18 @@ impl InternedStringArena {
         }
     }
 
-    // Adds a new string.  This does not check whether we've already stored a string with the same
-    // content; that is handled down below in `StackGraph::add_symbol` and `add_file`.
     fn add(&mut self, value: &str) -> InternedStringContent {
-        // Is there enough room in current_buffer to hold this string?
         let value = value.as_bytes();
         let len = value.len();
         let capacity = self.current_buffer.capacity();
         let remaining_capacity = capacity - self.current_buffer.len();
         if len > remaining_capacity {
-            // If not, move current_buffer over into full_buffers (so that we hang onto it until
-            // we're dropped) and allocate a new current_buffer that's at least big enough to hold
-            // this string.
             let new_capacity = (capacity.max(len) + 1).next_power_of_two();
             let new_buffer = Vec::with_capacity(new_capacity);
             let old_buffer = std::mem::replace(&mut self.current_buffer, new_buffer);
             self.full_buffers.push(old_buffer);
         }
 
-        // Copy the string's content into current_buffer and return a pointer to it.  That pointer
-        // is stable since we never allow the current_buffer to be resized — once we run out of
-        // room, we allocate a _completely new buffer_ to replace it.
         let start_index = self.current_buffer.len();
         self.current_buffer.extend_from_slice(value);
         let start = unsafe { self.current_buffer.as_ptr().add(start_index) };
@@ -138,16 +124,8 @@ impl InternedStringContent {
         }
     }
 
-    // Returns a supposedly 'static reference to the string's data.  The string data isn't really
-    // static, but we are careful only to use this as a key in the HashMap that StackGraph uses to
-    // track whether we've stored a particular symbol already.  That HashMap lives alongside the
-    // InternedStringArena that holds the data, so we can get away with a technically incorrect
-    // 'static lifetime here.  As an extra precaution, this method is is marked as unsafe so that
-    // we don't inadvertently call it from anywhere else in the crate.
     unsafe fn as_hash_key(&self) -> &'static str {
         // SAFETY: `start`/`len` point into the InternedStringArena that outlives every use of the
-        // returned key (see the comment above), and the bytes were copied from a `&str`, so they
-        // are valid UTF-8 by construction.
         unsafe {
             let bytes = std::slice::from_raw_parts(self.start, self.len);
             std::str::from_utf8_unchecked(bytes)
@@ -157,9 +135,6 @@ impl InternedStringContent {
 
 unsafe impl Send for InternedStringContent {}
 unsafe impl Sync for InternedStringContent {}
-
-//-------------------------------------------------------------------------------------------------
-// Symbols
 
 /// A name that we are trying to resolve using stack graphs.
 ///
@@ -238,9 +213,6 @@ impl Handle<Symbol> {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Interned strings
-
 /// Arbitrary string content associated with some part of a stack graph.
 #[repr(C)]
 pub struct InternedString {
@@ -308,9 +280,6 @@ impl Handle<InternedString> {
         DisplayInternedString { wrapped: self, graph }
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Files
 
 /// A source file that we have extracted stack graph data from.
 ///
@@ -409,9 +378,6 @@ impl Handle<File> {
         DisplayFile { wrapped: self, graph }
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Nodes
 
 /// Uniquely identifies a node in a stack graph.
 ///
@@ -948,9 +914,7 @@ impl<'a> Display for DisplayPopSymbolNode<'a> {
 }
 
 /// Pushes a scoped symbol onto the symbol stack.
-// The private `_phantom` field forces construction through `StackGraph::add_push_scoped_symbol_node`,
 // which is what registers the node's `NodeID`.  clippy suggests `#[non_exhaustive]`, but that only
-// seals the type for *other* crates — an in-crate struct literal would still bypass the ID registry.
 #[allow(clippy::manual_non_exhaustive)]
 #[repr(C)]
 pub struct PushScopedSymbolNode {
@@ -1232,9 +1196,6 @@ impl<'a> Display for DisplayScopeNode<'a> {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Edges
-
 /// Connects two nodes in a stack graph.
 ///
 /// These edges provide the basic graph connectivity that allow us to search for name binding paths
@@ -1289,9 +1250,6 @@ impl StackGraph {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Source code
-
 /// Contains information about a range of code in a source code file.
 #[repr(C)]
 #[derive(Default)]
@@ -1324,9 +1282,6 @@ impl StackGraph {
         &mut self.source_info[node]
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Debug info
 
 /// Contains debug info about a stack graph node as key-value pairs of strings.
 #[derive(Default)]
@@ -1384,9 +1339,6 @@ impl StackGraph {
         &mut es[idx].1
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Stack graphs
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]

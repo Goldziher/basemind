@@ -303,9 +303,6 @@ impl BasemindServer {
             .map(|r| crate::git::scope_key(r))
             .unwrap_or_else(|| format!("path:{}", root.display()));
         let agent_id = identity::resolve_agent_id(&config, &store);
-        // A linked worktree shares the MAIN worktree's history index (identical commit graph), which
-        // is also the directory the `scan` CLI and the daemon build into. Keying off `root`'s own
-        // cache dir instead would have a worktree read an index nobody writes.
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
@@ -319,8 +316,6 @@ impl BasemindServer {
             && view_is_working
             && (store.index.files.is_empty() || fjall_index_empty);
         let defer_warm = options.background && !needs_initial_scan;
-        // Empty for BOTH deferred regimes: `serve` warms it on a background task, the one-shot CLI
-        // builds it at the first barrier that needs it (and often never does).
         let cache = if defer_warm || options.lazy_cache {
             Arc::new(MapCache::empty())
         } else {
@@ -635,10 +630,6 @@ impl ServerHandler for BasemindServer {
         request: CompleteRequestParams,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CompleteResult, rmcp::ErrorData> {
-        // `complete_argument` scans the in-RAM map, so it must take the same barrier every other
-        // cache-reading tool takes. Without it, a completion arriving before the background warm
-        // publishes silently reads the empty placeholder and returns zero candidates — and under
-        // `lazy_cache`, where the barrier is what BUILDS the map, it would return zero forever.
         self.state.await_cache_ready().await;
         Ok(self.complete_argument(&request))
     }

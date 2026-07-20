@@ -1,12 +1,4 @@
-# Maintained fork of stack-graphs, originally derived from
-# github.com/github/stack-graphs v0.14.1 (archived upstream, crates.io `stack-graphs` 0.14.1).
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
-# Owned and modernized by basemind: edition 2024, `lsp-positions` is a workspace path dep so the
-# whole stack-graph stack resolves to a single instance. The C FFI (`c.rs` + cbindgen header), the
-# `serde` / `visualization` / `storage` (rusqlite) modules and the `bincode` feature are stripped:
-# basemind only builds a StackGraph in memory and runs the forward partial-path stitcher over it.
-# Two upstream panics on the stitching hot path were converted to graceful skips — see
-# `src/stitching.rs` (`Database::get_incoming_path_degree`, `ForwardPartialPathStitcher::extend`).
 [package]
 name = "stack-graphs"
 version = "0.14.1"
@@ -15,17 +7,15 @@ homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-# Derived from the upstream github/stack-graphs crate
-# (GitHub <opensource+stack-graphs@github.com>, Douglas Creager <dcreager@dcreager.net>).
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 publish = false
 
-[lints]
-workspace = true
-
 [lib]
 test = false
+
+[features]
+copious-debugging = []
 
 [dependencies]
 ahash = "0.8"
@@ -43,8 +33,8 @@ thiserror = "2"
 maplit = "1.0"
 pretty_assertions = "1"
 
-[features]
-copious-debugging = []
+[lints]
+workspace = true
 
 [[test]]
 name = "it"

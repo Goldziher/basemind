@@ -10,41 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Repo documents (and code chunks) now get embedded under the machine daemon.** On a
-  `daemon_writer` session the initial scan was forwarded to the daemon as a `Deferred` (code-map +
-  keyword) pass only — the promised follow-up vector-fill never ran, so nothing was ever written to
-  LanceDB and `search_documents` returned nothing for repository documents (`web_scrape` was
-  unaffected because it embeds inline). The daemon (the sole fjall writer) can now run an `Inline`
-  embed pass, and `serve` forwards a detached vector-fill follow-up after the fast initial scan — off
-  the boot handshake, so startup is not blocked on ONNX. Live watcher rescans and the explicit
-  `rescan` tool forward the embed pass too, matching the non-daemon path (#32).
-- **`web_crawl` stays on the seed host.** crawlberg defaults `stay_on_domain` off, so a crawl
-  followed links onto other domains and pulled in unrelated hosts. basemind now forces on-host
-  scope (subdomains still excluded) when building the crawl engine, so `web_crawl` indexes the site
-  you pointed it at and no others (#34).
-- **`web_map` no longer risks OOM on large sitemap-index hosts.** The per-call `limit` bounded only
-  the response; crawlberg still materialized the whole sitemap first, so a host like docs.rs (~482k
-  URLs) drove peak RSS into the multiple-GB range. crawlberg 1.0.6 threads `map_limit` through the
-  sitemap fetch loop (upstream fix for the issue we filed); basemind now passes it, bounding peak to
-  roughly the cap plus one child sitemap. `total_urls` is a floor above the cap, with `truncated`
-  set (#30).
-- **A daemon-writer rescan now invalidates in-flight `search_symbols` cursors even when content is
-  unchanged.** The `cache_generation` bump was nested inside the map rebuild, which the fingerprint
-  optimization skips on a no-op rescan, so a stale cursor could read as valid — contradicting the
-  documented `invalidated on rescan` contract the local path honors. The bump is now unconditional
-  (#35).
-
-### Changed
-
-- **Enforced the 1000-line module cap.** Split `comms/daemon.rs`, `mcp/mod.rs`, `mcp/helpers_calls.rs`,
-  and `mcp/types.rs` into sibling modules, and added `tests/max_lines.rs` so `cargo test` fails if any
-  `src/**/*.rs` exceeds the cap (poly cannot count lines, so the documented `rust-max-lines` check
-  never existed). Bumped crawlberg to 1.0.6; `arrow-array`/`arrow-schema` held at 58 in lock-step with
-  lancedb (#19).
-
-## [0.22.0] — 2026-07-12
+## [0.22.0] — 2026-07-20
 
 > **Index rebuild on upgrade.** This release bumps the index/blob/comms schema (21 → 22), so every
 > existing `.basemind/` (legacy, per-repo) and the new global cache wipe and rebuild from source on
@@ -99,6 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`[code_intel] precise_resolution` config toggle** (default `true`). Set it to `false` in
   `basemind.toml` to skip the precise engines (oxc + stack-graphs) and fall back to fast tree-sitter
   `locals` scope binding for every language. Applies to files (re)scanned after the change.
+- **`[resources]` governance config.** A new table bounds basemind's memory and CPU footprint for
+  fitting a large workspace on a modest host: `embed_threads` (caps the ONNX embedding pool;
+  supersedes the deprecated `[documents].embed_max_threads` alias), `embed_batch_size` (default 32),
+  `scan_threads` (caps the scanner rayon pool), `document_models` (`full` | `code_only` | `none` —
+  narrows the document tier for a code-centric workspace), and `max_footprint_mb`, enforced by a
+  best-effort backpressure gate that samples the process `phys_footprint` (mach `TASK_VM_INFO`, which
+  counts compressed and swapped-out pages) at the document-extraction and embedding admit points and
+  parks over-ceiling workers on a bounded backoff — never failing a scan. The schema change is
+  additive (no `RELEASE_MINOR`/blob bump).
+- **`inbox_wait`** — a blocking comms tool that returns the moment a peer posts to a joined thread (or
+  on timeout), replacing the `inbox_read`/`thread_list` polling loop. Backed by the broker's existing
+  push fan-out via a membership-routed `SubscribeInbox` sink over an ephemeral connection, so a long
+  wait can't head-of-line-block other comms calls.
+- **Per-call latency in every tool response.** Latency-relevant tools now return `elapsed_us` (tool
+  body only — index/store lookups, git walks, ranking, response construction; excludes transport and
+  serialization) and the CLI additionally reports `startup_us`, so query cost is observable and
+  distinct from process startup. Microseconds because the warm code-map path is routinely
+  sub-millisecond.
 
 ### Changed
 
@@ -108,6 +92,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Blobs are global and deduped across repos.** The content-addressed blob store used to be
   per-repo; it is now one machine-wide store, so identical file content scanned from different repos
   or worktrees is extracted and stored once.
+- **`find_callers` reports a complete result; precision is now additive.** The name scan (the same
+  sound scan `find_references` runs) is the floor and defines `total`/`hits`; import resolution can
+  only refine it, surfacing precision as a per-hit `resolved` flag plus a `resolved_total` lower
+  bound. Previously resolution ran first and returned early, so a partial resolution could report a
+  confident, complete-looking, wrong subset (see Fixed).
+- **1000-line module cap is now enforced.** `tests/max_lines.rs` walks `src/**/*.rs` and fails
+  `cargo test` on any file over the cap — the documented `rust-max-lines` poly check never actually
+  existed (poly's custom rules are ast-grep matches and cannot count lines). Several files that had
+  drifted past the cap were split along real seams into sibling modules, behaviour-preserving by
+  construction (the `keys.rs` split keeps `symbol_kind_byte`'s persisted `u8` ordinals byte-identical).
+- **Dependency upgrades.** xberg `1.0.0-rc.30`, crawlberg `1.0.7`, tree-sitter-language-pack `1.13.1`,
+  and the latest compatible versions across the tree; `arrow-array`/`arrow-schema` held at 58 in
+  lock-step with lancedb 0.31. stack-graphs is vendored under `crates/` with two upstream panics
+  fixed.
 
 ### Removed
 
@@ -133,6 +131,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   freely to an ancestor `.basemind/`.
 - Fixed Codex plugin MCP startup by using the required root `.mcp.json` shape and resolving the
   launcher relative to the installed plugin instead of an unsupported `${PLUGIN_ROOT}` placeholder.
+- **`find_callers` reported 2 callers where there were 172.** It ran import resolution first and
+  returned early on any hit, so the name scan ran only as a fallback when resolution found nothing.
+  When resolution saw 2 of 172 real call sites it reported `total: 2` with no truncation flag — a
+  confident, complete-looking, wrong answer an agent would act on. The name scan is now the floor and
+  resolution only annotates it (a Python case that returned 7 of ~4,000 now returns the full set).
+- **`workspace_grep` returned a fast, confident, wrong zero.** `scan_cap` bounded _files visited_, so
+  a default grep over a 68k-file workspace searched ~2.9% of it in arbitrary path order and stopped —
+  and a rare identifier, which is precisely what one greps for, does not live in the first 2.9%.
+  `limit` now caps _hits_, the whole corpus is scanned (rayon-parallel with a memmem literal
+  prefilter), and `total_matches`/`total_files_matched` are exact. A latent cursor bug that dropped a
+  file's remaining matches on a mid-file `limit` boundary is fixed by packing `(candidate, hit
+  ordinal)` into the cursor.
+- **The git-history index was built and read from nowhere on a `--features full` binary.** Fjall's
+  directory lock is exclusive even for a read-only open, so serve (which opens read-only under
+  `comms`) could not hold the history DB; the handle was `None`, serve never built the index, and
+  every git tool silently live-walked forever. The daemon now owns both the build and the reads
+  (`GitHistoryIndex` is a `Local | Remote` backend enum), the per-repo build is serialized so N
+  sessions cause one walk, and the one-shot CLI routes its history reads through the daemon instead of
+  climbing a retry ladder and live-walking. Measured, daemon up: CLI startup ~1.56 s → ~5 ms, a git
+  query ~1.59 s → ~10 ms.
+- **`search_documents` could never see anything the web lane ingested.** The scanner writes documents
+  under the repo scope while `web_scrape`/`web_crawl` write under `web:<host>`, and the search
+  hard-filtered on the repo scope with no way to name the other namespace — so every scraped page was
+  written, embedded, and then permanently invisible. `scope` is now a search parameter (defaulting to
+  the repo scope), and the ingest tools echo the scope they wrote under, so the pair composes.
+- **A daemon `--features full` build embedded nothing it scanned.** The forwarded initial scan ran a
+  `Deferred` (code map + BM25 keyword) pass only; the vector-fill follow-up the non-daemon path spawns
+  was never forwarded, so LanceDB stayed empty for every repository document and code chunk
+  (`web_scrape` worked because it embeds inline). The daemon can now run an `Inline` embed pass, and
+  `serve` forwards a detached vector-fill follow-up after the fast initial scan — off the boot
+  handshake, so startup never blocks on ONNX. Live watcher rescans and the `rescan` tool forward it
+  too.
+- **A failure in an optional lane destroyed the code map.** The scanner flushed the code map _after_
+  the optional lanes (embeddings, documents, code-intel), so any lane that failed took the whole map
+  with it — leaving gigabytes of blobs behind a `file_count` of 0 and a full re-scan on every launch.
+  The map is now persisted before the optional lanes run, each lane runs under `catch_unwind`, and a
+  per-file panic in the resolve pass costs only that file's edges.
+- **The machine daemon's footprint climbed to ~13 GB at monorepo scale and never released.** The
+  `Inline` embed pass accumulated every file's embedding rows (a 768-dim vector + chunk text per
+  chunk) for the whole corpus in RAM before one LanceDB write. It now streams per file, so peak embed
+  RAM is one file independent of corpus size (a `phys_footprint`-ratchet regression test pins it flat
+  across passes). A related serve-side RSS sawtooth — a whole-map rebuild on every no-op rescan — is
+  gone: an `(path, content-hash)` fingerprint proves the blobs are byte-identical and the resident map
+  is reused.
+- **A panicking request handler pinned its daemon forever.** The idle reaper counts live links, and
+  the refcount was released by a plain statement after the accept loop, which an unwind walks past —
+  so one panicking handler left the count above zero and that daemon never reaped, stacking an
+  immortal process on every run. The refcount is now an RAII `LinkGuard` released by `Drop` (also
+  closing the accept/exit race), and idle detection consults in-flight work, not link count alone.
+- **Every CLI invocation rebuilt the whole in-RAM map cache** — ~3–5 s flat, up to 11 s under load,
+  even for `repo-info`, which never reads the map. The one-shot CLI now builds it lazily at the cache
+  barrier, only for tools that scan the corpus (`repo-info` ~534 µs vs `search_symbols` ~1 s). En
+  route this fixed `complete()` reading the map without taking the barrier every other cache-reading
+  tool takes — an intermittent flake that would have become a permanent empty under lazy-cache.
+- **Orphaned workspace caches pinned blobs forever.** Nothing reaped the per-workspace cache dir of a
+  deleted repo, so the global blob store could only grow (48 workspace dirs for 2 live repos). A
+  marker-based reaper now records the canonical root and reclaims dead workspaces before the blob
+  sweep — conservatively keeping anything it can't prove dead (held lock, or a root whose parent is
+  also missing, e.g. an unmounted volume).
+- **Two agents sharing one identity shared one inbox.** The CLI's persisted-id tier read the
+  pre-0.22 in-repo path that no longer exists, so every CLI call collapsed onto a shared
+  `"basemind-cli"` constant (and `serve` onto `"anon"`). All four resolvers are consolidated to a
+  single chain — env, config, then a generated id persisted in the correct per-workspace cache dir,
+  then a process-unique id — never a shared constant, and honouring `comms.agent_id`.
+- **A thread scoped to `<dir>/**` was invisible to an agent whose cwd _is_ `<dir>`.** globset's `**`
+  requires a component after the slash, so the recursive form never matched its own base — the most
+  common cwd. The stripped base is retried, covering the root without widening the glob.
+- **Cross-file `goto_definition` silently dropped every tsconfig-aliased import.** oxc resolves a
+  tsconfig `paths` alias against a _canonicalized_ `baseUrl`, so on a symlinked root the resolved
+  target's prefix didn't match and the cross-file edge was discarded. The resolver now discovers the
+  governing tsconfig per importing file (what `tsc` applies) and `to_repo_relative` retries against
+  the canonical root — a no-op on non-symlinked roots.
+- **A daemon-writer rescan didn't invalidate in-flight `search_symbols` cursors on unchanged
+  content.** The `cache_generation` bump was nested inside the map rebuild, which the fingerprint
+  optimization skips on a no-op rescan, so a stale cursor read as valid — contradicting the documented
+  `invalidated on rescan` contract. The bump is now unconditional.
+- **Telemetry recorded call latency in milliseconds, so every sub-millisecond tool read as `0`.** The
+  sink now stamps microseconds (legacy `elapsed_ms` rows are rescaled on read), matching the
+  response-level `elapsed_us` reading.
+- **Fjall ran on its 32 MiB default block cache against a multi-GB index.** The cache is now sized at
+  20% of the on-disk index, clamped to [32 MiB, 256 MiB] (`BASEMIND_INDEX_CACHE_BYTES` overrides);
+  `find_references("get")` on django went 907 µs → 285 µs for +15.9 MB RSS.
+- **`web_crawl` followed links off the seed host.** crawlberg's `stay_on_domain` defaults off and the
+  engine builder never set it, so a crawl wandered onto every domain it linked to. On-host scope is
+  forced now (subdomains still excluded).
+- **`web_map` returned every URL a site has, uncapped** — 482k URLs on docs.rs drove peak RSS into the
+  multi-GB range and OOM-killed the process. `limit` (default 100, max 1000) now caps the response,
+  and crawlberg 1.0.7's `map_limit` bounds the sitemap fetch itself, holding peak to roughly the cap
+  plus one child sitemap; `total_urls` becomes a floor with `truncated` set.
+- **`cache_stats` no longer flakes when a `*.tmp` file vanishes mid size-walk**, and an fsevents
+  watcher test race (an event landing before stream registration is lost forever) is closed by
+  re-writing until the watcher reports the path.
 
 ## [0.21.1] — 2026-07-11
 

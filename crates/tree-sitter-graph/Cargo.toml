@@ -1,8 +1,4 @@
-# Maintained fork of tree-sitter-graph, originally derived from
-# github.com/tree-sitter/tree-sitter-graph v0.12.0 (tag v0.12.0).
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
-# Owned and modernized by basemind: ported to tree-sitter 0.26, edition 2024.
-# CLI + tree-sitter-loader/config features stripped.
 [package]
 name = "tree-sitter-graph"
 version = "0.12.0"
@@ -11,13 +7,9 @@ homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-# Derived from the upstream tree-sitter-graph crate (Douglas Creager <dcreager@dcreager.net>).
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 publish = false
-
-[lints]
-workspace = true
 
 [lib]
 test = false
@@ -36,6 +28,9 @@ tree-sitter = "0.26"
 env_logger = "0.11"
 indoc = "2.0"
 tree-sitter-python = "=0.23.5"
+
+[lints]
+workspace = true
 
 [[test]]
 name = "it"

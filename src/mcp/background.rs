@@ -47,14 +47,6 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
-        // A daemon_writer serve holds no write lock: forward the initial full scan to the daemon
-        // (the sole writer) and rebuild the read-only map from the index it writes. The fast pass is
-        // `Deferred` (code map + keyword lane, no ONNX) so the handshake is never blocked on the
-        // embedder; a detached follow-up then forwards an `embed` (Inline) scan so the daemon fills
-        // the document + code-chunk vectors the fast pass skipped. Without that follow-up nothing is
-        // ever written to LanceDB on this path and `search_documents` stays empty for repo documents
-        // (bug #32). This mirrors the non-daemon branch below (Deferred fast pass → detached Inline
-        // embed pass → GC), except the embed write is forwarded to the daemon, the sole writer.
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
             state.initial_scan_active.store(true, Ordering::Relaxed);
@@ -72,9 +64,6 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
                 .initial_scan_ms
                 .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
             state.initial_scan_active.store(false, Ordering::Relaxed);
-            // Detached vector-fill: forward an `embed` (Inline) scan so the daemon fills the vectors
-            // the fast pass skipped. No blob GC here — on the daemon-writer model the daemon owns
-            // reference-counted GC across all workspaces (a per-workspace serve sweep would be unsafe).
             let embed_state = Arc::clone(&state);
             tokio::spawn(async move {
                 let embed_started = std::time::Instant::now();
@@ -183,9 +172,6 @@ fn refresh_batch(
 ) -> Result<(usize, usize, usize), String> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.daemon_writer {
-        // `embed: true` mirrors the non-daemon watcher below (`EmbedMode::Inline`): a document or
-        // source file added/edited after boot gets its vectors filled by the daemon, not left
-        // chunk-only forever.
         let report = handle
             .block_on(super::daemon_forward::forward_rescan_and_refresh(
                 state,
@@ -323,11 +309,6 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                         continue;
                     }
                 };
-                // `index.msgpack` being REWRITTEN does not mean any indexed file CHANGED: the daemon
-                // rewrites it after every scan, including one that touched nothing. Rebuilding the
-                // whole corpus here — re-reading every L1/L2 blob while the old map is still
-                // resident — is what made serve's RSS sawtooth. The fingerprint proves the blobs
-                // behind the map are identical, so the map we already hold is still exactly right.
                 let fingerprint = super::map_fingerprint::index_fingerprint(&new_store);
                 if fingerprint == state.cache.load().fingerprint {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -70,9 +69,6 @@ use crate::partial::PartialSymbolStack;
 use crate::paths::Extend;
 use crate::paths::PathResolutionError;
 use crate::stats::FrequencyDistribution;
-
-//-------------------------------------------------------------------------------------------------
-// Appendable
 
 /// Something that can be appended to a partial path.
 pub trait Appendable {
@@ -153,9 +149,6 @@ impl Appendable for PartialPath {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// ToAppendable
-
 /// A trait to be implemented on types such as [`Database`][] that allow converting handles
 /// to appendables.
 ///
@@ -168,9 +161,6 @@ where
 {
     fn get_appendable<'a>(&'a self, handle: &'a H) -> &'a A;
 }
-
-//-------------------------------------------------------------------------------------------------
-// Candidates
 
 /// A trait to support finding candidates for partial path extension. The candidates are represented
 /// by handles `H`, which are mapped to appendables `A` using the database `Db`. Loading errors are
@@ -203,9 +193,6 @@ where
     /// Get the graph, partial path arena, and database backing this candidates instance.
     fn get_graph_partials_and_db(&mut self) -> (&StackGraph, &mut PartialPaths, &Db);
 }
-
-//-------------------------------------------------------------------------------------------------
-// FileEdges
 
 /// Acts as a database of the edges in the graph.
 pub struct GraphEdgeCandidates<'a> {
@@ -256,9 +243,6 @@ impl ToAppendable<Edge, Edge> for GraphEdges {
         edge
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Databases
 
 /// Contains a "database" of partial paths.
 ///
@@ -321,10 +305,7 @@ impl Database {
         let symbol_stack_precondition = path.symbol_stack_precondition;
         let handle = self.partial_paths.add(path);
 
-        // If the partial path starts at the root node, index it by its symbol stack precondition.
         if graph[start_node].is_root() {
-            // The join node is root, so there's no need to use half-open symbol stacks here, as we
-            // do for [`PartialPath::concatenate`][].
             let mut key = SymbolStackKey::from_partial_symbol_stack(partials, self, symbol_stack_precondition);
             if !key.is_empty() {
                 match symbol_stack_precondition.has_variable() {
@@ -336,7 +317,6 @@ impl Database {
                 self.root_paths_by_precondition_prefix[key.back_handle()].push(handle);
             }
         } else {
-            // Otherwise index it by its source node.
             self.paths_by_start_node[start_node].push(handle);
         }
 
@@ -357,8 +337,6 @@ impl Database {
         R: std::iter::Extend<Handle<PartialPath>>,
     {
         if graph[path.end_node].is_root() {
-            // The join node is root, so there's no need to use half-open symbol stacks here, as we
-            // do for [`PartialPath::concatenate`][].
             self.find_candidate_partial_paths_from_root(graph, partials, Some(path.symbol_stack_postcondition), result);
         } else {
             self.find_candidate_partial_paths_from_node(graph, partials, path.end_node, result);
@@ -377,13 +355,10 @@ impl Database {
     ) where
         R: std::iter::Extend<Handle<PartialPath>>,
     {
-        // If the path currently ends at the root node, then we need to look up partial paths whose
-        // symbol stack precondition is compatible with the path.
         match symbol_stack {
             Some(symbol_stack) => {
                 let mut key = SymbolStackKey::from_partial_symbol_stack(partials, self, symbol_stack);
                 copious_debugging!("      Search for symbol stack <{}>", key.display(graph, self));
-                // paths that have exactly this symbol stack
                 if let Some(paths) = self.root_paths_by_precondition_without_variable.get(key.back_handle()) {
                     #[cfg(feature = "copious-debugging")]
                     {
@@ -396,7 +371,6 @@ impl Database {
                     }
                     result.extend(paths.iter().copied());
                 }
-                // paths that have an extension of this symbol stack
                 if symbol_stack.has_variable()
                     && let Some(paths) = self.root_paths_by_precondition_prefix.get(key.back_handle())
                 {
@@ -412,7 +386,6 @@ impl Database {
                     result.extend(paths.iter().copied());
                 }
                 loop {
-                    // paths that have a prefix of this symbol stack
                     if let Some(paths) = self.root_paths_by_precondition_with_variable.get(key.back_handle()) {
                         #[cfg(feature = "copious-debugging")]
                         {
@@ -464,7 +437,6 @@ impl Database {
         R: std::iter::Extend<Handle<PartialPath>>,
     {
         copious_debugging!("      Search for start node {}", start_node.display(graph));
-        // Return all of the partial paths that start at the requested node.
         if let Some(paths) = self.paths_by_start_node.get(start_node) {
             #[cfg(feature = "copious-debugging")]
             {
@@ -479,13 +451,6 @@ impl Database {
     /// Returns the number of paths in this database that share the given end node.  Nodes that no
     /// partial path in this database ends at have degree [`Degree::Zero`][].
     pub fn get_incoming_path_degree(&self, end_node: Handle<Node>) -> Degree {
-        // `incoming_paths` is a supplemental arena that only `add_partial_path` grows, so it is
-        // sized by the largest *end node* ever added — not by the graph's node arena.  Callers ask
-        // about arbitrary graph nodes (`DatabaseCandidates::get_joining_candidate_degree` passes
-        // the end node of whatever path is being extended), and any node past that high-water mark
-        // — one from a file whose partial paths were never loaded, or simply allocated after the
-        // database was populated — indexes past the end.  Upstream indexed directly and panicked;
-        // "not an end node in this database" is a well-defined answer, and it is zero.
         self.incoming_paths.get(end_node).copied().unwrap_or_default()
     }
 
@@ -498,15 +463,12 @@ impl Database {
     /// This method is meant to be used at index time, to calculate the set of nodes that are local
     /// after having just calculated the set of partial paths for the file.
     pub fn find_local_nodes(&mut self) {
-        // Assume that any node that is the start or end of a partial path is local to this file
-        // until we see a path connecting the root node to it (in either direction).
         self.local_nodes.clear();
         for handle in self.iter_partial_paths() {
             self.local_nodes.add(self[handle].start_node);
             self.local_nodes.add(self[handle].end_node);
         }
 
-        // The root node and jump-to-scope node are the most obvious non-local nodes.
         let mut nonlocal_start_nodes = HandleSet::new();
         let mut nonlocal_end_nodes = HandleSet::new();
         self.local_nodes.remove(StackGraph::root_node());
@@ -516,8 +478,6 @@ impl Database {
         nonlocal_start_nodes.add(StackGraph::jump_to_node());
         nonlocal_end_nodes.add(StackGraph::jump_to_node());
 
-        // Other nodes are non-local if we see any partial path that connects it to another
-        // non-local node.  Repeat until we reach a fixed point.
         let mut keep_checking = true;
         while keep_checking {
             keep_checking = false;
@@ -525,8 +485,6 @@ impl Database {
                 let start_node = self[handle].start_node;
                 let end_node = self[handle].end_node;
 
-                // First check forwards paths, where non-localness propagates from the start node
-                // of each path.
                 let start_node_is_nonlocal = nonlocal_start_nodes.contains(start_node);
                 let end_node_is_nonlocal = nonlocal_start_nodes.contains(end_node);
                 if start_node_is_nonlocal && !end_node_is_nonlocal {
@@ -535,8 +493,6 @@ impl Database {
                     self.local_nodes.remove(end_node);
                 }
 
-                // Then check reverse paths, where non-localness propagates from the end node of
-                // each path.
                 let start_node_is_nonlocal = nonlocal_end_nodes.contains(start_node);
                 let end_node_is_nonlocal = nonlocal_end_nodes.contains(end_node);
                 if !start_node_is_nonlocal && end_node_is_nonlocal {
@@ -637,10 +593,6 @@ impl ForwardCandidates<Handle<PartialPath>, PartialPath, Database, CancellationE
 /// particular symbol stack as their precondition.
 #[derive(Clone, Copy)]
 pub struct SymbolStackKey {
-    // Note: the symbols are stored in reverse order, with the "front" of the List being the "back"
-    // of the symbol stack.  That lets us easily get a handle to the back of the symbol stack, and
-    // also lets us easily pops items off the back of key, which we need to do to search for all
-    // prefixes of a particular symbol stack down in `find_candidate_partial_paths_from_root`.
     symbols: List<Handle<Symbol>>,
 }
 
@@ -673,7 +625,6 @@ impl SymbolStackKey {
             self.symbols = List::from_handle(*handle);
             return;
         }
-        // push_front because we store the key's symbols in reverse order.
         self.symbols.push_front(&mut db.symbol_stack_keys, symbol);
         let handle = self.back_handle();
         db.symbol_stack_key_cache.insert(cache_key, handle);
@@ -681,7 +632,6 @@ impl SymbolStackKey {
 
     /// Pops a symbol from the back of this symbol stack key.
     fn pop_back(&mut self, db: &Database) -> Option<Handle<Symbol>> {
-        // pop_front because we store the key's symbols in reverse order.
         self.symbols.pop_front(&db.symbol_stack_keys).copied()
     }
 
@@ -700,8 +650,6 @@ impl SymbolStackKey {
 
     /// Returns a handle to the back of the symbol stack key.
     fn back_handle(self) -> SymbolStackKeyHandle {
-        // Because the symbols are stored in reverse order, the handle to the "front" of the list
-        // is a handle to the "back" of the key.
         self.symbols.handle()
     }
 
@@ -717,7 +665,6 @@ struct DisplaySymbolStackKey<'a>(SymbolStackKey, &'a StackGraph, &'a Database);
 #[cfg(feature = "copious-debugging")]
 impl<'a> Display for DisplaySymbolStackKey<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Use a recursive function to print the contents of the key out in reverse order.
         fn display_one(
             mut key: SymbolStackKey,
             graph: &StackGraph,
@@ -734,9 +681,6 @@ impl<'a> Display for DisplaySymbolStackKey<'a> {
         display_one(self.0, self.1, self.2, f)
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Stitching partial paths together
 
 /// Implements a phased forward partial path stitching algorithm.
 ///
@@ -768,11 +712,7 @@ pub struct ForwardPartialPathStitcher<H> {
     candidates: Vec<H>,
     extensions: Vec<(PartialPath, AppendingCycleDetector<H>)>,
     queue: VecDeque<(PartialPath, AppendingCycleDetector<H>, bool)>,
-    // tracks the number of initial paths in the queue because we do not want call
-    // extend_until on those
     initial_paths_in_queue: usize,
-    // next_iteration is a tuple of queues instead of an queue of tuples so that the path queue
-    // can be cheaply exposed through the C API as a continuous memory block
     next_iteration: (
         VecDeque<PartialPath>,
         VecDeque<AppendingCycleDetector<H>>,
@@ -812,11 +752,8 @@ impl<H> ForwardPartialPathStitcher<H> {
             initial_paths_in_queue: initial_paths,
             next_iteration,
             appended_paths,
-            // By default, all paths are checked for similarity
             similar_path_detector: Some(SimilarPathDetector::new()),
-            // By default, all nodes are checked for cycles and (if enabled) similarity
             check_only_join_nodes: false,
-            // By default, there's no artificial bound on the amount of work done per phase
             max_work_per_phase: usize::MAX,
             initial_paths,
             stats: None,
@@ -922,38 +859,18 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
         copious_debugging!("    Extend {}", partial_path.display(graph, partials));
 
         if check_cycle {
-            // Check is path is cyclic, in which case we do not extend it. We only do this if the start and end nodes are the same,
-            // or the current end node has multiple incoming edges. If neither of these hold, the path cannot end in a cycle.
             let has_precondition_variables = partial_path.symbol_stack_precondition.has_variable()
                 || partial_path.scope_stack_precondition.has_variable();
             let cycles = match cycle_detector.is_cyclic(graph, partials, db, &mut self.appended_paths) {
                 Ok(cycles) => cycles,
                 Err(_error) => {
-                    // The cycle test does not replay the real path: it rebuilds the suspected cycle
-                    // on top of a path freshly minted at the cycle's end node, so the fragments are
-                    // re-appended against *initial* stack variables rather than the concrete stacks
-                    // the path actually carried.  That reconstruction can legitimately fail to
-                    // unify — a _drop scopes_ end node yields an empty, variable-free scope-stack
-                    // postcondition, which cannot satisfy a fragment that requires concrete scopes,
-                    // and real source code produces exactly that (`ScopeStackUnsatisfied`).
                     // Upstream's `.expect()` is therefore unsound: failure here means only that we
-                    // cannot decide whether the path is cyclic, so we make the terminating choice
-                    // and discontinue it, just as we would for a cycle we did prove.  The cost is
-                    // at most a few unresolved references in one file; a panic would abort the scan
-                    // of every other file in the repository.
                     copious_debugging!("      is discontinued: cycle test failed: {:?}", _error);
                     return 0;
                 }
             };
             let cyclic = match has_precondition_variables {
-                // If the precondition has no variables, we allow cycles that strengthen the
-                // precondition, because we know they cannot strengthen the precondition of
-                // the overall path.
                 false => !cycles.into_iter().all(|c| c == Cyclicity::StrengthensPrecondition),
-                // If the precondition has variables, do not allow any cycles, not even those
-                // that strengthen the precondition. This is more strict than necessary. Better
-                // might be to disallow precondition strengthening cycles only if they would
-                // strengthen the overall path precondition.
                 true => !cycles.is_empty(),
             };
             if cyclic {
@@ -962,12 +879,10 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
             }
         }
 
-        // find candidates to append
         self.candidates.clear();
         candidates.get_forward_candidates(partial_path, &mut self.candidates);
         let (graph, partials, db) = candidates.get_graph_partials_and_db();
 
-        // try to extend path with candidates
         let candidate_count = self.candidates.len();
         self.extensions.clear();
         self.extensions.reserve(candidate_count);
@@ -977,8 +892,6 @@ impl<H: Clone> ForwardPartialPathStitcher<H> {
 
             let mut new_partial_path = partial_path.clone();
             let mut new_cycle_detector = cycle_detector.clone();
-            // If there are errors concatenating these partial paths, or resolving the resulting
-            // partial path, just skip the extension — it's not a fatal error.
             #[cfg_attr(not(feature = "copious-debugging"), allow(unused_variables))]
             {
                 if let Err(err) = appendable.append_to(graph, partials, &mut new_partial_path) {

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -125,9 +124,6 @@ where
     {
         let key = path.key();
 
-        // Iterate through the bucket to determine if this paths is better than any already known
-        // path. Note that the bucket might be modified during the loop if a path is removed which
-        // is shadowed by the new path!
         let possibly_similar_paths = self.paths.entry(key.clone()).or_default();
         let mut possible_similar_counts = self.counts.as_mut().map(move |cs| cs.entry(key).or_default());
         let mut idx = 0;
@@ -136,17 +132,14 @@ where
             let other_path = &mut possibly_similar_paths[idx];
             match cmp(arena, path, other_path) {
                 Some(Ordering::Less) => {
-                    // the new path is better, remove the old one
                     possibly_similar_paths.remove(idx);
                     if let Some(possible_similar_counts) = possible_similar_counts.as_mut() {
                         count += possible_similar_counts[idx];
                         possible_similar_counts.remove(idx);
                     }
-                    // keep `idx` which now points to the next element
                     continue;
                 }
                 Some(_) => {
-                    // the new path is equal or worse, and ignored
                     if let Some(possible_similar_counts) = possible_similar_counts {
                         possible_similar_counts[idx] += 1;
                     }
@@ -158,7 +151,6 @@ where
             }
         }
 
-        // this path is either new or better, keep it
         possibly_similar_paths.push(path.clone());
         if let Some(possible_similar_counts) = possible_similar_counts {
             possible_similar_counts.push(count);
@@ -171,7 +163,6 @@ where
         self.paths.iter().map(|b| b.1.len()).max().unwrap_or(0)
     }
 
-    // Returns the distribution of similar path counts.
     pub fn stats(&self) -> SimilarPathStats {
         let mut stats = SimilarPathStats::default();
         if let Some(counts) = &self.counts {
@@ -188,9 +179,7 @@ where
 
 #[derive(Clone, Debug, Default)]
 pub struct SimilarPathStats {
-    // The distribution of the number of similar paths detected
     pub similar_path_count: FrequencyDistribution<usize>,
-    // The distribution of the internal bucket sizes in the similar path detector
     pub similar_path_bucket_size: FrequencyDistribution<usize>,
 }
 
@@ -207,9 +196,6 @@ impl std::ops::AddAssign<&Self> for SimilarPathStats {
         self.similar_path_count += &rhs.similar_path_count;
     }
 }
-
-// ----------------------------------------------------------------------------
-// Cycle detector
 
 /// An arena used by [`AppendingCycleDetector`][] to store the path component lists.
 /// The arena is shared between all cycle detectors in a path stitching run, so that
@@ -352,16 +338,8 @@ where
 
         let mut maybe_cyclic_path = None;
         let mut remaining_appendages = self.appendages;
-        // Unlike the stored appendages, which are stored in a shared arena, we use a _local_
-        // buffer to collect the prefix appendages that we collect for possible cycles. This is
-        // to prevent adding elements to the shared arena for every invocation of this method,
-        // because they would remain in the arena after the method returns. We take care to
-        // minimize (re)allocations by (a) only allocating when a possible cycle is detected,
-        // (b) reserving all necessary space before adding elements, and (c) reusing the buffer
-        // between loop iterations.
         let mut prefix_appendages = Vec::new();
         loop {
-            // find cycle length
             let mut counting_appendages = remaining_appendages;
             let mut cycle_length = 0usize;
             loop {
@@ -378,7 +356,6 @@ where
                 }
             }
 
-            // collect prefix elements (reversing their order)
             prefix_appendages.clear();
             prefix_appendages.reserve(cycle_length);
             for _ in 0..cycle_length {
@@ -386,13 +363,11 @@ where
                 prefix_appendages.push(appendable);
             }
 
-            // build prefix path -- prefix starts at end_node, because this is a cycle
             let mut prefix_path = PartialPath::from_node(graph, partials, end_node);
             while let Some(appendage) = prefix_appendages.pop() {
                 appendage.append_to(graph, partials, db, &appendables.interned, &mut prefix_path)?;
             }
 
-            // build cyclic path
             let cyclic_path = maybe_cyclic_path.unwrap_or_else(|| PartialPath::from_node(graph, partials, end_node));
             cyclic_path.append_to(graph, partials, &mut prefix_path)?;
             if !prefix_path.edges.is_empty()

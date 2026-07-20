@@ -257,7 +257,6 @@ fn load_or_create_workspace_id(workspace_cache_dir: &Path) -> Option<AgentId> {
             file.write_all(candidate.as_str().as_bytes()).ok()?;
             Some(candidate)
         }
-        // Lost the seed race — the winner's id is the workspace's id.
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_agent_id(&path),
         Err(_) => None,
     }

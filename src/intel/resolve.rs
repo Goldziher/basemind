@@ -185,8 +185,6 @@ mod tests {
 
     #[test]
     fn precise_false_skips_oxc_so_no_import_edges() {
-        // The `[code_intel] precise_resolution = false` path: the oxc engine is skipped, so the
-        // import/export facts it alone produces are absent (locals binding carries no imports).
         let src = b"import { helper } from './util';\nfunction f() { return helper(); }\n";
         let refs = resolve_file("typescript", Path::new("app.ts"), src, false);
         assert!(

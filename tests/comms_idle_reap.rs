@@ -51,8 +51,6 @@ impl Daemon {
         let child = Command::new(BIN)
             .args(["comms", "daemon"])
             .env("BASEMIND_COMMS_DIR", comms_dir)
-            // Keep the registry snapshot + any index writes inside the tempdir: this test must
-            // never touch the real XDG cache (a live session may be using it).
             .env("BASEMIND_DATA_HOME", comms_dir)
             .env(IDLE_REAP_AFTER_ENV, TEST_REAP_AFTER.as_secs().to_string())
             .env(IDLE_REAP_CHECK_EVERY_ENV, TEST_REAP_CHECK_EVERY.as_secs().to_string())
@@ -95,7 +93,6 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        // Only ever kills the child WE spawned — never a broadly-matched `basemind` process.
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -128,8 +125,6 @@ fn idle_daemon_self_terminates_and_a_fresh_one_respawns() {
          dead endpoint instead of respawning"
     );
 
-    // The auto-spawn path must still work after an idle exit, and the fresh daemon must be able to
-    // open the very same store the reaped one owned — i.e. the exit released its locks cleanly.
     let mut respawned = Daemon::start(&comms_dir);
     assert!(
         respawned.is_running(),
@@ -164,8 +159,6 @@ fn daemon_with_a_connected_client_does_not_reap() {
             .expect("connect to daemon")
     });
 
-    // Sit silent for several multiples of the idle window. A daemon that reaped on socket silence
-    // would be long gone by now.
     let quiet_for = TEST_REAP_AFTER * 4 + TEST_REAP_CHECK_EVERY * 2;
     std::thread::sleep(quiet_for);
 
@@ -179,8 +172,6 @@ fn daemon_with_a_connected_client_does_not_reap() {
         "a daemon with a connected client must still be serving its socket"
     );
 
-    // Releasing the last client makes it genuinely idle — and then it MUST go. Without this the
-    // test above would still pass on a daemon that simply never exits.
     drop(client);
     drop(runtime);
     assert!(
@@ -190,13 +181,3 @@ fn daemon_with_a_connected_client_does_not_reap() {
 }
 
 // NOTE: the third hazard — a LONG forwarded RPC (a scan / git-history build that runs for seconds
-// to minutes inside a single request) — is deliberately NOT covered here. The only honest way to
-// exercise it end-to-end is to scan a repo big enough to outlast the idle window, and a test that
-// does that is both slow and a bad parallel citizen: it pegs the CPU while the neighbouring daemon
-// suites are racing their own readiness deadlines, and it made `concurrency_smoke` flake.
-//
-// It is covered where it is cheap to cover instead: the link refcount that protects it is the same
-// one `daemon_with_a_connected_client_does_not_reap` pins above (the guard is taken at accept and
-// released when the link closes — how long a request takes in between cannot affect it), and the
-// linkless variant, daemon-internal work with no client attached, is pinned directly by
-// `comms::daemon::tests::work_in_flight_blocks_the_idle_reap_even_with_no_links`.

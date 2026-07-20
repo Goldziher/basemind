@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -47,9 +46,7 @@ fn can_create_edges() {
     build_and_check_stack_graph_edges(
         python,
         tsg,
-        &[
-            "[test.py(0) definition a] -0-> [test.py(1) reference a]", //
-        ],
+        &["[test.py(0) definition a] -0-> [test.py(1) reference a]"],
     );
 }
 
@@ -69,9 +66,7 @@ fn can_create_edges_with_precedence() {
     build_and_check_stack_graph_edges(
         python,
         tsg,
-        &[
-            "[test.py(0) definition a] -17-> [test.py(1) reference a]", //
-        ],
+        &["[test.py(0) definition a] -17-> [test.py(1) reference a]"],
     );
 }
 
@@ -104,7 +99,7 @@ fn can_create_edges_to_singleton_nodes() {
         python,
         tsg,
         &[
-            "[test.py(0) reference a] -6-> [jump to scope]", //
+            "[test.py(0) reference a] -6-> [jump to scope]",
             "[test.py(0) reference a] -6-> [root]",
             "[jump to scope] -12-> [test.py(1) definition a]",
             "[root] -12-> [test.py(1) definition a]",

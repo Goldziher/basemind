@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -190,14 +189,10 @@ impl Offset {
                 end: utf8_offset + cluster.len(),
             })
             .peekable();
-        // We want the output to include an entry for the end of the string — i.e., for the byte
-        // offset immediately after the last character of the string.  To do this, we add a dummy
-        // character to list of actual characters from the string.
         line.chars()
             .chain(std::iter::once(' '))
             .scan(Offset::default(), move |offset, ch| {
                 let result = Some(*offset);
-                // If there is no next grapheme, we assume it is the extra ' ' that was chained
                 if grapheme_utf8_offsets
                     .peek()
                     .map(|r| r.start == offset.utf8_offset)
@@ -244,11 +239,8 @@ impl<'a> PositionedSubstring<'a> {
     /// provide the byte offset of the start of the line, and we automatically find the end of the
     /// line.
     pub fn from_line(string: &'a str, line_utf8_offset: usize) -> PositionedSubstring<'a> {
-        // The line's byte index lets us trim all preceding lines in the file.
         let line_plus_others = &string[line_utf8_offset..];
 
-        // The requested line stops at the first newline, or at the end of the file if there aren't
-        // any newlines.
         let line = match memchr(b'\n', line_plus_others.as_bytes()) {
             Some(newline_offset) => &line_plus_others[..newline_offset],
             None => line_plus_others,
@@ -266,7 +258,6 @@ impl<'a> PositionedSubstring<'a> {
         }
     }
 
-    // Returns an iterator over the lines of the given string.
     pub fn lines_iter(string: &'a str) -> impl Iterator<Item = PositionedSubstring<'a>> + 'a {
         let mut next_utf8_offset = 0;
         std::iter::from_fn(move || {
@@ -294,11 +285,7 @@ impl<'a> PositionedSubstring<'a> {
         let trailing_whitespace = trimmed_left
             .bytes()
             .enumerate()
-            // Point at the last non-whitespace character
             .rfind(|(_, ch)| !(*ch as char).is_ascii_whitespace())
-            // Point at the immediately following whitespace character.  Note we are only looking
-            // for _ASCII_ whitespace, so we can assume that the last whitespace character that we
-            // found is 1 byte long.
             .map(|(index, _)| index + 1)
             .unwrap_or(0);
         let trimmed = &trimmed_left[0..trailing_whitespace];
@@ -321,13 +308,6 @@ pub struct SpanCalculator<'a> {
     trimmed_line: Option<PositionedSubstring<'a>>,
     columns: Vec<Offset>,
 }
-
-// Note that each time you calculate the position of a node on a _different line_, we have to
-// calculate some information about line.  You'd think that would mean it would be most efficient
-// to use this type if you made to sure group all of your nodes by their rows before asking for us
-// to create Spans for them.  However, it turns out that sorting your nodes to make sure that
-// they're in row order is just as much work as recalculating the UTF16 column offsets if we ever
-// revisit a line!
 
 impl<'a> SpanCalculator<'a> {
     /// Creates a new span calculator for locations within the given string.
@@ -364,8 +344,6 @@ impl<'a> SpanCalculator<'a> {
     /// Constructs a [`Position`][] instance for a tree-sitter location.
     #[cfg(feature = "tree-sitter")]
     pub fn position_for_node(&mut self, byte_offset: usize, position: tree_sitter::Point) -> Position {
-        // Since we know the byte offset of the node within the file, and of the node within the
-        // line, subtracting gives us the offset of the line within the file.
         let line_utf8_offset = byte_offset - position.column;
         self.for_line_and_column(position.row, line_utf8_offset, position.column)
     }
@@ -422,7 +400,6 @@ impl<'a> SpanCalculator<'a> {
             .columns
             .binary_search_by_key(&grapheme_offset, |pos| pos.grapheme_offset)
             .unwrap();
-        // make sure to return the first offset for this grapheme
         let mut offset = &self.columns[index];
         while index > 0 {
             index -= 1;

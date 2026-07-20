@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -92,10 +91,8 @@ impl Functions {
     /// reference][`crate::reference::functions`].
     pub fn stdlib() -> Functions {
         let mut functions = Functions::new();
-        // general functions
         functions.add(Identifier::from("eq"), stdlib::Eq);
         functions.add(Identifier::from("is-null"), stdlib::IsNull);
-        // tree functions
         functions.add(Identifier::from("named-child-index"), stdlib::syntax::NamedChildIndex);
         functions.add(Identifier::from("source-text"), stdlib::syntax::SourceText);
         functions.add(Identifier::from("start-row"), stdlib::syntax::StartRow);
@@ -104,18 +101,13 @@ impl Functions {
         functions.add(Identifier::from("end-column"), stdlib::syntax::EndColumn);
         functions.add(Identifier::from("node-type"), stdlib::syntax::NodeType);
         functions.add(Identifier::from("named-child-count"), stdlib::syntax::NamedChildCount);
-        // graph functions
         functions.add(Identifier::from("node"), stdlib::graph::Node);
-        // boolean functions
         functions.add(Identifier::from("not"), stdlib::bool::Not);
         functions.add(Identifier::from("and"), stdlib::bool::And);
         functions.add(Identifier::from("or"), stdlib::bool::Or);
-        // math functions
         functions.add(Identifier::from("plus"), stdlib::math::Plus);
-        // string functions
         functions.add(Identifier::from("format"), stdlib::string::Format);
         functions.add(Identifier::from("replace"), stdlib::string::Replace);
-        // list functions
         functions.add(Identifier::from("concat"), stdlib::list::Concat);
         functions.add(Identifier::from("is-empty"), stdlib::list::IsEmpty);
         functions.add(Identifier::from("join"), stdlib::list::Join);
@@ -291,8 +283,6 @@ pub mod stdlib {
             }
         }
 
-        // The implementation of the standard [`start-row`][`crate::reference::functions#start-row`]
-        // function.
         pub struct StartRow;
 
         impl Function for StartRow {
@@ -308,9 +298,6 @@ pub mod stdlib {
             }
         }
 
-        // The implementation of the standard
-        // [`start-column`][`crate::reference::functions#start-column`]
-        // function.
         pub struct StartColumn;
 
         impl Function for StartColumn {
@@ -326,8 +313,6 @@ pub mod stdlib {
             }
         }
 
-        // The implementation of the standard [`end-row`][`crate::reference::functions#end-row`]
-        // function.
         pub struct EndRow;
 
         impl Function for EndRow {
@@ -343,8 +328,6 @@ pub mod stdlib {
             }
         }
 
-        // The implementation of the standard [`end-column`][`crate::reference::functions#end-column`]
-        // function.
         pub struct EndColumn;
 
         impl Function for EndColumn {
@@ -360,8 +343,6 @@ pub mod stdlib {
             }
         }
 
-        // The implementation of the standard [`node-type`][`crate::reference::functions#node-type`]
-        // function.
         pub struct NodeType;
 
         impl Function for NodeType {
@@ -376,9 +357,6 @@ pub mod stdlib {
                 Ok(Value::String(node.kind().to_string()))
             }
         }
-
-        // The implementation of the standard
-        // [`named-child-count`][`crate::reference::functions#named-child-count`] function.
 
         pub struct NamedChildCount;
 

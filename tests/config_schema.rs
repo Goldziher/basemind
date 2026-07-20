@@ -13,14 +13,6 @@ fn generate_schema_text() -> String {
     s
 }
 
-// The snapshot is byte-exact, so it is only meaningful where the generated key ordering matches
-// the committed file. `schema_for!` derives the *content* of the schema feature-independently, but
-// the JSON *property ordering* is not: the `intelligence` stack (lancedb/arrow) transitively enables
-// `serde_json/preserve_order`, which switches `serde_json::Map` from sorted `BTreeMap` to
-// insertion-order `IndexMap`. The committed snapshot is insertion-order, so a default-feature build
-// (sorted) would spuriously fail the byte comparison. Gate both the check and the regenerator on
-// `intelligence` — the feature that guarantees insertion order — and regenerate under a link-safe
-// superset such as `--features code-search`.
 #[cfg(feature = "intelligence")]
 #[test]
 fn schema_snapshot_matches_derived() {

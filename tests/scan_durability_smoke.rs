@@ -39,7 +39,6 @@ fn panicking_optional_lane_leaves_the_code_map_flushed_and_queryable() {
     seed_repo(root);
 
     // SAFETY: `TEST_FAULT_LANE_ENV` is read only by the scanner's lane guard, and the only scan in
-    // this binary is the one below — no other thread reads the variable while it is being set.
     unsafe { std::env::set_var(TEST_FAULT_LANE_ENV, LANE_RESOLVE) };
 
     let cfg = ConfigV1::with_defaults();
@@ -77,8 +76,6 @@ fn code_map_survives_a_lane_that_kills_the_process() {
     let root = dir.path();
     seed_repo(root);
 
-    // Inherits `BASEMIND_DATA_HOME` from `init_isolated_cache`, so the child writes into the same
-    // isolated cache this test then reads back.
     let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
         .args(["--root", root.to_str().unwrap(), "scan", "--quiet"])
         .env(TEST_FAULT_LANE_ENV, format!("{LANE_RESOLVE}:abort"))

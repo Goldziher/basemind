@@ -334,8 +334,8 @@ activity by type, then tokens saved, then unread messages. Adjust with
 <p align="center"><img src="docs/media/semantic-demo.gif" alt="Semantic search over the documents store" width="820"></p>
 <p align="center"><em>Searching documents by meaning, not keywords, across 90+ formats.</em></p>
 
-<p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo room, DMing each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
-<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped comms room (post, direct-message, synthesize) — entirely over <code>basemind comms</code>.</em></p>
+<p align="center"><img src="docs/demos/code-review-panel.gif" alt="Three named reviewer agents posting findings to a shared repo-scoped thread, replying to each other, and an orchestrator synthesizing a verdict over the comms CLI" width="820"></p>
+<p align="center"><em>Multi-agent code-review panel: named reviewers coordinate in a repo-scoped thread (post, reply, synthesize) — entirely over <code>basemind comms</code>.</em></p>
 
 <!-- markdownlint-enable MD013 -->
 
@@ -772,12 +772,14 @@ machine-readable output.
 
 | Command | Purpose |
 |---|---|
-| `rooms` / `join <room>` / `leave <room>` / `room-create <room>` | List, join, leave, or create rooms. |
-| `post <room> <subject> [--body --reply-to --tag]` | Post a message. |
-| `history <room>` / `inbox [--mark-read]` | Recent messages in a room / your inbox. |
-| `read <id>` | Read one message in full. |
-| `register --name <handle>` / `agents` | Set your handle / list active agents. |
-| `status` / `start` / `stop` | The shared service: check, start, or stop it. |
+| `thread-start [--subject --path --member]` / `threads [--subject-contains]` | Start a thread (addressed by ≥2 of subject / path / members) / list threads discoverable to you. |
+| `join <thread>` / `leave <thread>` / `members <thread>` | Join, leave, or list the members of a thread. |
+| `add-member <thread> <id>` / `remove-member <thread> <id>` / `archive <thread>` | Manage membership and archive a thread (creator only). |
+| `post <thread> <subject> [--body --reply-to --tag]` | Post a message to a thread. |
+| `history <thread> [--since-hours]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
+| `read <id>` | Read one message body in full. |
+| `register --name <handle>` / `agents [--thread]` | Set your handle / list active agents. |
+| `daemon` / `start` / `stop` / `status` | The broker daemon: run it, ensure it, stop it, or inspect pid / version / uptime. |
 
 **Shells (`basemind shells`, `--features shells`)**
 

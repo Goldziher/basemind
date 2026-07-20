@@ -108,8 +108,6 @@ fn comms_paths() -> CommsPaths {
 /// argument and re-runs the whole suite, which spawns another "daemon", and so on. Spawn the real
 /// binary explicitly instead. Idempotent: a second daemon on the same socket loses the bind race and
 /// exits, so racing tests converge on one.
-// The daemon is a per-process singleton shared by every test in this binary and outlives any one of
-// them, so it is deliberately never `wait()`ed on: it self-terminates when idle.
 #[allow(clippy::zombie_processes)]
 fn ensure_real_daemon() {
     let paths = comms_paths();

@@ -24,10 +24,6 @@ pub const PROTO_VER: u32 = 3;
 
 /// A request from a client to the broker. `method` selects the variant; `params` are the
 /// flattened fields.
-// `Eq` is intentionally dropped: the `Governance` variant carries a `ProposalRecord` (and, via the
-// promote op, a `MemoryRecord`) whose git-derived `confidence` / `importance` are `f32`, which is not
-// `Eq`. `Eq` was never load-bearing here (no HashMap/HashSet keys, no `assert_eq!` on the wire); only
-// mpsc channels + serde use these enums, both of which need `PartialEq` at most.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
 pub enum CommsRequest {
@@ -330,8 +326,6 @@ pub enum CommsRequest {
 }
 
 /// A response from the broker to a [`CommsRequest`].
-// `Eq` dropped for the same reason as [`CommsRequest`]: the `Governance` outcome carries an
-// `f32`-bearing `ProposalRecord`. `PartialEq` is retained (used by tests + serde round-trips).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "snake_case")]
 pub enum CommsResponse {
@@ -499,8 +493,6 @@ pub enum CommsNotification {
 
 /// A frame sent from broker → client: either a direct response to a request or an
 /// out-of-band notification. Both ride the same link.
-// `Eq` dropped because it wraps [`CommsResponse`], which is no longer `Eq` (its `Governance` outcome
-// carries an `f32`-bearing `ProposalRecord`). `PartialEq` is retained for the round-trip tests.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommsOut {

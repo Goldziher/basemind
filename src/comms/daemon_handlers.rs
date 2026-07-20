@@ -119,7 +119,6 @@ impl Broker {
             });
         }
 
-        // The full member set: the creator plus any explicit members, deduplicated.
         let mut member_set: Vec<AgentId> = vec![creator.clone()];
         for m in members {
             if !member_set.contains(&m) {

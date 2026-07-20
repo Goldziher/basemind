@@ -113,8 +113,6 @@ pub fn run(
         let server = context::build_server(root, view, documents)?;
         let stdout = std::io::stdout();
         let mut out = stdout.lock();
-        // Sampled immediately before the first tool call: everything the process did to get here
-        // is startup, everything the tool does from here is the query.
         let opts = Emit {
             json,
             startup_us: u64::try_from(process_started.elapsed().as_micros()).unwrap_or(u64::MAX),

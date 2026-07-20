@@ -36,10 +36,6 @@ impl BasemindServer {
         let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
-            // No `await_cache_ready` barrier: `outline` is path-keyed, and both branches below
-            // already fall back to reading the file's single L1 blob from the store when the in-RAM
-            // map misses. Waiting on (or forcing) the whole-corpus build to read ONE file would make
-            // the commonest navigation call pay the cost of every other file in the repo.
             fn l1_views(l1: &crate::extract::FileMapL1) -> (Vec<SymbolView>, Vec<ImportView>) {
                 let symbols = l1
                     .symbols
@@ -84,7 +80,6 @@ impl BasemindServer {
                     docs: None,
                     l2_status: None,
                     notice: None,
-                    // Stamped unconditionally from `__body` just before serialization below.
                     elapsed_us: 0,
                 };
                 let entry = store
@@ -137,7 +132,6 @@ impl BasemindServer {
                         docs: None,
                         l2_status: None,
                         notice: None,
-                        // Stamped unconditionally from `__body` just before serialization below.
                         elapsed_us: 0,
                     }
                 } else {
@@ -158,7 +152,6 @@ impl BasemindServer {
                         docs: None,
                         l2_status: None,
                         notice: None,
-                        // Stamped unconditionally from `__body` just before serialization below.
                         elapsed_us: 0,
                     }
                 }
@@ -570,8 +563,6 @@ impl BasemindServer {
             self.state.await_cache_ready().await;
             let store = self.state.store.read().await;
             let cache = self.state.cache.load_full();
-            // A `daemon_writer` serve has no open index, so the precise cross-file resolution forwards
-            // to the daemon (the sole fjall writer); every other serve resolves locally.
             #[cfg(all(feature = "comms", any(unix, windows)))]
             let refs = if self.state.daemon_writer {
                 let client = super::helpers_comms::resolve_comms_client(&self.state, None).await?;

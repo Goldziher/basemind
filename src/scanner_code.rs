@@ -111,12 +111,6 @@ pub(crate) fn chunk_and_embed(
             Some(blob) => blob.chunks,
             None => {
                 let chunks = chunk_file(rel, hash_hex, l1, l2, bytes, opts);
-                // Persist the chunk-only sidecar for BOTH Deferred and Inline. It is the keyword
-                // (BM25) lane's on-disk form, so writing it is what makes a re-scan idempotent:
-                // `extraction_sidecars_present` requires this blob, and the daemon's rescan path
-                // scans Deferred with no Inline follow-up — gating the write on Inline left the
-                // sidecar absent, so every daemon rescan re-processed every file. A later Inline
-                // embed pass still re-embeds (its `embedding_dim: 0` fails `code_cache_is_reusable`).
                 let blob = CodeChunkBlob {
                     schema_ver: SCHEMA_VER,
                     embedding_dim: 0,
@@ -168,8 +162,6 @@ pub(crate) fn chunk_and_embed(
     if let Some(blob) = &cached
         && code_cache_is_reusable(blob, dim, &config.documents.embedding_preset)
     {
-        // The sidecar already carries the vectors; the flush re-reads it to build rows. Here we
-        // only stage BM25 (worker-owned) and hand back the metadata descriptor.
         let bm25 = build_chunk_postings(&blob.chunks);
         return Ok(Some(PendingCodeBatch {
             rel_path: rel.to_string(),
@@ -194,9 +186,6 @@ pub(crate) fn chunk_and_embed(
         return Ok(None);
     }
     let texts: Vec<&str> = chunks.iter().map(|c| c.searchable_text.as_str()).collect();
-    // Best-effort memory backpressure: embedding a file's chunks drives an ONNX forward pass whose
-    // transient arenas are the other peak-memory stage of a scan. Park this worker while the process
-    // footprint is over the `[resources].max_footprint_mb` ceiling (no-op when unset) before the batch.
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
     let embeddings = match embedder.embed_batch(&texts) {
         Ok(embeddings) if embeddings.len() == chunks.len() => embeddings,
@@ -225,7 +214,6 @@ pub(crate) fn chunk_and_embed(
     if let Err(error) = store.write_chunks_hex(hash_hex, &blob) {
         tracing::warn!(rel, ?error, "write code-chunk sidecar failed; embedding cache skipped");
     }
-    // Rows are rebuilt from the sidecar we just persisted, at flush time — not held here.
     Ok(Some(PendingCodeBatch {
         rel_path: rel.to_string(),
         blob_hash: hash_hex.to_string(),
@@ -275,8 +263,6 @@ pub(crate) fn delete_stale_code_chunks(store: &mut Store, config: &Config, scope
         return;
     }
     let model = &config.documents.embedding_preset;
-    // Dim-probe only: threads and batch size are immaterial here (no embedding runs),
-    // so pass auto-threads (0) and the configured batch size for consistency.
     let dim = match SharedEmbedder::load(model, 0, config.resources.embed_batch_size) {
         Ok(embedder) => embedder.dim(),
         Err(error) => {
@@ -322,8 +308,6 @@ pub(crate) fn flush_code_batches(
     let Some(dim) = batches.iter().find(|b| b.embedding_dim > 0).map(|b| b.embedding_dim) else {
         return 0;
     };
-    // Dim-probe only (no embedding runs here), and this helper has no `Config` in scope, so
-    // pass auto-threads (0) and the default embed batch size — the value is immaterial.
     match SharedEmbedder::load(
         embedding_model,
         0,
@@ -361,8 +345,6 @@ pub(crate) fn flush_code_batches(
         let blob = match store.read_chunks_by_hex(&batch.blob_hash) {
             Ok(Some(blob)) if blob.embedding_dim == dim && blob.embeddings.len() == blob.chunks.len() => blob,
             Ok(Some(_)) => {
-                // Sidecar no longer carries matching vectors (e.g. overwritten chunk-only) — nothing
-                // to write for this file. BM25 was already staged in the worker.
                 continue;
             }
             Ok(None) => {

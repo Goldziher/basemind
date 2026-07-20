@@ -82,11 +82,9 @@ fn a_cli_invocation_shares_the_persisted_id_of_the_serve_session_in_the_same_wor
     let machine = FakeMachine::new();
     let root = workspace();
 
-    // `serve` boots first and persists its generated id in the workspace cache dir.
     let served = identity::resolve(&request(&machine, root.path()));
     assert_eq!(served.source(), IdentitySource::Workspace);
 
-    // A later CLI invocation in the same workspace must adopt it, not mint a new one.
     let from_cli = identity::resolve(&request(&machine, root.path()));
 
     assert_eq!(served.id().as_str(), from_cli.id().as_str());
@@ -125,7 +123,6 @@ fn an_explicit_env_agent_id_wins_over_every_other_tier() {
     let machine = FakeMachine::new();
     let root = workspace();
 
-    // Persist a workspace id first, so the env tier has something to beat.
     let persisted = identity::resolve(&request(&machine, root.path())).into_id();
 
     let resolved = identity::resolve(&IdentityRequest {
@@ -202,7 +199,6 @@ fn reusing_one_explicit_agent_id_across_two_workspaces_surfaces_a_collision() {
         "warning names this claimant's root: {warning}"
     );
 
-    // Not a hard failure: the id is still handed out, so a legitimate reconnect keeps working.
     assert_eq!(second.id().as_str(), "basemind-cli");
 }
 

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2022, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -162,7 +161,6 @@ impl std::fmt::Display for ParseErrorDisplayPretty<'_> {
 
 /// Find errors in the given tree and add those to the given errors vector
 fn find_errors<'tree>(tree: &'tree Tree, errors: &mut Vec<ParseError<'tree>>, first_only: bool) {
-    // do not walk the tree unless there actually are errors
     if !tree.root_node().has_error() {
         return;
     }
@@ -199,23 +197,9 @@ fn find_errors<'tree>(tree: &'tree Tree, errors: &mut Vec<ParseError<'tree>>, fi
     cursor.reset(tree.root_node());
 }
 
-// ------------------------------------------------------------------------------------------------
-// Types to package a tree and parse errors for that tree
-//
-// Parse errors contain `Node` values, that are parametrized by the lifetime `tree of the tree they
-// are part of. It is normally not possible to combine a value and references to that value in a single
-// data type. However, in the case of tree-sitter trees and nodes, the nodes do not point to memory in the
-// tree value, but both point to heap allocated memory. Therefore, moving the tree does not invalidate the
-// node. We use this fact to implement the TreeWithParseError* types.
-//
-// To be able to use these types in errors, we implement Send and Sync. These traits are implemented for
-// Tree, but not for Node. However, since the TreeWithParseError* types contain the tree as well as the nodes,
-// it is okay to implement Send and Sync.
-
 /// A type containing a tree and a parse error
 pub struct TreeWithParseError {
     tree: Tree,
-    // the 'static lifetime is okay because we own `tree`
     error: ParseError<'static>,
 }
 
@@ -239,15 +223,12 @@ impl std::fmt::Debug for TreeWithParseError {
     }
 }
 
-// Send and Sync must be implemented for ParseError -> Node -> ffi::TSTree
-// This is okay because Send and Sync _are_ implemented for Tree, which also holds ffi::TSTree
 unsafe impl Send for TreeWithParseError {}
 unsafe impl Sync for TreeWithParseError {}
 
 /// A type containing a tree and an optional parse error
 pub struct TreeWithParseErrorOption {
     tree: Tree,
-    // the 'static lifetime is okay because we own `tree`
     error: Option<ParseError<'static>>,
 }
 
@@ -257,8 +238,6 @@ impl TreeWithParseErrorOption {
         find_errors(&tree, &mut errors, true);
         Self {
             // SAFETY: the only lifetime change here is `'_` -> `'static` on the borrowed
-            // `Node`s. The nodes borrow heap memory owned by `tree`, which we move into `self`
-            // alongside them, so the borrow stays valid for the life of this value.
             error: unsafe {
                 std::mem::transmute::<Option<ParseError<'_>>, Option<ParseError<'static>>>(errors.into_iter().next())
             },
@@ -294,15 +273,12 @@ impl std::fmt::Debug for TreeWithParseErrorOption {
     }
 }
 
-// Send and Sync must be implemented for ParseError -> Node -> ffi::TSTree
-// This is okay because Send and Sync _are_ implemented for Tree, which also holds ffi::TSTree
 unsafe impl Send for TreeWithParseErrorOption {}
 unsafe impl Sync for TreeWithParseErrorOption {}
 
 /// A type containing a tree and parse errors
 pub struct TreeWithParseErrorVec {
     tree: Tree,
-    // the 'static lifetime is okay because we own `tree`
     errors: Vec<ParseError<'static>>,
 }
 
@@ -312,8 +288,6 @@ impl TreeWithParseErrorVec {
         find_errors(&tree, &mut errors, false);
         TreeWithParseErrorVec {
             // SAFETY: same reasoning as `TreeWithParseErrorOption::into_first` — this only
-            // widens the borrowed `Node` lifetime to `'static`, and `tree` (which owns the
-            // referenced heap memory) is moved into `self` so the borrow remains valid.
             errors: unsafe { std::mem::transmute::<Vec<ParseError<'_>>, Vec<ParseError<'static>>>(errors) },
             tree,
         }
@@ -340,12 +314,8 @@ impl std::fmt::Debug for TreeWithParseErrorVec {
     }
 }
 
-// Send and Sync must be implemented for ParseError -> Node -> ffi::TSTree
-// This is okay because Send and Sync _are_ implemented for Tree, which also holds ffi::TSTree
 unsafe impl Send for TreeWithParseErrorVec {}
 unsafe impl Sync for TreeWithParseErrorVec {}
-
-//-----------------------------------------------------------------------------
 
 /// Excerpts of source from either the target language file or the tsg rules file.
 pub struct Excerpt<'a> {
@@ -382,7 +352,6 @@ impl<'a> Excerpt<'a> {
 
 impl<'a> std::fmt::Display for Excerpt<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // path and line/col
         writeln!(
             f,
             "{}{}:{}:{}:",
@@ -392,7 +361,6 @@ impl<'a> std::fmt::Display for Excerpt<'a> {
             header_style(&format!("{}", self.columns.start + 1)),
         )?;
         if let Some(source) = self.source {
-            // first line: line number & source
             writeln!(
                 f,
                 "{}{}{}{}",
@@ -401,7 +369,6 @@ impl<'a> std::fmt::Display for Excerpt<'a> {
                 prefix_style(" | "),
                 source,
             )?;
-            // second line: caret
             writeln!(
                 f,
                 "{}{}{}{}{}",
@@ -417,9 +384,6 @@ impl<'a> std::fmt::Display for Excerpt<'a> {
         Ok(())
     }
 }
-
-// Styling functions. Errors are consumed programmatically, so these are plain passthroughs
-// (the upstream colored-terminal path was dropped along with its `colored` dependency).
 
 fn header_style(str: &str) -> impl std::fmt::Display + '_ {
     str

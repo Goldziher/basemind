@@ -1,9 +1,4 @@
-# Maintained fork of lsp-positions, originally derived from
-# github.com/github/stack-graphs lsp-positions v0.3.4.
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
-# Owned and modernized by basemind: ported to tree-sitter 0.26, edition 2024. Only the
-# `tree-sitter` feature is needed by tree-sitter-stack-graphs; the `bincode`/`serde` features
-# are retained but off by default.
 [package]
 name = "lsp-positions"
 version = "0.3.4"
@@ -12,14 +7,9 @@ homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-# Derived from the upstream github/stack-graphs lsp-positions crate
-# (GitHub <opensource+stack-graphs@github.com>, Douglas Creager).
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 publish = false
-
-[lints]
-workspace = true
 
 [lib]
 test = false
@@ -29,8 +19,11 @@ bincode = ["dep:bincode"]
 tree-sitter = ["dep:tree-sitter"]
 
 [dependencies]
+bincode = { version = "3.0.0", optional = true }
 memchr = "2.8"
+serde = { version = "1", features = ["derive"], optional = true }
 tree-sitter = { version = "0.26", optional = true }
 unicode-segmentation = { version = "1.13" }
-serde = { version = "1", features = ["derive"], optional = true }
-bincode = { version = "3.0.0", optional = true }
+
+[lints]
+workspace = true

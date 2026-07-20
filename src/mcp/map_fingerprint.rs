@@ -95,7 +95,6 @@ mod tests {
         let first = index_fingerprint(&store);
         drop(store);
 
-        // Re-scan and reopen with zero source changes — exactly what a no-op daemon scan produces.
         let store = scan(root);
         let second = index_fingerprint(&store);
 

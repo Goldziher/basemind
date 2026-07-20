@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -99,12 +98,10 @@ impl<'tree> Graph<'tree> {
         })
     }
 
-    // Returns an iterator of references to all of the nodes in the graph.
     pub fn iter_nodes(&self) -> impl Iterator<Item = GraphNodeRef> + use<> {
         (0..self.graph_nodes.len() as u32).map(GraphNodeRef)
     }
 
-    // Returns the number of nodes in the graph.
     pub fn node_count(&self) -> usize {
         self.graph_nodes.len()
     }
@@ -187,12 +184,10 @@ impl GraphNode {
             .map(move |index| &mut self.outgoing_edges[index].1)
     }
 
-    // Returns an iterator of all of the outgoing edges from this node.
     pub fn iter_edges(&self) -> impl Iterator<Item = (GraphNodeRef, &Edge)> + '_ {
         self.outgoing_edges.iter().map(|(id, edge)| (GraphNodeRef(*id), edge))
     }
 
-    // Returns the number of outgoing edges from this node.
     pub fn edge_count(&self) -> usize {
         self.outgoing_edges.len()
     }
@@ -204,7 +199,6 @@ impl<'a> Serialize for SerializeGraphNode<'a> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let node_index = self.0;
         let node = self.1;
-        // serializing as a map instead of a struct so we don't have to encode a struct name
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("id", &node_index)?;
         map.serialize_entry("edges", &SerializeGraphNodeEdges(&node.outgoing_edges))?;
@@ -324,15 +318,12 @@ impl Serialize for Attributes {
 /// The value of an attribute
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Value {
-    // Scalar
     Null,
     Boolean(bool),
     Integer(u32),
     String(String),
-    // Compound
     List(Vec<Value>),
     Set(BTreeSet<Value>),
-    // References
     SyntaxNode(SyntaxNodeRef),
     GraphNode(GraphNodeRef),
 }

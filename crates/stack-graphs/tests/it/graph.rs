@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -21,7 +20,6 @@ fn can_create_symbols() {
     let b = graph.add_symbol("b");
     let c = graph.add_symbol("c");
     let empty1 = graph.add_symbol("");
-    // The content of each symbol be comparable
     assert_eq!(graph[a1], graph[a2]);
     assert_ne!(graph[a1], graph[b]);
     assert_ne!(graph[a1], graph[c]);
@@ -29,7 +27,6 @@ fn can_create_symbols() {
     assert_ne!(graph[a2], graph[c]);
     assert_ne!(graph[b], graph[c]);
     assert_ne!(graph[empty1], graph[a1]);
-    // and because we deduplicate symbols, the handles should be comparable too.
     assert_eq!(a1, a2);
     assert_ne!(a1, b);
     assert_ne!(a1, c);
@@ -45,8 +42,6 @@ fn can_iterate_symbols() {
     graph.add_symbol("a");
     graph.add_symbol("b");
     graph.add_symbol("c");
-    // We should get all of the symbols that we've created — though there's no guarantee in which
-    // order they'll come out of the iterator.
     let symbols = graph
         .iter_symbols()
         .map(|symbol| &graph[symbol])
@@ -76,7 +71,6 @@ fn can_create_strings() {
     let b = graph.add_string("b");
     let c = graph.add_string("c");
     let empty1 = graph.add_string("");
-    // The content of each string be comparable
     assert_eq!(graph[a1], graph[a2]);
     assert_ne!(graph[a1], graph[b]);
     assert_ne!(graph[a1], graph[c]);
@@ -84,7 +78,6 @@ fn can_create_strings() {
     assert_ne!(graph[a2], graph[c]);
     assert_ne!(graph[b], graph[c]);
     assert_ne!(graph[empty1], graph[a1]);
-    // and because we deduplicate strings, the handles should be comparable too.
     assert_eq!(a1, a2);
     assert_ne!(a1, b);
     assert_ne!(a1, c);
@@ -100,8 +93,6 @@ fn can_iterate_strings() {
     graph.add_string("a");
     graph.add_string("b");
     graph.add_string("c");
-    // We should get all of the strings that we've created — though there's no guarantee in which
-    // order they'll come out of the iterator.
     let strings = graph
         .iter_strings()
         .map(|string| &graph[string])
@@ -145,7 +136,6 @@ fn can_add_and_remove_edges() {
     graph.add_edge(h1, h2, 0);
     graph.add_edge(h1, h3, 0);
     graph.add_edge(h1, h4, 0);
-    // If you try to overwrite an edge, the original edge takes precedence.
     graph.add_edge(h1, h3, 1);
     assert_eq!(
         graph

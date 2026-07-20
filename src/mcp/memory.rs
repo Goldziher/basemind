@@ -153,9 +153,6 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
     let (vis_byte, owner) = namespace(state, params.visibility);
     let tags = params.tags.clone().unwrap_or_default();
 
-    // Fjall RMW: forwarded to the daemon under `daemon_writer` (the sole fjall writer serializes
-    // same-workspace ops, so no per-key lock is needed there); otherwise done locally under the
-    // per-key `memory_put_lock`. Both paths return the resolved `(created_at, updated_at)`.
     let (created_at, updated_at) = memory_put_fjall(state, vis_byte, owner, &params.key, &params.value, &tags).await?;
 
     if params.embed {
@@ -735,17 +732,13 @@ mod scope_tests {
 
     #[test]
     fn a_scraped_page_is_reachable_only_by_naming_its_web_scope() {
-        // The bug, stated as a test: web_scrape writes here...
         let url = crate::url::Url::parse("https://example.com/page").unwrap();
         let write_scope = default_scope(&url);
         assert_eq!(write_scope, "web:example.com");
 
-        // ...and the default read looks somewhere else entirely, which is why the page came back
-        // as 0 hits however it was queried.
         let repo_scope = "repo-abc123";
         assert_ne!(resolve_doc_scope(None, repo_scope), write_scope);
 
-        // Naming the scope the ingest tool echoed back is what closes the loop.
         assert_eq!(resolve_doc_scope(Some(&write_scope), repo_scope), write_scope);
     }
 }

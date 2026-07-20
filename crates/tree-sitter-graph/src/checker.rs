@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2022, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -108,9 +107,6 @@ struct VariableResult {
     quantifier: CaptureQuantifier,
 }
 
-//-----------------------------------------------------------------------------
-// File
-
 impl ast::File {
     pub fn check(&mut self) -> Result<(), CheckError> {
         let mut globals = VariableMap::new();
@@ -133,9 +129,6 @@ impl ast::File {
         Ok(())
     }
 }
-
-//-----------------------------------------------------------------------------
-// Stanza
 
 impl ast::Stanza {
     fn check(
@@ -187,9 +180,6 @@ impl ast::Stanza {
         Ok(())
     }
 }
-
-//-----------------------------------------------------------------------------
-// Statements
 
 #[derive(Clone, Debug)]
 struct StatementResult {
@@ -313,11 +303,6 @@ impl ast::Scan {
         used_captures.extend(value_result.used_captures);
 
         for arm in &mut self.arms {
-            // Be aware that this check is not complete, as it does not rule out
-            // all regular expressions that admit empty matches. For example, th
-            // regex "\b" matches empty strings within a larger non-empty one.
-            // Therefore, there is also a runtime check that checks that a match was
-            // non-empty. This is all to prevent non-termination of scan.
             if arm.regex.captures("").is_some() {
                 return Err(CheckError::NullableRegex(arm.regex.to_string(), arm.location));
             }
@@ -437,9 +422,6 @@ impl ast::ForIn {
         Ok(StatementResult { used_captures })
     }
 }
-
-//-----------------------------------------------------------------------------
-// Expressions
 
 /// Expression checking result
 #[derive(Clone, Debug)]
@@ -615,7 +597,7 @@ impl ast::Capture {
         self.file_capture_index = ctx
             .file_query
             .capture_index_for_name(&name)
-            .expect("missing capture index for name") as usize; // if the previous lookup succeeded, this one should succeed as well
+            .expect("missing capture index for name") as usize;
         self.quantifier = ctx.file_query.capture_quantifiers(ctx.stanza_index)[self.file_capture_index];
         Ok(ExpressionResult {
             is_local: true,
@@ -651,9 +633,6 @@ impl ast::RegexCapture {
         })
     }
 }
-
-//-----------------------------------------------------------------------------
-// Variables
 
 impl ast::Variable {
     fn check_add(
@@ -697,10 +676,6 @@ impl ast::UnscopedVariable {
             ));
         }
         let mut value = value;
-        // Mutable variables are not considered local, because a non-local
-        // assignment in a loop could invalidate an earlier local assignment.
-        // Since we process all statement in order, we don't have info on later
-        // assignments, and can assume non-local to be sound.
         if mutable {
             value.is_local = false;
         }
@@ -720,10 +695,6 @@ impl ast::UnscopedVariable {
             ));
         }
         let mut value = value;
-        // Mutable variables are not considered local, because a non-local
-        // assignment in a loop could invalidate an earlier local assignment.
-        // Since we process all statement in order, we don't have info on later
-        // assignments, and can assume non-local to be sound.
         value.is_local = false;
         ctx.locals
             .set(self.name.clone(), value)
@@ -770,9 +741,6 @@ impl ast::ScopedVariable {
     }
 }
 
-//-----------------------------------------------------------------------------
-// Attributes
-
 #[derive(Clone, Debug)]
 struct AttributeResult {
     used_captures: HashSet<Identifier>,
@@ -786,9 +754,6 @@ impl ast::Attribute {
         })
     }
 }
-
-//-----------------------------------------------------------------------------
-// Result Conversions
 
 impl From<ExpressionResult> for StatementResult {
     fn from(val: ExpressionResult) -> Self {

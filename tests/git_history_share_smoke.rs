@@ -39,8 +39,6 @@ fn git_history_index_is_shared_from_linked_worktree() {
     let main_bm = shared_history_basemind_dir(&main);
     let wt_bm = shared_history_basemind_dir(&wt);
 
-    // Both the main and the linked worktree must resolve the git-history index to the SAME
-    // workspace cache dir — the one keyed on the main worktree root.
     assert_eq!(
         wt_bm, main_bm,
         "a linked worktree must resolve the git-history index to the MAIN worktree's workspace cache"

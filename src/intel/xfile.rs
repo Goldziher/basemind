@@ -77,7 +77,7 @@ fn resolve_export_transitively(
     for _ in 0..MAX_REEXPORT_HOPS {
         let current_key = current_rel.as_str()?.to_string();
         if !visited.insert((current_key.clone(), wanted.clone())) {
-            return None; // re-export cycle — bail rather than loop.
+            return None;
         }
         if let Some(&name_start) = export_maps
             .get(current_key.as_str())
@@ -85,14 +85,13 @@ fn resolve_export_transitively(
         {
             return Some((current_rel, name_start));
         }
-        // Not a direct export: is `wanted` re-exported here (imported under that local name)? Follow it.
         let reexport = facts
             .get(&current_key)?
             .imports
             .iter()
             .find(|import| !import.is_type && import.local == wanted)?;
         let next_rel = resolver.resolve(root, &current_key, reexport)?;
-        store.lookup(&next_rel)?; // the re-export target must be indexed to have an export list.
+        store.lookup(&next_rel)?;
         wanted = reexport.imported.clone().unwrap_or(wanted);
         current_rel = next_rel;
     }
@@ -122,8 +121,6 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
         })
         .collect();
 
-    // Resolvers are cheap to reuse but the oxc variant is not cheap to build; cache one per
-    // language for the whole stitch. `None` records a language with no compiled-in resolver.
     let mut resolvers: AHashMap<String, Option<SpecifierResolver>> = AHashMap::new();
     let mut writer = index_db.writer();
     let mut edges = 0usize;
@@ -159,25 +156,14 @@ pub fn stitch_cross_file_edges(root: &Path, store: &Store, index_db: &IndexDb, f
                 continue;
             }
 
-            // A specific imported name (`from m import f`) joins against that export; an import with
-            // no named symbol falls back to the resolver's default-export convention (JS `default`),
-            // and `None` there means "no single export to bind" (bare Python/Java module import) — so
-            // the join is skipped rather than binding to an unrelated `default` symbol.
             let Some(wanted) = import.imported.as_deref().or_else(|| resolver.default_export_name()) else {
                 continue;
             };
-            // Resolve to the DEFINING file, following re-export chains so an import through a package
-            // `__init__.py` / barrel binds to the real definition (`from pkg import QuerySet` →
-            // `pkg/query.py`), not the intermediate re-exporter (which carries no direct export).
             let Some((def_rel, name_start)) =
                 resolve_export_transitively(root, store, facts, &export_maps, resolver, target_rel, wanted)
             else {
                 continue;
             };
-            // Emit a cross-file edge for the import binding site itself AND for every in-file use
-            // of the imported name (calls/references whose intra `def_start` is this binding), so
-            // `find_callers` / `goto_definition` resolve the real call sites across the boundary,
-            // not just the `import` statement.
             let mut use_starts: Vec<u32> = vec![import.local_start];
             for edge in &importer_facts.import_uses {
                 if edge.def_start == import.local_start && !use_starts.contains(&edge.use_start) {

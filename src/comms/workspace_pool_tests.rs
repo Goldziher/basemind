@@ -52,7 +52,6 @@ fn lru_eviction_keeps_only_the_most_recent_within_the_cap() {
 #[test]
 fn evicted_workspace_lazily_reopens_with_its_committed_index_intact() {
     store::init_isolated_cache();
-    // A cap of 1 forces the second open to evict the first from RAM.
     let pool = WorkspacePool::new(1);
     let ws1 = workspace_with_sources();
     let ws2 = workspace_with_sources();
@@ -63,7 +62,6 @@ fn evicted_workspace_lazily_reopens_with_its_committed_index_intact() {
         .expect("read ws1 while hot");
     assert_eq!(hot_files, 2, "ws1's two sources are indexed while it is hot");
 
-    // Opening ws2 past the cap evicts ws1 from RAM — its on-disk cache survives.
     pool.rescan(ws2.path(), None, false, false).expect("scan ws2");
     assert_eq!(pool.len(), 1, "cap of 1 holds a single hot workspace");
     assert!(
@@ -71,7 +69,6 @@ fn evicted_workspace_lazily_reopens_with_its_committed_index_intact() {
         "ws1 must have been evicted from the hot set"
     );
 
-    // Re-requesting ws1 lazily reopens it from disk (no rescan); the committed index is intact.
     let recovered = pool
         .with_workspace(ws1.path(), |store| {
             (
@@ -118,7 +115,6 @@ fn embed_pass_reprocesses_the_chunk_only_sidecar_the_deferred_pass_left() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
-    // `WorkspacePool::rescan` loads config from disk, so opt into code-chunk embeddings via toml.
     std::fs::write(
         dir.path().join("basemind.toml"),
         "\"$schema\" = \"v1\"\n[code_search]\nembed = true\n",
@@ -126,20 +122,15 @@ fn embed_pass_reprocesses_the_chunk_only_sidecar_the_deferred_pass_left() {
     .expect("write config");
     std::fs::write(dir.path().join("lib.rs"), "pub fn embed_marker() -> u32 { 42 }\n").expect("write source");
 
-    // Fast pass — Deferred: writes the chunk-only sidecar, no vectors.
     let deferred = pool.rescan(dir.path(), None, false, false).expect("deferred scan");
     assert!(
         deferred.updated >= 1,
         "the source is newly indexed by the deferred pass"
     );
 
-    // A second Deferred pass is idempotent — the chunk-only sidecar satisfies the unchanged check.
     let deferred_again = pool.rescan(dir.path(), None, false, false).expect("deferred rescan");
     assert_eq!(deferred_again.updated, 0, "a second deferred pass changes nothing");
 
-    // Vector-fill follow-up — Inline: must re-process the dim-0 sidecar rather than skip it. This is
-    // the daemon-writer embed pass that bug #32 was missing: before the fix `rescan` was hard-wired to
-    // Deferred, so this pass — like the idempotent one above — changed nothing (`updated == 0`).
     let embed = pool.rescan(dir.path(), None, false, true).expect("inline embed scan");
     assert!(
         embed.updated >= 1,
@@ -162,17 +153,12 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let dir = tempfile::tempdir().expect("tempdir");
-    // An `.svg` document routes to the document tier (no tree-sitter grammar, so it is not
-    // code-mapped) and extracts as text without OCR — the same fixture shape `scan_smoke`'s
-    // `documents_are_cached_unchanged_and_pruned` uses to exercise the doc tier deterministically.
     std::fs::write(
         dir.path().join("notes.svg"),
         br#"<svg xmlns="http://www.w3.org/2000/svg"><text>photosynthesis chloroplast glucose oxygen</text></svg>"#,
     )
     .expect("write document");
 
-    // Fast pass — Deferred: the document is extracted (docs_indexed) but no DocEntry is persisted, so
-    // nothing is tracked as embedded.
     let deferred = pool.rescan(dir.path(), None, false, false).expect("deferred scan");
     assert!(
         deferred.docs_indexed >= 1,
@@ -187,7 +173,6 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
         "the deferred pass must not persist a document embedding entry"
     );
 
-    // Vector-fill follow-up — Inline: the daemon embeds the document and persists its DocEntry.
     pool.rescan(dir.path(), None, false, true).expect("inline embed scan");
     let tracked_after_inline = pool
         .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").is_some())

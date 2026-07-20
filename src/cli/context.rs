@@ -29,8 +29,6 @@ const CLI_GIT_CACHE_MEM: usize = 256;
 /// into the resolved config the same way `serve` does.
 pub fn build_server(root: &Path, view: &str, documents: DocumentsCliOverrides) -> Result<BasemindServer> {
     let store = Store::open_read_only(root, view).context("open store (read-only)")?;
-    // Reuse the workspace cache dir the store already resolved (global XDG root, keyed on `root`)
-    // so the git cache lands alongside the same workspace's views.
     let basemind_dir = store.basemind_dir.clone();
     let cfg = Arc::new(load_config(root, documents)?);
     let repo = Repo::discover(root).ok().map(Arc::new);

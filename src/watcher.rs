@@ -217,11 +217,6 @@ mod tests {
             })
         });
 
-        // Re-write until the watcher observes it, rather than writing once after a fixed sleep and
-        // hoping the fsevents stream was already registered. A stream only delivers events from its
-        // own start point, so a write that lands before registration is lost FOREVER — no timeout
-        // can recover it. That startup race, not slowness, is what made this test flaky under load:
-        // a busy machine delays registration past the sleep and the single write vanishes.
         let target = root.join("hello.rs");
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let received = loop {

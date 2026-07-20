@@ -259,9 +259,6 @@ pub(super) async fn run_proposals_mine(
         }
     }
 
-    // Build every mined candidate serve-side (pure compute — no fjall). The tombstone-check that
-    // filters already-rejected ids lives in `apply_mine_core`, so both the local and the
-    // daemon-forwarded apply paths see one consistent fjall view when they write.
     let now = crate::lance::now_micros();
     let mut seen_ids: AHashSet<String> = AHashSet::new();
     let mut candidates: Vec<(String, ProposalRecord)> = Vec::new();
@@ -375,7 +372,6 @@ pub(super) async fn run_proposals_list(
 
     let cursor_bytes: Option<Vec<u8>> = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
-    // Shared post-scan shaping: map `(id, record)` items onto the MCP response.
     let to_response = |items: Vec<(String, ProposalRecord)>, truncated: bool, next_cursor: Option<Vec<u8>>| {
         let proposals: Vec<ProposalEntry> = items
             .into_iter()
@@ -451,7 +447,6 @@ pub(super) async fn run_proposal_accept(
     state: &ServerState,
     params: ProposalAcceptParams,
 ) -> Result<CallToolResult, McpError> {
-    // Read the proposal (fjall): forwarded under `daemon_writer`, local otherwise.
     let proposal = read_proposal(state, &params.id)
         .await?
         .ok_or_else(|| McpError::invalid_params(format!("proposal not found: {}", params.id), None))?;
@@ -480,8 +475,6 @@ pub(super) async fn run_proposal_accept(
         importance: proposal.importance,
     };
 
-    // Compute the audit verdict LOCALLY — serve keeps its blobs-backed `MapCache` + read-only store,
-    // so `audit_one_record` works even under `daemon_writer` (the store's read-only, but readable).
     {
         let cache = state.cache.load_full();
         let root = state.root.clone();
@@ -491,8 +484,6 @@ pub(super) async fn run_proposal_accept(
         record.last_verified = now;
     }
 
-    // Promote (fjall): write the audited memory record + remove the proposal. Forwarded under
-    // `daemon_writer`, local otherwise.
     promote_proposal(state, &params.id, &memory_key, &record).await?;
 
     {

@@ -339,8 +339,6 @@ impl MapCache {
     /// the fully-built map, never this placeholder.
     pub(crate) fn empty() -> Self {
         Self {
-            // Never matches a populated index, so a serve still warming its map can never mistake
-            // this placeholder for a current one and skip the build.
             fingerprint: 0,
             by_path: BTreeMap::new(),
             imports_index: Vec::new(),

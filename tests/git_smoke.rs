@@ -142,13 +142,11 @@ fn views_live_in_separate_subdirs_under_workspace_cache() {
     .unwrap();
     drop(staged);
 
-    // The cache is machine-global + workspace-keyed now, not `<root>/.basemind/`.
     let cache = basemind::store::workspace_cache_dir(root);
     let views_dir = cache.join("views");
     assert!(views_dir.join(VIEW_WORKING).join("index.msgpack").exists());
     assert!(views_dir.join(VIEW_STAGED).join("index.msgpack").exists());
     assert!(!cache.join("index.msgpack").exists());
-    // Nothing is written under the repo root anymore.
     assert!(!root.join(".basemind").exists(), "no in-repo cache dir is created");
 }
 
@@ -157,8 +155,6 @@ fn legacy_top_level_index_is_migrated_into_working_view() {
     let (dir, _cfg) = init_repo();
     let root = dir.path();
 
-    // Simulate a pre-views layout inside the (now global) workspace cache dir: a top-level
-    // `index.msgpack` that `Store::open` must migrate into `views/working/`.
     let cache = basemind::store::workspace_cache_dir(root);
     fs::create_dir_all(&cache).unwrap();
     let empty = basemind::store::Index::empty();

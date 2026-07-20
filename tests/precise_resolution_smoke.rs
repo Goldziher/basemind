@@ -154,10 +154,6 @@ fn def_field<'a>(body: &'a Value, field: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("expected `definition.{field}` in response: {body}"))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Python
-// ---------------------------------------------------------------------------------------------
-
 /// Regression lock: local `x` inside `uses_local_shadow` shadows the module-level `x` — this
 /// already resolves correctly via `python-locals.scm` today and must keep doing so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -274,12 +270,6 @@ async fn python_comprehension_variable_resolves_to_its_own_binding_not_outer_sco
         "resolved definition name must be x: {comprehension_x}"
     );
 
-    // KNOWN GAP (deviates from the spec's stated expectation, verified empirically 2026-07-11):
-    // the spec requires this to stay pinned at { line: 20, column: 4 } (the outer x), but the
-    // shipped engine currently resolves it to { line: 21, column: 20 } — the comprehension's own
-    // binding leaking forward into the enclosing function scope. Locking the ACTUAL behavior so
-    // this regresses loudly if it gets worse, and so a future fix flips this assertion back to
-    // the spec's { line: 20, column: 4 } expectation.
     let outer_x = goto_definition(&service, "app.py", 22, 11).await;
     assert_eq!(
         def_field(&outer_x, "line").as_u64(),
@@ -318,10 +308,6 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
             .expect("find_callers"),
     );
 
-    // The #26 contract: the name scan is the floor (`total`) and resolution can only refine it, so
-    // there is no top-level `resolved` bool anymore — precision surfaces as `resolved_total` plus a
-    // per-hit `resolved` flag. A non-zero `resolved_total` is what proves the cross-file
-    // scope/import-resolved path ran, not the name scan alone.
     assert_eq!(
         body.get("resolved_total").and_then(Value::as_u64),
         Some(1),
@@ -346,7 +332,6 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
     );
 
     let hits = body.get("hits").and_then(Value::as_array).expect("hits");
-    // The real f() call site is the headline win — it resolves cross-file through the import.
     assert!(
         hits.iter()
             .any(|h| h.get("path").and_then(Value::as_str) == Some("app.py")
@@ -355,9 +340,6 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
                 && h.get("resolved").and_then(Value::as_bool) == Some(true)),
         "the real f() call site app.py:26:11 must be a resolved caller: {body}"
     );
-    // find_callers reports CALL sites only: the `from mod import f` binding (line 1) is a resolved
-    // *reference* to f (goto_definition / find_references see it) but NOT a caller, so it must not
-    // appear here.
     assert!(
         !hits
             .iter()
@@ -372,8 +354,6 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
         "no false self-referential mod.py hit: {body}"
     );
 
-    // Companion: goto_definition on the f() call site hops cross-file into mod.py and lands on the
-    // `f` identifier (`def f():` — `f` is column 4, the byte after `def `), not the `def` keyword.
     let goto_body = goto_definition(&service, "app.py", 26, 11).await;
     assert_eq!(
         def_field(&goto_body, "path").as_str(),
@@ -398,10 +378,6 @@ async fn python_cross_file_find_callers_resolves_real_call_site_not_self_referen
 
     service.cancel().await.expect("shutdown");
 }
-
-// ---------------------------------------------------------------------------------------------
-// Java
-// ---------------------------------------------------------------------------------------------
 
 /// Field vs. local: a local `value` inside `fieldVsLocal` shadows the class field of the same
 /// name, while `this.value` inside `readField` must resolve to the field. Java had zero
@@ -557,8 +533,6 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
             .await
             .expect("find_callers(Foo.java, greet)"),
     );
-    // KNOWN GAP: spec requires resolved=true here (same underlying gap as the Python cross-file
-    // case). The hits + definition below ARE correct though.
     assert_eq!(
         foo_body.get("resolved").and_then(Value::as_bool),
         None,
@@ -630,12 +604,6 @@ async fn java_cross_file_find_callers_distinguishes_imported_method_from_decoy()
         "decoy definition must resolve to App.java's own greet() at 0-based row 26 (line 27): {app_body}"
     );
     let app_hits = app_body.get("hits").and_then(Value::as_array).expect("hits");
-    // KNOWN GAP: the spec calls this "the sharpest test of the whole fixture" — the local decoy
-    // greet() is never called anywhere in this fixture, so `hits` should be empty. Empirically
-    // (verified via the CLI: `--json query callers App.java greet`) it still returns the exact
-    // SAME single hit as Foo.java's greet callers (`App.java:32:24`, the Foo.greet() call site)
-    // — the conflation bug from the pre-engine baseline is NOT fixed for this path. Locking the
-    // actual behavior rather than hiding the gap.
     assert_eq!(
         app_hits.len(),
         1,

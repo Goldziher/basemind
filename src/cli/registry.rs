@@ -254,8 +254,6 @@ async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Writ
 
 /// Render a claim / release outcome, honoring `--json`. `held` reflects whether the claim is now
 /// held (claim) or was cleared (release) by `claimant`; `verb` is the human label.
-// Flat render helper: json + out + the four outcome fields + verb. Bundling these into a struct
-// would add ceremony without clarifying anything, so the arg count is acceptable here.
 #[allow(clippy::too_many_arguments)]
 fn render_claim(
     json: bool,

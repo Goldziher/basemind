@@ -59,7 +59,6 @@ fn comms_daemon_thread_history_is_front_matter_only() {
     assert!(ok, "comms start failed: {err}");
     let _stop = Stop(&comms_dir);
 
-    // Start a thread addressed by subject + a member (two dimensions).
     let (ok, start_out, e) = comms(
         &comms_dir,
         "agent-alice",

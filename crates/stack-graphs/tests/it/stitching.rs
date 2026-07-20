@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2023, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -68,57 +67,39 @@ fn test_foo_bar_root_candidate_paths(symbols: &[&str], variable: bool) -> usize 
 
 #[test]
 fn find_candidates_for_exact_symbol_stack_with_variable() {
-    // <"foo","bar",%2> ~ <"foo","bar",%1> | yes, %2 = %1
-    // <"foo","bar",%2> ~ <"foo","bar">    | yes, %2 = <>
     let results = test_foo_bar_root_candidate_paths(&["bar", "foo"], true);
     assert_eq!(2, results);
 }
 
 #[test]
 fn find_candidates_for_exact_symbol_stack_without_variable() {
-    // <"foo","bar"> ~ <"foo","bar",%1> | yes, %1 = <>
-    // <"foo","bar"> ~ <"foo","bar">    | yes
     let results = test_foo_bar_root_candidate_paths(&["bar", "foo"], false);
     assert_eq!(2, results);
 }
 
 #[test]
 fn find_candidates_for_longer_symbol_stack_with_variable() {
-    // <"foo","bar","quz",%2> ~ <"foo","bar",%1> | yes, %1 = <"quz",%2>
-    // <"foo","bar","quz",%2> ~ <"foo","bar">    | no
     let results = test_foo_bar_root_candidate_paths(&["quz", "bar", "foo"], true);
     assert_eq!(1, results);
 }
 
 #[test]
 fn find_candidates_for_longer_symbol_stack_without_variable() {
-    // <"foo","bar","quz"> ~ <"foo","bar",%1> | yes, %1 = <"quz">
-    // <"foo","bar","quz"> ~ <"foo","bar">    | no
     let results = test_foo_bar_root_candidate_paths(&["quz", "bar", "foo"], false);
     assert_eq!(1, results);
 }
 
 #[test]
 fn find_candidates_for_shorter_symbol_stack_with_variable() {
-    // <"foo",%2> ~ <"foo","bar",%1> | yes, %2 = <"bar",%1>
-    // <"foo",%2> ~ <"foo","bar">    | yes, %2 = <"bar">
     let results = test_foo_bar_root_candidate_paths(&["foo"], true);
     assert_eq!(2, results);
 }
 
 #[test]
 fn find_candidates_for_shorter_symbol_stack_without_variable() {
-    // <"foo"> ~ <"foo","bar",%1> | no
-    // <"foo"> ~ <"foo","bar">    | no
     let results = test_foo_bar_root_candidate_paths(&["foo"], false);
     assert_eq!(0, results);
 }
-
-// ----------------------------------------------------------------------------
-// regressions: panics that aborted a whole-repository scan
-//
-// Both of these fire on real source code (they were hit while indexing an 82k-file monorepo) and
-// must degrade to a skipped path, never a panic: one bad file cannot be allowed to abort the scan.
 
 /// A partial path that starts and ends at the same _drop scopes_ node, and whose scope-stack
 /// precondition is a concrete scope stack with no variable.
@@ -156,7 +137,6 @@ fn cycle_detector_reports_unsatisfiable_replay_as_an_error() {
         AppendingCycleDetector::from(&mut appendables, path);
     detector.append(&mut appendables, handle);
 
-    // Not a panic, and not a silent "no cycle": a genuine, reportable resolution failure.
     let result = detector.is_cyclic(&graph, &mut partials, &database, &mut appendables);
     assert!(
         matches!(result, Err(PathResolutionError::ScopeStackUnsatisfied)),
@@ -171,8 +151,6 @@ fn stitcher_discontinues_path_when_cycle_test_is_unsatisfiable_instead_of_panick
     let mut database = Database::new();
     database.add_partial_path(&graph, &mut partials, path.clone());
 
-    // The database *does* hold a candidate that starts where the seed path ends, so a zero
-    // extension count below can only mean the stitcher deliberately discontinued the path.
     let mut candidates = Vec::new();
     database.find_candidate_partial_paths_from_node(&graph, &mut partials, drop_scopes, &mut candidates);
     assert_eq!(1, candidates.len());
@@ -188,8 +166,6 @@ fn stitcher_discontinues_path_when_cycle_test_is_unsatisfiable_instead_of_panick
         extended += stitcher.previous_phase_partial_paths().count();
     }
 
-    // No panic, and the candidate is never taken: an undecidable cycle test is treated exactly
-    // like a proven cycle, so the path is discontinued.
     assert_eq!(0, extended);
 }
 
@@ -206,9 +182,6 @@ fn incoming_path_degree_is_zero_for_a_node_no_partial_path_ends_at() {
     let mut database = Database::new();
     database.add_partial_path(&graph, &mut partials, path);
 
-    // `incoming_paths` is grown lazily, only up to the largest *end node* ever added.  Every node
-    // past that — here, one allocated after the database was populated — used to index out of
-    // bounds.  The honest answer for such a node is "no partial path in this database ends here".
     let unseen = create_scope_node(&mut graph, file, true);
     assert_eq!(Degree::Zero, database.get_incoming_path_degree(unseen));
     assert_eq!(Degree::Zero, database.get_incoming_path_degree(StackGraph::root_node()));
@@ -221,8 +194,6 @@ fn stitcher_extends_a_path_whose_end_node_the_database_never_reaches() {
     let file = graph.add_file("test").unwrap();
     let mut partials = PartialPaths::new();
 
-    // Every partial path in the database ends at `foo_def`, so `incoming_paths` stops growing
-    // there — `bar_def`, allocated afterwards, is past the end of the arena.
     let scope = create_scope_node(&mut graph, file, true);
     let foo_def = create_pop_symbol_node(&mut graph, file, "foo", true);
     let later_scope = create_scope_node(&mut graph, file, true);
@@ -235,8 +206,6 @@ fn stitcher_extends_a_path_whose_end_node_the_database_never_reaches() {
     database.add_partial_path(&graph, &mut partials, known);
     database.add_partial_path(&graph, &mut partials, extension);
 
-    // `check_only_join_nodes` is what the two `find_*_partial_paths` entry points turn on, and it
-    // is what makes `extend` ask the database for the end node's incoming degree — the OOB index.
     let seed = create_partial_path_and_edges(&mut graph, &mut partials, &[later_scope, bar_def]).unwrap();
     assert_ne!(
         seed.start_node, seed.end_node,
@@ -254,7 +223,5 @@ fn stitcher_extends_a_path_whose_end_node_the_database_never_reaches() {
         extended += stitcher.previous_phase_partial_paths().count();
     }
 
-    // No panic, and the degree lookup answering "zero" does not cost us the extension: the seed is
-    // still stitched onto the one database path that starts at `bar_def`.
     assert_eq!(1, extended);
 }

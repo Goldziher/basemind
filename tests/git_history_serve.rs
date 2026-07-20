@@ -122,7 +122,6 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
     let service = spawn_server(root).await;
     let peer = service.peer().clone();
 
-    // The daemon builds the index in the background; poll until it is fresh (bounded).
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let mut last;
     loop {

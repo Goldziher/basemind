@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -125,7 +124,6 @@ fn cyclic_imports_rust() {
         "test.rs",
         &[],
         // NOTE: Because everything in this example is local to one file, there aren't any partial
-        // paths involving the root node.
         &[],
     );
 }

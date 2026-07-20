@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -22,7 +21,6 @@ fn check_jump_to_definition(graph: &StackGraph, expected_partial_paths: &[&str])
     let mut partials = PartialPaths::new();
     let mut db = Database::new();
 
-    // Generate partial paths for everything in the database.
     for file in graph.iter_files() {
         ForwardPartialPathStitcher::find_minimal_partial_path_set_in_file(
             graph,
@@ -67,17 +65,11 @@ fn class_field_through_function_parameter() {
     check_jump_to_definition(
         &graph,
         &[
-            // reference to `a` in import statement
             "<> () [main.py(17) reference a] -> [a.py(0) definition a] <> ()",
-            // reference to `b` in import statement
             "<> () [main.py(15) reference b] -> [b.py(0) definition b] <> ()",
-            // reference to `foo` in function call resolves to function definition
             "<> () [main.py(13) reference foo] -> [a.py(5) definition foo] <> ()",
-            // reference to `A` as function parameter resolves to class definition
             "<> () [main.py(9) reference A] -> [b.py(5) definition A] <> ()",
-            // reference to `bar` on result flows through body of `foo` to find `A.bar`
             "<> () [main.py(10) reference bar] -> [b.py(8) definition bar] <> ()",
-            // reference to `x` in function body resolves to formal parameter
             "<> () [a.py(8) reference x] -> [a.py(14) definition x] <> ()",
         ],
     );
@@ -89,13 +81,9 @@ fn cyclic_imports_python() {
     check_jump_to_definition(
         &graph,
         &[
-            // reference to `a` in import statement
             "<> () [main.py(8) reference a] -> [a.py(0) definition a] <> ()",
-            // reference to `foo` resolves through intermediate file to find `b.foo`
             "<> () [main.py(6) reference foo] -> [b.py(6) definition foo] <> ()",
-            // reference to `b` in import statement
             "<> () [a.py(6) reference b] -> [b.py(0) definition b] <> ()",
-            // reference to `a` in import statement
             "<> () [b.py(8) reference a] -> [a.py(0) definition a] <> ()",
         ],
     );
@@ -107,16 +95,11 @@ fn cyclic_imports_rust() {
     check_jump_to_definition(
         &graph,
         &[
-            // reference to `a` in `a::FOO` resolves to module definition
             "<> () [test.rs(103) reference a] -> [test.rs(201) definition a] <> ()",
-            // reference to `a::FOO` in `main` can resolve either to `a::BAR` or `b::FOO`
             "<> () [test.rs(101) reference FOO] -> [test.rs(304) definition FOO] <> ()",
             "<> () [test.rs(101) reference FOO] -> [test.rs(204) definition BAR] <> ()",
-            // reference to `b` in use statement resolves to module definition
             "<> () [test.rs(206) reference b] -> [test.rs(301) definition b] <> ()",
-            // reference to `a` in use statement resolves to module definition
             "<> () [test.rs(307) reference a] -> [test.rs(201) definition a] <> ()",
-            // reference to `BAR` in module `b` can _only_ resolve to `a::BAR`
             "<> () [test.rs(305) reference BAR] -> [test.rs(204) definition BAR] <> ()",
         ],
     );
@@ -128,11 +111,8 @@ fn sequenced_import_star() {
     check_jump_to_definition(
         &graph,
         &[
-            // reference to `a` in import statement
             "<> () [main.py(8) reference a] -> [a.py(0) definition a] <> ()",
-            // reference to `foo` resolves through intermediate file to find `b.foo`
             "<> () [main.py(6) reference foo] -> [b.py(5) definition foo] <> ()",
-            // reference to `b` in import statement
             "<> () [a.py(6) reference b] -> [b.py(0) definition b] <> ()",
         ],
     );
