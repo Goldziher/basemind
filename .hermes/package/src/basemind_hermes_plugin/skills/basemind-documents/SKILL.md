@@ -10,8 +10,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:b29ea41ab510c394d835970be9cf5092bea234b49088c2573e016009a260a1c1
-Source-Hash: blake3:960affce8e7d6c8efa32c93ebdd7ca85100e78044731248bd9b44189655e893a
+Content-Hash: blake3:fe9693b2a3d63a50847b3e1d3abd04814a346bd3b06206c6cfac8e3a92b527bf
+Source-Hash: blake3:178bcc6ce0f1192b8cadf08e0aa7274f68b1b27837e4634363304539dccfbe6f
 Schema-Version: v1
 -->
 
@@ -33,7 +33,8 @@ this skill is for prose and documents.
 - Web ingestion (`web_scrape` / `web_crawl` / `web_map`) needs `--features crawl`. When that feature
   is **off** these tools are not registered at all — they simply won't appear in the tool list.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts and embeds
-  them into `.basemind/`. See the `basemind-scan` skill.
+  them into the machine-global cache (Linux `~/.local/share/basemind/`, macOS
+  `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). See the `basemind-scan` skill.
 
 ## Tool routing
 
@@ -76,7 +77,7 @@ search_documents { query: "rate limiting", mime_type: "text/html" }
 - Crawled/scraped pages land in the `documents` table tagged with a `scope` of `web:<host>`
   (override on `web_scrape`); `search_documents` searches across every ingested document.
 - `robots.txt` is honoured by default; only `[crawl].respect_robots_txt = false` in
-  `.basemind/basemind.toml` (config-file-only) disables it. The crawler SSRF-blocks private/loopback
+  the repo-root `basemind.toml` (config-file-only) disables it. The crawler SSRF-blocks private/loopback
   hosts unless `[crawl].allow_private_network = true`.
 - Memory is scoped by the normalised git `origin` URL, so clones of the same repo share stored
   entries and unrelated repos do not.

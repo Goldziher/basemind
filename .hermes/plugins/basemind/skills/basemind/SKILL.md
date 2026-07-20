@@ -10,8 +10,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:70f3e3ffddfa914e775879f78876f79c3536ca80f262fa87d0209b9b37b7a51c
-Source-Hash: blake3:960affce8e7d6c8efa32c93ebdd7ca85100e78044731248bd9b44189655e893a
+Content-Hash: blake3:fbfe669a135b1ba7200075fc0c23161fe5049e0cb77e86fb6934d22ea3aa28bb
+Source-Hash: blake3:178bcc6ce0f1192b8cadf08e0aa7274f68b1b27837e4634363304539dccfbe6f
 Schema-Version: v1
 -->
 
@@ -92,6 +92,8 @@ git only when no basemind tool covers the question.
 | Question | Tool |
 |---|---|
 | "Where is X defined?" | `search_symbols` (substring match, optional `kind` filter) |
+| "Jump to the definition of X used here?" | `goto_definition` (scope-aware resolution from a use site) |
+| "What's the high-level architecture / module map?" | `architecture_map` |
 | "What's the shape of file F?" | `outline` (add `l2: true` for calls + docs) |
 | "What calls X?" (any name) | `find_references` |
 | "What calls this specific definition?" | `find_callers` (path + name + optional kind) |
@@ -119,14 +121,16 @@ git only when no basemind tool covers the question.
 
 ## Setup (one-time per repo)
 
-basemind needs an index at `.basemind/` before it can answer queries. From the repo root:
+basemind needs an index before it can answer queries. The index lives in a machine-global cache
+(Linux `~/.local/share/basemind/`, macOS `~/Library/Application Support/basemind/`; override
+`BASEMIND_DATA_HOME`), keyed by workspace — never inside your repo. From the repo root:
 
 ```sh
 basemind scan
 ```
 
 This walks the tree, parses with tree-sitter, and writes a content-addressed blob
-store + Fjall inverted index under `.basemind/`. A few seconds for small repos,
+store + Fjall inverted index into the machine-global cache. A few seconds for small repos,
 ~22 s for an ~80k-file TypeScript monorepo.
 
 The MCP server is launched by the host (`basemind serve` — wired up in
@@ -192,4 +196,4 @@ A 1000-line file becomes a 30-line table of contents.
   document. It searches across ALL documents and has **no `scope` parameter** — you cannot
   filter results to a single host at query time.
   robots.txt is honoured by default; only `[crawl].respect_robots_txt = false` in
-  `.basemind/basemind.toml` (config-file-only) disables it.
+  the repo-root `basemind.toml` (config-file-only) disables it.
