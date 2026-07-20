@@ -3,6 +3,10 @@
 # scripts, not a compiled binary. This launcher installs a version-matched
 set -euo pipefail
 
+# Original stdio args, forwarded to whichever binary we exec. Captured here because a ~keep
+# fallback exec happens inside a function, where "$@" would mean the function's args. ~keep
+ARGS=("$@")
+
 log() { printf 'basemind-launch: %s\n' "$*" >&2; }
 die() {
 	log "error: $*"
@@ -46,6 +50,40 @@ prune_stale_versions() {
 		[0-9]*) rm -rf "$entry" 2>/dev/null || true ;;
 		esac
 	done
+}
+
+# Schema minor of a version string: 0.22.1 -> 0.22, 1.3.0-rc.2 -> 1.3. Binaries that ~keep
+# share a minor share the blob + index schema (RELEASE_MINOR), so one can stand in for ~keep
+# another; a different minor would trigger a wipe-and-rebuild and must never be a fallback. ~keep
+version_minor() { printf '%s\n' "$1" | sed -n 's/^\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'; }
+
+# Newest cached binary whose schema minor matches VERSION (so it is blob/index ~keep
+# compatible), excluding VERSION itself. Prints its path, or nothing. Used to keep the ~keep
+# MCP server available during a release window, before the pinned assets finish uploading. ~keep
+newest_compatible_cached() {
+	[ -d "$PARENT" ] || return 0
+	local want entry base bin ver best_ver="" best_bin=""
+	want="$(version_minor "$VERSION")"
+	for entry in "$PARENT"/*/; do
+		[ -d "$entry" ] || continue
+		base="$(basename "$entry")"
+		case "$base" in
+		[0-9]*) ;;
+		*) continue ;;
+		esac
+		[ "$base" = "$VERSION" ] && continue
+		bin="$entry$BINARY_NAME"
+		[ -x "$bin" ] || continue
+		ver="$(binary_version "$bin")"
+		[ -n "$ver" ] || continue
+		[ "$(version_minor "$ver")" = "$want" ] || continue
+		if [ -z "$best_ver" ] || [ "$(printf '%s\n%s\n' "$best_ver" "$ver" | sort -V | tail -n1)" = "$ver" ]; then
+			best_ver="$ver"
+			best_bin="$bin"
+		fi
+	done
+	[ -n "$best_bin" ] && printf '%s\n' "$best_bin"
+	return 0
 }
 
 try_exec() {
@@ -123,6 +161,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The pinned v${VERSION} assets are missing (release still publishing, or genuinely ~keep
+# incomplete). Rather than leave the session with no MCP server, exec the newest cached ~keep
+# binary of the same schema minor if one exists; only give up when none is available. ~keep
+fallback_or_die() {
+	local fb
+	fb="$(newest_compatible_cached)"
+	if [ -n "$fb" ]; then
+		log "warning: $1"
+		log "v${VERSION} not yet downloadable; falling back to compatible cached basemind $(binary_version "$fb") at $fb — run \`/plugin update\` once the release completes"
+		release_lock
+		LOCK_HELD=""
+		exec "$fb" "${ARGS[@]}"
+	fi
+	die_incomplete_release "$1"
+}
+
 LOCK_HELD=""
 waited=0
 while ! mkdir "$LOCK" 2>/dev/null; do
@@ -140,13 +194,13 @@ try_exec "$MANAGED_BIN" "$@"
 
 TMP="$(mktemp -d)"
 log "downloading $ASSET ..."
-fetch "$ASSET_URL" "$TMP/$ASSET" || die_incomplete_release "could not download $ASSET ($ASSET_URL)"
+fetch "$ASSET_URL" "$TMP/$ASSET" || fallback_or_die "could not download $ASSET ($ASSET_URL)"
 
 fetch "$SUMS_URL" "$TMP/checksums.txt" ||
-	die_incomplete_release "could not fetch checksums ($SUMS_URL); refusing to install an unverified binary"
+	fallback_or_die "could not fetch checksums ($SUMS_URL); refusing to install an unverified binary"
 EXPECTED="$(awk -v f="$ASSET" '{name=$NF; sub(/^[*]/, "", name); if (name == f) print $1}' "$TMP/checksums.txt")"
 [ -n "$EXPECTED" ] ||
-	die_incomplete_release "no checksum entry for $ASSET in $SUMS_URL; refusing to install an unverified binary"
+	fallback_or_die "no checksum entry for $ASSET in $SUMS_URL; refusing to install an unverified binary"
 ACTUAL="$(sha256 "$TMP/$ASSET")"
 [ -n "$ACTUAL" ] || die "failed to compute sha256 for $ASSET"
 [ "$EXPECTED" = "$ACTUAL" ] || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL)"
