@@ -7,7 +7,7 @@ small surface area and a sharp commit-quality bar.
 
 ```sh
 git clone https://github.com/Goldziher/basemind && cd basemind
-task setup     # cargo fetch + prek install (one-time)
+task setup     # cargo fetch + poly hook install (one-time)
 task check     # lint + test
 ```
 
@@ -15,7 +15,7 @@ You'll need:
 
 - Rust 2024 edition (stable)
 - [`task`](https://taskfile.dev) — task runner
-- [`prek`](https://github.com/j178/prek) — pre-commit hook runner (installed by `task setup`)
+- [`poly`](https://github.com/Goldziher/poly) — lint and git-hook runner (installed by `task setup`)
 
 ## Pre-commit hooks
 
@@ -30,7 +30,7 @@ the commit-msg hook validates the message. Run all hooks manually with
 2. Branch from `main`. Keep branches short-lived; rebase if drift gets ugly.
 3. Write tests first when the change is observable from the public API or MCP
    surface. RED → GREEN → REFACTOR.
-4. Run `task check` before pushing — `prek` runs the same hooks locally that CI
+4. Run `task check` before pushing — `poly` runs the same hooks locally that CI
    runs.
 5. Open a PR. Conventional Commit prefix in the title:
    - `feat:` new functionality
