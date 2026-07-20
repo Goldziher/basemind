@@ -20,12 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and uses the serialized, checksummed launcher; simultaneous first starts cannot corrupt a shared
   `npx` cache.
 - **MCP tools stay available across a release window.** The plugin launcher (`mcp-launch.sh`)
-  hard-pinned to the plugin's exact version and aborted if that release's platform asset 404'd. In
-  the window between bumping the plugin and the release finishing its per-platform binary uploads,
-  that left the session with no MCP server at all. The launcher now falls back to the newest cached
-  binary sharing the pinned version's schema minor (`RELEASE_MINOR`, so blob/index compatible) —
-  never across a minor, which would force a wipe-and-rebuild — and only gives up when no compatible
-  binary is cached.
+  hard-pinned to the plugin's exact version and aborted if that release's platform asset 404'd — so
+  in the window between the plugin bumping to a new version and that release finishing its
+  per-platform binary uploads, the session had no MCP server at all. On a missing pinned asset the
+  launcher now re-execs pinned to the newest _published_ GitHub release: GitHub exposes only
+  finalized, non-draft releases at `/releases/latest`, and the publish workflow promotes a release
+  only after every platform asset + checksums exist, so the fallback target is always complete and
+  safe to run — even from an empty cache. A same-schema-minor cached binary remains the offline last
+  resort. The launcher also now discovers the plugin manifest under any harness mirror
+  (`.claude-plugin` / `.codex-plugin` / `.cursor-plugin`), so one launcher serves every coding agent.
+- **The publish workflow heals partial releases and never publishes out of order.** A rerun that
+  found any single release asset previously assumed the release was complete and skipped the build
+  matrix, so a release missing a platform binary could never recover. It now requires the full
+  archive + checksums set before treating a release as published, so a rerun rebuilds only the
+  missing platforms. Publish concurrency keys on the resolved tag (a tag push and a manual dispatch
+  for the same tag no longer race) and never cancels a publish mid-flight, and the crates.io publish
+  waits for the release to finalize like the npm/PyPI publishes.
 - **Version updates no longer leak basemind processes.** On update, the prior version's `serve` and
   comms daemon kept running beside the new generation, so the machine never converged on a single
   daemon. The launcher now terminates every basemind process (serve and comms/write/shell daemons —
@@ -1669,7 +1679,7 @@ beyond a rescan is needed.
   `/bm-stats` slash commands, now ship inside `.claude-plugin/`, `.codex-plugin/`,
   `.cursor-plugin/`, and the `basemind-opencode` npm tarball — so an installed
   plugin teaches the agent how to use the tools without manual onboarding. A new
-  `scripts/sync-plugin-skills.sh` (wired as a prek hook) keeps the canonical
+  `scripts/sync-plugin-skills.sh` (wired as a poly hook) keeps the canonical
   source and the per-harness copies in lock-step.
 
 ## [0.1.1] — 2026-06-15
