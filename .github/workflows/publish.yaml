@@ -12,8 +12,12 @@ on:
         type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Key on the resolved release tag, not github.ref: a tag push (refs/tags/vX) and a ~keep
+  # workflow_dispatch rerun for the SAME tag carry different refs and would otherwise race, ~keep
+  # while two unrelated manual dispatches share refs/heads/main and would cancel each other. ~keep
+  # Never cancel a publish mid-flight — cargo publish and release promotion are irreversible. ~keep
+  group: publish-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -229,23 +233,47 @@ jobs:
           echo "  PyPI:               $pypi_exists"
           echo "  PyPI (hermes):      $pypi_hermes_exists"
 
-      - name: Detect existing GitHub release assets
+      - name: Detect a COMPLETE existing release (all archives + checksums)
         id: release_assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           tag="${{ steps.version.outputs.tag }}"
+          version="${{ steps.version.outputs.version }}"
           release_assets_exist=false
 
+          # Only treat the release as "already published" when the FULL asset set a
+          # downstream install needs is present. A partial draft (some builders failed or
+          # were cancelled) must report false so create_release + the build matrix rerun and
+          # heal the gaps. The previous "any asset present" check skipped the builders on a
+          # partial draft, so a release that lost a platform binary could never complete on
+          # a rerun (the v0.10.0 / release-window failure class).
+          required=(
+            "basemind-x86_64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-unknown-linux-gnu.tar.gz"
+            "basemind-aarch64-apple-darwin.tar.gz"
+            "basemind-x86_64-apple-darwin.tar.gz"
+            "basemind-x86_64-pc-windows-msvc.zip"
+            "basemind_${version}_checksums.txt"
+          )
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            count="$(gh release view "$tag" --json assets --jq '.assets | length')"
-            if [ "${count:-0}" -gt 0 ]; then
+            gh release view "$tag" --json assets -q '.assets[].name' > /tmp/have_assets.txt || true
+            missing=0
+            for asset in "${required[@]}"; do
+              if ! grep -qx "$asset" /tmp/have_assets.txt 2>/dev/null; then
+                echo "  missing: $asset"
+                missing=$((missing + 1))
+              fi
+            done
+            if [ "$missing" -eq 0 ]; then
               release_assets_exist=true
             fi
           fi
 
           echo "release_assets_exist=$release_assets_exist" >> "$GITHUB_OUTPUT"
-          echo "GitHub release assets exist? $release_assets_exist"
+          echo "Complete release already present? $release_assets_exist"
 
   create_release:
     name: Create GitHub release
@@ -645,8 +673,11 @@ jobs:
 
   publish_crates:
     name: Publish crates.io
-    needs: meta
-    if: needs.meta.outputs.crates_exists != 'true'
+    needs: [meta, finalize_release]
+    # Gate on a finalized GitHub release like the wrapper publishes do: crates.io is ~keep
+    # irreversible, so don't publish source unless the platform binaries built and the ~keep
+    # release promoted — keeps the surfaces atomic across a partial failure. ~keep
+    if: always() && needs.meta.outputs.crates_exists != 'true' && needs.finalize_release.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
