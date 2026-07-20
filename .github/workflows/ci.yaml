@@ -16,10 +16,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # The `full` feature build (ONNX + lancedb + vendored stack-graphs) produces huge debug objects
-  # that exhaust the standard runners' disk — surfacing as an `ld` bus error (truncated object) on
-  # Linux and an explicit ENOSPC on macOS. Level 1 keeps panic file:line (so backtraces stay useful)
-  # while dropping the variable/type DWARF that dominates the size.
+  # ~keep The `full` feature build (ONNX + lancedb + vendored stack-graphs) produces huge debug objects
+  # ~keep that exhaust the standard runners' disk — surfacing as an `ld` bus error (truncated object) on
+  # ~keep Linux and an explicit ENOSPC on macOS. Level 1 keeps panic file:line (so backtraces stay useful)
+  # ~keep while dropping the variable/type DWARF that dominates the size.
   CARGO_PROFILE_DEV_DEBUG: "1"
   CARGO_PROFILE_TEST_DEBUG: "1"
 
@@ -55,8 +55,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The `full` build is disk-heavy; reclaim space up front on the legs that build it so the
-      # debug + release target dirs and the downloaded ONNX models don't hit ENOSPC.
+      # ~keep The `full` build is disk-heavy; reclaim space up front on the legs that build it so the
+      # ~keep debug + release target dirs and the downloaded ONNX models don't hit ENOSPC.
       - name: Free disk space (Linux)
         if: runner.os == 'Linux' && matrix.features == 'full'
         run: |
