@@ -45,6 +45,7 @@ All tunables live under a named section — there are no bare top-level options.
 | `[cache]` | In-memory FileMap LRU size. |
 | `[mcp]` | MCP transport (`stdio`). |
 | `[documents]` | Document extraction + RAG (needs `--features documents`). |
+| `[resources]` | Resource-governance knobs: scanner/embedder thread caps, batch size, footprint ceiling, document model profile. |
 | `[code_search]` | Semantic/keyword code search chunking + embedding (needs `--features code-search`). |
 | `[memory]` | Shared-memory scope and default visibility (needs `--features memory`). |
 | `[crawl]` | Web crawl limits + SSRF policy (needs `--features crawl`). |
@@ -130,6 +131,31 @@ The `[documents]` tree also carries sub-tables for reranking, keywords, NER, sum
 [JSON Schema](https://github.com/Goldziher/basemind/blob/main/schema/basemind-config-v1.schema.json)
 for the exhaustive field set.
 
+### `[resources]` Section
+
+Bounds basemind's memory and CPU footprint: scanner/embedder thread caps, embed batch size, a
+best-effort footprint ceiling, and which document model families run. `0` is the "auto" sentinel
+for the thread/concurrency caps — it means "let basemind pick a bounded fraction of the machine"
+rather than "use zero threads".
+
+```toml
+[resources]
+scan_threads = 8
+embed_threads = 4
+embed_batch_size = 16
+max_footprint_mb = 4096
+document_models = "code_only"
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `scan_threads` | integer | `0` | Cap on the code-map scanner's rayon pool. `0` (auto) keeps rayon's default (one worker per logical CPU). The pool is built once per process and fixed after the first scan. |
+| `embed_threads` | integer | `0` | Cap on the ONNX embedding pool. `0` (auto) resolves to `max(2, logical_cpus / 4)`, so the embedder never pins the machine and ORT arenas aren't replicated across every core. Supersedes the deprecated `[documents].embed_max_threads`; `resources.embed_threads` wins whenever it's set (non-zero). |
+| `embed_batch_size` | integer | `32` | Number of chunks the embedder submits to ONNX per batch. Larger batches amortize per-call overhead at the cost of a higher transient memory spike; lower it to shrink that spike. |
+| `max_concurrent_documents` | integer | `0` | Upper bound on documents extracted concurrently. `0` (auto) leaves dispatch unbounded. Parsed today; enforcement is a later iteration — memory is bounded in the meantime by `max_footprint_mb` rather than by an in-flight document count. |
+| `max_footprint_mb` | integer | `0` | Best-effort ceiling on process physical footprint, in mebibytes (macOS `phys_footprint`, which counts compressed + swapped-out pages; a no-op elsewhere). `0` disables the gate. When set, the `FootprintGate` samples the footprint at the document-extraction and code-chunk embedding admit points and parks over-ceiling workers on a bounded backoff. It never fails a scan: an unreadable sample or a sustained overshoot admits anyway after a capped wait, so the ceiling shapes the peak rather than enforcing a hard invariant. |
+| `document_models` | enum | `full` | Which model families run during document extraction. `full` runs every configured post-processor. `code_only` keeps embeddings but forces keyword extraction, NER, and summarization off and disables OCR. `none` also drops embeddings — documents are still extracted for text + metadata (keyword search) but never routed to any model. `[documents].enabled = false` remains the zero-cost total short-circuit. |
+
 ### `[code_search]` Section
 
 Semantic + keyword search over source chunks (`search_code` / `get_chunk`). Requires
@@ -205,9 +231,9 @@ agent_id = "my-agent"
 | `enabled` | bool | `true` | Connect to the comms daemon (only meaningful with the `comms` feature). |
 | `agent_id` | string | auto | Stable identity presented to the broker. Falls back to `BASEMIND_AGENT_ID`, then a generated per-session id. |
 | `idle_timeout_secs` | integer | — | Idle window before the broker sheds caches. |
-| `max_messages_per_room` | integer | — | Per-room front-matter retention cap. |
+| `max_messages_per_room` | integer | — | Per-thread front-matter retention cap. |
 | `retention_secs` | integer | — | Message retention window; older messages become prune-eligible. |
-| `max_rooms` | integer | — | Hard cap on concurrently registered rooms. |
+| `max_rooms` | integer | — | Hard cap on concurrently registered threads. |
 
 ### `[llm]` Section
 
@@ -278,7 +304,7 @@ ONNX Runtime). Opt into the rest:
 | `memory` | LanceDB-backed shared memory (`memory_*` tools). | yes |
 | `crawl` | Web scraping and crawling (`web_scrape`, `web_crawl`, `web_map`); implies `documents`. | yes |
 | `code-search` | Hybrid code search — vector + BM25 + exact-symbol lanes (`search_code`, `get_chunk`). | yes |
-| `comms` | Agent-to-agent comms — rooms, per-agent inbox, DMs (Unix domain sockets + Windows named pipes). | yes |
+| `comms` | Agent-to-agent comms — threads, per-agent inbox, DMs (Unix domain sockets + Windows named pipes). | yes |
 | `shells` | Headless agent shells (`shell_spawn`, `shell_send`, …). | yes |
 | `code-intel` | Scope- and import-resolved JS/TS `find_references` / `goto_definition` (oxc). | yes |
 | `full` | `documents` + `memory` + `crawl` + `comms` + `shells` + `code-intel` + `code-search`. | — |

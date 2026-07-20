@@ -144,7 +144,7 @@ shell_capture { "session_id": "shard-2" }
   let them run in the background.
 - **Poll with `shell_capture`, don't assume completion time.** Machine speed varies; check
   output before proceeding.
-- **Coordinate with comms.** A background worker can post updates to a room while an
+- **Coordinate with comms.** A background worker can post updates to a thread while an
   orchestrator polls and decides next steps.
 - **Clean up with `shell_kill`** or let sessions exit naturally. Don't accumulate idle
   sessions.

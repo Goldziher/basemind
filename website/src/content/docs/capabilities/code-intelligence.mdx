@@ -10,6 +10,34 @@ across 300+ languages. Structural queries resolve in milliseconds and return **p
 numbers, and signatures — not file bodies** — so they cost a fraction of the tokens of
 reading source.
 
+## Precise, scope- and import-aware resolution
+
+Navigation is **scope- and import-aware** for JavaScript/TypeScript (via oxc) and for
+**Python and Java** — via an in-tree, tree-sitter-0.26 fork of GitHub's stack-graphs engines
+(vendored under `crates/`) executing `.tsg` name-binding rules, with no per-language LSP
+server. Every other language still gets fast tree-sitter scope binding.
+
+This resolves each use to the definition it actually binds to: a shadowed local isn't
+confused with an import, and `goto_definition` lands on the right target — including across
+files, for Python dotted/relative imports and for JS/TS module resolution (Node resolution
+plus tsconfig `paths` aliases via `oxc_resolver`).
+
+<Aside type="note">
+Resolution **refines but never shrinks** a result set. `find_callers` reports every call site
+whose callee matches the name — the same sound floor `find_references` uses — and marks each
+hit `resolved` when resolution proved the binding (`resolved_total` counts them). It does
+**not** filter down to only the resolved subset: resolution can't see through a module-object
+import (`from pkg import mod` then `mod.f()`) or an unresolvable alias, so filtering would drop
+real callers. Filter on `resolved` for precision; trust `total` for completeness.
+</Aside>
+
+Known limitation this release: Java cross-file resolution of a **member call** on an imported
+type (`Foo.greet()`) is not yet resolved — the imported type itself resolves, the method call
+on it does not.
+
+Toggle with `[code_intel] precise_resolution` in `basemind.toml` (default `true`). Set it to
+`false` to fall back to tree-sitter locals binding for every language.
+
 ## Core tools
 
 ### `outline`
@@ -76,8 +104,11 @@ results are disambiguated by location.
 ### `goto_definition`
 
 Resolve a `path:line:column` reference to its actual definition. Intra-file resolution
-via tree-sitter `locals` across 80+ languages; JavaScript/TypeScript additionally get
-cross-file resolution via oxc scope analysis with `--features code-intel-js`.
+via tree-sitter `locals` across 80+ languages; JavaScript/TypeScript, Python, and Java
+additionally get precise, scope- and import-aware resolution — including cross-file — via
+oxc (JS/TS) or the in-tree stack-graphs engine (Python/Java). See
+[Precise, scope- and import-aware resolution](#precise-scope--and-import-aware-resolution)
+above.
 
 ```json
 {

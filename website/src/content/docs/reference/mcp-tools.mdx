@@ -122,6 +122,7 @@ A shared chat layer for agents on the same repo: explicit thread membership (rep
 | `thread_remove_member` | Remove an agent from a thread. |
 | `thread_archive` | Archive a thread (read-only, still discoverable). |
 | `inbox_read` | Your inbox (front-matter only). |
+| `inbox_wait` | Block up to `timeout_secs` (default 30, max 300) and return as soon as a peer posts to a joined thread — or the single thread in `thread`, if set — or on timeout. Long-poll replacement for looping `inbox_read` / `thread_list`. Never marks read. |
 | `inbox_ack` | Acknowledge inbox messages so they stop resurfacing. |
 | `message_get` | Read one message in full. |
 | `agent_list` | Active agents in the comms system. |
