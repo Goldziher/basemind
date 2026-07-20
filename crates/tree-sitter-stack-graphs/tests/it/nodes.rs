@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -199,10 +198,7 @@ fn can_create_push_scoped_node() {
     build_and_check_stack_graph_nodes(
         python,
         tsg,
-        &[
-            "[test.py(0) exported scope]", //
-            "[test.py(1) push scoped a test.py(0)]",
-        ],
+        &["[test.py(0) exported scope]", "[test.py(1) push scoped a test.py(0)]"],
     );
 }
 

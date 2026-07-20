@@ -138,11 +138,9 @@ async fn thread_start_enforces_two_of_three_dimensions() {
 
     let mut alice = connect(&socket, "agent-alice", &root).await;
 
-    // Only subject → rejected.
     let one = alice.start_thread(Some("solo-topic".to_string()), None, vec![]).await;
     assert!(one.is_err(), "a single dimension must be rejected");
 
-    // subject + members → accepted.
     let ok = alice
         .start_thread(Some("topic".to_string()), None, vec![agent("agent-bob")])
         .await
@@ -335,14 +333,12 @@ async fn scoped_discovery_and_shared_thread_chat() {
         .expect("start thread")
         .id;
 
-    // Outsider (not a member, no path) sees nothing.
     let outsider_list = outsider
         .list_threads(None, None, None, false)
         .await
         .expect("outsider list");
     assert!(outsider_list.is_empty(), "a non-member with no path match sees nothing");
 
-    // Reviewer + tester (members) see it.
     let reviewer_list = reviewer
         .list_threads(None, None, None, false)
         .await
@@ -376,7 +372,6 @@ async fn scoped_discovery_and_shared_thread_chat() {
         "both senders appear in the shared thread: {senders:?}"
     );
 
-    // The outsider was never a member, so the thread's posts never reach its inbox.
     let (outsider_inbox, _u, _c) = outsider
         .read_inbox(None, None, None, 100, false, None)
         .await
@@ -455,13 +450,11 @@ async fn creator_archives_thread_and_it_leaves_active_listings() {
         .expect("start thread")
         .id;
 
-    // Bob (member, not creator) cannot archive.
     assert!(
         bob.archive_thread(thread.clone()).await.is_err(),
         "non-creator cannot archive"
     );
 
-    // Alice (creator) can.
     alice.archive_thread(thread.clone()).await.expect("creator archives");
 
     let active = alice.list_threads(None, None, None, false).await.expect("active list");
@@ -510,7 +503,6 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
-    // The Hello handshake carries the repo root as cwd; the daemon auto-registers it.
     let mut alice = connect(&socket, "agent-alice", &repo).await;
 
     let workspaces = alice.list_workspaces().await.expect("list workspaces");
@@ -532,7 +524,6 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
     assert_eq!(branches.len(), 1, "one local branch");
     assert_eq!(branches[0].name, "main", "the main branch");
 
-    // Two claimants race for the (main) worktree; exactly one wins.
     let mut bob = connect(&socket, "agent-bob", &repo).await;
     let a_won = alice
         .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
@@ -545,7 +536,6 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
     assert!(a_won, "alice's first claim wins");
     assert!(!b_won, "bob cannot claim a worktree alice holds");
 
-    // The registry now reflects the holder.
     let worktrees = alice
         .list_worktrees(repo_id.clone())
         .await
@@ -556,7 +546,6 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
         "the (main) worktree is claimed by alice"
     );
 
-    // Alice releases; bob can then claim.
     let released = alice
         .release_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
         .await
@@ -568,7 +557,6 @@ async fn machine_registry_auto_registers_and_worktree_claim_is_exclusive() {
         .expect("bob claim after release");
     assert!(b_won_now, "bob claims once the worktree is freed");
 
-    // An unknown worktree name is not a hard error; it just fails to claim.
     let unknown = bob
         .claim_worktree(repo_id.clone(), "no-such-worktree".to_string(), "agent-bob".to_string())
         .await

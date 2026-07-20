@@ -34,9 +34,6 @@ pub(super) async fn forward_rescan_and_refresh(
     full: bool,
     embed: bool,
 ) -> Result<RescanReport, McpError> {
-    // Dedicated, un-cached connection: a rescan/embed can run for minutes, so it must NOT hold the
-    // shared per-identity comms client mutex — doing so head-of-line-blocks every other comms tool
-    // and `resolved_refs` read for this identity until the scan finishes (#36).
     let mut client = connect_ephemeral_client(state).await?;
     let report = client
         .rescan(state.root.clone(), paths, full, embed)
@@ -60,14 +57,7 @@ async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> 
     let root = state.root.clone();
     let current_fingerprint = state.cache.load().fingerprint;
     let (store, cache) = tokio::task::spawn_blocking(move || {
-        // Blobs-only: never open the fjall index (the daemon holds its exclusive lock as the sole
-        // writer). The rebuilt store + map read from the shared blobs the daemon just wrote.
         let store = Store::open_read_only_no_index(&root, &view)?;
-        // A scan that changed nothing (`updated: 0, removed: 0` — the common case under editor or
-        // gitignored churn) still rewrites `index.msgpack`. Rebuilding the whole map for it means
-        // re-reading every L1/L2 blob while the OLD map is still resident in `state.cache`, which
-        // transiently doubles serve's RSS. An unchanged fingerprint proves the content-addressed
-        // blobs behind the map are identical, so the map already in hand is still exactly correct.
         let cache =
             (super::map_fingerprint::index_fingerprint(&store) != current_fingerprint).then(|| MapCache::build(&store));
         Ok::<(Store, Option<MapCache>), crate::store::StoreError>((store, cache))
@@ -75,18 +65,10 @@ async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> 
     .await
     .map_err(|error| McpError::internal_error(format!("refresh map task panicked: {error}"), None))?
     .map_err(|error| McpError::internal_error(format!("reopen read-only store: {error}"), None))?;
-    // The store is swapped either way: the daemon rewrote `index.msgpack`, and store-reading tools
-    // (`status`'s `file_count`, corpus bytes) read `store.index` directly rather than the map.
     *state.store.write().await = store;
     if let Some(cache) = cache {
         state.cache.store(Arc::new(cache));
     }
-    // Bump the generation on every forwarded rescan — even when the fingerprint was unchanged and the
-    // map above was reused. `cache_generation` is the cursor-validity token, and the documented
-    // contract (matched by the local scan path in `background.rs`) is that a rescan invalidates
-    // in-flight cursors. The bump is a lone atomic add, independent of the expensive `MapCache::build`
-    // the fingerprint check still guards, so cursor invalidation stays consistent across the
-    // daemon-writer and local paths without giving up the no-op-rescan RSS optimization.
     state.cache_generation.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }

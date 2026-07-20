@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -119,8 +118,6 @@ pub mod path {
     }
 
     /// Normalize a path, removing things like `.` and `..` wherever possible.
-    // Based on the following code from Cargo:
-    // https://github.com/rust-lang/cargo/blob/e515c3277bf0681bfc79a9e763861bfe26bb05db/crates/cargo-util/src/paths.rs#L73-L106
     // Licensed under MIT license & Apache License (Version 2.0)
     pub fn normalize(path: &Path) -> Option<PathBuf> {
         let mut components = path.components().peekable();

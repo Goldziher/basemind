@@ -124,10 +124,6 @@ pub fn load_with_overrides(
 ///
 /// Assumes `start` is already canonicalized by the caller.
 pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
-    // Closest enclosing git repo workdir — the ceiling for the config-marker walk. Canonicalized so
-    // it compares equal to the canonical `current` path as we ascend. `None` when `start` is not
-    // inside any git repo: then there is no repo boundary to respect and the walk runs to the
-    // filesystem root (non-git monorepo case).
     let git_root = crate::git::Repo::discover(start).ok().map(|repo| {
         repo.workdir()
             .canonicalize()
@@ -139,7 +135,6 @@ pub fn discover_root_with_basemind(start: &Path) -> PathBuf {
         if current.join(CONFIG_FILE_NAME).is_file() {
             return current.to_path_buf();
         }
-        // Stop after checking the enclosing git root — do not ascend past it into a parent repo.
         if git_root.as_deref() == Some(current) {
             break;
         }

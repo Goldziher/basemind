@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -38,7 +37,7 @@ fn can_allocate_in_supplemental_arena() {
     assert_eq!(supplemental.get(h1), None);
     assert_eq!(supplemental.get(h2), None);
     assert_eq!(supplemental.get(h3), None);
-    assert_eq!(&mut supplemental[h1], ""); // &mut to force "get or create" behavior
+    assert_eq!(&mut supplemental[h1], "");
     supplemental[h2].push_str("hiya");
     assert_eq!(supplemental.get(h2).map(String::as_str), Some("hiya"));
 }
@@ -108,7 +107,6 @@ fn can_create_reversible_lists() {
     assert_eq!(collect(&list, &arena), vec![5, 4, 1, 2, 3]);
     list.reverse(&mut arena);
     assert_eq!(collect(&list, &arena), vec![3, 2, 1, 4, 5]);
-    // Verify that we stash away the re-reversal so that we don't have to recompute it.
     assert!(list.have_reversal(&arena));
 }
 
@@ -185,8 +183,6 @@ fn can_create_deques() {
 fn can_compare_deques() {
     use std::cmp::Ordering;
     let mut arena = Deque::new_arena();
-    // Build up deques in both directions so that our comparisons have to test the "reverse if
-    // needed" logic.
     let from_slice_forwards = |slice: &[u32], arena: &mut DequeArena<u32>| {
         let mut deque = Deque::empty();
         for element in slice.iter() {
@@ -218,7 +214,6 @@ fn can_compare_deques() {
     assert_eq!(deque2.cmp(&mut arena, deque12), Ordering::Greater);
     assert_eq!(deque1.cmp(&mut arena, deque12), Ordering::Less);
 
-    // We should get the same result regardless of which direction the deques are pointing.
     deque1.ensure_forwards(&mut arena);
     deque10.ensure_forwards(&mut arena);
     assert_eq!(deque1.cmp(&mut arena, deque10), Ordering::Less);

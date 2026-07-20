@@ -764,7 +764,6 @@ mod tests {
         assert!(!store.get_thread(&thread_id("stale")).unwrap().unwrap().active);
         assert!(store.get_thread(&thread_id("fresh")).unwrap().unwrap().active);
 
-        // Idempotent: an already-archived thread does not re-count.
         assert_eq!(
             store
                 .archive_idle(std::time::Duration::from_secs(14 * 24 * 60 * 60))
@@ -776,10 +775,9 @@ mod tests {
     #[test]
     fn purge_archived_reaps_stale_archived_threads_and_all_their_rows_only() {
         let (_d, store) = temp_store();
-        let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60); // 30-day retention
+        let ttl = std::time::Duration::from_secs(30 * 24 * 60 * 60);
         let sixty_days_micros = 60 * 24 * 60 * 60 * 1_000_000i64;
 
-        // (1) stale ARCHIVED thread — last activity 60 days ago → purged, with all its rows.
         let stale_id = thread_id("th-stale");
         let mut stale = sample_thread("th-stale");
         stale.active = false;
@@ -805,13 +803,11 @@ mod tests {
         store.post(&stale_id, meta, MessageBody(body)).expect("post stale");
         store.set_read_cursor(&agent_id("a"), &stale_id, 1).expect("cursor");
 
-        // (2) recently-ARCHIVED thread — archived but active within the TTL → survives.
         let mut fresh_archived = sample_thread("th-fresh-archived");
         fresh_archived.active = false;
         fresh_archived.last_activity = now_micros();
         store.put_thread(&fresh_archived).expect("put fresh-archived");
 
-        // (3) ACTIVE stale thread — old but still active → never touched by purge.
         let mut active_old = sample_thread("th-active-old");
         active_old.last_activity = now_micros() - sixty_days_micros;
         store.put_thread(&active_old).expect("put active-old");
@@ -854,7 +850,6 @@ mod tests {
             "an active thread is never purged, however stale"
         );
 
-        // Idempotent: nothing left to purge on a second pass.
         assert_eq!(store.purge_archived(ttl).expect("purge again"), 0);
     }
 

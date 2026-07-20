@@ -211,11 +211,7 @@ fn embed_state_satisfied(store: &Store, config: &Config, rel: &str, hash_hex: &s
     if !cfg.embed || crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude) {
         return true;
     }
-    // A schema/state peek is enough here — this is a stat-only fast path, so avoid the full
-    // chunk-text decode `read_chunks_by_hex` would pay for on every unchanged, embed-eligible file.
     match store.peek_chunk_state(hash_hex) {
-        // A file with no chunks has nothing to embed; anything with vectors for the active preset is
-        // already satisfied. A non-empty, unembedded (dim-0) sidecar must be re-processed.
         Ok(Some(peek)) => {
             peek.chunks.is_empty()
                 || (peek.embedding_dim > 0
@@ -390,9 +386,6 @@ fn process_file(
         None
     };
 
-    // Stage BM25 postings into Fjall here in the worker, then clear them: they are consumed at this
-    // point, and the descriptor that follows into `FileResult` is accumulated corpus-wide, so it
-    // must stay metadata-only (see `PendingCodeBatch`).
     #[cfg(feature = "code-search")]
     let code_batch = code_batch.map(|mut batch| {
         index_batch.stage_bm25(&rel_path, &batch.bm25);
@@ -464,9 +457,6 @@ fn process_doc(
         size_bytes,
         mtime,
     };
-    // Best-effort memory backpressure: document extraction (xberg + optional embedding) is one of
-    // the two peak-memory stages of a scan. Park this worker while the process footprint is over
-    // the `[resources].max_footprint_mb` ceiling (no-op when unset) before admitting more work.
     crate::backpressure::FootprintGate::new(config.resources.max_footprint_mb).admit();
 
     match extract_and_persist_doc(

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2023, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -26,12 +25,10 @@ impl<T: Eq + Hash> FrequencyDistribution<T> {
         self.total += 1;
     }
 
-    // The number of recorded values.
     pub fn count(&self) -> usize {
         self.total
     }
 
-    // The number of unique recorded values.
     pub fn unique(&self) -> usize {
         self.values.len()
     }

@@ -27,7 +27,6 @@ pub(super) async fn run_goto_definition(
     state: &ServerState,
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
-    // The `goto_definition` shim delegates immediately, so this IS the first statement of the body.
     let started = std::time::Instant::now();
     let abs = state.root.join(params.path.to_path_buf());
     let source = std::fs::read(&abs)
@@ -93,7 +92,6 @@ async fn resolve_definition(
     use_path: &RelPath,
     use_start: u32,
 ) -> Option<(RelPath, u32)> {
-    // `state` drives only the daemon-forward branch below; on a non-comms build there is no daemon.
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]

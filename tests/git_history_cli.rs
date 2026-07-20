@@ -168,7 +168,6 @@ mod with_daemon {
     /// Bring up a REAL `basemind comms daemon` on this process's isolated socket. Never use
     /// `CommsClient::ensure_and_connect` from a test: it execs `current_exe()`, which here is the
     /// libtest harness.
-    // The daemon is a per-binary singleton that outlives any one test and self-terminates when idle.
     #[allow(clippy::zombie_processes)]
     fn ensure_real_daemon() {
         let paths = comms_paths();
@@ -271,8 +270,6 @@ mod with_daemon {
     /// CLI live-walks — and SAYS SO (`partial: true`) rather than pretending the answer is complete.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn cli_reports_partial_when_the_daemon_has_no_index_for_the_repo() {
-        // `build_repo` first: it is what pins this process (and the daemon it spawns) to the isolated
-        // cache + comms dir.
         let dir = build_repo();
         let root = dir.path();
         ensure_real_daemon();
@@ -294,7 +291,6 @@ fn cli_reads_the_local_index_when_no_daemon_is_running() {
     let root = dir.path();
     let history_dir = basemind::git_history::shared_history_basemind_dir(root);
 
-    // Build the index the way a standalone `basemind scan` does, then release fjall's lock.
     {
         let index = basemind::git_history::GitHistoryIndex::open(&history_dir).expect("open git-history index");
         let repo = basemind::git::Repo::discover(root).expect("discover repo");

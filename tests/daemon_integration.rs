@@ -70,7 +70,7 @@ impl Daemon {
     /// cleanly instead of racing the outgoing process.
     fn stop(self) {
         let socket = self.socket.clone();
-        drop(self); // Drop runs `comms stop` + reaps the child.
+        drop(self);
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if !probe_alive(&socket) {
@@ -184,12 +184,10 @@ async fn concurrent_cold_rescans_open_the_workspace_once_and_all_succeed() {
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
-    // Connect every client first (Hello registers the workspace but leaves its store COLD)...
     let mut clients = Vec::with_capacity(RACERS);
     for c in 0..RACERS {
         clients.push(connect(&socket, &format!("agent-race-{c}"), &repo).await);
     }
-    // ...then fire every client's first rescan at once, so the ONLY thing racing is the cold open.
     let mut tasks = Vec::with_capacity(RACERS);
     for (c, mut client) in clients.into_iter().enumerate() {
         let repo = repo.clone();
@@ -232,7 +230,6 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
-    // Bootstrap client: its Hello registers the workspace; grab the repo id for the claim churn.
     let mut boot = connect(&socket, "agent-stress-boot", &repo).await;
     let repo_id = boot.list_workspaces().await.expect("list workspaces")[0]
         .repo_id
@@ -249,12 +246,10 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
             let agent = format!("agent-stress-{c}");
             let mut client = connect(&socket, &agent, &repo).await;
             for _ in 0..iters {
-                // Write: forward a full rescan to the sole writer (serialized per-workspace).
                 client
                     .rescan(repo.clone(), None, true, false)
                     .await
                     .map_err(|e| format!("{agent} rescan: {e}"))?;
-                // Read: the machine registry must never lose the workspace mid-storm.
                 let workspaces = client
                     .list_workspaces()
                     .await
@@ -262,7 +257,6 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
                 if workspaces.is_empty() {
                     return Err(format!("{agent}: registry lost the workspace mid-storm"));
                 }
-                // Contended advisory-claim churn on a per-client worktree name.
                 let name = format!("wt-{c}");
                 let _ = client
                     .claim_worktree(repo_id.clone(), name.clone(), agent.clone())
@@ -273,7 +267,6 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
         }));
     }
 
-    // Every client task must complete within a generous ceiling — a daemon deadlock trips the timeout.
     let join_all = async {
         let mut outcomes = Vec::with_capacity(tasks.len());
         for task in tasks {
@@ -292,7 +285,6 @@ async fn stress_many_concurrent_sessions_read_and_write_through_one_daemon() {
         }
     }
 
-    // The daemon survived the storm: still responsive, registry still consistent, index not torn.
     let mut after = connect(&socket, "agent-stress-after", &repo).await;
     let workspaces = after.list_workspaces().await.expect("post-storm list_workspaces");
     assert_eq!(
@@ -343,7 +335,6 @@ fn comms_stop_terminates_the_daemon_without_an_external_kill() {
     }
     assert!(probe_alive(&socket), "daemon did not become ready");
 
-    // Issue the Stop RPC over the CLI (connect-only; it never respawns a daemon).
     let stop = Command::new(BIN)
         .args(["comms", "stop"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
@@ -355,8 +346,6 @@ fn comms_stop_terminates_the_daemon_without_an_external_kill() {
         String::from_utf8_lossy(&stop.stderr)
     );
 
-    // The daemon must exit on its OWN — poll `try_wait`, and only kill (to avoid a zombie) if the
-    // fix regressed and it never self-terminated.
     let exit_by = Instant::now() + Duration::from_secs(10);
     let mut exited = false;
     while Instant::now() < exit_by {
@@ -388,7 +377,6 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
 
-    // --- First daemon: register the repo (via Hello cwd) and take an advisory claim. ---
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
@@ -403,15 +391,12 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
         .expect("alice claim");
     assert!(claimed, "alice takes the previously-unclaimed (main) worktree");
 
-    // Drop the client before restarting so its link does not outlive the daemon.
     drop(alice);
     daemon.stop();
 
-    // --- Second daemon on the SAME data home: state must reload from the snapshot. ---
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
 
-    // A fresh session (whose Hello re-registers + re-enumerates the repo) still sees the workspace...
     let mut bob = connect(&socket, "agent-bob", &repo).await;
     let workspaces = bob.list_workspaces().await.expect("list workspaces after restart");
     assert_eq!(
@@ -425,7 +410,6 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
         "the same repo id reloads from the snapshot"
     );
 
-    // ...and the advisory claim survives: the row is still held by alice through the re-enumeration.
     let worktrees = bob
         .list_worktrees(repo_id.clone())
         .await
@@ -440,7 +424,6 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
         "populate_git preserves the reloaded claim when Hello re-enumerates the repo"
     );
 
-    // A competing claimant is therefore rejected until the holder releases.
     let bob_won = bob
         .claim_worktree(repo_id.clone(), "(main)".to_string(), "agent-bob".to_string())
         .await
@@ -450,8 +433,6 @@ async fn registry_and_worktree_claim_survive_a_daemon_restart() {
         "the surviving claim blocks a second claimant across the restart"
     );
 
-    // Releasing as the original holder frees it, and bob can then claim — proving the reloaded
-    // claim is a real, releasable row and not a frozen artifact.
     let released = bob
         .release_worktree(repo_id.clone(), "(main)".to_string(), "agent-alice".to_string())
         .await
@@ -489,13 +470,9 @@ async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind(
             .expect("spawn comms daemon")
     };
 
-    // Launch both at once so they race the same cold bind.
     let mut child_a = spawn_one();
     let mut child_b = spawn_one();
 
-    // Exactly one of the two must end up serving. Poll until the socket answers. Generous
-    // deadline: this races TWO full daemon spawns against each other, so it needs more headroom
-    // than a single-daemon startup under a loaded test machine.
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut alive = false;
     while Instant::now() < deadline {
@@ -507,7 +484,6 @@ async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind(
     }
     assert!(alive, "one of the two racing daemons must come up serving");
 
-    // A client can connect and get a status reply from whichever daemon won.
     let mut client = connect(&socket, "agent-race", tmp.path()).await;
     let report = client.status().await.expect("status against the winning daemon");
     assert!(
@@ -517,9 +493,6 @@ async fn should_converge_on_one_live_daemon_when_two_processes_race_a_cold_bind(
     );
     drop(client);
 
-    // Reap both children: the loser has already exited on its own (bind failed, probed the
-    // winner, returned Ok(()) per `comms_daemon::run`); the winner is stopped via the CLI so its
-    // socket is released cleanly, then both processes are waited on unconditionally.
     let _ = Command::new(BIN)
         .args(["comms", "stop"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
@@ -570,7 +543,6 @@ async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connect
     );
     drop(client);
 
-    // Create a new branch (not yet checked out anywhere) and confirm a FRESH connect picks it up.
     git(&["branch", "feature"], &repo);
     let mut client = connect(&socket, "agent-reg-2", &repo).await;
     let branches = client
@@ -583,7 +555,6 @@ async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connect
     );
     drop(client);
 
-    // Add a linked worktree checked out on `feature` and confirm a fresh connect enumerates it.
     let linked_path = tmp.path().join("linked-wt");
     git(
         &[
@@ -615,7 +586,6 @@ async fn should_reflect_branch_creation_and_worktree_add_remove_on_fresh_connect
     );
     drop(client);
 
-    // Remove the linked worktree and confirm a fresh connect prunes it.
     git(&["worktree", "remove", linked_path.to_str().expect("utf8 path")], &repo);
     let mut client = connect(&socket, "agent-reg-4", &repo).await;
     let worktrees = client
@@ -647,8 +617,6 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
     let comms_dir = tmp.path().join("comms");
     let socket = comms_socket_path(&comms_dir);
 
-    // Daemon A: started via a raw Command (not `Daemon::start`) so we retain the `Child` to
-    // `try_wait()` on it directly instead of it being moved into a `Daemon` that reaps on drop.
     let mut child_a = Command::new(BIN)
         .args(["comms", "daemon"])
         .env("BASEMIND_COMMS_DIR", &comms_dir)
@@ -665,8 +633,6 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
     }
     assert!(probe_alive(&socket), "daemon A must come up before we orphan it");
 
-    // Simulate the crash-and-reclaim sequence: unlink A's socket file, then bind a fresh daemon
-    // B on the same path. B's `bind_listener` sees no file and binds a NEW inode.
     std::fs::remove_file(&socket).expect("unlink daemon A's socket");
 
     let mut child_b = Command::new(BIN)
@@ -685,8 +651,6 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
     }
     assert!(probe_alive(&socket), "daemon B must come up on the rebound socket");
 
-    // Daemon A's ownership watchdog polls every `OWNERSHIP_CHECK_EVERY` (~30s); give it a
-    // generous deadline before concluding it never self-terminated.
     let watchdog_deadline = Instant::now() + Duration::from_secs(90);
     let mut a_exited = false;
     while Instant::now() < watchdog_deadline {
@@ -701,7 +665,6 @@ async fn should_self_terminate_when_its_socket_is_reclaimed_by_another_daemon() 
         "daemon A must self-terminate once its socket is reclaimed by daemon B (orphan watchdog)"
     );
 
-    // Reap both children unconditionally.
     let _ = child_a.wait();
     let _ = Command::new(BIN)
         .args(["comms", "stop"])
@@ -728,11 +691,6 @@ async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
     let repo = tmp.path().join("repo");
     init_git_repo(&repo);
 
-    // Plant a legacy in-repo `.basemind/index.msgpack` with a stale (pre-0.22) schema_ver. This
-    // mirrors the real on-disk shape (`store::Index`) closely enough for `check_schema` to reject
-    // it as stale (`schema_ver == 21` vs. today's `SCHEMA_VER`), which is all this test needs: a
-    // file basemind recognizes as "present but stale" that the global-cache re-root must never
-    // touch during a rescan.
     #[derive(serde::Serialize)]
     struct LegacyIndex {
         schema_ver: u16,
@@ -765,18 +723,13 @@ async fn should_rescan_successfully_and_ignore_a_stale_legacy_in_repo_index() {
         report.scanned
     );
 
-    // The in-repo legacy file is untouched: the global-cache re-root means rescan never reads or
-    // writes `<repo>/.basemind/` at all.
     let legacy_bytes_after = std::fs::read(&legacy_index_path).expect("re-read legacy index.msgpack");
     assert_eq!(
         legacy_bytes_after, legacy_bytes_before,
         "the in-repo legacy .basemind/index.msgpack must be left byte-for-byte untouched"
     );
 
-    // The global cache under BASEMIND_DATA_HOME got a workspace directory for this repo.
     // NOTE: we assert the workspace directory's existence (the weaker, currently-checkable
-    // invariant) rather than inspecting the Fjall view contents directly, since `IndexDb` internals
-    // are not part of this test's public surface.
     let workspace_key = basemind::store::workspace_key(&repo);
     let workspace_dir = comms_dir.join("cache").join("workspaces").join(&workspace_key);
     assert!(
@@ -820,7 +773,6 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
     let rescan_repo = repo.clone();
     let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
 
-    // Give the rescan a moment to actually start before triggering the stop.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let comms_dir_for_stop = comms_dir.clone();
@@ -839,8 +791,6 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
         String::from_utf8_lossy(&stop_output.stderr)
     );
 
-    // The in-flight rescan must resolve — Ok or a clean Err — within a bounded timeout, never hang
-    // or panic, regardless of whether it raced the stop request.
     let rescan_outcome = tokio::time::timeout(Duration::from_secs(15), rescan_task)
         .await
         .expect("in-flight rescan must resolve within the timeout, not hang");
@@ -853,15 +803,12 @@ async fn should_drain_cleanly_with_an_in_flight_rescan_and_reload_registry_after
             );
         }
         Ok(Err(client_error)) => {
-            // A clean client-side error (e.g. the link broke) is an accepted outcome of racing a
-            // stop — the requirement is "no panic, no hang", not "always succeeds".
             let _ = client_error;
         }
         Err(join_error) => panic!("rescan task must not panic, got: {join_error}"),
     }
-    daemon.stop(); // The `Stop` RPC self-terminates the daemon; wait for the socket to go dead.
+    daemon.stop();
 
-    // Restart on the same comms_dir: the registry snapshot must reload intact.
     let daemon = Daemon::start(&comms_dir);
     let socket = daemon.socket().to_path_buf();
     let mut client = connect(&socket, "agent-drain-2", &repo).await;

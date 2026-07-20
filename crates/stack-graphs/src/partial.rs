@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -53,9 +52,6 @@ use crate::graph::Symbol;
 use crate::paths::PathResolutionError;
 use crate::utils::cmp_option;
 use crate::utils::equals_option;
-
-//-------------------------------------------------------------------------------------------------
-// Displaying stuff
 
 /// This trait only exists because:
 ///
@@ -128,9 +124,6 @@ where
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Symbol stack variables
-
 /// Represents an unknown list of scoped symbols.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, Hash, Niche, Ord, PartialEq, PartialOrd)]
@@ -192,9 +185,6 @@ impl TryFrom<u32> for SymbolStackVariable {
         Ok(SymbolStackVariable(value))
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Scope stack variables
 
 /// Represents an unknown list of exported scopes.
 #[repr(transparent)]
@@ -264,16 +254,11 @@ impl TryFrom<u32> for ScopeStackVariable {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Partial symbol stacks
-
 /// A symbol with an unknown, but possibly empty, list of exported scopes attached to it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PartialScopedSymbol {
     pub symbol: Handle<Symbol>,
-    // Note that not having an attached scope list is _different_ than having an empty attached
-    // scope list.
     pub scopes: ControlledOption<PartialScopeStack>,
 }
 
@@ -322,13 +307,10 @@ impl PartialScopedSymbol {
             return false;
         }
 
-        // If one side has an attached scope but the other doesn't, then the scoped symbols don't
-        // match.
         if self.scopes.is_none() != postcondition.scopes.is_none() {
             return false;
         }
 
-        // Otherwise, if both sides have an attached scope, they have to be compatible.
         if let Some(precondition_scopes) = self.scopes.into_option()
             && let Some(postcondition_scopes) = postcondition.scopes.into_option()
         {
@@ -443,9 +425,6 @@ impl PartialSymbolStack {
     }
 
     /// Returns the number of concrete symbols on this partial stack.
-    // No `is_empty` companion: a partial stack with zero concrete symbols is not "empty" — it may
-    // still carry a variable that matches an arbitrary suffix.  The two meaningful predicates are
-    // `contains_symbols` (no concrete symbols) and `can_only_match_empty` (no symbols, no variable).
     #[allow(clippy::len_without_is_empty)]
     #[inline(always)]
     pub fn len(&self) -> usize {
@@ -549,12 +528,10 @@ impl PartialSymbolStack {
                     return false;
                 }
             } else {
-                // Stacks aren't the same length.
                 return false;
             }
         }
         if other.contains_symbols() {
-            // Stacks aren't the same length.
             return false;
         }
         self.variable.into_option() == other.variable.into_option()
@@ -568,8 +545,6 @@ impl PartialSymbolStack {
         symbol_bindings: &PartialSymbolStackBindings,
         scope_bindings: &PartialScopeStackBindings,
     ) -> Result<PartialSymbolStack, PathResolutionError> {
-        // If this partial symbol stack ends in a variable, see if we have a binding for it.  If
-        // so, substitute that binding in.  If not, leave the variable as-is.
         let mut result = match self.variable.into_option() {
             Some(variable) => match symbol_bindings.get(variable) {
                 Some(bound) => bound,
@@ -578,8 +553,6 @@ impl PartialSymbolStack {
             None => PartialSymbolStack::empty(),
         };
 
-        // Then prepend all of the scoped symbols that appear at the beginning of this stack,
-        // applying the bindings to any attached scopes as well.
         while let Some(partial_symbol) = self.pop_back(partials) {
             let partial_symbol = partial_symbol.apply_partial_bindings(partials, scope_bindings)?;
             result.push_front(partials, partial_symbol);
@@ -603,7 +576,6 @@ impl PartialSymbolStack {
     ) -> Result<PartialSymbolStack, PathResolutionError> {
         let mut lhs = self;
 
-        // First, look at the shortest common prefix of lhs and rhs, and verify that they match.
         let mut head = Deque::empty();
         while lhs.contains_symbols() && rhs.contains_symbols() {
             let mut lhs_front = lhs.pop_front(partials).unwrap();
@@ -612,21 +584,6 @@ impl PartialSymbolStack {
             head.push_back(&mut partials.partial_symbol_stacks, lhs_front);
         }
 
-        // Now at most one stack still has symbols.  Zero, one, or both of them have variables.
-        // Let's do a case analysis on all of those possibilities.
-
-        // CASE 1:
-        // Both lhs and rhs have no more symbols.  The answer is always yes, and any variables that
-        // are present get bound.  (If both sides have variables, then one variable gets bound to
-        // the other, since both lhs and rhs will match _any other symbol stack_ at this point.  If
-        // only one side has a variable, then the variable gets bound to the empty stack.)
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  ()            ()            => yes either
-        //  ()            () $2         => yes rhs, $2 => ()
-        //  () $1         ()            => yes lhs, $1 => ()
-        //  () $1         () $2         => yes lhs, $2 => $1
         if !lhs.contains_symbols() && !rhs.contains_symbols() {
             match (lhs.variable.into_option(), rhs.variable.into_option()) {
                 (None, None) => {
@@ -656,17 +613,6 @@ impl PartialSymbolStack {
             }
         }
 
-        // CASE 2:
-        // One of the stacks contains symbols and the other doesn't, and the “empty” stack doesn't
-        // have a variable.  Since there's no variable on the empty side to capture the remaining
-        // content on the non-empty side, the answer is always no.
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  ()            (stuff)       => NO
-        //  ()            (stuff) $2    => NO
-        //  (stuff)       ()            => NO
-        //  (stuff) $1    ()            => NO
         if !lhs.contains_symbols() && lhs.variable.is_none() {
             return Err(PathResolutionError::SymbolStackUnsatisfied);
         }
@@ -674,19 +620,6 @@ impl PartialSymbolStack {
             return Err(PathResolutionError::SymbolStackUnsatisfied);
         }
 
-        // CASE 3:
-        // One of the stacks contains symbols and the other doesn't, and the “empty” stack _does_
-        // have a variable.  If both sides have the same variable, the answer is NO. Otherwise,
-        // the answer is YES, and the “empty” side's variable needs to capture the entirety of the
-        // non-empty side.
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  (...) $1      (...) $1      => no
-        //  () $1         (stuff)       => yes rhs,  $1 => rhs
-        //  () $1         (stuff) $2    => yes rhs,  $1 => rhs
-        //  (stuff)       () $2         => yes lhs,  $2 => lhs
-        //  (stuff) $1    () $2         => yes lhs,  $2 => lhs
         match (lhs.variable.into_option(), rhs.variable.into_option()) {
             (Some(v1), Some(v2)) if v1 == v2 => return Err(PathResolutionError::ScopeStackUnsatisfied),
             _ => {}
@@ -782,8 +715,6 @@ impl PartialSymbolStack {
 
     /// Returns the largest value of any scope stack variable in this partial symbol stack.
     pub fn largest_scope_stack_variable(&self, partials: &PartialPaths) -> u32 {
-        // We don't have to check the postconditions, because it's not valid for a postcondition to
-        // refer to a variable that doesn't exist in the precondition.
         self.iter_unordered(partials)
             .filter_map(|symbol| symbol.scopes.into_option())
             .filter_map(|scopes| scopes.variable.into_option())
@@ -795,10 +726,7 @@ impl PartialSymbolStack {
 
 impl DisplayWithPartialPaths for PartialSymbolStack {
     fn prepare(&mut self, graph: &StackGraph, partials: &mut PartialPaths) {
-        // Ensure that our deque is pointed forwards while we still have a mutable reference to the
-        // arena.
         self.symbols.ensure_forwards(&mut partials.partial_symbol_stacks);
-        // And then prepare each symbol in the stack.
         let mut symbols = self.symbols;
         while let Some(mut symbol) = symbols.pop_front(&mut partials.partial_symbol_stacks).copied() {
             symbol.prepare(graph, partials);
@@ -824,9 +752,6 @@ impl DisplayWithPartialPaths for PartialSymbolStack {
         Ok(())
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Partial scope stacks
 
 /// A pattern that might match against a scope stack.  Consists of a (possibly empty) list of
 /// exported scopes, along with an optional scope stack variable.
@@ -865,8 +790,6 @@ impl PartialScopeStack {
     }
 
     /// Returns the number of concrete scopes on this partial stack.
-    // No `is_empty` companion, for the same reason as `PartialSymbolStack::len`: zero concrete
-    // scopes still leaves a variable that can match an arbitrary suffix.
     #[allow(clippy::len_without_is_empty)]
     #[inline(always)]
     pub fn len(&self) -> usize {
@@ -918,12 +841,10 @@ impl PartialScopeStack {
                     return false;
                 }
             } else {
-                // Stacks aren't the same length.
                 return false;
             }
         }
         if other.contains_scopes() {
-            // Stacks aren't the same length.
             return false;
         }
         self.variable.into_option() == other.variable.into_option()
@@ -936,8 +857,6 @@ impl PartialScopeStack {
         partials: &mut PartialPaths,
         scope_bindings: &PartialScopeStackBindings,
     ) -> Result<PartialScopeStack, PathResolutionError> {
-        // If this partial scope stack ends in a variable, see if we have a binding for it.  If so,
-        // substitute that binding in.  If not, leave the variable as-is.
         let mut result = match self.variable.into_option() {
             Some(variable) => match scope_bindings.get(variable) {
                 Some(bound) => bound,
@@ -946,7 +865,6 @@ impl PartialScopeStack {
             None => PartialScopeStack::empty(),
         };
 
-        // Then prepend all of the scopes that appear at the beginning of this stack.
         while let Some(scope) = self.pop_back(partials) {
             result.push_front(partials, scope);
         }
@@ -969,7 +887,6 @@ impl PartialScopeStack {
         let mut lhs = self;
         let original_rhs = rhs;
 
-        // First, look at the shortest common prefix of lhs and rhs, and verify that they match.
         while lhs.contains_scopes() && rhs.contains_scopes() {
             let lhs_front = lhs.pop_front(partials).unwrap();
             let rhs_front = rhs.pop_front(partials).unwrap();
@@ -978,21 +895,6 @@ impl PartialScopeStack {
             }
         }
 
-        // Now at most one stack still has scopes.  Zero, one, or both of them have variables.
-        // Let's do a case analysis on all of those possibilities.
-
-        // CASE 1:
-        // Both lhs and rhs have no more scopes.  The answer is always yes, and any variables that
-        // are present get bound.  (If both sides have variables, then one variable gets bound to
-        // the other, since both lhs and rhs will match _any other scope stack_ at this point.  If
-        // only one side has a variable, then the variable gets bound to the empty stack.)
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  ()            ()            => yes either
-        //  ()            () $2         => yes rhs, $2 => ()
-        //  () $1         ()            => yes lhs, $1 => ()
-        //  () $1         () $2         => yes lhs, $2 => $1
         if !lhs.contains_scopes() && !rhs.contains_scopes() {
             match (lhs.variable.into_option(), rhs.variable.into_option()) {
                 (None, None) => return Ok(self),
@@ -1011,17 +913,6 @@ impl PartialScopeStack {
             }
         }
 
-        // CASE 2:
-        // One of the stacks contains scopes and the other doesn't, and the “empty” stack doesn't
-        // have a variable.  Since there's no variable on the empty side to capture the remaining
-        // content on the non-empty side, the answer is always no.
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  ()            (stuff)       => NO
-        //  ()            (stuff) $2    => NO
-        //  (stuff)       ()            => NO
-        //  (stuff) $1    ()            => NO
         if !lhs.contains_scopes() && lhs.variable.is_none() {
             return Err(PathResolutionError::ScopeStackUnsatisfied);
         }
@@ -1029,19 +920,6 @@ impl PartialScopeStack {
             return Err(PathResolutionError::ScopeStackUnsatisfied);
         }
 
-        // CASE 3:
-        // One of the stacks contains scopes and the other doesn't, and the “empty” stack _does_
-        // have a variable.  If both sides have the same variable, the answer is NO. Otherwise,
-        // the answer is YES, and the “empty” side's variable needs to capture the entirety of the
-        // non-empty side.
-        //
-        //     lhs           rhs
-        // ============  ============
-        //  (...) $1      (...) $1      => no
-        //  () $1         (stuff)       => yes rhs,  $1 => rhs
-        //  () $1         (stuff) $2    => yes rhs,  $1 => rhs
-        //  (stuff)       () $2         => yes lhs,  $2 => lhs
-        //  (stuff) $1    () $2         => yes lhs,  $2 => lhs
         match (lhs.variable.into_option(), rhs.variable.into_option()) {
             (Some(v1), Some(v2)) if v1 == v2 => return Err(PathResolutionError::ScopeStackUnsatisfied),
             _ => {}
@@ -1184,9 +1062,6 @@ impl DisplayWithPartialPaths for PartialScopeStack {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Partial symbol bindings
-
 pub struct PartialSymbolStackBindings {
     bindings: SmallVec<[Option<PartialSymbolStack>; 4]>,
 }
@@ -1271,9 +1146,6 @@ impl DisplayWithPartialPaths for &mut PartialSymbolStackBindings {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Partial scope bindings
-
 pub struct PartialScopeStackBindings {
     bindings: SmallVec<[Option<PartialScopeStack>; 4]>,
 }
@@ -1356,9 +1228,6 @@ impl DisplayWithPartialPaths for &mut PartialScopeStackBindings {
         write!(f, "}}")
     }
 }
-
-//-------------------------------------------------------------------------------------------------
-// Edge lists
 
 #[repr(C)]
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -1561,9 +1430,6 @@ impl DisplayWithPartialPaths for PartialPathEdgeList {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Partial paths
-
 /// A portion of a name-binding path.
 ///
 /// Partial paths can be computed _incrementally_, in which case all of the edges in the partial
@@ -1705,8 +1571,6 @@ impl PartialPath {
     /// and its postcondition is compatible with its precondition.  If the path is cyclic, a
     /// tuple is returned indicating whether cycle requires strengthening the pre- or postcondition.
     pub fn is_cyclic(&self, graph: &StackGraph, partials: &mut PartialPaths) -> Option<Cyclicity> {
-        // StackGraph ensures that there are no nodes with duplicate IDs, so we can do a simple
-        // comparison of node handles here.
         if self.start_node != self.end_node {
             return None;
         }
@@ -1798,8 +1662,6 @@ impl PartialPath {
 
     /// Returns the largest value of any symbol stack variable in this partial path.
     pub fn largest_symbol_stack_variable(&self) -> u32 {
-        // We don't have to check the postconditions, because it's not valid for a postcondition to
-        // refer to a variable that doesn't exist in the precondition.
         self.symbol_stack_precondition.largest_symbol_stack_variable()
     }
 
@@ -1817,8 +1679,6 @@ impl PartialPath {
         symbol_stack_precondition: &PartialSymbolStack,
         scope_stack_precondition: &PartialScopeStack,
     ) -> u32 {
-        // We don't have to check the postconditions, because it's not valid for a postcondition to
-        // refer to a variable that doesn't exist in the precondition.
         std::cmp::max(
             symbol_stack_precondition.largest_scope_stack_variable(partials),
             scope_stack_precondition.largest_scope_stack_variable(),
@@ -2066,8 +1926,6 @@ impl Node {
             }
             Self::JumpTo(_) => {}
             Self::PopScopedSymbol(sink) => {
-                // Ideally we want to pop sink's scoped symbol off from top of the symbol stack
-                // postcondition.
                 if let Some(top) = symbol_stack_postcondition.pop_front(partials) {
                     if top.symbol != sink.symbol {
                         return Err(PathResolutionError::IncorrectPoppedSymbol);
@@ -2078,9 +1936,6 @@ impl Node {
                     };
                     *scope_stack_postcondition = new_scope_stack;
                 } else if symbol_stack_postcondition.has_variable() {
-                    // If the symbol stack postcondition is empty but has a variable, then we can update
-                    // the _precondition_ to indicate that the symbol stack needs to contain this scoped
-                    // symbol in order to successfully use this partial path.
                     let scope_stack_variable = PartialPath::fresh_scope_stack_variable_for_partial_stack(
                         partials,
                         symbol_stack_precondition,
@@ -2090,21 +1945,13 @@ impl Node {
                         symbol: sink.symbol,
                         scopes: ControlledOption::some(PartialScopeStack::from_variable(scope_stack_variable)),
                     };
-                    // We simply push to the precondition. The official procedure here
-                    // is to bind the postcondition symbol stack variable to the symbol
-                    // and a fresh variable, and apply that. However, because the variable
-                    // can only be bound in the precondition symbol stack, this amounts to
-                    // pushing the symbol there directly.
                     symbol_stack_precondition.push_back(partials, precondition_symbol);
                     *scope_stack_postcondition = PartialScopeStack::from_variable(scope_stack_variable);
                 } else {
-                    // The symbol stack postcondition is empty and has no variable, so we cannot
-                    // perform the operation.
                     return Err(PathResolutionError::SymbolStackUnsatisfied);
                 }
             }
             Self::PopSymbol(sink) => {
-                // Ideally we want to pop sink's symbol off from top of the symbol stack postcondition.
                 if let Some(top) = symbol_stack_postcondition.pop_front(partials) {
                     if top.symbol != sink.symbol {
                         return Err(PathResolutionError::IncorrectPoppedSymbol);
@@ -2113,29 +1960,16 @@ impl Node {
                         return Err(PathResolutionError::UnexpectedAttachedScopeList);
                     }
                 } else if symbol_stack_postcondition.has_variable() {
-                    // If the symbol stack postcondition is empty but has a variable, then we can update
-                    // the _precondition_ to indicate that the symbol stack needs to contain this symbol
-                    // in order to successfully use this partial path.
                     let precondition_symbol = PartialScopedSymbol {
                         symbol: sink.symbol,
                         scopes: ControlledOption::none(),
                     };
-                    // We simply push to the precondition. The official procedure here
-                    // is to bind the postcondition symbol stack variable to the symbol
-                    // and a fresh variable, and apply that. However, because the variable
-                    // can only be bound in the precondition symbol stack, this amounts to
-                    // pushing the symbol there directly.
                     symbol_stack_precondition.push_back(partials, precondition_symbol);
                 } else {
-                    // The symbol stack postcondition is empty and has no variable, so we cannot
-                    // perform the operation.
                     return Err(PathResolutionError::SymbolStackUnsatisfied);
                 }
             }
             Self::PushScopedSymbol(sink) => {
-                // The symbol stack postcondition is our representation of the path's symbol stack.
-                // Pushing the scoped symbol onto our postcondition indicates that using this partial
-                // path would push the scoped symbol onto the path's symbol stack.
                 let sink_symbol = sink.symbol;
                 let sink_scope = graph
                     .node_for_id(sink.scope)
@@ -2149,9 +1983,6 @@ impl Node {
                 symbol_stack_postcondition.push_front(partials, postcondition_symbol);
             }
             Self::PushSymbol(sink) => {
-                // The symbol stack postcondition is our representation of the path's symbol stack.
-                // Pushing the symbol onto our postcondition indicates that using this partial path
-                // would push the symbol onto the path's symbol stack.
                 let sink_symbol = sink.symbol;
                 let postcondition_symbol = PartialScopedSymbol {
                     symbol: sink_symbol,
@@ -2275,9 +2106,6 @@ impl Node {
     }
 }
 
-//-------------------------------------------------------------------------------------------------
-// Extending partial paths with partial paths
-
 impl PartialPath {
     /// Attempts to append a partial path to this one.  If the postcondition of the “left” partial path
     /// is not compatible with the precondition of the “right” path, we return an error describing why.
@@ -2353,7 +2181,6 @@ impl PartialPath {
             return Err(PathResolutionError::IncorrectSourceNode);
         }
 
-        // Ensure the right post- and left precondition are half-open, so we can unify them.
         let mut lhs_symbol_stack_postcondition = lhs.symbol_stack_postcondition;
         let mut lhs_scope_stack_postcondition = lhs.scope_stack_postcondition;
         let mut rhs_symbol_stack_precondition = rhs.symbol_stack_precondition;
@@ -2413,9 +2240,6 @@ struct Join {
     pub symbol_bindings: PartialSymbolStackBindings,
     pub scope_bindings: PartialScopeStackBindings,
 }
-
-//-------------------------------------------------------------------------------------------------
-// Partial path resolution state
 
 /// Manages the state of a collection of partial paths built up as part of the partial-path-finding
 /// algorithm or path-stitching algorithm.

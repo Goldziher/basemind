@@ -18,8 +18,6 @@ use crate::path::RelPath;
 
 /// One git-history operation, forwarded from a front-end to the daemon.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-// Adjacent tagging, matching `CommsRequest` / `CommsResponse`: the wire codec is msgpack
-// (`rmp_serde`), which cannot round-trip an INTERNALLY tagged enum whose variants hold sequences.
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum GitHistoryOp {
     /// Bring the repo's index up to date with HEAD (build / append / no-op), then report what was

@@ -21,9 +21,7 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let saved_data_home = std::env::var_os("BASEMIND_DATA_HOME");
 
-    // --- Native default: clear the override so we observe the platform dir `directories` returns. ---
     // SAFETY: this is the only test fn in this binary, so no other thread reads or writes the
-    // environment concurrently with these mutations.
     unsafe {
         std::env::remove_var("BASEMIND_DATA_HOME");
     }
@@ -63,7 +61,6 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
     }
     #[cfg(target_os = "linux")]
     {
-        // On Linux the native dir IS XDG: honor `$XDG_DATA_HOME` when set, else `~/.local/share`.
         match std::env::var_os("XDG_DATA_HOME") {
             Some(xdg) if !xdg.is_empty() => assert!(
                 native.starts_with(&xdg),
@@ -76,7 +73,6 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         }
     }
 
-    // Every cache subtree lives under `cache_root()` — one source of truth, no divergent resolvers.
     assert!(
         global_blobs_dir().starts_with(&native),
         "the global blob store must live under cache_root(), got {:?}",
@@ -88,7 +84,6 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         workspace_cache_dir(manifest)
     );
 
-    // `workspace_key` is a deterministic, machine-stable hex digest of the canonical root path.
     let key_a = workspace_key(manifest);
     let key_b = workspace_key(manifest);
     assert_eq!(key_a, key_b, "workspace_key must be deterministic for the same root");
@@ -97,7 +92,6 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         "workspace_key must be a non-empty hex digest, got {key_a:?}"
     );
 
-    // --- Override: `BASEMIND_DATA_HOME` redirects the entire cache (the test-isolation + escape seam). ---
     let temp = tempfile::tempdir().expect("tempdir");
     // SAFETY: as above — this is the sole test fn in this binary.
     unsafe {
@@ -117,7 +111,6 @@ fn cache_paths_are_platform_native_and_honor_the_data_home_override() {
         "the per-workspace cache dir must follow the BASEMIND_DATA_HOME override"
     );
 
-    // --- Restore the environment for any downstream process inspection. ---
     // SAFETY: as above.
     unsafe {
         match saved_data_home {

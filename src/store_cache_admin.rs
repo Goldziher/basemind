@@ -232,9 +232,6 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<Ca
     let telemetry_bytes = file_size(&basemind_dir.join(TELEMETRY_FILENAME))?;
     let git_history_bytes = dir_size(&basemind_dir.join(crate::git_history::GIT_HISTORY_DIR))?;
 
-    // Blobs live in the machine-global store now, outside this workspace's tree — so the total is
-    // the per-workspace tree PLUS the global blob store. `other_bytes` then captures anything under
-    // the workspace dir not attributed to a named component (lock/id sidecars, legacy index, …).
     let total_bytes = dir_size(basemind_dir)? + blobs_bytes;
     let accounted = blobs_bytes + views_bytes + lance_bytes + git_cache_bytes + telemetry_bytes + git_history_bytes;
     let other_bytes = total_bytes.saturating_sub(accounted);
@@ -365,9 +362,6 @@ pub(crate) fn dir_size(dir: &Path) -> Result<u64, GcError> {
         let path = entry.path();
         let meta = match entry.metadata() {
             Ok(meta) => meta,
-            // A file — typically a `*.tmp` mid atomic-rename — can vanish between `read_dir` and
-            // `metadata` under a concurrent scan/write. That's benign for a size estimate: skip it
-            // rather than failing the whole `cache_stats` call (a flaky race otherwise).
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
             Err(source) => {
                 return Err(GcError::Io {

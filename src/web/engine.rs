@@ -35,12 +35,7 @@ fn kc_config(cfg: &CrawlConfig) -> Result<KcCrawlConfig> {
         max_body_size: Some(max_body_size),
         max_concurrent: Some(4),
         request_timeout: Duration::from_secs(30),
-        // Confine link-following to the seed host. crawlberg defaults this off, which let a
-        // `web_crawl` wander onto other domains (bug #34); a repo/site crawl must stay on-host.
         stay_on_domain: true,
-        // Bound the sitemap fetch so a huge sitemap-index host cannot OOM the process (crawlberg#33):
-        // crawlberg stops fetching + parsing once this many URLs are collected. `web_map` caps its
-        // per-call limit at the same value, so this never truncates a result a caller could ask for.
         map_limit: Some(WEB_MAP_URL_CAP as usize),
         ssrf: SsrfPolicy {
             deny_private: !cfg.allow_private_network,

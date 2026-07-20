@@ -119,10 +119,6 @@ fn compute_facts(root: &Path, store: &Store, files: &[FileSnapshot], precise: bo
                     let lang = lang::intern(language)?;
                     let abs = root.join(rel_str);
                     let bytes = std::fs::read(&abs).ok()?;
-                    // Per-file panic containment: the precise engines are third-party (the
-                    // `stack-graphs` partial-path stitcher has panicked with an out-of-bounds index
-                    // and a failed cyclic test on real inputs). One pathological file must cost only
-                    // its own resolved edges, not the other tens of thousands of files in the pass.
                     let computed = match contain_panic(|| crate::intel::resolve::resolve_file(lang, &abs, &bytes, precise))
                     {
                         Ok(computed) => computed,

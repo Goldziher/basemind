@@ -262,7 +262,6 @@ async fn try_couple_session_thread(
     let thread_id = {
         let handle = resolve_comms_client(state, None).await?;
         let mut client = handle.lock().await;
-        // subject + members[child] is two addressing dimensions (the parent is the implicit creator).
         let thread = client
             .start_thread(Some(subject), None, vec![child_agent.clone()])
             .await

@@ -216,7 +216,6 @@ pub(super) async fn run_find_callers(
     });
 
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
-    // The sound floor. Never skipped, never overridden — this is what makes the answer complete.
     let scan = scan_calls(
         store.index_db.as_ref(),
         cache,
@@ -225,9 +224,6 @@ pub(super) async fn run_find_callers(
         cursor_bytes.as_deref(),
     )?;
 
-    // The refinement. `None` when the definition doesn't resolve (no engine for the language, or no
-    // resolution facts): hits then carry no `resolved` annotation at all, rather than a misleading
-    // `false` that would imply resolution had ruled them out.
     let resolved = match symbol.as_ref() {
         Some(sym) => resolved_callers(store, &refs, root, cache, &params.path, sym, &params.name, limit).await,
         None => None,
@@ -346,8 +342,6 @@ fn call_sites_in_file(
 /// cap the refinement simply stops proving things — hits stay unannotated and the floor stays
 /// complete. Degrading toward "unproven" is always safe; degrading toward "no callers" is what this
 /// function exists to prevent.
-// Threads the store, the ref backend, the definition, and the name/cap bounds; a params struct used
-// at exactly one call site would obscure more than it saves.
 #[allow(clippy::too_many_arguments)]
 async fn resolved_callers(
     store: &crate::store::Store,
@@ -376,10 +370,6 @@ async fn resolved_callers(
     for edge in &refs.intra {
         push_candidate(edge.def_start, &mut def_starts);
     }
-    // Also seed from this file's exports. A definition that is exported and called only from OTHER
-    // files (e.g. a Python `def f` in a module that never calls `f` itself) has no intra edge to
-    // recover `def_start` from, so intra-only seeding would miss every cross-file caller. The export
-    // records the identifier byte the cross-file join keyed on.
     for export in &refs.exports {
         push_candidate(export.name_start, &mut def_starts);
     }
@@ -387,8 +377,6 @@ async fn resolved_callers(
         return None;
     }
 
-    // Popular exported symbols have many cross-file uses, so dedup via a hash set rather than a
-    // quadratic `Vec::contains` over `(RelPath, u32)` (a full path comparison each probe).
     let mut seen: ahash::AHashSet<(crate::path::RelPath, u32)> = ahash::AHashSet::new();
     let mut uses: Vec<(crate::path::RelPath, u32)> = Vec::new();
     for def_start in def_starts {
@@ -402,17 +390,12 @@ async fn resolved_callers(
         return None;
     }
 
-    // Resolved edges also cover non-call references — chiefly the `import` binding that introduced
-    // the name — so keep only uses that coincide with an actual call site. Those dropped edges still
-    // serve `goto_definition` / `find_references`; they just aren't "callers".
     let probe_cap = limit.saturating_mul(8).max(2_000);
     let finder = memchr::memmem::Finder::new(name.as_bytes());
     let mut sites: ahash::AHashMap<crate::path::RelPath, ahash::AHashSet<u32>> = ahash::AHashMap::new();
     let mut aliased: Vec<(Vec<u8>, ReferenceHit)> = Vec::new();
     let mut total: u32 = 0;
 
-    // One index range-scan per use-FILE (not per use), so a definition with many callers in one file
-    // costs one scan. `uses` is grouped by path first to guarantee that.
     uses.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut probed = 0usize;
     let mut file_calls: Option<(&crate::path::RelPath, ahash::AHashMap<u32, CallSite>)> = None;
@@ -422,8 +405,6 @@ async fn resolved_callers(
                 break;
             }
             probed += 1;
-            // An index hiccup here costs only the annotation, never the floor: the name scan has
-            // already run and its hits stand on their own.
             file_calls = Some((
                 use_path,
                 call_sites_in_file(store.index_db.as_ref(), cache, use_path).ok()?,
@@ -433,15 +414,13 @@ async fn resolved_callers(
             continue;
         };
         let Some(site) = calls.get(use_start) else {
-            continue; // a resolved reference that isn't a call — e.g. the import binding itself
+            continue;
         };
         total += 1;
         sites.entry(use_path.clone()).or_default().insert(*use_start);
         if finder.find(site.callee.as_bytes()).is_none()
             && let Some(key) = crate::index::keys::call_by_callee(&site.callee, use_path, *use_start)
         {
-            // The name scan cannot see this call site (the binding was renamed at the import), so
-            // resolution is the ONLY way it ever gets reported. Merge it in rather than drop it.
             aliased.push((
                 key,
                 ReferenceHit {
@@ -485,8 +464,6 @@ fn merge_resolved(
     if resolved.aliased.is_empty() {
         return page;
     }
-    // Aliased sites are invisible to the name scan, so they are additive to `total` — the count the
-    // agent reads as "how many things call this".
     let total = page.total.saturating_add(resolved.aliased.len() as u32);
     let scan_had_more = page.next_cursor.is_some();
 
@@ -501,10 +478,8 @@ fn merge_resolved(
     }
     for (key, hit) in resolved.aliased {
         if cursor_after.is_some_and(|cursor| key.as_slice() <= cursor) {
-            continue; // already emitted on an earlier page
+            continue;
         }
-        // Start byte is only carried to annotate scan hits (done above); aliased hits are already
-        // annotated `resolved: true`, so the parallel slot is inert for them.
         merged.push((key, hit, 0));
     }
     merged.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -594,13 +569,11 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir(root.join("pkg")).expect("pkg dir");
         std::fs::write(root.join("pkg/__init__.py"), b"").expect("__init__.py");
-        // The self-call is what makes resolution "succeed" — and what made the bug silent.
         std::fs::write(
             root.join("pkg/mod.py"),
             b"def target():\n    return 1\n\n\ndef seed():\n    return target()\n",
         )
         .expect("mod.py");
-        // Module-import form: the resolver cannot bind `mod.target` back to `pkg/mod.py::target`.
         std::fs::write(
             root.join("caller_a.py"),
             b"from pkg import mod\n\n\ndef go():\n    return mod.target()\n",
@@ -618,8 +591,6 @@ mod tests {
             .build()
             .expect("runtime");
 
-        // Ground truth (matches `git grep -c 'target('` on this fixture): 4 call sites — one in
-        // pkg/mod.py (seed's self-call) and three across the two importers.
         let references = decode(
             &super::run_find_references(
                 store.index_db.as_ref(),
@@ -683,10 +654,6 @@ mod tests {
             "find_callers and find_references must agree on an unambiguous name"
         );
 
-        // Whatever resolution manages to prove, it is a SUBSET count — never the total. (With a
-        // Python engine compiled in — `code-intel-stack` — the self-call resolves and this is where
-        // the old code early-returned with `total: 1`. With no engine it proves nothing. Either way
-        // the floor above must hold.)
         let resolved_total = callers
             .get("resolved_total")
             .and_then(serde_json::Value::as_u64)
@@ -715,13 +682,11 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        // The self-call is what makes resolution "succeed" — and what made the bug silent.
         std::fs::write(
             root.join("util.ts"),
             b"export function target() { return 1; }\ntarget();\n",
         )
         .expect("util.ts");
-        // Namespace import: the resolver cannot bind `util.target` back to util.ts's `target`.
         std::fs::write(
             root.join("consumer.ts"),
             b"import * as util from './util';\nutil.target();\nutil.target();\n",
@@ -853,10 +818,6 @@ mod tests {
             "L1 node start_byte must differ from the resolver's def identifier byte"
         );
 
-        // `run_find_callers` is async (the daemon-forward path awaits a socket); drive it on a
-        // throwaway current-thread runtime so `scan` above stays OUTSIDE any runtime (a scan that
-        // flushes vectors block_on's its own runtime — nesting would panic). Local resolver: this
-        // store has an open index, so the resolution reads it directly with no daemon involved.
         let body = decode(
             &tokio::runtime::Builder::new_current_thread()
                 .enable_all()

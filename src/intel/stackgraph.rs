@@ -110,8 +110,6 @@ fn build_engine(lang: LangId) -> Option<&'static LangEngine> {
     let sgl = match StackGraphLanguage::from_str(ts_language, &source) {
         Ok(sgl) => sgl,
         Err(err) => {
-            // Whole-language degradation to the locals fallback — surface it above debug. Cached per
-            // language (see `engine`), so this fires at most once per language per process.
             tracing::warn!(
                 lang,
                 error = %err,
@@ -139,8 +137,6 @@ pub fn resolve_stackgraph(lang: LangId, source: &[u8]) -> Option<FileResolvedRef
 
     let mut out = FileResolvedRefs::new(lang);
     out.intra = intra;
-    // Imports/exports come from L1 (correct identifier byte spans; see module docs). Best-effort:
-    // a failure here still leaves a valid `intra`-only record.
     populate_imports_exports(lang, source, &mut out);
     Some(out)
 }
@@ -204,7 +200,6 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         .build_stack_graph_into(&mut graph, file, src, &globals, &deadline)
         .map_err(|e| format!("build_stack_graph_into: {e}"))?;
 
-    // Phase 1: minimal partial-path set for this file, loaded into a Database.
     let mut partials = PartialPaths::new();
     let mut db = Database::new();
     ForwardPartialPathStitcher::find_minimal_partial_path_set_in_file(
@@ -219,7 +214,6 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
     )
     .map_err(|_| "find_minimal_partial_path_set_in_file cancelled".to_string())?;
 
-    // Phase 2: from every reference node, stitch complete paths and record (ref, def) endpoints.
     let references: Vec<Handle<Node>> = graph.iter_nodes().filter(|h| graph[*h].is_reference()).collect();
 
     let mut edges: Vec<ResolvedEdge> = Vec::new();
@@ -232,8 +226,6 @@ fn resolve_intra(engine: &LangEngine, lang: LangId, src: &str) -> Result<Vec<Res
         |g, _ps, path| {
             let use_node = path.start_node;
             let def_node = path.end_node;
-            // Intra-file only: the definition must belong to this same file (skip root/jump-to and
-            // any cross-file endpoints — those become imports/exports, handled via L1).
             if !g[def_node].is_definition() || !g[def_node].is_in_file(file) {
                 return;
             }
@@ -292,9 +284,6 @@ fn span_bytes(graph: &StackGraph, node: Handle<Node>) -> Option<(u32, u32)> {
 fn populate_imports_exports(lang: LangId, source: &[u8], out: &mut FileResolvedRefs) {
     use crate::lang::{ParseOutcome, parse_with_default_timeout, with_parser};
 
-    // Parse once and share the tree between the export and import queries — each would otherwise
-    // re-parse identical bytes. (The stack-graph build does its own parse upstream; this at least
-    // collapses the two query passes here into a single parse.)
     let Ok(ParseOutcome::Ok(tree)) = with_parser(lang, |p| parse_with_default_timeout(p, source)) else {
         return;
     };
@@ -349,12 +338,6 @@ fn extract_imports(lang: LangId, source: &[u8], root: tree_sitter::Node<'_>, out
             Ok(t) => t.to_string(),
             Err(_) => continue,
         };
-        // A `@module` capture is present only for the from-import / Java-import patterns (a bare
-        // Python `import m` has none). Its presence tells us this binding names a *symbol* imported
-        // from a module — so `imported` is the symbol name the cross-file join must match against
-        // the target's exports. Absent an alias (which the query deliberately does not capture),
-        // the imported name equals the local name. A bare `import m` binds the module itself, not a
-        // single export, so it carries `imported: None` and the join skips it.
         let module_node = module_idx.and_then(|mi| m.captures.iter().find(|c| c.index == mi));
         let specifier = module_node
             .and_then(|c| c.node.utf8_text(source).ok())
@@ -387,8 +370,6 @@ fn import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
 }
 
 fn build_import_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
-    // Capture the local-name identifier (`@local`) and, where available, the module path
-    // (`@module`). Python `from m import f` / `import m` and Java `import a.b.Foo;`.
     let src = match lang {
         "python" => {
             "(import_from_statement module_name: (_) @module name: (dotted_name (identifier) @local))\n\
@@ -423,9 +404,6 @@ fn export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
 }
 
 fn build_export_query(lang: LangId) -> Option<&'static tree_sitter::Query> {
-    // Capture the module-level export identifier (`@export`): the `name:` of each top-level
-    // definition another file can import. Only node types known to exist in the TSLP grammars are
-    // referenced — one unknown node type fails the WHOLE query compile, silently emptying exports.
     let src = match lang {
         "python" => {
             "(module (function_definition name: (identifier) @export))\n\
@@ -469,11 +447,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // Regression (grantflow): a typed splat parameter (`**kwargs: T` / `*args: T`) used to abort
-        // the entire stack-graph build — the upstream `.tsg` `typed_parameter` rule captured the
-        // splat pattern as a plain name and failed on its undefined `.def`. That silently lost ALL
-        // resolution for the whole file (fell back to locals, no cross-file). The imported `f` used
-        // inside such a function must still resolve to its import binding.
         let src = "from m import f\n\n\ndef g(a: str, **kw: str) -> None:\n    return f(a)\n";
         let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
             eprintln!("skip: python stack-graph engine unavailable");
@@ -513,8 +486,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // `class X(Base, total=False)` — a keyword-argument base used to abort the build (the .tsg
-        // treated every base as a superclass and failed on the `keyword_argument`).
         assert_import_resolves(
             "from m import f\n\n\nclass Cfg(dict, total=False):\n    pass\n\n\ndef g():\n    return f()\n",
             "return f()",
@@ -526,10 +497,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // `lambda: expr` — a parameter-less lambda used to abort the WHOLE file's build (its `.call`
-        // node was never created because the function/lambda stanza requires a `parameters` field).
-        // The fix stops the abort so the rest of the file resolves; the imported `f` used elsewhere
-        // must still resolve even though the module also contains a parameter-less lambda.
         assert_import_resolves(
             "from m import f\n\n\nnoop = lambda: 0\n\n\ndef g():\n    return f()\n",
             "return f()",
@@ -541,8 +508,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // `a = b = c` — chained assignment nests, so the outer `right:` is an `assignment` with no
-        // `.output`, which used to abort the build.
         assert_import_resolves(
             "from m import f\n\n\ndef g():\n    a = b = f()\n    return a\n",
             "b = f()",
@@ -562,8 +527,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // `x` is defined at module level (line 1) and re-bound locally inside `f`. The use of `x`
-        // inside `f` must resolve to the LOCAL def, not the module-level one or the import.
         let src = "from m import x\nX_MODULE = 1\ndef f():\n    x = 2\n    return x\n";
         let refs = resolve_stackgraph("python", src.as_bytes());
         let Some(refs) = refs else {
@@ -574,7 +537,7 @@ mod tests {
             eprintln!("skip: python stack graph produced no intra edges in this env");
             return;
         }
-        let local_def = src.find("    x = 2").unwrap() as u32 + 4; // the `x` in `x = 2`
+        let local_def = src.find("    x = 2").unwrap() as u32 + 4;
         let return_use = src.rfind("return x").unwrap() as u32 + "return ".len() as u32;
         let edge = edge_for_use(&refs, return_use);
         assert_eq!(
@@ -602,7 +565,6 @@ mod tests {
             eprintln!("skip: no intra edges in this env");
             return;
         }
-        // first param `x` is at the first "(x)"; its use is the first `return x`.
         let first_param = src.find("first(x)").unwrap() as u32 + "first(".len() as u32;
         let second_param = src.find("second(x)").unwrap() as u32 + "second(".len() as u32;
         let first_use = src.find("return x\n").unwrap() as u32 + "return ".len() as u32;
@@ -625,8 +587,6 @@ mod tests {
         if skip_if_no_grammar("python") {
             return;
         }
-        // The comprehension binds its own `x`; the expression `x` before `for` must resolve to the
-        // comprehension binding, NOT the outer `x`. This is the case the locals engine gets wrong.
         let src = "def g():\n    x = \"outer\"\n    values = [x for x in range(3)]\n    return x\n";
         let Some(refs) = resolve_stackgraph("python", src.as_bytes()) else {
             eprintln!("skip: python stack-graph engine unavailable");
@@ -638,7 +598,6 @@ mod tests {
         }
         let outer_def = src.find("    x = \"outer\"").unwrap() as u32 + 4;
         let comp_binding = src.find("for x in").unwrap() as u32 + "for ".len() as u32;
-        // The `x` in `[x for ...]` (the element expression, before `for`).
         let comp_use = src.find("[x for").unwrap() as u32 + 1;
         let comp_edge = edge_for_use(&refs, comp_use);
         assert_eq!(
@@ -675,8 +634,6 @@ mod tests {
         if skip_if_no_grammar("java") {
             return;
         }
-        // `Foo.greet()` uses imported class `Foo`; there is also a local method `greet`. The `greet`
-        // in `Foo.greet()` must NOT resolve to the local `greet` method definition.
         let src = "import a.b.Foo;\nclass C {\n    String greet() { return \"local\"; }\n    String use() { return Foo.greet(); }\n}\n";
         let Some(refs) = resolve_stackgraph("java", src.as_bytes()) else {
             eprintln!("skip: java stack-graph engine unavailable");
@@ -688,7 +645,6 @@ mod tests {
         }
         let local_greet_def = src.find("String greet()").unwrap() as u32 + "String ".len() as u32;
         let foo_greet_use = src.find("Foo.greet()").unwrap() as u32 + "Foo.".len() as u32;
-        // If an edge exists for the `greet` in `Foo.greet()`, it must not point at the local method.
         if let Some(edge) = refs.intra.iter().find(|e| e.use_start == foo_greet_use) {
             assert_ne!(
                 edge.def_start, local_greet_def,

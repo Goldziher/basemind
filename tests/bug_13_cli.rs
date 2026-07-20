@@ -42,8 +42,6 @@ fn build_repo() -> TempDir {
 
 /// Run a fresh scan (wiping any prior index) and return captured stderr.
 fn scan_stderr(root: &Path, extra: &[&str], rust_log: Option<&str>) -> String {
-    // Wipe this workspace's (global-cache) state so the scan rebuilds the DB and emits the
-    // subsystem "Creating database" INFO lines the test observes.
     let _ = std::fs::remove_dir_all(basemind::store::workspace_cache_dir(root));
     let mut args = vec!["--root", root.to_str().unwrap(), "scan"];
     args.extend_from_slice(extra);

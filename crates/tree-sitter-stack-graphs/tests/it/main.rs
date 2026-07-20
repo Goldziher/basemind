@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -19,9 +18,6 @@ use tree_sitter_stack_graphs::StackGraphLanguage;
 mod builder;
 mod edges;
 mod nodes;
-// `loader` and `test` modules are omitted: they exercise the stripped `loader`/`test`
-// modules of the vendored crate (tree-sitter-loader / language-config driven) which are
-// out of scope for basemind's parse-.tsg-to-StackGraph use case.
 
 fn build_stack_graph(python_source: &str, tsg_source: &str) -> Result<(StackGraph, Handle<File>), BuildError> {
     let file_name = "test.py";

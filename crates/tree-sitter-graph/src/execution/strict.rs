@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -161,9 +160,6 @@ impl<'a> ScopedVariables<'a> {
 }
 
 impl Stanza {
-    // The strict executor threads the full evaluation environment (graph, config, locals, scoped
-    // vars, regex captures, and inherited-variable sets) through one call; bundling it into a
-    // struct would relocate the coupling rather than remove it.
     #[allow(clippy::too_many_arguments)]
     fn execute<'g, 'l, 's, 'tree>(
         &self,
@@ -714,12 +710,10 @@ impl ScopedVariable {
             _ => return Err(ExecutionError::InvalidVariableScope(format!("got {}", scope))),
         };
 
-        // search this node
         if let Some(value) = exec.scoped.try_get(scope.index).and_then(|v| v.get(&self.name)) {
             return Ok(value);
         }
 
-        // search parent nodes
         if exec.inherited_variables.contains(&self.name) {
             let mut parent = exec.graph.syntax_nodes.get(&scope.index).and_then(|n| n.parent());
             while let Some(scope) = parent {

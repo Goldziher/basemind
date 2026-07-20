@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2022, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -20,7 +19,7 @@ fn init_log() {
         .format_level(false)
         .format_target(false)
         .format_timestamp(None)
-        .try_init(); // try, because earlier test may have already initialized it
+        .try_init();
 }
 
 fn execute(python_source: &str, dsl_source: &str) -> Result<String, ExecutionError> {

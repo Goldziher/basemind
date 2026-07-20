@@ -168,8 +168,6 @@ pub(super) struct MemoryDeleteResponse {
 /// Verification verdict of a memory's code references against the live index, set by the
 /// W10 audit engine. `#[serde(default)]` on the record field means pre-W10 blobs (written
 /// before this existed) decode as `Unverified` — no schema bump required.
-// `pub` so it can nest inside `MemoryRecord` on the daemon wire (see `MemoryRecord`); crate-internal
-// in practice because `types_memory` is `pub(crate)`.
 #[cfg(feature = "memory")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -211,8 +209,6 @@ pub struct Provenance {
     pub commands: Vec<String>,
 }
 
-// `pub` so it can ride the daemon wire in `comms::proposals_proto::GovernanceOp::ProposalPromote`;
-// crate-internal in practice because `types_memory` is `pub(crate)`.
 #[cfg(feature = "memory")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryRecord {

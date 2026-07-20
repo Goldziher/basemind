@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -147,80 +146,20 @@ fn can_unify_partial_symbol_stacks() -> Result<(), PathResolutionError> {
     verify((&[], None), (&[], var2), "%2", "{%2 => <>}", "{}")?;
     verify((&[], var1), (&[], var2), "%1", "{%2 => <%1>}", "{}")?;
 
-    verify_not(
-        (&[], None), //
-        (&[a], None),
-    )?;
-    verify(
-        (&[], var1), //
-        (&[a], None),
-        "a",
-        "{%1 => <a>}",
-        "{}",
-    )?;
-    verify_not(
-        (&[], None), //
-        (&[a], var2),
-    )?;
-    verify(
-        (&[], var1), //
-        (&[a], var2),
-        "a,%2",
-        "{%1 => <a,%2>}",
-        "{}",
-    )?;
+    verify_not((&[], None), (&[a], None))?;
+    verify((&[], var1), (&[a], None), "a", "{%1 => <a>}", "{}")?;
+    verify_not((&[], None), (&[a], var2))?;
+    verify((&[], var1), (&[a], var2), "a,%2", "{%1 => <a,%2>}", "{}")?;
 
-    verify_not(
-        (&[a], None), //
-        (&[], None),
-    )?;
-    verify_not(
-        (&[a], var1), //
-        (&[], None),
-    )?;
-    verify(
-        (&[a], None), //
-        (&[], var2),
-        "a",
-        "{%2 => <a>}",
-        "{}",
-    )?;
-    verify(
-        (&[a], var1), //
-        (&[], var2),
-        "a,%1",
-        "{%2 => <a,%1>}",
-        "{}",
-    )?;
+    verify_not((&[a], None), (&[], None))?;
+    verify_not((&[a], var1), (&[], None))?;
+    verify((&[a], None), (&[], var2), "a", "{%2 => <a>}", "{}")?;
+    verify((&[a], var1), (&[], var2), "a,%1", "{%2 => <a,%1>}", "{}")?;
 
-    verify(
-        (&[a], None), //
-        (&[a], None),
-        "a",
-        "{}",
-        "{}",
-    )?;
-    verify(
-        (&[a], var1), //
-        (&[a], None),
-        "a,%1",
-        "{%1 => <>}",
-        "{}",
-    )?;
-    verify(
-        (&[a], None), //
-        (&[a], var2),
-        "a,%2",
-        "{%2 => <>}",
-        "{}",
-    )?;
-    verify(
-        (&[a], var1), //
-        (&[a], var2),
-        "a,%1",
-        "{%2 => <%1>}",
-        "{}",
-    )?;
+    verify((&[a], None), (&[a], None), "a", "{}", "{}")?;
+    verify((&[a], var1), (&[a], None), "a,%1", "{%1 => <>}", "{}")?;
+    verify((&[a], None), (&[a], var2), "a,%2", "{%2 => <>}", "{}")?;
+    verify((&[a], var1), (&[a], var2), "a,%1", "{%2 => <%1>}", "{}")?;
 
     verify_not((&[a], var1), (&[], var1))?;
     verify_not((&[], var1), (&[a], var1))?;
@@ -239,28 +178,10 @@ fn can_unify_partial_symbol_stacks() -> Result<(), PathResolutionError> {
         "{}",
     )?;
 
-    verify_not(
-        (&[a], None), //
-        (&[a, dot, b], None),
-    )?;
-    verify_not(
-        (&[a], None), //
-        (&[a, dot, b], var2),
-    )?;
-    verify(
-        (&[a], var1), //
-        (&[a, dot, b], None),
-        "a.b",
-        "{%1 => <.b>}",
-        "{}",
-    )?;
-    verify(
-        (&[a], var1), //
-        (&[a, dot, b], var2),
-        "a.b,%2",
-        "{%1 => <.b,%2>}",
-        "{}",
-    )?;
+    verify_not((&[a], None), (&[a, dot, b], None))?;
+    verify_not((&[a], None), (&[a, dot, b], var2))?;
+    verify((&[a], var1), (&[a, dot, b], None), "a.b", "{%1 => <.b>}", "{}")?;
+    verify((&[a], var1), (&[a, dot, b], var2), "a.b,%2", "{%1 => <.b,%2>}", "{}")?;
 
     let empty_scopes: NiceScopeStack = (&[], None);
     let a_empty = ("a", Some(empty_scopes));
@@ -320,72 +241,20 @@ fn can_unify_partial_scope_stacks() -> Result<(), PathResolutionError> {
     verify((&[], None), (&[], var2), "$2", "{$2 => ()}")?;
     verify((&[], var1), (&[], var2), "$1", "{$2 => ($1)}")?;
 
-    verify_not(
-        (&[], None), //
-        (&[10], None),
-    )?;
-    verify(
-        (&[], var1), //
-        (&[10], None),
-        "[file(10)]",
-        "{$1 => ([file(10)])}",
-    )?;
-    verify_not(
-        (&[], None), //
-        (&[10], var2),
-    )?;
-    verify(
-        (&[], var1), //
-        (&[10], var2),
-        "[file(10)],$2",
-        "{$1 => ([file(10)],$2)}",
-    )?;
+    verify_not((&[], None), (&[10], None))?;
+    verify((&[], var1), (&[10], None), "[file(10)]", "{$1 => ([file(10)])}")?;
+    verify_not((&[], None), (&[10], var2))?;
+    verify((&[], var1), (&[10], var2), "[file(10)],$2", "{$1 => ([file(10)],$2)}")?;
 
-    verify_not(
-        (&[10], None), //
-        (&[], None),
-    )?;
-    verify_not(
-        (&[10], var1), //
-        (&[], None),
-    )?;
-    verify(
-        (&[10], None), //
-        (&[], var2),
-        "[file(10)]",
-        "{$2 => ([file(10)])}",
-    )?;
-    verify(
-        (&[10], var1), //
-        (&[], var2),
-        "[file(10)],$1",
-        "{$2 => ([file(10)],$1)}",
-    )?;
+    verify_not((&[10], None), (&[], None))?;
+    verify_not((&[10], var1), (&[], None))?;
+    verify((&[10], None), (&[], var2), "[file(10)]", "{$2 => ([file(10)])}")?;
+    verify((&[10], var1), (&[], var2), "[file(10)],$1", "{$2 => ([file(10)],$1)}")?;
 
-    verify(
-        (&[10], None), //
-        (&[10], None),
-        "[file(10)]",
-        "{}",
-    )?;
-    verify(
-        (&[10], var1), //
-        (&[10], None),
-        "[file(10)],$1",
-        "{$1 => ()}",
-    )?;
-    verify(
-        (&[10], None), //
-        (&[10], var2),
-        "[file(10)],$2",
-        "{$2 => ()}",
-    )?;
-    verify(
-        (&[10], var1), //
-        (&[10], var2),
-        "[file(10)],$1",
-        "{$2 => ($1)}",
-    )?;
+    verify((&[10], None), (&[10], None), "[file(10)]", "{}")?;
+    verify((&[10], var1), (&[10], None), "[file(10)],$1", "{$1 => ()}")?;
+    verify((&[10], None), (&[10], var2), "[file(10)],$2", "{$2 => ()}")?;
+    verify((&[10], var1), (&[10], var2), "[file(10)],$1", "{$2 => ($1)}")?;
 
     verify_not((&[10], var1), (&[], var1))?;
     verify_not((&[], var1), (&[10], var1))?;
@@ -853,7 +722,6 @@ fn can_resolve_to_node() -> Result<(), PathResolutionError> {
     let exported_scope = create_scope_node(&mut graph, file, true);
     let baz_def = create_pop_scoped_symbol_node(&mut graph, file, "baz", false);
 
-    // resolved node ends up in precondition scope stack
     {
         let mut g = StackGraph::new();
         g.add_from_graph(&graph).expect("");
@@ -865,7 +733,6 @@ fn can_resolve_to_node() -> Result<(), PathResolutionError> {
         assert_eq!(Some(exported_scope), p.scope_stack_precondition.pop_front(&mut ps));
     }
 
-    // precondition is fixed, and resolving fails
     {
         let mut g = StackGraph::new();
         g.add_from_graph(&graph).expect("");
@@ -877,8 +744,6 @@ fn can_resolve_to_node() -> Result<(), PathResolutionError> {
         p.resolve_to_node(&g, &mut ps, exported_scope).expect_err("");
     }
 
-    // resolved node ends up in scoped symbol in precondition symbol stack
-    // resolving succeeds even though the scope stack is finite
     {
         let mut g = StackGraph::new();
         g.add_from_graph(&graph).expect("");

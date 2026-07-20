@@ -83,9 +83,6 @@ impl AuditVerdict {
 
 /// On-disk record for a co-change skill proposal. Stored as msgpack in the `proposals`
 /// Fjall keyspace. `#[serde(default)]` on new fields ensures old blobs decode cleanly.
-// `pub` (not `pub(crate)`) so it can ride the daemon wire in `comms::proposals_proto::GovernanceOp`,
-// which is `pub` like `comms::memory_proto`'s `pub WireMemoryEntry`. Nothing outside the crate can
-// reach it — `types_governance` is `pub(crate)` — so this stays crate-internal in practice.
 #[cfg(feature = "memory")]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProposalRecord {

@@ -103,8 +103,6 @@ pub(crate) fn doc_config_from(
         ner: cfg.ner.clone(),
         summarization: cfg.summarization.clone(),
         llm: llm.clone(),
-        // Prefer `[resources].embed_threads`; fall back to the deprecated
-        // `[documents].embed_max_threads` alias for back-compat.
         embed_max_threads: resources.effective_embed_threads(cfg.embed_max_threads),
         embed_batch_size: resources.embed_batch_size,
         document_models: resources.document_models,

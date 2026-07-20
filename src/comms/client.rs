@@ -512,8 +512,6 @@ impl CommsClient {
         let outcome = self
             .wait_inbox_after_subscribe(remote, cwd, since_micros, cursor, limit, timeout)
             .await;
-        // Best-effort: unsubscribe on every exit, including an error from the wait itself. A link
-        // that is already gone (the error path most likely to hit) makes this a harmless no-op.
         let _ = self.unsubscribe(sub).await;
         outcome
     }

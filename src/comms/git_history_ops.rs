@@ -74,9 +74,6 @@ impl Broker {
         };
         entry.touch();
 
-        // Held across a Sync only. Reads stay concurrent, and a read racing a build sees
-        // `last_indexed_head` unset until the build's final commit — so the caller's freshness check
-        // live-walks meanwhile rather than reading a half-built index.
         let _build_guard = match op {
             GitHistoryOp::Sync => Some(entry.build_lock.clone().lock_owned().await),
             _ => None,

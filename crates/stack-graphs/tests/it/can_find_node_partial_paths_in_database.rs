@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -73,7 +72,6 @@ fn class_field_through_function_parameter() {
             "<%1> ($1) [a.py(8) reference x] -> [jump to scope] <x,%1> ($1)",
         ],
     );
-    // no references in b.py
 }
 
 #[test]
@@ -124,5 +122,4 @@ fn sequenced_import_star() {
         ("a.py", 6),
         &["<%1> ($1) [a.py(6) reference b] -> [root] <b,%1> ($1)"],
     );
-    // no references in b.py
 }

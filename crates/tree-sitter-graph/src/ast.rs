@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -77,23 +76,16 @@ pub struct Stanza {
 /// A statement that can appear in a graph DSL stanza
 #[derive(Debug, Eq, PartialEq)]
 pub enum Statement {
-    // Variables
     DeclareImmutable(DeclareImmutable),
     DeclareMutable(DeclareMutable),
     Assign(Assign),
-    // Graph nodes
     CreateGraphNode(CreateGraphNode),
     AddGraphNodeAttribute(AddGraphNodeAttribute),
-    // Edges
     CreateEdge(CreateEdge),
     AddEdgeAttribute(AddEdgeAttribute),
-    // Regular expression
     Scan(Scan),
-    // Debugging
     Print(Print),
-    // If
     If(If),
-    // ForIn
     ForIn(ForIn),
 }
 
@@ -504,26 +496,18 @@ impl std::fmt::Display for UnscopedVariable {
 /// An expression that can appear in a graph DSL file
 #[derive(Debug, Eq, PartialEq)]
 pub enum Expression {
-    // Literals
     FalseLiteral,
     NullLiteral,
     TrueLiteral,
-    // Constants
     IntegerConstant(IntegerConstant),
     StringConstant(StringConstant),
-    // Literals
     ListLiteral(ListLiteral),
     SetLiteral(SetLiteral),
-    // Comprehensions
     ListComprehension(ListComprehension),
     SetComprehension(SetComprehension),
-    // Syntax nodes
     Capture(Capture),
-    // Variables
     Variable(Variable),
-    // Functions
     Call(Call),
-    // Regular expression
     RegexCapture(RegexCapture),
 }
 

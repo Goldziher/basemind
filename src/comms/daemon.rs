@@ -464,8 +464,6 @@ impl Broker {
     /// Shed hot workspaces idle past `ttl` from RAM (their on-disk cache survives). Returns the
     /// count evicted. The daemon's periodic sweep calls this so cold indexes free memory.
     pub fn evict_idle_workspaces(&self, ttl: Duration) -> usize {
-        // Shedding a git-history entry also RELEASES its fjall lock, so a cold repo's index becomes
-        // openable again by a standalone `basemind scan` / `rescan` on the same machine.
         self.git_history
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -525,9 +523,6 @@ impl Broker {
                 cwd,
             } => {
                 let resp = self.on_hello(agent, proto_ver, remote, cwd.clone(), session)?;
-                // Best-effort: registering a serve session's cwd populates the machine registry so
-                // the coordination tools see the repo without a separate register step. A discovery
-                // or persist failure is logged and ignored — Hello must not fail on it.
                 if let (CommsResponse::Welcome { .. }, Some(root)) = (&resp, cwd) {
                     let mut registry = self.machine_registry.lock().await;
                     if let Err(error) = registry.register_workspace(&root) {
@@ -630,8 +625,6 @@ impl Broker {
         embed: bool,
     ) -> CommsResponse {
         self.mark_active().await;
-        // Hold the READ side across the whole scan so a concurrent blob GC (WRITE side) cannot
-        // reference-count and reap this rescan's freshly-written blobs before its index.msgpack lands.
         let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let started = Instant::now();

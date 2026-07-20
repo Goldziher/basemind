@@ -111,7 +111,6 @@ fn aliased_monorepo() -> TempDir {
          \x20 return settings;\n\
          }\n",
     );
-    // Decoy: exports the SAME name, and is never imported by SettingsRoutes.
     write(
         root,
         "src/unrelated/useCustomerSettings.ts",
@@ -125,7 +124,6 @@ async fn goto_definition_follows_an_aliased_import_from_the_call_site_to_the_def
     let dir = aliased_monorepo();
     let service = serve(dir.path()).await;
 
-    // Line 4: `  const settings = useCustomerSettings();`
     let call_col = col_of("  const settings = useCustomerSettings();", "useCustomerSettings", 0);
     let definition = goto(&service, "src/routes/SettingsRoutes.tsx", 4, call_col).await;
 
@@ -157,7 +155,6 @@ async fn goto_definition_resolves_the_aliased_import_binding_itself() {
     let dir = aliased_monorepo();
     let service = serve(dir.path()).await;
 
-    // Line 1: `import { useCustomerSettings } from '@app/hooks/useCustomerSettings';`
     let binding_col = col_of(
         "import { useCustomerSettings } from '@app/hooks/useCustomerSettings';",
         "useCustomerSettings",
@@ -186,8 +183,6 @@ async fn goto_definition_never_jumps_to_an_unimported_same_named_symbol() {
         "tsconfig.json",
         "{\n  \"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": { \"@app/*\": [\"src/*\"] }\n  }\n}\n",
     );
-    // `Orphan.tsx` imports NOTHING. Its `useCustomerSettings()` call is unbound. A same-named export
-    // exists elsewhere in the repo — resolving to it would be a fabricated jump.
     write(
         root,
         "src/hooks/useCustomerSettings.ts",
@@ -233,7 +228,6 @@ async fn goto_definition_leaves_an_alias_with_no_target_file_unresolved() {
     );
     let service = serve(root).await;
 
-    // The import binding names a module that does not exist. Nothing may be invented for it.
     let binding_col = col_of(
         "import { missingHook } from '@app/hooks/missingHook';",
         "missingHook",

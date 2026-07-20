@@ -156,7 +156,6 @@ async fn thread_start_requires_two_of_three_dimensions() {
     let (tx, _rx) = mpsc::channel(8);
     let mut alice = hello(&broker, &tx, "alice").await;
 
-    // Only subject → rejected.
     let one_dim = broker
         .handle(
             CommsRequest::ThreadStart {
@@ -173,7 +172,6 @@ async fn thread_start_requires_two_of_three_dimensions() {
         "a single dimension must be rejected"
     );
 
-    // Only the creator as a member (no explicit extra member) + subject → still one dimension.
     let creator_only = broker
         .handle(
             CommsRequest::ThreadStart {
@@ -190,7 +188,6 @@ async fn thread_start_requires_two_of_three_dimensions() {
         "creator-only membership does not count as the members dimension"
     );
 
-    // subject + path → two dimensions, accepted.
     let ok = broker
         .handle(
             CommsRequest::ThreadStart {
@@ -230,7 +227,6 @@ async fn thread_list_does_not_leak_non_matching_threads() {
     let mut alice = hello(&broker, &tx, "alice").await;
     let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
 
-    // Carol is neither a member nor path-matched.
     let mut carol = hello(&broker, &tx, "carol").await;
     let carol_list = match broker
         .handle(
@@ -250,7 +246,6 @@ async fn thread_list_does_not_leak_non_matching_threads() {
     };
     assert!(carol_list.is_empty(), "a non-member with no path match sees nothing");
 
-    // Alice (the creator/member) sees it.
     let alice_list = match broker
         .handle(
             CommsRequest::ThreadList {
@@ -284,11 +279,9 @@ async fn join_post_history_and_inbox_round_trip() {
     let _m1 = post(&broker, &mut alice, &tx, &thread, "first").await;
     let _m2 = post(&broker, &mut alice, &tx, &thread, "second").await;
 
-    // Bob was added as a member at thread_start, so both land in his inbox.
     let bob_inbox = inbox(&broker, &mut bob, &tx).await;
     assert_eq!(bob_inbox.len(), 2);
 
-    // History returns them oldest-first.
     match broker
         .handle(
             CommsRequest::ThreadHistory {
@@ -309,7 +302,6 @@ async fn join_post_history_and_inbox_round_trip() {
         other => panic!("expected History, got {other:?}"),
     }
 
-    // Alice's own posts are excluded from her inbox.
     assert!(inbox(&broker, &mut alice, &tx).await.is_empty());
 }
 
@@ -320,18 +312,15 @@ async fn inbox_reflects_only_joined_threads() {
     let (_d, broker) = temp_broker();
     let (tx, _rx) = mpsc::channel(64);
     let mut alice = hello(&broker, &tx, "alice").await;
-    // Thread with alice + bob only.
     let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
     post(&broker, &mut alice, &tx, &thread, "hello").await;
 
-    // Carol is not a member.
     let mut carol = hello(&broker, &tx, "carol").await;
     assert!(
         inbox(&broker, &mut carol, &tx).await.is_empty(),
         "non-member sees nothing"
     );
 
-    // After Carol joins, she starts seeing future posts.
     join(&broker, &mut carol, &tx, &thread).await;
     post(&broker, &mut alice, &tx, &thread, "after-join").await;
     let carol_inbox = inbox(&broker, &mut carol, &tx).await;
@@ -348,7 +337,6 @@ async fn creator_can_archive_but_member_cannot() {
     let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
     let mut bob = hello(&broker, &tx, "bob").await;
 
-    // Bob (member, not creator) cannot archive.
     let denied = broker
         .handle(CommsRequest::ThreadArchive { thread: thread.clone() }, &mut bob, &tx)
         .await;
@@ -357,13 +345,11 @@ async fn creator_can_archive_but_member_cannot() {
         "a non-creator member must not archive"
     );
 
-    // Alice (creator) can.
     let ok = broker
         .handle(CommsRequest::ThreadArchive { thread: thread.clone() }, &mut alice, &tx)
         .await;
     assert!(matches!(ok, CommsResponse::Ok));
 
-    // Archived → drops out of the active listing.
     let active = match broker
         .handle(
             CommsRequest::ThreadList {
@@ -382,7 +368,6 @@ async fn creator_can_archive_but_member_cannot() {
     };
     assert!(active.is_empty(), "an archived thread is not in the active listing");
 
-    // But include_archived surfaces it.
     let with_archived = match broker
         .handle(
             CommsRequest::ThreadList {
@@ -486,7 +471,6 @@ async fn ack_by_ids_advances_only_the_acking_agents_cursor() {
     assert_eq!(bob_after.len(), 1);
     assert_eq!(bob_after[0].meta.subject, "second");
 
-    // Shared log is untouched.
     match broker
         .handle(
             CommsRequest::ThreadHistory {
@@ -504,7 +488,6 @@ async fn ack_by_ids_advances_only_the_acking_agents_cursor() {
         other => panic!("expected History, got {other:?}"),
     }
 
-    // Carol's inbox is unaffected.
     assert_eq!(inbox(&broker, &mut carol, &tx).await.len(), 2);
 }
 
@@ -606,7 +589,6 @@ async fn subscribe_inbox_wakes_on_any_joined_thread() {
     let thread2 = start_thread(&broker, &mut alice, &tx, &["carol"]).await;
     let mut bob = hello(&broker, &tx, "bob").await;
     let mut carol = hello(&broker, &tx, "carol").await;
-    // A third thread alice is NOT a member of.
     let thread3 = start_thread(&broker, &mut bob, &tx, &["carol"]).await;
 
     let sub_resp = broker
@@ -812,10 +794,8 @@ async fn blob_gc_waits_for_an_in_flight_rescan() {
     crate::store::init_isolated_cache();
     let (_d, broker) = temp_broker();
 
-    // Hold the READ side exactly as `on_rescan` does, simulating a scan in flight.
     let rescan_guard = broker.blob_gc_lock.read().await;
 
-    // The GC sweep must block on the WRITE side while the read is held.
     let mut gc = std::pin::pin!(broker.run_blob_gc());
     tokio::select! {
         biased;
@@ -823,7 +803,6 @@ async fn blob_gc_waits_for_an_in_flight_rescan() {
         _ = tokio::time::sleep(Duration::from_millis(150)) => {}
     }
 
-    // Once the rescan releases the read lock, the sweep proceeds.
     drop(rescan_guard);
     gc.await.expect("blob GC runs once no rescan holds the read lock");
 }
@@ -851,7 +830,6 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
     }
     let root = ws.path().to_path_buf();
 
-    // Interleave the two under load: each round races a full rescan against a full sweep.
     for _ in 0..6 {
         let mut session = Session::default();
         let rescan = broker.handle(
@@ -872,7 +850,6 @@ async fn concurrent_rescan_and_blob_gc_never_reaps_a_referenced_blob() {
         gc_res.expect("blob GC must succeed under a concurrent rescan");
     }
 
-    // Every blob the surviving index references must still be present — no live blob was reaped.
     let basemind_dir = crate::store::workspace_cache_dir(&root);
     let referenced = crate::store_gc::collect_referenced_hashes(&basemind_dir).expect("collect referenced hashes");
     assert!(
@@ -898,7 +875,6 @@ async fn archive_idle_threads_flips_stale_active_threads() {
     let mut alice = hello(&broker, &tx, "alice").await;
     let thread = start_thread(&broker, &mut alice, &tx, &["bob"]).await;
 
-    // Backdate its activity well past the TTL by rewriting the stored record.
     let mut record = broker.store.get_thread(&thread).unwrap().unwrap();
     record.last_activity = now_micros() - 30 * 24 * 60 * 60 * 1_000_000;
     broker.store.put_thread(&record).unwrap();

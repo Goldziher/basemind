@@ -549,7 +549,6 @@ fn symbol_names(body: &Value) -> Vec<String> {
 async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     let dir = build_repo();
     let root = dir.path();
-    // No run_scan: the index starts empty; the daemon must build it via the forwarded scan.
 
     let serve_a = spawn_server(root).await;
     let peer_a = serve_a.peer().clone();
@@ -577,7 +576,6 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
         "serve A sees 'alpha' after the daemon-forwarded scan: {names_a:?}"
     );
 
-    // Second serve on the SAME repo: reads the shared index AND forwards its own rescan.
     let serve_b = spawn_server(root).await;
     let peer_b = serve_b.peer().clone();
     let search_b = peer_b
@@ -639,7 +637,6 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
     let serve = spawn_server(root).await;
     let peer = serve.peer().clone();
 
-    // Forward the scan to the daemon (the sole writer), which resolves + writes `refs_by_def`.
     let rescan = peer
         .call_tool(call_params("rescan", json!({})))
         .await

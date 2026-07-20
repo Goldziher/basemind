@@ -127,8 +127,6 @@ fn stale_sidecar_rechunked_when_content_unchanged() {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    // Test-unique content: the `.chunk.msgpack` sidecar is content-addressed in the shared global
-    // store, so a body shared with another test would let this test delete a sibling's sidecar.
     let fixture = format!("{FIXTURE}\n// stale-sidecar-rechunk-marker\n");
     std::fs::write(root.join("lib.rs"), &fixture).expect("write fixture");
     let stem = content_stem(fixture.as_bytes());
@@ -200,19 +198,15 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
     basemind::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
-    // Test-unique content so this test's content-addressed sidecar can't collide with a sibling's.
     let fixture = format!("{FIXTURE}\n// deferred-inline-embed-marker\n");
     std::fs::write(root.join("lib.rs"), &fixture).expect("write fixture");
     let stem = content_stem(fixture.as_bytes());
 
     let mut cfg = ConfigV1::with_defaults();
-    // Chunking is on by default; opt into embeddings so the file is embed-eligible (the path the
-    // regression lives on). The embedder may still be offline — the assertions below don't need it.
     cfg.code_search.embed = true;
 
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    // Pass 1 — Deferred: writes the chunk-only sidecar (no vectors).
     let s1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred scan");
     assert_eq!(
         s1.stats.updated, 1,
@@ -228,7 +222,6 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
         "the deferred pass writes chunks only — no vectors yet"
     );
 
-    // A second Deferred pass is idempotent: the chunk-only sidecar satisfies the unchanged check.
     let s1b = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Deferred).expect("deferred rescan");
     assert_eq!(s1b.stats.updated, 0, "a second deferred pass changes nothing");
     assert_eq!(
@@ -236,8 +229,6 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
         "the file is skipped as unchanged on the second deferred pass"
     );
 
-    // Pass 2 — Inline over the SAME content must re-process, not skip: the dim-0 sidecar does not
-    // satisfy an embed-eligible Inline scan. This is the regression guard.
     let s2 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan");
     assert_eq!(
         s2.stats.skipped_unchanged, 0,
@@ -248,8 +239,6 @@ fn deferred_chunk_only_sidecar_is_reprocessed_by_an_inline_embed_pass() {
         "the inline pass re-processes the file to fill vectors"
     );
 
-    // When the embedder is available the sidecar is upgraded in place to carry vectors; offline it
-    // stays chunk-only (BM25 fallback). The re-process assertion above pins the fix either way.
     let after = store
         .read_chunks_by_hex(&stem)
         .expect("read chunk sidecar")
@@ -275,8 +264,6 @@ fn search_code_keyword_mode_ranks_by_bm25() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
-    // Canonical committed config location; the cache moved to a global XDG store so there is no
-    // in-repo `.basemind/` dir to hold a legacy config.
     std::fs::write(
         root.join("basemind.toml"),
         "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",
@@ -367,7 +354,6 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path();
     std::fs::write(root.join("lib.rs"), FIXTURE).expect("write fixture");
-    // Canonical committed config location (see the keyword-mode test).
     std::fs::write(
         root.join("basemind.toml"),
         "\"$schema\" = \"v1\"\n\n[code_search]\nembed = false\n",

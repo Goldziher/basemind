@@ -187,7 +187,6 @@ fn refresh_from_root_adds_new_and_drops_stale_rows() {
     assert_eq!(registry.branches(&repo_id).len(), 1, "only main branch at first");
     assert_eq!(registry.worktrees(&repo_id).len(), 1, "only main worktree at first");
 
-    // Add a branch and a linked worktree with real git plumbing, then refresh from the root.
     git(&["branch", "feature"], &main);
     let wt = tmp.path().join("wt");
     git(&["worktree", "add", "-q", wt.to_str().expect("utf8"), "feature"], &main);
@@ -206,7 +205,6 @@ fn refresh_from_root_adds_new_and_drops_stale_rows() {
         "new linked worktree surfaced after refresh: {worktree_names:?}"
     );
 
-    // Delete the feature branch and drop the worktree; refresh must reconcile the stale rows away.
     git(&["worktree", "remove", "--force", wt.to_str().expect("utf8")], &main);
     git(&["branch", "-D", "feature"], &main);
     registry.refresh_from_root(&main).expect("refresh after deletions");
@@ -228,9 +226,6 @@ fn refresh_from_root_adds_new_and_drops_stale_rows() {
 fn refresh_repo_by_id_reconciles_from_recorded_main_root() {
     crate::store::init_isolated_cache();
     let tmp = tempfile::tempdir().expect("tempdir");
-    // Register the canonical path so the repo id computed at register time equals the one
-    // `refresh_repo` re-derives from the recorded (canonical) main root — otherwise a symlinked
-    // tempdir (`/var` vs `/private/var` on macOS) yields two ids and the refresh writes a new row.
     let main = tmp.path().canonicalize().expect("canonicalize tmp").join("main");
     init_repo(&main);
 
@@ -239,7 +234,6 @@ fn refresh_repo_by_id_reconciles_from_recorded_main_root() {
     let repo_id = registry.get_workspace(&key).expect("row").repo_id.expect("repo id");
     assert_eq!(registry.branches(&repo_id).len(), 1, "only main branch at first");
 
-    // Create a new branch, then refresh by id (not root): the recorded main root is re-enumerated.
     git(&["branch", "topic"], &main);
     registry.refresh_repo(&repo_id).expect("refresh by id");
     let branch_names: Vec<String> = registry.branches(&repo_id).iter().map(|b| b.name.clone()).collect();
@@ -248,7 +242,6 @@ fn refresh_repo_by_id_reconciles_from_recorded_main_root() {
         "refresh_repo surfaced the new branch: {branch_names:?}"
     );
 
-    // An unknown id is a no-op (must not error).
     registry
         .refresh_repo(&"path:/definitely/not/a/repo".to_string())
         .expect("refresh of an unknown id is a no-op");

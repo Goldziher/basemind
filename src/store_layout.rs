@@ -165,14 +165,9 @@ pub fn init_isolated_cache() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        // Leak the TempDir so the directory lives for the entire process; the OS reclaims it on
-        // exit. A dropped TempDir here would delete the cache out from under still-running tests.
         let dir = Box::leak(Box::new(tempfile::tempdir().expect("create isolated cache tempdir")));
         let comms_dir = dir.path().join("comms");
         // SAFETY: set exactly once, inside `Once::call_once`, before any test thread reads
-        // `cache_root()` (every fixture constructor calls this first). Rust 2024 marks `set_var`
-        // unsafe because concurrent get/set is UB; the single-write-before-any-read discipline
-        // here upholds that invariant. `BASEMIND_COMMS_DIR` is inert on non-comms builds.
         unsafe {
             std::env::set_var(DATA_HOME_ENV, dir.path());
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);

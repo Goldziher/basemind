@@ -82,8 +82,6 @@ impl ChangeKind {
     }
 }
 
-// `PartialEq` so a `CommitInfo` page can ride the comms `CommsResponse` (which derives it) when a
-// `daemon_writer` serve forwards a git-history query to the daemon that holds the index.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CommitInfo {
     pub sha: String,

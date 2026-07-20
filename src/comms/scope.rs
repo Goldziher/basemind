@@ -50,18 +50,12 @@ pub fn path_matches(pattern: &str, cwd: &Path) -> bool {
     if glob_covers(pattern, cwd) {
         return true;
     }
-    // `<dir>/**` must also cover an agent sitting AT `<dir>`. globset's `**` requires at least one
-    // path component after the slash, so the recursive form never matches its own base — which left
-    // a thread scoped to `<repo>/**` invisible to an agent whose cwd IS `<repo>`, the most common
-    // cwd there is, while still being visible from every subdirectory. Retrying the stripped base
-    // covers the root without widening the glob (`/repo/**` still rejects `/repo2`).
     if let Some(base) = pattern.strip_suffix("/**")
         && !base.is_empty()
         && glob_covers(base, cwd)
     {
         return true;
     }
-    // Literal path-prefix fallback: a plain directory pattern covers agents at or below it.
     let literal = Path::new(pattern);
     let literal = literal.canonicalize().unwrap_or_else(|_| literal.to_path_buf());
     cwd.starts_with(&literal)
@@ -112,10 +106,6 @@ mod tests {
 
     #[test]
     fn recursive_glob_covers_an_agent_at_its_own_base_dir() {
-        // `<repo>/**` is the natural way to scope a thread to a repo, and an agent's cwd usually IS
-        // the repo root. globset's `**` requires at least one component after the slash, so the raw
-        // pattern never matches its own base — leaving a thread scoped to `<repo>/**` invisible from
-        // `<repo>` itself, the single most common cwd there is.
         assert!(
             path_matches("/home/u/repo/**", &PathBuf::from("/home/u/repo")),
             "a `<dir>/**` thread must be discoverable by an agent sitting AT `<dir>`"

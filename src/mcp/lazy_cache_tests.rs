@@ -20,9 +20,6 @@ use crate::store::{Store, VIEW_WORKING};
 /// Scan a two-file fixture, then hand back a one-shot server over the resulting read-only store —
 /// the exact construction `basemind query …` performs per invocation.
 fn oneshot_server(root: &std::path::Path) -> BasemindServer {
-    // Pin `$BASEMIND_DATA_HOME` before the first store open. Another test in this binary would
-    // otherwise flip the process-global mid-run, and the read-only store would look for its index
-    // in a different cache root than the scan wrote it to.
     crate::store::init_isolated_cache();
     std::fs::write(root.join("a.rs"), b"pub fn alpha_marker() {}\n").expect("a.rs");
     std::fs::write(root.join("b.rs"), b"pub fn beta_marker() {}\n").expect("b.rs");
@@ -128,14 +125,12 @@ async fn completion_is_empty_until_the_barrier_builds_the_map() {
         ArgumentInfo::new("symbol", "alpha"),
     );
 
-    // Unbuilt map — exactly what a barrier-less caller would observe.
     let cold = server.complete_argument(&request);
     assert!(
         cold.completion.values.is_empty(),
         "an unbuilt map yields no completions: this is the bug a missing barrier ships"
     );
 
-    // The barrier is what makes the map real. `complete` takes it before delegating here.
     server.state.await_cache_ready().await;
     let warm = server.complete_argument(&request);
     assert!(

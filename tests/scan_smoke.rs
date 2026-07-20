@@ -48,10 +48,6 @@ fn scan_extracts_rust_symbols() {
 fn scan_reuses_extraction_across_views_sharing_blobs() {
     let (dir, cfg) = fresh_repo();
     let root = dir.path();
-    // Unique content: the blob store is machine-global + content-addressed, so a body shared with
-    // another test would let that test's blob pre-seed this one — breaking the `reused_extraction
-    // == 0` first-scan assertion under a parallel run. A test-local symbol name keeps the hash
-    // (hence the blob) private to this test.
     fs::write(
         root.join("a.rs"),
         b"pub fn reuse_across_views_alpha() {}\npub struct ReuseAcrossViewsBeta { x: i32 }\n",
@@ -106,14 +102,10 @@ fn store_open_writes_nothing_under_repo_root() {
 
     let _store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
 
-    // The cache is a machine-global XDG store now — opening a store must not create any
-    // `.basemind/` under the repo (the old in-repo `.gitignore` scaffolding is gone; the durable
-    // in-repo marker is the committed `basemind.toml`, written by `basemind init` in Track G).
     assert!(
         !root.join(".basemind").exists(),
         "no in-repo .basemind/ should be created on store open"
     );
-    // The workspace's state lives under the global cache instead.
     assert!(
         basemind::store::workspace_cache_dir(root)
             .join("views")

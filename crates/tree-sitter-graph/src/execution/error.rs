@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -234,8 +233,6 @@ impl DisplayExecutionErrorPretty<'_> {
 }
 
 impl StatementContext {
-    // Every argument is source/context needed to render one pretty error frame; grouping them
-    // into a struct would just move the same fan-out one level up.
     #[allow(clippy::too_many_arguments)]
     fn fmt_pretty(
         &self,

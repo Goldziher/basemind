@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2022, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -103,8 +102,6 @@ impl ast::File {
             cancellation_flag,
         };
         lazy_graph.evaluate(&mut exec)?;
-        // make sure any unforced values are now forced, to surface any problems
-        // hidden by the fact that the values were unused
         store.evaluate_all(&mut exec)?;
         scoped_store.evaluate_all(&mut exec)?;
 
@@ -143,7 +140,7 @@ struct ExecutionContext<'a, 'c, 'g, 'tree> {
     store: &'a mut LazyStore,
     scoped_store: &'a mut LazyScopedVariables,
     lazy_graph: &'a mut LazyGraph,
-    function_parameters: &'a mut Vec<graph::Value>, // re-usable buffer to reduce memory allocations
+    function_parameters: &'a mut Vec<graph::Value>,
     prev_element_debug_info: &'a mut HashMap<GraphElementKey, DebugInfo>,
     error_context: StatementContext,
     inherited_variables: &'a HashSet<Identifier>,
@@ -159,7 +156,7 @@ struct EvaluationContext<'a, 'tree> {
     pub store: &'a LazyStore,
     pub scoped_store: &'a LazyScopedVariables,
     pub inherited_variables: &'a HashSet<Identifier>,
-    pub function_parameters: &'a mut Vec<graph::Value>, // re-usable buffer to reduce memory allocations
+    pub function_parameters: &'a mut Vec<graph::Value>,
     pub prev_element_debug_info: &'a mut HashMap<GraphElementKey, DebugInfo>,
     pub cancellation_flag: &'a dyn CancellationFlag,
 }
@@ -171,9 +168,6 @@ pub(super) enum GraphElementKey {
 }
 
 impl ast::Stanza {
-    // The lazy executor threads the full evaluation environment (graph, config, locals, several
-    // stores, and debug-info maps) through one call; bundling it into a struct would not reduce
-    // the coupling, only relocate it.
     #[allow(clippy::too_many_arguments)]
     fn execute_lazy<'l, 'tree>(
         &self,
@@ -467,8 +461,6 @@ impl ast::If {
 }
 
 impl ast::Condition {
-    // Eagerly evaluate the condition to a boolean. It assumes the argument expressions
-    // are local (i.e., `is_local = true` in the checker).
     fn test_eager(&self, exec: &mut ExecutionContext) -> Result<bool, ExecutionError> {
         match self {
             Self::Some { value, .. } => Ok(!value.evaluate_eager(exec)?.is_null()),
@@ -532,8 +524,6 @@ impl ast::Expression {
         }
     }
 
-    // Eagerly evaluate the expression to a `Value`, instead of a `LazyValue`. This method should
-    // only be called on expressions that are local (i.e., `is_local = true` in the checker).
     fn evaluate_eager(&self, exec: &mut ExecutionContext) -> Result<graph::Value, ExecutionError> {
         self.evaluate_lazy(exec)?.evaluate(&mut EvaluationContext {
             source: exec.source,

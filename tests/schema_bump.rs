@@ -181,14 +181,11 @@ fn opening_against_stale_schema_index_refreshes_durably_without_wiping_blobs() {
     basemind::store::init_isolated_cache();
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    // The cache is machine-global + workspace-keyed now, not `<root>/.basemind/`.
     let basemind_dir = basemind::store::workspace_cache_dir(root);
     let blobs_dir = basemind::store::global_blobs_dir();
     fs::create_dir_all(&basemind_dir).unwrap();
     fs::create_dir_all(&blobs_dir).unwrap();
 
-    // A test-unique blob stem so this test's durable-refresh assertion is not perturbed by another
-    // test's blob in the shared global store.
     let blob_path = blobs_dir.join("schemabump0000deadbeef.l1.msgpack");
     fs::write(&blob_path, b"not really a blob").unwrap();
 
@@ -285,10 +282,6 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
-    // Test-unique content: the blob store is machine-global + content-addressed, so a body shared
-    // with another test would put a foreign blob under this test's stems and make full-dir blob-set
-    // equality flaky under a parallel run. A private symbol name keeps this test's blob stems its
-    // own, so we can assert on exactly those stems.
     fs::write(root.join("a.rs"), b"pub fn schema_bump_refresh_marker() {}\n").unwrap();
 
     let config = basemind::config::ConfigV1::with_defaults();
@@ -313,8 +306,6 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
         .join(basemind::store::VIEW_WORKING)
         .join("index.msgpack");
 
-    // The content-hash stems this workspace's index references — the only blobs this test owns in
-    // the shared global store. We assert on exactly these, never the whole (shared) directory.
     let referenced_stems = |label: &str| -> Vec<String> {
         let idx_bytes = fs::read(&view_index).unwrap_or_else(|e| panic!("read view index ({label}): {e}"));
         let index: basemind::store::Index = rmp_serde::from_slice(&idx_bytes).unwrap();
@@ -413,10 +404,6 @@ fn schema_bump_refreshes_blobs_in_place_and_gc_reclaims_only_orphans() {
         );
     }
 
-    // GC intent (reclaims only orphans) is asserted per-workspace-safely: every blob the refreshed
-    // index references is still on disk. We do NOT run the global `store_gc::run_gc` here — under
-    // the machine-global blob store a single-workspace sweep could reap blobs other parallel tests'
-    // workspaces still reference; cross-workspace reference-counted GC is the daemon's job (Track E).
     for stem in &after_stems {
         assert!(
             !all_blobs_for(std::slice::from_ref(stem)).is_empty(),

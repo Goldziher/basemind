@@ -304,11 +304,6 @@ pub(super) async fn run_memory_audit(
         now,
     };
 
-    // Gather the raw `(key, value, from_archive, persist)` records to audit. Single-key reads one
-    // keyspace and always writes back; the range path scans live (writes back) then — only if room
-    // remains under the shared `limit` — archive (read-only, never written back). Under
-    // `daemon_writer` the fjall reads/writes forward to the daemon; the audit verdict itself
-    // (`evaluate_one`, cache + read-only store) is always computed here.
     let records = gather_audit_records(state, &store_guard, &params, vis_byte, owner, limit, scan_cap).await?;
 
     let mut results: Vec<AuditResult> = Vec::new();

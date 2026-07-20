@@ -96,10 +96,6 @@ impl RemoteHistory {
         let client = self
             .client
             .get_or_try_init(|| async {
-                // Connect only — never SPAWN a daemon from the query path. The startup sync
-                // ([`request_sync`]) owns bring-up; a query that spawns would put a daemon launch on
-                // the latency path of a tool call, and a down daemon would launch one per call.
-                // With no daemon there is nothing to read, and the caller live-walks.
                 let client = CommsClient::connect(
                     &crate::comms::singleton::resolve_paths()?,
                     self.agent.clone(),
@@ -167,9 +163,6 @@ const SYNC_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
 pub async fn request_sync(root: PathBuf, agent: AgentId) -> Option<SyncOutcome> {
     let mut backoff = SYNC_BACKOFF;
     for attempt in 0..=SYNC_RETRIES {
-        // Only the FIRST attempt may spawn a daemon. A retry that re-spawns turns a slow bring-up
-        // (or a loaded machine) into a launch-per-attempt feedback loop; every later attempt just
-        // waits for the daemon the first one asked for.
         match try_sync(&root, &agent, attempt == 0).await {
             Ok(outcome) => return Some(outcome),
             Err(error) if attempt == SYNC_RETRIES => {

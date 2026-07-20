@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2022, tree-sitter authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -252,7 +251,6 @@ impl Thunk {
         trace!("force {}", state);
         let value = match state {
             ThunkState::Unforced(value) => {
-                // it is important that we do not hold a borrow of self.forced_values when executing self.value.evaluate
                 let value = value.evaluate(exec)?;
                 Ok(value)
             }

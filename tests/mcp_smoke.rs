@@ -1604,11 +1604,6 @@ async fn mcp_server_exercises_representative_tools() {
          got all-zero report {body}"
     );
 
-    // Seed a fresh sub-millisecond tool call immediately before reading telemetry. The `recent`
-    // window is a small ring (last ~10 calls); under feature sets that add fixture calls above
-    // (comms/memory/proposals) the earlier `search_symbols`/`outline` rows get flushed out of it, so
-    // pin one here rather than assume a specific earlier tool survived. This is a warm in-RAM lookup,
-    // so it is itself the sub-millisecond, non-zero-µs row the assertions below check for.
     let _ = service
         .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 5 })))
         .await
@@ -1628,10 +1623,6 @@ async fn mcp_server_exercises_representative_tools() {
     let per_tool = body.get("per_tool").and_then(Value::as_array).expect("per_tool array");
     assert!(!per_tool.is_empty(), "per_tool histogram must not be empty");
 
-    // Telemetry rows must be recorded in microseconds. Every call above is a warm in-RAM lookup
-    // against a fixture repo, so all of them complete in well under a millisecond: when the row was
-    // stamped with `as_millis` this histogram was a column of zeros, and a fast tool was
-    // indistinguishable from an uninstrumented one. At least one real call must show a duration.
     let recent = body.get("recent").and_then(Value::as_array).expect("recent array");
     assert!(!recent.is_empty(), "recent calls must not be empty");
     for call in recent {
@@ -1640,12 +1631,6 @@ async fn mcp_server_exercises_representative_tools() {
             "every telemetry row must carry an `elapsed_us` reading, got {call}"
         );
     }
-    // The bug this guards: these fixture tools are pure in-RAM lookups that complete in tens of
-    // microseconds (`find_files` ~15 us, `find_references` ~47 us, `workspace_grep` ~78 us), so a
-    // row stamped with `as_millis` recorded every one of them as `0` — a fast tool was
-    // indistinguishable from an uninstrumented one. Asserting "some call is non-zero" would NOT
-    // catch it (a `rescan` in the same window takes ~20 ms and stays non-zero either way); the
-    // discriminating property is that a SUB-MILLISECOND tool reports a duration at all.
     const SUB_MS_TOOLS: [&str; 5] = [
         "find_files",
         "find_references",
@@ -1687,10 +1672,6 @@ async fn mcp_server_exercises_representative_tools() {
         blob_count >= 1,
         "freshly-scanned fixture should have blobs on disk: {body}"
     );
-    // The blob store is machine-global now, so `orphan_blob_count` is measured across every
-    // workspace that shares the store — a clean scan of THIS workspace can still see orphans that
-    // belong to other workspaces (here, sibling tests sharing the isolated global cache). The
-    // meaningful post-scan invariant is that orphan accounting ran, not that it is zero.
     assert!(
         body.get("blob_accounting_ok").and_then(Value::as_bool).unwrap_or(false),
         "orphan accounting must have run after a clean scan: {body}"
@@ -2963,7 +2944,6 @@ async fn comms_round_trip_front_matter_then_body_then_inbox() {
         .await
         .expect("connect b");
 
-    // Start a thread with A as creator + B as a member (subject + members = two dimensions).
     let thread = a
         .start_thread(
             Some("Team".to_string()),
@@ -3136,8 +3116,6 @@ async fn comms_inbox_wait_delivers_then_times_out() {
     assert!(!timed_out, "a's wait must resolve from b's pre-existing post");
     assert_eq!(rows.len(), 1, "exactly the one posted message");
     assert_eq!(rows[0].meta.subject, "deploy status");
-    // `unread` is the count REMAINING beyond this page (same semantics as inbox_read): the one post
-    // came back in `rows`, so nothing remains — 0, not a running total.
     assert_eq!(
         unread, 0,
         "the single post was returned in rows; none remain beyond this page"
@@ -3172,8 +3150,6 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     let root = dir.path();
     run_scan(root);
 
-    // Canonical committed config location (`<root>/basemind.toml`); the cache moved to a global
-    // XDG store so there is no in-repo `.basemind/` dir to hold a legacy config anymore.
     std::fs::write(
         root.join("basemind.toml"),
         b"\"$schema\" = \"v1\"\n\n[shells]\nvisual = \"headless\"\n",
@@ -3470,10 +3446,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             .await
             .expect("lean invoke_tool"),
     );
-    // `elapsed_us` is a per-call latency reading, so it is legitimately different between any two
-    // calls (these are even two separate server processes). Assert both carry it, then compare the
-    // rest of the payload structurally — that is what this test is actually about: the lean
-    // `invoke_tool` wrapper must not alter the response it forwards.
     let mut via_invoke = via_invoke;
     let mut direct = direct;
     for (label, body) in [("invoke_tool", &mut via_invoke), ("direct", &mut direct)] {
@@ -3743,7 +3715,6 @@ fn assert_stamped(tool: &str, body: &Value) {
 async fn latency_tools_report_microsecond_elapsed_us() {
     let (_dir, service) = spawn_paging_server().await;
 
-    // Representative code-map tool: index-backed, the microsecond-scale hot path.
     let search = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "paged" })))
@@ -3756,7 +3727,6 @@ async fn latency_tools_report_microsecond_elapsed_us() {
     );
     assert_sane_elapsed_us("search_symbols", &search);
 
-    // Representative git tool: walks real history, a different code path entirely.
     let recent = decode_text(
         &service
             .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
@@ -3766,14 +3736,6 @@ async fn latency_tools_report_microsecond_elapsed_us() {
     assert_eq!(commit_shas(&recent).len(), 2, "fixture has 5 commits; asked for 2");
     assert_stamped("recent_changes", &recent);
 
-    // `outline` is the one tool that builds its response with an `elapsed_us: 0` placeholder and
-    // overwrites it just before serialization, so it is the tool most able to regress into shipping
-    // a hardcoded 0 — assert it explicitly.
-    //
-    // Use the `l2: true` path deliberately: it reads an L2 blob from the store, so it always costs
-    // more than a microsecond. The warm in-RAM path (`l2: false`) can legitimately complete in under
-    // 1 µs on a tiny fixture and truncate to 0, which would make a `> 0` assertion flaky rather than
-    // meaningful. Both paths share the same post-hoc stamp, so this still covers the placeholder.
     let outline = decode_text(
         &service
             .call_tool(call_params("outline", json!({ "path": "paged.rs", "l2": true })))

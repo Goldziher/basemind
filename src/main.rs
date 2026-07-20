@@ -257,10 +257,6 @@ fn default_log_directive(verbosity: Verbosity) -> &'static str {
 }
 
 fn main() -> Result<()> {
-    // Earliest observable point in the process. Everything from here to the first tool call is
-    // charged to `startup_us` (see `cli::render::Emit`), so a CLI caller can see exactly how much
-    // of a wrapped `time basemind …` was process startup rather than the query. Pre-`main` cost
-    // (exec, dynamic linking, runtime init) is not observable from inside the process.
     let process_started = std::time::Instant::now();
     #[cfg(all(feature = "shells", any(unix, windows)))]
     if let Some(result) = basemind::shells::intercept_internal_reexec() {
@@ -306,9 +302,6 @@ fn main() -> Result<()> {
         )
     };
     match cli.cmd {
-        // `init` anchors to the current repo (git root, else cwd) — NOT the ancestor-`.basemind`
-        // walk `root` uses — so it scaffolds the project you're in, never a parent that already
-        // has a `.basemind/`.
         Cmd::Init(args) => basemind::cli::init::run(&basemind::config::init_root(&start), &args),
         Cmd::Scan(args) => cmd_scan(&root, &args, verbosity, no_color),
         Cmd::Rescan(args) => cmd_rescan(&root, &args, verbosity, no_color),
@@ -449,9 +442,6 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
         .context("build tokio runtime")?;
 
     runtime.block_on(async move {
-        // Identity resolves through the ONE shared resolver rather than a constant: a lifecycle
-        // RPC connects as a real agent, and a machine-wide constant is exactly what let two agents
-        // collide onto one inbox. Keyed on the cwd, so it is this workspace's agent.
         let root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let agent = basemind::comms::identity::cli_agent_id(&root);
         let mut client = CommsClient::connect(&paths, agent, None, None)
@@ -772,16 +762,8 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
             );
         }
     }
-    // On a comms build the machine daemon is the sole fjall writer: this serve opens the store
-    // READ-ONLY and forwards every write (auto-scan, watcher rescan, `rescan` tool) to the daemon
-    // over the socket (see `mcp::daemon_forward`), so N sessions on one repo all read + write
-    // without the single-holder downgrade. Without comms there is no daemon, so serve is the local
-    // writer exactly as before: take the write lock, or fall back read-only if another serve holds it.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let (store, read_only, daemon_writer) = (
-        // Blobs-only open: the daemon is the sole fjall writer, and fjall's directory lock is
-        // exclusive even for a read-only open, so opening the index here would steal the lock the
-        // daemon needs. Reads come from the shared blobs / in-RAM map instead.
         Store::open_read_only_no_index(root, view).context("open store read-only")?,
         true,
         true,
@@ -825,8 +807,6 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
         watch: !args.no_watch,
         read_only,
         daemon_writer,
-        // `serve` is long-lived, so the whole-corpus map build amortizes over the session and is
-        // warmed off the startup path already. Laziness is a one-shot-CLI concern.
         lazy_cache: false,
     };
     tracing::info!(

@@ -71,11 +71,6 @@ pub(super) fn run_workspace_grep(
 
     let re = Regex::new(&params.pattern).map_err(|e| McpError::invalid_params(format!("invalid regex: {e}"), None))?;
 
-    // `escape` escapes every meta character, so an escape that changes nothing proves the pattern
-    // has none — the regex then matches exactly that byte string and memmem can reject a whole file
-    // with one SIMD pass instead of driving the regex engine across it. Anything else (alternation,
-    // optional atoms, inline flags) has no soundly extractable required literal here, so it runs
-    // unprefiltered rather than risking a false negative — a missed match is the bug this tool had.
     let literal =
         (regex::escape(&params.pattern) == params.pattern).then(|| Finder::new(params.pattern.as_bytes()).into_owned());
 
@@ -84,8 +79,6 @@ pub(super) fn run_workspace_grep(
 
     let cache = state.cache.load_full();
 
-    // `by_path` is a BTreeMap, so the candidate list is in sorted path order on every call. Both the
-    // parallel scan below and the cursor offsets depend on that determinism.
     let candidates: Vec<(&RelPath, &crate::extract::FileMapL1)> = cache
         .by_path
         .iter()
@@ -125,8 +118,6 @@ pub(super) fn run_workspace_grep(
 
     let budget = super::budget::apply_budget(hits, params.max_tokens);
     let (hits, budgeted, next_cursor) = if budget.budgeted {
-        // `budgeted` is only ever set when at least one hit was dropped, so `hit_cursors[kept]` is
-        // the first dropped hit — resuming exactly there re-emits nothing and loses nothing.
         let kept = budget.items.len();
         let resume = hit_cursors
             .get(kept)

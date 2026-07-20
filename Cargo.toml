@@ -1,10 +1,3 @@
-[workspace]
-members = ["crates/stack-graphs", "crates/tree-sitter-graph", "crates/tree-sitter-stack-graphs", "crates/lsp-positions"]
-
-# Shared lint policy for the owned forks under crates/*. The root basemind package opts in via
-# its own `[lints] workspace = true` below; each fork crate does the same in its Cargo.toml.
-[workspace.lints.clippy]
-all = "warn"
 
 [package]
 name = "basemind"
@@ -22,6 +15,16 @@ categories = ["command-line-utilities", "development-tools"]
 
 [package.metadata.cargo-machete]
 ignored = ["serde_toon_format"]
+[workspace]
+members = [
+    "crates/lsp-positions",
+    "crates/stack-graphs",
+    "crates/tree-sitter-graph",
+    "crates/tree-sitter-stack-graphs",
+]
+
+[workspace.lints.clippy]
+all = "warn"
 
 [lib]
 name = "basemind"
@@ -34,7 +37,13 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
+intelligence = [
+    "dep:xberg",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:futures",
+]
 
 documents = [
     "intelligence",
@@ -58,7 +67,12 @@ documents = [
     "dep:serde_toon_format",
 ]
 
-code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
+code-search = [
+    "intelligence",
+    "xberg/embeddings",
+    "xberg/reranker",
+    "xberg/reranker-presets",
+]
 
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
@@ -81,11 +95,16 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
+full = [
+    "documents",
+    "memory",
+    "crawl",
+    "comms",
+    "shells",
+    "code-intel",
+    "code-search",
+]
 
-# Exposes `store::init_isolated_cache()` so integration tests (in `tests/`) can redirect
-# `BASEMIND_DATA_HOME` to a per-process temp dir. Integration-test binaries get it via the
-# `basemind` dev-dependency below (which enables this feature).
 test-support = ["dep:tempfile"]
 
 ort-dynamic = ["xberg?/ort-dynamic"]
@@ -96,15 +115,12 @@ anstream = "1.0"
 anstyle = "1"
 anyhow = "1"
 arc-swap = "1.9.2"
-# Pinned to 58 deliberately: lancedb 0.31 links arrow 58, and bumping ours to 59 puts two arrow
-# versions in the graph — `RecordBatch` then no longer satisfies lancedb's `Scannable`. Bump only
-# in lock-step with lancedb.
 arrow-array = { version = "58", optional = true }
 arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-crawlberg = { version = "1.0.6", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.0.7", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.8"
 fs2 = "0.4"
@@ -160,29 +176,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-graph = { path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.12.5"
+tree-sitter-language-pack = "1.13.1"
 tree-sitter-stack-graphs = { path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.0-rc.29", default-features = false, features = [
+xberg = { version = "1.0.0-rc.30", default-features = false, features = [
     "tokio-runtime",
     "simd-utf8",
 ], optional = true }
-
-# The whole stack-graph stack is forked under crates/ (stack-graphs, tree-sitter-stack-graphs,
-# tree-sitter-graph, lsp-positions) and every member must resolve to the SAME `lsp-positions`
-# instance so their `lsp_positions::Span` types unify — and the upstream crates.io `lsp-positions`
-# pins tree-sitter 0.24, which is incompatible with basemind's 0.26. Redirect it to our
-# owned, 0.26-ported fork for the whole graph.
-[patch.crates-io]
-lsp-positions = { path = "crates/lsp-positions" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"
 
 [dev-dependencies]
-# The crate depends on itself with `test-support` so every integration-test binary can call
-# `basemind::store::init_isolated_cache()` to redirect `BASEMIND_DATA_HOME` at a per-process temp
-# dir — keeping tests off the real user XDG cache without each test re-declaring the plumbing.
 basemind = { path = ".", features = ["test-support"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = "1"
@@ -191,6 +196,9 @@ rmcp = { version = "2.2", features = ["client", "transport-child-process"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 wiremock = "0.6"
+
+[patch.crates-io]
+lsp-positions = { path = "crates/lsp-positions" }
 
 [profile.release]
 lto = "thin"

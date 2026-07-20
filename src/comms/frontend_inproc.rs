@@ -86,9 +86,6 @@ impl InProcFrontend {
             to_client: to_client.clone(),
         };
         let broker = self.broker.clone();
-        // Counted like any other link. The in-process front-end has no idle reaper today, but the
-        // link refcount is what tells a broker it has someone to serve — leaving these invisible
-        // would mean an embedded broker could be reaped mid-session the moment one ever did.
         let guard = broker.register_link();
         tokio::spawn(async move {
             serve_link(broker, link, to_client, guard).await;
@@ -178,7 +175,6 @@ mod tests {
         hello(&mut writer, "writer").await;
         hello(&mut reader, "reader").await;
 
-        // Thread with writer (creator) + reader as members.
         let thread = start_thread(&mut writer, &["reader"]).await;
 
         writer

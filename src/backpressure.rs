@@ -168,7 +168,6 @@ mod tests {
 
     #[test]
     fn over_then_under_parks_until_clear() {
-        // 200 MB ceiling: first two samples are over it, then it drops under.
         let calls = AtomicUsize::new(0);
         let gate = FootprintGate::with_sampler(200, || {
             let n = calls.fetch_add(1, Ordering::SeqCst);

@@ -312,8 +312,6 @@ pub fn scan(
         run_optional_lane(LANE_DOC_REMOVALS, || {
             flush_doc_removals_if_any(store, config, &scope, &doc_stale);
         });
-        // The doc-removal lane is the ONE post-barrier lane that edits `store.index` (it drops the
-        // `doc_files` entries it purges from LanceDB), so its edits need a second flush.
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));
@@ -445,7 +443,6 @@ pub fn scan_paths(
         run_optional_lane(LANE_DOC_REMOVALS, || {
             flush_doc_removals_if_any(store, config, &scope, &doc_removed);
         });
-        // See `flush_code_map`: the doc-removal lane is the only post-barrier `store.index` mutator.
         store.flush()?;
     }
     run_optional_lane(LANE_BM25_STATS, || finalize_bm25_stats_if_any(store, config));

@@ -251,9 +251,6 @@ impl Store {
         ensure_dir(&basemind_dir)?;
         let blobs_dir = global_blobs_dir();
         ensure_dir(&blobs_dir)?;
-        // Blobs are global (shared by every workspace), so a standalone Store can never see the
-        // full set of live references — auto-GC is disabled here (`blobs_shared = true`); the
-        // daemon performs reference-counted GC across all workspaces.
         let blobs_shared = true;
         ensure_dir(&basemind_dir.join(VIEWS_DIR))?;
         migrate_legacy_index_into_views(&basemind_dir)?;
@@ -261,8 +258,6 @@ impl Store {
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         ensure_dir(&view_dir)?;
         let lock = acquire_lock_as(&basemind_dir, holder)?;
-        // Record (or self-heal) the root marker under the lock, so the orphan reaper can later tell
-        // whether this workspace's worktree still exists. See [`WORKSPACE_MARKER_FILE`].
         ensure_workspace_marker(&basemind_dir, root);
         let index = match read_index(&view_dir) {
             Ok(Some(idx)) => idx,
@@ -319,13 +314,9 @@ impl Store {
         let basemind_dir = workspace_cache_dir(root);
         if basemind_dir.exists() {
             let _ = migrate_legacy_index_into_views(&basemind_dir);
-            // Self-heal the root marker for workspaces that predate it (a read-only open never
-            // creates the dir, so this only ever touches an existing workspace). Idempotent: a
-            // marker already naming this root is left alone.
             ensure_workspace_marker(&basemind_dir, root);
         }
         let blobs_dir = global_blobs_dir();
-        // See `open_with_holder`: blobs are global, so auto-GC is disabled in a standalone Store.
         let blobs_shared = true;
         let view_dir = basemind_dir.join(VIEWS_DIR).join(view);
         if view != VIEW_WORKING && !view_dir.join(INDEX_FILE).exists() {

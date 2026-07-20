@@ -1,12 +1,4 @@
-# Maintained fork of tree-sitter-stack-graphs, originally derived from
-# github.com/github/stack-graphs v0.10.0 (archived upstream).
 # License: MIT OR Apache-2.0 (see LICENSE-MIT / LICENSE-APACHE — upstream copyright retained).
-# Owned and modernized by basemind: ported to tree-sitter 0.26, edition 2024. The `cli` / `lsp`
-# features and the loader/test/ci/cli modules (tree-sitter-loader, tree-sitter-config, walkdir,
-# rust-ini, ...) are stripped: we only parse a .tsg string and execute it against a
-# tree_sitter::Tree to build a stack_graphs::graph::StackGraph. lsp-positions, tree-sitter-graph
-# and stack-graphs are all workspace path deps — the whole stack-graph stack is forked under
-# crates/ and must resolve to a single instance of each.
 [package]
 name = "tree-sitter-stack-graphs"
 version = "0.10.0"
@@ -15,14 +7,9 @@ homepage = "https://github.com/Goldziher/basemind"
 repository = "https://github.com/Goldziher/basemind"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-# Derived from the upstream github/stack-graphs tree-sitter-stack-graphs crate
-# (GitHub <opensource+stack-graphs@github.com>, Douglas Creager, Hendrik van Antwerpen).
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 publish = false
-
-[lints]
-workspace = true
 
 [lib]
 test = false
@@ -39,6 +26,9 @@ tree-sitter-graph = { path = "../tree-sitter-graph" }
 [dev-dependencies]
 pretty_assertions = "1"
 tree-sitter-python = "=0.23.5"
+
+[lints]
+workspace = true
 
 [[test]]
 name = "it"

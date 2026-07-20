@@ -69,8 +69,6 @@ pub fn emit(tool_name: &str, result: &CallToolResult, opts: &Emit, out: &mut imp
         return render_json(&value, out);
     }
 
-    // Human mode: lift `elapsed_us` out of the payload so the generic renderer doesn't print it
-    // as just another scalar row, then report it in the timing footer.
     let elapsed_us = match &mut value {
         Value::Object(map) => map.remove("elapsed_us").and_then(|v| v.as_u64()),
         _ => None,
@@ -83,7 +81,6 @@ pub fn emit(tool_name: &str, result: &CallToolResult, opts: &Emit, out: &mut imp
             format_us(us),
             format_us(opts.startup_us)
         )?,
-        // The tool reports no latency (a non-instrumented tool) — report only what we do know.
         None => writeln!(out, "\n({} startup)", format_us(opts.startup_us))?,
     }
     Ok(())

@@ -1,4 +1,3 @@
-// -*- coding: utf-8 -*-
 // ------------------------------------------------------------------------------------------------
 // Copyright © 2021, stack-graphs authors.
 // Licensed under either of Apache License, Version 2.0, or MIT license, at your option.
@@ -380,7 +379,6 @@ pub use tree_sitter_graph::Variables;
 
 const MAX_PARSE_ERRORS: usize = 5;
 
-// Node type values
 static DROP_SCOPES_TYPE: &str = "drop_scopes";
 static POP_SCOPED_SYMBOL_TYPE: &str = "pop_scoped_symbol";
 static POP_SYMBOL_TYPE: &str = "pop_symbol";
@@ -388,7 +386,6 @@ static PUSH_SCOPED_SYMBOL_TYPE: &str = "push_scoped_symbol";
 static PUSH_SYMBOL_TYPE: &str = "push_symbol";
 static SCOPE_TYPE: &str = "scope";
 
-// Node attribute names
 static DEBUG_ATTR_PREFIX: &str = "debug_";
 static DEFINIENS_NODE_ATTR: &str = "definiens_node";
 static EMPTY_SOURCE_SPAN_ATTR: &str = "empty_source_span";
@@ -402,7 +399,6 @@ static SYMBOL_ATTR: &str = "symbol";
 static SYNTAX_TYPE_ATTR: &str = "syntax_type";
 static TYPE_ATTR: &str = "type";
 
-// Expected attributes per node type
 static POP_SCOPED_SYMBOL_ATTRS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     HashSet::from([
         TYPE_ATTR,
@@ -428,10 +424,8 @@ static PUSH_SYMBOL_ATTRS: Lazy<HashSet<&'static str>> =
 static SCOPE_ATTRS: Lazy<HashSet<&'static str>> =
     Lazy::new(|| HashSet::from([TYPE_ATTR, IS_EXPORTED_ATTR, IS_ENDPOINT_ATTR]));
 
-// Edge attribute names
 static PRECEDENCE_ATTR: &str = "precedence";
 
-// Global variables
 /// Name of the variable used to pass the root node.
 pub const ROOT_NODE_VAR: &str = "ROOT_NODE";
 /// Name of the variable used to pass the jump-to-scope node.
@@ -607,11 +601,6 @@ impl<'a> Builder<'a> {
         let tree = {
             let mut parser = Parser::new();
             parser.set_language(&self.sgl.language)?;
-            // tree-sitter 0.26 removed `Parser::set_cancellation_flag`. Cancellation is now
-            // expressed via a progress callback on `ParseOptions`: tree-sitter invokes it
-            // periodically during parsing, and returning `ControlFlow::Break` aborts the parse
-            // (yielding `None`). We consult the same `CancellationFlag` the rest of the build
-            // uses, so cancellation semantics are preserved without a background poller thread.
             let mut progress = |_: &tree_sitter::ParseState| -> std::ops::ControlFlow<()> {
                 if cancellation_flag.check("parsing").is_err() {
                     std::ops::ControlFlow::Break(())
@@ -620,8 +609,6 @@ impl<'a> Builder<'a> {
                 }
             };
             let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
-            // `parse_with_options` takes a chunked text-retrieval callback (byte offset +
-            // position -> slice), mirroring the internal callback that `Parser::parse` builds.
             let bytes = self.source.as_bytes();
             let len = bytes.len();
             let mut read = |i: usize, _: tree_sitter::Point| -> &[u8] { if i < len { &bytes[i..] } else { &[] } };
@@ -660,15 +647,6 @@ impl<'a> Builder<'a> {
                 [DEBUG_ATTR_PREFIX, "tsg_match_node"].concat().as_str().into(),
             );
 
-        // The execute_into() method requires that the reference to the tree matches the lifetime
-        // parameter 'a of the Graph, because the Graph can hold references to the Tree. In this Builder,
-        // the Graph is created _before_ the Tree, so that it can be prepopulated with nodes. Because of
-        // that, the borrow checker complains that the Tree only lives as long as this method, not as long
-        // as the lifetime parameter 'a. Here we transmute the Tree reference to give it the required 'a
-        // lifetime, which is safe because:
-        // (1) this method takes ownership of the Builder; and
-        // (2) it returns no values connected to 'a.
-        // These together guarantee that no values connected to the lifetime 'a outlive the Tree.
         let tree: &'a tree_sitter::Tree = unsafe { transmute(&tree) };
         self.sgl.tsg.execute_into(
             &mut self.graph,
@@ -898,14 +876,10 @@ impl<'a> Builder<'a> {
     fn load(mut self, cancellation_flag: &dyn CancellationFlag) -> Result<(), BuildError> {
         let cancellation_flag: &dyn stack_graphs::CancellationFlag = &cancellation_flag;
 
-        // By default graph ids are used for stack graph local_ids. A remapping is computed
-        // for local_ids that already exist in the graph---all other graph ids are mapped to
-        // the same local_id. See [`self.node_id_for_index`] for more details.
         let mut next_local_id = (self.graph.node_count() - self.injected_node_count) as u32;
         for node in self.stack_graph.nodes_for_file(self.file) {
             let local_id = self.stack_graph[node].id().local_id();
             let index = (local_id as usize) + self.injected_node_count;
-            // find next available local_id for which no stack graph node exists yet
             while self
                 .stack_graph
                 .node_for_id(NodeID::new_in_file(self.file, next_local_id))
@@ -913,7 +887,6 @@ impl<'a> Builder<'a> {
             {
                 next_local_id += 1;
             }
-            // remap graph node index to the available stack graph node local_id
             if self
                 .remapped_nodes
                 .insert(index, NodeID::new_in_file(self.file, next_local_id))
@@ -923,8 +896,6 @@ impl<'a> Builder<'a> {
             }
         }
 
-        // First create a stack graph node for each TSG node.  (The skip(...) is because the first
-        // DSL nodes that we create are the proxies for the injected stack graph nodes.)
         for node_ref in self.graph.iter_nodes().skip(self.injected_node_count) {
             cancellation_flag.check("loading graph nodes")?;
             let node_type = self.get_node_type(node_ref)?;
@@ -944,10 +915,6 @@ impl<'a> Builder<'a> {
             self.verify_node(node)?;
         }
 
-        // Then add stack graph edges for each TSG edge.  Note that we _don't_ skip(...) here because
-        // there might be outgoing nodes from the “root” node that we need to process.
-        // (Technically the caller could add outgoing nodes from “jump to scope” as well, but those
-        // are invalid according to the stack graph semantics and will never be followed.
         for source_ref in self.graph.iter_nodes() {
             let source = &self.graph[source_ref];
             let source_node_id = self.node_id_for_graph_node(source_ref);
@@ -1231,8 +1198,6 @@ pub trait FileAnalyzer {
     /// Construct stack graph for the given file. Implementations must assume that nodes
     /// for the given file may already exist, and make sure to prevent node id conflicts,
     /// for example by using `StackGraph::new_node_id`.
-    // Public trait contract: each argument is a distinct input an analyzer needs; the signature
-    // is part of the stable API surface, so it is not collapsed into a parameter struct.
     #[allow(clippy::too_many_arguments)]
     fn build_stack_graph_into(
         &self,

@@ -93,7 +93,6 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
     let cfg = embed_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    // Pass 1 — Inline: indexes + embeds every file.
     let p1 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan 1");
     assert!(
         p1.stats.updated >= code_files,
@@ -106,10 +105,6 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
         p1.stats.docs_indexed
     );
 
-    // Pass 2 — Inline over identical content must be a near-noop: the content-hash-keyed Unchanged
-    // gate skips every file, so nothing is re-embedded and nothing is rewritten to LanceDB. This is
-    // the "a full Inline pass over an already-embedded corpus is a near-noop" guarantee — the
-    // per-file marker (blob hash) that gates the rewrite, checked before a batch is ever produced.
     let p2 = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline scan 2");
     assert_eq!(
         p2.stats.updated, 0,
@@ -125,8 +120,6 @@ fn embed_results_land_and_rescan_is_a_near_noop() {
         "every code + doc file is skipped as unchanged on the second Inline pass"
     );
 
-    // Correctness: when the embedder is available, the persisted blobs the flush streams from must
-    // actually carry the vectors (dim > 0, one per chunk). Skips gracefully offline.
     if embedder_produced_vectors(&store, code_files) {
         let code_entry = store.lookup("code_0.rs").expect("code file indexed");
         let code_blob = store
@@ -198,9 +191,6 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
     let cfg = embed_config();
     let mut store = Store::open(root, VIEW_WORKING).expect("open store");
 
-    // Warm/first pass: loads the embedding model and does the one real embed of the whole corpus.
-    // With the streaming fix, peak here is baseline + one file's rows; pre-fix it was baseline +
-    // every file's rows held at once. If the model never loads, there is nothing to measure — skip.
     let warm = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("warm inline scan");
     eprintln!(
         "warm pass: updated={} docs_indexed={} files={total}",
@@ -211,9 +201,6 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
         return;
     }
 
-    // Repeated rescans over identical content. Each is a near-noop (every file Unchanged), and the
-    // current footprint must not climb pass over pass — that upward creep is the daemon leak. Report
-    // both current and peak footprint for evidence; assert only on the machine-independent creep.
     let mut currents = Vec::new();
     for pass in 0..5 {
         let report = scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).expect("inline rescan");
@@ -233,9 +220,6 @@ fn embed_pass_footprint_does_not_ratchet_across_rescans() {
 
     let first = currents[0];
     let last = currents[currents.len() - 1];
-    // The pre-fix daemon grew unbounded (GBs) across rescans because embed rows were never released.
-    // A generous 400 MB tolerance absorbs allocator/model-arena jitter while still failing hard on
-    // the unbounded corpus-scale creep the leak produced.
     const CREEP_TOLERANCE_MB: f64 = 400.0;
     assert!(
         last - first < CREEP_TOLERANCE_MB,
