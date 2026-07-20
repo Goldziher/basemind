@@ -39,9 +39,9 @@ tasks:
       - cargo test --workspace -- --nocapture
 
   lint:
-    desc: Run all linters and formatters via prek
+    desc: Run all linters and formatters via poly
     cmds:
-      - prek run --all-files
+      - poly lint .
 
   format:
     desc: Format code
@@ -63,14 +63,12 @@ tasks:
     desc: Update dependencies (compatible versions only — no Cargo.toml edits)
     cmds:
       - cargo update
-      - prek autoupdate
 
   upgrade:
     desc: Upgrade dependencies to latest, including incompatible bumps (rewrites Cargo.toml)
     cmds:
       - cargo upgrade --incompatible
       - cargo update
-      - prek autoupdate
 
   harden:
     desc: Run the real-OSS hardening harness against all canary repos
