@@ -313,7 +313,7 @@ else
 fi
 
 RSYNC_ARGS=(-av --delete --delete-excluded)
-RSYNC_ARGS+=(--include="/scripts/" --include="/scripts/mcp-launch.sh")
+RSYNC_ARGS+=(--include="/scripts/" --include="/scripts/mcp-launch.sh" --include="/scripts/codex-mcp-launch.mjs")
 for pat in "${EXCLUDES[@]}"; do RSYNC_ARGS+=(--exclude="$pat"); done
 append_git_ignored_directory_excludes
 append_git_ignored_file_excludes

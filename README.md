@@ -100,6 +100,8 @@ codex plugin add basemind@basemind
 ```
 
 In the app: open the **Plugins** sidebar and add basemind. The CLI and IDE share one config file.
+The plugin starts the latest published GitHub release from the project workspace; it never runs from
+the installed plugin cache or races a shared `npx` install.
 
 </details>
 

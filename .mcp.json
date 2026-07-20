@@ -1,9 +1,13 @@
 {
   "mcpServers": {
     "basemind": {
-      "command": "./scripts/mcp-launch.sh",
-      "args": ["serve"],
-      "cwd": "."
+      "command": "node",
+      "args": [
+        "-e",
+        "const fs=require(\"fs\"),p=require(\"path\"),o=require(\"os\"),u=require(\"url\"),c=p.join(process.env.BASEMIND_CODEX_HOME||process.env.CODEX_HOME||p.join(o.homedir(),\".codex\"),\"plugins\",\"cache\"),s=fs.readdirSync(c,{withFileTypes:true}).flatMap(m=>{const r=p.join(c,m.name,\"basemind\");return fs.existsSync(r)?fs.readdirSync(r).map(v=>p.join(r,v,\"scripts\",\"codex-mcp-launch.mjs\")):[]}).filter(f=>fs.existsSync(f)).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs)[0];if(!s)throw Error(\"basemind Codex launcher not found\");import(u.pathToFileURL(s).href).then(m=>m.run(process.argv.slice(1)));",
+        "serve"
+      ],
+      "startup_timeout_sec": 120
     }
   }
 }
