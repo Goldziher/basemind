@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-07-20
+
+### Fixed
+
+- **basemind is publishable to crates.io again.** The 0.22.0 stack-graphs vendoring added four
+  in-tree forks as versionless path dependencies with `publish = false`, which made `cargo publish`
+  reject basemind ("all dependencies must have a version requirement specified"). The forks are
+  renamed to owned, published crates — `basemind-stack-graphs`, `basemind-lsp-positions`,
+  `basemind-tree-sitter-graph`, `basemind-tree-sitter-stack-graphs` — and referenced by version, so
+  `cargo install basemind` works again. The publish workflow now releases the sub-crates in
+  dependency order before basemind. No API or on-disk-format change (blob/index schema unchanged).
+
 ## [0.22.0] — 2026-07-20
 
 > **Index rebuild on upgrade.** This release bumps the index/blob/comms schema (21 → 22), so every
