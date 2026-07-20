@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Codex downstream workspaces now start the latest complete release reliably.** Codex resolved the
+  old relative launcher inside its installed plugin cache, indexing the plugin instead of the user's
+  workspace. Its plugin now locates a bundled bootstrap, resolves the latest published GitHub tag,
+  and uses the serialized, checksummed launcher; simultaneous first starts cannot corrupt a shared
+  `npx` cache.
 - **MCP tools stay available across a release window.** The plugin launcher (`mcp-launch.sh`)
   hard-pinned to the plugin's exact version and aborted if that release's platform asset 404'd. In
   the window between bumping the plugin and the release finishing its per-platform binary uploads,
