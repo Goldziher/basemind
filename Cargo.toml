@@ -96,7 +96,7 @@ arrow-schema = { version = "58", optional = true }
 blake3 = "1"
 bstr = { version = "1", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
-crawlberg = { version = "1.0.7", default-features = false, features = ["native-runtime"], optional = true }
+crawlberg = { version = "1.0.8", default-features = false, features = ["native-runtime"], optional = true }
 directories = "6"
 fjall = "3.1.8"
 fs2 = "0.4"
@@ -152,7 +152,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.26"
 tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0", path = "crates/tree-sitter-graph", optional = true }
-tree-sitter-language-pack = "1.13.1"
+tree-sitter-language-pack = "1.13.2"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.0-rc.30", default-features = false, features = [
