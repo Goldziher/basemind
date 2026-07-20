@@ -3305,8 +3305,10 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
     let root = dir.path();
     let service = spawn_serve(root, None).await;
 
+    // ~keep Poll for up to 30s: on a loaded Windows runner the boot scan (daemon spawn + named-pipe
+    // ~keep comms + scan) can take well over the ~10s a 200-iteration budget allowed, which flaked here.
     let mut settled: Option<Value> = None;
-    for _ in 0..200 {
+    for _ in 0..600 {
         let result = service
             .call_tool(call_params("status", json!({})))
             .await
