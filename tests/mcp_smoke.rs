@@ -3121,6 +3121,13 @@ async fn comms_inbox_wait_delivers_then_times_out() {
         "the single post was returned in rows; none remain beyond this page"
     );
 
+    // `wait_inbox` never marks read (per its tool contract) — the caller acks once it has handled ~keep
+    // the page. Advance a's read cursor past b's post so the next wait sees a genuinely empty inbox ~keep
+    // and blocks to the timeout rather than re-delivering the same message. ~keep
+    a.read_inbox(None, None, None, 100, true, None)
+        .await
+        .expect("mark the delivered page read");
+
     let (timed_out2, rows2, _unread2, _next2) = a
         .wait_inbox(None, None, None, None, None, 100, std::time::Duration::from_millis(300))
         .await
