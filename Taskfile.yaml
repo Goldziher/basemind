@@ -89,6 +89,6 @@ tasks:
       vars: [VERSION]
 
   release:dry-run:
-    desc: GoReleaser snapshot build — produces dist/ archives without uploading
+    desc: "Dry-run the real release packaging path for the host platform (build + package-release.sh + checksums + launcher smoke)"
     cmds:
-      - goreleaser release --snapshot --clean --skip=publish
+      - ./scripts/release-dry-run.sh
