@@ -710,6 +710,9 @@ dependencies = [
  "arrow-array",
  "arrow-schema",
  "basemind",
+ "basemind-stack-graphs",
+ "basemind-tree-sitter-graph",
+ "basemind-tree-sitter-stack-graphs",
  "blake3",
  "bstr",
  "clap",
@@ -751,7 +754,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_toon_format",
- "stack-graphs",
  "streaming-iterator",
  "tempfile",
  "thiserror 2.0.19",
@@ -761,12 +763,71 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-graph",
  "tree-sitter-language-pack",
- "tree-sitter-stack-graphs",
  "url",
  "wiremock",
  "xberg",
+]
+
+[[package]]
+name = "basemind-lsp-positions"
+version = "0.3.4"
+dependencies = [
+ "bincode 3.0.0",
+ "memchr",
+ "serde",
+ "tree-sitter",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "basemind-stack-graphs"
+version = "0.14.1"
+dependencies = [
+ "ahash 0.8.12",
+ "basemind-lsp-positions",
+ "bitvec",
+ "controlled-option",
+ "either",
+ "enumset",
+ "fxhash",
+ "itertools 0.15.0",
+ "maplit",
+ "pretty_assertions",
+ "smallvec",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "basemind-tree-sitter-graph"
+version = "0.12.0"
+dependencies = [
+ "env_logger",
+ "indoc",
+ "log",
+ "regex",
+ "serde",
+ "serde_json",
+ "smallvec",
+ "streaming-iterator",
+ "thiserror 2.0.19",
+ "tree-sitter",
+ "tree-sitter-python",
+]
+
+[[package]]
+name = "basemind-tree-sitter-stack-graphs"
+version = "0.10.0"
+dependencies = [
+ "basemind-lsp-positions",
+ "basemind-stack-graphs",
+ "basemind-tree-sitter-graph",
+ "controlled-option",
+ "once_cell",
+ "pretty_assertions",
+ "thiserror 2.0.19",
+ "tree-sitter",
+ "tree-sitter-python",
 ]
 
 [[package]]
@@ -7087,17 +7148,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lsp-positions"
-version = "0.3.4"
-dependencies = [
- "bincode 3.0.0",
- "memchr",
- "serde",
- "tree-sitter",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "lz4"
 version = "1.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10840,24 +10890,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "stack-graphs"
-version = "0.14.1"
-dependencies = [
- "ahash 0.8.12",
- "bitvec",
- "controlled-option",
- "either",
- "enumset",
- "fxhash",
- "itertools 0.15.0",
- "lsp-positions",
- "maplit",
- "pretty_assertions",
- "smallvec",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11783,23 +11815,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tree-sitter-graph"
-version = "0.12.0"
-dependencies = [
- "env_logger",
- "indoc",
- "log",
- "regex",
- "serde",
- "serde_json",
- "smallvec",
- "streaming-iterator",
- "thiserror 2.0.19",
- "tree-sitter",
- "tree-sitter-python",
-]
-
-[[package]]
 name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11836,21 +11851,6 @@ checksum = "70beaa47e19e1529e8787fc0a80ebbae5a9fdaefc5fcc8972c885c9abf6ab0f0"
 dependencies = [
  "cc",
  "tree-sitter-language",
-]
-
-[[package]]
-name = "tree-sitter-stack-graphs"
-version = "0.10.0"
-dependencies = [
- "controlled-option",
- "lsp-positions",
- "once_cell",
- "pretty_assertions",
- "stack-graphs",
- "thiserror 2.0.19",
- "tree-sitter",
- "tree-sitter-graph",
- "tree-sitter-python",
 ]
 
 [[package]]
