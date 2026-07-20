@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-07-20
+
+### Fixed
+
+- **MCP tools stay available across a release window.** The plugin launcher (`mcp-launch.sh`)
+  hard-pinned to the plugin's exact version and aborted if that release's platform asset 404'd. In
+  the window between bumping the plugin and the release finishing its per-platform binary uploads,
+  that left the session with no MCP server at all. The launcher now falls back to the newest cached
+  binary sharing the pinned version's schema minor (`RELEASE_MINOR`, so blob/index compatible) —
+  never across a minor, which would force a wipe-and-rebuild — and only gives up when no compatible
+  binary is cached.
+- **Version updates no longer leak basemind processes.** On update, the prior version's `serve` and
+  comms daemon kept running beside the new generation, so the machine never converged on a single
+  daemon. The launcher now terminates every basemind process (serve and comms/write/shell daemons —
+  all the same binary) belonging to a different cached version before exec'ing the resolved binary,
+  and prunes leftover install lock/staging dirs. Unix best-effort; never blocks or fails the launch.
+  No API or on-disk-format change (blob/index schema unchanged).
+
 ## [0.22.1] — 2026-07-20
 
 ### Fixed
