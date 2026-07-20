@@ -29,11 +29,8 @@ fn job_block<'a>(workflow: &'a str, job: &str) -> &'a str {
     let mut offset = after_header;
     for line in rest[after_header..].split_inclusive('\n') {
         let bytes = line.as_bytes();
-        let is_job_header = bytes.len() >= 3
-            && bytes[0] == b' '
-            && bytes[1] == b' '
-            && bytes[2] != b' '
-            && bytes[2] != b'#';
+        let is_job_header =
+            bytes.len() >= 3 && bytes[0] == b' ' && bytes[1] == b' ' && bytes[2] != b' ' && bytes[2] != b'#';
         if is_job_header {
             return &rest[..offset];
         }
@@ -82,7 +79,10 @@ fn finalize_requires_the_full_asset_set() {
         "basemind-x86_64-apple-darwin.tar.gz",
         "basemind-x86_64-pc-windows-msvc.zip",
     ] {
-        assert!(block.contains(asset), "finalize_release must require {asset} before promoting");
+        assert!(
+            block.contains(asset),
+            "finalize_release must require {asset} before promoting"
+        );
     }
     assert!(
         block.contains("_checksums.txt"),
