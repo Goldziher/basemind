@@ -773,9 +773,11 @@ dependencies = [
 name = "basemind-agent"
 version = "0.1.0"
 dependencies = [
+ "basemind",
  "futures",
  "globset",
  "liter-llm",
+ "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
