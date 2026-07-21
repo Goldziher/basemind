@@ -1,0 +1,24 @@
+[package]
+name = "basemind-agent-ipc"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Cross-process (msgpack over a Unix socket) transport for the basemind agent engine."
+publish = false
+
+[dependencies]
+basemind-agent = { path = "../basemind-agent" }
+futures = "0.3"
+rmp-serde = "1"
+serde = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+[dev-dependencies]
+basemind-agent = { path = "../basemind-agent", features = ["test-util"] }
+tempfile = "3"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
+
+[lints]
+workspace = true

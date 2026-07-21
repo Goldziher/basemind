@@ -788,6 +788,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "basemind-agent-ipc"
+version = "0.1.0"
+dependencies = [
+ "basemind-agent",
+ "futures",
+ "rmp-serde",
+ "serde",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "basemind-lsp-positions"
 version = "0.3.4"
 dependencies = [
