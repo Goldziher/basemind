@@ -42,6 +42,7 @@ pub struct Session {
     persisted: usize,
     title: Option<String>,
     room: Option<Arc<dyn RoomClient>>,
+    room_auto_respond: bool,
 }
 
 impl Session {
@@ -68,6 +69,7 @@ impl Session {
             persisted: 0,
             title: None,
             room: None,
+            room_auto_respond: false,
         })
     }
 
@@ -98,6 +100,7 @@ impl Session {
             persisted: 0,
             title: None,
             room: None,
+            room_auto_respond: false,
         }
     }
 
@@ -114,6 +117,14 @@ impl Session {
         self
     }
 
+    /// Opt into auto-responding to the room: while idle, an incoming peer message starts a turn so
+    /// the agent can react (e.g. reply via `room:post`). Off by default — wiring a room only surfaces
+    /// messages; it does not make the agent chatty. No effect without a room.
+    pub fn with_room_auto_respond(mut self, on: bool) -> Self {
+        self.room_auto_respond = on;
+        self
+    }
+
     /// Seed the history from a resumed session: append `messages`, set the token totals, and mark
     /// them already-persisted so they are not re-appended on the next turn.
     pub fn seed(mut self, messages: Vec<Message>, input_tokens: u64, output_tokens: u64) -> Self {
@@ -125,50 +136,79 @@ impl Session {
     }
 
     /// Run until the command channel closes or a `Shutdown` arrives. Each `UserMessage` drives one
-    /// turn; permission replies are consumed inside the turn.
+    /// turn; permission replies are consumed inside the turn. With room auto-respond on, an incoming
+    /// peer message received while idle also drives a turn.
     pub async fn run(mut self, endpoint: EngineEndpoint) {
         let EngineEndpoint { mut commands, events } = endpoint;
-        // Incoming room messages ride the existing event broadcast, so the command loop needs no ~keep
-        // change to surface a roster or a peer message. ~keep
+        // Incoming room messages ride the existing event broadcast, so surfacing a roster or a peer
+        // message needs no command-loop change. ~keep
         if let Some(room) = &self.room {
             room.spawn_incoming(events.clone());
         }
-        while let Some(command) = commands.recv().await {
-            match command {
-                AgentCommand::UserMessage { text } => {
-                    self.history.push_user(text);
-                    self.turn += 1;
-                    let resolved = self.provider.for_role(self.role).clone();
-                    let mut cx = TurnContext {
-                        history: &mut self.history,
-                        tools: &self.tools,
-                        role: &resolved,
-                        permission: &self.permission,
-                        root: self.root.clone(),
-                        server: self.server.clone(),
-                        room: self.room.clone(),
-                        max_steps: self.max_steps,
-                    };
-                    run_turn(self.turn, &mut cx, &events, &mut commands).await;
-                    self.persist_turn(&events).await;
-                }
-                AgentCommand::Shutdown => break,
-                AgentCommand::RoomPost { subject, text } => {
-                    if let Some(room) = &self.room
-                        && let Err(error) = room.post(subject, text).await
-                    {
-                        let _ = events.send(AgentEvent::Error {
-                            turn: None,
-                            message: format!("room post: {error}"),
-                            fatal: false,
-                        });
+        // For auto-respond we watch that same broadcast for `RoomMessage`s, so a peer message can
+        // start a turn while idle. A second subscriber never perturbs the primary UI stream. ~keep
+        let mut wake = (self.room.is_some() && self.room_auto_respond).then(|| events.subscribe());
+        loop {
+            tokio::select! {
+                command = commands.recv() => {
+                    let Some(command) = command else { break };
+                    match command {
+                        AgentCommand::UserMessage { text } => {
+                            self.run_user_turn(text, &events, &mut commands).await;
+                        }
+                        AgentCommand::Shutdown => break,
+                        AgentCommand::RoomPost { subject, text } => {
+                            if let Some(room) = &self.room
+                                && let Err(error) = room.post(subject, text).await
+                            {
+                                let _ = events.send(AgentEvent::Error {
+                                    turn: None,
+                                    message: format!("room post: {error}"),
+                                    fatal: false,
+                                });
+                            }
+                        }
+                        // A permission reply or cancel with no turn in flight has nothing to answer;
+                        // a room post with no room wired stays a no-op. ~keep
+                        AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}
                     }
                 }
-                // A permission reply or cancel with no turn in flight has nothing to answer; a room
-                // post with no room wired stays a no-op. ~keep
-                AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}
+                message = recv_room_message(wake.as_mut()), if wake.is_some() => match message {
+                    // Frame the peer message as the turn's user input so the agent can react to it. ~keep
+                    Some(message) => {
+                        let text = format!("[room] {}: {}", message.from, message.body);
+                        self.run_user_turn(text, &events, &mut commands).await;
+                    }
+                    // The broadcast closed; stop watching for wakes. ~keep
+                    None => wake = None,
+                },
             }
         }
+    }
+
+    /// Push `text` as a user message and drive one turn to completion, then persist it. Shared by the
+    /// command path and the room-auto-respond wake path.
+    async fn run_user_turn(
+        &mut self,
+        text: String,
+        events: &broadcast::Sender<AgentEvent>,
+        commands: &mut tokio::sync::mpsc::Receiver<AgentCommand>,
+    ) {
+        self.history.push_user(text);
+        self.turn += 1;
+        let resolved = self.provider.for_role(self.role).clone();
+        let mut cx = TurnContext {
+            history: &mut self.history,
+            tools: &self.tools,
+            role: &resolved,
+            permission: &self.permission,
+            root: self.root.clone(),
+            server: self.server.clone(),
+            room: self.room.clone(),
+            max_steps: self.max_steps,
+        };
+        run_turn(self.turn, &mut cx, events, commands).await;
+        self.persist_turn(events).await;
     }
 
     /// Persist the messages produced by the turn just finished. Runs between turns (never inside the
@@ -205,6 +245,25 @@ impl Session {
                 message: format!("session persist (meta): {error}"),
                 fatal: false,
             });
+        }
+    }
+}
+
+/// Await the next incoming [`RoomMessage`](crate::room::RoomMessage) on the wake receiver, draining
+/// past every other event. Returns `None` once the broadcast closes. When `rx` is `None` it parks
+/// forever, so the enclosing `select!` must guard this branch on `wake.is_some()`.
+async fn recv_room_message(rx: Option<&mut broadcast::Receiver<AgentEvent>>) -> Option<crate::room::RoomMessage> {
+    let Some(rx) = rx else {
+        // Never resolve: the caller's `if wake.is_some()` guard keeps us out of this arm. ~keep
+        std::future::pending::<()>().await;
+        return None;
+    };
+    loop {
+        match rx.recv().await {
+            Ok(AgentEvent::RoomMessage(message)) => return Some(message),
+            // Any other event — or a lagged gap under a busy turn — is irrelevant to waking. ~keep
+            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return None,
         }
     }
 }

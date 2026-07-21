@@ -47,6 +47,9 @@ pub struct RoomScript {
     /// Peer messages delivered after their `after_ms` delay, in order.
     #[serde(default)]
     pub incoming: Vec<RoomIncoming>,
+    /// When true, an incoming message received while idle starts a turn (room auto-respond).
+    #[serde(default)]
+    pub auto_respond: bool,
 }
 
 /// One scripted incoming room message: the sender, subject, body, and the delay before delivery.
@@ -148,6 +151,11 @@ impl Scenario {
             })
             .collect();
         Some(ScriptedRoom::new(room.roster.clone(), incoming))
+    }
+
+    /// Whether this scenario's room opts into auto-responding to incoming peer messages.
+    pub fn room_auto_respond(&self) -> bool {
+        self.room.as_ref().is_some_and(|room| room.auto_respond)
     }
 
     /// A single-role [`ProviderPool`] backed by this scenario's scripted client, so a real
