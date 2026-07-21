@@ -72,7 +72,13 @@ pub enum AgentEvent {
         summary: String,
     },
     /// The engine is blocked awaiting a permission decision for a tool call.
+    ///
+    /// This event must reach the UI reliably: size the transport's event buffer so a lagging
+    /// subscriber cannot drop it, otherwise the turn stays blocked on a reply that never comes.
+    /// The reply itself flows back over the reliable command channel, not the broadcast.
     PermissionRequested {
+        /// The turn this request belongs to.
+        turn: u64,
         /// Correlates with the [`crate::command::AgentCommand::PermissionDecision`] reply.
         req_id: u64,
         /// The tool-call awaiting approval.
@@ -120,4 +126,34 @@ pub enum AgentEvent {
         /// Whether the session cannot continue.
         fatal: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_use_a_stable_internally_tagged_shape() {
+        let event = AgentEvent::TurnStarted { turn: 1 };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "turn_started", "turn": 1 }));
+        let back: AgentEvent = serde_json::from_value(json).unwrap();
+        assert_eq!(back, event);
+    }
+
+    #[test]
+    fn permission_requested_round_trips_and_carries_turn() {
+        let event = AgentEvent::PermissionRequested {
+            turn: 2,
+            req_id: 7,
+            call_id: "c1".into(),
+            tool: "shell:exec".into(),
+            action: "exec".into(),
+            target: "ls".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["kind"], "permission_requested");
+        assert_eq!(json["turn"], 2);
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), event);
+    }
 }

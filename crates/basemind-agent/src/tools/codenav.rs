@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use basemind::mcp::BasemindServer;
 use basemind::mcp::params::{OutlineParams, SearchSymbolsParams};
 use basemind::path::RelPath;
 use schemars::JsonSchema;
@@ -23,6 +24,14 @@ pub fn code_nav_tools() -> Vec<Arc<dyn ToolDyn>> {
 
 fn code_map_err(tool: &'static str) -> impl Fn(String) -> AgentError {
     move |message| AgentError::CodeMap { tool, message }
+}
+
+/// The basemind server from the context, or a clean code-map error if none is wired.
+fn require_server<'a>(ctx: &'a ToolCtx, tool: &'static str) -> Result<&'a BasemindServer> {
+    ctx.server.as_deref().ok_or_else(|| AgentError::CodeMap {
+        tool,
+        message: "code map unavailable (no index for this workspace)".into(),
+    })
 }
 
 /// `code:outline` — structural outline of a file.
@@ -59,7 +68,8 @@ impl Tool for OutlineTool {
             max_tokens: None,
             format: None,
         };
-        let result = basemind::mcp::agent_api::outline(&ctx.server, params)
+        let server = require_server(ctx, Tool::name(self))?;
+        let result = basemind::mcp::agent_api::outline(server, params)
             .await
             .map_err(|e| code_map_err(Tool::name(self))(e.to_string()))?;
         let value = basemind::cli::render::result_to_value(&result)
@@ -110,7 +120,8 @@ impl Tool for SearchSymbolsTool {
             format: None,
             cursor: None,
         };
-        let result = basemind::mcp::agent_api::search_symbols(&ctx.server, params)
+        let server = require_server(ctx, Tool::name(self))?;
+        let result = basemind::mcp::agent_api::search_symbols(server, params)
             .await
             .map_err(|e| code_map_err(Tool::name(self))(e.to_string()))?;
         let value = basemind::cli::render::result_to_value(&result)

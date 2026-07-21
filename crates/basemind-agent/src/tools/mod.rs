@@ -25,13 +25,15 @@ use serde::de::DeserializeOwned;
 use crate::error::{AgentError, Result};
 use crate::permission::PermissionClaim;
 
-/// Shared context handed to every tool during execution. Additional fields (progress sink,
-/// cancellation token) are added by later slices without changing tool signatures.
+/// Shared context handed to every tool during execution. The basemind server is optional so tools
+/// that don't need it (e.g. `shell:exec`) — and turn-loop tests that use only such tools — need not
+/// stand up an index; code-nav tools error cleanly when it is absent. Additional fields (progress
+/// sink, cancellation token) are added by later slices without changing tool signatures.
 pub struct ToolCtx {
     /// Repository root — working directory for shell and base for relative paths.
     pub root: PathBuf,
-    /// In-process basemind server for code-map queries.
-    pub server: Arc<BasemindServer>,
+    /// In-process basemind server for code-map queries, when available.
+    pub server: Option<Arc<BasemindServer>>,
 }
 
 /// The output of a tool: the text fed back to the model, and whether it is an error (errors are
@@ -113,21 +115,21 @@ impl<T: Tool> ToolDyn for T {
     }
 
     fn permission_of(&self, raw_args: &str) -> Result<PermissionClaim> {
-        let args = parse_args::<T::Args>(raw_args)?;
+        let args = parse_args::<T::Args>(Tool::name(self), raw_args)?;
         Ok(Tool::permission(self, &args))
     }
 
     async fn call(&self, raw_args: &str, ctx: &ToolCtx) -> Result<ToolOutput> {
-        let args = parse_args::<T::Args>(raw_args)?;
+        let args = parse_args::<T::Args>(Tool::name(self), raw_args)?;
         Tool::execute(self, args, ctx).await
     }
 }
 
 /// Deserialize tool arguments, treating an empty string as an empty object (some providers send
-/// `""` for a no-argument call).
-fn parse_args<A: DeserializeOwned>(raw: &str) -> Result<A> {
+/// `""` for a no-argument call). Tags the error with `tool` so a bad-JSON failure names its source.
+fn parse_args<A: DeserializeOwned>(tool: &'static str, raw: &str) -> Result<A> {
     let raw = if raw.trim().is_empty() { "{}" } else { raw };
-    serde_json::from_str(raw).map_err(AgentError::ToolArgs)
+    serde_json::from_str(raw).map_err(|source| AgentError::ToolArgs { tool, source })
 }
 
 /// Generate the JSON Schema for a tool's argument type.
@@ -181,10 +183,10 @@ mod tests {
     }
 
     #[test]
-    fn permission_of_rejects_malformed_json() {
-        assert!(matches!(
-            NoopTool.permission_of("{not json"),
-            Err(AgentError::ToolArgs(_))
-        ));
+    fn permission_of_rejects_malformed_json_and_names_the_tool() {
+        match NoopTool.permission_of("{not json") {
+            Err(AgentError::ToolArgs { tool, .. }) => assert_eq!(tool, "test:noop"),
+            other => panic!("expected ToolArgs error, got {other:?}"),
+        }
     }
 }

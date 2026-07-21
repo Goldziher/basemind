@@ -38,3 +38,22 @@ pub enum AgentCommand {
     /// Gracefully shut the session down (flush persistence, drop clients).
     Shutdown,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_use_a_stable_tagged_shape() {
+        let command = AgentCommand::PermissionDecision {
+            req_id: 3,
+            decision: PermissionDecision::AllowForSession,
+        };
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "kind": "permission_decision", "req_id": 3, "decision": "allow_for_session" })
+        );
+        assert_eq!(serde_json::from_value::<AgentCommand>(json).unwrap(), command);
+    }
+}

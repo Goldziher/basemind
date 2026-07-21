@@ -13,8 +13,14 @@ pub enum AgentError {
     Llm(#[from] liter_llm::LiterLlmError),
 
     /// A tool's JSON arguments failed to deserialize into its typed `Args`.
-    #[error("tool arguments: {0}")]
-    ToolArgs(#[source] serde_json::Error),
+    #[error("tool `{tool}` arguments: {source}")]
+    ToolArgs {
+        /// The tool whose arguments were malformed.
+        tool: &'static str,
+        /// The underlying deserialization error.
+        #[source]
+        source: serde_json::Error,
+    },
 
     /// A basemind code-map tool returned an error.
     #[error("code-map tool `{tool}`: {message}")]
