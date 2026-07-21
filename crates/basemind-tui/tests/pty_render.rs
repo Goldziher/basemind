@@ -56,9 +56,12 @@ fn streaming_assistant_text_accretes_and_labels_render() {
     session.expect_screen("permission required");
     session.allow_session();
 
-    // Require the tool call line, its successful result, both streamed text chunks, and the run ~keep
-    // reaching idle — only possible once the exec succeeded and the tool-free turn 2 stopped. ~keep
+    // The opening "user" message is mirrored into the transcript (main.rs seeds it before the loop),
+    // so it renders a `you:` label; the agent label, both streamed text chunks, the tool call line,
+    // its successful result, and the run reaching idle must all render too. ~keep
     session.expect_all(&[
+        "you:",
+        "render the lines",
         "agent:",
         "Line one.",
         "Line two.",
@@ -67,14 +70,6 @@ fn streaming_assistant_text_accretes_and_labels_render() {
         MARKER,
         "idle (Stop)",
     ]);
-
-    // The scenario's opening "user" message is sent straight to the engine (bypassing the on_key ~keep
-    // path that records a transcript entry), so it never gets a "you:" label of its own — confirmed ~keep
-    // by reading main.rs's replay wiring. Type a follow-up message through the PTY instead, which ~keep
-    // does go through `App::on_key`, to exercise the "you:" label rendering. ~keep
-    session.type_str("hello agent");
-    session.enter();
-    session.expect_all(&["you:", "hello agent"]);
 }
 
 #[test]

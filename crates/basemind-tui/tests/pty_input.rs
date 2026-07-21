@@ -13,9 +13,8 @@ use std::time::Duration;
 const ABSENCE_DWELL: Duration = Duration::from_millis(500);
 
 /// A single-stop scenario: the auto-sent user message gets one tool-free reply, so the run goes
-/// idle with nothing left scripted. The auto-sent prompt itself never renders — `main.rs` sends it
-/// straight to the engine before the UI loop starts, bypassing `App::on_key`, so the first `you:`
-/// line any of these tests ever see is one they type themselves.
+/// idle with nothing left scripted. `main.rs` mirrors the auto-sent prompt into the transcript, so
+/// it renders a `you: start` line before any of these tests type their own message.
 fn single_turn_scenario() -> String {
     r#"{
         "user": "start",
@@ -91,16 +90,22 @@ fn enter_on_empty_input_is_a_no_op() {
 
 #[test]
 fn enter_on_a_typed_prompt_submits_it_and_clears_the_input_box() {
-    let mut session = PtySession::spawn(&single_turn_scenario());
-    session.expect_screen("idle (Stop)");
+    // Two scripted stop-turns: one for the auto-sent prompt, one for the message typed below. The
+    // second reply is the unambiguous signal that Enter actually submitted — the auto-sent prompt
+    // already renders a `you:` line, so `you:` alone no longer proves the typed prompt went through. ~keep
+    let mut session = PtySession::spawn(&two_turn_scenario());
+    session.expect_all(&["Reply ONE-A9.", "idle (Stop)"]);
 
     session.type_str("PROMPT-Z3");
     session.expect_screen("PROMPT-Z3█");
 
     session.enter();
 
-    session.expect_all(&["you:", "PROMPT-Z3"]);
+    // The agent's second reply only renders once the typed prompt was submitted; only then is it safe
+    // to assert the input box cleared (the block cursor no longer trails the text). ~keep
+    session.expect_screen("Reply TWO-B7.");
     session.expect_absent("PROMPT-Z3█", ABSENCE_DWELL);
+    session.expect_screen("PROMPT-Z3");
 }
 
 #[test]

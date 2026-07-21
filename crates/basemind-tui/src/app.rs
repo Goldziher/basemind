@@ -215,7 +215,7 @@ impl App {
                     return None;
                 }
                 let text = std::mem::take(&mut self.input);
-                self.transcript.push(TranscriptEntry::User(text.clone()));
+                self.push_user(text.clone());
                 Some(AgentCommand::UserMessage { text })
             }
             KeyCode::Char(c) => {
@@ -264,6 +264,14 @@ impl App {
         };
         self.pending_permission = None;
         Some(AgentCommand::PermissionDecision { req_id, decision })
+    }
+
+    /// Record a user message in the transcript. Used by the Enter handler and to mirror the
+    /// auto-sent opening prompt (sent straight to the engine, bypassing `on_key`) so it shows a
+    /// `you:` line like any typed message.
+    pub fn push_user(&mut self, text: String) {
+        self.transcript.push(TranscriptEntry::User(text));
+        self.dirty = true;
     }
 
     /// Append streaming text to the trailing assistant entry, opening one if none is current.

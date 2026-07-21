@@ -120,14 +120,18 @@ async fn main() -> Result<()> {
     let (endpoint, client) = in_proc_channel(32, 256);
     let engine = tokio::spawn(session.run(endpoint));
 
+    let mut app = App::new(model);
     if let Some(prompt) = initial_prompt {
+        // Mirror the auto-sent opening prompt into the transcript so it renders a `you:` line, the
+        // same as a prompt typed at the input box (which records itself through `App::on_key`). ~keep
+        app.push_user(prompt.clone());
         client
             .send_command(AgentCommand::UserMessage { text: prompt })
             .await
             .context("send initial prompt")?;
     }
 
-    let result = run::run(client, App::new(model)).await;
+    let result = run::run(client, app).await;
 
     // Let the engine drain its Shutdown before we surface any UI error. ~keep
     let _ = engine.await;
