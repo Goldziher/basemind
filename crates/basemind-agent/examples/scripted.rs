@@ -3,9 +3,10 @@
 //! real tool registry (code-nav against the in-process basemind index + shell), so it exercises the
 //! integration the unit tests mock out.
 //!
-//! The model's turns come from a scenario (a fixed sequence of assistant replies: text and/or tool
-//! calls), so the run is repeatable. A scenario can be supplied as a JSON file; otherwise a built-in
-//! default drives one code-map query plus one permission-gated shell command.
+//! The model's turns come from a [`Scenario`](basemind_agent::replay::Scenario) — a fixed sequence
+//! of assistant replies (text and/or tool calls), so the run is repeatable. A scenario can be
+//! supplied as a JSON file; otherwise a built-in default drives one code-map query plus one
+//! permission-gated shell command.
 //!
 //! Usage:
 //!   cargo run -p basemind-agent --example scripted [-- <scenario.json>] [repo-root]
@@ -17,7 +18,7 @@
 //!     "turns": [
 //!       { "text": "assistant text", "tools": [ { "id": "c1", "name": "code:search_symbols",
 //!                                                 "args": { "needle": "run_turn" } } ] },
-//!       { "text": "closing line" }          // no tools => the model stops here
+//!       { "text": "closing line" }
 //!     ]
 //!   }
 //!
@@ -27,41 +28,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use basemind_agent::model::MockModelClient as Mock;
+use basemind_agent::replay::{Scenario, ScriptToolCall, ScriptTurn};
 use basemind_agent::tools::{ShellTool, code_nav_tools, git_history_tools};
 use basemind_agent::{
-    AgentClient, AgentCommand, AgentEvent, ModelClient, PermissionDecision, ProviderPool, ResolvedRole, Session,
-    ToolRegistry, in_proc_channel,
+    AgentClient, AgentCommand, AgentEvent, PermissionDecision, Session, ToolRegistry, in_proc_channel,
 };
-use liter_llm::ChatCompletionChunk;
-use serde::Deserialize;
 
-/// One scripted assistant reply: optional text plus zero or more tool calls. An empty `tools` list
-/// means the model stops after this turn.
-#[derive(Deserialize)]
-struct ScriptTurn {
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    tools: Vec<ScriptToolCall>,
-}
-
-/// A scripted tool call: the call id, the tool name, and the JSON arguments object.
-#[derive(Deserialize)]
-struct ScriptToolCall {
-    id: String,
-    name: String,
-    args: serde_json::Value,
-}
-
-/// A full scenario: an optional system prompt, the opening user message, and the scripted turns.
-#[derive(Deserialize)]
-struct Scenario {
-    #[serde(default)]
-    system: Option<String>,
-    user: String,
-    turns: Vec<ScriptTurn>,
-}
+/// Model-step budget for the scripted turn.
+const MAX_STEPS: u32 = 20;
 
 /// The built-in scenario: exercise a real code-map query, then a permission-gated shell command,
 /// then stop. Chosen so the run touches streaming text, a read-only auto-allowed tool, a suspend →
@@ -95,41 +69,12 @@ fn default_scenario() -> Scenario {
     }
 }
 
-/// Turn a scenario's replies into the chunk streams a [`Mock`] replays, one inner `Vec` per round.
-fn scripted_turns(scenario: &Scenario) -> Vec<Vec<ChatCompletionChunk>> {
-    scenario
-        .turns
-        .iter()
-        .map(|turn| {
-            let mut chunks = Vec::new();
-            if let Some(text) = &turn.text {
-                chunks.push(Mock::text(text));
-            }
-            for (index, call) in turn.tools.iter().enumerate() {
-                let args = call.args.to_string();
-                chunks.push(Mock::tool_call(index as u32, Some(&call.id), Some(&call.name), &args));
-            }
-            // No tools requested => the model is done; otherwise it wants the tools run and continues.
-            chunks.push(if turn.tools.is_empty() {
-                Mock::finish_stop()
-            } else {
-                Mock::finish_tool_calls()
-            });
-            chunks
-        })
-        .collect()
-}
-
 #[tokio::main]
 async fn main() {
     let (scenario_path, root) = parse_args();
     let scenario = match scenario_path {
-        Some(path) => match std::fs::read_to_string(&path).map(|raw| serde_json::from_str::<Scenario>(&raw)) {
-            Ok(Ok(scenario)) => scenario,
-            Ok(Err(error)) => {
-                eprintln!("scenario {}: invalid JSON: {error}", path.display());
-                std::process::exit(2);
-            }
+        Some(path) => match Scenario::load(&path) {
+            Ok(scenario) => scenario,
             Err(error) => {
                 eprintln!("scenario {}: {error}", path.display());
                 std::process::exit(2);
@@ -137,15 +82,6 @@ async fn main() {
         },
         None => default_scenario(),
     };
-
-    // The scripted model in a resolved role; the whole pool falls back to it.
-    let client: Arc<dyn ModelClient> = Arc::new(Mock::new(scripted_turns(&scenario)));
-    let provider = ProviderPool::single(ResolvedRole {
-        client,
-        model: "mock/scripted".into(),
-        temperature: None,
-        max_tokens: None,
-    });
 
     // Real tools: attach the in-process code map when the repo is scanned, else run shell-only.
     let mut tools = ToolRegistry::new();
@@ -162,7 +98,14 @@ async fn main() {
     };
     tools.register(Arc::new(ShellTool));
 
-    let session = Session::with_provider(provider, root, server, tools, scenario.system.clone(), 20);
+    let session = Session::with_provider(
+        scenario.provider(),
+        root,
+        server,
+        tools,
+        scenario.system.clone(),
+        MAX_STEPS,
+    );
 
     let (endpoint, mut client) = in_proc_channel(32, 256);
     let engine = tokio::spawn(session.run(endpoint));
