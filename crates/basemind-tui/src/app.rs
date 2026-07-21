@@ -78,6 +78,8 @@ pub struct App {
     pub should_quit: bool,
     /// Transcript scroll offset in lines.
     pub scroll: u16,
+    /// Set whenever state changes; the run loop redraws only when set, so idle ticks are skipped.
+    pub dirty: bool,
 }
 
 impl App {
@@ -96,11 +98,13 @@ impl App {
             pending_permission: None,
             should_quit: false,
             scroll: 0,
+            dirty: true,
         }
     }
 
     /// Fold one engine event into state. Pure: no terminal or IO side effects.
     pub fn apply(&mut self, event: AgentEvent) {
+        self.dirty = true;
         match event {
             AgentEvent::TurnStarted { .. } => {
                 self.status.in_flight = true;
@@ -156,41 +160,58 @@ impl App {
             AgentEvent::TurnFinished { reason, .. } => {
                 self.status.in_flight = false;
                 self.status.last_reason = Some(reason);
+                // The turn may have ended (cancel / shutdown / error) with a prompt still
+                // outstanding; drop the now-meaningless overlay so a late answer is not sent into
+                // a finished turn.
+                self.pending_permission = None;
             }
             AgentEvent::Error { message, fatal, .. } => {
                 let prefix = if fatal { "fatal error" } else { "error" };
                 self.transcript
                     .push(TranscriptEntry::Notice(format!("{prefix}: {message}")));
+                if fatal {
+                    self.status.in_flight = false;
+                    self.pending_permission = None;
+                }
             }
         }
     }
 
     /// Translate a key press into an optional command. Pure: no terminal or IO side effects.
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AgentCommand> {
-        // A pending permission prompt captures the keyboard until answered.
-        if let Some(prompt) = &self.pending_permission {
-            return self.answer_permission(prompt.req_id, key.code);
-        }
+        self.dirty = true;
 
-        // Ctrl-C is a hard shutdown regardless of what is focused.
+        // Ctrl-C is the unconditional exit — checked before the permission capture below so it
+        // still works while a prompt is up.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.pending_permission = None;
             self.should_quit = true;
             return Some(AgentCommand::Shutdown);
         }
 
+        // A pending permission prompt captures the rest of the keyboard until answered.
+        if let Some(prompt) = &self.pending_permission {
+            return self.answer_permission(prompt.req_id, key.code);
+        }
+
         match key.code {
             // Esc cancels a running turn and stays in the app (the payoff of mid-turn cancel);
-            // when idle there is nothing to cancel, so it quits. Ctrl-C is the unconditional quit.
+            // when idle there is nothing to cancel, so it quits.
             KeyCode::Esc => {
                 if self.status.in_flight {
                     Some(AgentCommand::Cancel)
                 } else {
                     self.should_quit = true;
-                    Some(AgentCommand::Cancel)
+                    Some(AgentCommand::Shutdown)
                 }
             }
             KeyCode::Enter => {
                 if self.input.trim().is_empty() {
+                    return None;
+                }
+                // The engine does not queue messages mid-turn, so submitting now would silently
+                // drop the input. Hold it in the box until the turn ends (Esc cancels a runaway one).
+                if self.status.in_flight {
                     return None;
                 }
                 let text = std::mem::take(&mut self.input);
@@ -451,8 +472,68 @@ mod tests {
         assert!(!app.status.in_flight);
 
         let command = app.on_key(key(KeyCode::Esc));
-        assert_eq!(command, Some(AgentCommand::Cancel));
+        assert_eq!(command, Some(AgentCommand::Shutdown));
         assert!(app.should_quit, "Esc with no turn running quits");
+    }
+
+    #[test]
+    fn ctrl_c_during_a_permission_prompt_still_shuts_down() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::PermissionRequested {
+            turn: 1,
+            req_id: 3,
+            call_id: "c".into(),
+            tool: "shell:exec".into(),
+            action: "exec".into(),
+            target: "rm -rf /".into(),
+        });
+        let command = app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            command,
+            Some(AgentCommand::Shutdown),
+            "Ctrl-C must escape even a prompt"
+        );
+        assert!(app.should_quit);
+        assert!(app.pending_permission.is_none(), "the prompt is cleared on exit");
+    }
+
+    #[test]
+    fn enter_while_a_turn_is_in_flight_is_held_not_sent() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::TurnStarted { turn: 1 });
+        for c in "wait".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        // Enter mid-turn must not submit (the engine would drop it) nor clear the box.
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.input, "wait", "the message is held, not lost");
+        assert!(
+            !app.transcript.iter().any(|e| matches!(e, TranscriptEntry::User(_))),
+            "nothing is shown as sent"
+        );
+    }
+
+    #[test]
+    fn turn_finished_clears_a_stale_permission_prompt() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::PermissionRequested {
+            turn: 1,
+            req_id: 5,
+            call_id: "c".into(),
+            tool: "shell:exec".into(),
+            action: "exec".into(),
+            target: "ls".into(),
+        });
+        assert!(app.pending_permission.is_some());
+        app.apply(AgentEvent::TurnFinished {
+            turn: 1,
+            reason: StopReason::Cancelled,
+            steps: 1,
+        });
+        assert!(
+            app.pending_permission.is_none(),
+            "a turn ending without an answer must drop the overlay"
+        );
     }
 
     #[test]

@@ -65,6 +65,8 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
                         client.send_command(command).await?;
                     }
                 }
+                // A resize does not touch app state but the layout must be recomputed.
+                Some(Ok(Event::Resize(_, _))) => app.dirty = true,
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(error.into()),
                 None => break,
@@ -76,9 +78,13 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
                 None => engine_open = false,
             },
 
-            // Coalesced redraw.
+            // Coalesced redraw: only when something changed since the last frame, so the ~30fps
+            // ticker does not repaint an idle screen every tick.
             _ = ticker.tick() => {
-                terminal.draw(|frame| ui::draw(frame, &app))?;
+                if app.dirty {
+                    terminal.draw(|frame| ui::draw(frame, &app))?;
+                    app.dirty = false;
+                }
             }
         }
 
