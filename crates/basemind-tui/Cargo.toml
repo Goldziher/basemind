@@ -16,6 +16,9 @@ path = "src/main.rs"
 # Enables `--replay <scenario.json>`: drives the UI with a scripted model (no network / no key) by ~keep
 # turning on the engine's `test-util` seam. Off by default so scripted mocks never ship in the binary. ~keep
 replay = ["basemind-agent/test-util"]
+# Enables the live multi-agent room: connect a `CommsRoom` (basemind-agent's comms-broker adapter) and ~keep
+# attach it to the live session. Off by default so the binary needs no broker/socket at runtime. ~keep
+room = ["basemind-agent/comms"]
 
 [dependencies]
 anyhow = "1"

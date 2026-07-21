@@ -150,10 +150,31 @@ async fn build_engine(args: &Args) -> Result<(Session, String, Option<String>)> 
     tools.register(Arc::new(ShellTool));
     tools.register_all(comms_tools());
 
-    match args.replay.clone() {
+    let built = match args.replay.clone() {
         Some(path) => build_replay_session(path, args.root.clone(), server, tools),
         None => build_live_session(args, server, tools).await,
+    };
+    #[cfg(feature = "room")]
+    let built = maybe_attach_room(built, args).await;
+    built
+}
+
+/// Connect the live multi-agent room and attach it to the session, degrading to a roomless session
+/// when no broker is reachable (mirrors the code-map degradation in [`build_engine`]). Only the live
+/// path attaches here; the replay path already wires a `ScriptedRoom`.
+#[cfg(feature = "room")]
+async fn maybe_attach_room(
+    built: Result<(Session, String, Option<String>)>,
+    args: &Args,
+) -> Result<(Session, String, Option<String>)> {
+    let (mut session, model, prompt) = built?;
+    if args.replay.is_none() {
+        match basemind_agent::room::CommsRoom::connect(&args.root).await {
+            Ok(room) => session = session.with_room(Arc::new(room)),
+            Err(error) => eprintln!("(multi-agent room unavailable: {error})"),
+        }
     }
+    Ok((session, model, prompt))
 }
 
 /// Run the engine in this process and drive the UI directly (the default mode).
