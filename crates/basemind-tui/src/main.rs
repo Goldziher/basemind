@@ -184,11 +184,13 @@ async fn run_in_proc(args: Args) -> Result<()> {
 /// per-workspace socket. No UI; runs until the process is killed. The initial prompt is ignored —
 /// prompts arrive from attaches so the session stays shared.
 async fn run_daemon(args: Args) -> Result<()> {
-    let (session, _model, _initial_prompt) = build_engine(&args).await?;
-
+    // Claim the singleton socket before building the engine: if another daemon won a spawn race, this
+    // bind fails here, before `build_engine` creates an orphaned session directory on disk. ~keep
     let socket_path = agent_socket_path(&args.root);
     let listener = bind_listener(&socket_path, probe_alive).context("bind agent daemon socket")?;
     eprintln!("agent daemon listening on {}", socket_path.display());
+
+    let (session, _model, _initial_prompt) = build_engine(&args).await?;
 
     let (endpoint, template) = in_proc_channel(32, 256);
     tokio::spawn(session.run(endpoint));
