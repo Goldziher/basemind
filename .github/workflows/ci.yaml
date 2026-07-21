@@ -99,6 +99,13 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --features "${{ matrix.features }}" --quiet
 
+      # ~keep The tui `replay` feature (scripted model + PTY e2e) is a basemind-tui feature, not a root
+      # ~keep one, so the workspace test above compiles it out. Run it explicitly on the unix default legs
+      # ~keep (the tests are `unix`-gated; portable-pty supplies its own PTY, so no real TTY is needed).
+      - name: cargo test (basemind-tui replay + PTY)
+        if: runner.os != 'Windows' && matrix.features == ''
+        run: cargo test -p basemind-tui --features replay --quiet
+
       - name: cargo build --release
         run: cargo build --release --quiet --bin basemind --features "${{ matrix.features }}"
 
