@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use basemind::config::LlmConfig;
+use basemind::config::{ApiKey, LlmConfig};
 use liter_llm::{ClientConfigBuilder, DefaultClient};
 
 use crate::error::{AgentError, Result};
@@ -25,9 +25,18 @@ pub fn build_model_client(config: &LlmConfig) -> Result<Arc<dyn ModelClient>> {
         ));
     }
 
-    let mut builder = match config.api_key.resolve() {
-        Some(secret) => ClientConfigBuilder::new(secret.expose().to_string()),
-        None => ClientConfigBuilder::from_env(),
+    // An explicit `{ env = "NAME" }` whose variable is unset must fail loudly naming NAME, not
+    // fall through to liter-llm's provider-default env lookup (which could silently pick up an
+    // unrelated key such as OPENAI_API_KEY).
+    let mut builder = match (&config.api_key, config.api_key.resolve()) {
+        (_, Some(secret)) => ClientConfigBuilder::new(secret.expose().to_string()),
+        (ApiKey::Env { env }, None) => {
+            return Err(AgentError::Config(format!(
+                "api_key env var `{env}` is unset or empty (model `{}`)",
+                config.model
+            )));
+        }
+        (_, None) => ClientConfigBuilder::from_env(),
     };
     if let Some(url) = &config.base_url {
         builder = builder.base_url(url.clone());
@@ -52,5 +61,22 @@ mod tests {
         let cfg = LlmConfig::default();
         // `Arc<dyn ModelClient>` is not `Debug`, so match rather than `expect_err`.
         assert!(matches!(build_model_client(&cfg), Err(AgentError::Config(_))));
+    }
+
+    #[test]
+    fn unresolved_env_key_errors_naming_the_var() {
+        let cfg = LlmConfig {
+            model: "openai/gpt-4o".into(),
+            api_key: ApiKey::Env {
+                env: "BASEMIND_TEST_DEFINITELY_MISSING_KEY".into(),
+            },
+            ..Default::default()
+        };
+        match build_model_client(&cfg) {
+            Err(AgentError::Config(message)) => {
+                assert!(message.contains("BASEMIND_TEST_DEFINITELY_MISSING_KEY"), "{message}");
+            }
+            _ => panic!("expected a Config error naming the missing env var"),
+        }
     }
 }

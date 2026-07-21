@@ -52,7 +52,14 @@ impl StreamAssembler {
         if let Some(usage) = &chunk.usage {
             self.usage = Some(usage.clone());
         }
-        let choice = chunk.choices.first()?;
+        // We only drive single-completion requests (`n` unset ⇒ 1), so the sole choice is
+        // index 0. Select it explicitly rather than blindly taking `[0]`, so a provider that
+        // orders choices differently (or a future `n > 1` caller) never silently loses deltas.
+        let choice = chunk
+            .choices
+            .iter()
+            .find(|choice| choice.index == 0)
+            .or_else(|| chunk.choices.first())?;
         if let Some(reason) = &choice.finish_reason {
             self.finish_reason = Some(reason.clone());
         }

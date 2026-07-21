@@ -62,13 +62,18 @@ impl PermissionEngine {
 
     /// Remember a claim so future identical claims auto-allow for the rest of the session.
     pub fn remember(&self, claim: &PermissionClaim) {
-        self.remembered.lock().expect("remember lock").insert(claim.signature());
+        // Recover from a poisoned lock rather than panicking: a poisoned permission cache would
+        // otherwise make every subsequent tool call panic and deny the rest of the session.
+        self.remembered
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(claim.signature());
     }
 
     fn is_remembered(&self, claim: &PermissionClaim) -> bool {
         self.remembered
             .lock()
-            .expect("remember lock")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .contains(&claim.signature())
     }
 

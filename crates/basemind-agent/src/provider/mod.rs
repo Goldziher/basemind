@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::{AgentConfig, Role, RoleModels};
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 use crate::model::ModelClient;
 
 /// A role resolved to a ready client plus the per-request knobs from its [`LlmConfig`].
@@ -42,9 +42,10 @@ impl ProviderPool {
         let default = resolve(&config.roles, Role::Default)?;
         let mut roles = HashMap::new();
         for role in [Role::Small, Role::Plan, Role::Title, Role::Summarize] {
-            // Only build a distinct client when the role is configured with its own model; an
-            // unset role shares `default` via `for_role`'s fallback.
-            if config.roles.resolve(role).model != default.model || is_explicit(&config.roles, role) {
+            // Build a distinct client only for an explicitly-configured role; an unset role shares
+            // `default` via `for_role`'s fallback. (An unset role resolves to `&default`, so no
+            // model-diffing is needed here.)
+            if is_explicit(&config.roles, role) {
                 roles.insert(role, resolve(&config.roles, role)?);
             }
         }
@@ -73,8 +74,9 @@ fn is_explicit(roles: &RoleModels, role: Role) -> bool {
 
 fn resolve(roles: &RoleModels, role: Role) -> Result<ResolvedRole> {
     let llm = roles.resolve(role);
+    let client = build_model_client(llm).map_err(|e| AgentError::Config(format!("role {role:?}: {e}")))?;
     Ok(ResolvedRole {
-        client: build_model_client(llm)?,
+        client,
         model: llm.model.clone(),
         temperature: llm.temperature,
         max_tokens: llm.max_tokens,
