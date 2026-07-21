@@ -45,6 +45,18 @@ impl InProcAgentClient {
     pub fn resubscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.events.resubscribe()
     }
+
+    /// Mint an independent front-end client for the same engine: a cloned command sink plus a fresh
+    /// event subscription. Every minted client can send commands and sees the same event stream, so
+    /// one long-lived engine can serve a sequence of front-ends (a daemon accepting reconnects) or
+    /// several at once. The engine stays alive as long as any client — including the template this
+    /// was minted from — holds the command sink.
+    pub fn new_client(&self) -> InProcAgentClient {
+        InProcAgentClient {
+            commands: self.commands.clone(),
+            events: self.events.resubscribe(),
+        }
+    }
 }
 
 /// Create a connected engine/UI pair. `command_buffer` bounds queued commands; `event_buffer`
@@ -81,5 +93,41 @@ impl AgentClient for InProcAgentClient {
             .send(command)
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "agent engine is gone"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::AgentEvent;
+
+    #[tokio::test]
+    async fn new_client_shares_the_engine_event_stream_and_command_sink() {
+        let (mut endpoint, client) = in_proc_channel(4, 8);
+        // Mint two independent front-ends before broadcasting, so their subscriptions see it. ~keep
+        let mut first = client.new_client();
+        let mut second = client.new_client();
+
+        endpoint
+            .events
+            .send(AgentEvent::TurnStarted { turn: 7 })
+            .expect("broadcast reaches subscribers");
+        assert_eq!(first.next_event().await, Some(AgentEvent::TurnStarted { turn: 7 }));
+        assert_eq!(second.next_event().await, Some(AgentEvent::TurnStarted { turn: 7 }));
+
+        first
+            .send_command(AgentCommand::Cancel)
+            .await
+            .expect("command reaches engine");
+        assert_eq!(endpoint.commands.recv().await, Some(AgentCommand::Cancel));
+
+        // Dropping the template and one client leaves the engine reachable via the survivor. ~keep
+        drop(client);
+        drop(second);
+        first
+            .send_command(AgentCommand::Shutdown)
+            .await
+            .expect("engine still reachable through the surviving client");
+        assert_eq!(endpoint.commands.recv().await, Some(AgentCommand::Shutdown));
     }
 }

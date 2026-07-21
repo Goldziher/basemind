@@ -9,11 +9,35 @@
 
 use basemind_agent::AgentClient;
 use futures::{SinkExt, StreamExt};
-use tokio::net::UnixStream;
+use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 use crate::error::IpcError;
 use crate::frame::{codec, decode, encode};
+
+/// Run the daemon accept loop: for every accepted connection, mint a fresh engine-facing client via
+/// `make_client` and bridge it to the socket with [`serve_connection`] on its own task.
+///
+/// `make_client` is called once per connection — the daemon passes
+/// `|| template.new_client()`([`InProcAgentClient::new_client`](basemind_agent::InProcAgentClient::new_client)),
+/// so every attach shares one long-lived engine and the session outlives any single connection.
+/// Returns only on an unrecoverable accept error; a per-connection error is logged and the loop
+/// continues.
+pub async fn serve<C, F>(listener: UnixListener, mut make_client: F) -> Result<(), IpcError>
+where
+    C: AgentClient,
+    F: FnMut() -> C,
+{
+    loop {
+        let (stream, _addr) = listener.accept().await?;
+        let client = make_client();
+        tokio::spawn(async move {
+            if let Err(error) = serve_connection(stream, client).await {
+                tracing::warn!(%error, "agent ipc: connection ended with an error");
+            }
+        });
+    }
+}
 
 /// Bridge a single connected `stream` to `client` (an engine-facing [`AgentClient`]): forward the
 /// engine's events out as msgpack frames, and feed decoded inbound command frames into the engine.

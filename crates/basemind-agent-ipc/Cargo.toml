@@ -15,6 +15,7 @@ serde = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
 tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
 
 [dev-dependencies]
 basemind-agent = { path = "../basemind-agent", features = ["test-util"] }
