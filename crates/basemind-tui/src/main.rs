@@ -33,7 +33,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use basemind::mcp::BasemindServer;
-use basemind_agent::tools::{ShellTool, code_nav_tools, git_history_tools};
+use basemind_agent::tools::{ShellTool, code_nav_tools, comms_tools, git_history_tools};
 use basemind_agent::{AgentClient, AgentCommand, Session, SessionStore, ToolRegistry, in_proc_channel};
 use basemind_agent_ipc::{
     UdsAgentClient, agent_socket_path, bind_listener, ensure_daemon, probe_alive, serve, spawn_detached,
@@ -148,6 +148,7 @@ async fn build_engine(args: &Args) -> Result<(Session, String, Option<String>)> 
         }
     };
     tools.register(Arc::new(ShellTool));
+    tools.register_all(comms_tools());
 
     match args.replay.clone() {
         Some(path) => build_replay_session(path, args.root.clone(), server, tools),

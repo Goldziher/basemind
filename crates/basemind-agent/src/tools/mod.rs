@@ -6,11 +6,13 @@
 //! — a fraction of the tokens per turn.
 
 mod codenav;
+mod comms;
 mod githist;
 mod registry;
 mod shell;
 
 pub use codenav::code_nav_tools;
+pub use comms::comms_tools;
 pub use githist::git_history_tools;
 pub use registry::ToolRegistry;
 pub use shell::ShellTool;
@@ -36,6 +38,8 @@ pub struct ToolCtx {
     pub root: PathBuf,
     /// In-process basemind server for code-map queries, when available.
     pub server: Option<Arc<BasemindServer>>,
+    /// The connected multi-agent room, when one is wired — backs the `room:*` tools.
+    pub room: Option<Arc<dyn crate::room::RoomClient>>,
 }
 
 /// The output of a tool: the text fed back to the model, and whether it is an error (errors are
