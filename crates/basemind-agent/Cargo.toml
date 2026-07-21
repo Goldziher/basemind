@@ -6,20 +6,20 @@ license = "MIT"
 description = "Model-agnostic coding-agent engine built on the basemind code map + liter-llm."
 publish = false
 
-[lints]
-workspace = true
-
 [dependencies]
-basemind = { path = "../..", default-features = false }
-liter-llm = { version = "1.10.1", features = ["tower"] }
-tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "process"] }
 async-trait = "0.1"
+basemind = { path = "../..", default-features = false }
 futures = "0.3"
 globset = "0.4"
+liter-llm = { version = "1.10.1", features = ["tower"] }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "process"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util", "sync"] }
+
+[lints]
+workspace = true

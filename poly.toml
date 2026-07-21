@@ -74,7 +74,7 @@ preserve_patterns = [
 disable = ["MD013", "MD024", "MD033", "MD036", "MD041"]
 
 [lint.typos]
-extend_words = { patern = "patern", pattrn = "pattrn", ser = "ser", certifi = "certifi" }
+extend_words = { patern = "patern", pattrn = "pattrn", ser = "ser", certifi = "certifi", ratatui = "ratatui", Ratatui = "Ratatui" }
 extend_identifiers = { rela_path = "rela_path" }
 extend_exclude = ["tests/fixtures/**"]
 

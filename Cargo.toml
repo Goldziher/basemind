@@ -22,6 +22,7 @@ members = [
     "crates/tree-sitter-graph",
     "crates/tree-sitter-stack-graphs",
     "crates/basemind-agent",
+    "crates/basemind-tui",
 ]
 
 [workspace.lints.clippy]
