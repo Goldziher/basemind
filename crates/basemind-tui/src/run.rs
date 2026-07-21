@@ -16,6 +16,7 @@ use crossterm::{ExecutableCommand, event::DisableMouseCapture};
 use futures::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use tokio::time::interval;
 
 use crate::app::App;
@@ -81,6 +82,9 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
             // ticker does not repaint an idle screen every tick. ~keep
             _ = ticker.tick() => {
                 if app.dirty {
+                    // Pin/clamp the transcript scroll against the live terminal size before drawing. ~keep
+                    let size = terminal.size()?;
+                    ui::reconcile_scroll(&mut app, Rect::new(0, 0, size.width, size.height));
                     terminal.draw(|frame| ui::draw(frame, &app))?;
                     app.dirty = false;
                 }
