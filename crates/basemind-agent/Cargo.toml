@@ -12,7 +12,8 @@ workspace = true
 [dependencies]
 basemind = { path = "../..", default-features = false }
 liter-llm = { version = "1.10.1", features = ["tower"] }
-tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "process"] }
+async-trait = "0.1"
 futures = "0.3"
 globset = "0.4"
 schemars = "1.2"
