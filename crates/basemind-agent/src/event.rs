@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::room::{RoomMessage, RoomPeer};
+
 /// Why a turn stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,6 +128,14 @@ pub enum AgentEvent {
         /// Whether the session cannot continue.
         fatal: bool,
     },
+    /// The multi-agent room roster changed (or was first published). Carries the full current set.
+    RoomRoster {
+        /// The current peer agents.
+        peers: Vec<RoomPeer>,
+    },
+    /// A message arrived from a room peer (or an echo of the local agent's own post). An internally
+    /// tagged newtype variant flattens the payload onto the frame: `{"kind":"room_message","from":..}`.
+    RoomMessage(RoomMessage),
 }
 
 #[cfg(test)]
@@ -154,6 +164,40 @@ mod tests {
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["kind"], "permission_requested");
         assert_eq!(json["turn"], 2);
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn room_message_flattens_its_payload_onto_the_frame() {
+        let event = AgentEvent::RoomMessage(RoomMessage {
+            from: "alice".into(),
+            subject: "sync".into(),
+            body: "ready to review".into(),
+        });
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "room_message",
+                "from": "alice",
+                "subject": "sync",
+                "body": "ready to review",
+            })
+        );
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn room_roster_round_trips_a_peer_list() {
+        let event = AgentEvent::RoomRoster {
+            peers: vec![RoomPeer {
+                id: "bob".into(),
+                display: "bob".into(),
+            }],
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["kind"], "room_roster");
+        assert_eq!(json["peers"][0]["id"], "bob");
         assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), event);
     }
 }

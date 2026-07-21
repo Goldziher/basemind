@@ -322,5 +322,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::Compacted { .. } => "Compacted",
         AgentEvent::TurnFinished { .. } => "TurnFinished",
         AgentEvent::Error { .. } => "Error",
+        AgentEvent::RoomRoster { .. } => "RoomRoster",
+        AgentEvent::RoomMessage(_) => "RoomMessage",
     }
 }
