@@ -16,6 +16,21 @@ cargo run -p basemind-tui -- --continue
 cargo run -p basemind-tui -- --resume <session-id>
 ```
 
+## Multi-agent room
+
+The agent can join a shared room over basemind's comms broker: peers show in a roster bar, incoming
+peer messages land in the transcript, and you post with `/post <text>`. The model also gets `room:*`
+tools (`room:post` is permission-gated; `room:read`/`room:list_agents` are auto-allowed). The room is
+built behind the `room` feature (off by default so the binary needs no broker at runtime):
+
+```bash
+cargo run -p basemind-tui --features room -- "coordinate with the other agents"
+```
+
+Without a reachable broker the session runs roomless. The engine seam is `RoomClient`
+(`basemind-agent`); `--replay` drives a hermetic `ScriptedRoom` instead, and a scenario may add a
+`room` block (`roster` + timed `incoming` + `auto_respond`) — see the PTY tests `tests/pty_room*.rs`.
+
 ## Testing
 
 The UI is verified deterministically — no network, no API key — in three layers, all driven by a
