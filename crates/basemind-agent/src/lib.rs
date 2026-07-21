@@ -25,6 +25,6 @@ pub use history::History;
 pub use model::{LiterModelClient, ModelClient};
 pub use permission::{Decision, PermissionClaim, PermissionEngine};
 pub use provider::{ProviderPool, ResolvedRole};
-pub use session::{StreamAssembler, TurnContext, run_turn};
+pub use session::{Session, StreamAssembler, TurnContext, run_turn};
 pub use tools::{ToolCtx, ToolRegistry};
 pub use transport::{AgentClient, EngineEndpoint, InProcAgentClient, in_proc_channel};
