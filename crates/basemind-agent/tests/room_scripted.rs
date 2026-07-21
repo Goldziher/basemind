@@ -1,7 +1,8 @@
-//! Room integration test: drive the real [`Session::run`] loop with a [`ScriptedRoom`] over the
-//! [`AgentClient`] transport. It asserts three things end-to-end, with no broker and no network:
+//! Room integration tests: drive the real [`Session::run`] loop with a [`ScriptedRoom`] over the
+//! [`AgentClient`] transport, with no broker and no network. The first test covers the base seam —
 //! the roster is published, a scripted incoming peer message rides the event broadcast, and a
-//! `RoomPost` command issued while the session is idle reaches the room's post-log.
+//! `RoomPost` issued while idle reaches the room's post-log. The second covers auto-respond — an
+//! incoming message wakes a turn whose scripted reply is emitted.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,6 +113,56 @@ async fn scripted_room_publishes_roster_streams_incoming_and_captures_a_post() {
         "the RoomPost reached the room, posts={:?}",
         room.posts()
     );
+
+    let _ = client.send_command(AgentCommand::Shutdown).await;
+    let _ = engine.await;
+}
+
+#[tokio::test]
+async fn auto_respond_wakes_a_turn_on_an_incoming_message() {
+    let incoming = vec![ScriptedIncoming {
+        message: RoomMessage {
+            from: "alice".into(),
+            subject: "ping".into(),
+            body: "you there?".into(),
+        },
+        after: Duration::from_millis(20),
+    }];
+    let room = ScriptedRoom::new(Vec::new(), incoming);
+
+    // One scripted turn is available for the wake to consume; no UserMessage is ever sent, so the
+    // only way a turn starts is the incoming message waking it.
+    let scenario =
+        Scenario::from_json(r#"{ "user": "n/a", "turns": [ { "text": "AUTO-REPLY" } ] }"#).expect("scenario parses");
+    let session = Session::with_provider(
+        scenario.provider(),
+        PathBuf::from("."),
+        None,
+        ToolRegistry::new(),
+        scenario.system.clone(),
+        MAX_STEPS,
+    )
+    .with_room(Arc::new(room))
+    .with_room_auto_respond(true);
+
+    let (endpoint, mut client) = in_proc_channel(32, 256);
+    let engine = tokio::spawn(session.run(endpoint));
+
+    // The wake must drive a real turn: observe TurnStarted followed by the scripted reply text. ~keep
+    let mut started = false;
+    let mut replied = false;
+    while !replied {
+        let event = tokio::time::timeout(DEADLINE, client.next_event())
+            .await
+            .expect("an event arrived within the deadline")
+            .expect("the engine is still running");
+        match event {
+            AgentEvent::TurnStarted { .. } => started = true,
+            AgentEvent::TextDelta { text, .. } if text.contains("AUTO-REPLY") => replied = true,
+            _ => {}
+        }
+    }
+    assert!(started, "a turn was started by the incoming message");
 
     let _ = client.send_command(AgentCommand::Shutdown).await;
     let _ = engine.await;

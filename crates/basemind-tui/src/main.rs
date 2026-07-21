@@ -319,7 +319,9 @@ fn build_replay_session(
     // Attach the scripted room when the scenario declares one, so a PTY run exercises the roster and
     // incoming peer messages with no broker. ~keep
     if let Some(room) = scenario.scripted_room() {
-        session = session.with_room(Arc::new(room));
+        session = session
+            .with_room(Arc::new(room))
+            .with_room_auto_respond(scenario.room_auto_respond());
     }
     Ok((session, "mock/scripted".into(), Some(scenario.user)))
 }
