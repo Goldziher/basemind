@@ -1,8 +1,12 @@
 //! Conversation history and token accounting.
 //!
 //! Holds the ordered message list plus an optional system prompt, and accumulates token usage
-//! across turns. Compaction and on-disk persistence land in a later slice; for now this is the
-//! minimal store the turn-loop needs to build requests and report cumulative usage.
+//! across turns. On-disk persistence lives in [`persist`]; compaction lands in a later slice. For
+//! now this is the minimal store the turn-loop needs to build requests and report cumulative usage.
+
+mod persist;
+
+pub use persist::{SessionMeta, SessionStore};
 
 use liter_llm::{Message, SystemMessage, Usage, UserContent, UserMessage};
 
@@ -28,6 +32,20 @@ impl History {
     /// Append a message verbatim (assistant/tool messages from the turn-loop).
     pub fn push(&mut self, message: Message) {
         self.messages.push(message);
+    }
+
+    /// The conversation messages (excluding the system prompt), in order.
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// Restore a persisted conversation: append `messages` and set the cumulative token totals.
+    ///
+    /// Used on resume; the system prompt supplied to [`History::new`] is preserved.
+    pub fn restore(&mut self, messages: Vec<Message>, input_tokens: u64, output_tokens: u64) {
+        self.messages.extend(messages);
+        self.input_tokens = input_tokens;
+        self.output_tokens = output_tokens;
     }
 
     /// Append a user message.
@@ -106,6 +124,24 @@ mod tests {
         let messages = history.to_messages();
         assert_eq!(messages.len(), 1);
         assert!(matches!(messages[0], Message::User(_)));
+    }
+
+    #[test]
+    fn restore_sets_messages_and_totals() {
+        let mut history = History::new(Some("system".into()));
+        history.restore(
+            vec![Message::User(UserMessage {
+                content: UserContent::Text("resumed".into()),
+                name: None,
+            })],
+            512,
+            128,
+        );
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.totals(), (512, 128));
+        assert_eq!(user_text(&history.messages()[0]), Some("resumed"));
+        // The system prompt is still prepended for the model request.
+        assert!(matches!(history.to_messages()[0], Message::System(_)));
     }
 
     #[test]

@@ -47,6 +47,10 @@ pub enum AgentError {
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A session-persistence (de)serialization error (JSONL messages, session metadata).
+    #[error("serde: {0}")]
+    Serde(#[from] serde_json::Error),
+
     /// A tool execution failure carrying a human-readable message fed back to the model.
     #[error("{0}")]
     Tool(String),
