@@ -6,10 +6,12 @@
 //! — a fraction of the tokens per turn.
 
 mod codenav;
+mod githist;
 mod registry;
 mod shell;
 
 pub use codenav::code_nav_tools;
+pub use githist::git_history_tools;
 pub use registry::ToolRegistry;
 pub use shell::ShellTool;
 

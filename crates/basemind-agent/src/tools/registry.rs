@@ -55,17 +55,32 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{ShellTool, code_nav_tools};
+    use crate::tools::{ShellTool, code_nav_tools, git_history_tools};
 
     #[test]
     fn specs_expose_registered_tool_names_in_sorted_order() {
         let mut registry = ToolRegistry::new();
         registry.register_all(code_nav_tools());
+        registry.register_all(git_history_tools());
         registry.register(Arc::new(ShellTool));
 
         let names: Vec<_> = registry.specs().into_iter().map(|s| s.function.name).collect();
-        assert_eq!(names, vec!["code:outline", "code:search_symbols", "shell:exec"]);
-        assert_eq!(registry.len(), 3);
+        assert_eq!(
+            names,
+            vec![
+                "code:call_graph",
+                "code:find_callers",
+                "code:find_references",
+                "code:outline",
+                "code:search_symbols",
+                "code:workspace_grep",
+                "git:blame_symbol",
+                "git:diff_file",
+                "git:recent_changes",
+                "shell:exec",
+            ]
+        );
+        assert_eq!(registry.len(), 10);
         assert!(registry.get("shell:exec").is_some());
         assert!(registry.get("nope").is_none());
     }
