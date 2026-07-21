@@ -12,6 +12,11 @@ publish = false
 name = "basemind-tui"
 path = "src/main.rs"
 
+[features]
+# Enables `--replay <scenario.json>`: drives the UI with a scripted model (no network / no key) by
+# turning on the engine's `test-util` seam. Off by default so scripted mocks never ship in the binary.
+replay = ["basemind-agent/test-util"]
+
 [dependencies]
 anyhow = "1"
 basemind = { path = "../..", default-features = false }

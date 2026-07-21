@@ -13,6 +13,9 @@ pub mod history;
 pub mod model;
 pub mod permission;
 pub mod provider;
+// Scripted-model replay for controlled smokes and e2e tests; never in a release lib.
+#[cfg(any(test, feature = "test-util"))]
+pub mod replay;
 pub mod session;
 pub mod tools;
 pub mod transport;
