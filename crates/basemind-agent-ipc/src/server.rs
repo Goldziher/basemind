@@ -21,15 +21,23 @@ use crate::frame::{codec, decode, encode};
 /// `make_client` is called once per connection — the daemon passes
 /// `|| template.new_client()`([`InProcAgentClient::new_client`](basemind_agent::InProcAgentClient::new_client)),
 /// so every attach shares one long-lived engine and the session outlives any single connection.
-/// Returns only on an unrecoverable accept error; a per-connection error is logged and the loop
-/// continues.
+/// Runs until the process is killed: both an accept error and a per-connection error are logged and
+/// the loop continues, so one transient failure never tears down the shared session for every attach.
 pub async fn serve<C, F>(listener: UnixListener, mut make_client: F) -> Result<(), IpcError>
 where
     C: AgentClient,
     F: FnMut() -> C,
 {
     loop {
-        let (stream, _addr) = listener.accept().await?;
+        let (stream, _addr) = match listener.accept().await {
+            Ok(pair) => pair,
+            // A transient accept error (fd exhaustion, an aborted connect) must not kill the daemon
+            // and every live attach with it; log it and keep serving, as comms' accept loop does. ~keep
+            Err(error) => {
+                tracing::warn!(%error, "agent ipc: accept failed; continuing");
+                continue;
+            }
+        };
         let client = make_client();
         tokio::spawn(async move {
             if let Err(error) = serve_connection(stream, client).await {
@@ -74,7 +82,9 @@ pub async fn serve_connection<C: AgentClient>(stream: UnixStream, mut client: C)
                     let _ = client.send_command(command).await;
                 }
                 Some(Err(error)) => return Err(error.into()),
-                // The peer disconnected; dropping `client` closes the engine's command channel. ~keep
+                // The peer disconnected; drop this connection's client. In the daemon case the shared
+                // session lives on (the template still holds the command sink); in the one-shot case
+                // this was the sole sink, so dropping it ends the engine. ~keep
                 None => break,
             },
         }
