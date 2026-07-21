@@ -12,26 +12,35 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::app::{App, PermissionPrompt, TranscriptEntry};
 use crate::markdown::render_markdown;
 
-/// Split the frame into the three stacked regions: transcript, status bar, input box. Shared by
-/// [`draw`] and [`reconcile_scroll`] so both agree on the transcript's geometry.
-fn layout(area: Rect) -> std::rc::Rc<[Rect]> {
+/// Split the frame into the stacked regions: transcript, an optional one-line room bar, status bar,
+/// input box. Shared by [`draw`] and [`reconcile_scroll`] so both agree on the transcript's geometry;
+/// the transcript stays index 0 whether or not the room bar is present.
+fn layout(area: Rect, has_roster: bool) -> std::rc::Rc<[Rect]> {
+    let mut constraints = vec![Constraint::Min(3)]; // transcript ~keep
+    if has_roster {
+        constraints.push(Constraint::Length(1)); // room bar ~keep
+    }
+    constraints.push(Constraint::Length(1)); // status bar ~keep
+    constraints.push(Constraint::Length(3)); // input box ~keep
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),    // transcript ~keep
-            Constraint::Length(1), // status bar ~keep
-            Constraint::Length(3), // input box ~keep
-        ])
+        .constraints(constraints)
         .split(area)
 }
 
 /// Draw the whole UI for the current [`App`] snapshot.
 pub fn draw(frame: &mut Frame, app: &App) {
-    let chunks = layout(frame.area());
+    let has_roster = !app.roster.is_empty();
+    let chunks = layout(frame.area(), has_roster);
 
     draw_transcript(frame, app, chunks[0]);
-    draw_status(frame, app, chunks[1]);
-    draw_input(frame, app, chunks[2]);
+    let mut next = 1;
+    if has_roster {
+        draw_room_bar(frame, app, chunks[next]);
+        next += 1;
+    }
+    draw_status(frame, app, chunks[next]);
+    draw_input(frame, app, chunks[next + 1]);
 
     if let Some(prompt) = &app.pending_permission {
         draw_permission_overlay(frame, prompt);
@@ -68,9 +77,27 @@ fn transcript_lines(app: &App) -> Vec<Line<'static>> {
                     Style::default().fg(Color::Magenta).add_modifier(Modifier::ITALIC),
                 )));
             }
+            TranscriptEntry::Room { from, subject, body } => push_room(&mut lines, from, subject, body),
         }
     }
     lines
+}
+
+/// Push a room message: a bold `⇄ from` header (with ` · subject` when one is present) then the body.
+fn push_room(lines: &mut Vec<Line<'static>>, from: &str, subject: &str, body: &str) {
+    let header = if subject.is_empty() {
+        format!("⇄ {from}")
+    } else {
+        format!("⇄ {from} · {subject}")
+    };
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        body.to_string(),
+        Style::default().fg(Color::Blue),
+    )));
 }
 
 /// The transcript paragraph without its border block — shared by the renderer and the scroll-height
@@ -84,7 +111,7 @@ fn transcript_body(lines: Vec<Line<'static>>) -> Paragraph<'static> {
 /// following once the user has paged back to the bottom. Called from the run loop, which alone knows
 /// the terminal size.
 pub fn reconcile_scroll(app: &mut App, area: Rect) {
-    let transcript = layout(area)[0];
+    let transcript = layout(area, !app.roster.is_empty())[0];
     let inner_width = transcript.width.saturating_sub(2);
     let inner_height = transcript.height.saturating_sub(2);
     let total = transcript_body(transcript_lines(app)).line_count(inner_width) as u16;
@@ -133,6 +160,21 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         )),
         state,
     ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Render the one-line room bar: the comma-joined display names of the current roster.
+fn draw_room_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let peers = app
+        .roster
+        .iter()
+        .map(|peer| peer.display.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let line = Line::from(Span::styled(
+        format!(" room: {peers} "),
+        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+    ));
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -265,5 +307,47 @@ mod tests {
         app.push_user("only one short line".into());
         reconcile_scroll(&mut app, Rect::new(0, 0, 80, 24));
         assert_eq!(app.scroll, 0, "content that fits the viewport has no scroll");
+    }
+
+    #[test]
+    fn a_roster_inserts_a_room_region_and_keeps_the_transcript_at_index_zero() {
+        let area = Rect::new(0, 0, 80, 24);
+        let without = layout(area, false);
+        let with = layout(area, true);
+        assert_eq!(without.len(), 3, "no room bar without a roster");
+        assert_eq!(with.len(), 4, "a room bar adds one region");
+        assert_eq!(with[0].x, without[0].x, "the transcript stays index 0");
+        assert!(
+            with[0].height < without[0].height,
+            "the room bar steals one transcript row"
+        );
+
+        let mut app = tall_app();
+        app.roster = vec![basemind_agent::RoomPeer {
+            id: "a".into(),
+            display: "alice".into(),
+        }];
+        let expected = (transcript_body(transcript_lines(&app)).line_count(78) as u16)
+            .saturating_sub(layout(area, true)[0].height.saturating_sub(2));
+        reconcile_scroll(&mut app, area);
+        assert_eq!(app.scroll, expected, "follow still pins to the bottom with a roster");
+        assert!(app.follow);
+    }
+
+    #[test]
+    fn transcript_lines_render_a_room_message() {
+        let mut app = App::new("m");
+        app.transcript.push(TranscriptEntry::Room {
+            from: "alice".into(),
+            subject: String::new(),
+            body: "hello team".into(),
+        });
+        let rendered: String = transcript_lines(&app)
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("alice"), "the sender is rendered");
+        assert!(rendered.contains("hello team"), "the body is rendered");
     }
 }
