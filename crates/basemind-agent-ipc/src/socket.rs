@@ -14,8 +14,11 @@ use crate::error::IpcError;
 
 /// Subdirectory under the machine-global cache holding agent daemon sockets.
 const AGENT_SUBDIR: &str = "agent";
-/// Subdirectory (under `AGENT_SUBDIR`) that holds the per-workspace daemon sockets.
-const DAEMON_SUBDIR: &str = "daemon";
+/// How many leading hex chars of the workspace key name the socket. The full 64-char key would push
+/// the absolute socket path past the platform `sockaddr_un` limit (~104 bytes on macOS) even under a
+/// normal home; a 16-hex (64-bit) prefix keeps it short while staying collision-free for the handful
+/// of repos a user runs. It is a prefix of the session store's key, so the two stay associable.
+const KEY_PREFIX_LEN: usize = 16;
 /// Owner-only directory mode for the socket directory.
 #[cfg(unix)]
 const OWNER_ONLY_DIR: u32 = 0o700;
@@ -23,15 +26,17 @@ const OWNER_ONLY_DIR: u32 = 0o700;
 #[cfg(unix)]
 const OWNER_ONLY_FILE: u32 = 0o600;
 
-/// The per-workspace daemon socket path: `cache_root()/agent/daemon/<workspace_key>.sock`.
+/// The per-workspace daemon socket path: `cache_root()/agent/<workspace_key_prefix>.sock`.
 ///
-/// Reuses the same `workspace_key` as the session store, so the daemon socket lives next to
-/// `agent/sessions/<workspace_key>/` and honors `BASEMIND_DATA_HOME`.
+/// The name is a prefix of the same `workspace_key` the session store uses, so the socket is
+/// associable with `agent/sessions/<workspace_key>/` and honors `BASEMIND_DATA_HOME` — kept short to
+/// stay within the platform Unix-socket path limit.
 pub fn agent_socket_path(root: &Path) -> PathBuf {
+    let key = basemind::store_layout::workspace_key(root);
+    let short = &key[..key.len().min(KEY_PREFIX_LEN)];
     basemind::store_layout::cache_root()
         .join(AGENT_SUBDIR)
-        .join(DAEMON_SUBDIR)
-        .join(format!("{}.sock", basemind::store_layout::workspace_key(root)))
+        .join(format!("{short}.sock"))
 }
 
 /// Best-effort synchronous liveness probe: a live daemon's listener accepts the connect (even while
@@ -104,6 +109,14 @@ mod tests {
             first.display()
         );
         assert_eq!(first.extension().and_then(|ext| ext.to_str()), Some("sock"));
+        // Guard the SUN_LEN ceiling (~104 bytes on macOS): even under a deep tempdir data home the
+        // shortened key must keep the absolute socket path bindable. ~keep
+        assert!(
+            first.as_os_str().len() < 104,
+            "socket path must stay within the platform limit: {} ({} bytes)",
+            first.display(),
+            first.as_os_str().len()
+        );
 
         let other_repo = tempfile::tempdir().expect("other repo");
         assert_ne!(first, agent_socket_path(other_repo.path()), "distinct repos differ");
