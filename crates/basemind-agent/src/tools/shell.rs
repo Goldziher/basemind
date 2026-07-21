@@ -47,10 +47,14 @@ impl Tool for ShellTool {
 /// Run `command` in `root`, returning combined stdout+stderr. Server-free so it is directly
 /// testable. A non-zero exit sets `is_error` but still returns the output for the model to read.
 async fn run_command(command: &str, root: &Path) -> Result<ToolOutput> {
+    // `kill_on_drop` so that when the turn-loop drops this future to cancel the tool, the child is
+    // actually killed rather than orphaned. (A `sh -c` pipeline's grandchildren can still outlive
+    // the killed `sh`; a process group would reap those, deferred as a later refinement.)
     let output = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(command)
         .current_dir(root)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(AgentError::Io)?;

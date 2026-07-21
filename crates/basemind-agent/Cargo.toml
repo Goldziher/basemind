@@ -6,6 +6,12 @@ license = "MIT"
 description = "Model-agnostic coding-agent engine built on the basemind code map + liter-llm."
 publish = false
 
+[features]
+# Exposes the scripted test doubles (`MockModelClient`, `StallingModelClient`). Off by default so
+# they never ship in a release build; the self-dev-dependency below turns it on for this crate's
+# own tests (edition-2024 resolver keeps the dev-only feature out of normal builds).
+test-util = []
+
 [dependencies]
 async-trait = "0.1"
 basemind = { path = "../..", default-features = false }
@@ -19,6 +25,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time", "process", "fs"] }
 
 [dev-dependencies]
+# Self-reference enabling `test-util` for this crate's test/example/bench targets (integration
+# tests link the normally-built lib, which otherwise omits the feature-gated mocks).
+basemind-agent = { path = ".", features = ["test-util"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util", "sync"] }
 

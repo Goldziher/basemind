@@ -123,7 +123,7 @@ impl ModelClient for MockModelClient {
         let turn = self
             .turns
             .lock()
-            .expect("mock lock poisoned")
+            .unwrap_or_else(|poison| poison.into_inner())
             .pop_front()
             .unwrap_or_default();
         Box::pin(async move {
