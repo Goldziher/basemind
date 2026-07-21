@@ -104,12 +104,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 /// Render the input box, showing the current line with a block cursor.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let text = format!("{}\u{2588}", app.input); // trailing full-block as a simple cursor
+    // While a turn is running, Enter is held (the engine does not queue mid-turn) — say so.
+    let title = if app.status.in_flight {
+        " message (turn in progress · Esc to cancel · Ctrl-C exit) "
+    } else {
+        " message (Enter send · Esc quit · Ctrl-C exit) "
+    };
     let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" message (Enter send · Esc cancel/quit · Ctrl-C exit) "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
