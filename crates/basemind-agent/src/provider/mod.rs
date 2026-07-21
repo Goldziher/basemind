@@ -52,6 +52,18 @@ impl ProviderPool {
         Ok(Self { default, roles })
     }
 
+    /// Build a pool from a single already-resolved role; every role falls back to it. Available
+    /// only under test / the `test-util` feature: it lets a controlled smoke drive the real runner
+    /// with a scripted [`ModelClient`](crate::model::ModelClient) instead of resolving live provider
+    /// clients from config.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn single(default: ResolvedRole) -> Self {
+        Self {
+            default,
+            roles: HashMap::new(),
+        }
+    }
+
     /// The resolved role, falling back to `default` when the role has no distinct client.
     pub fn for_role(&self, role: Role) -> &ResolvedRole {
         if role == Role::Default {

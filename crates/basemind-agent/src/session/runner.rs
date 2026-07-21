@@ -68,6 +68,35 @@ impl Session {
         })
     }
 
+    /// Build a session from an already-resolved provider pool instead of live config. Available only
+    /// under test / the `test-util` feature: it drives the real runner (streaming, permission,
+    /// cancel, persistence) with a scripted [`ModelClient`](crate::model::ModelClient), so a
+    /// controlled smoke exercises the same code path as the TUI with no network and no API keys.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_provider(
+        provider: ProviderPool,
+        root: PathBuf,
+        server: Option<Arc<BasemindServer>>,
+        tools: ToolRegistry,
+        system_prompt: Option<String>,
+        max_steps: u32,
+    ) -> Self {
+        Self {
+            history: History::new(system_prompt),
+            tools,
+            provider,
+            permission: PermissionEngine::with_base(),
+            root,
+            server,
+            role: Role::Default,
+            max_steps,
+            turn: 0,
+            store: None,
+            persisted: 0,
+            title: None,
+        }
+    }
+
     /// Persist this session's turns to `store`, appending new messages between turns.
     pub fn persist_to(mut self, store: SessionStore) -> Self {
         self.store = Some(store);
