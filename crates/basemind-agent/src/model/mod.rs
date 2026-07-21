@@ -2,12 +2,16 @@
 //!
 //! The engine depends on a deliberately small, object-safe streaming-chat trait,
 //! [`ModelClient`], rather than on liter-llm's eleven-method `LlmClient` directly. This keeps
-//! test doubles tiny (two methods, see [`MockModelClient`]) and decouples the turn-loop from
+//! test doubles tiny (two methods, see `MockModelClient`) and decouples the turn-loop from
 //! provider specifics. Real providers are reached through [`LiterModelClient`], which adapts any
 //! liter-llm client (`DefaultClient`, `ManagedClient`, ...) held as `Arc<dyn LlmClient>`.
 
+// The scripted mocks are test-only: available under `cfg(test)` for this crate's own tests and
+// under the `test-util` feature for downstream test builds, but never compiled into a release lib.
+#[cfg(any(test, feature = "test-util"))]
 mod mock;
 
+#[cfg(any(test, feature = "test-util"))]
 pub use mock::{MockModelClient, StallingModelClient};
 
 use std::sync::Arc;
