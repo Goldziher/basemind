@@ -108,7 +108,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" message (Enter to send · Esc to quit) "),
+                .title(" message (Enter send · Esc cancel/quit · Ctrl-C exit) "),
         )
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
@@ -127,7 +127,7 @@ fn draw_permission_overlay(frame: &mut Frame, prompt: &PermissionPrompt) {
         Line::from(Span::styled(prompt.target.clone(), Style::default().fg(Color::Yellow))),
         Line::from(""),
         Line::from(Span::styled(
-            "[y] allow once   [a] allow for session   [n] deny",
+            "[y] allow once   [a] allow for session   [n] deny   [Esc] cancel turn",
             Style::default().fg(Color::DarkGray),
         )),
     ];
