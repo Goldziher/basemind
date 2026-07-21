@@ -19,6 +19,7 @@ use crate::event::AgentEvent;
 use crate::history::{History, SessionMeta, SessionStore};
 use crate::permission::PermissionEngine;
 use crate::provider::ProviderPool;
+use crate::room::RoomClient;
 use crate::tools::ToolRegistry;
 use crate::transport::EngineEndpoint;
 use tokio::sync::broadcast;
@@ -40,6 +41,7 @@ pub struct Session {
     store: Option<SessionStore>,
     persisted: usize,
     title: Option<String>,
+    room: Option<Arc<dyn RoomClient>>,
 }
 
 impl Session {
@@ -65,6 +67,7 @@ impl Session {
             store: None,
             persisted: 0,
             title: None,
+            room: None,
         })
     }
 
@@ -94,12 +97,20 @@ impl Session {
             store: None,
             persisted: 0,
             title: None,
+            room: None,
         }
     }
 
     /// Persist this session's turns to `store`, appending new messages between turns.
     pub fn persist_to(mut self, store: SessionStore) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Wire a multi-agent room: its incoming peer messages stream onto the event broadcast and
+    /// `RoomPost` commands are forwarded to it. Absent a room, both stay no-ops.
+    pub fn with_room(mut self, room: Arc<dyn RoomClient>) -> Self {
+        self.room = Some(room);
         self
     }
 
@@ -117,6 +128,11 @@ impl Session {
     /// turn; permission replies are consumed inside the turn.
     pub async fn run(mut self, endpoint: EngineEndpoint) {
         let EngineEndpoint { mut commands, events } = endpoint;
+        // Incoming room messages ride the existing event broadcast, so the command loop needs no ~keep
+        // change to surface a roster or a peer message. ~keep
+        if let Some(room) = &self.room {
+            room.spawn_incoming(events.clone());
+        }
         while let Some(command) = commands.recv().await {
             match command {
                 AgentCommand::UserMessage { text } => {
@@ -136,9 +152,20 @@ impl Session {
                     self.persist_turn(&events).await;
                 }
                 AgentCommand::Shutdown => break,
+                AgentCommand::RoomPost { subject, text } => {
+                    if let Some(room) = &self.room
+                        && let Err(error) = room.post(subject, text).await
+                    {
+                        let _ = events.send(AgentEvent::Error {
+                            turn: None,
+                            message: format!("room post: {error}"),
+                            fatal: false,
+                        });
+                    }
+                }
                 // A permission reply or cancel with no turn in flight has nothing to answer; a room
-                // post with no room wired is a no-op until the room seam lands. ~keep
-                AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel | AgentCommand::RoomPost { .. } => {}
+                // post with no room wired stays a no-op. ~keep
+                AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}
             }
         }
     }
