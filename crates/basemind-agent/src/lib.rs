@@ -6,10 +6,12 @@
 //! [`model::ModelClient`] trait, so the turn-loop is model-agnostic and the tests are network-free.
 
 pub mod command;
+pub mod config;
 pub mod error;
 pub mod event;
 pub mod model;
 pub mod permission;
+pub mod provider;
 pub mod session;
 pub mod transport;
 
