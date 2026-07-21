@@ -34,6 +34,6 @@ pub use frame::MAX_FRAME_BYTES;
 #[cfg(unix)]
 pub use client::UdsAgentClient;
 #[cfg(unix)]
-pub use server::serve_connection;
+pub use server::{serve, serve_connection};
 #[cfg(unix)]
 pub use socket::{agent_socket_path, bind_listener, probe_alive};
