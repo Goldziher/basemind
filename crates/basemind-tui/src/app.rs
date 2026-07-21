@@ -32,6 +32,15 @@ pub enum TranscriptEntry {
     },
     /// An out-of-band notice (errors, compaction, ...).
     Notice(String),
+    /// A multi-agent room message: a peer's (or your own echoed) post to the shared room.
+    Room {
+        /// The posting agent's identity (`"you"` for a locally echoed self-post).
+        from: String,
+        /// The optional subject line; empty when the post carried none.
+        subject: String,
+        /// The message body.
+        body: String,
+    },
 }
 
 /// A permission request awaiting the user's decision.
@@ -83,6 +92,8 @@ pub struct App {
     pub follow: bool,
     /// Set whenever state changes; the run loop redraws only when set, so idle ticks are skipped.
     pub dirty: bool,
+    /// The current multi-agent room roster (peers sharing this room), newest snapshot from the engine.
+    pub roster: Vec<basemind_agent::RoomPeer>,
 }
 
 impl App {
@@ -103,6 +114,7 @@ impl App {
             scroll: 0,
             follow: true,
             dirty: true,
+            roster: Vec::new(),
         }
     }
 
@@ -178,8 +190,16 @@ impl App {
                     self.pending_permission = None;
                 }
             }
-            // The room seam lands in slice 1; until then roster + incoming messages are ignored. ~keep
-            AgentEvent::RoomRoster { .. } | AgentEvent::RoomMessage(_) => {}
+            AgentEvent::RoomRoster { peers } => {
+                self.roster = peers;
+            }
+            AgentEvent::RoomMessage(message) => {
+                self.transcript.push(TranscriptEntry::Room {
+                    from: message.from,
+                    subject: message.subject,
+                    body: message.body,
+                });
+            }
         }
     }
 
@@ -212,6 +232,28 @@ impl App {
                 }
             }
             KeyCode::Enter => {
+                if let Some(rest) = self.input.strip_prefix("/post ") {
+                    if rest.trim().is_empty() {
+                        return None;
+                    }
+                    // The engine drops room posts issued mid-turn — its idle command loop is not ~keep
+                    // polled during a turn — so hold the input like a user message until the turn ends. ~keep
+                    if self.status.in_flight {
+                        return None;
+                    }
+                    let input = std::mem::take(&mut self.input);
+                    let body = input["/post ".len()..].to_string();
+                    // The broker excludes self-posts from your own inbox, so echo it locally here. ~keep
+                    self.transcript.push(TranscriptEntry::Room {
+                        from: "you".into(),
+                        subject: String::new(),
+                        body: body.clone(),
+                    });
+                    return Some(AgentCommand::RoomPost {
+                        subject: None,
+                        text: body,
+                    });
+                }
                 if self.input.trim().is_empty() {
                     return None;
                 }
@@ -569,6 +611,83 @@ mod tests {
         assert_eq!(command, Some(AgentCommand::Cancel));
         assert!(app.pending_permission.is_none(), "Esc clears the prompt");
         assert!(!app.should_quit, "cancelling a prompt does not quit the app");
+    }
+
+    #[test]
+    fn room_roster_event_populates_roster() {
+        let mut app = App::new("m");
+        let peers = vec![
+            basemind_agent::RoomPeer {
+                id: "a".into(),
+                display: "alice".into(),
+            },
+            basemind_agent::RoomPeer {
+                id: "b".into(),
+                display: "bob".into(),
+            },
+        ];
+        app.apply(AgentEvent::RoomRoster { peers: peers.clone() });
+        assert_eq!(app.roster, peers);
+    }
+
+    #[test]
+    fn room_message_folds_into_room_entry() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::RoomMessage(basemind_agent::RoomMessage {
+            from: "alice".into(),
+            subject: "hi".into(),
+            body: "hello there".into(),
+        }));
+        assert_eq!(app.transcript.len(), 1);
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Room {
+                from: "alice".into(),
+                subject: "hi".into(),
+                body: "hello there".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn slash_post_emits_room_post_and_clears_input() {
+        let mut app = App::new("m");
+        for c in "/post hello team".chars() {
+            assert_eq!(app.on_key(key(KeyCode::Char(c))), None);
+        }
+        let command = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            command,
+            Some(AgentCommand::RoomPost {
+                subject: None,
+                text: "hello team".into(),
+            })
+        );
+        assert_eq!(app.input, "", "input clears on a room post");
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Room {
+                from: "you".into(),
+                subject: String::new(),
+                body: "hello team".into(),
+            }),
+            "the post is locally echoed"
+        );
+    }
+
+    #[test]
+    fn slash_post_mid_turn_is_held() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::TurnStarted { turn: 1 });
+        for c in "/post hi".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert_eq!(app.input, "/post hi", "the post is held, not cleared");
+        assert!(
+            !app.transcript.iter().any(|e| matches!(e, TranscriptEntry::Room { .. })),
+            "nothing is echoed while held"
+        );
     }
 
     #[test]
