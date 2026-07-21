@@ -179,9 +179,15 @@ impl App {
         }
 
         match key.code {
+            // Esc cancels a running turn and stays in the app (the payoff of mid-turn cancel);
+            // when idle there is nothing to cancel, so it quits. Ctrl-C is the unconditional quit.
             KeyCode::Esc => {
-                self.should_quit = true;
-                Some(AgentCommand::Cancel)
+                if self.status.in_flight {
+                    Some(AgentCommand::Cancel)
+                } else {
+                    self.should_quit = true;
+                    Some(AgentCommand::Cancel)
+                }
             }
             KeyCode::Enter => {
                 if self.input.trim().is_empty() {
@@ -219,9 +225,14 @@ impl App {
         }
     }
 
-    /// Map a key to a permission decision: `y` allow once, `a` allow for the session, `n`/`d` deny.
-    /// Any decision clears the prompt; other keys are ignored while the prompt is up.
+    /// Map a key to a permission decision: `y` allow once, `a` allow for the session, `n`/`d` deny,
+    /// `Esc` cancel the whole turn. Any of these clears the prompt; other keys are ignored while it
+    /// is up.
     fn answer_permission(&mut self, req_id: u64, code: KeyCode) -> Option<AgentCommand> {
+        if code == KeyCode::Esc {
+            self.pending_permission = None;
+            return Some(AgentCommand::Cancel);
+        }
         let decision = match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => PermissionDecision::Allow,
             KeyCode::Char('a') | KeyCode::Char('A') => PermissionDecision::AllowForSession,
@@ -421,6 +432,44 @@ mod tests {
             }
             other => panic!("expected a tool entry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn esc_while_a_turn_is_in_flight_cancels_without_quitting() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::TurnStarted { turn: 1 });
+        assert!(app.status.in_flight);
+
+        let command = app.on_key(key(KeyCode::Esc));
+        assert_eq!(command, Some(AgentCommand::Cancel));
+        assert!(!app.should_quit, "Esc during a turn cancels but keeps the session open");
+    }
+
+    #[test]
+    fn esc_while_idle_quits() {
+        let mut app = App::new("m");
+        assert!(!app.status.in_flight);
+
+        let command = app.on_key(key(KeyCode::Esc));
+        assert_eq!(command, Some(AgentCommand::Cancel));
+        assert!(app.should_quit, "Esc with no turn running quits");
+    }
+
+    #[test]
+    fn esc_during_a_permission_prompt_cancels_the_turn() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::PermissionRequested {
+            turn: 1,
+            req_id: 9,
+            call_id: "c".into(),
+            tool: "shell:exec".into(),
+            action: "exec".into(),
+            target: "rm -rf /".into(),
+        });
+        let command = app.on_key(key(KeyCode::Esc));
+        assert_eq!(command, Some(AgentCommand::Cancel));
+        assert!(app.pending_permission.is_none(), "Esc clears the prompt");
+        assert!(!app.should_quit, "cancelling a prompt does not quit the app");
     }
 
     #[test]
