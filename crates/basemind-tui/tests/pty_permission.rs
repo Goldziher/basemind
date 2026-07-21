@@ -71,11 +71,10 @@ fn allow_for_session_is_remembered_and_a_repeat_of_the_same_call_never_reprompts
 }
 
 #[test]
-fn deny_fails_the_call_without_running_it_and_the_turn_still_stops() {
-    // A denial is fed back into the model's history before the tool call ever "starts" (no ~keep
-    // `ToolStarted` event fires for it), so no ⚙/✓/✗ transcript line renders here — the observable ~keep
-    // proof of a deny is the command's output never appearing while the turn still reaches its ~keep
-    // scripted stop. ~keep
+fn deny_renders_a_failed_result_without_running_the_command() {
+    // The call is announced up front, so a denial fills its entry with a red ✗ ("denied by user") — ~keep
+    // the user sees the denial took effect — while the command never runs and the turn still reaches ~keep
+    // its scripted stop. ~keep
     let scenario = r#"{
         "user": "run denied",
         "turns": [
@@ -93,8 +92,10 @@ fn deny_fails_the_call_without_running_it_and_the_turn_still_stops() {
     session.expect_screen("permission required");
     session.deny();
 
-    session.expect_screen("idle (Stop)");
-    session.expect_absent("DENIED-5Q", ABSENCE_DWELL);
+    session.expect_all(&["✗ denied by user", "idle (Stop)"]);
+    // The echo never ran — its result is the denied ✗, never a ✓. (The command text also appears in ~keep
+    // the tool-call args line, so absence of the marker alone would not prove non-execution.) ~keep
+    session.expect_absent("✓", ABSENCE_DWELL);
 }
 
 #[test]
@@ -115,6 +116,6 @@ fn esc_at_the_prompt_cancels_the_turn_without_running_the_command() {
     session.expect_screen("permission required");
     session.esc();
 
-    session.expect_screen("idle (Cancelled)");
-    session.expect_absent("NEVER-RUN", ABSENCE_DWELL);
+    session.expect_all(&["✗ cancelled", "idle (Cancelled)"]);
+    session.expect_absent("✓", ABSENCE_DWELL);
 }

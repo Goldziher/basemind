@@ -30,8 +30,10 @@ fn esc_at_the_permission_prompt_cancels_the_turn_without_running_the_command() {
     session.expect_screen("permission required");
     session.esc();
 
-    session.expect_screen("idle (Cancelled)");
-    session.expect_absent("SHOULD-NOT-RUN", ABSENCE_DWELL);
+    // The command never ran: its result is the cancelled ✗, never a ✓. (The command text also shows ~keep
+    // in the tool-call args line now, so a bare marker-absence check no longer proves non-execution.) ~keep
+    session.expect_all(&["✗ cancelled", "idle (Cancelled)"]);
+    session.expect_absent("✓", ABSENCE_DWELL);
 }
 
 #[test]
