@@ -76,8 +76,11 @@ pub struct App {
     pub pending_permission: Option<PermissionPrompt>,
     /// Set once the user asks to quit; the run loop tears down on the next iteration.
     pub should_quit: bool,
-    /// Transcript scroll offset in lines.
+    /// Transcript scroll offset in lines. Reconciled against the real viewport before each draw.
     pub scroll: u16,
+    /// When set, the transcript auto-scrolls to the newest content each frame. A manual scroll-up
+    /// clears it; paging back down to the bottom restores it.
+    pub follow: bool,
     /// Set whenever state changes; the run loop redraws only when set, so idle ticks are skipped.
     pub dirty: bool,
 }
@@ -98,6 +101,7 @@ impl App {
             pending_permission: None,
             should_quit: false,
             scroll: 0,
+            follow: true,
             dirty: true,
         }
     }
@@ -226,7 +230,10 @@ impl App {
                 self.input.pop();
                 None
             }
+            // Scrolling up detaches from the newest content (stops following); the render-time ~keep
+            // reconcile re-engages follow once the user pages back down to the bottom. ~keep
             KeyCode::Up => {
+                self.follow = false;
                 self.scroll = self.scroll.saturating_sub(1);
                 None
             }
@@ -235,6 +242,7 @@ impl App {
                 None
             }
             KeyCode::PageUp => {
+                self.follow = false;
                 self.scroll = self.scroll.saturating_sub(PAGE_SCROLL);
                 None
             }

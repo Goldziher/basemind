@@ -120,29 +120,30 @@ fn a_second_pty_typed_prompt_drives_the_scripted_second_turn() {
 }
 
 #[test]
-fn page_down_and_page_up_move_the_transcript_scroll_offset() {
+fn the_transcript_auto_follows_the_newest_and_page_up_down_detaches_then_re_follows() {
     let mut session = PtySession::spawn(&tall_transcript_scenario());
     session.expect_screen("idle (Stop)");
 
-    // `App::scroll` starts at 0 and there is no auto-pin-to-newest (see `src/app.rs`): the viewport ~keep
-    // opens on the TOP of the transcript, so the first numbered line is visible immediately and the ~keep
-    // tail marker is scrolled off below the fold. ~keep
+    // The transcript auto-follows the newest content, so the tail marker is visible immediately and ~keep
+    // the first numbered line is scrolled off above the fold. ~keep
+    session.expect_screen("BOTTOM-MARKER-Q");
+    session.expect_absent("line-01", ABSENCE_DWELL);
+
+    // Paging up detaches from the bottom (`PAGE_SCROLL` = 10 lines each) and brings the head of the ~keep
+    // transcript into view; four pages saturate at the top. ~keep
+    session.page_up();
+    session.page_up();
+    session.page_up();
+    session.page_up();
     session.expect_screen("line-01");
     session.expect_absent("BOTTOM-MARKER-Q", ABSENCE_DWELL);
 
-    // Three Page Downs (`PAGE_SCROLL` = 10 lines each) move the offset past the top of the ~keep
-    // transcript, bringing the tail marker into view and scrolling line-01 out. ~keep
+    // Paging back down past the bottom re-engages follow, so the tail marker returns and the head ~keep
+    // scrolls out again. ~keep
+    session.page_down();
     session.page_down();
     session.page_down();
     session.page_down();
     session.expect_screen("BOTTOM-MARKER-Q");
     session.expect_absent("line-01", ABSENCE_DWELL);
-
-    // Paging back up the same distance returns to the top: the tail marker leaves and line-01 ~keep
-    // reappears. ~keep
-    session.page_up();
-    session.page_up();
-    session.page_up();
-    session.expect_screen("line-01");
-    session.expect_absent("BOTTOM-MARKER-Q", ABSENCE_DWELL);
 }
