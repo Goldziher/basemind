@@ -9,6 +9,7 @@ pub mod command;
 pub mod config;
 pub mod error;
 pub mod event;
+pub mod history;
 pub mod model;
 pub mod permission;
 pub mod provider;
