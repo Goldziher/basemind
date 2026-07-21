@@ -7,6 +7,7 @@ description = "Cross-process (msgpack over a Unix socket) transport for the base
 publish = false
 
 [dependencies]
+basemind = { path = "../..", default-features = false }
 basemind-agent = { path = "../basemind-agent" }
 futures = "0.3"
 rmp-serde = "1"

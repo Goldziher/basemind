@@ -25,6 +25,8 @@ mod frame;
 mod client;
 #[cfg(unix)]
 mod server;
+#[cfg(unix)]
+mod socket;
 
 pub use error::IpcError;
 pub use frame::MAX_FRAME_BYTES;
@@ -33,3 +35,5 @@ pub use frame::MAX_FRAME_BYTES;
 pub use client::UdsAgentClient;
 #[cfg(unix)]
 pub use server::serve_connection;
+#[cfg(unix)]
+pub use socket::{agent_socket_path, bind_listener, probe_alive};

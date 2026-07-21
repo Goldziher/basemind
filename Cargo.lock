@@ -791,6 +791,7 @@ dependencies = [
 name = "basemind-agent-ipc"
 version = "0.1.0"
 dependencies = [
+ "basemind",
  "basemind-agent",
  "futures",
  "rmp-serde",
