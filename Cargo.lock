@@ -774,6 +774,7 @@ name = "basemind-agent"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "globset",
  "liter-llm",
  "serde",
  "serde_json",
