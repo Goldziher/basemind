@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.3] — 2026-07-21
+
+### Fixed
+
+- **The file watcher no longer leaks memory or storms the CPU on large, churny trees.** On
+  macOS/Windows the `notify-debouncer-full` debouncer defaulted to its `FileIdMap` cache, which
+  recursively walks and `stat`s the entire watched subtree — following symlinks, at watch time and
+  again on every directory create/rename — into an unbounded map. On a pnpm monorepo (a
+  `node_modules` symlink farm plus in-repo git worktrees) that walk amplified without bound: RSS
+  climbed 138 MB → 6.85 GB in ~3 minutes at 45–95 % CPU (#43, re-file of #41; CPU counterpart #33).
+  Both the tree watcher (`basemind watch` / `serve`) and the internal view watcher now use
+  `NoCache` — the same cache Linux already defaulted to — so the debouncer never walks the tree.
+  basemind's own gitignore-aware `IndexFilter` still selects what a change rescans, and renames
+  degrade to remove-old + create-new, which the incremental scanner already handles.
+
 ## [0.22.2] — 2026-07-20
 
 ### Fixed
