@@ -66,6 +66,7 @@ fn default_scenario() -> Scenario {
                 tools: Vec::new(),
             },
         ],
+        room: None,
     }
 }
 

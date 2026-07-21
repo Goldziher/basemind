@@ -314,7 +314,12 @@ fn build_replay_session(
 
     let scenario = Scenario::load(&path).with_context(|| format!("load replay scenario {}", path.display()))?;
     let system = scenario.system.clone().unwrap_or_else(|| SYSTEM_PROMPT.into());
-    let session = Session::with_provider(scenario.provider(), root, server, tools, Some(system), REPLAY_MAX_STEPS);
+    let mut session = Session::with_provider(scenario.provider(), root, server, tools, Some(system), REPLAY_MAX_STEPS);
+    // Attach the scripted room when the scenario declares one, so a PTY run exercises the roster and
+    // incoming peer messages with no broker. ~keep
+    if let Some(room) = scenario.scripted_room() {
+        session = session.with_room(Arc::new(room));
+    }
     Ok((session, "mock/scripted".into(), Some(scenario.user)))
 }
 
