@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use notify::{EventKind, RecursiveMode};
-use notify_debouncer_full::{DebounceEventResult, new_debouncer};
+use notify::{Config as NotifyConfig, EventKind, RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{DebounceEventResult, NoCache, new_debouncer_opt};
 use thiserror::Error;
 use tracing::{debug, info, warn};
 
@@ -62,9 +62,23 @@ pub fn watch_paths(
 ) -> Result<(), WatchError> {
     let (tx, rx) = std::sync::mpsc::channel::<DebounceEventResult>();
     let debounce = Duration::from_millis(config.watch.debounce_ms);
-    let mut debouncer = new_debouncer(debounce, None, move |res| {
-        let _ = tx.send(res);
-    })?;
+    // ~keep NoCache, not the default RecommendedCache. On macOS/Windows the default is FileIdMap,
+    // ~keep whose add_path recursively WalkDirs the whole subtree with follow_links(true) — at
+    // ~keep watch() time and again on every dir create/rename — stat-ing every path into an
+    // ~keep unbounded HashMap. On a pnpm symlink farm that walk amplifies without bound (issue #43:
+    // ~keep 138 MB → 6.85 GB in 3 min). We do our own gitignore-aware filtering in keep_event_path
+    // ~keep and re-derive state from disk, so the FileId rename stitching NoCache drops is unused; a
+    // ~keep rename just degrades to remove-old + create-new, which scan_paths already handles. Linux
+    // ~keep already defaults to NoCache.
+    let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
+        debounce,
+        None,
+        move |res| {
+            let _ = tx.send(res);
+        },
+        NoCache::new(),
+        NotifyConfig::default(),
+    )?;
     debouncer.watch(root, RecursiveMode::Recursive)?;
 
     let filter = crate::scanner_filter::IndexFilter::new(root, config)?;
@@ -235,6 +249,55 @@ mod tests {
             received.iter().any(|p| p.ends_with("hello.rs")),
             "expected hello.rs in {received:?}"
         );
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.join();
+    }
+
+    /// A rename must still surface the new path. Under `NoCache` the debouncer no longer stitches
+    /// FileId-based rename events, so a rename degrades to remove-old + create-new — we assert the
+    /// create half reaches the callback so the renamed file gets (re)indexed. Guards the cache swap
+    /// in `watch_paths` (issue #43).
+    #[test]
+    fn should_emit_new_path_when_file_is_renamed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().canonicalize().expect("canonicalize tempdir");
+        let mut config = crate::config::default_for_root(&root);
+        config.watch.debounce_ms = 50;
+
+        let original = root.join("before.rs");
+        std::fs::write(&original, b"fn main() {}\n").expect("seed file");
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (path_tx, path_rx) = mpsc::channel::<Vec<PathBuf>>();
+
+        let root_for_thread = root.clone();
+        let handle = std::thread::spawn(move || {
+            watch_paths(&root_for_thread, &config, shutdown_rx, |paths, kind| {
+                assert!(matches!(kind, BatchKind::Incremental { .. }));
+                let _ = path_tx.send(paths);
+            })
+        });
+
+        // ~keep Let the watcher arm before the rename so the create half is observed.
+        std::thread::sleep(Duration::from_millis(200));
+        let renamed = root.join("after.rs");
+        std::fs::rename(&original, &renamed).expect("rename file");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let saw_new_path = loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "watcher never reported after.rs within 30s"
+            );
+            match path_rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(paths) if paths.iter().any(|p| p.ends_with("after.rs")) => break true,
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watcher thread died"),
+            }
+        };
+        assert!(saw_new_path, "expected after.rs to surface post-rename");
 
         let _ = shutdown_tx.send(());
         let _ = handle.join();

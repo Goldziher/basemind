@@ -275,11 +275,20 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
     std::thread::Builder::new()
         .name("basemind-mcp-view-watcher".to_string())
         .spawn(move || {
-            use notify_debouncer_full::new_debouncer;
+            use notify::RecommendedWatcher;
+            use notify_debouncer_full::{NoCache, new_debouncer_opt};
             use std::time::Duration;
 
             let (tx, rx) = std::sync::mpsc::channel();
-            let mut debouncer = match new_debouncer(Duration::from_millis(150), None, tx) {
+            // ~keep NoCache, not the default FileIdMap — see src/watcher.rs (issue #43). We only
+            // ~keep compare event paths to `target`, so the FileId rename cache is dead weight here.
+            let mut debouncer = match new_debouncer_opt::<_, RecommendedWatcher, NoCache>(
+                Duration::from_millis(150),
+                None,
+                tx,
+                NoCache::new(),
+                notify::Config::default(),
+            ) {
                 Ok(d) => d,
                 Err(e) => {
                     tracing::warn!(error = %e, "view watcher: failed to start debouncer");
