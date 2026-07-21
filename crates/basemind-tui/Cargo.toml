@@ -1,5 +1,5 @@
-# This crate inherits `[workspace.lints]` from the root workspace via `[lints] workspace = true`
-# once the integrating engineer adds `crates/basemind-tui` to the root `[workspace] members`.
+# This crate inherits `[workspace.lints]` from the root workspace via `[lints] workspace = true` ~keep
+# once the integrating engineer adds `crates/basemind-tui` to the root `[workspace] members`. ~keep
 [package]
 name = "basemind-tui"
 version = "0.1.0"
@@ -13,8 +13,8 @@ name = "basemind-tui"
 path = "src/main.rs"
 
 [features]
-# Enables `--replay <scenario.json>`: drives the UI with a scripted model (no network / no key) by
-# turning on the engine's `test-util` seam. Off by default so scripted mocks never ship in the binary.
+# Enables `--replay <scenario.json>`: drives the UI with a scripted model (no network / no key) by ~keep
+# turning on the engine's `test-util` seam. Off by default so scripted mocks never ship in the binary. ~keep
 replay = ["basemind-agent/test-util"]
 
 [dependencies]
@@ -27,6 +27,15 @@ ratatui = "0.29"
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 toml = "1"
+
+[dev-dependencies]
+# Real-terminal (PTY) end-to-end harness for the `pty_replay` test (gated behind `replay`): ~keep
+# spawn the binary under a pseudo-terminal, parse its ANSI output into a screen grid, drive keys. ~keep
+portable-pty = "0.9"
+tempfile = "3"
+# Pinned to the 0.15 line on purpose: 0.16 needs `unicode-width ^0.2.1`, which conflicts with ~keep
+# `ratatui 0.29`'s `unicode-width =0.2.0` pin and fails to resolve. Do not bump. ~keep
+vt100 = "0.15"
 
 [lints]
 workspace = true
