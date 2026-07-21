@@ -21,6 +21,7 @@ replay = ["basemind-agent/test-util"]
 anyhow = "1"
 basemind = { path = "../..", default-features = false }
 basemind-agent = { path = "../basemind-agent" }
+basemind-agent-ipc = { path = "../basemind-agent-ipc" }
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures = "0.3"
 # `unstable-rendered-line-info` exposes `Paragraph::line_count`, used to measure the wrapped ~keep
