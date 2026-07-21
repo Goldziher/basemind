@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn max_steps_defaults_to_the_constant_on_deserialize() {
-        // An empty `[agent]` table should still get the sane step budget, not zero.
+        // An empty `[agent]` table should still get the sane step budget, not zero. ~keep
         let cfg: AgentConfig = toml_from("");
         assert_eq!(cfg.max_steps, DEFAULT_MAX_STEPS);
         assert!(cfg.cost_budget_usd.is_none());
@@ -62,8 +62,8 @@ mod tests {
     }
 
     fn toml_from(body: &str) -> AgentConfig {
-        // Deserialize via JSON to avoid pulling a toml dep into this crate's tests; the field
-        // defaults (serde `default`) behave identically across formats.
+        // Deserialize via JSON to avoid pulling a toml dep into this crate's tests; the field ~keep
+        // defaults (serde `default`) behave identically across formats. ~keep
         let json = json_for(body);
         serde_json::from_value(json).expect("valid config")
     }

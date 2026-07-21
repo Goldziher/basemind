@@ -202,7 +202,7 @@ mod tests {
     fn rules_are_kind_scoped() {
         let mut set = RuleSet::new();
         set.push(rule(ClaimKind::Write, "*", RuleAction::Allow));
-        // A write rule must not satisfy an exec claim with the same target.
+        // A write rule must not satisfy an exec claim with the same target. ~keep
         assert_eq!(set.eval(&PermissionClaim::exec("build.sh")), RuleAction::Ask);
     }
 }

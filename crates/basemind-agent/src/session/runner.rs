@@ -108,7 +108,7 @@ impl Session {
     pub fn seed(mut self, messages: Vec<Message>, input_tokens: u64, output_tokens: u64) -> Self {
         self.history.restore(messages, input_tokens, output_tokens);
         self.persisted = self.history.messages().len();
-        // Reuse an existing title (first user message) so resume does not rewrite it.
+        // Reuse an existing title (first user message) so resume does not rewrite it. ~keep
         self.title = first_user_title(self.history.messages());
         self
     }
@@ -136,7 +136,7 @@ impl Session {
                     self.persist_turn(&events).await;
                 }
                 AgentCommand::Shutdown => break,
-                // A permission reply or cancel with no turn in flight has nothing to answer.
+                // A permission reply or cancel with no turn in flight has nothing to answer. ~keep
                 AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}
             }
         }

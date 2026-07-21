@@ -95,8 +95,8 @@ fn parse_args() -> Args {
 async fn main() -> Result<()> {
     let args = parse_args();
 
-    // Attach the in-process code map if the repo is scanned; otherwise run shell-only. Print the
-    // note BEFORE entering the alternate screen so it is visible. Shared by both session paths.
+    // Attach the in-process code map if the repo is scanned; otherwise run shell-only. Print the ~keep
+    // note BEFORE entering the alternate screen so it is visible. Shared by both session paths. ~keep
     let mut tools = ToolRegistry::new();
     let server = match basemind::cli::context::build_server(&args.root, "working", Default::default()) {
         Ok(server) => {
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
     };
     tools.register(Arc::new(ShellTool));
 
-    // A scripted replay session (deterministic, no network) or a live-provider session.
+    // A scripted replay session (deterministic, no network) or a live-provider session. ~keep
     let (session, model, initial_prompt) = match args.replay.clone() {
         Some(path) => build_replay_session(path, args.root.clone(), server, tools)?,
         None => build_live_session(&args, server, tools).await?,
@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
 
     let result = run::run(client, App::new(model)).await;
 
-    // Let the engine drain its Shutdown before we surface any UI error.
+    // Let the engine drain its Shutdown before we surface any UI error. ~keep
     let _ = engine.await;
     result
 }

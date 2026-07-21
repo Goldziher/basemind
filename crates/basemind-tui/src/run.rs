@@ -58,28 +58,27 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
 
     loop {
         tokio::select! {
-            // Terminal input: decode keys, fold into the app, forward any resulting command.
             maybe_event = input.next() => match maybe_event {
                 Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => {
                     if let Some(command) = app.on_key(key) {
                         client.send_command(command).await?;
                     }
                 }
-                // A resize does not touch app state but the layout must be recomputed.
+                // A resize does not touch app state but the layout must be recomputed. ~keep
                 Some(Ok(Event::Resize(_, _))) => app.dirty = true,
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(error.into()),
                 None => break,
             },
 
-            // Engine events: fold into the app. `None` means the engine shut down.
+            // Engine events: fold into the app. `None` means the engine shut down. ~keep
             event = client.next_event(), if engine_open => match event {
                 Some(event) => app.apply(event),
                 None => engine_open = false,
             },
 
-            // Coalesced redraw: only when something changed since the last frame, so the ~30fps
-            // ticker does not repaint an idle screen every tick.
+            // Coalesced redraw: only when something changed since the last frame, so the ~30fps ~keep
+            // ticker does not repaint an idle screen every tick. ~keep
             _ = ticker.tick() => {
                 if app.dirty {
                     terminal.draw(|frame| ui::draw(frame, &app))?;
@@ -93,7 +92,7 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
         }
     }
 
-    // Best-effort graceful shutdown; the engine may already be gone.
+    // Best-effort graceful shutdown; the engine may already be gone. ~keep
     let _ = client.send_command(AgentCommand::Shutdown).await;
     Ok(())
 }

@@ -25,9 +25,9 @@ pub fn build_model_client(config: &LlmConfig) -> Result<Arc<dyn ModelClient>> {
         ));
     }
 
-    // An explicit `{ env = "NAME" }` whose variable is unset must fail loudly naming NAME, not
-    // fall through to liter-llm's provider-default env lookup (which could silently pick up an
-    // unrelated key such as OPENAI_API_KEY).
+    // An explicit `{ env = "NAME" }` whose variable is unset must fail loudly naming NAME, not ~keep
+    // fall through to liter-llm's provider-default env lookup (which could silently pick up an ~keep
+    // unrelated key such as OPENAI_API_KEY). ~keep
     let mut builder = match (&config.api_key, config.api_key.resolve()) {
         (_, Some(secret)) => ClientConfigBuilder::new(secret.expose().to_string()),
         (ApiKey::Env { env }, None) => {
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn empty_model_is_a_config_error() {
         let cfg = LlmConfig::default();
-        // `Arc<dyn ModelClient>` is not `Debug`, so match rather than `expect_err`.
+        // `Arc<dyn ModelClient>` is not `Debug`, so match rather than `expect_err`. ~keep
         assert!(matches!(build_model_client(&cfg), Err(AgentError::Config(_))));
     }
 

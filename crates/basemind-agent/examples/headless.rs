@@ -32,7 +32,7 @@ async fn main() {
     });
     let root = args.next().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
 
-    // A single default role; the key is read from the environment (BYO key).
+    // A single default role; the key is read from the environment (BYO key). ~keep
     let config = AgentConfig {
         roles: RoleModels {
             default: LlmConfig {
@@ -47,7 +47,7 @@ async fn main() {
         ..Default::default()
     };
 
-    // Try to attach the in-process code map; fall back to shell-only if the repo isn't scanned.
+    // Try to attach the in-process code map; fall back to shell-only if the repo isn't scanned. ~keep
     let mut tools = ToolRegistry::new();
     let server = match basemind::cli::context::build_server(&root, "working", Default::default()) {
         Ok(server) => {

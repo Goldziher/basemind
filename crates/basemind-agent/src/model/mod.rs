@@ -6,8 +6,8 @@
 //! provider specifics. Real providers are reached through [`LiterModelClient`], which adapts any
 //! liter-llm client (`DefaultClient`, `ManagedClient`, ...) held as `Arc<dyn LlmClient>`.
 
-// The scripted mocks are test-only: available under `cfg(test)` for this crate's own tests and
-// under the `test-util` feature for downstream test builds, but never compiled into a release lib.
+// The scripted mocks are test-only: available under `cfg(test)` for this crate's own tests and ~keep
+// under the `test-util` feature for downstream test builds, but never compiled into a release lib. ~keep
 #[cfg(any(test, feature = "test-util"))]
 mod mock;
 
