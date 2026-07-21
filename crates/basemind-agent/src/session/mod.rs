@@ -1,9 +1,11 @@
 //! Session orchestration: the turn-loop and its streaming support.
 //!
-//! For now this holds the [`stream_assembler`], which reassembles streamed provider chunks into a
-//! finished assistant turn. The turn-loop itself lands in a later slice once the tool registry and
-//! permission engine are in place.
+//! [`run_turn`] drives one user turn to completion — streaming the model, assembling tool calls,
+//! permission-gating and executing them, and feeding results back — emitting [`crate::event::AgentEvent`]s
+//! and consuming [`crate::command::AgentCommand`]s (permission replies / cancel) along the way.
 
 pub mod stream_assembler;
+pub mod turn;
 
 pub use stream_assembler::{AssembledTurn, StreamAssembler};
+pub use turn::{TurnContext, run_turn};

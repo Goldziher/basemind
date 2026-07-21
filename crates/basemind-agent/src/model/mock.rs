@@ -80,6 +80,16 @@ impl MockModelClient {
             ..Default::default()
         }
     }
+
+    /// A terminal chunk with `finish_reason = stop` (no more tools wanted).
+    pub fn finish_stop() -> ChatCompletionChunk {
+        Self::finish(FinishReason::Stop)
+    }
+
+    /// A terminal chunk with `finish_reason = tool_calls` (the model wants tools run).
+    pub fn finish_tool_calls() -> ChatCompletionChunk {
+        Self::finish(FinishReason::ToolCalls)
+    }
 }
 
 impl ModelClient for MockModelClient {
