@@ -70,6 +70,7 @@ async fn turn_runs_a_permitted_tool_and_continues_to_stop() {
         permission: &permission,
         root: PathBuf::from("."),
         server: None,
+        room: None,
         max_steps: 10,
     };
 
@@ -114,6 +115,7 @@ async fn turn_suspends_on_permission_then_resumes_on_approval() {
         permission: &permission,
         root: PathBuf::from("."),
         server: None,
+        room: None,
         max_steps: 10,
     };
 
@@ -167,6 +169,7 @@ async fn turn_denied_permission_feeds_error_back_and_still_stops() {
         permission: &permission,
         root: PathBuf::from("."),
         server: None,
+        room: None,
         max_steps: 10,
     };
 
@@ -221,6 +224,7 @@ async fn cancel_during_streaming_ends_the_turn() {
         permission: &permission,
         root: PathBuf::from("."),
         server: None,
+        room: None,
         max_steps: 10,
     };
 
@@ -279,6 +283,7 @@ async fn cancel_during_tool_execution_ends_the_turn() {
         permission: &permission,
         root: PathBuf::from("."),
         server: None,
+        room: None,
         max_steps: 10,
     };
 

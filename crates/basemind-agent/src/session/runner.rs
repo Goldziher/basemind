@@ -146,6 +146,7 @@ impl Session {
                         permission: &self.permission,
                         root: self.root.clone(),
                         server: self.server.clone(),
+                        room: self.room.clone(),
                         max_steps: self.max_steps,
                     };
                     run_turn(self.turn, &mut cx, &events, &mut commands).await;

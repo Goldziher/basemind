@@ -44,6 +44,8 @@ pub struct TurnContext<'a> {
     pub root: PathBuf,
     /// The in-process basemind server for code-nav tools, if the workspace is indexed.
     pub server: Option<Arc<BasemindServer>>,
+    /// The connected multi-agent room for `room:*` tools, if one is wired.
+    pub room: Option<Arc<dyn crate::room::RoomClient>>,
     /// Maximum model steps (tool-call rounds) before the turn stops.
     pub max_steps: u32,
 }
@@ -216,6 +218,7 @@ async fn execute_call(
     let ctx = ToolCtx {
         root: cx.root.clone(),
         server: cx.server.clone(),
+        room: cx.room.clone(),
     };
     // Race the tool against the command channel so a cancel aborts a long-running tool (shell, ~keep
     // scan) promptly. Dropping the future is the cooperative cancel; a non-cancel command that ~keep
