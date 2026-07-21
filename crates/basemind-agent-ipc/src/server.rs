@@ -7,7 +7,7 @@
 //! bridge is the socket-facing mirror of a UI: commands decoded from the socket go *into* the engine,
 //! events from the engine go *out* to the socket.
 
-use basemind_agent::AgentClient;
+use basemind_agent::{AgentClient, AgentCommand};
 use futures::{SinkExt, StreamExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::codec::{FramedRead, FramedWrite};
@@ -61,7 +61,14 @@ pub async fn serve_connection<C: AgentClient>(stream: UnixStream, mut client: C)
             },
             frame = reader.next() => match frame {
                 Some(Ok(frame)) => {
-                    let command = decode(&frame)?;
+                    let command: AgentCommand = decode(&frame)?;
+                    // A `Shutdown` from a front-end means "this UI is detaching", not "kill the
+                    // shared engine": the daemon session must outlive any single connection, so close
+                    // this connection without forwarding it. (In-process mode never reaches here — it
+                    // drives the engine directly, where `Shutdown` correctly ends the session.) ~keep
+                    if matches!(command, AgentCommand::Shutdown) {
+                        break;
+                    }
                     // The engine only errors here if it is already gone, in which case the next
                     // `next_event()` returns `None` and ends the loop; nothing to do on error. ~keep
                     let _ = client.send_command(command).await;

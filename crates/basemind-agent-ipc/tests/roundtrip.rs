@@ -216,7 +216,8 @@ async fn a_persistent_session_survives_disconnect_and_advances_on_reattach() {
         r#"{ "user": "hi", "turns": [ { "text": "reply one" }, { "text": "reply two" } ] }"#,
     );
 
-    // First attach drives turn 1, then disconnects (drop the client). ~keep
+    // First attach drives turn 1, then detaches the way the real UI does on exit: it sends
+    // `Shutdown` before disconnecting. That must NOT kill the shared session. ~keep
     let mut first = UdsAgentClient::connect(&socket).await.expect("connect first");
     first
         .send_command(AgentCommand::UserMessage { text: "first".into() })
@@ -230,6 +231,10 @@ async fn a_persistent_session_survives_disconnect_and_advances_on_reattach() {
         "first attach is turn 1: {events:?}"
     );
     assert_eq!(streamed_text(&events), "reply one", "first attach text: {events:?}");
+    first
+        .send_command(AgentCommand::Shutdown)
+        .await
+        .expect("send shutdown on detach");
     drop(first);
 
     // A fresh attach reuses the same daemon session: it is turn 2 (the counter advanced) and the
