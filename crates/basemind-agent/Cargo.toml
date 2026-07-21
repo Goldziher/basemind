@@ -1,0 +1,21 @@
+[package]
+name = "basemind-agent"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Model-agnostic coding-agent engine built on the basemind code map + liter-llm."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+liter-llm = { version = "1.10.1", features = ["tower"] }
+tokio = { version = "1", features = ["sync", "rt-multi-thread", "macros", "time"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "test-util"] }
