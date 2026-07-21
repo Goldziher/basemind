@@ -13,6 +13,7 @@ pub mod model;
 pub mod permission;
 pub mod provider;
 pub mod session;
+pub mod tools;
 pub mod transport;
 
 pub use command::{AgentCommand, PermissionDecision};
