@@ -8,7 +8,7 @@
 
 mod mock;
 
-pub use mock::MockModelClient;
+pub use mock::{MockModelClient, StallingModelClient};
 
 use std::sync::Arc;
 

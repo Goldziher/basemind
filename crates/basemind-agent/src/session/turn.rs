@@ -59,7 +59,7 @@ pub async fn run_turn(
     let mut seq = 0u64;
 
     for step in 0..cx.max_steps {
-        let assembled = match stream_step(turn, cx, events, &mut seq).await {
+        let assembled = match stream_step(turn, cx, events, commands, &mut seq).await {
             Ok(assembled) => assembled,
             Err(reason) => return finish(events, turn, reason, step + 1),
         };
@@ -82,8 +82,14 @@ pub async fn run_turn(
             _ => return finish(events, turn, StopReason::Stop, step + 1),
         }
 
-        for call in &assembled.tool_calls {
+        for (index, call) in assembled.tool_calls.iter().enumerate() {
             if let Some(reason) = execute_call(turn, cx, events, commands, call).await {
+                // On cancellation, feed a synthetic result for every sibling call not yet run so the
+                // assistant's tool_calls all have matching tool results — required for the history to
+                // stay valid for the next turn or a resumed session.
+                for pending in &assembled.tool_calls[index + 1..] {
+                    cx.history.push(tool_result_message(pending, "cancelled".into()));
+                }
                 return finish(events, turn, reason, step + 1);
             }
         }
@@ -92,12 +98,16 @@ pub async fn run_turn(
     finish(events, turn, StopReason::MaxSteps, cx.max_steps)
 }
 
-/// Open a stream, emit text deltas, and assemble the turn. Returns the assembled turn, or a
-/// terminal [`StopReason`] on a provider/stream error.
+/// Open a stream, emit text deltas, and assemble the turn. Returns the assembled turn, a terminal
+/// [`StopReason`] on a provider/stream error, or [`StopReason::Cancelled`] if the user cancels
+/// mid-stream. The command channel is polled concurrently with the stream so a `Cancel` aborts the
+/// model response promptly rather than waiting for it to finish; stray non-cancel commands (there is
+/// no outstanding permission prompt, and mid-turn user messages are not queued) are ignored.
 async fn stream_step(
     turn: u64,
     cx: &TurnContext<'_>,
     events: &broadcast::Sender<AgentEvent>,
+    commands: &mut mpsc::Receiver<AgentCommand>,
     seq: &mut u64,
 ) -> Result<AssembledTurn, StopReason> {
     let request = build_request(cx);
@@ -110,21 +120,29 @@ async fn stream_step(
     };
 
     let mut assembler = StreamAssembler::new();
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(chunk) => {
-                if let Some(delta) = assembler.push_chunk(&chunk) {
-                    *seq += 1;
-                    let _ = events.send(AgentEvent::TextDelta {
-                        turn,
-                        seq: *seq,
-                        text: delta,
-                    });
+    loop {
+        tokio::select! {
+            item = stream.next() => match item {
+                Some(Ok(chunk)) => {
+                    if let Some(delta) = assembler.push_chunk(&chunk) {
+                        *seq += 1;
+                        let _ = events.send(AgentEvent::TextDelta {
+                            turn,
+                            seq: *seq,
+                            text: delta,
+                        });
+                    }
                 }
-            }
-            Err(error) => {
-                emit_error(events, turn, &error.to_string());
-                return Err(StopReason::Error);
+                Some(Err(error)) => {
+                    emit_error(events, turn, &error.to_string());
+                    return Err(StopReason::Error);
+                }
+                None => break,
+            },
+            command = commands.recv() => {
+                if is_cancel(&command) {
+                    return Err(StopReason::Cancelled);
+                }
             }
         }
     }
@@ -196,10 +214,25 @@ async fn execute_call(
         root: cx.root.clone(),
         server: cx.server.clone(),
     };
-    let output = match tool.call(&call.function.arguments, &ctx).await {
-        Ok(output) => output,
-        // A tool that errors hard still feeds the message back to the model rather than aborting.
-        Err(error) => ToolOutput::error(error.to_string()),
+    // Race the tool against the command channel so a cancel aborts a long-running tool (shell,
+    // scan) promptly. Dropping the future is the cooperative cancel; a non-cancel command that
+    // arrives mid-execution is ignored and the tool continues.
+    let call_future = tool.call(&call.function.arguments, &ctx);
+    tokio::pin!(call_future);
+    let output = loop {
+        tokio::select! {
+            result = &mut call_future => break match result {
+                Ok(output) => output,
+                // A tool that errors hard still feeds the message back to the model rather than aborting.
+                Err(error) => ToolOutput::error(error.to_string()),
+            },
+            command = commands.recv() => {
+                if is_cancel(&command) {
+                    feed_tool_error(cx, events, call, "cancelled".into());
+                    return Some(StopReason::Cancelled);
+                }
+            }
+        }
     };
 
     let _ = events.send(AgentEvent::ToolResult {
@@ -211,6 +244,17 @@ async fn execute_call(
     None
 }
 
+/// Whether a command observed mid-turn should cancel it: an explicit `Cancel`, a `Shutdown`, or a
+/// closed channel (the UI dropped its client). `Shutdown` ends the turn here; the session itself
+/// ends when the runner sees the command channel close (the UI drops its client on shutdown).
+/// Non-cancel commands (stray permission replies, mid-turn user messages) do not cancel.
+fn is_cancel(command: &Option<AgentCommand>) -> bool {
+    matches!(
+        command,
+        None | Some(AgentCommand::Cancel) | Some(AgentCommand::Shutdown)
+    )
+}
+
 /// Wait for the permission reply matching `req_id`. `Cancel` (or a closed channel) returns `None`;
 /// unrelated commands are ignored for the duration of the wait.
 async fn await_permission(req_id: u64, commands: &mut mpsc::Receiver<AgentCommand>) -> Option<PermissionDecision> {
@@ -220,7 +264,7 @@ async fn await_permission(req_id: u64, commands: &mut mpsc::Receiver<AgentComman
                 req_id: replied,
                 decision,
             } if replied == req_id => return Some(decision),
-            AgentCommand::Cancel => return None,
+            AgentCommand::Cancel | AgentCommand::Shutdown => return None,
             _ => {}
         }
     }
