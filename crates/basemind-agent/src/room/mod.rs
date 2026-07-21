@@ -18,6 +18,11 @@ use tokio::sync::broadcast;
 use crate::error::Result;
 use crate::event::AgentEvent;
 
+#[cfg(feature = "comms")]
+mod comms;
+#[cfg(feature = "comms")]
+pub use comms::CommsRoom;
+
 /// A peer agent visible in the room roster.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomPeer {
