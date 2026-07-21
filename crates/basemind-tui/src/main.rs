@@ -9,6 +9,13 @@
 //! `--resume <id>` resumes a named one. The model is read from `BASEMIND_AGENT_MODEL` (default
 //! `anthropic/claude-sonnet-4`) and the API key from `ANTHROPIC_API_KEY`.
 //!
+//! By default the engine runs in-process. Two flags switch to a daemon-hosted engine over a
+//! per-workspace Unix socket (`basemind-agent-ipc`):
+//! - `--daemon` runs the engine headless (no UI), hosting one long-lived session and serving attaches.
+//! - `--attach` runs the UI against that daemon; if none is running it transparently spawns a detached
+//!   one first. Every attach joins the *same* session, so the session outlives any single UI and a
+//!   later attach reconnects to a turn already in flight.
+//!
 //! Built with `--features replay`, `--replay <scenario.json>` instead drives the whole UI against a
 //! scripted model (no network, no API key) — the deterministic path used for smoke tests.
 
@@ -21,12 +28,16 @@ mod run;
 mod ui;
 
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use basemind::mcp::BasemindServer;
 use basemind_agent::tools::{ShellTool, code_nav_tools, git_history_tools};
 use basemind_agent::{AgentClient, AgentCommand, Session, SessionStore, ToolRegistry, in_proc_channel};
+use basemind_agent_ipc::{
+    UdsAgentClient, agent_socket_path, bind_listener, ensure_daemon, probe_alive, serve, spawn_detached,
+};
 
 use crate::app::App;
 use crate::config::{default_model_name, load_agent_config};
@@ -45,21 +56,35 @@ enum Resume {
     Id(String),
 }
 
-/// Command-line arguments: an optional initial prompt, a repo root, a resume mode, and an optional
-/// scripted-replay scenario.
+/// Where the engine runs relative to this process.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Engine runs in this process, driving the UI directly (the default).
+    InProc,
+    /// Engine runs headless in this process, serving attaches over the socket (no UI).
+    Daemon,
+    /// UI runs in this process against a daemon-hosted engine, spawning one if none is running.
+    Attach,
+}
+
+/// Command-line arguments: an optional initial prompt, a repo root, a resume mode, an optional
+/// scripted-replay scenario, and how the engine is hosted.
 struct Args {
     prompt: Option<String>,
     root: PathBuf,
     resume: Resume,
     replay: Option<PathBuf>,
+    mode: Mode,
 }
 
-/// Parse `[prompt] [--root <path>] [--resume <id> | --continue] [--replay <scenario.json>]`.
+/// Parse `[prompt] [--root <path>] [--resume <id> | --continue] [--replay <scenario.json>]
+/// [--daemon | --attach]`.
 fn parse_args() -> Args {
     let mut prompt = None;
     let mut root = PathBuf::from(".");
     let mut resume = Resume::Fresh;
     let mut replay = None;
+    let mut mode = Mode::InProc;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -79,6 +104,8 @@ fn parse_args() -> Args {
                     replay = Some(PathBuf::from(value));
                 }
             }
+            "--daemon" => mode = Mode::Daemon,
+            "--attach" => mode = Mode::Attach,
             _ if prompt.is_none() => prompt = Some(arg),
             _ => {}
         }
@@ -88,15 +115,26 @@ fn parse_args() -> Args {
         root,
         resume,
         replay,
+        mode,
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args();
+    match args.mode {
+        Mode::InProc => run_in_proc(args).await,
+        Mode::Daemon => run_daemon(args).await,
+        Mode::Attach => run_attach(args).await,
+    }
+}
 
-    // Attach the in-process code map if the repo is scanned; otherwise run shell-only. Print the ~keep
-    // note BEFORE entering the alternate screen so it is visible. Shared by both session paths. ~keep
+/// Build the engine: the code-map tools (if the repo is scanned) plus a scripted-replay or
+/// live-provider [`Session`]. Returns the session, the model name for the status bar, and the
+/// initial prompt (if any). Shared by the in-process and daemon paths.
+async fn build_engine(args: &Args) -> Result<(Session, String, Option<String>)> {
+    // Attach the in-process code map if the repo is scanned; otherwise run shell-only. The note is ~keep
+    // printed before any alternate screen is entered so it stays visible. ~keep
     let mut tools = ToolRegistry::new();
     let server = match basemind::cli::context::build_server(&args.root, "working", Default::default()) {
         Ok(server) => {
@@ -111,11 +149,15 @@ async fn main() -> Result<()> {
     };
     tools.register(Arc::new(ShellTool));
 
-    // A scripted replay session (deterministic, no network) or a live-provider session. ~keep
-    let (session, model, initial_prompt) = match args.replay.clone() {
-        Some(path) => build_replay_session(path, args.root.clone(), server, tools)?,
-        None => build_live_session(&args, server, tools).await?,
-    };
+    match args.replay.clone() {
+        Some(path) => build_replay_session(path, args.root.clone(), server, tools),
+        None => build_live_session(args, server, tools).await,
+    }
+}
+
+/// Run the engine in this process and drive the UI directly (the default mode).
+async fn run_in_proc(args: Args) -> Result<()> {
+    let (session, model, initial_prompt) = build_engine(&args).await?;
 
     let (endpoint, client) = in_proc_channel(32, 256);
     let engine = tokio::spawn(session.run(endpoint));
@@ -136,6 +178,83 @@ async fn main() -> Result<()> {
     // Let the engine drain its Shutdown before we surface any UI error. ~keep
     let _ = engine.await;
     result
+}
+
+/// Run the engine headless, hosting one long-lived session and serving attaches over the
+/// per-workspace socket. No UI; runs until the process is killed. The initial prompt is ignored —
+/// prompts arrive from attaches so the session stays shared.
+async fn run_daemon(args: Args) -> Result<()> {
+    let (session, _model, _initial_prompt) = build_engine(&args).await?;
+
+    let socket_path = agent_socket_path(&args.root);
+    let listener = bind_listener(&socket_path, probe_alive).context("bind agent daemon socket")?;
+    eprintln!("agent daemon listening on {}", socket_path.display());
+
+    let (endpoint, template) = in_proc_channel(32, 256);
+    tokio::spawn(session.run(endpoint));
+
+    // The template client is held here for the process's lifetime, so the engine's command channel
+    // never closes between connections and the session persists across attaches. ~keep
+    serve(listener, move || template.new_client())
+        .await
+        .context("serve agent daemon")?;
+    Ok(())
+}
+
+/// Run the UI against a daemon-hosted engine, spawning a detached daemon first if none is running,
+/// then joining its shared session.
+async fn run_attach(args: Args) -> Result<()> {
+    let socket_path = agent_socket_path(&args.root);
+    ensure_daemon(&socket_path, || spawn_detached(daemon_command(&args)))
+        .await
+        .context("ensure an agent daemon is running")?;
+    let client = UdsAgentClient::connect(&socket_path)
+        .await
+        .context("connect to the agent daemon")?;
+
+    let model = attach_model_name(&args)?;
+    let mut app = App::new(model);
+    if let Some(prompt) = args.prompt.clone() {
+        // Seed the transcript with the auto-sent prompt (a `you:` line) and drive it into the shared
+        // daemon session. ~keep
+        app.push_user(prompt.clone());
+        client
+            .send_command(AgentCommand::UserMessage { text: prompt })
+            .await
+            .context("send initial prompt")?;
+    }
+    run::run(client, app).await
+}
+
+/// The command that spawns a detached daemon for this repo: the current binary in `--daemon` mode,
+/// carrying the same root, replay, and resume selection — but never the prompt (attaches own prompts).
+fn daemon_command(args: &Args) -> Command {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("basemind-tui"));
+    let mut command = Command::new(exe);
+    command.arg("--daemon").arg("--root").arg(&args.root);
+    if let Some(replay) = &args.replay {
+        command.arg("--replay").arg(replay);
+    }
+    match &args.resume {
+        Resume::Id(id) => {
+            command.arg("--resume").arg(id);
+        }
+        Resume::Latest => {
+            command.arg("--continue");
+        }
+        Resume::Fresh => {}
+    }
+    command
+}
+
+/// The model name to show in the status bar for an attach, matching what the daemon runs: the
+/// scripted model under `--replay`, else the configured default role's model.
+fn attach_model_name(args: &Args) -> Result<String> {
+    if args.replay.is_some() {
+        return Ok("mock/scripted".into());
+    }
+    let config = load_agent_config(&args.root).context("load agent config")?;
+    Ok(default_model_name(&config).to_string())
 }
 
 /// Build a session backed by live providers, resuming or creating a persisted JSONL session log. On

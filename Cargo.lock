@@ -871,6 +871,7 @@ dependencies = [
  "anyhow",
  "basemind",
  "basemind-agent",
+ "basemind-agent-ipc",
  "crossterm",
  "futures",
  "portable-pty",
