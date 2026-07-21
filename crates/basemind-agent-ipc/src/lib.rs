@@ -24,6 +24,8 @@ mod frame;
 #[cfg(unix)]
 mod client;
 #[cfg(unix)]
+mod lifecycle;
+#[cfg(unix)]
 mod server;
 #[cfg(unix)]
 mod socket;
@@ -33,6 +35,8 @@ pub use frame::MAX_FRAME_BYTES;
 
 #[cfg(unix)]
 pub use client::UdsAgentClient;
+#[cfg(unix)]
+pub use lifecycle::{ensure_daemon, ensure_daemon_with, spawn_detached};
 #[cfg(unix)]
 pub use server::{serve, serve_connection};
 #[cfg(unix)]
