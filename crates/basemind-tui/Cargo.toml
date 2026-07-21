@@ -1,0 +1,27 @@
+# This crate inherits `[workspace.lints]` from the root workspace via `[lints] workspace = true`
+# once the integrating engineer adds `crates/basemind-tui` to the root `[workspace] members`.
+[package]
+name = "basemind-tui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Ratatui terminal front-end for the basemind-agent engine."
+publish = false
+
+[[bin]]
+name = "basemind-tui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+basemind = { path = "../..", default-features = false }
+basemind-agent = { path = "../basemind-agent" }
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+ratatui = "0.29"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+toml = "1"
+
+[lints]
+workspace = true
