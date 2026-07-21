@@ -53,18 +53,15 @@ fn a_scripted_turn_renders_markdown_tool_and_status() {
 
     let screen = render(&app, 80, 24);
 
-    // Assistant markdown renders, and the raw markers do not survive to the screen.
     assert!(screen.contains("Heading"), "heading text renders\n{screen}");
     assert!(screen.contains("bold"), "bold text renders\n{screen}");
     assert!(!screen.contains("**bold**"), "bold markers are stripped\n{screen}");
     assert!(!screen.contains("# Heading"), "heading marker is stripped\n{screen}");
 
-    // The tool call and its successful result.
     assert!(screen.contains("code:outline"), "tool name renders\n{screen}");
     assert!(screen.contains("12 symbols"), "tool result renders\n{screen}");
     assert!(screen.contains('✓'), "success mark renders\n{screen}");
 
-    // The status bar: model plus idle-with-reason once the turn finished.
     assert!(screen.contains("mock/scripted"), "model in status bar\n{screen}");
     assert!(screen.contains("idle (Stop)"), "idle reason in status bar\n{screen}");
 }

@@ -126,7 +126,7 @@ mod tests {
         };
         let chunks = scenario.chunks();
         assert_eq!(chunks.len(), 1);
-        // One text delta plus one terminal finish chunk, and no tool-call fragments.
+        // One text delta plus one terminal finish chunk, and no tool-call fragments. ~keep
         assert_eq!(chunks[0].len(), 2);
     }
 
@@ -145,7 +145,7 @@ mod tests {
             }],
         };
         let chunks = scenario.chunks();
-        // No text => just the tool-call fragment plus the terminal finish chunk.
+        // No text => just the tool-call fragment plus the terminal finish chunk. ~keep
         assert_eq!(chunks[0].len(), 2);
     }
 

@@ -17,9 +17,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),    // transcript
-            Constraint::Length(1), // status bar
-            Constraint::Length(3), // input box
+            Constraint::Min(3),    // transcript ~keep
+            Constraint::Length(1), // status bar ~keep
+            Constraint::Length(3), // input box ~keep
         ])
         .split(frame.area());
 
@@ -103,8 +103,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the input box, showing the current line with a block cursor.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
-    let text = format!("{}\u{2588}", app.input); // trailing full-block as a simple cursor
-    // While a turn is running, Enter is held (the engine does not queue mid-turn) — say so.
+    let text = format!("{}\u{2588}", app.input); // trailing full-block as a simple cursor ~keep
+    // While a turn is running, Enter is held (the engine does not queue mid-turn) — say so. ~keep
     let title = if app.status.in_flight {
         " message (turn in progress · Esc to cancel · Ctrl-C exit) "
     } else {

@@ -58,7 +58,7 @@ async fn turn_runs_a_permitted_tool_and_continues_to_stop() {
     let tools = registry();
     let resolved = scripted_shell_role();
 
-    // Allow exec so the loop runs without a permission round-trip.
+    // Allow exec so the loop runs without a permission round-trip. ~keep
     let mut rules = RuleSet::base();
     rules.push(Rule::new(ClaimKind::Exec, "*", RuleAction::Allow).unwrap());
     let permission = PermissionEngine::new(rules);
@@ -82,15 +82,15 @@ async fn turn_runs_a_permitted_tool_and_continues_to_stop() {
         kinds,
         vec![
             "TurnStarted",
-            "TextDelta",   // "Let me list the files. "
-            "ToolStarted", // shell:exec
-            "ToolResult",  // echo hi
-            "TextDelta",   // "Done."
+            "TextDelta",   // "Let me list the files. " ~keep
+            "ToolStarted", // shell:exec ~keep
+            "ToolResult",  // echo hi ~keep
+            "TextDelta",   // "Done." ~keep
             "TurnFinished",
         ]
     );
 
-    // The tool ran and its output was fed back into history as a tool message.
+    // The tool ran and its output was fed back into history as a tool message. ~keep
     assert!(matches!(seen[3], AgentEvent::ToolResult { ok: true, .. }));
 }
 
@@ -104,7 +104,7 @@ async fn turn_suspends_on_permission_then_resumes_on_approval() {
     history.push_user("run echo");
     let tools = registry();
     let resolved = scripted_shell_role();
-    // Base ruleset only: exec is Ask, so the loop must suspend for approval.
+    // Base ruleset only: exec is Ask, so the loop must suspend for approval. ~keep
     let permission = PermissionEngine::with_base();
 
     let mut cx = TurnContext {
@@ -117,7 +117,7 @@ async fn turn_suspends_on_permission_then_resumes_on_approval() {
         max_steps: 10,
     };
 
-    // Concurrently: run the turn, and answer the permission request when it arrives.
+    // Concurrently: run the turn, and answer the permission request when it arrives. ~keep
     let run = run_turn(1, &mut cx, &events, &mut commands);
     let respond = async {
         loop {
@@ -187,7 +187,7 @@ async fn turn_denied_permission_feeds_error_back_and_still_stops() {
     };
     let (reason, ()) = tokio::join!(run, respond);
 
-    // Denied tool is fed back as a failed result, but the model still gets its next round and stops.
+    // Denied tool is fed back as a failed result, but the model still gets its next round and stops. ~keep
     assert_eq!(reason, StopReason::Stop);
     let seen = drain(&mut recorder);
     assert!(
@@ -204,7 +204,7 @@ async fn cancel_during_streaming_ends_the_turn() {
     let mut history = History::new(None);
     history.push_user("hello");
     let tools = registry();
-    // A provider whose stream stalls forever after one delta — the only way out is a cancel.
+    // A provider whose stream stalls forever after one delta — the only way out is a cancel. ~keep
     let client: Arc<dyn ModelClient> = Arc::new(StallingModelClient);
     let resolved = ResolvedRole {
         client,
@@ -224,7 +224,7 @@ async fn cancel_during_streaming_ends_the_turn() {
         max_steps: 10,
     };
 
-    // Run the (stalling) turn and cancel it concurrently.
+    // Run the (stalling) turn and cancel it concurrently. ~keep
     let run = run_turn(1, &mut cx, &events, &mut commands);
     let cancel = async {
         tokio::task::yield_now().await;
@@ -255,7 +255,7 @@ async fn cancel_during_tool_execution_ends_the_turn() {
     let mut history = History::new(None);
     history.push_user("run a slow command");
     let tools = registry();
-    // The model asks to run a long sleep; we cancel while it is in flight.
+    // The model asks to run a long sleep; we cancel while it is in flight. ~keep
     let client: Arc<dyn ModelClient> = Arc::new(Mock::new(vec![vec![
         Mock::tool_call(0, Some("call_1"), Some("shell:exec"), r#"{"command":"sleep 2"}"#),
         Mock::finish_tool_calls(),
@@ -267,7 +267,7 @@ async fn cancel_during_tool_execution_ends_the_turn() {
         max_tokens: None,
     };
 
-    // Auto-allow exec so the turn reaches tool execution without a permission round-trip.
+    // Auto-allow exec so the turn reaches tool execution without a permission round-trip. ~keep
     let mut rules = RuleSet::base();
     rules.push(Rule::new(ClaimKind::Exec, "*", RuleAction::Allow).unwrap());
     let permission = PermissionEngine::new(rules);
@@ -284,7 +284,7 @@ async fn cancel_during_tool_execution_ends_the_turn() {
 
     let run = run_turn(1, &mut cx, &events, &mut commands);
     let cancel = async {
-        // Cancel as soon as the tool has actually started.
+        // Cancel as soon as the tool has actually started. ~keep
         loop {
             if let Ok(AgentEvent::ToolStarted { .. }) = responder.recv().await {
                 cmd_tx.send(AgentCommand::Cancel).await.unwrap();

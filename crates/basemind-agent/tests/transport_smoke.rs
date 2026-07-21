@@ -7,11 +7,9 @@ use basemind_agent::{AgentClient, AgentCommand, AgentEvent, StopReason, in_proc_
 async fn in_proc_client_round_trips_events_and_commands() {
     let (mut engine, mut client) = in_proc_channel(8, 16);
 
-    // engine -> UI
     engine.events.send(AgentEvent::TurnStarted { turn: 1 }).unwrap();
     assert_eq!(client.next_event().await, Some(AgentEvent::TurnStarted { turn: 1 }));
 
-    // UI -> engine
     client
         .send_command(AgentCommand::UserMessage { text: "hi".into() })
         .await
@@ -21,7 +19,7 @@ async fn in_proc_client_round_trips_events_and_commands() {
         Some(AgentCommand::UserMessage { text: "hi".into() })
     );
 
-    // a later event still arrives
+    // a later event still arrives ~keep
     engine
         .events
         .send(AgentEvent::TurnFinished {
@@ -35,7 +33,7 @@ async fn in_proc_client_round_trips_events_and_commands() {
         Some(AgentEvent::TurnFinished { .. })
     ));
 
-    // dropping the engine closes the stream
+    // dropping the engine closes the stream ~keep
     drop(engine);
     assert_eq!(client.next_event().await, None);
 }

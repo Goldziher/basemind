@@ -62,8 +62,8 @@ impl PermissionEngine {
 
     /// Remember a claim so future identical claims auto-allow for the rest of the session.
     pub fn remember(&self, claim: &PermissionClaim) {
-        // Recover from a poisoned lock rather than panicking: a poisoned permission cache would
-        // otherwise make every subsequent tool call panic and deny the rest of the session.
+        // Recover from a poisoned lock rather than panicking: a poisoned permission cache would ~keep
+        // otherwise make every subsequent tool call panic and deny the rest of the session. ~keep
         self.remembered
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(engine.evaluate(&claim), Decision::Ask);
         engine.remember(&claim);
         assert_eq!(engine.evaluate(&claim), Decision::Allow);
-        // A different target is unaffected.
+        // A different target is unaffected. ~keep
         assert_eq!(engine.evaluate(&PermissionClaim::write("src/other.rs")), Decision::Ask);
     }
 

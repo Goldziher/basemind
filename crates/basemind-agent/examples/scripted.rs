@@ -83,7 +83,7 @@ async fn main() {
         None => default_scenario(),
     };
 
-    // Real tools: attach the in-process code map when the repo is scanned, else run shell-only.
+    // Real tools: attach the in-process code map when the repo is scanned, else run shell-only. ~keep
     let mut tools = ToolRegistry::new();
     let server = match basemind::cli::context::build_server(&root, "working", Default::default()) {
         Ok(server) => {

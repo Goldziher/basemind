@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(history.len(), 1);
         assert_eq!(history.totals(), (512, 128));
         assert_eq!(user_text(&history.messages()[0]), Some("resumed"));
-        // The system prompt is still prepended for the model request.
+        // The system prompt is still prepended for the model request. ~keep
         assert!(matches!(history.to_messages()[0], Message::System(_)));
     }
 

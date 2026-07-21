@@ -52,9 +52,9 @@ impl StreamAssembler {
         if let Some(usage) = &chunk.usage {
             self.usage = Some(usage.clone());
         }
-        // We only drive single-completion requests (`n` unset ⇒ 1), so the sole choice is
-        // index 0. Select it explicitly rather than blindly taking `[0]`, so a provider that
-        // orders choices differently (or a future `n > 1` caller) never silently loses deltas.
+        // We only drive single-completion requests (`n` unset ⇒ 1), so the sole choice is ~keep
+        // index 0. Select it explicitly rather than blindly taking `[0]`, so a provider that ~keep
+        // orders choices differently (or a future `n > 1` caller) never silently loses deltas. ~keep
         let choice = chunk
             .choices
             .iter()
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn assembles_a_single_tool_call_from_fragments() {
-        // id+name arrive first; arguments stream as three JSON fragments.
+        // id+name arrive first; arguments stream as three JSON fragments. ~keep
         let turn = feed(&[
             M::tool_call(0, Some("call_1"), Some("code:outline"), ""),
             M::tool_call(0, None, None, "{\"path\":"),
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn assembles_parallel_tool_calls_ordered_by_index() {
-        // Two calls interleaved across indices 0 and 1.
+        // Two calls interleaved across indices 0 and 1. ~keep
         let turn = feed(&[
             M::tool_call(0, Some("a"), Some("fs:read"), "{\"p\":"),
             M::tool_call(1, Some("b"), Some("shell:exec"), "{\"cmd\":"),

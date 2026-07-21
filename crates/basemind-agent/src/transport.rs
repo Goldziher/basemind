@@ -70,7 +70,7 @@ impl AgentClient for InProcAgentClient {
             match self.events.recv().await {
                 Ok(event) => return Some(event),
                 Err(broadcast::error::RecvError::Closed) => return None,
-                // A slow UI fell behind; skip the gap and keep going rather than dying.
+                // A slow UI fell behind; skip the gap and keep going rather than dying. ~keep
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
             }
         }

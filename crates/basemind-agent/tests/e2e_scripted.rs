@@ -36,7 +36,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(ShellTool));
 
-    // No code index (server: None) — this test is hermetic and shell-only.
+    // No code index (server: None) — this test is hermetic and shell-only. ~keep
     let session = Session::with_provider(
         scenario.provider(),
         PathBuf::from("."),
@@ -56,7 +56,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
         .await
         .expect("send prompt");
 
-    // Collect the whole turn, auto-approving the shell permission when it is requested.
+    // Collect the whole turn, auto-approving the shell permission when it is requested. ~keep
     let mut events = Vec::new();
     while let Some(event) = client.next_event().await {
         if let AgentEvent::PermissionRequested { req_id, .. } = &event {
@@ -78,7 +78,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
     let _ = client.send_command(AgentCommand::Shutdown).await;
     let _ = engine.await;
 
-    // The turn starts and ends cleanly.
+    // The turn starts and ends cleanly. ~keep
     assert!(
         matches!(events.first(), Some(AgentEvent::TurnStarted { turn: 1 })),
         "first event is TurnStarted, got {:?}",
@@ -96,7 +96,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
         events.last()
     );
 
-    // The shell tool was permission-gated and produced its output.
+    // The shell tool was permission-gated and produced its output. ~keep
     assert!(
         events
             .iter()
@@ -110,7 +110,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
         "the approved echo produced its output"
     );
 
-    // The scripted text on both rounds streamed through.
+    // The scripted text on both rounds streamed through. ~keep
     let streamed: String = events
         .iter()
         .filter_map(|e| match e {

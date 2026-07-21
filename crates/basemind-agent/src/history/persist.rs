@@ -267,7 +267,7 @@ mod tests {
         let store = SessionStore::create(harness.root()).await.expect("create");
         store.append(&[user("one")]).await.expect("append one");
         store.append(&[user("two")]).await.expect("append two");
-        // open() needs meta.json alongside the log; write one so the read succeeds.
+        // open() needs meta.json alongside the log; write one so the read succeeds. ~keep
         store
             .write_meta(&SessionMeta {
                 id: store.id().to_string(),
@@ -297,8 +297,8 @@ mod tests {
                 .as_deref(),
             Some(first.id())
         );
-        // A later id sorts after the first (ids are zero-padded epoch-millis); force a strictly
-        // greater id so the assertion holds even inside the same millisecond.
+        // A later id sorts after the first (ids are zero-padded epoch-millis); force a strictly ~keep
+        // greater id so the assertion holds even inside the same millisecond. ~keep
         let newer_id = format!("{:0width$}", u128::MAX, width = SESSION_ID_WIDTH);
         let newer_dir = sessions_area(harness.root()).join(&newer_id);
         fs::create_dir_all(&newer_dir).await.expect("newer dir");
@@ -316,7 +316,7 @@ mod tests {
         let harness = Harness::new();
         let store = SessionStore::create(harness.root()).await.expect("create");
         store.append(&[user("only")]).await.expect("append");
-        // Simulate a trailing blank line beyond the newline `append` already writes.
+        // Simulate a trailing blank line beyond the newline `append` already writes. ~keep
         store.append(&[]).await.expect("noop append");
         let path = sessions_area(harness.root()).join(store.id()).join(MESSAGES_FILE);
         let mut raw = fs::read_to_string(&path).await.expect("read");

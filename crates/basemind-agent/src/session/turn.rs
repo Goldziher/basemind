@@ -84,9 +84,9 @@ pub async fn run_turn(
 
         for (index, call) in assembled.tool_calls.iter().enumerate() {
             if let Some(reason) = execute_call(turn, cx, events, commands, call).await {
-                // On cancellation, feed a synthetic result for every sibling call not yet run so the
-                // assistant's tool_calls all have matching tool results — required for the history to
-                // stay valid for the next turn or a resumed session.
+                // On cancellation, feed a synthetic result for every sibling call not yet run so the ~keep
+                // assistant's tool_calls all have matching tool results — required for the history to ~keep
+                // stay valid for the next turn or a resumed session. ~keep
                 for pending in &assembled.tool_calls[index + 1..] {
                     cx.history.push(tool_result_message(pending, "cancelled".into()));
                 }
@@ -214,16 +214,16 @@ async fn execute_call(
         root: cx.root.clone(),
         server: cx.server.clone(),
     };
-    // Race the tool against the command channel so a cancel aborts a long-running tool (shell,
-    // scan) promptly. Dropping the future is the cooperative cancel; a non-cancel command that
-    // arrives mid-execution is ignored and the tool continues.
+    // Race the tool against the command channel so a cancel aborts a long-running tool (shell, ~keep
+    // scan) promptly. Dropping the future is the cooperative cancel; a non-cancel command that ~keep
+    // arrives mid-execution is ignored and the tool continues. ~keep
     let call_future = tool.call(&call.function.arguments, &ctx);
     tokio::pin!(call_future);
     let output = loop {
         tokio::select! {
             result = &mut call_future => break match result {
                 Ok(output) => output,
-                // A tool that errors hard still feeds the message back to the model rather than aborting.
+                // A tool that errors hard still feeds the message back to the model rather than aborting. ~keep
                 Err(error) => ToolOutput::error(error.to_string()),
             },
             command = commands.recv() => {

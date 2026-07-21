@@ -42,9 +42,9 @@ impl ProviderPool {
         let default = resolve(&config.roles, Role::Default)?;
         let mut roles = HashMap::new();
         for role in [Role::Small, Role::Plan, Role::Title, Role::Summarize] {
-            // Build a distinct client only for an explicitly-configured role; an unset role shares
-            // `default` via `for_role`'s fallback. (An unset role resolves to `&default`, so no
-            // model-diffing is needed here.)
+            // Build a distinct client only for an explicitly-configured role; an unset role shares ~keep
+            // `default` via `for_role`'s fallback. (An unset role resolves to `&default`, so no ~keep
+            // model-diffing is needed here.) ~keep
             if is_explicit(&config.roles, role) {
                 roles.insert(role, resolve(&config.roles, role)?);
             }
@@ -122,13 +122,13 @@ mod tests {
         let pool = ProviderPool::from_config(&cfg).expect("pool builds");
         assert_eq!(pool.for_role(Role::Default).model, "anthropic/claude-sonnet-4");
         assert_eq!(pool.for_role(Role::Small).model, "anthropic/claude-haiku-4");
-        // Unconfigured plan role falls back to default's model.
+        // Unconfigured plan role falls back to default's model. ~keep
         assert_eq!(pool.for_role(Role::Plan).model, "anthropic/claude-sonnet-4");
     }
 
     #[test]
     fn from_config_errors_when_default_has_no_model() {
-        let cfg = AgentConfig::default(); // default LlmConfig has an empty model
+        let cfg = AgentConfig::default(); // default LlmConfig has an empty model ~keep
         assert!(ProviderPool::from_config(&cfg).is_err());
     }
 }

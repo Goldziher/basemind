@@ -109,7 +109,7 @@ impl App {
             AgentEvent::TurnStarted { .. } => {
                 self.status.in_flight = true;
                 self.status.last_reason = None;
-                // Open a fresh assistant entry that subsequent deltas append into.
+                // Open a fresh assistant entry that subsequent deltas append into. ~keep
                 self.transcript.push(TranscriptEntry::Assistant(String::new()));
             }
             AgentEvent::TextDelta { text, .. } => self.append_assistant(&text),
@@ -144,8 +144,8 @@ impl App {
                 output_tokens,
                 ..
             } => {
-                // The event carries running session totals (documented cumulative), so assign
-                // rather than add — adding would double-count across successive turns.
+                // The event carries running session totals (documented cumulative), so assign ~keep
+                // rather than add — adding would double-count across successive turns. ~keep
                 self.status.input_tokens = input_tokens;
                 self.status.output_tokens = output_tokens;
             }
@@ -160,9 +160,9 @@ impl App {
             AgentEvent::TurnFinished { reason, .. } => {
                 self.status.in_flight = false;
                 self.status.last_reason = Some(reason);
-                // The turn may have ended (cancel / shutdown / error) with a prompt still
-                // outstanding; drop the now-meaningless overlay so a late answer is not sent into
-                // a finished turn.
+                // The turn may have ended (cancel / shutdown / error) with a prompt still ~keep
+                // outstanding; drop the now-meaningless overlay so a late answer is not sent into ~keep
+                // a finished turn. ~keep
                 self.pending_permission = None;
             }
             AgentEvent::Error { message, fatal, .. } => {
@@ -181,22 +181,22 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Option<AgentCommand> {
         self.dirty = true;
 
-        // Ctrl-C is the unconditional exit — checked before the permission capture below so it
-        // still works while a prompt is up.
+        // Ctrl-C is the unconditional exit — checked before the permission capture below so it ~keep
+        // still works while a prompt is up. ~keep
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.pending_permission = None;
             self.should_quit = true;
             return Some(AgentCommand::Shutdown);
         }
 
-        // A pending permission prompt captures the rest of the keyboard until answered.
+        // A pending permission prompt captures the rest of the keyboard until answered. ~keep
         if let Some(prompt) = &self.pending_permission {
             return self.answer_permission(prompt.req_id, key.code);
         }
 
         match key.code {
-            // Esc cancels a running turn and stays in the app (the payoff of mid-turn cancel);
-            // when idle there is nothing to cancel, so it quits.
+            // Esc cancels a running turn and stays in the app (the payoff of mid-turn cancel); ~keep
+            // when idle there is nothing to cancel, so it quits. ~keep
             KeyCode::Esc => {
                 if self.status.in_flight {
                     Some(AgentCommand::Cancel)
@@ -209,8 +209,8 @@ impl App {
                 if self.input.trim().is_empty() {
                     return None;
                 }
-                // The engine does not queue messages mid-turn, so submitting now would silently
-                // drop the input. Hold it in the box until the turn ends (Esc cancels a runaway one).
+                // The engine does not queue messages mid-turn, so submitting now would silently ~keep
+                // drop the input. Hold it in the box until the turn ends (Esc cancels a runaway one). ~keep
                 if self.status.in_flight {
                     return None;
                 }
@@ -278,8 +278,8 @@ impl App {
     /// Record a tool result: prefer the entry with a matching `call_id`, else the most recent
     /// tool still awaiting a result.
     fn fill_tool_result(&mut self, call_id: &str, ok: bool, summary: String) {
-        // Prefer the newest unfilled tool whose call_id matches; fall back to the newest unfilled
-        // tool of any id (results can arrive with a call_id the UI never saw a start for).
+        // Prefer the newest unfilled tool whose call_id matches; fall back to the newest unfilled ~keep
+        // tool of any id (results can arrive with a call_id the UI never saw a start for). ~keep
         let by_id = self.transcript.iter().rposition(|entry| {
             matches!(entry, TranscriptEntry::Tool { call_id: id, result, .. } if id == call_id && result.is_none())
         });
@@ -504,7 +504,7 @@ mod tests {
         for c in "wait".chars() {
             app.on_key(key(KeyCode::Char(c)));
         }
-        // Enter mid-turn must not submit (the engine would drop it) nor clear the box.
+        // Enter mid-turn must not submit (the engine would drop it) nor clear the box. ~keep
         assert_eq!(app.on_key(key(KeyCode::Enter)), None);
         assert_eq!(app.input, "wait", "the message is held, not lost");
         assert!(
