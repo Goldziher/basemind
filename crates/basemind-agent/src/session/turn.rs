@@ -158,6 +158,16 @@ async fn execute_call(
     commands: &mut mpsc::Receiver<AgentCommand>,
     call: &ToolCall,
 ) -> Option<StopReason> {
+    // Announce the call up front so the transcript shows the pending tool during the permission ~keep
+    // prompt, and every outcome — denied, cancelled, or run — has a started entry to fill with its ~keep
+    // result (an unknown tool or a rejected claim renders a failed result the same way). ~keep
+    let _ = events.send(AgentEvent::ToolStarted {
+        turn,
+        call_id: call.id.clone(),
+        name: call.function.name.clone(),
+        args: serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null),
+    });
+
     let Some(tool) = cx.tools.get(&call.function.name) else {
         feed_tool_error(cx, events, call, format!("unknown tool `{}`", call.function.name));
         return None;
@@ -202,13 +212,6 @@ async fn execute_call(
             }
         }
     }
-
-    let _ = events.send(AgentEvent::ToolStarted {
-        turn,
-        call_id: call.id.clone(),
-        name: call.function.name.clone(),
-        args: serde_json::from_str(&call.function.arguments).unwrap_or(serde_json::Value::Null),
-    });
 
     let ctx = ToolCtx {
         root: cx.root.clone(),
