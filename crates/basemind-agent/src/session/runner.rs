@@ -1,8 +1,9 @@
 //! The session runner: the outer loop that ties [`run_turn`](super::run_turn) to the transport.
 //!
 //! It owns the session state (history, tools, provider pool, permission engine) and drives one turn
-//! per `UserMessage` command, streaming events back over the [`EngineEndpoint`]. A future slice adds
-//! a prompt queue and mid-turn cancellation; for now a message that arrives mid-turn is not queued.
+//! per `UserMessage` command, streaming events back over the [`EngineEndpoint`]. A running turn is
+//! cancellable mid-stream (the turn-loop polls the command channel while streaming and executing
+//! tools); a `UserMessage` that arrives mid-turn is not yet queued.
 
 use std::path::PathBuf;
 use std::sync::Arc;

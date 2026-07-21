@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use basemind_agent::model::MockModelClient as Mock;
+use basemind_agent::model::{MockModelClient as Mock, StallingModelClient};
 use basemind_agent::permission::{ClaimKind, Rule, RuleAction, RuleSet};
 use basemind_agent::tools::ShellTool;
 use basemind_agent::{
@@ -194,6 +194,120 @@ async fn turn_denied_permission_feeds_error_back_and_still_stops() {
         seen.iter()
             .any(|e| matches!(e, AgentEvent::ToolResult { ok: false, .. }))
     );
+}
+
+#[tokio::test]
+async fn cancel_during_streaming_ends_the_turn() {
+    let (events, mut recorder) = broadcast::channel(256);
+    let (cmd_tx, mut commands) = mpsc::channel(16);
+
+    let mut history = History::new(None);
+    history.push_user("hello");
+    let tools = registry();
+    // A provider whose stream stalls forever after one delta — the only way out is a cancel.
+    let client: Arc<dyn ModelClient> = Arc::new(StallingModelClient);
+    let resolved = ResolvedRole {
+        client,
+        model: "mock/model".into(),
+        temperature: None,
+        max_tokens: None,
+    };
+    let permission = PermissionEngine::with_base();
+
+    let mut cx = TurnContext {
+        history: &mut history,
+        tools: &tools,
+        role: &resolved,
+        permission: &permission,
+        root: PathBuf::from("."),
+        server: None,
+        max_steps: 10,
+    };
+
+    // Run the (stalling) turn and cancel it concurrently.
+    let run = run_turn(1, &mut cx, &events, &mut commands);
+    let cancel = async {
+        tokio::task::yield_now().await;
+        cmd_tx.send(AgentCommand::Cancel).await.unwrap();
+    };
+    let (reason, ()) = tokio::join!(run, cancel);
+
+    assert_eq!(reason, StopReason::Cancelled);
+    let seen = drain(&mut recorder);
+    assert!(
+        matches!(
+            seen.last(),
+            Some(AgentEvent::TurnFinished {
+                reason: StopReason::Cancelled,
+                ..
+            })
+        ),
+        "the turn should finish as cancelled, got {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn cancel_during_tool_execution_ends_the_turn() {
+    let (events, mut recorder) = broadcast::channel(256);
+    let (cmd_tx, mut commands) = mpsc::channel(16);
+    let mut responder = events.subscribe();
+
+    let mut history = History::new(None);
+    history.push_user("run a slow command");
+    let tools = registry();
+    // The model asks to run a long sleep; we cancel while it is in flight.
+    let client: Arc<dyn ModelClient> = Arc::new(Mock::new(vec![vec![
+        Mock::tool_call(0, Some("call_1"), Some("shell:exec"), r#"{"command":"sleep 2"}"#),
+        Mock::finish_tool_calls(),
+    ]]));
+    let resolved = ResolvedRole {
+        client,
+        model: "mock/model".into(),
+        temperature: None,
+        max_tokens: None,
+    };
+
+    // Auto-allow exec so the turn reaches tool execution without a permission round-trip.
+    let mut rules = RuleSet::base();
+    rules.push(Rule::new(ClaimKind::Exec, "*", RuleAction::Allow).unwrap());
+    let permission = PermissionEngine::new(rules);
+
+    let mut cx = TurnContext {
+        history: &mut history,
+        tools: &tools,
+        role: &resolved,
+        permission: &permission,
+        root: PathBuf::from("."),
+        server: None,
+        max_steps: 10,
+    };
+
+    let run = run_turn(1, &mut cx, &events, &mut commands);
+    let cancel = async {
+        // Cancel as soon as the tool has actually started.
+        loop {
+            if let Ok(AgentEvent::ToolStarted { .. }) = responder.recv().await {
+                cmd_tx.send(AgentCommand::Cancel).await.unwrap();
+                break;
+            }
+        }
+    };
+    let (reason, ()) = tokio::join!(run, cancel);
+
+    assert_eq!(reason, StopReason::Cancelled);
+    let seen = drain(&mut recorder);
+    assert!(
+        seen.iter()
+            .any(|e| matches!(e, AgentEvent::ToolResult { ok: false, .. })),
+        "the cancelled tool should feed back a failed result, got {seen:?}"
+    );
+    assert!(matches!(
+        seen.last(),
+        Some(AgentEvent::TurnFinished {
+            reason: StopReason::Cancelled,
+            ..
+        })
+    ));
 }
 
 fn event_kind(event: &AgentEvent) -> &'static str {

@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use futures::stream;
+use futures::{StreamExt, stream};
 use liter_llm::{
     BoxFuture, BoxStream, ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, FinishReason,
     Result as LlmResult, StreamChoice, StreamDelta, StreamFunctionCall, StreamToolCall,
@@ -89,6 +89,29 @@ impl MockModelClient {
     /// A terminal chunk with `finish_reason = tool_calls` (the model wants tools run).
     pub fn finish_tool_calls() -> ChatCompletionChunk {
         Self::finish(FinishReason::ToolCalls)
+    }
+}
+
+/// A [`ModelClient`] whose stream emits one text delta and then never completes — a stand-in for a
+/// slow provider. Used to test mid-stream cancellation deterministically: the turn-loop can only
+/// advance past the stall by observing a cancel on the command channel.
+pub struct StallingModelClient;
+
+impl ModelClient for StallingModelClient {
+    fn chat_stream(
+        &self,
+        _request: ChatCompletionRequest,
+    ) -> BoxFuture<'_, LlmResult<BoxStream<'static, LlmResult<ChatCompletionChunk>>>> {
+        Box::pin(async move {
+            let head = stream::iter(vec![Ok(MockModelClient::text("thinking… "))]);
+            let tail = stream::pending::<LlmResult<ChatCompletionChunk>>();
+            let stream: BoxStream<'static, LlmResult<ChatCompletionChunk>> = Box::pin(head.chain(tail));
+            Ok(stream)
+        })
+    }
+
+    fn chat(&self, _request: ChatCompletionRequest) -> BoxFuture<'_, LlmResult<ChatCompletionResponse>> {
+        Box::pin(std::future::pending())
     }
 }
 
