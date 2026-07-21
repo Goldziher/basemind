@@ -10,6 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::{App, PermissionPrompt, TranscriptEntry};
+use crate::markdown::render_markdown;
 
 /// Draw the whole UI for the current [`App`] snapshot.
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -33,15 +34,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 /// Render the scrollable, wrapped conversation transcript.
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for entry in &app.transcript {
         match entry {
-            TranscriptEntry::User(text) => {
-                lines.push(labeled("you", Color::Cyan, text));
-            }
-            TranscriptEntry::Assistant(text) => {
-                lines.push(labeled("agent", Color::Green, text));
-            }
+            TranscriptEntry::User(text) => push_message(&mut lines, "you", Color::Cyan, text),
+            TranscriptEntry::Assistant(text) => push_message(&mut lines, "agent", Color::Green, text),
             TranscriptEntry::Tool { name, args, result, .. } => {
                 lines.push(Line::from(vec![
                     Span::styled(format!("⚙ {name} "), Style::default().fg(Color::Yellow)),
@@ -146,15 +143,16 @@ fn draw_permission_overlay(frame: &mut Frame, prompt: &PermissionPrompt) {
     frame.render_widget(paragraph, area);
 }
 
-/// A `"label: text"` transcript line with a colored, bold label.
-fn labeled(label: &str, color: Color, text: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            format!("{label}: "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(text.to_string()),
-    ])
+/// Push a colored, bold speaker label line, then the markdown-rendered message body.
+///
+/// The body honors embedded newlines and lightweight markdown via [`render_markdown`], fixing the
+/// old single-[`Line`] rendering that mangled multi-line and multi-paragraph replies.
+fn push_message(lines: &mut Vec<Line<'static>>, label: &str, color: Color, text: &str) {
+    lines.push(Line::from(Span::styled(
+        format!("{label}:"),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )));
+    lines.extend(render_markdown(text));
 }
 
 /// Compute a rectangle `percent_x` × `percent_y` of `area`, centered.

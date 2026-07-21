@@ -10,6 +10,7 @@
 
 mod app;
 mod config;
+mod markdown;
 mod run;
 mod ui;
 
