@@ -7,6 +7,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use liter_llm::ChatCompletionChunk;
 use serde::Deserialize;
@@ -14,6 +15,7 @@ use serde::Deserialize;
 use crate::error::Result;
 use crate::model::{MockModelClient, ModelClient};
 use crate::provider::{ProviderPool, ResolvedRole};
+use crate::room::{RoomMessage, RoomPeer, ScriptedIncoming, ScriptedRoom};
 
 /// Routing string reported for the scripted model (status bar, requests).
 const SCRIPTED_MODEL: &str = "mock/scripted";
@@ -29,6 +31,37 @@ pub struct Scenario {
     pub user: String,
     /// The scripted assistant replies, one per model round.
     pub turns: Vec<ScriptTurn>,
+    /// An optional multi-agent room to attach: a static roster plus a timed incoming feed. Drives a
+    /// [`ScriptedRoom`] so a PTY/e2e test can exercise the room with no broker.
+    #[serde(default)]
+    pub room: Option<RoomScript>,
+}
+
+/// A scripted multi-agent room: the roster published at start and the peer messages delivered on a
+/// timer. Deserialized from the scenario JSON's optional `room` object.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RoomScript {
+    /// The roster of peer agents published once at session start.
+    #[serde(default)]
+    pub roster: Vec<RoomPeer>,
+    /// Peer messages delivered after their `after_ms` delay, in order.
+    #[serde(default)]
+    pub incoming: Vec<RoomIncoming>,
+}
+
+/// One scripted incoming room message: the sender, subject, body, and the delay before delivery.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RoomIncoming {
+    /// The posting peer's id.
+    pub from: String,
+    /// The message subject (front-matter); empty when omitted.
+    #[serde(default)]
+    pub subject: String,
+    /// The message body.
+    pub body: String,
+    /// Milliseconds the incoming task waits before delivering this message.
+    #[serde(default)]
+    pub after_ms: u64,
 }
 
 /// One scripted assistant reply: optional text plus zero or more tool calls. An empty `tools` list
@@ -98,6 +131,25 @@ impl Scenario {
         Arc::new(MockModelClient::new(self.chunks()))
     }
 
+    /// The scripted room for this scenario, if it declares one — ready to hand to
+    /// [`Session::with_room`](crate::Session::with_room).
+    pub fn scripted_room(&self) -> Option<ScriptedRoom> {
+        let room = self.room.as_ref()?;
+        let incoming = room
+            .incoming
+            .iter()
+            .map(|entry| ScriptedIncoming {
+                message: RoomMessage {
+                    from: entry.from.clone(),
+                    subject: entry.subject.clone(),
+                    body: entry.body.clone(),
+                },
+                after: Duration::from_millis(entry.after_ms),
+            })
+            .collect();
+        Some(ScriptedRoom::new(room.roster.clone(), incoming))
+    }
+
     /// A single-role [`ProviderPool`] backed by this scenario's scripted client, so a real
     /// [`Session`](crate::Session) can run the scenario through its normal loop.
     pub fn provider(&self) -> ProviderPool {
@@ -123,6 +175,7 @@ mod tests {
                 text: Some("done".into()),
                 tools: Vec::new(),
             }],
+            room: None,
         };
         let chunks = scenario.chunks();
         assert_eq!(chunks.len(), 1);
@@ -143,6 +196,7 @@ mod tests {
                     args: serde_json::json!({ "command": "echo hi" }),
                 }],
             }],
+            room: None,
         };
         let chunks = scenario.chunks();
         // No text => just the tool-call fragment plus the terminal finish chunk. ~keep
@@ -159,5 +213,34 @@ mod tests {
         assert_eq!(scenario.user, "u");
         assert_eq!(scenario.turns.len(), 1);
         assert_eq!(scenario.turns[0].tools[0].name, "code:outline");
+    }
+
+    #[test]
+    fn a_scenario_without_a_room_has_no_scripted_room() {
+        let scenario = Scenario::from_json(r#"{ "user": "u", "turns": [ { "text": "t" } ] }"#).expect("parses");
+        assert!(scenario.scripted_room().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_room_script_builds_a_scripted_room_with_roster_and_incoming() {
+        use crate::room::RoomClient;
+
+        let scenario = Scenario::from_json(
+            r#"{ "user": "u", "turns": [ { "text": "t" } ], "room": {
+                "roster": [ { "id": "alice", "display": "alice" } ],
+                "incoming": [ { "from": "alice", "subject": "sync", "body": "ROOM-IN-42", "after_ms": 20 } ] } }"#,
+        )
+        .expect("parses");
+        let room = scenario.scripted_room().expect("a room is declared");
+        assert_eq!(
+            room.roster().await.expect("roster"),
+            vec![RoomPeer {
+                id: "alice".into(),
+                display: "alice".into(),
+            }]
+        );
+        let history = room.history(None).await.expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].body, "ROOM-IN-42");
     }
 }
