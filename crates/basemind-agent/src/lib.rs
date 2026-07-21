@@ -16,6 +16,7 @@ pub mod provider;
 // Scripted-model replay for controlled smokes and e2e tests; never in a release lib. ~keep
 #[cfg(any(test, feature = "test-util"))]
 pub mod replay;
+pub mod room;
 pub mod session;
 pub mod tools;
 pub mod transport;
@@ -28,6 +29,7 @@ pub use history::{History, SessionMeta, SessionStore};
 pub use model::{LiterModelClient, ModelClient};
 pub use permission::{Decision, PermissionClaim, PermissionEngine};
 pub use provider::{ProviderPool, ResolvedRole};
+pub use room::{RoomClient, RoomMessage, RoomPeer};
 pub use session::{Session, StreamAssembler, TurnContext, run_turn};
 pub use tools::{ToolCtx, ToolRegistry};
 pub use transport::{AgentClient, EngineEndpoint, InProcAgentClient, in_proc_channel};

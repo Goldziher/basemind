@@ -37,6 +37,13 @@ pub enum AgentCommand {
     Cancel,
     /// Gracefully shut the session down (flush persistence, drop clients).
     Shutdown,
+    /// Post a message to the multi-agent room on the human's behalf (issued by the UI on `/post`).
+    RoomPost {
+        /// An optional subject; the room derives a short one when absent.
+        subject: Option<String>,
+        /// The message body.
+        text: String,
+    },
 }
 
 #[cfg(test)]
@@ -53,6 +60,20 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({ "kind": "permission_decision", "req_id": 3, "decision": "allow_for_session" })
+        );
+        assert_eq!(serde_json::from_value::<AgentCommand>(json).unwrap(), command);
+    }
+
+    #[test]
+    fn room_post_round_trips_with_an_optional_subject() {
+        let command = AgentCommand::RoomPost {
+            subject: None,
+            text: "hello team".into(),
+        };
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "kind": "room_post", "subject": null, "text": "hello team" })
         );
         assert_eq!(serde_json::from_value::<AgentCommand>(json).unwrap(), command);
     }

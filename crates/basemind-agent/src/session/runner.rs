@@ -136,8 +136,9 @@ impl Session {
                     self.persist_turn(&events).await;
                 }
                 AgentCommand::Shutdown => break,
-                // A permission reply or cancel with no turn in flight has nothing to answer. ~keep
-                AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}
+                // A permission reply or cancel with no turn in flight has nothing to answer; a room
+                // post with no room wired is a no-op until the room seam lands. ~keep
+                AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel | AgentCommand::RoomPost { .. } => {}
             }
         }
     }

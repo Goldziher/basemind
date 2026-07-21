@@ -178,6 +178,8 @@ impl App {
                     self.pending_permission = None;
                 }
             }
+            // The room seam lands in slice 1; until then roster + incoming messages are ignored. ~keep
+            AgentEvent::RoomRoster { .. } | AgentEvent::RoomMessage(_) => {}
         }
     }
 
