@@ -487,6 +487,10 @@ impl LlmConfig {
             max_retries: self.max_retries,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            // New in xberg rc.31; `None` preserves the prior behavior (basemind resolves the api ~keep
+            // key itself, adds no custom provider headers, and leaves xberg's env handling default). ~keep
+            load_env: None,
+            headers: None,
         })
     }
 }
