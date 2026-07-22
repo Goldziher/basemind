@@ -73,6 +73,7 @@ pub async fn run_turn(
                 turn,
                 input_tokens,
                 output_tokens,
+                saved_tokens: cx.history.saved_tokens(),
                 cost_usd: None,
             });
         }
@@ -246,6 +247,12 @@ async fn execute_call(
         ok: !output.is_error,
         summary: truncate(&output.text),
     });
+    // Estimate the tokens this code-map call saved vs the shell/read baseline it replaced. Zero for ~keep
+    // non-code tools (shell_exec/room_*); surfaced cumulatively in the next Usage event. ~keep
+    if !output.is_error {
+        let saved = basemind::mcp::agent_api::estimate_tokens_saved(&call.function.name, &output.text);
+        cx.history.add_saved_tokens(saved);
+    }
     cx.history.push(tool_result_message(call, output.text));
     None
 }

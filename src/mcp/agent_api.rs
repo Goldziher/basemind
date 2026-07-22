@@ -61,3 +61,13 @@ facade! { plain:
     blame_symbol => BlameSymbolParams,
     diff_file => DiffFileParams,
 }
+
+/// Estimate the tokens a code-map tool call saved versus the shell/read baseline it replaces.
+///
+/// `tool` is the code-map tool name (e.g. `"outline"`, `"search_symbols"`) and `response_text` is
+/// the JSON body returned to the model. Returns `0` for a tool with no disclosed baseline (a plain
+/// `shell_exec` or `room_*` call), so callers can sum it unconditionally over every tool result.
+/// Backs the agent TUI's "tokens saved" telemetry; see [`super::savings`] for the baseline model.
+pub fn estimate_tokens_saved(tool: &str, response_text: &str) -> u64 {
+    super::savings::estimate_from_text(tool, 0, response_text).est_tokens_saved
+}

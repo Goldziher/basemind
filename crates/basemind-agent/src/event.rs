@@ -100,6 +100,10 @@ pub enum AgentEvent {
         input_tokens: u64,
         /// Cumulative output tokens for the session.
         output_tokens: u64,
+        /// Cumulative tokens saved by code-map tool calls vs the shell/read baseline (basemind's
+        /// differentiator). Additive: older wire payloads without it deserialize as `0`.
+        #[serde(default)]
+        saved_tokens: u64,
         /// Estimated cumulative cost in USD, if the provider exposes pricing.
         cost_usd: Option<f64>,
     },

@@ -16,6 +16,7 @@ pub struct History {
     messages: Vec<Message>,
     input_tokens: u64,
     output_tokens: u64,
+    saved_tokens: u64,
 }
 
 impl History {
@@ -26,6 +27,7 @@ impl History {
             messages: Vec::new(),
             input_tokens: 0,
             output_tokens: 0,
+            saved_tokens: 0,
         }
     }
 
@@ -80,6 +82,20 @@ impl History {
     /// Cumulative `(input, output)` token totals for the session.
     pub fn totals(&self) -> (u64, u64) {
         (self.input_tokens, self.output_tokens)
+    }
+
+    /// Add to the cumulative estimate of tokens saved by code-map tool calls; returns the new total.
+    ///
+    /// A live per-session estimate (basemind's differentiator surfaced in the TUI), not persisted
+    /// across resume — it reflects the savings of the current process's tool calls only.
+    pub fn add_saved_tokens(&mut self, saved: u64) -> u64 {
+        self.saved_tokens = self.saved_tokens.saturating_add(saved);
+        self.saved_tokens
+    }
+
+    /// Cumulative estimated tokens saved by code-map tool calls this session.
+    pub fn saved_tokens(&self) -> u64 {
+        self.saved_tokens
     }
 
     /// Number of conversation messages (excluding the system prompt).
