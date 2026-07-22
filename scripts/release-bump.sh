@@ -32,6 +32,21 @@ echo "→ Cargo.toml         → $VERSION"
 sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$VERSION\"/" Cargo.toml
 rm Cargo.toml.bak
 
+# The internal (publish = false) workspace crates track the release version in lock-step so the
+# shipped `basemind-tui --version` matches `basemind`. Path deps between them carry no version, so
+# only the [package] version line (anchored) is rewritten.
+WORKSPACE_CRATES=(
+	crates/basemind-agent/Cargo.toml
+	crates/basemind-agent-ipc/Cargo.toml
+	crates/basemind-tui/Cargo.toml
+)
+for crate_manifest in "${WORKSPACE_CRATES[@]}"; do
+	[[ -f "$crate_manifest" ]] || continue
+	echo "→ ${crate_manifest} → $VERSION"
+	sed -i.bak -E "s/^version = \"[^\"]+\"$/version = \"$VERSION\"/" "$crate_manifest"
+	rm "${crate_manifest}.bak"
+done
+
 if [[ -f npm-package/package.json ]]; then
 	echo "→ npm-package        → $VERSION"
 	sed -i.bak -E "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" npm-package/package.json
@@ -97,6 +112,15 @@ if [ "$cargo_version" != "$VERSION" ]; then
 	echo "✗ Cargo.toml: expected $VERSION, got $cargo_version"
 	validation_failed=1
 fi
+
+for crate_manifest in "${WORKSPACE_CRATES[@]}"; do
+	[[ -f "$crate_manifest" ]] || continue
+	crate_version="$(grep -E '^version = "' "$crate_manifest" | head -1 | cut -d'"' -f2)"
+	if [ "$crate_version" != "$VERSION" ]; then
+		echo "✗ ${crate_manifest}: expected $VERSION, got $crate_version"
+		validation_failed=1
+	fi
+done
 
 if [ -f npm-package/package.json ]; then
 	npm_version="$(jq -r '.version' npm-package/package.json 2>/dev/null || echo '')"

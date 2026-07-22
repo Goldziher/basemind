@@ -1,6 +1,6 @@
 [package]
 name = "basemind-agent-ipc"
-version = "0.1.0"
+version = "0.22.3"
 edition = "2024"
 license = "MIT"
 description = "Cross-process (msgpack over a Unix socket) transport for the basemind agent engine."
