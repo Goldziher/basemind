@@ -30,33 +30,46 @@ x86_64-pc-windows-msvc)
 esac
 
 RELEASE_DIR="target/${TRIPLE}/release"
-BINARY_PATH="${RELEASE_DIR}/basemind${BINEXT}"
 
-if [ ! -f "$BINARY_PATH" ]; then
-	echo "Binary not found at $BINARY_PATH" >&2
-	exit 1
-fi
+# basemind is the code-map/MCP server; basemind-tui is the agent TUI. Both ship in every ~keep
+# per-triple archive, side by side at the archive root, so `basemind agent` can re-exec its ~keep
+# sibling basemind-tui found next to it. ~keep
+BINARIES=(basemind basemind-tui)
+
+for bin in "${BINARIES[@]}"; do
+	bin_path="${RELEASE_DIR}/${bin}${BINEXT}"
+	if [ ! -f "$bin_path" ]; then
+		echo "Binary not found at $bin_path" >&2
+		exit 1
+	fi
+done
 
 STAGING_DIR="basemind-staging-${TRIPLE}"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR/lib"
-cp "$BINARY_PATH" "$STAGING_DIR/basemind${BINEXT}"
-BIN_IN_STAGING="$STAGING_DIR/basemind${BINEXT}"
+
+BINS_IN_STAGING=()
+for bin in "${BINARIES[@]}"; do
+	cp "${RELEASE_DIR}/${bin}${BINEXT}" "$STAGING_DIR/${bin}${BINEXT}"
+	BINS_IN_STAGING+=("$STAGING_DIR/${bin}${BINEXT}")
+done
 
 case "$SYSTEM" in
 linux)
 	echo "Gathering Linux dynamic dependencies (ldd transitive closure)..."
-	while IFS= read -r line; do
-		lib=$(awk '{ for (i=1;i<=NF;i++){ if ($i=="=>" && $(i+1) ~ /^\//){print $(i+1); exit} if ($i ~ /^\// && $i !~ /^\(/){print $i; exit} } }' <<<"$line")
-		[ -n "$lib" ] && [ -f "$lib" ] || continue
-		base=$(basename "$lib")
-		case "$base" in
-		libc.so* | libm.so* | libpthread.so* | libdl.so* | librt.so* | libresolv.so* | \
-			ld-linux*.so* | ld-musl*.so* | libgcc_s.so*) continue ;;
-		esac
-		[ -f "$STAGING_DIR/lib/$base" ] && continue
-		cp -L "$lib" "$STAGING_DIR/lib/" 2>/dev/null || true
-	done < <(ldd "$BIN_IN_STAGING" 2>/dev/null || true)
+	for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
+		while IFS= read -r line; do
+			lib=$(awk '{ for (i=1;i<=NF;i++){ if ($i=="=>" && $(i+1) ~ /^\//){print $(i+1); exit} if ($i ~ /^\// && $i !~ /^\(/){print $i; exit} } }' <<<"$line")
+			[ -n "$lib" ] && [ -f "$lib" ] || continue
+			base=$(basename "$lib")
+			case "$base" in
+			libc.so* | libm.so* | libpthread.so* | libdl.so* | librt.so* | libresolv.so* | \
+				ld-linux*.so* | ld-musl*.so* | libgcc_s.so*) continue ;;
+			esac
+			[ -f "$STAGING_DIR/lib/$base" ] && continue
+			cp -L "$lib" "$STAGING_DIR/lib/" 2>/dev/null || true
+		done < <(ldd "$bin_in_staging" 2>/dev/null || true)
+	done
 
 	if [ -d "${RELEASE_DIR}/deps" ]; then
 		for lib in "${RELEASE_DIR}/deps"/*.so*; do
@@ -67,8 +80,10 @@ linux)
 		done
 	fi
 
-	# shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
-	patchelf --set-rpath '$ORIGIN/lib' "$BIN_IN_STAGING"
+	for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
+		# shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
+		patchelf --set-rpath '$ORIGIN/lib' "$bin_in_staging"
+	done
 	for so in "$STAGING_DIR/lib/"*.so*; do
 		[ -f "$so" ] || continue
 		# shellcheck disable=SC2016  # literal $ORIGIN is intended — patchelf/ld expands it at load time
@@ -90,7 +105,7 @@ macos)
 		done
 		return 1
 	}
-	QUEUE=("$BIN_IN_STAGING")
+	QUEUE=("${BINS_IN_STAGING[@]}")
 	while [ ${#QUEUE[@]} -gt 0 ]; do
 		cur="${QUEUE[0]}"
 		QUEUE=("${QUEUE[@]:1}")
@@ -118,22 +133,28 @@ macos)
 		base="${copied_bases[$idx]}"
 		old="${copied_olds[$idx]}"
 		install_name_tool -id "@loader_path/lib/$base" "$STAGING_DIR/lib/$base" 2>/dev/null || true
-		install_name_tool -change "$old" "@loader_path/lib/$base" "$BIN_IN_STAGING" 2>/dev/null || true
+		for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
+			install_name_tool -change "$old" "@loader_path/lib/$base" "$bin_in_staging" 2>/dev/null || true
+		done
 		for other in "$STAGING_DIR/lib/"*.dylib; do
 			[ -f "$other" ] || continue
 			install_name_tool -change "$old" "@loader_path/$base" "$other" 2>/dev/null || true
 		done
 		idx=$((idx + 1))
 	done
-	install_name_tool -add_rpath "@loader_path/lib" "$BIN_IN_STAGING" 2>/dev/null || true
+	for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
+		install_name_tool -add_rpath "@loader_path/lib" "$bin_in_staging" 2>/dev/null || true
+	done
 
-	echo "Re-signing bundled dylibs + binary (ad-hoc) after install_name_tool..."
+	echo "Re-signing bundled dylibs + binaries (ad-hoc) after install_name_tool..."
 	for dylib in "$STAGING_DIR/lib/"*.dylib; do
 		[ -f "$dylib" ] || continue
 		codesign --force --sign - "$dylib"
 	done
-	codesign --force --sign - "$BIN_IN_STAGING"
-	codesign --verify --strict "$BIN_IN_STAGING"
+	for bin_in_staging in "${BINS_IN_STAGING[@]}"; do
+		codesign --force --sign - "$bin_in_staging"
+		codesign --verify --strict "$bin_in_staging"
+	done
 
 	if [ "$TRIPLE" = "x86_64-apple-darwin" ]; then
 		echo "Vendoring ONNX Runtime (ort-dynamic) for Intel macOS..."
