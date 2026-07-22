@@ -40,8 +40,9 @@ toml = "1"
 # spawn the binary under a pseudo-terminal, parse its ANSI output into a screen grid, drive keys. ~keep
 portable-pty = "0.9"
 tempfile = "3"
-# Pinned to the 0.15 line on purpose: 0.16 needs `unicode-width ^0.2.1`, which conflicts with ~keep
-# `ratatui 0.29`'s `unicode-width =0.2.0` pin and fails to resolve. Do not bump. ~keep
+# vt100 0.16 (its `screen_mut().set_size` + `Cell::contents() -> &str` API) resolves now that ~keep
+# ratatui is on 0.30; on ratatui 0.29 its `unicode-width ^0.2.1` requirement clashed with the ~keep
+# `=0.2.0` pin, which is why this crate sat on vt100 0.15 until the ratatui bump. ~keep
 vt100 = "0.16"
 
 [lints]

@@ -72,8 +72,9 @@ The `replay` feature also enables `--replay <scenario.json>`, which runs the who
 scripted model — the vector the PTY tests spawn. It stays off by default so the scripted mocks never
 ship in the binary.
 
-> **`vt100` is pinned to the `0.15` line on purpose.** `0.16` needs `unicode-width ^0.2.1`, which
-> conflicts with `ratatui 0.29`'s `unicode-width =0.2.0` pin and fails to resolve. Do not bump it.
+> **`vt100` tracks `ratatui`.** `vt100 0.16` needs `unicode-width ^0.2.1`, which clashed with
+> `ratatui 0.29`'s `=0.2.0` pin — so this crate stayed on `vt100 0.15` until the `ratatui 0.30`
+> bump relaxed it. Keep the two in step when bumping either.
 
 New PTY tests build on `PtySession`: use its poll-until helpers (`wait_for` / `expect_screen` /
 `refute_after_settle`) rather than fixed sleeps — the UI repaints on a ~33 ms dirty-tick, so a screen
