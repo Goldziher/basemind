@@ -121,6 +121,10 @@ fn parse_args() -> Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load a local `.env` (from the CWD or a parent) before anything reads the environment, so the ~keep
+    // provider keys / `BASEMIND_AGENT_MODEL` can live in a gitignored file instead of the shell. A ~keep
+    // missing file is fine, and real environment variables already set always win. ~keep
+    let _ = dotenvy::dotenv();
     let args = parse_args();
     match args.mode {
         Mode::InProc => run_in_proc(args).await,
