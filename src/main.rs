@@ -118,6 +118,8 @@ enum Cmd {
     DetectWaste(basemind::textcompress::cli::DetectWasteArgs),
     /// Run an MCP server (stdio) exposing the code map to AI agents.
     Serve(ServeArgs),
+    /// Launch the basemind agent TUI (a coding agent over the code map).
+    Agent(AgentArgs),
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
@@ -228,6 +230,15 @@ struct ServeArgs {
     documents: DocumentsCliOverrides,
 }
 
+#[derive(clap::Args, Debug)]
+struct AgentArgs {
+    /// Arguments forwarded verbatim to the sibling `basemind-tui` binary: positional `[prompt]`,
+    /// plus `--resume <id>`, `--continue`, `--daemon`, `--attach`, `--replay <scenario.json>`. The
+    /// environment (including `BASEMIND_AGENT_MODEL` / `ANTHROPIC_API_KEY`) is inherited unchanged.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
 #[derive(Subcommand, Debug)]
 enum LangCmd {
     /// Show installed grammars and where they live.
@@ -330,6 +341,7 @@ fn main() -> Result<()> {
         Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args),
+        Cmd::Agent(args) => cmd_agent(&root, &args.args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         Cmd::Statusline => cmd_statusline(),
         #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -840,6 +852,76 @@ fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()>
     outcome
 }
 
+/// Basename of the sibling agent-TUI binary this shim launches. Windows adds `.exe`.
+#[cfg(windows)]
+const AGENT_TUI_BINARY: &str = "basemind-tui.exe";
+#[cfg(not(windows))]
+const AGENT_TUI_BINARY: &str = "basemind-tui";
+
+/// Locate the `basemind-tui` binary as a sibling of the running executable, returning `Some(path)`
+/// only when that sibling file actually exists. Pure and side-effect-free (it never execs), so the
+/// resolution logic is unit-testable without replacing the test process.
+fn resolve_agent_binary(current_exe: &std::path::Path) -> Option<PathBuf> {
+    let sibling = current_exe.parent()?.join(AGENT_TUI_BINARY);
+    sibling.is_file().then_some(sibling)
+}
+
+/// Launch the `basemind-tui` agent TUI, forwarding `args` verbatim and inheriting the environment
+/// (including `BASEMIND_AGENT_MODEL` / `ANTHROPIC_API_KEY`).
+///
+/// The root crate cannot depend on `basemind-tui` — that would cycle, since `basemind-tui` depends
+/// on `basemind` — so this is a re-exec shim rather than an in-process call. It prefers the sibling
+/// binary shipped alongside `basemind` in the release archive and falls back to resolving the bare
+/// `basemind-tui` name against `PATH`. When the caller did not forward a `--root`, the top-level
+/// `--root` is injected so the TUI targets the same repository this invocation selected.
+fn cmd_agent(root: &std::path::Path, args: &[String]) -> Result<()> {
+    let current_exe = std::env::current_exe().context("locate the running basemind executable")?;
+    let program: std::ffi::OsString =
+        resolve_agent_binary(&current_exe).map_or_else(|| AGENT_TUI_BINARY.into(), PathBuf::into_os_string);
+
+    let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 2);
+    // Only inject --root when the caller did not already forward one through.  ~keep
+    if !args.iter().any(|arg| arg == "--root") {
+        child_args.push("--root".to_string());
+        child_args.push(root.to_string_lossy().into_owned());
+    }
+    child_args.extend_from_slice(args);
+
+    launch_agent(&program, &child_args)
+}
+
+/// Map an OS launch failure for the agent TUI into actionable guidance. A `NotFound` means the
+/// binary is missing next to `basemind` and off `PATH`; anything else is wrapped with the program
+/// path for context.
+fn agent_launch_error(program: &std::ffi::OsStr, error: std::io::Error) -> anyhow::Error {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        anyhow::anyhow!(
+            "the basemind agent TUI binary ({AGENT_TUI_BINARY}) was not found next to `basemind` \
+             or on PATH; it ships in the release archive alongside `basemind`"
+        )
+    } else {
+        anyhow::Error::new(error).context(format!("launch {}", program.to_string_lossy()))
+    }
+}
+
+/// Replace this process with the agent TUI. `exec` inherits env + stdio and only returns on
+/// failure, so a return is always an error.
+#[cfg(unix)]
+fn launch_agent(program: &std::ffi::OsStr, args: &[String]) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let error = std::process::Command::new(program).args(args).exec();
+    Err(agent_launch_error(program, error))
+}
+
+/// Non-unix fallback: spawn the agent TUI, wait, and propagate its exit code (no `exec`).
+#[cfg(not(unix))]
+fn launch_agent(program: &std::ffi::OsStr, args: &[String]) -> Result<()> {
+    match std::process::Command::new(program).args(args).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(error) => Err(agent_launch_error(program, error)),
+    }
+}
+
 fn cmd_hook_install(root: &std::path::Path) -> Result<()> {
     let hooks_dir = root.join(".git").join("hooks");
     if !hooks_dir.exists() {
@@ -892,5 +974,30 @@ mod statusline_tests {
     fn caps_the_name_list_with_an_overflow_marker() {
         let hot = [ws("/a/one"), ws("/a/two"), ws("/a/three"), ws("/a/four"), ws("/a/five")];
         assert_eq!(super::format_statusline(&hot), "bm: one · two · three +2 · 5 hot");
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::{AGENT_TUI_BINARY, resolve_agent_binary};
+
+    #[test]
+    fn resolves_sibling_binary_when_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let current_exe = dir.path().join("basemind");
+        std::fs::write(&current_exe, b"").expect("write fake basemind");
+        let sibling = dir.path().join(AGENT_TUI_BINARY);
+        std::fs::write(&sibling, b"").expect("write fake basemind-tui");
+
+        assert_eq!(resolve_agent_binary(&current_exe), Some(sibling));
+    }
+
+    #[test]
+    fn returns_none_when_sibling_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let current_exe = dir.path().join("basemind");
+        std::fs::write(&current_exe, b"").expect("write fake basemind");
+
+        assert_eq!(resolve_agent_binary(&current_exe), None);
     }
 }
