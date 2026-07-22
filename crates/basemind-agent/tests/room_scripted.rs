@@ -130,8 +130,8 @@ async fn auto_respond_wakes_a_turn_on_an_incoming_message() {
     }];
     let room = ScriptedRoom::new(Vec::new(), incoming);
 
-    // One scripted turn is available for the wake to consume; no UserMessage is ever sent, so the
-    // only way a turn starts is the incoming message waking it.
+    // One scripted turn is available for the wake to consume; no UserMessage is ever sent, so the ~keep
+    // only way a turn starts is the incoming message waking it. ~keep
     let scenario =
         Scenario::from_json(r#"{ "user": "n/a", "turns": [ { "text": "AUTO-REPLY" } ] }"#).expect("scenario parses");
     let session = Session::with_provider(
