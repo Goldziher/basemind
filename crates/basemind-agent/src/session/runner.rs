@@ -168,6 +168,17 @@ impl Session {
                                 });
                             }
                         }
+                        AgentCommand::RoomLeave => {
+                            if let Some(room) = &self.room
+                                && let Err(error) = room.leave().await
+                            {
+                                let _ = events.send(AgentEvent::Error {
+                                    turn: None,
+                                    message: format!("room leave: {error}"),
+                                    fatal: false,
+                                });
+                            }
+                        }
                         // A permission reply or cancel with no turn in flight has nothing to answer;
                         // a room post with no room wired stays a no-op. ~keep
                         AgentCommand::PermissionDecision { .. } | AgentCommand::Cancel => {}

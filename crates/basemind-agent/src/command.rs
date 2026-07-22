@@ -44,6 +44,8 @@ pub enum AgentCommand {
         /// The message body.
         text: String,
     },
+    /// Leave the multi-agent room (issued by the UI on `/leave`); best-effort, a no-op with no room.
+    RoomLeave,
 }
 
 #[cfg(test)]
@@ -75,6 +77,14 @@ mod tests {
             json,
             serde_json::json!({ "kind": "room_post", "subject": null, "text": "hello team" })
         );
+        assert_eq!(serde_json::from_value::<AgentCommand>(json).unwrap(), command);
+    }
+
+    #[test]
+    fn room_leave_round_trips_as_a_bare_tag() {
+        let command = AgentCommand::RoomLeave;
+        let json = serde_json::to_value(&command).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "room_leave" }));
         assert_eq!(serde_json::from_value::<AgentCommand>(json).unwrap(), command);
     }
 }
