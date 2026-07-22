@@ -12,6 +12,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// How far a Page Up / Page Down moves the transcript viewport.
 const PAGE_SCROLL: u16 = 10;
 
+/// Longest `/post subject: body` subject accepted: a longer or multi-token lead stays part of the body.
+const MAX_SUBJECT_LEN: usize = 32;
+
 /// One rendered line of the conversation transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TranscriptEntry {
@@ -94,6 +97,9 @@ pub struct App {
     pub dirty: bool,
     /// The current multi-agent room roster (peers sharing this room), newest snapshot from the engine.
     pub roster: Vec<basemind_agent::RoomPeer>,
+    /// Count of room messages / peer deltas that landed while scrolled up (not following the newest
+    /// line). Surfaced as an unread cue in the status bar and cleared on return to the bottom.
+    pub unread: u32,
 }
 
 impl App {
@@ -115,6 +121,7 @@ impl App {
             follow: true,
             dirty: true,
             roster: Vec::new(),
+            unread: 0,
         }
     }
 
@@ -199,14 +206,29 @@ impl App {
                     subject: message.subject,
                     body: message.body,
                 });
+                self.note_unread();
             }
             AgentEvent::RoomPeerJoined { peer } => {
+                // A refreshed RoomRoster may already list this peer; do not double-announce it. ~keep
+                if self.roster.iter().any(|existing| existing.id == peer.id) {
+                    return;
+                }
                 self.transcript
                     .push(TranscriptEntry::Notice(format!("{} joined the room", peer.display)));
+                self.roster.push(peer);
+                self.note_unread();
             }
             AgentEvent::RoomPeerLeft { id } => {
+                // Prefer the departing peer's display name; fall back to the raw id if unknown. ~keep
+                let display = self
+                    .roster
+                    .iter()
+                    .position(|existing| existing.id == id)
+                    .map(|pos| self.roster.remove(pos).display)
+                    .unwrap_or_else(|| id.clone());
                 self.transcript
-                    .push(TranscriptEntry::Notice(format!("{id} left the room")));
+                    .push(TranscriptEntry::Notice(format!("{display} left the room")));
+                self.note_unread();
             }
         }
     }
@@ -239,41 +261,7 @@ impl App {
                     Some(AgentCommand::Shutdown)
                 }
             }
-            KeyCode::Enter => {
-                if let Some(rest) = self.input.strip_prefix("/post ") {
-                    if rest.trim().is_empty() {
-                        return None;
-                    }
-                    // The engine drops room posts issued mid-turn — its idle command loop is not ~keep
-                    // polled during a turn — so hold the input like a user message until the turn ends. ~keep
-                    if self.status.in_flight {
-                        return None;
-                    }
-                    let input = std::mem::take(&mut self.input);
-                    let body = input["/post ".len()..].to_string();
-                    // The broker excludes self-posts from your own inbox, so echo it locally here. ~keep
-                    self.transcript.push(TranscriptEntry::Room {
-                        from: "you".into(),
-                        subject: String::new(),
-                        body: body.clone(),
-                    });
-                    return Some(AgentCommand::RoomPost {
-                        subject: None,
-                        text: body,
-                    });
-                }
-                if self.input.trim().is_empty() {
-                    return None;
-                }
-                // The engine does not queue messages mid-turn, so submitting now would silently ~keep
-                // drop the input. Hold it in the box until the turn ends (Esc cancels a runaway one). ~keep
-                if self.status.in_flight {
-                    return None;
-                }
-                let text = std::mem::take(&mut self.input);
-                self.push_user(text.clone());
-                Some(AgentCommand::UserMessage { text })
-            }
+            KeyCode::Enter => self.on_enter(),
             KeyCode::Char(c) => {
                 self.input.push(c);
                 None
@@ -326,6 +314,87 @@ impl App {
         Some(AgentCommand::PermissionDecision { req_id, decision })
     }
 
+    /// Handle Enter: dispatch the local room slash-commands (`/roster`, `/room`, `/leave`, `/post`)
+    /// first, else submit the input as a user message. Pure: no terminal or IO side effects.
+    fn on_enter(&mut self) -> Option<AgentCommand> {
+        // `/roster` (alias `/room`) and `/leave` resolve locally — no engine round-trip for the ~keep
+        // roster dump, a single RoomLeave for the departure. ~keep
+        match self.input.trim() {
+            "/roster" | "/room" => {
+                let notice = self.roster_notice();
+                self.input.clear();
+                self.transcript.push(TranscriptEntry::Notice(notice));
+                return None;
+            }
+            "/leave" => {
+                self.input.clear();
+                self.transcript.push(TranscriptEntry::Notice("leaving the room".into()));
+                return Some(AgentCommand::RoomLeave);
+            }
+            _ => {}
+        }
+        if self.input.starts_with("/post ") {
+            return self.on_post();
+        }
+        if self.input.trim().is_empty() {
+            return None;
+        }
+        // The engine does not queue messages mid-turn, so submitting now would silently drop the ~keep
+        // input. Hold it in the box until the turn ends (Esc cancels a runaway one). ~keep
+        if self.status.in_flight {
+            return None;
+        }
+        let text = std::mem::take(&mut self.input);
+        self.push_user(text.clone());
+        Some(AgentCommand::UserMessage { text })
+    }
+
+    /// Handle a `/post ` submission: parse an optional `subject: ` lead, echo the post locally, and
+    /// emit the [`AgentCommand::RoomPost`]. Held (not sent, not cleared) while a turn is in flight.
+    fn on_post(&mut self) -> Option<AgentCommand> {
+        let arg = self.input["/post ".len()..].to_string();
+        if arg.trim().is_empty() {
+            return None;
+        }
+        // The engine drops room posts issued mid-turn — its idle command loop is not polled during ~keep
+        // a turn — so hold the input like a user message until the turn ends. ~keep
+        if self.status.in_flight {
+            return None;
+        }
+        self.input.clear();
+        let (subject, body) = split_post(&arg);
+        // The broker excludes self-posts from your own inbox, so echo it locally here. ~keep
+        self.transcript.push(TranscriptEntry::Room {
+            from: "you".into(),
+            subject: subject.clone().unwrap_or_default(),
+            body: body.clone(),
+        });
+        Some(AgentCommand::RoomPost { subject, text: body })
+    }
+
+    /// A one-line notice summarizing the current roster: the comma-joined display names, or a
+    /// "no peers" line when empty. Backs the `/roster` command.
+    fn roster_notice(&self) -> String {
+        if self.roster.is_empty() {
+            return "room: no peers".into();
+        }
+        let names = self
+            .roster
+            .iter()
+            .map(|peer| peer.display.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("room peers: {names}")
+    }
+
+    /// Bump the unread cue when a room event lands while the transcript is scrolled up (not
+    /// following the newest line); a following transcript already shows it, so it stays read.
+    fn note_unread(&mut self) {
+        if !self.follow {
+            self.unread = self.unread.saturating_add(1);
+        }
+    }
+
     /// Record a user message in the transcript. Used by the Enter handler and to mirror the
     /// auto-sent opening prompt (sent straight to the engine, bypassing `on_key`) so it shows a
     /// `you:` line like any typed message.
@@ -360,6 +429,20 @@ impl App {
             *result = Some((ok, summary));
         }
     }
+}
+
+/// Split a `/post` argument into an optional subject and the body. A leading `subject: ` (split on
+/// the first `": "`) is lifted into the subject only when the candidate is a single whitespace-free
+/// token no longer than [`MAX_SUBJECT_LEN`]; otherwise the whole argument is the body (subject `None`).
+fn split_post(arg: &str) -> (Option<String>, String) {
+    if let Some((head, rest)) = arg.split_once(": ")
+        && !head.is_empty()
+        && head.chars().count() <= MAX_SUBJECT_LEN
+        && !head.chars().any(char::is_whitespace)
+    {
+        return (Some(head.to_string()), rest.to_string());
+    }
+    (None, arg.to_string())
 }
 
 #[cfg(test)]
@@ -704,5 +787,196 @@ mod tests {
         let command = app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
         assert_eq!(command, Some(AgentCommand::Shutdown));
         assert!(app.should_quit);
+    }
+
+    fn type_line(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn slash_post_with_a_subject_lifts_it_into_the_post_and_echo() {
+        let mut app = App::new("m");
+        type_line(&mut app, "/post fix: the parser drops trailing commas");
+        let command = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            command,
+            Some(AgentCommand::RoomPost {
+                subject: Some("fix".into()),
+                text: "the parser drops trailing commas".into(),
+            })
+        );
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Room {
+                from: "you".into(),
+                subject: "fix".into(),
+                body: "the parser drops trailing commas".into(),
+            }),
+            "the echo carries the parsed subject"
+        );
+        assert_eq!(app.input, "", "input clears on a room post");
+    }
+
+    #[test]
+    fn slash_post_without_a_subject_stays_subjectless() {
+        let mut app = App::new("m");
+        type_line(&mut app, "/post ship it");
+        let command = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            command,
+            Some(AgentCommand::RoomPost {
+                subject: None,
+                text: "ship it".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn split_post_treats_a_multi_token_lead_as_body() {
+        // A whitespace-bearing lead before `": "` is not a subject — the whole thing is the body. ~keep
+        assert_eq!(
+            split_post("I think: we should merge"),
+            (None, "I think: we should merge".to_string())
+        );
+        assert_eq!(split_post("sync: done"), (Some("sync".to_string()), "done".to_string()));
+        assert_eq!(split_post("no marker here"), (None, "no marker here".to_string()));
+    }
+
+    #[test]
+    fn slash_roster_lists_peers_as_a_notice_and_sends_nothing() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::RoomRoster {
+            peers: vec![
+                basemind_agent::RoomPeer {
+                    id: "a".into(),
+                    display: "alice".into(),
+                },
+                basemind_agent::RoomPeer {
+                    id: "b".into(),
+                    display: "bob".into(),
+                },
+            ],
+        });
+        type_line(&mut app, "/roster");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None, "/roster is a local command");
+        assert_eq!(app.input, "", "input clears");
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("room peers: alice, bob".into()))
+        );
+    }
+
+    #[test]
+    fn slash_room_alias_with_an_empty_roster_says_no_peers() {
+        let mut app = App::new("m");
+        type_line(&mut app, "/room");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), None);
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("room: no peers".into()))
+        );
+    }
+
+    #[test]
+    fn slash_leave_emits_room_leave_and_clears_input() {
+        let mut app = App::new("m");
+        type_line(&mut app, "/leave");
+        let command = app.on_key(key(KeyCode::Enter));
+        assert_eq!(command, Some(AgentCommand::RoomLeave));
+        assert_eq!(app.input, "", "input clears on leave");
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("leaving the room".into()))
+        );
+    }
+
+    #[test]
+    fn peer_joined_pushes_a_notice_and_extends_the_roster() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::RoomPeerJoined {
+            peer: basemind_agent::RoomPeer {
+                id: "c".into(),
+                display: "carol".into(),
+            },
+        });
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("carol joined the room".into()))
+        );
+        assert_eq!(app.roster.len(), 1, "the joiner is reflected in the roster");
+    }
+
+    #[test]
+    fn peer_joined_does_not_double_announce_a_known_peer() {
+        let mut app = App::new("m");
+        let peer = basemind_agent::RoomPeer {
+            id: "c".into(),
+            display: "carol".into(),
+        };
+        app.apply(AgentEvent::RoomRoster {
+            peers: vec![peer.clone()],
+        });
+        app.apply(AgentEvent::RoomPeerJoined { peer });
+        assert!(
+            !app.transcript.iter().any(|e| matches!(e, TranscriptEntry::Notice(_))),
+            "a peer already on the roster must not be announced again"
+        );
+        assert_eq!(app.roster.len(), 1, "no duplicate roster entry");
+    }
+
+    #[test]
+    fn peer_left_uses_the_display_name_and_prunes_the_roster() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::RoomRoster {
+            peers: vec![basemind_agent::RoomPeer {
+                id: "c".into(),
+                display: "carol".into(),
+            }],
+        });
+        app.apply(AgentEvent::RoomPeerLeft { id: "c".into() });
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("carol left the room".into()))
+        );
+        assert!(app.roster.is_empty(), "the departed peer is pruned");
+    }
+
+    #[test]
+    fn peer_left_falls_back_to_the_id_when_unknown() {
+        let mut app = App::new("m");
+        app.apply(AgentEvent::RoomPeerLeft { id: "ghost".into() });
+        assert_eq!(
+            app.transcript.last(),
+            Some(&TranscriptEntry::Notice("ghost left the room".into()))
+        );
+    }
+
+    #[test]
+    fn unread_counts_room_events_only_while_scrolled_up() {
+        let mut app = App::new("m");
+        // Following (at the bottom): a message is seen, so it stays read. ~keep
+        app.apply(AgentEvent::RoomMessage(basemind_agent::RoomMessage {
+            from: "alice".into(),
+            subject: String::new(),
+            body: "one".into(),
+        }));
+        assert_eq!(app.unread, 0, "a message read at the bottom does not count");
+
+        // Detach (scroll up): subsequent room events accumulate as unread. ~keep
+        app.follow = false;
+        app.apply(AgentEvent::RoomMessage(basemind_agent::RoomMessage {
+            from: "alice".into(),
+            subject: String::new(),
+            body: "two".into(),
+        }));
+        app.apply(AgentEvent::RoomPeerJoined {
+            peer: basemind_agent::RoomPeer {
+                id: "c".into(),
+                display: "carol".into(),
+            },
+        });
+        assert_eq!(app.unread, 2, "a message and a join both count while detached");
     }
 }

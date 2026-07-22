@@ -15,7 +15,7 @@ use serde::Deserialize;
 use crate::error::Result;
 use crate::model::{MockModelClient, ModelClient};
 use crate::provider::{ProviderPool, ResolvedRole};
-use crate::room::{RoomMessage, RoomPeer, ScriptedIncoming, ScriptedRoom};
+use crate::room::{RoomMessage, RoomPeer, ScriptedIncoming, ScriptedPresence, ScriptedRoom};
 
 /// Routing string reported for the scripted model (status bar, requests).
 const SCRIPTED_MODEL: &str = "mock/scripted";
@@ -47,9 +47,28 @@ pub struct RoomScript {
     /// Peer messages delivered after their `after_ms` delay, in order.
     #[serde(default)]
     pub incoming: Vec<RoomIncoming>,
+    /// Peer presence deltas (joins / leaves) delivered after their `after_ms` delay, interleaved with
+    /// [`incoming`](Self::incoming) by wall clock.
+    #[serde(default)]
+    pub presence: Vec<RoomPresence>,
     /// When true, an incoming message received while idle starts a turn (room auto-respond).
     #[serde(default)]
     pub auto_respond: bool,
+}
+
+/// One scripted presence delta: a peer joining or leaving after a delay. Set `joined` for a join
+/// (id + display) or `left` for a departure (id); `joined` wins if both are present.
+#[derive(Clone, Debug, Deserialize)]
+pub struct RoomPresence {
+    /// The peer that joins; set for a join delta.
+    #[serde(default)]
+    pub joined: Option<RoomPeer>,
+    /// The id of the peer that leaves; set for a leave delta.
+    #[serde(default)]
+    pub left: Option<String>,
+    /// Milliseconds the presence task waits before delivering this delta.
+    #[serde(default)]
+    pub after_ms: u64,
 }
 
 /// One scripted incoming room message: the sender, subject, body, and the delay before delivery.
@@ -150,7 +169,25 @@ impl Scenario {
                 after: Duration::from_millis(entry.after_ms),
             })
             .collect();
-        Some(ScriptedRoom::new(room.roster.clone(), incoming))
+        let presence = room
+            .presence
+            .iter()
+            .filter_map(|entry| {
+                let after = Duration::from_millis(entry.after_ms);
+                if let Some(peer) = &entry.joined {
+                    Some(ScriptedPresence::Joined {
+                        peer: peer.clone(),
+                        after,
+                    })
+                } else {
+                    entry
+                        .left
+                        .as_ref()
+                        .map(|id| ScriptedPresence::Left { id: id.clone(), after })
+                }
+            })
+            .collect();
+        Some(ScriptedRoom::new(room.roster.clone(), incoming).with_presence(presence))
     }
 
     /// Whether this scenario's room opts into auto-responding to incoming peer messages.
