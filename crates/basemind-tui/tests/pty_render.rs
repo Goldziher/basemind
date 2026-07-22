@@ -49,7 +49,7 @@ fn markdown_scenario() -> String {
 }
 
 #[test]
-fn streaming_assistant_text_accretes_and_labels_render() {
+fn streaming_assistant_text_accretes_and_renders() {
     let mut session = PtySession::spawn(&streaming_scenario());
 
     // The permission-gated exec raises the overlay; approve it for the session over the PTY. ~keep
@@ -57,12 +57,10 @@ fn streaming_assistant_text_accretes_and_labels_render() {
     session.allow_session();
 
     // The opening "user" message is mirrored into the transcript (main.rs seeds it before the loop),
-    // so it renders a `you:` label; the agent label, both streamed text chunks, the tool call line,
-    // its successful result, and the run reaching idle must all render too. ~keep
+    // rendered as a chevron line (no `you:`/`agent:` labels); both streamed text chunks, the tool
+    // call line, its successful result, and the run reaching idle must all render too. ~keep
     session.expect_all(&[
-        "you:",
         "render the lines",
-        "agent:",
         "Line one.",
         "Line two.",
         "⚙ shell_exec",

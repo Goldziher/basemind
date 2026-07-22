@@ -28,6 +28,9 @@ basemind-agent-ipc = { path = "../basemind-agent-ipc" }
 crossterm = { version = "0.29", features = ["event-stream"] }
 dotenvy = "0.15"
 futures = "0.3"
+# Cross-platform resident-set-size sampler for the status bar's `rss` figure (mach on macOS, ~keep
+# /proc on Linux) — a tiny, dependency-free crate. ~keep
+memory-stats = "1"
 # `unstable-rendered-line-info` exposes `Paragraph::line_count`, used to measure the wrapped ~keep
 # transcript height so the viewport can pin to the newest line (ratatui #293). ~keep
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }

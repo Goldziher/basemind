@@ -68,6 +68,8 @@ pub struct Status {
     pub input_tokens: u64,
     /// Cumulative output tokens for the session.
     pub output_tokens: u64,
+    /// Cumulative tokens saved by basemind code-map tool calls vs the shell/read baseline.
+    pub saved_tokens: u64,
     /// Whether a turn is currently in flight.
     pub in_flight: bool,
     /// Why the last turn stopped, once idle.
@@ -100,6 +102,20 @@ pub struct App {
     /// Count of room messages / peer deltas that landed while scrolled up (not following the newest
     /// line). Surfaced as an unread cue in the status bar and cleared on return to the bottom.
     pub unread: u32,
+    /// Number of basemind code-map tool calls (searches) issued this session — the "basemind is
+    /// working" signal in the status bar.
+    pub searches: u64,
+    /// Approximate count of messages held in the session context (user + assistant + tool), adjusted
+    /// down on compaction. Surfaced as the "ctx" figure.
+    pub messages: u64,
+    /// How many times the context was compacted this session.
+    pub compactions: u64,
+    /// The repository folder name shown in the status bar (empty when unknown).
+    pub repo: String,
+    /// The current git branch shown in the status bar (empty when unknown / detached).
+    pub branch: String,
+    /// Resident set size (bytes) of this process, sampled by the run loop; `None` until first read.
+    pub rss_bytes: Option<u64>,
 }
 
 impl App {
@@ -112,6 +128,7 @@ impl App {
                 model: model.into(),
                 input_tokens: 0,
                 output_tokens: 0,
+                saved_tokens: 0,
                 in_flight: false,
                 last_reason: None,
             },
@@ -122,6 +139,31 @@ impl App {
             dirty: true,
             roster: Vec::new(),
             unread: 0,
+            searches: 0,
+            messages: 0,
+            compactions: 0,
+            repo: String::new(),
+            branch: String::new(),
+            rss_bytes: None,
+        }
+    }
+
+    /// Set the repository name + branch shown in the status bar (called once at startup).
+    pub fn set_context(&mut self, repo: impl Into<String>, branch: impl Into<String>) {
+        self.repo = repo.into();
+        self.branch = branch.into();
+    }
+
+    /// Record a fresh RSS sample from the run loop, redrawing only when the megabyte figure changes
+    /// so idle memory jitter does not force repaints.
+    pub fn set_rss(&mut self, bytes: u64) {
+        let changed = self
+            .rss_bytes
+            .map(|prev| prev / 1_048_576 != bytes / 1_048_576)
+            .unwrap_or(true);
+        self.rss_bytes = Some(bytes);
+        if changed {
+            self.dirty = true;
         }
     }
 
@@ -132,6 +174,7 @@ impl App {
             AgentEvent::TurnStarted { .. } => {
                 self.status.in_flight = true;
                 self.status.last_reason = None;
+                self.messages = self.messages.saturating_add(1);
                 // Open a fresh assistant entry that subsequent deltas append into. ~keep
                 self.transcript.push(TranscriptEntry::Assistant(String::new()));
             }
@@ -139,6 +182,9 @@ impl App {
             AgentEvent::ToolStarted {
                 call_id, name, args, ..
             } => {
+                if is_search_tool(&name) {
+                    self.searches = self.searches.saturating_add(1);
+                }
                 self.transcript.push(TranscriptEntry::Tool {
                     call_id,
                     name,
@@ -147,7 +193,11 @@ impl App {
                 });
             }
             AgentEvent::ToolProgress { .. } => {}
-            AgentEvent::ToolResult { call_id, ok, summary } => self.fill_tool_result(&call_id, ok, summary),
+            AgentEvent::ToolResult { call_id, ok, summary } => {
+                // A tool result is one more message in the session context. ~keep
+                self.messages = self.messages.saturating_add(1);
+                self.fill_tool_result(&call_id, ok, summary);
+            }
             AgentEvent::PermissionRequested {
                 req_id,
                 tool,
@@ -165,17 +215,22 @@ impl App {
             AgentEvent::Usage {
                 input_tokens,
                 output_tokens,
+                saved_tokens,
                 ..
             } => {
                 // The event carries running session totals (documented cumulative), so assign ~keep
                 // rather than add — adding would double-count across successive turns. ~keep
                 self.status.input_tokens = input_tokens;
                 self.status.output_tokens = output_tokens;
+                self.status.saved_tokens = saved_tokens;
             }
             AgentEvent::Compacted {
                 removed_messages,
                 summary_tokens,
             } => {
+                // Compaction replaces `removed_messages` with a single summary message. ~keep
+                self.messages = self.messages.saturating_sub(removed_messages as u64).saturating_add(1);
+                self.compactions = self.compactions.saturating_add(1);
                 self.transcript.push(TranscriptEntry::Notice(format!(
                     "compacted {removed_messages} messages into ~{summary_tokens} tokens"
                 )));
@@ -400,6 +455,7 @@ impl App {
     /// `you:` line like any typed message.
     pub fn push_user(&mut self, text: String) {
         self.transcript.push(TranscriptEntry::User(text));
+        self.messages = self.messages.saturating_add(1);
         self.dirty = true;
     }
 
@@ -429,6 +485,23 @@ impl App {
             *result = Some((ok, summary));
         }
     }
+}
+
+/// The basemind code-map / git tools whose calls count as "searches" in the status bar. A
+/// `shell_exec` or `room_*` call is not a code-map query, so it does not bump the counter.
+fn is_search_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "outline"
+            | "search_symbols"
+            | "find_references"
+            | "find_callers"
+            | "call_graph"
+            | "workspace_grep"
+            | "recent_changes"
+            | "blame_symbol"
+            | "diff_file"
+    )
 }
 
 /// Split a `/post` argument into an optional subject and the body. A leading `subject: ` (split on
@@ -563,10 +636,12 @@ mod tests {
             turn: 1,
             input_tokens: 128,
             output_tokens: 64,
+            saved_tokens: 900,
             cost_usd: Some(0.01),
         });
         assert_eq!(app.status.input_tokens, 128);
         assert_eq!(app.status.output_tokens, 64);
+        assert_eq!(app.status.saved_tokens, 900, "the saved-tokens total is folded in");
     }
 
     #[test]

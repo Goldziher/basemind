@@ -1,7 +1,9 @@
 //! Rendering: turn an [`App`] snapshot into a frame. Pure presentation — no state mutation.
 //!
-//! Layout is a transcript viewport on top, a one-line status bar, and a bordered input box at the
-//! bottom. A pending permission request is drawn as a centered overlay above everything.
+//! Layout is a borderless transcript viewport on top, a two-line telemetry bar, and a single
+//! highlighted input line at the bottom. A pending permission request is drawn as a centered overlay
+//! above everything. User turns are distinguished by a `›` chevron and a highlight background rather
+//! than a `you:` label; assistant turns render as plain markdown with no label.
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -16,12 +18,12 @@ use crate::markdown::render_markdown;
 /// input box. Shared by [`draw`] and [`reconcile_scroll`] so both agree on the transcript's geometry;
 /// the transcript stays index 0 whether or not the room bar is present.
 fn layout(area: Rect, has_roster: bool) -> std::rc::Rc<[Rect]> {
-    let mut constraints = vec![Constraint::Min(3)]; // transcript ~keep
+    let mut constraints = vec![Constraint::Min(1)]; // transcript ~keep
     if has_roster {
         constraints.push(Constraint::Length(1)); // room bar ~keep
     }
-    constraints.push(Constraint::Length(1)); // status bar ~keep
-    constraints.push(Constraint::Length(3)); // input box ~keep
+    constraints.push(Constraint::Length(2)); // two-line telemetry bar ~keep
+    constraints.push(Constraint::Length(1)); // single input line ~keep
     Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
@@ -47,13 +49,42 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Background used to highlight the user's own turns (in the transcript and the input line): a dark
+/// gray from the xterm-256 palette, chosen for broad terminal support over a 24-bit color.
+const HIGHLIGHT_BG: Color = Color::Indexed(236);
+
+/// The chevron marking a user turn / the input prompt, in place of a `you:` label.
+const CHEVRON: &str = "› ";
+
+/// Format a token/count figure compactly: `1234 → "1.2k"`, `2_500_000 → "2.5M"`.
+fn fmt_count(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
 /// Build the styled, wrapped transcript lines for the current [`App`] snapshot.
 fn transcript_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     for entry in &app.transcript {
         match entry {
-            TranscriptEntry::User(text) => push_message(&mut lines, "you", Color::Cyan, text),
-            TranscriptEntry::Assistant(text) => push_message(&mut lines, "agent", Color::Green, text),
+            TranscriptEntry::User(text) => lines.push(Line::from(vec![
+                Span::styled(
+                    CHEVRON,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(HIGHLIGHT_BG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text.clone(), Style::default().fg(Color::White).bg(HIGHLIGHT_BG)),
+            ])),
+            // Assistant turns render as plain markdown with no label — the lack of a chevron/glyph ~keep
+            // is what distinguishes them from user and tool lines. ~keep
+            TranscriptEntry::Assistant(text) => lines.extend(render_markdown(text)),
             TranscriptEntry::Tool { name, args, result, .. } => {
                 lines.push(Line::from(vec![
                     Span::styled(format!("⚙ {name} "), Style::default().fg(Color::Yellow)),
@@ -112,8 +143,9 @@ fn transcript_body(lines: Vec<Line<'static>>) -> Paragraph<'static> {
 /// the terminal size.
 pub fn reconcile_scroll(app: &mut App, area: Rect) {
     let transcript = layout(area, !app.roster.is_empty())[0];
-    let inner_width = transcript.width.saturating_sub(2);
-    let inner_height = transcript.height.saturating_sub(2);
+    // The transcript is borderless, so its inner area is its full width/height. ~keep
+    let inner_width = transcript.width;
+    let inner_height = transcript.height;
     let total = transcript_body(transcript_lines(app)).line_count(inner_width) as u16;
     let max_scroll = total.saturating_sub(inner_height);
     if app.follow {
@@ -130,15 +162,14 @@ pub fn reconcile_scroll(app: &mut App, area: Rect) {
     }
 }
 
-/// Render the scrollable, wrapped conversation transcript.
+/// Render the scrollable, wrapped conversation transcript — borderless, filling its region.
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
-    let paragraph = transcript_body(transcript_lines(app))
-        .block(Block::default().borders(Borders::ALL).title(" transcript "))
-        .scroll((app.scroll, 0));
+    let paragraph = transcript_body(transcript_lines(app)).scroll((app.scroll, 0));
     frame.render_widget(paragraph, area);
 }
 
-/// Render the one-line status bar: model, tokens, and in-flight/idle state.
+/// Render the two-line telemetry bar. Line one is the identity row (model · repo · branch · state);
+/// line two is the basemind metrics row (tokens · saved · searches · context · RSS).
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let status = &app.status;
     let state = if status.in_flight {
@@ -153,20 +184,30 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| " ready ".to_string());
         Span::styled(reason, Style::default().fg(Color::DarkGray))
     };
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", status.model),
-            Style::default().fg(Color::White).bg(Color::Blue),
-        ),
-        Span::raw(format!(
-            "  in {} / out {} tok ",
-            status.input_tokens, status.output_tokens
-        )),
-        state,
-    ];
+
+    let mut identity = vec![Span::styled(
+        format!(" ◈ {} ", status.model),
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+    )];
+    if !app.repo.is_empty() {
+        identity.push(Span::styled(
+            format!("  {}", app.repo),
+            Style::default().fg(Color::White),
+        ));
+    }
+    if !app.branch.is_empty() {
+        identity.push(Span::styled(
+            format!("  ⎇ {}", app.branch),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+    identity.push(state);
     if app.unread > 0 {
         // A yellow badge flags room activity that arrived while scrolled up; cleared at the bottom. ~keep
-        spans.push(Span::styled(
+        identity.push(Span::styled(
             format!(" ● {} unread ", app.unread),
             Style::default()
                 .fg(Color::Black)
@@ -174,7 +215,43 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    let mut metrics = vec![
+        Span::styled(
+            format!(
+                " ↑{} ↓{} tok",
+                fmt_count(status.input_tokens),
+                fmt_count(status.output_tokens)
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!("  saved ~{} tok", fmt_count(status.saved_tokens)),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(format!("  search {}", app.searches), Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!("  ctx {}{}", app.messages, compaction_suffix(app.compactions)),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    if let Some(bytes) = app.rss_bytes {
+        metrics.push(Span::styled(
+            format!("  rss {}MB", bytes / 1_048_576),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(vec![Line::from(identity), Line::from(metrics)]), area);
+}
+
+/// The compaction suffix for the context figure: empty when none, else ` (Nc)`.
+fn compaction_suffix(compactions: u64) -> String {
+    if compactions == 0 {
+        String::new()
+    } else {
+        format!(" ({compactions}c)")
+    }
 }
 
 /// The room-bar label prefix; kept as a constant so [`room_bar_label`] budgets width consistently.
@@ -226,18 +303,22 @@ fn truncate_chars(text: &str, width: usize) -> String {
     out
 }
 
-/// Render the input box, showing the current line with a block cursor.
+/// Render the single input line: a chevron prompt, the current text with a block cursor, and a
+/// full-width highlight background matching how the user's own turns render in the transcript.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
-    let text = format!("{}\u{2588}", app.input); // trailing full-block as a simple cursor ~keep
-    // While a turn is running, Enter is held (the engine does not queue mid-turn) — say so. ~keep
-    let title = if app.status.in_flight {
-        " message (turn in progress · Esc to cancel · Ctrl-C exit) "
-    } else {
-        " message (Enter send · Esc quit · Ctrl-C exit) "
-    };
-    let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: false });
+    let line = Line::from(vec![
+        Span::styled(
+            CHEVRON,
+            Style::default()
+                .fg(Color::Cyan)
+                .bg(HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(app.input.clone(), Style::default().fg(Color::White).bg(HIGHLIGHT_BG)),
+        Span::styled("\u{2588}", Style::default().fg(Color::White).bg(HIGHLIGHT_BG)),
+    ]);
+    // `style` fills the whole one-row area with the highlight so the prompt reads as a bar. ~keep
+    let paragraph = Paragraph::new(line).style(Style::default().bg(HIGHLIGHT_BG));
     frame.render_widget(paragraph, area);
 }
 
@@ -270,18 +351,6 @@ fn draw_permission_overlay(frame: &mut Frame, prompt: &PermissionPrompt) {
     frame.render_widget(paragraph, area);
 }
 
-/// Push a colored, bold speaker label line, then the markdown-rendered message body.
-///
-/// The body honors embedded newlines and lightweight markdown via [`render_markdown`], fixing the
-/// old single-[`Line`] rendering that mangled multi-line and multi-paragraph replies.
-fn push_message(lines: &mut Vec<Line<'static>>, label: &str, color: Color, text: &str) {
-    lines.push(Line::from(Span::styled(
-        format!("{label}:"),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    )));
-    lines.extend(render_markdown(text));
-}
-
 /// Compute a rectangle `percent_x` × `percent_y` of `area`, centered.
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
@@ -306,9 +375,10 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
 
-    /// The transcript's max scroll for an 80x24 terminal (transcript inner height is 18 rows).
+    /// The transcript's max scroll for an 80x24 terminal: borderless full width (80), and a
+    /// transcript height of 21 rows (24 − 2 status − 1 input, no roster).
     fn max_scroll_80x24(app: &App) -> u16 {
-        (transcript_body(transcript_lines(app)).line_count(78) as u16).saturating_sub(18)
+        (transcript_body(transcript_lines(app)).line_count(80) as u16).saturating_sub(21)
     }
 
     fn tall_app() -> App {
@@ -375,8 +445,8 @@ mod tests {
             id: "a".into(),
             display: "alice".into(),
         }];
-        let expected = (transcript_body(transcript_lines(&app)).line_count(78) as u16)
-            .saturating_sub(layout(area, true)[0].height.saturating_sub(2));
+        let expected = (transcript_body(transcript_lines(&app)).line_count(80) as u16)
+            .saturating_sub(layout(area, true)[0].height);
         reconcile_scroll(&mut app, area);
         assert_eq!(app.scroll, expected, "follow still pins to the bottom with a roster");
         assert!(app.follow);

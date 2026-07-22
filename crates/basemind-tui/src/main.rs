@@ -27,7 +27,7 @@ mod markdown;
 mod run;
 mod ui;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
@@ -189,8 +189,10 @@ async fn run_in_proc(args: Args) -> Result<()> {
     let engine = tokio::spawn(session.run(endpoint));
 
     let mut app = App::new(model);
+    let (repo, branch) = repo_context(&args.root);
+    app.set_context(repo, branch);
     if let Some(prompt) = initial_prompt {
-        // Mirror the auto-sent opening prompt into the transcript so it renders a `you:` line, the
+        // Mirror the auto-sent opening prompt into the transcript so it renders a chevron line, the
         // same as a prompt typed at the input box (which records itself through `App::on_key`). ~keep
         app.push_user(prompt.clone());
         client
@@ -242,8 +244,10 @@ async fn run_attach(args: Args) -> Result<()> {
 
     let model = attach_model_name(&args)?;
     let mut app = App::new(model);
+    let (repo, branch) = repo_context(&args.root);
+    app.set_context(repo, branch);
     if let Some(prompt) = args.prompt.clone() {
-        // Seed the transcript with the auto-sent prompt (a `you:` line) and drive it into the shared
+        // Seed the transcript with the auto-sent prompt (a chevron line) and drive it into the shared
         // daemon session. ~keep
         app.push_user(prompt.clone());
         client
@@ -252,6 +256,35 @@ async fn run_attach(args: Args) -> Result<()> {
             .context("send initial prompt")?;
     }
     run::run(client, app).await
+}
+
+/// The repository folder name and current git branch for the status bar. The name is the final path
+/// component of the canonicalized root; the branch is read from `.git/HEAD`. Best-effort — any I/O
+/// failure yields an empty string (the status bar simply omits that field), never an error.
+fn repo_context(root: &Path) -> (String, String) {
+    let repo = std::fs::canonicalize(root)
+        .ok()
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let branch = std::fs::read_to_string(root.join(".git").join("HEAD"))
+        .ok()
+        .map(|head| parse_git_head(head.trim()))
+        .unwrap_or_default();
+    (repo, branch)
+}
+
+/// Parse a `.git/HEAD` payload into a branch name: `ref: refs/heads/<branch>` → `<branch>`, a raw
+/// detached-HEAD sha → its 7-char short form, anything else → empty.
+fn parse_git_head(head: &str) -> String {
+    if let Some(reference) = head.strip_prefix("ref: refs/heads/") {
+        reference.to_string()
+    } else if head.len() >= 7 && head.chars().all(|c| c.is_ascii_hexdigit()) {
+        head[..7].to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// The command that spawns a detached daemon for this repo: the current binary in `--daemon` mode,
@@ -360,4 +393,26 @@ fn build_replay_session(
     _tools: ToolRegistry,
 ) -> Result<(Session, String, Option<String>)> {
     anyhow::bail!("--replay requires building basemind-tui with `--features replay`")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_git_head;
+
+    #[test]
+    fn parse_git_head_reads_a_branch_ref() {
+        assert_eq!(parse_git_head("ref: refs/heads/feat/agent-layer"), "feat/agent-layer");
+        assert_eq!(parse_git_head("ref: refs/heads/main"), "main");
+    }
+
+    #[test]
+    fn parse_git_head_shortens_a_detached_sha() {
+        assert_eq!(parse_git_head("3ce31a3f9c0d1e2b3a4c5d6e7f8091a2b3c4d5e6"), "3ce31a3");
+    }
+
+    #[test]
+    fn parse_git_head_yields_empty_for_unrecognized_payloads() {
+        assert_eq!(parse_git_head(""), "");
+        assert_eq!(parse_git_head("ref: refs/tags/v1.0.0"), "");
+    }
 }

@@ -26,6 +26,10 @@ use crate::ui;
 /// together on the next tick.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
+/// Sample RSS every this many frames (~1s at [`FRAME_INTERVAL`]) — memory moves slowly, so a
+/// per-frame syscall would be waste.
+const RSS_SAMPLE_TICKS: u64 = 30;
+
 /// RAII guard: leaves raw mode and the alternate screen when dropped, so panics restore the
 /// terminal.
 struct TerminalGuard;
@@ -59,6 +63,7 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
     let mut input = EventStream::new();
     let mut ticker = interval(FRAME_INTERVAL);
     let mut engine_open = true;
+    let mut tick_count: u64 = 0;
 
     loop {
         tokio::select! {
@@ -84,6 +89,14 @@ pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
             // Coalesced redraw: only when something changed since the last frame, so the ~30fps ~keep
             // ticker does not repaint an idle screen every tick. ~keep
             _ = ticker.tick() => {
+                // Sample resident memory about once a second (every RSS_SAMPLE_TICKS frames); ~keep
+                // set_rss only marks the app dirty when the megabyte figure actually changes. ~keep
+                if tick_count.is_multiple_of(RSS_SAMPLE_TICKS)
+                    && let Some(usage) = memory_stats::memory_stats()
+                {
+                    app.set_rss(usage.physical_mem as u64);
+                }
+                tick_count = tick_count.wrapping_add(1);
                 if app.dirty {
                     // Pin/clamp the transcript scroll against the live terminal size before drawing. ~keep
                     let size = terminal.size()?;

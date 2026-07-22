@@ -115,9 +115,9 @@ fn resize_mid_session_preserves_content_and_the_ui_keeps_rendering() {
 
     // Grow the terminal; the SIGWINCH-driven repaint is async, so poll rather than assert immediately. ~keep
     session.resize(40, 120);
-    session.expect_all(&[" transcript ", "RESIZE-OK", " mock/scripted "]);
+    session.expect_all(&["RESIZE-OK", "mock/scripted"]);
 
     // Shrink back to the original size; the same invariants must still hold after the second resize. ~keep
     session.resize(24, 80);
-    session.expect_all(&[" transcript ", "RESIZE-OK", " mock/scripted "]);
+    session.expect_all(&["RESIZE-OK", "mock/scripted"]);
 }

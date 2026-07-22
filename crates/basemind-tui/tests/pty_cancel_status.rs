@@ -1,7 +1,7 @@
 #![cfg(all(feature = "replay", unix))]
 //! Real-terminal (PTY) end-to-end coverage of cancel/interrupt behavior and the status bar: proves
 //! Esc cancels a suspended (permission-gated) turn AND a mid-flight running tool, and that the status
-//! bar's model chip, token counter, and in-flight/idle input title all track a real turn over the
+//! bar's model chip, token counter, and in-flight/idle state all track a real turn over the
 //! actual crossterm/raw-mode UI.
 
 mod common;
@@ -86,19 +86,17 @@ fn status_bar_shows_model_chip_token_counter_and_in_flight_then_idle_title() {
         session.screen()
     );
 
-    // While the gated turn is suspended, the input title already reads as in-flight (a turn is ~keep
-    // running even though it is parked on the permission overlay). ~keep
-    session.expect_screen("turn in progress");
+    // While the gated turn is suspended, the status bar already reads in-flight (a turn is running ~keep
+    // even though it is parked on the permission overlay). ~keep
+    session.expect_screen("thinking…");
 
     session.allow_session();
     session.expect_all(&["STATUS-OK", "idle (Stop)"]);
 
-    // Back at idle, the title reverts to the idle variant and the model chip is still present. ~keep
-    session.expect_screen("Enter send · Esc quit · Ctrl-C exit");
+    // Back at idle, the status shows the stop reason and the model chip + token counter persist. ~keep
     let screen = session.screen();
     assert!(screen.contains("mock/scripted"), "model chip present at idle\n{screen}");
-    assert!(screen.contains("in "), "token counter 'in ' present\n{screen}");
-    assert!(screen.contains("/ out"), "token counter '/ out' present\n{screen}");
+    assert!(screen.contains('↑'), "token counter up-arrow present\n{screen}");
     assert!(screen.contains("tok"), "token counter 'tok' unit present\n{screen}");
 }
 

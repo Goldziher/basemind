@@ -74,7 +74,9 @@ fn backspace_deletes_the_trailing_character_before_the_cursor() {
 fn enter_on_empty_input_is_a_no_op() {
     let mut session = PtySession::spawn(&single_turn_scenario());
     session.expect_screen("idle (Stop)");
-    let you_count_before = session.screen().matches("you:").count();
+    // User turns render as `›` chevron lines (plus the always-present input chevron); an empty Enter
+    // must not add another, so the chevron count is unchanged. ~keep
+    let chevron_count_before = session.screen().matches('›').count();
 
     session.enter();
 
@@ -82,8 +84,8 @@ fn enter_on_empty_input_is_a_no_op() {
     // "thinking…"; poll for it staying absent so a repaint race cannot mask a regression. ~keep
     session.expect_absent("thinking", ABSENCE_DWELL);
     assert_eq!(
-        session.screen().matches("you:").count(),
-        you_count_before,
+        session.screen().matches('›').count(),
+        chevron_count_before,
         "an empty Enter must not push a new transcript entry"
     );
 }
@@ -92,7 +94,7 @@ fn enter_on_empty_input_is_a_no_op() {
 fn enter_on_a_typed_prompt_submits_it_and_clears_the_input_box() {
     // Two scripted stop-turns: one for the auto-sent prompt, one for the message typed below. The
     // second reply is the unambiguous signal that Enter actually submitted — the auto-sent prompt
-    // already renders a `you:` line, so `you:` alone no longer proves the typed prompt went through. ~keep
+    // already renders its own chevron line, so a chevron alone does not prove the typed prompt went through. ~keep
     let mut session = PtySession::spawn(&two_turn_scenario());
     session.expect_all(&["Reply ONE-A9.", "idle (Stop)"]);
 
@@ -116,7 +118,7 @@ fn a_second_pty_typed_prompt_drives_the_scripted_second_turn() {
     session.type_str("second question");
     session.enter();
 
-    session.expect_all(&["you:", "second question", "Reply TWO-B7.", "idle (Stop)"]);
+    session.expect_all(&["second question", "Reply TWO-B7.", "idle (Stop)"]);
 }
 
 #[test]
