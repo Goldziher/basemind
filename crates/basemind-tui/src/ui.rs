@@ -124,6 +124,10 @@ pub fn reconcile_scroll(app: &mut App, area: Rect) {
             app.follow = true;
         }
     }
+    // Holding (or returning to) the bottom means the newest lines are on screen — the cue is spent. ~keep
+    if app.follow {
+        app.unread = 0;
+    }
 }
 
 /// Render the scrollable, wrapped conversation transcript.
@@ -149,7 +153,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| " ready ".to_string());
         Span::styled(reason, Style::default().fg(Color::DarkGray))
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!(" {} ", status.model),
             Style::default().fg(Color::White).bg(Color::Blue),
@@ -159,23 +163,67 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             status.input_tokens, status.output_tokens
         )),
         state,
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    if app.unread > 0 {
+        // A yellow badge flags room activity that arrived while scrolled up; cleared at the bottom. ~keep
+        spans.push(Span::styled(
+            format!(" ● {} unread ", app.unread),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Render the one-line room bar: the comma-joined display names of the current roster.
+/// The room-bar label prefix; kept as a constant so [`room_bar_label`] budgets width consistently.
+const ROOM_BAR_PREFIX: &str = " room: ";
+
+/// Render the one-line room bar: the comma-joined display names of the current roster, elided to fit.
 fn draw_room_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let peers = app
-        .roster
-        .iter()
-        .map(|peer| peer.display.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let displays = app.roster.iter().map(|peer| peer.display.as_str()).collect::<Vec<_>>();
+    let label = room_bar_label(&displays, area.width as usize);
     let line = Line::from(Span::styled(
-        format!(" room: {peers} "),
+        label,
         Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
     ));
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Build the room-bar label, eliding the comma-joined roster to `width` columns. When the full list
+/// fits it is shown verbatim; otherwise as many leading names as fit are followed by a `…+N` overflow
+/// marker for the rest. The result never exceeds `width` display columns (best-effort on wide glyphs).
+fn room_bar_label(displays: &[&str], width: usize) -> String {
+    let full = format!("{ROOM_BAR_PREFIX}{} ", displays.join(", "));
+    if full.chars().count() <= width {
+        return full;
+    }
+    // Drop trailing names one at a time until the shown prefix plus a `…+N` marker fits the width. ~keep
+    for shown in (0..displays.len()).rev() {
+        let hidden = displays.len() - shown;
+        let head = displays[..shown].join(", ");
+        let separator = if shown == 0 { "" } else { ", " };
+        let candidate = format!("{ROOM_BAR_PREFIX}{head}{separator}…+{hidden} ");
+        if candidate.chars().count() <= width {
+            return candidate;
+        }
+    }
+    // Even the marker alone overflows a very narrow bar: hard-truncate with a trailing ellipsis. ~keep
+    truncate_chars(&format!("{ROOM_BAR_PREFIX}…+{} ", displays.len()), width)
+}
+
+/// Truncate `text` to at most `width` display columns, appending `…` when it had to be cut.
+fn truncate_chars(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 /// Render the input box, showing the current line with a block cursor.
@@ -349,5 +397,59 @@ mod tests {
             .join("\n");
         assert!(rendered.contains("alice"), "the sender is rendered");
         assert!(rendered.contains("hello team"), "the body is rendered");
+    }
+
+    #[test]
+    fn room_bar_shows_the_full_roster_when_it_fits() {
+        let label = room_bar_label(&["alice", "bob"], 40);
+        assert_eq!(label, " room: alice, bob ", "a roster that fits is shown verbatim");
+    }
+
+    #[test]
+    fn room_bar_elides_a_long_roster_within_a_narrow_width() {
+        let displays = ["alice", "bob", "carol", "dave", "erin", "frank"];
+        let width = 24;
+        let label = room_bar_label(&displays, width);
+        assert!(
+            label.chars().count() <= width,
+            "the label never overflows the bar: {label:?}"
+        );
+        assert!(
+            label.contains('…'),
+            "an overflowing roster is elided with an ellipsis: {label:?}"
+        );
+        assert!(label.contains("alice"), "leading peers are still shown: {label:?}");
+        assert!(label.contains("+"), "the overflow count is shown: {label:?}");
+    }
+
+    #[test]
+    fn room_bar_hard_truncates_at_a_pathologically_narrow_width() {
+        let label = room_bar_label(&["alice", "bob", "carol"], 6);
+        assert!(
+            label.chars().count() <= 6,
+            "even a tiny bar is not overflowed: {label:?}"
+        );
+    }
+
+    #[test]
+    fn returning_to_the_bottom_clears_the_unread_cue() {
+        let mut app = tall_app();
+        app.follow = false;
+        app.scroll = u16::MAX;
+        app.unread = 3;
+        reconcile_scroll(&mut app, Rect::new(0, 0, 80, 24));
+        assert!(app.follow, "scrolling past the bottom re-engages follow");
+        assert_eq!(app.unread, 0, "reaching the bottom clears the unread cue");
+    }
+
+    #[test]
+    fn staying_scrolled_up_keeps_the_unread_cue() {
+        let mut app = tall_app();
+        app.follow = false;
+        app.scroll = 2;
+        app.unread = 3;
+        reconcile_scroll(&mut app, Rect::new(0, 0, 80, 24));
+        assert!(!app.follow, "an in-range offset stays detached");
+        assert_eq!(app.unread, 3, "the cue persists while scrolled up");
     }
 }
