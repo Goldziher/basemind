@@ -138,7 +138,7 @@ impl PtySession {
         let guard = self.parser.lock().expect("parser lock");
         let screen = guard.screen();
         screen.cell(row, col).map(|cell| OwnedCell {
-            ch: cell.contents(),
+            ch: cell.contents().to_string(),
             bold: cell.bold(),
             fg: cell.fgcolor(),
             bg: cell.bgcolor(),
@@ -306,7 +306,11 @@ impl PtySession {
                 pixel_height: 0,
             })
             .expect("resize pty");
-        self.parser.lock().expect("parser lock").set_size(rows, cols);
+        self.parser
+            .lock()
+            .expect("parser lock")
+            .screen_mut()
+            .set_size(rows, cols);
     }
 }
 

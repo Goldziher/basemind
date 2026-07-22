@@ -51,7 +51,10 @@ impl Drop for TerminalGuard {
 pub async fn run(mut client: impl AgentClient, mut app: App) -> Result<()> {
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    terminal.clear()?;
+    // No explicit `terminal.clear()`: the alternate screen is already blank on entry and the first
+    // `draw` paints the full frame against an empty prior buffer. ratatui 0.30's `clear()` snapshots
+    // the cursor via a DSR query (`get_cursor_position`), which blocks with no reply on a terminal
+    // that doesn't answer it (e.g. the PTY test harness) — so skipping it is both correct and safer.
 
     let mut input = EventStream::new();
     let mut ticker = interval(FRAME_INTERVAL);
