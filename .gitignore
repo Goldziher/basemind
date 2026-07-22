@@ -59,6 +59,11 @@ GEMINI.md
 .github/commands/
 .github/skills/
 
+# Local secrets / API keys for the agent TUI — never commit
+.env
+.env.*
+!.env.example
+
 # BEGIN ai-rulez (DO NOT EDIT - managed by ai-rulez)
 .ai-rulez/.generated-manifest.json
 .claude/
