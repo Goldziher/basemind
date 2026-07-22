@@ -17,13 +17,13 @@ categories = ["command-line-utilities", "development-tools"]
 ignored = ["serde_toon_format"]
 [workspace]
 members = [
+    "crates/basemind-agent",
+    "crates/basemind-agent-ipc",
+    "crates/basemind-tui",
     "crates/lsp-positions",
     "crates/stack-graphs",
     "crates/tree-sitter-graph",
     "crates/tree-sitter-stack-graphs",
-    "crates/basemind-agent",
-    "crates/basemind-agent-ipc",
-    "crates/basemind-tui",
 ]
 
 [workspace.lints.clippy]
@@ -40,7 +40,13 @@ path = "src/main.rs"
 [features]
 default = []
 
-intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
+intelligence = [
+    "dep:xberg",
+    "dep:lancedb",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:futures",
+]
 
 documents = [
     "intelligence",
@@ -64,7 +70,12 @@ documents = [
     "dep:serde_toon_format",
 ]
 
-code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
+code-search = [
+    "intelligence",
+    "xberg/embeddings",
+    "xberg/reranker",
+    "xberg/reranker-presets",
+]
 
 memory = ["intelligence", "xberg/embeddings", "xberg/keywords", "xberg/ner-onnx"]
 
@@ -87,7 +98,15 @@ code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitte
 
 code-intel = ["code-intel-js", "code-intel-stack"]
 
-full = ["documents", "memory", "crawl", "comms", "shells", "code-intel", "code-search"]
+full = [
+    "documents",
+    "memory",
+    "crawl",
+    "comms",
+    "shells",
+    "code-intel",
+    "code-search",
+]
 
 test-support = ["dep:tempfile"]
 
