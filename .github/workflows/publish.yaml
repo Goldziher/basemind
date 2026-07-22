@@ -351,6 +351,12 @@ jobs:
           cargo build --release --features "${{ matrix.features || 'full' }}" --bin basemind \
             --target "${{ matrix.triple }}"
 
+      - name: Build release TUI binary
+        shell: bash
+        run: |
+          cargo build --release -p basemind-tui --features room \
+            --target "${{ matrix.triple }}"
+
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
@@ -521,6 +527,7 @@ jobs:
           rustflags_var="CARGO_TARGET_$(echo "$TRIPLE" | tr 'a-z-' 'A-Z_')_RUSTFLAGS"
           export "${rustflags_var}=-C link-arg=${shim_obj}"
           cargo build --release --features full --bin basemind --target "$TRIPLE"
+          cargo build --release -p basemind-tui --features room --target "$TRIPLE"
 
       - name: Verify glibc floor (<= 2.28)
         shell: bash
