@@ -11,3 +11,9 @@
 [documents]
 
 [code_search]
+
+[agent]
+
+[agent.roles.default]
+model = "anthropic/claude-sonnet-5"
+api_key = { env = "ANTHROPIC_API_KEY" }
