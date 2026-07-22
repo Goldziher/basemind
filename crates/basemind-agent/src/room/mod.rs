@@ -61,6 +61,12 @@ pub trait RoomClient: Send + Sync + 'static {
     /// [`AgentEvent::RoomMessage`] per incoming peer message onto `events`. Fire-and-forget: the
     /// task exits when the broadcast closes (the session ended). Called once at session start.
     fn spawn_incoming(&self, events: broadcast::Sender<AgentEvent>);
+
+    /// Leave the room (best-effort). The default is a no-op, for transports with no explicit leave;
+    /// the broker-backed room releases its thread membership.
+    async fn leave(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// One entry on a [`ScriptedRoom`] timeline: a peer message plus the delay before it is delivered.
@@ -87,6 +93,7 @@ pub struct ScriptedRoom {
     roster: Vec<RoomPeer>,
     incoming: Vec<ScriptedIncoming>,
     posts: PostLog,
+    left: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -97,6 +104,7 @@ impl ScriptedRoom {
             roster,
             incoming,
             posts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            left: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -106,6 +114,11 @@ impl ScriptedRoom {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Whether [`leave`](RoomClient::leave) has been called (shared across clones).
+    pub fn left(&self) -> bool {
+        self.left.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -145,5 +158,10 @@ impl RoomClient for ScriptedRoom {
                 }
             }
         });
+    }
+
+    async fn leave(&self) -> Result<()> {
+        self.left.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }

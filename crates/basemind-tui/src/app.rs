@@ -200,6 +200,14 @@ impl App {
                     body: message.body,
                 });
             }
+            AgentEvent::RoomPeerJoined { peer } => {
+                self.transcript
+                    .push(TranscriptEntry::Notice(format!("{} joined the room", peer.display)));
+            }
+            AgentEvent::RoomPeerLeft { id } => {
+                self.transcript
+                    .push(TranscriptEntry::Notice(format!("{id} left the room")));
+            }
         }
     }
 

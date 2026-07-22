@@ -136,6 +136,16 @@ pub enum AgentEvent {
     /// A message arrived from a room peer (or an echo of the local agent's own post). An internally
     /// tagged newtype variant flattens the payload onto the frame: `{"kind":"room_message","from":..}`.
     RoomMessage(RoomMessage),
+    /// A peer joined the room — a roster delta emitted alongside a refreshed [`RoomRoster`].
+    RoomPeerJoined {
+        /// The peer that joined.
+        peer: RoomPeer,
+    },
+    /// A peer left the room — a roster delta identified by the departing peer's agent id.
+    RoomPeerLeft {
+        /// The id of the peer that left.
+        id: String,
+    },
 }
 
 #[cfg(test)]
@@ -185,6 +195,25 @@ mod tests {
             })
         );
         assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), event);
+    }
+
+    #[test]
+    fn room_peer_deltas_round_trip() {
+        let joined = AgentEvent::RoomPeerJoined {
+            peer: RoomPeer {
+                id: "alice".into(),
+                display: "Alice".into(),
+            },
+        };
+        let json = serde_json::to_value(&joined).unwrap();
+        assert_eq!(json["kind"], "room_peer_joined");
+        assert_eq!(json["peer"]["id"], "alice");
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), joined);
+
+        let left = AgentEvent::RoomPeerLeft { id: "alice".into() };
+        let json = serde_json::to_value(&left).unwrap();
+        assert_eq!(json, serde_json::json!({ "kind": "room_peer_left", "id": "alice" }));
+        assert_eq!(serde_json::from_value::<AgentEvent>(json).unwrap(), left);
     }
 
     #[test]

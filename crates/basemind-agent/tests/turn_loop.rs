@@ -329,5 +329,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::Error { .. } => "Error",
         AgentEvent::RoomRoster { .. } => "RoomRoster",
         AgentEvent::RoomMessage(_) => "RoomMessage",
+        AgentEvent::RoomPeerJoined { .. } => "RoomPeerJoined",
+        AgentEvent::RoomPeerLeft { .. } => "RoomPeerLeft",
     }
 }
