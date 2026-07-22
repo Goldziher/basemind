@@ -2,7 +2,7 @@
 # once the integrating engineer adds `crates/basemind-tui` to the root `[workspace] members`. ~keep
 [package]
 name = "basemind-tui"
-version = "0.1.0"
+version = "0.22.3"
 edition = "2024"
 license = "MIT"
 description = "Ratatui terminal front-end for the basemind-agent engine."
