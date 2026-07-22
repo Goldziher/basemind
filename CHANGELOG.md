@@ -226,6 +226,19 @@ older-build takeover) instead of leaving it to run away.
 - Dependencies: tree-sitter-language-pack 1.13.2 → 1.13.3, xberg rc.30 → rc.33, lockfile refresh
   (arrow stays on 58.x — lancedb 0.31 pins arrow 58).
 
+### Added
+
+- **`basemind agent` — a terminal coding agent over the code map.** A model-agnostic
+  (bring-your-own-key) ratatui TUI that runs a turn-loop against basemind's in-process code-map and
+  git tools. Launch it with `basemind agent [prompt]` (forwards `--continue` / `--resume` / the
+  positional prompt); the `basemind-tui` binary now ships alongside `basemind` in every release
+  archive, and `basemind agent` re-execs it.
+- **Multi-agent room.** Agents sharing a repo can join a room over the comms broker: a roster of
+  peers in the status area, `/post [subject:] <text>` to broadcast, `/roster` and `/leave` commands,
+  incoming peer messages plus join/leave notices in the transcript, an unread cue, and model-facing
+  `room:*` tools. The live broker room is built behind the `room` feature; its incoming stream
+  reconnects with backoff, refreshes the roster on a cadence, and dedups by message id.
+
 ## [0.22.3] — 2026-07-21
 
 ### Fixed
