@@ -21,6 +21,7 @@ use basemind::comms::identity::cli_agent_id;
 use basemind::comms::ids::{AgentId, ThreadId};
 use basemind::comms::model::{AgentCard, AgentRecord, now_micros};
 use basemind::comms::protocol::SeqMeta;
+use basemind::comms::singleton::{self, CommsPaths};
 use tokio::sync::{Mutex, broadcast};
 
 use super::{RoomClient, RoomMessage, RoomPeer};
@@ -45,20 +46,52 @@ pub struct CommsRoom {
     agent: AgentId,
     remote: Option<String>,
     cwd: Option<PathBuf>,
+    paths: CommsPaths,
     thread: ThreadId,
     client: Arc<Mutex<CommsClient>>,
 }
 
 impl CommsRoom {
-    /// Connect to the broker for `root`: resolve this agent's identity and scope, spawn/attach the
-    /// daemon, register the agent's card, then ensure the per-repo room thread exists and is joined.
+    /// Connect to the per-user singleton broker for `root`: resolve this agent's identity, scope,
+    /// and endpoint, spawn/attach the daemon, then finish bring-up (register card + ensure room
+    /// thread). The production entry point.
     pub async fn connect(root: &Path) -> Result<Self> {
+        let paths =
+            singleton::resolve_paths().map_err(|error| AgentError::Tool(format!("room resolve paths: {error}")))?;
         let agent = cli_agent_id(root);
         let (remote, cwd) = scope_context_for(root);
-        let mut client = CommsClient::ensure_and_connect(agent.clone(), remote.clone(), cwd.clone())
+        singleton::ensure_daemon(&paths)
+            .await
+            .map_err(|error| AgentError::Tool(format!("room ensure daemon: {error}")))?;
+        let client = CommsClient::connect(&paths, agent.clone(), remote.clone(), cwd.clone())
             .await
             .map_err(|error| AgentError::Tool(format!("room connect: {error}")))?;
+        Self::finish_connect(root, paths, agent, remote, cwd, client).await
+    }
 
+    /// Injection seam: connect to an explicitly-provided broker endpoint and identity instead of
+    /// the per-user singleton. Two rooms over one repo root but distinct [`AgentId`]s become two
+    /// peers of the same `agent-room` thread — the shape a hermetic test drives against an isolated
+    /// broker. Unlike [`connect`](Self::connect), the broker must already be running; this never
+    /// spawns a daemon.
+    pub async fn connect_with_paths(root: &Path, paths: &CommsPaths, agent: AgentId) -> Result<Self> {
+        let (remote, cwd) = scope_context_for(root);
+        let client = CommsClient::connect(paths, agent.clone(), remote.clone(), cwd.clone())
+            .await
+            .map_err(|error| AgentError::Tool(format!("room connect: {error}")))?;
+        Self::finish_connect(root, paths.clone(), agent, remote, cwd, client).await
+    }
+
+    /// Shared bring-up once a request client is connected: register the agent card (best-effort,
+    /// last-writer-wins) and ensure the per-repo room thread exists and is joined.
+    async fn finish_connect(
+        root: &Path,
+        paths: CommsPaths,
+        agent: AgentId,
+        remote: Option<String>,
+        cwd: Option<PathBuf>,
+        mut client: CommsClient,
+    ) -> Result<Self> {
         let card = AgentCard {
             name: agent.as_str().to_string(),
             description: "basemind agent".to_string(),
@@ -75,6 +108,7 @@ impl CommsRoom {
             agent,
             remote,
             cwd,
+            paths,
             thread,
             client: Arc::new(Mutex::new(client)),
         })
@@ -161,11 +195,14 @@ impl RoomClient for CommsRoom {
         let agent = self.agent.clone();
         let remote = self.remote.clone();
         let cwd = self.cwd.clone();
+        let paths = self.paths.clone();
         let thread = self.thread.clone();
         tokio::spawn(async move {
             // A dedicated connection: `wait_inbox` blocks for up to WAIT_TIMEOUT, so sharing the ~keep
-            // request client would stall every roster/post for the length of the long-poll. ~keep
-            let mut client = match CommsClient::ensure_and_connect(agent.clone(), remote.clone(), cwd.clone()).await {
+            // request client would stall every roster/post for the length of the long-poll. The ~keep
+            // request path already ensured the daemon, so a plain `connect` to the same endpoint ~keep
+            // suffices here (and stays bound to the injected broker in tests). ~keep
+            let mut client = match CommsClient::connect(&paths, agent.clone(), remote.clone(), cwd.clone()).await {
                 Ok(client) => client,
                 Err(error) => {
                     tracing::warn!(%error, "room incoming: connect failed");
