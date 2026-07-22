@@ -111,7 +111,7 @@ async fn wait_for_event(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_rooms_exchange_a_post_over_an_isolated_broker() {
     let harness = isolated_broker().await;
-    // Same root → same `agent-room` thread addressing; distinct agent ids → two peers.
+    // Same root → same `agent-room` thread addressing; distinct agent ids → two peers. ~keep
     let root = std::path::Path::new(".");
 
     let alice = CommsRoom::connect_with_paths(root, &harness.paths, AgentId::parse("alice").expect("agent"))
@@ -121,11 +121,11 @@ async fn two_rooms_exchange_a_post_over_an_isolated_broker() {
         .await
         .expect("connect bob room");
 
-    // Bob streams incoming; alice posts. Bob must surface alice's post as a RoomMessage.
+    // Bob streams incoming; alice posts. Bob must surface alice's post as a RoomMessage. ~keep
     let (events_tx, mut bob_events) = broadcast::channel(64);
     bob.spawn_incoming(events_tx);
 
-    // Bob's startup roster (published once by spawn_incoming) must include both peers.
+    // Bob's startup roster (published once by spawn_incoming) must include both peers. ~keep
     let roster_event = wait_for_event(&mut bob_events, |event| matches!(event, AgentEvent::RoomRoster { .. })).await;
     if let AgentEvent::RoomRoster { peers } = roster_event {
         let ids: Vec<&str> = peers.iter().map(|peer| peer.id.as_str()).collect();
@@ -144,7 +144,6 @@ async fn two_rooms_exchange_a_post_over_an_isolated_broker() {
         assert_eq!(message.body, "HERMETIC-42", "the streamed post carries alice's body");
     }
 
-    // The same post is visible via a direct history read.
     let history = bob.history(None).await.expect("bob reads history");
     assert!(
         history
