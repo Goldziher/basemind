@@ -9,11 +9,11 @@ mod common;
 use common::PtySession;
 use std::time::Duration;
 
-/// Unique stdout marker the scripted `shell:exec` emits; distinctive enough to never collide with
+/// Unique stdout marker the scripted `shell_exec` emits; distinctive enough to never collide with
 /// incidental screen text.
 const MARKER: &str = "RENDER-OK";
 
-/// A two-turn scenario: turn 1 streams `Line one. ` and runs a marker `shell:exec` behind the
+/// A two-turn scenario: turn 1 streams `Line one. ` and runs a marker `shell_exec` behind the
 /// permission gate; turn 2 streams `Line two.` with no tools, which stops the run.
 fn streaming_scenario() -> String {
     format!(
@@ -23,7 +23,7 @@ fn streaming_scenario() -> String {
                 {{
                     "text": "Line one. ",
                     "tools": [
-                        {{ "id": "c1", "name": "shell:exec", "args": {{ "command": "echo {MARKER}" }} }}
+                        {{ "id": "c1", "name": "shell_exec", "args": {{ "command": "echo {MARKER}" }} }}
                     ]
                 }},
                 {{ "text": "Line two." }}
@@ -65,7 +65,7 @@ fn streaming_assistant_text_accretes_and_labels_render() {
         "agent:",
         "Line one.",
         "Line two.",
-        "⚙ shell:exec",
+        "⚙ shell_exec",
         "✓",
         MARKER,
         "idle (Stop)",

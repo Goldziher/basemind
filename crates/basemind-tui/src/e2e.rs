@@ -37,7 +37,7 @@ fn a_scripted_turn_renders_markdown_tool_and_status() {
     app.apply(AgentEvent::ToolStarted {
         turn: 1,
         call_id: "c1".into(),
-        name: "code:outline".into(),
+        name: "outline".into(),
         args: serde_json::json!({ "path": "src/lib.rs" }),
     });
     app.apply(AgentEvent::ToolResult {
@@ -58,7 +58,7 @@ fn a_scripted_turn_renders_markdown_tool_and_status() {
     assert!(!screen.contains("**bold**"), "bold markers are stripped\n{screen}");
     assert!(!screen.contains("# Heading"), "heading marker is stripped\n{screen}");
 
-    assert!(screen.contains("code:outline"), "tool name renders\n{screen}");
+    assert!(screen.contains("outline"), "tool name renders\n{screen}");
     assert!(screen.contains("12 symbols"), "tool result renders\n{screen}");
     assert!(screen.contains('✓'), "success mark renders\n{screen}");
 
@@ -74,7 +74,7 @@ fn a_permission_request_renders_the_overlay() {
         turn: 1,
         req_id: 1,
         call_id: "c1".into(),
-        tool: "shell:exec".into(),
+        tool: "shell_exec".into(),
         action: "exec".into(),
         target: "echo hi".into(),
     });
@@ -84,6 +84,6 @@ fn a_permission_request_renders_the_overlay() {
         screen.contains("permission required"),
         "overlay title renders\n{screen}"
     );
-    assert!(screen.contains("shell:exec"), "tool name in overlay\n{screen}");
+    assert!(screen.contains("shell_exec"), "tool name in overlay\n{screen}");
     assert!(screen.contains("echo hi"), "target in overlay\n{screen}");
 }

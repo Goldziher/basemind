@@ -52,7 +52,7 @@ pub enum AgentEvent {
         turn: u64,
         /// Provider-assigned tool-call id (pairs with [`AgentEvent::ToolResult`]).
         call_id: String,
-        /// The tool name (namespaced, e.g. `code:outline`).
+        /// The tool name (namespaced, e.g. `outline`).
         name: String,
         /// The parsed arguments (or `null` if they were unparseable).
         args: serde_json::Value,
@@ -167,7 +167,7 @@ mod tests {
             turn: 2,
             req_id: 7,
             call_id: "c1".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "ls".into(),
         };

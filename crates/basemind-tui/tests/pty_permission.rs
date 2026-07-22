@@ -1,6 +1,6 @@
 #![cfg(all(feature = "replay", unix))]
 //! Real-terminal (PTY) end-to-end coverage of the permission engine: this proves all four answers to
-//! a `shell:exec` permission prompt — allow once, allow for session, deny, and Esc-cancel — drive the
+//! a `shell_exec` permission prompt — allow once, allow for session, deny, and Esc-cancel — drive the
 //! real crossterm/raw-mode UI the same way they drive the in-memory `App` unit tests, over an actual
 //! pseudo-terminal rather than a `TestBackend`.
 
@@ -20,7 +20,7 @@ fn allow_once_runs_the_gated_command_and_then_the_turn_stops() {
             {
                 "text": "Running it once.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo ALLOW-ONCE-9K2" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo ALLOW-ONCE-9K2" } }
                 ]
             },
             { "text": "Done." }
@@ -37,7 +37,7 @@ fn allow_once_runs_the_gated_command_and_then_the_turn_stops() {
 #[test]
 fn allow_for_session_is_remembered_and_a_repeat_of_the_same_call_never_reprompts() {
     // The remember-cache keys on the exact claim signature (`exec:<command>`), so "allow for ~keep
-    // session" covers repeats of the identical command, not every future shell:exec regardless of ~keep
+    // session" covers repeats of the identical command, not every future shell_exec regardless of ~keep
     // its target — hence both gated calls below run the same command. ~keep
     let scenario = r#"{
         "user": "run twice",
@@ -45,13 +45,13 @@ fn allow_for_session_is_remembered_and_a_repeat_of_the_same_call_never_reprompts
             {
                 "text": "Running the first one.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo SESSION-7A" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo SESSION-7A" } }
                 ]
             },
             {
                 "text": "Running the second one.",
                 "tools": [
-                    { "id": "c2", "name": "shell:exec", "args": { "command": "echo SESSION-7A" } }
+                    { "id": "c2", "name": "shell_exec", "args": { "command": "echo SESSION-7A" } }
                 ]
             },
             { "text": "Both done." }
@@ -81,7 +81,7 @@ fn deny_renders_a_failed_result_without_running_the_command() {
             {
                 "text": "Attempting the gated command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo DENIED-5Q" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo DENIED-5Q" } }
                 ]
             },
             { "text": "Done." }
@@ -106,7 +106,7 @@ fn esc_at_the_prompt_cancels_the_turn_without_running_the_command() {
             {
                 "text": "About to run the gated command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo NEVER-RUN" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo NEVER-RUN" } }
                 ]
             }
         ]

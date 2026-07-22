@@ -30,7 +30,7 @@ use crate::error::{AgentError, Result};
 use crate::permission::PermissionClaim;
 
 /// Shared context handed to every tool during execution. The basemind server is optional so tools
-/// that don't need it (e.g. `shell:exec`) — and turn-loop tests that use only such tools — need not
+/// that don't need it (e.g. `shell_exec`) — and turn-loop tests that use only such tools — need not
 /// stand up an index; code-nav tools error cleanly when it is absent. Additional fields (progress
 /// sink, cancellation token) are added by later slices without changing tool signatures.
 pub struct ToolCtx {
@@ -76,7 +76,7 @@ pub trait Tool: Send + Sync + 'static {
     /// The typed arguments this tool accepts.
     type Args: DeserializeOwned + JsonSchema + Send;
 
-    /// The tool's namespaced name (e.g. `code:outline`).
+    /// The tool's namespaced name (e.g. `outline`).
     fn name(&self) -> &'static str;
 
     /// A one-line description advertised to the model.
@@ -159,7 +159,7 @@ mod tests {
     impl Tool for NoopTool {
         type Args = NoopArgs;
         fn name(&self) -> &'static str {
-            "test:noop"
+            "test_noop"
         }
         fn description(&self) -> &'static str {
             "noop"
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn spec_carries_name_description_and_object_schema() {
         let spec = ToolDyn::spec(&NoopTool);
-        assert_eq!(spec.function.name, "test:noop");
+        assert_eq!(spec.function.name, "test_noop");
         assert_eq!(spec.function.description.as_deref(), Some("noop"));
         let params = spec.function.parameters.expect("has parameters");
         assert_eq!(params["type"], "object");
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn permission_of_rejects_malformed_json_and_names_the_tool() {
         match NoopTool.permission_of("{not json") {
-            Err(AgentError::ToolArgs { tool, .. }) => assert_eq!(tool, "test:noop"),
+            Err(AgentError::ToolArgs { tool, .. }) => assert_eq!(tool, "test_noop"),
             other => panic!("expected ToolArgs error, got {other:?}"),
         }
     }

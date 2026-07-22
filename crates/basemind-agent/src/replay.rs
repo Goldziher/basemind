@@ -103,7 +103,7 @@ pub struct ScriptTurn {
 pub struct ScriptToolCall {
     /// Provider-style call id (pairs a result with its start).
     pub id: String,
-    /// The namespaced tool name (e.g. `code:outline`).
+    /// The namespaced tool name (e.g. `outline`).
     pub name: String,
     /// The arguments object passed to the tool.
     pub args: serde_json::Value,
@@ -237,7 +237,7 @@ mod tests {
                 text: None,
                 tools: vec![ScriptToolCall {
                     id: "c1".into(),
-                    name: "shell:exec".into(),
+                    name: "shell_exec".into(),
                     args: serde_json::json!({ "command": "echo hi" }),
                 }],
             }],
@@ -252,12 +252,12 @@ mod tests {
     fn from_json_round_trips_a_scenario() {
         let scenario = Scenario::from_json(
             r#"{ "user": "u", "turns": [ { "text": "t", "tools": [ { "id": "c1",
-                "name": "code:outline", "args": { "path": "src/lib.rs" } } ] } ] }"#,
+                "name": "outline", "args": { "path": "src/lib.rs" } } ] } ] }"#,
         )
         .expect("parses");
         assert_eq!(scenario.user, "u");
         assert_eq!(scenario.turns.len(), 1);
-        assert_eq!(scenario.turns[0].tools[0].name, "code:outline");
+        assert_eq!(scenario.turns[0].tools[0].name, "outline");
     }
 
     #[test]

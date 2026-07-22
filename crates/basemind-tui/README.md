@@ -20,7 +20,7 @@ cargo run -p basemind-tui -- --resume <session-id>
 
 The agent can join a shared room over basemind's comms broker: peers show in a roster bar, incoming
 peer messages land in the transcript, and you post with `/post <text>`. The model also gets `room:*`
-tools (`room:post` is permission-gated; `room:read`/`room:list_agents` are auto-allowed). The room is
+tools (`room_post` is permission-gated; `room_read`/`room_list_agents` are auto-allowed). The room is
 built behind the `room` feature (off by default so the binary needs no broker at runtime):
 
 ```bash
@@ -41,7 +41,7 @@ from JSON:
 {
   "user": "the message that starts the run (auto-sent)",
   "turns": [
-    { "text": "assistant text", "tools": [ { "id": "c1", "name": "shell:exec",
+    { "text": "assistant text", "tools": [ { "id": "c1", "name": "shell_exec",
                                              "args": { "command": "echo hi" } } ] },
     { "text": "a closing line" }
   ]

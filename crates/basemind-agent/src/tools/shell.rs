@@ -1,4 +1,4 @@
-//! `shell:exec` — run a shell command in the repository root.
+//! `shell_exec` — run a shell command in the repository root.
 //!
 //! Gated by an exec permission claim on the command string. Output (stdout then stderr) is returned
 //! to the model; a non-zero exit is reported as a tool error, not a turn abort.
@@ -13,7 +13,7 @@ use super::{Tool, ToolCtx, ToolOutput};
 use crate::error::{AgentError, Result};
 use crate::permission::PermissionClaim;
 
-/// `shell:exec` tool.
+/// `shell_exec` tool.
 pub struct ShellTool;
 
 /// Arguments for [`ShellTool`].
@@ -28,7 +28,7 @@ impl Tool for ShellTool {
     type Args = ShellArgs;
 
     fn name(&self) -> &'static str {
-        "shell:exec"
+        "shell_exec"
     }
 
     fn description(&self) -> &'static str {

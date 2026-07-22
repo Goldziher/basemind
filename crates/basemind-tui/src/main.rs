@@ -44,7 +44,7 @@ use crate::config::{default_model_name, load_agent_config};
 
 /// The system prompt handed to the session.
 const SYSTEM_PROMPT: &str = "You are a coding assistant operating inside the basemind agent. Prefer \
-    the code:outline and code:search_symbols tools over reading whole files. Be concise.";
+    the outline and search_symbols tools over reading whole files. Be concise.";
 
 /// How the session log should be opened.
 enum Resume {

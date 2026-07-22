@@ -20,7 +20,7 @@ fn esc_at_the_permission_prompt_cancels_the_turn_without_running_the_command() {
             {
                 "text": "About to run the gated command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo SHOULD-NOT-RUN" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo SHOULD-NOT-RUN" } }
                 ]
             }
         ]
@@ -44,7 +44,7 @@ fn esc_cancels_a_long_running_exec_while_it_is_still_in_flight() {
             {
                 "text": "Running a slow command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "sleep 5" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "sleep 5" } }
                 ]
             }
         ]
@@ -70,7 +70,7 @@ fn status_bar_shows_model_chip_token_counter_and_in_flight_then_idle_title() {
             {
                 "text": "Running a quick command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo STATUS-OK" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo STATUS-OK" } }
                 ]
             },
             { "text": "Done." }

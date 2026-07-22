@@ -12,7 +12,7 @@ mod common;
 
 use common::PtySession;
 
-/// Unique stdout marker the scripted `shell:exec` emits; distinctive enough to never collide with
+/// Unique stdout marker the scripted `shell_exec` emits; distinctive enough to never collide with
 /// incidental screen text.
 const MARKER: &str = "PTY-MARKER-7F3A9";
 
@@ -26,7 +26,7 @@ fn marker_scenario() -> String {
                 {{
                     "text": "Running the marker now.",
                     "tools": [
-                        {{ "id": "c1", "name": "shell:exec", "args": {{ "command": "echo {MARKER}" }} }}
+                        {{ "id": "c1", "name": "shell_exec", "args": {{ "command": "echo {MARKER}" }} }}
                     ]
                 }},
                 {{ "text": "All done." }}

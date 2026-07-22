@@ -68,20 +68,20 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "code:call_graph",
-                "code:find_callers",
-                "code:find_references",
-                "code:outline",
-                "code:search_symbols",
-                "code:workspace_grep",
-                "git:blame_symbol",
-                "git:diff_file",
-                "git:recent_changes",
-                "shell:exec",
+                "blame_symbol",
+                "call_graph",
+                "diff_file",
+                "find_callers",
+                "find_references",
+                "outline",
+                "recent_changes",
+                "search_symbols",
+                "shell_exec",
+                "workspace_grep",
             ]
         );
         assert_eq!(registry.len(), 10);
-        assert!(registry.get("shell:exec").is_some());
+        assert!(registry.get("shell_exec").is_some());
         assert!(registry.get("nope").is_none());
     }
 }

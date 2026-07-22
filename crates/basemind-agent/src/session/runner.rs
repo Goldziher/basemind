@@ -118,7 +118,7 @@ impl Session {
     }
 
     /// Opt into auto-responding to the room: while idle, an incoming peer message starts a turn so
-    /// the agent can react (e.g. reply via `room:post`). Off by default — wiring a room only surfaces
+    /// the agent can react (e.g. reply via `room_post`). Off by default — wiring a room only surfaces
     /// messages; it does not make the agent chatty. No effect without a room.
     pub fn with_room_auto_respond(mut self, on: bool) -> Self {
         self.room_auto_respond = on;

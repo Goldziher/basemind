@@ -161,7 +161,7 @@ async fn a_permission_decision_flows_from_client_to_engine() {
         r#"{
             "user": "run it",
             "turns": [
-                { "text": "running", "tools": [ { "id": "c1", "name": "shell:exec", "args": { "command": "echo NOPE" } } ] },
+                { "text": "running", "tools": [ { "id": "c1", "name": "shell_exec", "args": { "command": "echo NOPE" } } ] },
                 { "text": "done" }
             ]
         }"#,
@@ -173,7 +173,7 @@ async fn a_permission_decision_flows_from_client_to_engine() {
         .await
         .expect("send user message");
 
-    // The gated shell:exec suspends the turn; catch the request id off the socket and answer Deny. ~keep
+    // The gated shell_exec suspends the turn; catch the request id off the socket and answer Deny. ~keep
     let req_id = loop {
         let event = tokio::time::timeout(EVENT_TIMEOUT, client.next_event())
             .await

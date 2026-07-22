@@ -26,7 +26,7 @@ pub fn git_history_tools() -> Vec<Arc<dyn ToolDyn>> {
     ]
 }
 
-/// `git:recent_changes` — recent commits with their file lists.
+/// `recent_changes` — recent commits with their file lists.
 struct RecentChangesTool;
 
 /// Arguments for [`RecentChangesTool`].
@@ -42,7 +42,7 @@ impl Tool for RecentChangesTool {
     type Args = RecentChangesArgs;
 
     fn name(&self) -> &'static str {
-        "git:recent_changes"
+        "recent_changes"
     }
 
     fn description(&self) -> &'static str {
@@ -51,7 +51,7 @@ impl Tool for RecentChangesTool {
     }
 
     fn permission(&self, _args: &RecentChangesArgs) -> PermissionClaim {
-        PermissionClaim::read("git:recent_changes")
+        PermissionClaim::read("recent_changes")
     }
 
     async fn execute(&self, args: RecentChangesArgs, ctx: &ToolCtx) -> Result<ToolOutput> {
@@ -70,7 +70,7 @@ impl Tool for RecentChangesTool {
     }
 }
 
-/// `git:blame_symbol` — per-symbol blame hunks.
+/// `blame_symbol` — per-symbol blame hunks.
 struct BlameSymbolTool;
 
 /// Arguments for [`BlameSymbolTool`].
@@ -93,7 +93,7 @@ impl Tool for BlameSymbolTool {
     type Args = BlameSymbolArgs;
 
     fn name(&self) -> &'static str {
-        "git:blame_symbol"
+        "blame_symbol"
     }
 
     fn description(&self) -> &'static str {
@@ -124,7 +124,7 @@ impl Tool for BlameSymbolTool {
     }
 }
 
-/// `git:diff_file` — a file's diff across two revisions.
+/// `diff_file` — a file's diff across two revisions.
 struct DiffFileTool;
 
 /// Arguments for [`DiffFileTool`].
@@ -143,7 +143,7 @@ impl Tool for DiffFileTool {
     type Args = DiffFileArgs;
 
     fn name(&self) -> &'static str {
-        "git:diff_file"
+        "diff_file"
     }
 
     fn description(&self) -> &'static str {
@@ -179,13 +179,13 @@ mod tests {
     fn git_history_tools_are_named() {
         let tools = git_history_tools();
         let names: Vec<_> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, vec!["git:recent_changes", "git:blame_symbol", "git:diff_file"]);
+        assert_eq!(names, vec!["recent_changes", "blame_symbol", "diff_file"]);
     }
 
     #[test]
     fn recent_changes_claims_a_static_read() {
         let claim = RecentChangesTool.permission_of(r#"{"limit":10}"#).expect("parses");
-        assert_eq!(claim, PermissionClaim::read("git:recent_changes"));
+        assert_eq!(claim, PermissionClaim::read("recent_changes"));
     }
 
     #[test]

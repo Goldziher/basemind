@@ -1,5 +1,5 @@
 #![cfg(all(feature = "replay", unix))]
-//! Real-terminal (PTY) end-to-end coverage of the failure-result path (`shell:exec` exiting non-zero
+//! Real-terminal (PTY) end-to-end coverage of the failure-result path (`shell_exec` exiting non-zero
 //! renders the red `✗` marker and the run still stops cleanly) and of terminal resize (SIGWINCH mid-
 //! session must not corrupt the transcript or hang the UI). Complements `pty_permission.rs` (the
 //! allow/deny/cancel matrix) and `pty_render.rs` (success-path rendering + the `✓` color spot-check).
@@ -20,7 +20,7 @@ fn a_failing_shell_exec_renders_a_red_x_result_and_the_run_still_stops_cleanly()
             {
                 "text": "Running the command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "exit 3" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "exit 3" } }
                 ]
             },
             { "text": "Handled the failure." }
@@ -70,13 +70,13 @@ fn a_success_then_a_failure_renders_both_marks() {
             {
                 "text": "Running the first command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo OKMARK-1" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo OKMARK-1" } }
                 ]
             },
             {
                 "text": "Running the second command.",
                 "tools": [
-                    { "id": "c2", "name": "shell:exec", "args": { "command": "exit 4" } }
+                    { "id": "c2", "name": "shell_exec", "args": { "command": "exit 4" } }
                 ]
             },
             { "text": "Both handled." }
@@ -101,7 +101,7 @@ fn resize_mid_session_preserves_content_and_the_ui_keeps_rendering() {
             {
                 "text": "Running the command.",
                 "tools": [
-                    { "id": "c1", "name": "shell:exec", "args": { "command": "echo RESIZE-OK" } }
+                    { "id": "c1", "name": "shell_exec", "args": { "command": "echo RESIZE-OK" } }
                 ]
             },
             { "text": "Done." }

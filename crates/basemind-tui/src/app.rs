@@ -26,7 +26,7 @@ pub enum TranscriptEntry {
     Tool {
         /// Provider-assigned tool-call id, used to pair a later result with this entry.
         call_id: String,
-        /// The namespaced tool name (e.g. `code:outline`).
+        /// The namespaced tool name (e.g. `outline`).
         name: String,
         /// The arguments rendered as compact JSON.
         args: String,
@@ -485,7 +485,7 @@ mod tests {
             turn: 3,
             req_id: 42,
             call_id: "c1".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "ls".into(),
         });
@@ -493,7 +493,7 @@ mod tests {
             app.pending_permission,
             Some(PermissionPrompt {
                 req_id: 42,
-                tool: "shell:exec".into(),
+                tool: "shell_exec".into(),
                 action: "exec".into(),
                 target: "ls".into(),
             })
@@ -517,7 +517,7 @@ mod tests {
             turn: 1,
             req_id: 7,
             call_id: "c".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "rm -rf /".into(),
         });
@@ -589,7 +589,7 @@ mod tests {
         app.apply(AgentEvent::ToolStarted {
             turn: 1,
             call_id: "call-1".into(),
-            name: "code:outline".into(),
+            name: "outline".into(),
             args: serde_json::json!({ "path": "src/lib.rs" }),
         });
         app.apply(AgentEvent::ToolResult {
@@ -599,7 +599,7 @@ mod tests {
         });
         match app.transcript.last() {
             Some(TranscriptEntry::Tool { result, name, .. }) => {
-                assert_eq!(name, "code:outline");
+                assert_eq!(name, "outline");
                 assert_eq!(result, &Some((true, "12 symbols".to_string())));
             }
             other => panic!("expected a tool entry, got {other:?}"),
@@ -634,7 +634,7 @@ mod tests {
             turn: 1,
             req_id: 3,
             call_id: "c".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "rm -rf /".into(),
         });
@@ -671,7 +671,7 @@ mod tests {
             turn: 1,
             req_id: 5,
             call_id: "c".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "ls".into(),
         });
@@ -694,7 +694,7 @@ mod tests {
             turn: 1,
             req_id: 9,
             call_id: "c".into(),
-            tool: "shell:exec".into(),
+            tool: "shell_exec".into(),
             action: "exec".into(),
             target: "rm -rf /".into(),
         });

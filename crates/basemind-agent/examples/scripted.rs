@@ -16,7 +16,7 @@
 //!     "system": "optional system prompt",
 //!     "user": "the user message that starts the turn",
 //!     "turns": [
-//!       { "text": "assistant text", "tools": [ { "id": "c1", "name": "code:search_symbols",
+//!       { "text": "assistant text", "tools": [ { "id": "c1", "name": "search_symbols",
 //!                                                 "args": { "needle": "run_turn" } } ] },
 //!       { "text": "closing line" }
 //!     ]
@@ -49,7 +49,7 @@ fn default_scenario() -> Scenario {
                 text: Some("Looking up run_turn. ".into()),
                 tools: vec![ScriptToolCall {
                     id: "call_1".into(),
-                    name: "code:search_symbols".into(),
+                    name: "search_symbols".into(),
                     args: serde_json::json!({ "needle": "run_turn" }),
                 }],
             },
@@ -57,7 +57,7 @@ fn default_scenario() -> Scenario {
                 text: Some("Now checking the shell. ".into()),
                 tools: vec![ScriptToolCall {
                     id: "call_2".into(),
-                    name: "shell:exec".into(),
+                    name: "shell_exec".into(),
                     args: serde_json::json!({ "command": "echo smoke-ok" }),
                 }],
             },

@@ -43,7 +43,7 @@ pub(super) fn require_server<'a>(ctx: &'a ToolCtx, tool: &'static str) -> Result
     })
 }
 
-/// `code:outline` — structural outline of a file.
+/// `outline` — structural outline of a file.
 struct OutlineTool;
 
 /// Arguments for [`OutlineTool`].
@@ -58,7 +58,7 @@ impl Tool for OutlineTool {
     type Args = OutlineArgs;
 
     fn name(&self) -> &'static str {
-        "code:outline"
+        "outline"
     }
 
     fn description(&self) -> &'static str {
@@ -87,7 +87,7 @@ impl Tool for OutlineTool {
     }
 }
 
-/// `code:search_symbols` — substring search over indexed symbol names.
+/// `search_symbols` — substring search over indexed symbol names.
 struct SearchSymbolsTool;
 
 /// Arguments for [`SearchSymbolsTool`].
@@ -108,7 +108,7 @@ impl Tool for SearchSymbolsTool {
     type Args = SearchSymbolsArgs;
 
     fn name(&self) -> &'static str {
-        "code:search_symbols"
+        "search_symbols"
     }
 
     fn description(&self) -> &'static str {
@@ -139,7 +139,7 @@ impl Tool for SearchSymbolsTool {
     }
 }
 
-/// `code:find_references` — call sites of any callee matching `name`.
+/// `find_references` — call sites of any callee matching `name`.
 struct FindReferencesTool;
 
 /// Arguments for [`FindReferencesTool`].
@@ -157,7 +157,7 @@ impl Tool for FindReferencesTool {
     type Args = FindReferencesArgs;
 
     fn name(&self) -> &'static str {
-        "code:find_references"
+        "find_references"
     }
 
     fn description(&self) -> &'static str {
@@ -187,7 +187,7 @@ impl Tool for FindReferencesTool {
     }
 }
 
-/// `code:find_callers` — callers of a specific definition (path + name).
+/// `find_callers` — callers of a specific definition (path + name).
 struct FindCallersTool;
 
 /// Arguments for [`FindCallersTool`].
@@ -210,7 +210,7 @@ impl Tool for FindCallersTool {
     type Args = FindCallersArgs;
 
     fn name(&self) -> &'static str {
-        "code:find_callers"
+        "find_callers"
     }
 
     fn description(&self) -> &'static str {
@@ -241,7 +241,7 @@ impl Tool for FindCallersTool {
     }
 }
 
-/// `code:call_graph` — BFS call graph rooted at a function name.
+/// `call_graph` — BFS call graph rooted at a function name.
 struct CallGraphTool;
 
 /// Arguments for [`CallGraphTool`].
@@ -268,7 +268,7 @@ impl Tool for CallGraphTool {
     type Args = CallGraphArgs;
 
     fn name(&self) -> &'static str {
-        "code:call_graph"
+        "call_graph"
     }
 
     fn description(&self) -> &'static str {
@@ -298,7 +298,7 @@ impl Tool for CallGraphTool {
     }
 }
 
-/// `code:workspace_grep` — indexed regex over file contents.
+/// `workspace_grep` — indexed regex over file contents.
 struct WorkspaceGrepTool;
 
 /// Arguments for [`WorkspaceGrepTool`].
@@ -322,7 +322,7 @@ impl Tool for WorkspaceGrepTool {
     type Args = WorkspaceGrepArgs;
 
     fn name(&self) -> &'static str {
-        "code:workspace_grep"
+        "workspace_grep"
     }
 
     fn description(&self) -> &'static str {
@@ -366,12 +366,12 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "code:outline",
-                "code:search_symbols",
-                "code:find_references",
-                "code:find_callers",
-                "code:call_graph",
-                "code:workspace_grep",
+                "outline",
+                "search_symbols",
+                "find_references",
+                "find_callers",
+                "call_graph",
+                "workspace_grep",
             ]
         );
     }

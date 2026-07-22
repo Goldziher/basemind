@@ -1,7 +1,7 @@
 //! Model-facing multi-agent room tools, backed by the [`RoomClient`](crate::room::RoomClient) seam.
 //!
 //! These let the agent itself participate in the room: post a message to peers, read recent room
-//! history, and list the peers currently present. Only the outbound `room:post` carries a `comms`
+//! history, and list the peers currently present. Only the outbound `room_post` carries a `comms`
 //! permission claim (it reaches other agents, so it defaults to Ask); the two read tools carry a
 //! `read` claim and are auto-allowed, so a roster/history check never interrupts the turn.
 
@@ -32,7 +32,7 @@ fn require_room<'a>(ctx: &'a ToolCtx, tool: &'static str) -> Result<&'a Arc<dyn 
         .ok_or_else(|| AgentError::Tool(format!("{tool}: no multi-agent room is connected")))
 }
 
-/// `room:post` — post a message to the shared room.
+/// `room_post` — post a message to the shared room.
 struct RoomPostTool;
 
 /// Arguments for [`RoomPostTool`].
@@ -50,7 +50,7 @@ impl Tool for RoomPostTool {
     type Args = RoomPostArgs;
 
     fn name(&self) -> &'static str {
-        "room:post"
+        "room_post"
     }
 
     fn description(&self) -> &'static str {
@@ -69,7 +69,7 @@ impl Tool for RoomPostTool {
     }
 }
 
-/// `room:read` — read recent room history.
+/// `room_read` — read recent room history.
 struct RoomReadTool;
 
 /// Arguments for [`RoomReadTool`].
@@ -85,7 +85,7 @@ impl Tool for RoomReadTool {
     type Args = RoomReadArgs;
 
     fn name(&self) -> &'static str {
-        "room:read"
+        "room_read"
     }
 
     fn description(&self) -> &'static str {
@@ -105,7 +105,7 @@ impl Tool for RoomReadTool {
     }
 }
 
-/// `room:list_agents` — list the peers currently in the room.
+/// `room_list_agents` — list the peers currently in the room.
 struct RoomListAgentsTool;
 
 /// Arguments for [`RoomListAgentsTool`] (none).
@@ -117,7 +117,7 @@ impl Tool for RoomListAgentsTool {
     type Args = RoomListAgentsArgs;
 
     fn name(&self) -> &'static str {
-        "room:list_agents"
+        "room_list_agents"
     }
 
     fn description(&self) -> &'static str {
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn comms_tools_are_named() {
         let names: Vec<_> = comms_tools().iter().map(|tool| tool.name()).collect();
-        assert_eq!(names, vec!["room:post", "room:read", "room:list_agents"]);
+        assert_eq!(names, vec!["room_post", "room_read", "room_list_agents"]);
     }
 
     #[test]

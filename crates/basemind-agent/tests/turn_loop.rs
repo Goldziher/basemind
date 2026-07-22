@@ -14,13 +14,13 @@ use basemind_agent::{
 };
 use tokio::sync::{broadcast, mpsc};
 
-/// A scripted two-round model: round 1 emits some text then asks to run `shell:exec`; round 2 emits
+/// A scripted two-round model: round 1 emits some text then asks to run `shell_exec`; round 2 emits
 /// a closing line and stops.
 fn scripted_shell_role() -> ResolvedRole {
     let client: Arc<dyn ModelClient> = Arc::new(Mock::new(vec![
         vec![
             Mock::text("Let me list the files. "),
-            Mock::tool_call(0, Some("call_1"), Some("shell:exec"), r#"{"command":"echo hi"}"#),
+            Mock::tool_call(0, Some("call_1"), Some("shell_exec"), r#"{"command":"echo hi"}"#),
             Mock::finish_tool_calls(),
         ],
         vec![Mock::text("Done."), Mock::finish_stop()],
@@ -84,7 +84,7 @@ async fn turn_runs_a_permitted_tool_and_continues_to_stop() {
         vec![
             "TurnStarted",
             "TextDelta",   // "Let me list the files. " ~keep
-            "ToolStarted", // shell:exec ~keep
+            "ToolStarted", // shell_exec ~keep
             "ToolResult",  // echo hi ~keep
             "TextDelta",   // "Done." ~keep
             "TurnFinished",
@@ -261,7 +261,7 @@ async fn cancel_during_tool_execution_ends_the_turn() {
     let tools = registry();
     // The model asks to run a long sleep; we cancel while it is in flight. ~keep
     let client: Arc<dyn ModelClient> = Arc::new(Mock::new(vec![vec![
-        Mock::tool_call(0, Some("call_1"), Some("shell:exec"), r#"{"command":"sleep 2"}"#),
+        Mock::tool_call(0, Some("call_1"), Some("shell_exec"), r#"{"command":"sleep 2"}"#),
         Mock::finish_tool_calls(),
     ]]));
     let resolved = ResolvedRole {

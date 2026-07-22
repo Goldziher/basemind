@@ -22,7 +22,7 @@ fn echo_scenario() -> Scenario {
             "user": "run echo and finish",
             "turns": [
                 { "text": "Running echo. ",
-                  "tools": [ { "id": "c1", "name": "shell:exec", "args": { "command": "echo hi-e2e" } } ] },
+                  "tools": [ { "id": "c1", "name": "shell_exec", "args": { "command": "echo hi-e2e" } } ] },
                 { "text": "Done." }
             ]
         }"#,
@@ -100,7 +100,7 @@ async fn a_scripted_scenario_runs_the_full_session_loop() {
     assert!(
         events
             .iter()
-            .any(|e| matches!(e, AgentEvent::PermissionRequested { tool, .. } if tool == "shell:exec")),
+            .any(|e| matches!(e, AgentEvent::PermissionRequested { tool, .. } if tool == "shell_exec")),
         "the exec tool asked for permission"
     );
     assert!(

@@ -152,7 +152,7 @@ mod tests {
     fn assembles_a_single_tool_call_from_fragments() {
         // id+name arrive first; arguments stream as three JSON fragments. ~keep
         let turn = feed(&[
-            M::tool_call(0, Some("call_1"), Some("code:outline"), ""),
+            M::tool_call(0, Some("call_1"), Some("outline"), ""),
             M::tool_call(0, None, None, "{\"path\":"),
             M::tool_call(0, None, None, "\"src/lib.rs\""),
             M::tool_call(0, None, None, "}"),
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(turn.tool_calls.len(), 1);
         let call = &turn.tool_calls[0];
         assert_eq!(call.id, "call_1");
-        assert_eq!(call.function.name, "code:outline");
+        assert_eq!(call.function.name, "outline");
         assert_eq!(call.function.arguments, "{\"path\":\"src/lib.rs\"}");
     }
 
@@ -171,7 +171,7 @@ mod tests {
         // Two calls interleaved across indices 0 and 1. ~keep
         let turn = feed(&[
             M::tool_call(0, Some("a"), Some("fs:read"), "{\"p\":"),
-            M::tool_call(1, Some("b"), Some("shell:exec"), "{\"cmd\":"),
+            M::tool_call(1, Some("b"), Some("shell_exec"), "{\"cmd\":"),
             M::tool_call(1, None, None, "\"ls\"}"),
             M::tool_call(0, None, None, "\"x\"}"),
             M::finish(FinishReason::ToolCalls),
@@ -188,7 +188,7 @@ mod tests {
     fn captures_interleaved_text_and_tool_calls() {
         let turn = feed(&[
             M::text("thinking... "),
-            M::tool_call(0, Some("c1"), Some("code:search_symbols"), "{}"),
+            M::tool_call(0, Some("c1"), Some("search_symbols"), "{}"),
             M::finish(FinishReason::ToolCalls),
         ]);
         assert_eq!(turn.text, "thinking... ");
