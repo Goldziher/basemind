@@ -361,15 +361,17 @@ fn row_for(res: &FileResult, verbosity: Verbosity) -> Option<Row<'_>> {
         FileStatus::DocIndexed {
             chunk_count,
             embedding_dim,
+            reused,
         } => {
             if v == Verbosity::Quiet {
                 None
             } else {
+                let cached = if *reused { ", cached" } else { "" };
                 Some(Row {
                     symbol: '✓',
                     label: "doc",
                     style: Style::new().fg_color(Some(Color::Ansi(AnsiColor::BrightBlue))),
-                    detail: format!("({chunk_count} chunks, dim={embedding_dim})"),
+                    detail: format!("({chunk_count} chunks, dim={embedding_dim}{cached})"),
                 })
             }
         }

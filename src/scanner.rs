@@ -91,6 +91,10 @@ pub struct ScanStats {
     /// were configured) pushed to LanceDB. Always present in `ScanStats` so callers that don't
     /// compile the `documents` feature still get a stable struct shape; stays `0` in that mode.
     pub docs_indexed: usize,
+    /// Subset of `docs_indexed` served from an already-persisted `.doc.msgpack` blob instead of a
+    /// fresh xberg extraction (+ embedding). Mirrors `reused_extraction` for the doc tier: rename /
+    /// rewrite churn should show up here, never as fresh extraction work (issue #44).
+    pub reused_doc_extraction: usize,
 }
 
 /// Per-file result. Every file the scanner *considered* shows up here.
@@ -175,6 +179,9 @@ pub enum FileStatus {
     DocIndexed {
         chunk_count: usize,
         embedding_dim: u16,
+        /// True when the doc was served from the cached `.doc.msgpack` blob rather than freshly
+        /// extracted (mirrors `Updated::reused`); drives the `reused_doc_extraction` counter.
+        reused: bool,
     },
 }
 
@@ -421,6 +428,14 @@ pub fn scan_paths(
         report.stats.removed += 1;
     }
 
+    // Doc-tier removals (file gone from disk, tracked only in `doc_files`) are purged by the
+    // doc-removals lane below; count them here so the report doesn't silently drop them.
+    #[cfg(feature = "documents")]
+    for rel in &doc_removed {
+        report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));
+        report.stats.removed += 1;
+    }
+
     flush_code_map(store)?;
 
     let precise = config.code_intel.precise_resolution;
@@ -491,8 +506,11 @@ fn apply_outcomes(
                 report.stats.parse_timeouts += 1;
             }
             #[cfg(feature = "documents")]
-            FileStatus::DocIndexed { .. } => {
+            FileStatus::DocIndexed { reused, .. } => {
                 report.stats.docs_indexed += 1;
+                if *reused {
+                    report.stats.reused_doc_extraction += 1;
+                }
             }
         }
         if let Some(entry) = o.upsert.take() {

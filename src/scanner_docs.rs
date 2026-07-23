@@ -65,6 +65,15 @@ pub(crate) struct PendingDocBatch {
     /// over-`max_chunks_per_document` cases — the blob is still tracked, but nothing lands in LanceDB
     /// (mirrors the old rows-empty batch). Decided at construction, where the document is in hand.
     pub emit_rows: bool,
+    /// Whether the doc leaves this pass with its embedding requirement satisfied — persisted onto
+    /// the [`crate::store::DocEntry`] so the next pass's unchanged fast path can tell a fully
+    /// embedded doc from a tracked-but-vectorless one (issue #44). True when the pass didn't ask to
+    /// embed, when vectors are present, or when the doc has no chunks to embed.
+    pub embedded: bool,
+    /// True when this batch came from the cached-blob reuse branch of `extract_and_persist_doc`
+    /// rather than a fresh xberg extraction. Drives the `reused_doc_extraction` scan counter — the
+    /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
+    pub reused: bool,
 }
 
 /// Look the configured embedding preset up in xberg's preset table and
@@ -249,16 +258,14 @@ pub(crate) fn extract_and_persist_doc(
     scope: &str,
     mode: EmbedMode,
 ) -> Result<Option<PendingDocBatch>, anyhow::Error> {
-    let embed = matches!(mode, EmbedMode::Inline)
-        && cfg.embed
-        && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude);
+    let embed = doc_embed_requested(rel, cfg, mode);
     let hex_buf = hashing::hex_buf(hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
         && cached_doc_is_reusable(&cached, cfg, embed)
     {
-        return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed)));
+        return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
     }
 
     let doc_config = doc_config_from(cfg, llm, resources, embed);
@@ -268,7 +275,16 @@ pub(crate) fn extract_and_persist_doc(
         .write_doc(hash, &doc)
         .with_context(|| format!("write doc blob for {rel}"))?;
 
-    Ok(Some(pending_from_doc(&doc, rel, hash_hex, scope, cfg, embed)))
+    Ok(Some(pending_from_doc(&doc, rel, hash_hex, scope, cfg, embed, false)))
+}
+
+/// Single source of truth for "will this pass embed this doc": embedding runs only on an `Inline`
+/// pass, with `[documents] embed` on, for a path not excluded by `embed_exclude`. Shared by
+/// `extract_and_persist_doc` (whether to ask xberg for vectors) and the `process_doc` unchanged
+/// fast path (whether a tracked-but-unembedded doc must be re-processed) so the two sides can
+/// never disagree about the requirement — a disagreement is exactly the issue-#44 loop.
+pub(crate) fn doc_embed_requested(rel: &str, cfg: &DocumentsConfig, mode: EmbedMode) -> bool {
+    matches!(mode, EmbedMode::Inline) && cfg.embed && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude)
 }
 
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
@@ -304,6 +320,7 @@ fn pending_from_doc(
     scope: &str,
     cfg: &DocumentsConfig,
     embed: bool,
+    reused: bool,
 ) -> PendingDocBatch {
     let chunk_count = doc.chunks.len();
     let embedding_dim = doc.embedding_dim;
@@ -324,6 +341,8 @@ fn pending_from_doc(
         chunk_count,
         embedding_dim,
         emit_rows,
+        embedded: !embed || embedding_dim > 0 || chunk_count == 0,
+        reused,
     }
 }
 
@@ -586,9 +605,53 @@ mod tests {
             chunk_count: 3,
             embedding_dim: 768,
             emit_rows: true,
+            embedded: true,
+            reused: false,
         };
         assert!(batch.emit_rows);
         assert_eq!(batch.chunk_count, 3);
+    }
+
+    /// `doc_embed_requested` is the single gate both `extract_and_persist_doc` and the
+    /// `process_doc` unchanged fast path consult; this truth table is the contract that keeps the
+    /// two sides agreeing about "will this pass embed this rel" (a disagreement is the #44 loop).
+    #[test]
+    fn doc_embed_requested_truth_table() {
+        let on = DocumentsConfig {
+            embed: true,
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            !doc_embed_requested("docs/a.pdf", &on, EmbedMode::Deferred),
+            "Deferred pass never embeds"
+        );
+        assert!(
+            doc_embed_requested("docs/a.pdf", &on, EmbedMode::Inline),
+            "Inline + embed on must embed"
+        );
+
+        let off = DocumentsConfig {
+            embed: false,
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            !doc_embed_requested("docs/a.pdf", &off, EmbedMode::Inline),
+            "Inline with embed off must not embed"
+        );
+
+        let excluded = DocumentsConfig {
+            embed: true,
+            embed_exclude: vec!["docs/**".to_string()],
+            ..DocumentsConfig::default()
+        };
+        assert!(
+            !doc_embed_requested("docs/a.pdf", &excluded, EmbedMode::Inline),
+            "embed_exclude match must not embed"
+        );
+        assert!(
+            doc_embed_requested("notes/a.pdf", &excluded, EmbedMode::Inline),
+            "non-excluded path still embeds"
+        );
     }
 
     #[test]

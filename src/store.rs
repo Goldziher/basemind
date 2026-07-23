@@ -204,6 +204,14 @@ pub struct DocEntry {
     /// File mtime in nanoseconds since the epoch (0 = unknown). Recorded for symmetry with
     /// [`FileEntry`]; the doc unchanged-skip currently keys on the content hash, not mtime.
     pub mtime: i64,
+    /// Whether the pass that recorded this entry left the doc's embedding requirement satisfied
+    /// (vectors present, doc chunkless, or the pass didn't ask to embed). The unchanged fast path
+    /// consults this so a tracked-but-vectorless doc no longer short-circuits an embedding pass —
+    /// the quiescent half of the issue-#44 re-embed loop. Additive msgpack field: entries written
+    /// before it existed deserialize as `false`, costing exactly one healing re-process on the
+    /// next embedding pass (whose result now persists, see `Store::write_doc`).
+    #[serde(default)]
+    pub embedded: bool,
 }
 
 pub struct Store {
