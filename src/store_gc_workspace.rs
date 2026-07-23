@@ -139,6 +139,7 @@ mod tests {
     use crate::store_gc::{collect_referenced_hashes_global_in, gc_global_blobs_in};
     use std::fs;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     /// Seed `<workspaces>/<key>/views/working/index.msgpack` referencing `stems`, and — when
     /// `root` is `Some` — the `workspace.json` marker recording that root. `None` reproduces a
@@ -274,7 +275,7 @@ mod tests {
         let dead_ws = seed_workspace(&workspaces, "key-dead", Some(&dead_root), &[pinned_stem.as_str()]);
         fs::remove_dir_all(&dead_root).expect("delete the orphan's root");
 
-        let before = gc_global_blobs_in(&workspaces, &blobs).expect("gc before");
+        let before = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc before");
         assert_eq!(before.removed, 0, "nothing reclaimable while the orphan pins the blob");
         assert!(
             blobs.join(format!("{pinned_stem}.fm.msgpack")).exists(),
@@ -290,7 +291,7 @@ mod tests {
             !referenced.contains(&pinned_stem),
             "the reaped workspace no longer votes in the live set"
         );
-        let after = gc_global_blobs_in(&workspaces, &blobs).expect("gc after");
+        let after = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc after");
         assert_eq!(after.removed, 1, "the previously-pinned blob is reclaimed");
         assert_eq!(after.bytes_freed, pinned_bytes.len() as u64);
         assert!(
@@ -321,7 +322,7 @@ mod tests {
 
         assert_eq!(reap_orphaned_workspaces_in(&workspaces).expect("reap").reaped, 1);
 
-        let report = gc_global_blobs_in(&workspaces, &blobs).expect("gc");
+        let report = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("gc");
         assert_eq!(report.removed, 0, "the live workspace still references the blob");
         assert!(
             blobs.join(format!("{shared_stem}.fm.msgpack")).exists(),
