@@ -19,6 +19,7 @@
 //! `doc_hash` to union.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use ahash::AHashSet;
 use serde::Serialize;
@@ -42,6 +43,14 @@ const BLOB_SUFFIXES: [&str; 4] = [".fm.msgpack", ".doc.msgpack", ".chunk.msgpack
 /// after a schema-bump refresh are dead format — the sweep deletes them on sight regardless of
 /// whether their stem is still referenced (the live `.fm` blob shares that stem).
 const LEGACY_BLOB_SUFFIXES: [&str; 2] = [".l1.msgpack", ".l2.msgpack"];
+
+/// Grace window the blob sweep grants young blobs: an unreferenced blob whose mtime is younger
+/// than this is kept. Content-addressed blobs are legitimately *entry-less* for a while — a
+/// Deferred pass writes doc blobs before any `DocEntry` exists, and a NoCache rename's remove
+/// half drops the tracking entry moments before the create half re-references the same hash
+/// (issue #44). Reaping inside that window forces a full re-extract + re-embed on the next
+/// encounter; the grace costs only delayed reclamation.
+const BLOB_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// The orphaned-workspace reaper — the other half of keeping the machine-global cache bounded.
 /// Lives in its own module (like `store_lock.rs`) to keep this file under the module size cap;
@@ -157,13 +166,16 @@ pub fn collect_referenced_hashes(basemind_dir: &Path) -> Result<AHashSet<String>
 /// disabled (`Store::blobs_shared == true`) and cross-workspace reference-counted GC is deferred
 /// to the daemon.
 pub fn gc_blobs(referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
-    gc_blobs_in(&global_blobs_dir(), referenced)
+    gc_blobs_in(&global_blobs_dir(), referenced, BLOB_GC_GRACE)
 }
 
 /// Sweep an explicit blob directory. The seam production reaches via [`gc_blobs`] (passing the
-/// global store) and unit tests reach with a per-test temp dir, so tests never touch — nor race
-/// on — the machine-global blob store or each other.
-fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>) -> Result<GcReport, GcError> {
+/// global store and [`BLOB_GC_GRACE`]) and unit tests reach with a per-test temp dir (usually
+/// `Duration::ZERO` grace), so tests never touch — nor race on — the machine-global blob store
+/// or each other. Unreferenced blobs younger than `grace` are kept (see [`BLOB_GC_GRACE`]);
+/// legacy split-tier blobs are dead format and reaped regardless of age.
+fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration) -> Result<GcReport, GcError> {
+    let now = SystemTime::now();
     let mut report = GcReport::default();
     if !blobs_dir.exists() {
         return Ok(report);
@@ -198,12 +210,21 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>) -> Result<GcRepo
         if referenced.contains(stem) {
             continue;
         }
-        let size = std::fs::metadata(&path)
-            .map_err(|source| GcError::Io {
-                path: path.clone(),
-                source,
-            })?
-            .len();
+        let meta = std::fs::metadata(&path).map_err(|source| GcError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        // Unreadable / future mtimes count as young — err toward keeping (a kept orphan costs
+        // disk until the next sweep; a reaped live-in-a-moment blob costs a full re-embed).
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .unwrap_or(Duration::ZERO);
+        if age < grace {
+            continue;
+        }
+        let size = meta.len();
         std::fs::remove_file(&path).map_err(|source| GcError::Io {
             path: path.clone(),
             source,
@@ -253,14 +274,23 @@ pub(crate) fn collect_referenced_hashes_global_in(workspaces_dir: &Path) -> Resu
 /// [`gc_report_only`] — safe ONLY because the daemon (the sole writer) is the single caller that can
 /// enumerate every workspace's references at once. Returns the sweep report.
 pub fn gc_global_blobs() -> Result<GcReport, GcError> {
-    gc_global_blobs_in(&cache_root().join(CACHE_DIR).join(WORKSPACES_DIR), &global_blobs_dir())
+    gc_global_blobs_in(
+        &cache_root().join(CACHE_DIR).join(WORKSPACES_DIR),
+        &global_blobs_dir(),
+        BLOB_GC_GRACE,
+    )
 }
 
 /// [`gc_global_blobs`] against explicit workspaces + blobs directories, so tests reference-count and
-/// sweep a per-fixture cache instead of the machine-global store.
-pub(crate) fn gc_global_blobs_in(workspaces_dir: &Path, blobs_dir: &Path) -> Result<GcReport, GcError> {
+/// sweep a per-fixture cache instead of the machine-global store. `grace` mirrors [`gc_blobs_in`]'s:
+/// production passes [`BLOB_GC_GRACE`], tests usually `Duration::ZERO`.
+pub(crate) fn gc_global_blobs_in(
+    workspaces_dir: &Path,
+    blobs_dir: &Path,
+    grace: Duration,
+) -> Result<GcReport, GcError> {
     let referenced = collect_referenced_hashes_global_in(workspaces_dir)?;
-    gc_blobs_in(blobs_dir, &referenced)
+    gc_blobs_in(blobs_dir, &referenced, grace)
 }
 
 /// The daemon's full cache sweep: reap orphaned workspace cache dirs FIRST, then reference-count and
@@ -481,7 +511,7 @@ mod tests {
     fn should_remove_only_orphan_blob() {
         let fx = build_fixture();
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        let report = gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
 
         assert_eq!(report.scanned, 2, "one ref blob + one orphan inspected");
         assert_eq!(report.removed, 1, "only the orphan removed");
@@ -502,6 +532,27 @@ mod tests {
     }
 
     #[test]
+    fn gc_grace_keeps_young_orphan_doc_blobs() {
+        let fx = build_fixture();
+        let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
+
+        // Fixture blobs were written moments ago, so any nonzero grace shields the orphan.
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::from_secs(3600)).expect("gc with grace");
+        assert_eq!(report.scanned, 2, "both blobs inspected");
+        assert_eq!(report.removed, 0, "young orphan survives the grace window");
+
+        let blobs = fx.basemind_dir.join(BLOBS_DIR);
+        assert!(
+            blobs.join(format!("{}.fm.msgpack", fx.orphan_stem)).exists(),
+            "young orphan blob still on disk"
+        );
+
+        // Zero grace reaps it — the pre-grace behavior every other test asserts.
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc without grace");
+        assert_eq!(report.removed, 1, "orphan reaped once outside the grace window");
+    }
+
+    #[test]
     fn should_reclaim_legacy_split_tier_blobs_even_when_stem_is_referenced() {
         let fx = build_fixture();
         let blobs = fx.basemind_dir.join(BLOBS_DIR);
@@ -513,7 +564,7 @@ mod tests {
             referenced.contains(&fx.referenced_stem),
             "stem is referenced by the live index"
         );
-        let report = gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
+        let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
 
         assert_eq!(report.removed, 3, "two legacy split blobs + the orphan filemap");
         assert!(
@@ -544,7 +595,7 @@ mod tests {
         );
 
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
+        gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
 
         let after = cache_stats_in(&fx.basemind_dir, &fx.blobs_dir).expect("stats after");
         assert_eq!(after.blob_count, 1, "orphan reaped");
@@ -664,7 +715,7 @@ mod tests {
         fs::write(blobs.join(format!("{}.rref.msgpack", fx.orphan_stem)), b"orphan-rref").expect("orphan rref");
 
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
-        gc_blobs_in(&fx.blobs_dir, &referenced).expect("gc");
+        gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc");
 
         assert!(
             blobs.join(format!("{}.chunk.msgpack", fx.referenced_stem)).exists(),
@@ -728,7 +779,7 @@ mod tests {
         assert!(referenced.contains(&stem_a) && referenced.contains(&stem_b));
         assert!(!referenced.contains(&orphan), "orphan referenced by no workspace");
 
-        let report = gc_global_blobs_in(&workspaces, &blobs).expect("global gc");
+        let report = gc_global_blobs_in(&workspaces, &blobs, Duration::ZERO).expect("global gc");
         assert_eq!(report.scanned, 3, "all three blobs inspected");
         assert_eq!(report.removed, 1, "only the cross-workspace orphan reaped");
         assert_eq!(report.bytes_freed, orphan_bytes.len() as u64);
