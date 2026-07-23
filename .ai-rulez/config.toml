@@ -9,7 +9,7 @@ builtins = ["rust", "cicd", "documentation", "observability", "default-commands"
 
 [plugin]
 name = "basemind"
-version = "0.22.3"
+version = "0.22.4"
 display_name = "basemind"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
 homepage = "https://github.com/Goldziher/basemind"
