@@ -58,6 +58,16 @@ struct WorkspaceEntry {
     key: String,
     /// Last time a request touched this entry; drives LRU eviction and the statusline idle report.
     last_used: Mutex<Instant>,
+    /// Monotonic count of COMPLETED (non-cancelled) full scans of this workspace. A full-rescan
+    /// request captures it before blocking on the store lock; if it advanced while the request
+    /// waited, an identical-or-stronger full scan just walked the same tree and the queued one is
+    /// redundant. This is what stops N sessions' back-to-back full rescans (issue #44) from
+    /// re-walking a monorepo N times.
+    full_scan_gen: std::sync::atomic::AtomicU64,
+    /// The most recent completed full scan: (generation, embed mode, stats). Served to coalesced
+    /// requests instead of re-scanning; an `Inline` result satisfies a `Deferred` request but not
+    /// vice versa.
+    last_full: Mutex<Option<(u64, EmbedMode, ScanStats)>>,
 }
 
 impl WorkspaceEntry {
@@ -146,20 +156,41 @@ impl WorkspacePool {
         entry.touch();
 
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
+        let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
+        // Capture the full-scan generation BEFORE blocking on the store lock: if it advances while
+        // this request waits, an identical-or-stronger full scan just walked the same tree and the
+        // queued request is redundant — serve that scan's stats instead of re-walking (N sessions'
+        // pile-up of full rescans, issue #44). An `Inline` result satisfies a `Deferred` request;
+        // the reverse would silently skip the vector fill.
+        let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
-        let report = match paths {
-            Some(ref paths) if !full && !paths.is_empty() => {
-                scanner::scan_paths_with_cancel(&entry.root, &mut store, &entry.config, paths, mode, cancel)?
+        if !incremental {
+            let last = entry.last_full.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((generation, last_mode, stats)) = *last
+                && generation > gen_before
+                && (last_mode == EmbedMode::Inline || mode == EmbedMode::Deferred)
+            {
+                return Ok((stats, false));
             }
-            _ => scanner::scan_with_cancel(
+        }
+        let report = if incremental {
+            let paths = paths.as_deref().unwrap_or_default();
+            scanner::scan_paths_with_cancel(&entry.root, &mut store, &entry.config, paths, mode, cancel)?
+        } else {
+            scanner::scan_with_cancel(
                 &entry.root,
                 &mut store,
                 &entry.config,
                 ScanSource::WorkingTree,
                 mode,
                 cancel,
-            )?,
+            )?
         };
+        // A cancelled pass is partial — never record it as a completed full scan.
+        if !incremental && !report.cancelled {
+            let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
+            *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));
+        }
         Ok((report.stats, report.cancelled))
     }
 
@@ -217,6 +248,8 @@ impl WorkspacePool {
             root: root.to_path_buf(),
             key: key.clone(),
             last_used: Mutex::new(Instant::now()),
+            full_scan_gen: std::sync::atomic::AtomicU64::new(0),
+            last_full: Mutex::new(None),
         });
 
         let mut map = self.lock_map();

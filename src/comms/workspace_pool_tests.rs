@@ -220,3 +220,61 @@ fn evict_idle_zero_drops_every_entry() {
     assert_eq!(dropped, 1, "a zero idle window evicts everything");
     assert_eq!(pool.len(), 0);
 }
+
+/// Full rescans that pile up behind an identical in-flight full scan coalesce: both requests
+/// capture the full-scan generation before blocking on the store lock, the winner walks the tree,
+/// and the loser is served the winner's stats. A NON-coalesced second pass would have reported
+/// `updated == 0, skipped_unchanged == 2` — both reporting `updated == 2` proves one walk ran.
+/// This is the issue-#44 pile-up: N sessions each requesting a full rescan of the same monorepo.
+#[test]
+fn queued_identical_full_rescans_coalesce() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+
+    // Warm the entry without scanning, then hold its store lock so both requests queue behind it
+    // with a pre-scan generation captured.
+    let entry = pool.get_or_open(ws.path()).expect("open entry");
+    let guard = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
+
+    std::thread::scope(|scope| {
+        let a = scope.spawn(|| pool.rescan(ws.path(), None, true, false, &ScanCancel::default()));
+        let b = scope.spawn(|| pool.rescan(ws.path(), None, true, false, &ScanCancel::default()));
+        // Give both threads time to capture the generation and block on the store lock.
+        std::thread::sleep(Duration::from_millis(200));
+        drop(guard);
+
+        let (stats_a, cancelled_a) = a.join().expect("thread a").expect("rescan a");
+        let (stats_b, cancelled_b) = b.join().expect("thread b").expect("rescan b");
+        assert!(!cancelled_a && !cancelled_b);
+        assert_eq!(stats_a.updated, 2, "one request performed the real walk");
+        assert_eq!(
+            stats_b.updated, 2,
+            "the queued request was served the winner's stats, not a redundant re-walk"
+        );
+        assert_eq!(stats_a.skipped_unchanged, 0);
+        assert_eq!(stats_b.skipped_unchanged, 0);
+    });
+}
+
+/// Sequential full rescans must NOT coalesce: the second request captures the already-advanced
+/// generation, so it walks the tree itself and correctly reports everything unchanged.
+#[test]
+fn sequential_full_rescans_do_not_coalesce() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+
+    let first = pool
+        .rescan(ws.path(), None, true, false, &ScanCancel::default())
+        .expect("first full scan")
+        .0;
+    assert_eq!(first.updated, 2);
+
+    let second = pool
+        .rescan(ws.path(), None, true, false, &ScanCancel::default())
+        .expect("second full scan")
+        .0;
+    assert_eq!(second.updated, 0, "a sequential rescan really re-walks");
+    assert_eq!(second.skipped_unchanged, 2);
+}
