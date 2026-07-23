@@ -233,6 +233,11 @@ pub struct Broker {
     /// front-end accept loop — not just notifies connected sinks. Absent in tests that drive the
     /// broker directly, where `begin_drain` still transitions state and notifies sinks.
     shutdown: std::sync::OnceLock<watch::Sender<bool>>,
+    /// Cooperative cancellation for in-flight scans. Every drain route ends in `finish_drain`,
+    /// which trips this FIRST — so a `Stop` RPC, SIGTERM, the idle reaper, and socket-ownership
+    /// loss all interrupt a mid-scan `spawn_blocking` at per-file granularity instead of letting
+    /// the runtime teardown block on it (previously only SIGKILL could end a scanning daemon).
+    scan_cancel: crate::scanner::ScanCancel,
     pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
     /// Daemon-internal work units in flight (see [`Broker::begin_work`]). Distinct from
@@ -277,6 +282,7 @@ impl Broker {
             machine_registry: Mutex::new(machine_registry),
             blob_gc_lock: RwLock::new(()),
             shutdown: std::sync::OnceLock::new(),
+            scan_cancel: crate::scanner::ScanCancel::new(),
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             work_inflight: AtomicUsize::new(0),
@@ -627,9 +633,16 @@ impl Broker {
         self.mark_active().await;
         let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
+        let cancel = self.scan_cancel.clone();
         let started = Instant::now();
-        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full, embed)).await {
-            Ok(Ok(stats)) => CommsResponse::Rescanned {
+        match tokio::task::spawn_blocking(move || pool.rescan(&root, paths, full, embed, &cancel)).await {
+            // A cancelled pass committed only part of the tree — surface it as an error so no ~keep
+            // client mistakes the partial index for a completed rescan. ~keep
+            Ok(Ok((_, true))) => CommsResponse::Error {
+                code: "rescan_cancelled".to_string(),
+                message: "daemon draining; partial scan committed".to_string(),
+            },
+            Ok(Ok((stats, false))) => CommsResponse::Rescanned {
                 scanned: stats.scanned,
                 updated: stats.updated,
                 removed: stats.removed,
@@ -823,6 +836,9 @@ impl Broker {
     /// live sink we are going away, then fire the accept-loop shutdown signal. Split out so the
     /// idle path can make its decision under the registry lock without holding it across the sends.
     async fn finish_drain(&self, sinks: Vec<mpsc::Sender<CommsOut>>) {
+        // Trip the scan token FIRST: a mid-flight rescan must start winding down before (not ~keep
+        // after) clients are told to disconnect, or the runtime teardown blocks on it. ~keep
+        self.scan_cancel.cancel();
         for tx in sinks {
             let _ = tx.send(CommsOut::Notification(CommsNotification::Shutdown)).await;
         }

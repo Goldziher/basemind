@@ -25,6 +25,13 @@ const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60)
 #[cfg(unix)]
 const OWNERSHIP_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// Hard bound on the runtime teardown at the end of [`run`]. Dropping the runtime implicitly waits
+/// *forever* for in-flight `spawn_blocking` work — which is exactly how a SIGTERM'd daemon used to
+/// hang until SIGKILL while a big rescan finished. The drain already trips the broker's scan-cancel
+/// token, so a scan winds down within one file; this timeout is the backstop for the pathological
+/// case where that one file is stuck inside non-cooperative work (e.g. an ONNX embed call).
+const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// The `(device, inode)` identity of the socket file, or `None` when it is absent / unstattable.
 /// The ownership watchdog compares this against the value captured at bind time to detect an
 /// unlink-and-rebind reclaim by another daemon.
@@ -45,7 +52,7 @@ pub fn run() -> Result<()> {
         .build()
         .context("build tokio runtime")?;
 
-    runtime.block_on(async move {
+    let result = runtime.block_on(async move {
         let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
             Ok(listener) => listener,
             Err(singleton::SingletonError::AlreadyRunning(p)) => {
@@ -181,7 +188,10 @@ pub fn run() -> Result<()> {
             .serve_obj(broker, shutdown_rx)
             .await
             .context("comms front-end serve loop")
-    })?;
+    });
+    // Bounded teardown instead of the implicit unbounded drop — see [`RUNTIME_SHUTDOWN_TIMEOUT`]. ~keep
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
+    result?;
     Ok(())
 }
 

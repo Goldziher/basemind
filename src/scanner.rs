@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 use tracing::debug;
@@ -189,6 +191,39 @@ pub enum FileStatus {
 pub struct ScanReport {
     pub results: Vec<FileResult>,
     pub stats: ScanStats,
+    /// True when the scan was interrupted by a [`ScanCancel`] token. The per-file work that
+    /// completed before the trip is committed (blobs, fjall batches, `index.msgpack`); everything
+    /// else — remaining candidates, the stale purge, the resolve/doc lanes — was skipped, so the
+    /// caller must not treat the report as a complete pass.
+    pub cancelled: bool,
+}
+
+/// Cooperative cancellation token for a scan.
+///
+/// Cancellation is per-file granularity: the scanner checks the token once before each candidate
+/// (one `Relaxed` atomic load — hot-path discipline, no ordering needed because the flag is
+/// monotonic and purely advisory) and again between the durability barrier and the optional
+/// enrichment lanes. A tripped token never tears state: completed files are already committed
+/// per-batch, and the caller returns before the stale purge so unscanned files are not mistaken
+/// for deleted ones. Clone freely — all clones share the flag.
+#[derive(Clone, Debug, Default)]
+pub struct ScanCancel(Arc<AtomicBool>);
+
+impl ScanCancel {
+    /// A fresh, untripped token.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Trip the token. Idempotent; every in-flight scan sharing it stops at its next check.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the token has been tripped.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
 }
 
 /// Pull submodule roots for the active scan source. WorkingTree opens a fresh `Repo` on the
@@ -236,6 +271,21 @@ pub fn scan(
     source: ScanSource<'_>,
     embed: EmbedMode,
 ) -> Result<ScanReport, ScanError> {
+    scan_with_cancel(root, store, config, source, embed, &ScanCancel::new())
+}
+
+/// [`scan`] with a cooperative [`ScanCancel`] token. A tripped token makes the pass return early
+/// with `report.cancelled == true`: completed files are committed and the code map flushed, but the
+/// stale purge and the resolve/doc lanes are skipped — a partial pass must never treat unscanned
+/// files as deleted.
+pub fn scan_with_cancel(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    source: ScanSource<'_>,
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+) -> Result<ScanReport, ScanError> {
     let submodule_roots = submodule_roots_for_source(root, &source);
     let filters = Filters::build(config, submodule_roots)?;
     let candidates = candidates_for_source(root, config, &filters, &source)?;
@@ -243,7 +293,39 @@ pub fn scan(
 
     let scope = derive_scope(root, &source);
 
-    let outcomes: Vec<FileResult> = run_candidates(&candidates, root, &filters, store, &source, config, &scope, embed);
+    let outcomes: Vec<FileResult> = run_candidates(
+        &candidates,
+        root,
+        &filters,
+        store,
+        &source,
+        config,
+        &scope,
+        embed,
+        cancel,
+    );
+
+    // Cancelled mid-pass: commit what completed and return BEFORE the stale purge. The purge below ~keep
+    // treats every indexed file absent from `outcomes` as deleted — on a partial pass that would ~keep
+    // wipe the entry of every candidate the cancellation skipped. The batch flushes still run: ~keep
+    // apply_outcomes recorded the completed files' entries (embedded=true), so dropping their ~keep
+    // LanceDB rows here would leave them tracked-but-rowless — quiescent, never re-flushed. The ~keep
+    // rows come from already-persisted blobs (no model inference), so this stays bounded. ~keep
+    if cancel.is_cancelled() {
+        let mut report = ScanReport {
+            cancelled: true,
+            ..ScanReport::default()
+        };
+        let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
+        flush_code_map(store)?;
+        run_optional_lane(LANE_DOC_BATCHES, || {
+            flush_doc_batches_if_any(store, config, &scope, doc_batches);
+        });
+        run_optional_lane(LANE_CODE_BATCHES, || {
+            flush_code_batches_if_any(store, config, &scope, code_batches);
+        });
+        return Ok(report);
+    }
 
     let seen: ahash::AHashSet<&str> = outcomes
         .iter()
@@ -296,6 +378,21 @@ pub fn scan(
     }
 
     flush_code_map(store)?;
+
+    // A token tripped after the last per-file check still stops the pass here, once the code map ~keep
+    // is durable but before the resolve pass (which can run for minutes on a large repo). The ~keep
+    // batch flushes still run — the completed files' entries are already recorded, and dropping ~keep
+    // their rows would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
+    if cancel.is_cancelled() {
+        report.cancelled = true;
+        run_optional_lane(LANE_DOC_BATCHES, || {
+            flush_doc_batches_if_any(store, config, &scope, doc_batches);
+        });
+        run_optional_lane(LANE_CODE_BATCHES, || {
+            flush_code_batches_if_any(store, config, &scope, code_batches);
+        });
+        return Ok(report);
+    }
 
     if matches!(source, ScanSource::WorkingTree) {
         let precise = config.code_intel.precise_resolution;
@@ -355,6 +452,21 @@ pub fn scan_paths(
     paths: &[PathBuf],
     embed: EmbedMode,
 ) -> Result<ScanReport, ScanError> {
+    scan_paths_with_cancel(root, store, config, paths, embed, &ScanCancel::new())
+}
+
+/// [`scan_paths`] with a cooperative [`ScanCancel`] token. Unlike [`scan_with_cancel`], the removal
+/// purge still runs on a tripped token — it is derived from path *existence* (the watcher told us
+/// the file is gone), not from scan completeness — but the resolve pass and the optional lanes are
+/// skipped and the report comes back with `cancelled == true`.
+pub fn scan_paths_with_cancel(
+    root: &Path,
+    store: &mut Store,
+    config: &Config,
+    paths: &[PathBuf],
+    embed: EmbedMode,
+    cancel: &ScanCancel,
+) -> Result<ScanReport, ScanError> {
     let source = ScanSource::WorkingTree;
     let filter = IndexFilter::new(root, config)?;
 
@@ -408,8 +520,17 @@ pub fn scan_paths(
     }
 
     let scope = derive_scope(root, &source);
-    let outcomes: Vec<FileResult> =
-        run_candidates(&rels, root, filter.filters(), store, &source, config, &scope, embed);
+    let outcomes: Vec<FileResult> = run_candidates(
+        &rels,
+        root,
+        filter.filters(),
+        store,
+        &source,
+        config,
+        &scope,
+        embed,
+        cancel,
+    );
 
     let mut report = ScanReport::default();
     let (doc_batches, code_batches) = apply_outcomes(store, &mut report, outcomes);
@@ -437,6 +558,21 @@ pub fn scan_paths(
     }
 
     flush_code_map(store)?;
+
+    // Cancelled: the removals above already ran (path-existence-derived, safe on a partial pass) ~keep
+    // and the code map is durable; skip the resolve pass and the removal lanes. The batch flushes ~keep
+    // still run — the completed files' entries are already recorded, and dropping their rows ~keep
+    // would leave them tracked-but-rowless (blob-sourced, no inference; bounded). ~keep
+    if cancel.is_cancelled() {
+        report.cancelled = true;
+        run_optional_lane(LANE_DOC_BATCHES, || {
+            flush_doc_batches_if_any(store, config, &scope, doc_batches);
+        });
+        run_optional_lane(LANE_CODE_BATCHES, || {
+            flush_code_batches_if_any(store, config, &scope, code_batches);
+        });
+        return Ok(report);
+    }
 
     let precise = config.code_intel.precise_resolution;
     run_optional_lane(LANE_RESOLVE, || {

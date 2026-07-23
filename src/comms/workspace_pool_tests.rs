@@ -21,11 +21,17 @@ fn rescan_indexes_sources_and_is_idempotent() {
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
 
-    let first = pool.rescan(ws.path(), None, false, false).expect("first scan");
+    let first = pool
+        .rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("first scan")
+        .0;
     assert_eq!(first.scanned, 2, "both sources considered");
     assert_eq!(first.updated, 2, "both sources newly indexed");
 
-    let second = pool.rescan(ws.path(), None, false, false).expect("second scan");
+    let second = pool
+        .rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("second scan")
+        .0;
     assert_eq!(second.scanned, 2, "both sources still considered");
     assert_eq!(second.updated, 0, "nothing changed on the second pass");
     assert_eq!(second.skipped_unchanged, 2, "both sources skipped as unchanged");
@@ -38,10 +44,12 @@ fn lru_eviction_keeps_only_the_most_recent_within_the_cap() {
     let ws1 = workspace_with_sources();
     let ws2 = workspace_with_sources();
 
-    pool.rescan(ws1.path(), None, false, false).expect("scan ws1");
+    pool.rescan(ws1.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws1");
     assert_eq!(pool.len(), 1);
 
-    pool.rescan(ws2.path(), None, false, false).expect("scan ws2");
+    pool.rescan(ws2.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws2");
     assert_eq!(pool.len(), 1, "cap of 1 holds a single hot workspace");
 
     let hot = pool.accessed();
@@ -56,13 +64,15 @@ fn evicted_workspace_lazily_reopens_with_its_committed_index_intact() {
     let ws1 = workspace_with_sources();
     let ws2 = workspace_with_sources();
 
-    pool.rescan(ws1.path(), None, false, false).expect("scan ws1");
+    pool.rescan(ws1.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws1");
     let hot_files = pool
         .with_workspace(ws1.path(), |store| store.index.files.len())
         .expect("read ws1 while hot");
     assert_eq!(hot_files, 2, "ws1's two sources are indexed while it is hot");
 
-    pool.rescan(ws2.path(), None, false, false).expect("scan ws2");
+    pool.rescan(ws2.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws2");
     assert_eq!(pool.len(), 1, "cap of 1 holds a single hot workspace");
     assert!(
         pool.accessed().iter().all(|w| w.root != ws1.path()),
@@ -90,7 +100,8 @@ fn accessed_reports_the_hot_set() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
-    pool.rescan(ws.path(), None, false, false).expect("scan");
+    pool.rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("scan");
 
     let hot = pool.accessed();
     assert_eq!(hot.len(), 1);
@@ -122,16 +133,25 @@ fn embed_pass_reprocesses_the_chunk_only_sidecar_the_deferred_pass_left() {
     .expect("write config");
     std::fs::write(dir.path().join("lib.rs"), "pub fn embed_marker() -> u32 { 42 }\n").expect("write source");
 
-    let deferred = pool.rescan(dir.path(), None, false, false).expect("deferred scan");
+    let deferred = pool
+        .rescan(dir.path(), None, false, false, &ScanCancel::default())
+        .expect("deferred scan")
+        .0;
     assert!(
         deferred.updated >= 1,
         "the source is newly indexed by the deferred pass"
     );
 
-    let deferred_again = pool.rescan(dir.path(), None, false, false).expect("deferred rescan");
+    let deferred_again = pool
+        .rescan(dir.path(), None, false, false, &ScanCancel::default())
+        .expect("deferred rescan")
+        .0;
     assert_eq!(deferred_again.updated, 0, "a second deferred pass changes nothing");
 
-    let embed = pool.rescan(dir.path(), None, false, true).expect("inline embed scan");
+    let embed = pool
+        .rescan(dir.path(), None, false, true, &ScanCancel::default())
+        .expect("inline embed scan")
+        .0;
     assert!(
         embed.updated >= 1,
         "the embed pass must re-process the chunk-only source to fill vectors (got updated={}, \
@@ -159,7 +179,10 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
     )
     .expect("write document");
 
-    let deferred = pool.rescan(dir.path(), None, false, false).expect("deferred scan");
+    let deferred = pool
+        .rescan(dir.path(), None, false, false, &ScanCancel::default())
+        .expect("deferred scan")
+        .0;
     assert!(
         deferred.docs_indexed >= 1,
         "the .svg file must route to the document tier (docs_indexed={})",
@@ -173,7 +196,8 @@ fn embed_pass_indexes_a_document_the_deferred_pass_leaves_untracked() {
         "the deferred pass must not persist a document embedding entry"
     );
 
-    pool.rescan(dir.path(), None, false, true).expect("inline embed scan");
+    pool.rescan(dir.path(), None, false, true, &ScanCancel::default())
+        .expect("inline embed scan");
     let tracked_after_inline = pool
         .with_workspace(dir.path(), |store| store.lookup_doc("notes.svg").is_some())
         .expect("read after inline");
@@ -188,7 +212,8 @@ fn evict_idle_zero_drops_every_entry() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
-    pool.rescan(ws.path(), None, false, false).expect("scan");
+    pool.rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("scan");
     assert_eq!(pool.len(), 1);
 
     let dropped = pool.evict_idle(Duration::ZERO);

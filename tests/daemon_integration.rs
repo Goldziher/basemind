@@ -157,6 +157,31 @@ fn init_bulk_git_repo(main: &Path, n_files: usize) {
     git(&["commit", "-qm", "bulk"], main);
 }
 
+/// A committed git repo whose scan takes tens of seconds in a debug build: `n_files` sources of
+/// `fns_per_file` functions each. The substrate for the SIGTERM-mid-scan regression, where the
+/// in-flight scan must comfortably outlast the daemon's exit deadline — a small fixture would finish
+/// before the drain grace and mask the pre-fix hang entirely. Feature-neutral (plain Rust sources).
+#[cfg(unix)]
+fn init_heavy_git_repo(main: &Path, n_files: usize, fns_per_file: usize) {
+    std::fs::create_dir_all(main.join("src")).expect("mkdir src");
+    git(&["init", "-q", "-b", "main"], main);
+    git(&["config", "user.email", "t@example.com"], main);
+    git(&["config", "user.name", "Test"], main);
+    for i in 0..n_files {
+        let mut body = String::with_capacity(fns_per_file * 80);
+        for j in 0..fns_per_file {
+            body.push_str(&format!(
+                "pub fn f{i}_{j}(x: u32) -> u32 {{ let y = x + {j}; y.wrapping_mul({m}) }}\n",
+                m = i % 97 + 1
+            ));
+        }
+        body.push_str(&format!("pub struct S{i} {{ pub a: u32, pub b: String }}\n"));
+        std::fs::write(main.join("src").join(format!("m{i}.rs")), body).expect("write src file");
+    }
+    git(&["add", "."], main);
+    git(&["commit", "-qm", "heavy"], main);
+}
+
 /// Read a positive-integer stress knob from the environment, defaulting when unset or unparseable.
 /// Lets the concurrency stress be cranked far harder on a big machine (`BASEMIND_STRESS_CLIENTS=64`).
 fn stress_knob(var: &str, default: usize) -> usize {
@@ -365,6 +390,104 @@ fn comms_stop_terminates_the_daemon_without_an_external_kill() {
         !probe_alive(&socket),
         "the socket must be released once the daemon self-terminates"
     );
+}
+
+/// Issue #44: SIGTERM must interrupt a MID-SCAN daemon. Every drain route (Stop RPC, SIGTERM,
+/// idle-reap, socket-ownership loss) converges on `Broker::finish_drain`, which now trips the
+/// broker's `ScanCancel` token so the in-flight `spawn_blocking` scan stops at per-file granularity,
+/// and the daemon entry point bounds its runtime teardown (`RUNTIME_SHUTDOWN_TIMEOUT`) instead of
+/// letting the implicit runtime drop wait forever on the blocking thread. Before the fix, the drain
+/// grace elapsed, the accept loop exited — and the process then hung inside the runtime drop until
+/// the scan of the whole tree completed, so only SIGKILL could end a scanning daemon; against this
+/// fixture (a scan that outlasts the 12s exit deadline) the try_wait poll below timed out.
+///
+/// Consistency after the interrupt is the second half: blobs are content-addressed, fjall commits
+/// per batch, and the cancelled pass skips the stale purge, so a fresh daemon on the same comms dir
+/// must reopen the partially-committed index cleanly and complete a full rescan.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn sigterm_mid_scan_exits_within_grace_and_index_reopens_cleanly() {
+    // ~47 MB of generated Rust: a debug-build scan of this runs well past the 12s exit deadline ~keep
+    // (~23s measured on an M4), so a pre-fix daemon — which cannot exit before the scan finishes — ~keep
+    // reliably fails the deadline, while a post-fix daemon cancels and exits within a few seconds. ~keep
+    const HEAVY_FILES: usize = 3000;
+    const HEAVY_FNS_PER_FILE: usize = 200;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let comms_dir = tmp.path().join("comms");
+    std::fs::create_dir_all(&comms_dir).expect("mkdir comms");
+    let repo = tmp.path().join("repo");
+    init_heavy_git_repo(&repo, HEAVY_FILES, HEAVY_FNS_PER_FILE);
+
+    let socket = comms_socket_path(&comms_dir);
+    let mut child = Command::new(BIN)
+        .args(["comms", "daemon"])
+        .env("BASEMIND_COMMS_DIR", &comms_dir)
+        .env("BASEMIND_DATA_HOME", &comms_dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn comms daemon");
+    let ready_by = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < ready_by && !probe_alive(&socket) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(probe_alive(&socket), "daemon did not become ready");
+
+    let mut client = connect(&socket, "agent-sigterm", &repo).await;
+    let rescan_repo = repo.clone();
+    let rescan_task = tokio::spawn(async move { client.rescan(rescan_repo, None, true, false).await });
+    // Long enough for the scan to be well in flight, far shorter than the scan itself. ~keep
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let term = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("run kill -TERM");
+    assert!(term.success(), "kill -TERM must be delivered");
+
+    let exit_by = Instant::now() + Duration::from_secs(12);
+    let mut exited = false;
+    while Instant::now() < exit_by {
+        if child.try_wait().expect("try_wait").is_some() {
+            exited = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("daemon did not exit within 12s of SIGTERM with a scan in flight (the SIGKILL-only hang)");
+    }
+    let _ = child.wait();
+
+    // The in-flight rescan resolved rather than hanging: Ok if it somehow finished before the ~keep
+    // drain, otherwise a clean Err (cancelled-pass error or broken link) — never a panic. ~keep
+    let rescan_outcome = tokio::time::timeout(Duration::from_secs(15), rescan_task)
+        .await
+        .expect("the in-flight rescan future must resolve once the daemon exits, not hang");
+    match rescan_outcome {
+        Ok(Ok(_)) | Ok(Err(_)) => {}
+        Err(join) => panic!("rescan task must not panic: {join}"),
+    }
+
+    // A fresh daemon reopens the partially-committed index cleanly and completes the full pass. ~keep
+    let daemon = Daemon::start(&comms_dir);
+    let socket = daemon.socket().to_path_buf();
+    let mut client = connect(&socket, "agent-sigterm-2", &repo).await;
+    let report = client
+        .rescan(repo.clone(), None, true, false)
+        .await
+        .expect("a full rescan after the interrupted pass must succeed");
+    assert!(
+        report.scanned >= HEAVY_FILES,
+        "the interrupted index must reopen cleanly and the full rescan cover every file, got scanned={}",
+        report.scanned
+    );
+    drop(client);
+    daemon.stop();
 }
 
 /// The machine registry and an advisory worktree claim are a durable msgpack snapshot: both must
