@@ -163,10 +163,10 @@ pub(crate) fn write_blob<T: serde::Serialize>(path: PathBuf, value: &T) -> Resul
 }
 
 /// Like [`write_blob`] but always (re)writes, even when a same-schema blob already exists. The
-/// code-chunk sidecar's embedding payload can change for the SAME content hash — a chunk-only
-/// `Deferred` blob (`embedding_dim: 0`) later upgraded to an embedded `Inline` blob — so a
-/// schema-only skip would wrongly keep the unembedded blob and `search_code` would serve no vectors.
-#[cfg(feature = "code-search")]
+/// embedding payload of a chunk sidecar or a doc blob can change for the SAME content hash — a
+/// vectorless `Deferred` blob (`embedding_dim: 0`) later upgraded to an embedded `Inline` blob — so
+/// a schema-only skip would wrongly keep the unembedded blob and vector search would serve nothing.
+#[cfg(any(feature = "code-search", feature = "documents"))]
 pub(crate) fn write_blob_overwrite<T: serde::Serialize>(path: PathBuf, value: &T) -> Result<(), StoreError> {
     let bytes = rmp_serde::to_vec_named(value)?;
     write_bytes_atomic(path, &bytes)
@@ -241,9 +241,16 @@ impl Store {
         write_bytes_atomic(path, &bytes)
     }
 
+    /// Write a document blob. Always overwrites (issue #44): this call is only reached after
+    /// `cached_doc_is_reusable` rejected the existing blob — e.g. a vectorless `Deferred` blob being
+    /// upgraded by an embedded `Inline` re-extraction of the SAME content hash — so the old
+    /// schema-only skip could only ever preserve a blob the caller had just decided was inadequate,
+    /// leaving it vectorless forever and re-embedding on every entry-less encounter. A `Deferred`
+    /// pass cannot downgrade an embedded blob this way, because `cached_doc_is_reusable` accepts any
+    /// readable blob when embedding is off (the reuse branch returns before this write).
     #[cfg(feature = "documents")]
     pub fn write_doc(&self, hash: &Hash, map: &crate::extract::doc::FileMapDoc) -> Result<(), StoreError> {
-        write_blob(self.blob_path_doc(hash), map)
+        write_blob_overwrite(self.blob_path_doc(hash), map)
     }
 
     #[cfg(feature = "documents")]
@@ -405,6 +412,52 @@ mod tests {
         assert!(
             store.read_l2_by_hex(&hash_hex).expect("read l2").is_none(),
             "L2 absent in an L1-only frame (escalation will extract on demand)"
+        );
+    }
+
+    /// Issue #44: a Deferred pass persists the doc blob vectorless (`embedding_dim: 0`); the later
+    /// Inline pass re-extracts + embeds and writes the SAME content hash again. That second write
+    /// must replace the blob — a schema-only skip keeps it vectorless forever, and every future
+    /// entry-less encounter of the content re-embeds again (the re-embed loop).
+    #[cfg(feature = "documents")]
+    #[test]
+    fn write_doc_overwrites_vectorless_blob_with_embedded_doc() {
+        use crate::extract::doc::FileMapDoc;
+        init_isolated_cache();
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::open(tmp.path(), VIEW_WORKING).expect("open store");
+        let hash = crate::hashing::hash_bytes(b"bug-44 deferred-then-inline doc");
+
+        let vectorless = FileMapDoc {
+            schema_ver: SCHEMA_VER,
+            mime_type: "text/plain".to_string(),
+            content: "hello".to_string(),
+            metadata: Vec::new(),
+            detected_languages: Vec::new(),
+            chunks: Vec::new(),
+            embedding_model: String::new(),
+            embedding_dim: 0,
+            keywords: Vec::new(),
+            entities: Vec::new(),
+            summary: None,
+        };
+        store.write_doc(&hash, &vectorless).expect("write vectorless blob");
+
+        let embedded = FileMapDoc {
+            embedding_model: "balanced".to_string(),
+            embedding_dim: 768,
+            ..vectorless
+        };
+        store.write_doc(&hash, &embedded).expect("write embedded blob");
+
+        let hex_buf = hashing::hex_buf(&hash);
+        let read = store
+            .read_doc_by_hex(hashing::hex_str(&hex_buf))
+            .expect("read doc blob")
+            .expect("doc blob present");
+        assert_eq!(
+            read.embedding_dim, 768,
+            "Inline pass's embedded doc must replace the Deferred pass's vectorless blob (issue #44)"
         );
     }
 
