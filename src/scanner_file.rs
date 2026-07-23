@@ -26,7 +26,7 @@ use crate::hashing;
 use crate::index::{IndexDb, writer::IndexWriter};
 use crate::lang;
 use crate::path::RelPath;
-use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanSource};
+use crate::scanner::{EmbedMode, FileResult, FileStatus, ScanCancel, ScanSource};
 #[cfg(feature = "documents")]
 use crate::scanner_docs::{extract_and_persist_doc, should_extract_document};
 use crate::scanner_filter::Filters;
@@ -157,6 +157,7 @@ pub(crate) fn run_candidates(
     config: &Config,
     scope: &str,
     embed: EmbedMode,
+    cancel: &ScanCancel,
 ) -> Vec<FileResult> {
     scanner_pool(config.resources.scan_threads).install(|| {
         candidates
@@ -164,6 +165,12 @@ pub(crate) fn run_candidates(
             .fold(
                 || WorkerIndexBatch::new(store),
                 |mut batch, rel| {
+                    // Cooperative cancellation, per-file granularity: one relaxed load before each ~keep
+                    // candidate. A skipped file emits no FileResult, so the caller can tell a ~keep
+                    // partial pass apart from a complete one (and must skip its stale purge). ~keep
+                    if cancel.is_cancelled() {
+                        return batch;
+                    }
                     let result = process_file(root, rel, filters, store, source, config, scope, &mut batch, embed);
                     batch.results.push(result);
                     batch

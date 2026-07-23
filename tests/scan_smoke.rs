@@ -2,7 +2,7 @@ use std::fs;
 
 use basemind::config::ConfigV1;
 use basemind::extract::SymbolKind;
-use basemind::scanner::{FileStatus, scan, scan_paths};
+use basemind::scanner::{FileStatus, ScanCancel, scan, scan_paths, scan_with_cancel};
 use basemind::store::Store;
 use tempfile::TempDir;
 
@@ -1194,4 +1194,106 @@ fn deferred_embed_mode_indexes_symbols_and_keyword_lane_but_writes_no_vectors() 
         !store.lance_dir_exists(),
         "deferred scan must not write LanceDB vector rows"
     );
+}
+
+/// A cancelled full scan must return early with `cancelled == true` and — the landmine the early
+/// return exists to defuse — must NOT run the stale purge: on a partial pass, every candidate the
+/// cancellation skipped is absent from the outcomes, and the purge would treat all of them as
+/// deleted and wipe their index entries.
+#[test]
+fn cancelled_scan_returns_partial_report_and_purges_nothing() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    for i in 0..10 {
+        fs::write(
+            root.join(format!("m{i}.rs")),
+            format!("pub fn cancel_fixture_{i}() -> u32 {{ {i} }}\n"),
+        )
+        .unwrap();
+    }
+
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let full = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert_eq!(full.stats.updated, 10, "baseline pass indexes every fixture file");
+    assert!(!full.cancelled, "an untripped token never marks a report cancelled");
+
+    let cancel = ScanCancel::new();
+    cancel.cancel();
+    let partial = scan_with_cancel(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+        &cancel,
+    )
+    .unwrap();
+    assert!(partial.cancelled, "a tripped token must mark the report cancelled");
+    assert_eq!(
+        partial.stats.removed, 0,
+        "a cancelled pass must not purge unscanned files as stale"
+    );
+    for i in 0..10 {
+        assert!(
+            store.lookup(format!("m{i}.rs")).is_some(),
+            "m{i}.rs must survive the cancelled pass in the store"
+        );
+    }
+
+    let followup = scan(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+    )
+    .unwrap();
+    assert!(!followup.cancelled);
+    assert_eq!(followup.stats.removed, 0, "nothing was purged by the cancelled pass");
+    assert_eq!(
+        followup.stats.skipped_unchanged, 10,
+        "every file is still indexed and unchanged after the cancelled pass"
+    );
+}
+
+/// A token tripped before the scan starts skips every candidate at the per-file check: the report
+/// carries zero per-file results, proving the fold does no extraction work once cancelled.
+#[test]
+fn cancel_flag_pretripped_skips_all_candidates_fast() {
+    let (dir, cfg) = fresh_repo();
+    let root = dir.path();
+    for i in 0..10 {
+        fs::write(
+            root.join(format!("m{i}.rs")),
+            format!("pub fn pretripped_fixture_{i}() -> u32 {{ {i} }}\n"),
+        )
+        .unwrap();
+    }
+
+    let cancel = ScanCancel::new();
+    cancel.cancel();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    let report = scan_with_cancel(
+        root,
+        &mut store,
+        &cfg,
+        basemind::scanner::ScanSource::WorkingTree,
+        basemind::scanner::EmbedMode::Inline,
+        &cancel,
+    )
+    .unwrap();
+    assert!(report.cancelled);
+    assert!(
+        report.results.is_empty(),
+        "a pre-tripped token must skip every candidate, got {} results",
+        report.results.len()
+    );
+    assert_eq!(report.stats.scanned, 0);
 }

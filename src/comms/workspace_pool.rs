@@ -20,7 +20,7 @@ use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Config};
-use crate::scanner::{self, EmbedMode, ScanSource, ScanStats};
+use crate::scanner::{self, EmbedMode, ScanCancel, ScanSource, ScanStats};
 use crate::store::{self, LockHolder, Store, VIEW_WORKING};
 
 /// Default number of workspaces the daemon keeps hot in RAM at once. A cold workspace opened past
@@ -129,13 +129,19 @@ impl WorkspacePool {
     /// so documents and code chunks get their LanceDB vectors. The daemon is the sole fjall writer,
     /// so this embed write must be owned here (a `Deferred`-only daemon would leave `search_documents`
     /// permanently empty for repo documents).
+    ///
+    /// `cancel` is the broker's drain token: a draining daemon trips it so a mid-flight scan stops
+    /// at per-file granularity instead of pinning the runtime shutdown. The returned `bool` reports
+    /// whether the pass was cancelled — the dispatch layer must surface a cancelled partial pass as
+    /// an error, never as a completed rescan.
     pub(crate) fn rescan(
         &self,
         root: &Path,
         paths: Option<Vec<PathBuf>>,
         full: bool,
         embed: bool,
-    ) -> Result<ScanStats, WorkspacePoolError> {
+        cancel: &ScanCancel,
+    ) -> Result<(ScanStats, bool), WorkspacePoolError> {
         let entry = self.get_or_open(root)?;
         entry.touch();
 
@@ -143,11 +149,18 @@ impl WorkspacePool {
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
         let report = match paths {
             Some(ref paths) if !full && !paths.is_empty() => {
-                scanner::scan_paths(&entry.root, &mut store, &entry.config, paths, mode)?
+                scanner::scan_paths_with_cancel(&entry.root, &mut store, &entry.config, paths, mode, cancel)?
             }
-            _ => scanner::scan(&entry.root, &mut store, &entry.config, ScanSource::WorkingTree, mode)?,
+            _ => scanner::scan_with_cancel(
+                &entry.root,
+                &mut store,
+                &entry.config,
+                ScanSource::WorkingTree,
+                mode,
+                cancel,
+            )?,
         };
-        Ok(report.stats)
+        Ok((report.stats, report.cancelled))
     }
 
     /// Run `f` against a workspace's open read-write [`Store`] (immutable borrow), opening it into
