@@ -10,6 +10,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.4] — 2026-07-23
+
+### Fixed
+
+- **The daemon no longer loops full document re-embed passes on churny trees** (#44 — ~700 % CPU
+  for hours, RSS to 5.4 GB on a multi-session pnpm monorepo). Root cause: `Store::write_doc` went
+  through the schema-only skip in `write_blob`, so when the serve boot's Deferred pass had written
+  a doc blob vectorless (`embedding_dim: 0`), the follow-up Inline pass re-extracted and re-embedded
+  the document — and then silently threw the embedded result away. The blob stayed vectorless
+  forever, and every entry-less encounter of the same content (NoCache rename remove+create pairs
+  from #43, `git worktree` churn, fresh worktree-rooted workspaces) re-ran ONNX embedding from
+  scratch. Doc blobs now overwrite on upgrade (the same fix the code-chunk tier already had), and
+  `DocEntry` records embed state so already-poisoned caches heal with exactly one persisted
+  re-embed pass on the next scan — no wipe needed. The same skip also meant `search_documents`
+  vectors never landed in LanceDB, so document vector search now actually works for repo docs.
+- **`basemind comms stop` and SIGTERM now interrupt a mid-scan daemon** (#44). The drain trips a
+  cooperative per-file cancellation token threaded through the scanner, and the runtime teardown is
+  bounded at 15 s instead of waiting forever on an in-flight rescan — previously only SIGKILL could
+  end a scanning daemon, which fed the respawn loop. A cancelled pass commits completed files
+  (including their LanceDB rows), never runs the stale purge, and surfaces as `rescan_cancelled`
+  rather than a completed rescan.
+- **Queued identical full rescans coalesce.** N sessions forwarding full rescans of the same
+  workspace serialized on the store lock and each re-walked the whole tree; a request that waited
+  behind an identical-or-stronger full scan is now served that scan's stats.
+- Unreferenced blobs younger than 6 h survive the daemon's hourly GC sweep, protecting the
+  Deferred→Inline and rename windows where content-addressed doc blobs are legitimately entry-less.
+
+### Changed
+
+- Dependencies: tree-sitter-language-pack 1.13.2 → 1.13.3, xberg rc.30 → rc.33, lockfile refresh
+  (arrow stays on 58.x — lancedb 0.31 pins arrow 58).
+
 ## [0.22.3] — 2026-07-21
 
 ### Fixed
