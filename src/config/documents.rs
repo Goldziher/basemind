@@ -487,6 +487,10 @@ impl LlmConfig {
             max_retries: self.max_retries,
             temperature: self.temperature,
             max_tokens: self.max_tokens,
+            // New in xberg rc.33; basemind has no config surface for these yet, so
+            // `None` keeps liter-llm's own defaults.
+            load_env: None,
+            headers: None,
         })
     }
 }
