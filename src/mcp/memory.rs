@@ -720,7 +720,9 @@ async fn attach_doc_metadata(
     Ok(())
 }
 
-#[cfg(all(test, feature = "documents"))]
+// Gated on `crawl` (not `documents`): the tests import `crate::web::ingest` and `crate::url`,
+// both crawl-only modules — a `--features documents` build without crawl must still compile.
+#[cfg(all(test, feature = "crawl"))]
 mod scope_tests {
     use super::resolve_doc_scope;
     use crate::web::ingest::default_scope;
