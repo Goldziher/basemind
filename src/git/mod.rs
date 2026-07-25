@@ -315,10 +315,7 @@ impl Repo {
         let mut out = Vec::new();
         for sm in iter {
             let path = match sm.path() {
-                Ok(cow) => {
-                    let bstr: &gix::bstr::BStr = &cow;
-                    crate::path::RelPath::from(<gix::bstr::BStr as AsRef<[u8]>>::as_ref(bstr))
-                }
+                Ok(path) => crate::path::RelPath::from(<gix::bstr::BString as AsRef<[u8]>>::as_ref(&path)),
                 Err(_) => continue,
             };
             if !path.is_empty() {
