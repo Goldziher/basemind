@@ -608,7 +608,155 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     }
 }
 
+/// Dispatch `basemind serve`. On a `comms` build serving the working view, first try to become a
+/// thin relay to the singleton daemon (which hosts the actual rmcp router); on ANY failure — or
+/// when the kill-switch `BASEMIND_SERVE_INPROCESS` is set, or for a non-working view — fall back to
+/// the in-process server. The fallback is total: a client is never bricked by a relay problem.
 fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    {
+        let force_inproc = std::env::var_os("BASEMIND_SERVE_INPROCESS").is_some();
+        if !force_inproc && view == basemind::store::VIEW_WORKING {
+            match try_serve_relay(root, view) {
+                Ok(()) => return Ok(()),
+                Err(error) => tracing::info!(%error, "relay to daemon unavailable; serving in-process"),
+            }
+        }
+    }
+    cmd_serve_inprocess(root, view, args)
+}
+
+/// Thin relay body: dial the singleton daemon and pump raw bytes between this process's
+/// stdin/stdout and the daemon socket so the daemon hosts the rmcp router. Returns `Ok(())` when
+/// the session ends cleanly (either side closing the pipe is normal). Returns `Err` ONLY before the
+/// relay is accepted — i.e. while it is still safe to fall back to an in-process serve without
+/// having consumed any of the client's stdin. Once the daemon accepts and the byte pump starts,
+/// the session is committed: it always resolves to `Ok(())` so we never double-serve.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
+    use basemind::comms::{identity, relay, singleton};
+    use tokio::io::AsyncWriteExt as _;
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+
+    runtime.block_on(async move {
+        let paths = singleton::resolve_paths().context("resolve comms paths")?;
+        singleton::ensure_daemon(&paths).await.context("ensure daemon")?;
+        let mut stream = relay_connect_stream(&paths.socket_path)
+            .await
+            .context("connect to daemon socket")?;
+
+        let agent = identity::cli_agent_id(root);
+        let hello = relay::RelayHello {
+            relay_proto_ver: relay::RELAY_PROTO_VER,
+            root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+            view: view.to_string(),
+            agent,
+        };
+        let welcome = relay::client_handshake(&mut stream, &hello)
+            .await
+            .context("relay handshake")?;
+        if welcome.relay_proto_ver != relay::RELAY_PROTO_VER {
+            anyhow::bail!(
+                "daemon relay-proto {} != client {}",
+                welcome.relay_proto_ver,
+                relay::RELAY_PROTO_VER
+            );
+        }
+        if !welcome.accepted {
+            anyhow::bail!("daemon declined relay: {:?}", welcome.code);
+        }
+
+        // Accepted: from here the session is committed — no fallback is possible because stdin is
+        // being forwarded to the daemon. Always resolve to Ok(()).
+        tracing::info!(
+            pid = std::process::id(),
+            daemon_version = %welcome.daemon_version,
+            view,
+            root = %root.display(),
+            "basemind serve: relaying to daemon"
+        );
+        let (mut sock_rd, mut sock_wr) = tokio::io::split(stream);
+        let mut stdin = tokio::io::stdin();
+        let mut stdout = tokio::io::stdout();
+        tokio::select! {
+            client_to_daemon = tokio::io::copy(&mut stdin, &mut sock_wr) => {
+                log_pump_end("stdin->daemon", client_to_daemon);
+                let _ = sock_wr.shutdown().await;
+            }
+            daemon_to_client = tokio::io::copy(&mut sock_rd, &mut stdout) => {
+                log_pump_end("daemon->stdout", daemon_to_client);
+                let _ = stdout.flush().await;
+            }
+        }
+        tracing::info!(pid = std::process::id(), "basemind serve: relay session ended, exiting");
+        Ok(())
+    })
+}
+
+/// Log the end of one relay copy direction. EOF (`Ok`) and the expected teardown kinds
+/// (`BrokenPipe` / `UnexpectedEof` / `ConnectionReset`) are normal end-of-session signals logged at
+/// debug; anything else is logged at info. Either way the session resolves cleanly.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn log_pump_end(direction: &str, result: std::io::Result<u64>) {
+    match result {
+        Ok(bytes) => tracing::debug!(direction, bytes, "relay pump reached EOF"),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+                    | std::io::ErrorKind::ConnectionReset
+            ) =>
+        {
+            tracing::debug!(direction, %error, "relay pump closed")
+        }
+        Err(error) => tracing::info!(direction, %error, "relay pump ended with error"),
+    }
+}
+
+/// Open the platform stream to the daemon endpoint for a relay session. Mirrors the private
+/// `CommsClient::connect_stream`: a Unix socket connect on unix, a busy-pipe-retrying named-pipe
+/// open on windows. Returns a stream that is `AsyncRead + AsyncWrite + Unpin` and splittable.
+#[cfg(all(feature = "comms", unix))]
+async fn relay_connect_stream(socket_path: &std::path::Path) -> std::io::Result<tokio::net::UnixStream> {
+    tokio::net::UnixStream::connect(socket_path).await
+}
+
+/// Windows named-pipe variant of [`relay_connect_stream`]. A busy pipe (`ERROR_PIPE_BUSY`, 231)
+/// means the server is mid-`connect()` for another client; retry briefly before giving up.
+#[cfg(all(feature = "comms", windows))]
+async fn relay_connect_stream(
+    socket_path: &std::path::Path,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    const ERROR_PIPE_BUSY: i32 = 231;
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+    let deadline = std::time::Instant::now() + CONNECT_TIMEOUT;
+    loop {
+        match ClientOptions::new().open(socket_path) {
+            Ok(client) => return Ok(client),
+            Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                tokio::time::sleep(RETRY_INTERVAL).await;
+            }
+            Err(source) => return Err(source),
+        }
+    }
+}
+
+/// The in-process serve body: open the store, build a [`basemind::mcp::BasemindServer`], and serve
+/// it over stdio. This is the behavior `basemind serve` had before the relay was added, and the
+/// guaranteed fallback whenever the relay is unavailable.
+fn cmd_serve_inprocess(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
     if view != basemind::store::VIEW_WORKING {
         let index_path = basemind::store::workspace_cache_dir(root)
             .join(basemind::store::VIEWS_DIR)
