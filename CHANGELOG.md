@@ -10,6 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`basemind serve` is now a thin relay to the singleton daemon; the daemon hosts the MCP router.**
+  Every client's `serve` used to open its own read-only store, build its own in-RAM code map, and
+  lazily load its own ONNX + LanceDB (~300–370 MB RSS **per process**). On a `comms` build serving
+  the working view, `serve` now dials the daemon, runs a tiny handshake, and pumps stdio bytes to it
+  — the daemon hosts the rmcp router over **one shared read stack per workspace** (`SharedReadStack`),
+  so the in-RAM map, ONNX model, LanceDB, and git caches are resident **once per workspace** instead
+  of once per client. `ServerState` was split into a per-connection identity (`agent_id`,
+  `comms_clients`, `log_level`) plus that shared stack, so distinct clients keep distinct memory-owner
+  identities while sharing the heavy read state. Fallback is total: any handshake problem — no daemon,
+  an older daemon (which rejects the `RELAY_MAGIC` preamble as an over-long frame), a proto/view
+  mismatch, or `BASEMIND_MCP_LEAN` / a non-working view / `BASEMIND_SERVE_INPROCESS` — serves
+  in-process exactly as before, so a client is never bricked. No blob/index schema change.
+
+### Fixed
+
+- **Daemon-hosted precise `resolved_refs` (and `search_code`) no longer degrade.** Hosted connections
+  read the daemon's read-write fjall index directly in-process via a host seam, so cross-file
+  `find_callers` / `goto_definition` see the `refs_by_def` edges an index-less thin serve could not —
+  without the daemon dialing itself over its own socket.
+
+### Removed
+
+- Deleted the orphaned `monitors/monitors.json` + `scripts/comms-monitor.sh` poll-loop scripts
+  (referenced by no manifest; the daemon's `SubscribeInbox` push channel supersedes them).
+
 ## [0.22.6] — 2026-07-25
 
 ### Fixed
