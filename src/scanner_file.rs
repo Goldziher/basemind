@@ -450,9 +450,6 @@ fn process_doc(
     let hex_buf = hashing::hex_buf(&hash);
     let hash_hex = hashing::hex_str(&hex_buf);
 
-    // A tracked doc whose stored embed state is unsatisfied must NOT short-circuit a pass that
-    // would embed it — hash + preset + blob existence alone kept vectorless docs quiescent
-    // forever (issue #44). The re-process persists via `Store::write_doc`'s overwrite.
     if let Some(existing) = store.lookup_doc(rel)
         && existing.hash_hex == hash_hex
         && existing.embedding_preset == config.documents.embedding_preset
@@ -482,9 +479,6 @@ fn process_doc(
                 embedding_dim: batch.embedding_dim,
                 reused: batch.reused,
             };
-            // Built AFTER the extract call (it used to be built before) so the entry can record
-            // the batch's embed state — the flag the next pass's fast path reads to tell a fully
-            // embedded doc from a tracked-but-vectorless one.
             let doc_entry = crate::store::DocEntry {
                 hash_hex: hash_hex.to_string(),
                 embedding_preset: config.documents.embedding_preset.clone(),

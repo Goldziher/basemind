@@ -157,11 +157,6 @@ impl WorkspacePool {
 
         let mode = if embed { EmbedMode::Inline } else { EmbedMode::Deferred };
         let incremental = matches!(paths, Some(ref p) if !full && !p.is_empty());
-        // Capture the full-scan generation BEFORE blocking on the store lock: if it advances while
-        // this request waits, an identical-or-stronger full scan just walked the same tree and the
-        // queued request is redundant — serve that scan's stats instead of re-walking (N sessions'
-        // pile-up of full rescans, issue #44). An `Inline` result satisfies a `Deferred` request;
-        // the reverse would silently skip the vector fill.
         let gen_before = entry.full_scan_gen.load(std::sync::atomic::Ordering::Acquire);
         let mut store = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
         if !incremental {
@@ -173,9 +168,6 @@ impl WorkspacePool {
                 return Ok((stats, false));
             }
         }
-        // Re-check the drain token AFTER winning the store lock: a request that queued behind a
-        // pass the drain cancelled must fail fast here, not start its own doomed walk — a
-        // cancelled pass never advances `full_scan_gen`, so the coalescing above cannot catch it.
         if cancel.is_cancelled() {
             return Ok((ScanStats::default(), true));
         }
@@ -192,7 +184,6 @@ impl WorkspacePool {
                 cancel,
             )?
         };
-        // A cancelled pass is partial — never record it as a completed full scan.
         if !incremental && !report.cancelled {
             let generation = entry.full_scan_gen.fetch_add(1, std::sync::atomic::Ordering::AcqRel) + 1;
             *entry.last_full.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, mode, report.stats));

@@ -1,7 +1,7 @@
 
 [package]
 name = "basemind"
-version = "0.22.4"
+version = "0.22.5"
 authors = ["Na'aman Hirschfeld <nhirschfeld@gmail.com>"]
 edition = "2024"
 description = "Full AI context layer over MCP — tree-sitter code-map, document RAG (PDF/Office/HTML/email + OCR + reranker), shared agent memory, on-demand web crawl, git history + blame + per-symbol diff. 300+ languages, 10+ coding-agent harnesses, content-addressed Fjall + LanceDB."
@@ -35,25 +35,25 @@ default = []
 intelligence = ["dep:xberg", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema", "dep:futures"]
 
 documents = [
-    "intelligence",
-    "xberg/formats",
-    "xberg/analysis",
-    "xberg/chunking-tokenizers",
-    "xberg/embeddings",
-    "xberg/reranker",
-    "xberg/reranker-presets",
-    "xberg/ocr",
-    "xberg/paddle-ocr",
-    "xberg/layout-detection",
-    "xberg/auto-rotate",
-    "xberg/ner-onnx",
-    "xberg/keywords-yake",
-    "xberg/keywords-rake",
-    "xberg/summarization",
-    "xberg/summarization-llm",
-    "xberg/redaction",
-    "xberg/qr-codes",
-    "dep:serde_toon_format",
+  "intelligence",
+  "xberg/formats",
+  "xberg/analysis",
+  "xberg/chunking-tokenizers",
+  "xberg/embeddings",
+  "xberg/reranker",
+  "xberg/reranker-presets",
+  "xberg/ocr",
+  "xberg/paddle-ocr",
+  "xberg/layout-detection",
+  "xberg/auto-rotate",
+  "xberg/ner-onnx",
+  "xberg/keywords-yake",
+  "xberg/keywords-rake",
+  "xberg/summarization",
+  "xberg/summarization-llm",
+  "xberg/redaction",
+  "xberg/qr-codes",
+  "dep:serde_toon_format",
 ]
 
 code-search = ["intelligence", "xberg/embeddings", "xberg/reranker", "xberg/reranker-presets"]
@@ -67,12 +67,12 @@ comms = ["dep:tokio-util"]
 shells = ["dep:rmux-sdk", "dep:rmux-server", "dep:rmux-client"]
 
 code-intel-js = [
-    "dep:oxc_allocator",
-    "dep:oxc_parser",
-    "dep:oxc_semantic",
-    "dep:oxc_span",
-    "dep:oxc_syntax",
-    "dep:oxc_resolver",
+  "dep:oxc_allocator",
+  "dep:oxc_parser",
+  "dep:oxc_semantic",
+  "dep:oxc_span",
+  "dep:oxc_syntax",
+  "dep:oxc_resolver",
 ]
 
 code-intel-stack = ["dep:stack-graphs", "dep:tree-sitter-graph", "dep:tree-sitter-stack-graphs"]
@@ -136,16 +136,16 @@ streaming-iterator = "0.1"
 tempfile = { version = "3", optional = true }
 thiserror = "2"
 tokio = { version = "1", features = [
-    "rt-multi-thread",
-    "macros",
-    "signal",
-    "sync",
-    "io-util",
-    "io-std",
-    "time",
-    "net",
-    "fs",
-    "process",
+  "rt-multi-thread",
+  "macros",
+  "signal",
+  "sync",
+  "io-util",
+  "io-std",
+  "time",
+  "net",
+  "fs",
+  "process",
 ] }
 tokio-util = { version = "0.7", features = ["codec"], optional = true }
 toml = "1.1"
@@ -157,8 +157,8 @@ tree-sitter-language-pack = "1.13.3"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
 xberg = { version = "1.0.0-rc.37", default-features = false, features = [
-    "tokio-runtime",
-    "simd-utf8",
+  "tokio-runtime",
+  "simd-utf8",
 ], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

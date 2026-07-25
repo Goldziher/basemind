@@ -29,7 +29,7 @@ Any agent can:
 
 Notes are simple key-value pairs:
 
-```
+```text
 key: "sqlinjection-mitigation"
 value: "All user inputs are parameterized at the data layer via the Query class.
         Prepared statements escape at the database driver level."
@@ -43,7 +43,7 @@ basemind watches how your files evolve and suggests notes worth saving. When it 
 frequently change together (the `migrations/` and `models/` directories, for example), it proposes
 a note:
 
-```
+```text
 "Files that change together in this repo: [migrations, models, controllers].
 Consider documenting the pattern or relationship."
 ```

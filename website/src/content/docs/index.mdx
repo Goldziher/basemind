@@ -32,22 +32,22 @@ question about your code costs a small fraction of the tokens it takes to read t
 ## The operating rule: basemind first, shell/grep/git fallback
 
 <CardGrid>
-	<Card title="Answer from structure" icon="magnifier">
-		`outline` a file before you open it, `search_symbols` instead of grep, `find_references`
-		instead of grepping call sites. Pointers, not file bodies.
-	</Card>
-	<Card title="Ask history directly" icon="git-branch">
-		`recent_changes`, `blame_symbol`, `commits_touching`, `diff_outline` — git intelligence at
-		symbol resolution, in tens of microseconds.
-	</Card>
-	<Card title="Search everything" icon="open-book">
-		Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR) — plus scraped
-		web pages — with reranking and per-document summaries.
-	</Card>
-	<Card title="Coordinate agents" icon="comment">
-		A shared channel for a team of agents on the same repo: rooms, inboxes, direct messages, and
-		orchestration of many named subagents.
-	</Card>
+    <Card title="Answer from structure" icon="magnifier">
+        `outline` a file before you open it, `search_symbols` instead of grep, `find_references`
+        instead of grepping call sites. Pointers, not file bodies.
+    </Card>
+    <Card title="Ask history directly" icon="git-branch">
+        `recent_changes`, `blame_symbol`, `commits_touching`, `diff_outline` — git intelligence at
+        symbol resolution, in tens of microseconds.
+    </Card>
+    <Card title="Search everything" icon="open-book">
+        Semantic + full-text search over PDFs, Office, HTML, email, and images (OCR) — plus scraped
+        web pages — with reranking and per-document summaries.
+    </Card>
+    <Card title="Coordinate agents" icon="comment">
+        A shared channel for a team of agents on the same repo: rooms, inboxes, direct messages, and
+        orchestration of many named subagents.
+    </Card>
 </CardGrid>
 
 ## Install in one step
@@ -56,39 +56,39 @@ The plugin sets up the server, helper skills, comms, and slash commands — and 
 `basemind` program for you on first use. Or install the program directly with a package manager.
 
 <Tabs syncKey="installer">
-	<TabItem label="Claude Code">
-		<Code
-			code={`/plugin marketplace add Goldziher/basemind\n/plugin install basemind@basemind`}
-			lang="text"
-		/>
-	</TabItem>
-	<TabItem label="Codex">
-		<Code
-			code={`codex plugin marketplace add Goldziher/basemind\ncodex plugin add basemind@basemind`}
-			lang="bash"
-		/>
-	</TabItem>
-	<TabItem label="Cursor">
-		<Code code={`/add-plugin basemind`} lang="text" />
-	</TabItem>
-	<TabItem label="Gemini CLI">
-		<Code code={`gemini extensions install https://github.com/Goldziher/basemind`} lang="bash" />
-	</TabItem>
-	<TabItem label="Copilot CLI">
-		<Code
-			code={`copilot plugin marketplace add Goldziher/basemind\ncopilot plugin install basemind@basemind`}
-			lang="bash"
-		/>
-	</TabItem>
-	<TabItem label="Homebrew">
-		<Code code={`brew install Goldziher/tap/basemind`} lang="bash" />
-	</TabItem>
-	<TabItem label="npm">
-		<Code code={`npm install -g basemind`} lang="bash" />
-	</TabItem>
-	<TabItem label="pip">
-		<Code code={`pip install basemind`} lang="bash" />
-	</TabItem>
+    <TabItem label="Claude Code">
+        <Code
+            code={`/plugin marketplace add Goldziher/basemind\n/plugin install basemind@basemind`}
+            lang="text"
+        />
+    </TabItem>
+    <TabItem label="Codex">
+        <Code
+            code={`codex plugin marketplace add Goldziher/basemind\ncodex plugin add basemind@basemind`}
+            lang="bash"
+        />
+    </TabItem>
+    <TabItem label="Cursor">
+        <Code code={`/add-plugin basemind`} lang="text" />
+    </TabItem>
+    <TabItem label="Gemini CLI">
+        <Code code={`gemini extensions install https://github.com/Goldziher/basemind`} lang="bash" />
+    </TabItem>
+    <TabItem label="Copilot CLI">
+        <Code
+            code={`copilot plugin marketplace add Goldziher/basemind\ncopilot plugin install basemind@basemind`}
+            lang="bash"
+        />
+    </TabItem>
+    <TabItem label="Homebrew">
+        <Code code={`brew install Goldziher/tap/basemind`} lang="bash" />
+    </TabItem>
+    <TabItem label="npm">
+        <Code code={`npm install -g basemind`} lang="bash" />
+    </TabItem>
+    <TabItem label="pip">
+        <Code code={`pip install basemind`} lang="bash" />
+    </TabItem>
 </Tabs>
 
 More hosts — Windsurf, Factory Droid, OpenCode, Kimi, Hermes, Cline, Continue, and others — plus the plain
@@ -98,10 +98,10 @@ in the full [installation guide](/start/installation/).
 ## Explore
 
 <CardGrid>
-	<LinkCard title="Introduction" href="/start/introduction/" description="What basemind is and why it exists." />
-	<LinkCard title="Quickstart" href="/start/quickstart/" description="Scan a repo and ask your first questions." />
-	<LinkCard title="How it works" href="/concepts/how-it-works/" description="One scan, then instant answers held in memory." />
-	<LinkCard title="MCP tools" href="/reference/mcp-tools/" description="Every tool, what it returns, and when to reach for it." />
-	<LinkCard title="CLI reference" href="/reference/cli/" description="The scriptable surface, at 1:1 parity with the MCP tools." />
-	<LinkCard title="Performance" href="/reference/performance/" description="Scan speed and microsecond git-history queries." />
+    <LinkCard title="Introduction" href="/start/introduction/" description="What basemind is and why it exists." />
+    <LinkCard title="Quickstart" href="/start/quickstart/" description="Scan a repo and ask your first questions." />
+    <LinkCard title="How it works" href="/concepts/how-it-works/" description="One scan, then instant answers held in memory." />
+    <LinkCard title="MCP tools" href="/reference/mcp-tools/" description="Every tool, what it returns, and when to reach for it." />
+    <LinkCard title="CLI reference" href="/reference/cli/" description="The scriptable surface, at 1:1 parity with the MCP tools." />
+    <LinkCard title="Performance" href="/reference/performance/" description="Scan speed and microsecond git-history queries." />
 </CardGrid>

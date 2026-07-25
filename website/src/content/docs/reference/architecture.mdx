@@ -9,7 +9,7 @@ basemind is a single Rust crate with one binary (`basemind`) serving three roles
 
 ## High-Level Pipeline
 
-```
+```text
 Your project (code + documents + git history)
   ↓
 basemind scan (or incremental watch)
@@ -80,7 +80,7 @@ Powers semantic search (code search, document search, memory search). Vectors ar
 
 `basemind scan` and `basemind watch` (incremental) share the same per-file pipeline:
 
-```
+```text
 Walker (gitignore-aware) → filter by glob + size cap
   ↓
 rayon par_iter (parallel across all CPU cores)
@@ -148,7 +148,7 @@ When `[documents] enabled = true`, `scanner_docs.rs` runs a separate pass:
 
 basemind uses the **tree-sitter language pack** (TSLP) to detect and parse 300+ languages. Language detection is dynamic:
 
-```
+```text
 File extension → tree_sitter_language_pack::detect_language
   ↓
 LangId = &'static str (the pack name, e.g. "rust", "python", "typescript")
@@ -201,7 +201,7 @@ Two persistent schemas, both tracking `RELEASE_MINOR` from `src/version.rs`:
 
 Global cache at `~/.local/share/basemind/` (or `$BASEMIND_DATA_HOME`):
 
-```
+```text
 ~/.local/share/basemind/
 ├── blobs/
 │   ├── abc123….l1.msgpack  # Outline: symbols, signatures, imports

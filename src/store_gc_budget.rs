@@ -347,7 +347,6 @@ mod tests {
             Duration::from_secs(2 * 24 * 3600),
         );
 
-        // Budget below the current footprint but reachable by evicting one workspace.
         let total = dir_size(&workspaces).expect("size");
         let one_ws = dir_size(&cold).expect("size cold");
         let budget = total - one_ws / 2;
@@ -424,11 +423,8 @@ mod tests {
 
     #[test]
     fn cache_budget_env_parses_default_zero_and_garbage() {
-        // Serialized via a lock-free convention: this test owns the env var name below and no
-        // other test touches it.
         const VAR: &str = CACHE_BUDGET_ENV;
         // SAFETY: test-only env mutation; no other thread in this test binary reads this var
-        // concurrently (only this test references it).
         unsafe { std::env::remove_var(VAR) };
         assert_eq!(cache_budget_bytes(), Some(DEFAULT_CACHE_BUDGET_MIB * 1024 * 1024));
         unsafe { std::env::set_var(VAR, "0") };

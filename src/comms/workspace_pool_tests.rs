@@ -232,15 +232,12 @@ fn queued_identical_full_rescans_coalesce() {
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
     let ws = workspace_with_sources();
 
-    // Warm the entry without scanning, then hold its store lock so both requests queue behind it
-    // with a pre-scan generation captured.
     let entry = pool.get_or_open(ws.path()).expect("open entry");
     let guard = entry.store.lock().unwrap_or_else(PoisonError::into_inner);
 
     std::thread::scope(|scope| {
         let a = scope.spawn(|| pool.rescan(ws.path(), None, true, false, &ScanCancel::default()));
         let b = scope.spawn(|| pool.rescan(ws.path(), None, true, false, &ScanCancel::default()));
-        // Give both threads time to capture the generation and block on the store lock.
         std::thread::sleep(Duration::from_millis(200));
         drop(guard);
 

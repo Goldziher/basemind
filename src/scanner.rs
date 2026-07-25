@@ -549,8 +549,6 @@ pub fn scan_paths_with_cancel(
         report.stats.removed += 1;
     }
 
-    // Doc-tier removals (file gone from disk, tracked only in `doc_files`) are purged by the
-    // doc-removals lane below; count them here so the report doesn't silently drop them.
     #[cfg(feature = "documents")]
     for rel in &doc_removed {
         report.results.push(FileResult::bare(rel.clone(), FileStatus::Removed));

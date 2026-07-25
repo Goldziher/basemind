@@ -59,8 +59,6 @@ fn fixture() -> (TempDir, ConfigV1) {
     }
     let mut cfg = ConfigV1::with_defaults();
     cfg.documents.enabled = true;
-    // Embeddings off: no ONNX model needed, but extraction + blob caching + the reuse accounting
-    // are the same code path the #44 loop rode.
     cfg.documents.embed = false;
     (dir, cfg)
 }
@@ -109,7 +107,6 @@ fn rename_churn_reuses_cached_extraction() {
     full_scan(root, &mut store, &cfg);
 
     fs::rename(root.join("alpha.svg"), root.join("alpha-renamed.svg")).unwrap();
-    // The watcher-batch shape: the debouncer reports both the vanished and the appeared path.
     let report = scan_paths(
         root,
         &mut store,
@@ -140,7 +137,6 @@ fn mtime_only_subtree_churn_refires_nothing() {
     let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
     full_scan(root, &mut store, &cfg);
 
-    // Delete + rewrite identical bytes: fresh mtimes/inodes, identical content hashes.
     for name in DOC_NAMES {
         let abs = root.join(name);
         fs::remove_file(&abs).unwrap();
@@ -170,7 +166,6 @@ fn repeated_churn_cycles_accumulate_zero_fresh_extractions() {
     let mut total_reused = 0usize;
     let mut alpha_current = "alpha.svg".to_string();
     for cycle in 0..3 {
-        // Rename churn: bounce the alpha doc between two names.
         let alpha_next = if cycle % 2 == 0 {
             "alpha-renamed.svg"
         } else {
@@ -189,7 +184,6 @@ fn repeated_churn_cycles_accumulate_zero_fresh_extractions() {
         total_reused += report.stats.reused_doc_extraction;
         alpha_current = alpha_next.to_string();
 
-        // Rewrite churn: delete + rewrite identical bytes for every doc.
         for name in DOC_NAMES.iter().filter(|n| **n != "alpha.svg") {
             let abs = root.join(name);
             fs::remove_file(&abs).unwrap();

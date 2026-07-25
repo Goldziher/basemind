@@ -232,8 +232,6 @@ fn gc_blobs_in(blobs_dir: &Path, referenced: &AHashSet<String>, grace: Duration)
             path: path.clone(),
             source,
         })?;
-        // Unreadable / future mtimes count as young — err toward keeping (a kept orphan costs
-        // disk until the next sweep; a reaped live-in-a-moment blob costs a full re-embed).
         let age = meta
             .modified()
             .ok()
@@ -575,7 +573,6 @@ mod tests {
         let fx = build_fixture();
         let referenced = collect_referenced_hashes(&fx.basemind_dir).expect("collect");
 
-        // Fixture blobs were written moments ago, so any nonzero grace shields the orphan.
         let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::from_secs(3600)).expect("gc with grace");
         assert_eq!(report.scanned, 2, "both blobs inspected");
         assert_eq!(report.removed, 0, "young orphan survives the grace window");
@@ -586,7 +583,6 @@ mod tests {
             "young orphan blob still on disk"
         );
 
-        // Zero grace reaps it — the pre-grace behavior every other test asserts.
         let report = gc_blobs_in(&fx.blobs_dir, &referenced, Duration::ZERO).expect("gc without grace");
         assert_eq!(report.removed, 1, "orphan reaped once outside the grace window");
     }

@@ -10,6 +10,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.5] — 2026-07-25
+
+Hardening release after a starved-GC incident: a pre-0.22.4 daemon stuck in the #44 re-embed loop
+held the blob-GC read lock indefinitely, which silently stopped **all** daemon maintenance and let
+the machine-global cache grow to 116 GB with no signal anywhere. Updating also remediates lingering
+pre-fix daemons: a 0.22.5 client stops any older-build daemon on first contact (existing
+older-build takeover) instead of leaving it to run away.
+
+### Added
+
+- **Cache size budget with cold-workspace eviction.** `BASEMIND_CACHE_BUDGET_MB` (default 20 GiB;
+  `0` = unlimited) bounds the machine-global cache. When workspaces + blobs exceed it, the GC
+  sweep evicts the coldest workspace dirs (idle ≥ 24 h, never ones another process holds locked)
+  and reclaims the blobs they pinned — the backstop the reference-counting GC lacked, since
+  live-but-idle workspaces pin their blobs forever.
+- **Persisted GC observability.** Every destructive sweep records its outcome (timestamp, blobs
+  removed, bytes freed, workspaces reaped/evicted) to `gc-state.json` in the cache root, and
+  `cache_stats` surfaces it as `last_gc` — a GC that stops running is now visible instead of a
+  silent disk leak.
+
+### Fixed
+
+- **Blob GC runs at daemon startup and on its own task** (#44). It previously ran only as the
+  last step of the hourly prune loop: a daemon restarting more often than hourly never swept once,
+  and a single starved GC await stopped message pruning, thread archiving, and workspace eviction
+  for the life of the process.
+- **The GC's lock wait is bounded** (#44). Waiting for the blob-GC write lock now times out after
+  5 minutes (logged, retried next cycle) instead of parking forever behind a runaway rescan's read
+  guard — which, the lock being FIFO, also queued every subsequent rescan behind the stuck writer
+  and wedged the daemon machine-wide.
+- **A draining daemon refuses new rescans** (`rescan_draining`) instead of running doomed partial
+  passes, and a rescan that queued behind a drain-cancelled pass fails fast instead of re-walking
+  the tree — cancelled passes never advance the coalescing generation, so each one previously
+  re-walked the whole monorepo.
+
+### Changed
+
+- Upgraded `gix` to 0.86 and `xberg` to 1.0.0-rc.37; `arrow-array`/`arrow-schema` are pinned to
+  `=58` (required by LanceDB 0.31).
+
 ## [0.22.4] — 2026-07-23
 
 ### Fixed
