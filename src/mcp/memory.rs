@@ -25,13 +25,15 @@ use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
 #[cfg(feature = "intelligence")]
 pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f32>, McpError> {
-    let preset = state.config.documents.embedding_preset.clone();
+    let preset = state.shared.config.documents.embedding_preset.clone();
     let max_embed_threads = state
+        .shared
         .config
         .resources
-        .effective_embed_threads(state.config.documents.embed_max_threads);
-    let embed_batch_size = state.config.resources.embed_batch_size;
+        .effective_embed_threads(state.shared.config.documents.embed_max_threads);
+    let embed_batch_size = state.shared.config.resources.embed_batch_size;
     let embedder = state
+        .shared
         .embedder
         .get_or_try_init(|| async {
             crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
@@ -50,16 +52,19 @@ pub(super) async fn embed_query(state: &ServerState, text: &str) -> Result<Vec<f
 
 #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
 pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance::LanceStore>, McpError> {
-    let preset = state.config.documents.embedding_preset.clone();
+    let preset = state.shared.config.documents.embedding_preset.clone();
     let max_embed_threads = state
+        .shared
         .config
         .resources
-        .effective_embed_threads(state.config.documents.embed_max_threads);
-    let embed_batch_size = state.config.resources.embed_batch_size;
+        .effective_embed_threads(state.shared.config.documents.embed_max_threads);
+    let embed_batch_size = state.shared.config.resources.embed_batch_size;
     state
+        .shared
         .lance
         .get_or_try_init(|| async {
             let embedder = state
+                .shared
                 .embedder
                 .get_or_try_init(|| async {
                     crate::embeddings::SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
@@ -70,7 +75,13 @@ pub(super) async fn lance_store(state: &ServerState) -> Result<Arc<crate::lance:
                 .map_err(|e| format!("embedder init: {e}"))?;
             let dim = embedder.dim();
             let model = embedder.model().to_string();
-            let lance_dir = state.store.read().await.basemind_dir.join(crate::store::LANCE_DIR);
+            let lance_dir = state
+                .shared
+                .store
+                .read()
+                .await
+                .basemind_dir
+                .join(crate::store::LANCE_DIR);
             let model_for_open = model.clone();
             tokio::task::spawn_blocking(move || crate::lance::LanceStore::open(&lance_dir, dim, &model_for_open))
                 .await
@@ -159,7 +170,7 @@ pub(super) async fn run_memory_put(state: &ServerState, params: MemoryPutParams)
         let embedding = embed_query(state, &params.value).await?;
         let lance = lance_store(state).await?;
         let row = crate::lance::MemoryRow {
-            scope: state.scope.clone(),
+            scope: state.shared.scope.clone(),
             key: params.key.clone(),
             value: params.value.clone(),
             tags,
@@ -197,7 +208,7 @@ async fn memory_put_fjall(
     tags: &[String],
 ) -> Result<(i64, i64), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
@@ -211,7 +222,7 @@ async fn memory_put_fjall(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -223,16 +234,16 @@ async fn memory_put_fjall(
         };
     }
 
-    let key_lock = memory_put_lock(&state.scope, vis_byte, owner, key);
+    let key_lock = memory_put_lock(&state.shared.scope, vis_byte, owner, key);
     let _put_guard = key_lock.lock().await;
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     Ok(super::memory_ops::put_core(
         idx,
-        &state.scope,
+        &state.shared.scope,
         vis_byte,
         owner,
         key,
@@ -246,7 +257,7 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
     let (vis_byte, owner) = namespace(state, params.visibility);
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
@@ -258,7 +269,7 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         let entry = match outcome {
@@ -273,13 +284,13 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
         return json_result(&entry);
     }
 
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     let entry: Option<MemoryEntry> =
-        super::memory_ops::get_core(idx, &state.scope, vis_byte, owner, &params.key)?.map(wire_to_entry);
+        super::memory_ops::get_core(idx, &state.shared.scope, vis_byte, owner, &params.key)?.map(wire_to_entry);
     json_result(&entry)
 }
 
@@ -309,7 +320,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
     let cursor_bytes = params.cursor.as_ref().map(|c| c.decode_fjall()).transpose()?;
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
@@ -324,7 +335,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -347,14 +358,14 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
         };
     }
 
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     let result = super::memory_ops::list_core(
         idx,
-        &state.scope,
+        &state.shared.scope,
         &super::memory_ops::ListQuery {
             vis_byte,
             owner,
@@ -385,7 +396,7 @@ pub(super) async fn run_memory_search(
     let agent_id = owner.to_string();
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
-    let scope = state.scope.clone();
+    let scope = state.shared.scope.clone();
     let tag = params.tag.clone();
     let hits_raw = tokio::task::spawn_blocking(move || {
         lance.search_memory(&scope, &visibility, &agent_id, embedding, limit, tag.as_deref())
@@ -416,9 +427,9 @@ pub(super) async fn run_memory_delete(
 ) -> Result<CallToolResult, McpError> {
     let (vis_byte, owner) = namespace(state, params.visibility);
     let deleted_fjall = memory_delete_fjall(state, vis_byte, owner, &params.key).await?;
-    if let Some(lance) = state.lance.get() {
+    if let Some(lance) = state.shared.lance.get() {
         let lance = Arc::clone(lance);
-        let scope = state.scope.clone();
+        let scope = state.shared.scope.clone();
         let key = params.key.clone();
         let visibility = lance_visibility(params.visibility).to_string();
         let agent_id = owner.to_string();
@@ -450,7 +461,7 @@ pub(super) async fn run_memory_delete(
 #[cfg(feature = "memory")]
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
@@ -462,7 +473,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .memory_op(state.root.clone(), state.scope.clone(), op)
+            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -474,19 +485,25 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
         };
     }
 
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let idx = store
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    Ok(super::memory_ops::delete_core(idx, &state.scope, vis_byte, owner, key)?)
+    Ok(super::memory_ops::delete_core(
+        idx,
+        &state.shared.scope,
+        vis_byte,
+        owner,
+        key,
+    )?)
 }
 
 /// Pick the ingestion scope to search: the caller's if they named one, else this repo's.
 ///
 /// Documents are partitioned by ingestion scope, and the lanes do not agree on one: the scanner
 /// writes under the repo scope while `web_scrape` / `web_crawl` write under `web:<host>`. Reading
-/// only `state.scope`, with no way to ask for another, made every scraped page permanently
+/// only `state.shared.scope`, with no way to ask for another, made every scraped page permanently
 /// invisible — the write landed, LanceDB grew on disk, and the query filtered it out and returned
 /// an empty, error-free, 14 ms answer.
 #[cfg(feature = "documents")]
@@ -501,7 +518,7 @@ pub(super) async fn run_search_documents(
 ) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
     let (output_format, reranker_enabled, reranker_preset, reranker_top_k) = if params.overrides.any() {
-        let mut effective = (*state.config).clone();
+        let mut effective = (*state.shared.config).clone();
         crate::config::layered::apply_documents_overrides(
             &mut effective,
             &params.overrides,
@@ -511,9 +528,9 @@ pub(super) async fn run_search_documents(
         let r = &effective.documents.reranker;
         (effective.documents.output.format, r.enabled, r.preset.clone(), r.top_k)
     } else {
-        let r = &state.config.documents.reranker;
+        let r = &state.shared.config.documents.reranker;
         (
-            state.config.documents.output.format,
+            state.shared.config.documents.output.format,
             r.enabled,
             r.preset.clone(),
             r.top_k,
@@ -523,7 +540,7 @@ pub(super) async fn run_search_documents(
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let embedding = embed_query(state, &params.query).await?;
     let lance = lance_store(state).await?;
-    let scope = resolve_doc_scope(params.scope.as_deref(), &state.scope);
+    let scope = resolve_doc_scope(params.scope.as_deref(), &state.shared.scope);
     let mime = params.mime_type.clone();
     let hits_raw =
         tokio::task::spawn_blocking(move || lance.search_documents(&scope, embedding, limit, mime.as_deref()))
@@ -652,7 +669,7 @@ async fn attach_doc_metadata(
     }
 
     let pairs: Vec<(String, std::path::PathBuf)> = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         unique_paths
             .iter()
             .filter_map(|p| {

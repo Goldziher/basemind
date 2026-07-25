@@ -108,7 +108,7 @@ fn per_call_engine(
     max_pages: Option<u32>,
     max_depth: Option<u32>,
 ) -> Result<crawlberg::CrawlEngineHandle, McpError> {
-    let mut cfg = state.config.crawl.clone();
+    let mut cfg = state.shared.config.crawl.clone();
     if let Some(mp) = max_pages {
         cfg.max_pages = mp;
     }
@@ -119,13 +119,15 @@ fn per_call_engine(
 }
 
 async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> {
-    let preset = state.config.documents.embedding_preset.clone();
+    let preset = state.shared.config.documents.embedding_preset.clone();
     let max_embed_threads = state
+        .shared
         .config
         .resources
-        .effective_embed_threads(state.config.documents.embed_max_threads);
-    let embed_batch_size = state.config.resources.embed_batch_size;
+        .effective_embed_threads(state.shared.config.documents.embed_max_threads);
+    let embed_batch_size = state.shared.config.resources.embed_batch_size;
     let embedder = state
+        .shared
         .embedder
         .get_or_try_init(|| async {
             SharedEmbedder::load(&preset, max_embed_threads, embed_batch_size)
@@ -138,7 +140,7 @@ async fn embedder(state: &ServerState) -> Result<Arc<SharedEmbedder>, McpError> 
 }
 
 fn engine(state: &ServerState) -> Result<&crawlberg::CrawlEngineHandle, McpError> {
-    state.crawl_engine.as_ref().ok_or_else(|| {
+    state.shared.crawl_engine.as_ref().ok_or_else(|| {
         McpError::internal_error("crawl engine not initialised; check basemind serve startup logs", None)
     })
 }
@@ -165,7 +167,7 @@ pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams)
     let response = if params.index {
         let lance = lance_store(state).await?;
         let embedder = embedder(state).await?;
-        let documents_cfg = state.config.documents.clone();
+        let documents_cfg = state.shared.config.documents.clone();
         let scope_for_block = scope.clone();
         let final_url_for_block = result.final_url.clone();
         let mime_for_block = result.content_type.clone();
@@ -234,7 +236,7 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
     let pages_visited = crawl_outcome.pages.len();
     let lance = lance_store(state).await?;
     let embedder = embedder(state).await?;
-    let documents_cfg = Arc::new(state.config.documents.clone());
+    let documents_cfg = Arc::new(state.shared.config.documents.clone());
 
     let mut total_chunks = 0usize;
     let mut pages_indexed = 0usize;

@@ -712,6 +712,7 @@ pub(crate) fn churn_commit_counts(state: &super::ServerState, window: u32) -> Re
     let commits: Vec<crate::git::CommitInfo> = match super::helpers::git_history_if_fresh(state, &head) {
         Some(index) => index.window_commits(window as usize),
         None => state
+            .shared
             .git_cache
             .log(repo, &head, None, window, true)
             .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?

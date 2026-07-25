@@ -39,10 +39,10 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            let store = self.state.store.read().await;
+            let store = self.state.shared.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             let churn = if params.include_churn {
                 let window = params.churn_window.unwrap_or(200).min(2000);
                 churn_commit_counts(&self.state, window).ok()

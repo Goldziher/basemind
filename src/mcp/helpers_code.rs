@@ -40,7 +40,10 @@ fn wants_toon(state: &ServerState, format: Option<&str>) -> bool {
     match format.map(str::trim) {
         Some(f) if f.eq_ignore_ascii_case("toon") => true,
         Some(f) if f.eq_ignore_ascii_case("json") => false,
-        _ => matches!(state.config.documents.output.format, crate::config::OutputFormat::Toon),
+        _ => matches!(
+            state.shared.config.documents.output.format,
+            crate::config::OutputFormat::Toon
+        ),
     }
 }
 
@@ -49,7 +52,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
     let limit = params.limit.unwrap_or(10).min(100) as usize;
     let want_toon = wants_toon(state, params.format.as_deref());
 
-    let rr = &state.config.code_search.reranker;
+    let rr = &state.shared.config.code_search.reranker;
     let rerank_enabled = params.reranker_enabled.unwrap_or(rr.enabled);
     let rerank_preset = params.reranker_preset.clone().unwrap_or_else(|| rr.preset.clone());
     let rerank_top_k = params.reranker_top_k.unwrap_or(rr.top_k);
@@ -95,7 +98,7 @@ pub(super) async fn run_search_code(state: &ServerState, params: SearchCodeParam
 async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
     let fuse_limit = (limit * 4).clamp(limit, 200);
 
-    let vector_ids: Vec<String> = if state.config.code_search.embed {
+    let vector_ids: Vec<String> = if state.shared.config.code_search.embed {
         match semantic_hits(state, query, fuse_limit).await {
             Ok(hits) => hits.into_iter().map(|h| h.chunk_id).collect(),
             Err(error) => {
@@ -107,7 +110,7 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
         Vec::new()
     };
 
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let (keyword_ids, exact_ids): (Vec<String>, Vec<String>) = match store.index_db.as_ref() {
         Some(db) => (
             bm25_search(db, query, fuse_limit)
@@ -152,7 +155,7 @@ async fn hybrid_hits(state: &ServerState, query: &str, limit: usize) -> Vec<Code
 async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result<Vec<CodeSearchHit>, McpError> {
     let embedding = embed_query(state, query).await?;
     let lance = lance_store(state).await?;
-    let scope = state.scope.clone();
+    let scope = state.shared.scope.clone();
     let hits_raw = tokio::task::spawn_blocking(move || lance.search_code_chunks(&scope, embedding, limit))
         .await
         .map_err(|e| McpError::internal_error(format!("spawn_blocking: {e}"), None))?
@@ -185,7 +188,7 @@ async fn semantic_hits(state: &ServerState, query: &str, limit: usize) -> Result
 /// Each hit carries a BM25 `score` (higher = better) and no `distance`. Returns an empty vec when the
 /// index is read-only (no `IndexDb` handle) — there is no keyword lane on a reader session.
 async fn keyword_hits(state: &ServerState, query: &str, limit: usize) -> Vec<CodeSearchHit> {
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let Some(db) = store.index_db.as_ref() else {
         return Vec::new();
     };
@@ -250,7 +253,7 @@ async fn rerank_hits(
         ));
     }
     let texts: Vec<String> = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         hits.iter()
             .map(|h| {
                 hydrate_one(&store, &h.chunk_id)
@@ -305,7 +308,7 @@ async fn rerank_hits(
 pub(super) async fn run_get_chunk(state: &ServerState, params: GetChunkParams) -> Result<CallToolResult, McpError> {
     let __body = std::time::Instant::now();
     let blob = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         let entry = store
             .lookup(&params.path)
             .ok_or_else(|| McpError::invalid_params(format!("get_chunk: file not indexed: {}", params.path), None))?;

@@ -31,7 +31,7 @@ pub(super) async fn run_cache_stats(
 ) -> Result<CallToolResult, McpError> {
     let state_for_stats = Arc::clone(&state);
     let stats = tokio::task::spawn_blocking(move || {
-        let store = state_for_stats.store.blocking_read();
+        let store = state_for_stats.shared.store.blocking_read();
         store_gc::cache_stats(&store.basemind_dir)
     })
     .await
@@ -68,7 +68,7 @@ pub(super) async fn run_cache_clear(
 ) -> Result<CallToolResult, McpError> {
     if let Some(name) = params.component.strip_prefix("views:") {
         let name = name.to_string();
-        let active_view = state.store.read().await.view.clone();
+        let active_view = state.shared.store.read().await.view.clone();
         if name == active_view {
             return Err(McpError::invalid_request(
                 format!(
@@ -79,7 +79,7 @@ pub(super) async fn run_cache_clear(
                 None,
             ));
         }
-        let dir = state.store.read().await.basemind_dir.clone();
+        let dir = state.shared.store.read().await.basemind_dir.clone();
         tokio::task::spawn_blocking(move || store_gc::clear_single_view(&dir, &name))
             .await
             .map_err(|e| McpError::internal_error(format!("cache_clear join: {e}"), None))?
@@ -136,7 +136,7 @@ pub(super) async fn run_cache_clear(
 /// serializes against `scan_and_refresh` and the stats/GC read guards for the wipe.
 async fn clear_live_component(state: Arc<ServerState>, component: CacheComponent) -> Result<(), McpError> {
     tokio::task::spawn_blocking(move || {
-        let store = state.store.blocking_write();
+        let store = state.shared.store.blocking_write();
         store_gc::clear_component(&store.basemind_dir, component)
     })
     .await
@@ -160,16 +160,16 @@ pub(super) async fn run_rescan(
         Some(requested) => {
             let mut out = Vec::with_capacity(requested.len());
             for p in requested {
-                let normalized = crate::path::normalize_query_path(&p, &state.root).ok_or_else(|| {
+                let normalized = crate::path::normalize_query_path(&p, &state.shared.root).ok_or_else(|| {
                     McpError::invalid_params(format!("rescan: path {p:?} escapes the repository root"), None)
                 })?;
-                out.push(state.root.join(normalized));
+                out.push(state.shared.root.join(normalized));
             }
             Some(out)
         }
     };
 
-    let root = state.root.display().to_string();
+    let root = state.shared.root.display().to_string();
 
     if let Some(token) = progress_token.clone() {
         super::notifications::emit_progress(peer, token, 0.0, None, "rescan: scanning working tree").await;
@@ -240,7 +240,7 @@ async fn fetch_rescan_stats(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
 ) -> Result<RescanStats, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         let report = super::daemon_forward::forward_rescan_and_refresh(state, scoped_paths, false, true).await?;
         return Ok(RescanStats {
             scanned: report.scanned,

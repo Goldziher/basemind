@@ -36,7 +36,7 @@ pub(super) async fn forward_rescan_and_refresh(
 ) -> Result<RescanReport, McpError> {
     let mut client = connect_ephemeral_client(state).await?;
     let report = client
-        .rescan(state.root.clone(), paths, full, embed)
+        .rescan(state.shared.root.clone(), paths, full, embed)
         .await
         .map_err(comms_err)?;
     refresh_readonly_map(state).await?;
@@ -53,9 +53,9 @@ pub(super) async fn forward_rescan_and_refresh(
 /// directly — without replacing the store they would report the pre-scan (often empty) index
 /// forever. This is the forward-path counterpart to a local scan mutating the store in place.
 async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> {
-    let view = state.store.read().await.view.clone();
-    let root = state.root.clone();
-    let current_fingerprint = state.cache.load().fingerprint;
+    let view = state.shared.store.read().await.view.clone();
+    let root = state.shared.root.clone();
+    let current_fingerprint = state.shared.cache.load().fingerprint;
     let (store, cache) = tokio::task::spawn_blocking(move || {
         let store = Store::open_read_only_no_index(&root, &view)?;
         let cache =
@@ -65,10 +65,10 @@ async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> 
     .await
     .map_err(|error| McpError::internal_error(format!("refresh map task panicked: {error}"), None))?
     .map_err(|error| McpError::internal_error(format!("reopen read-only store: {error}"), None))?;
-    *state.store.write().await = store;
+    *state.shared.store.write().await = store;
     if let Some(cache) = cache {
-        state.cache.store(Arc::new(cache));
+        state.shared.cache.store(Arc::new(cache));
     }
-    state.cache_generation.fetch_add(1, Ordering::Relaxed);
+    state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }

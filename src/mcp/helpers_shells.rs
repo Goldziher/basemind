@@ -38,7 +38,7 @@ fn parse_session_id(raw: &str) -> Result<SessionId, McpError> {
 /// Resolve a `session_id` to its rmux session name, erroring when unknown.
 async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, rmux_sdk::SessionName), McpError> {
     let id = parse_session_id(raw)?;
-    match state.shell_runtime.resolve(&id).await {
+    match state.shared.shell_runtime.resolve(&id).await {
         Some(name) => Ok((id, name)),
         None => Err(McpError::invalid_params(
             format!("unknown session_id {raw:?}; it may have been killed or never existed"),
@@ -58,7 +58,7 @@ async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, r
 /// created atomically before the spawn: a failure aborts the spawn, so no thread-less session
 /// leaks. When comms is disabled the tool behaves headless and `room_id` / `child_agent` are `None`.
 pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParams) -> Result<CallToolResult, McpError> {
-    if !state.config.shells.enabled {
+    if !state.shared.config.shells.enabled {
         return Err(McpError::invalid_params(
             "shells are disabled in config ([shells].enabled = false)",
             None,
@@ -70,14 +70,14 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
             let raw = rel
                 .as_str()
                 .ok_or_else(|| McpError::invalid_params("cwd is not valid UTF-8", None))?;
-            let normalized = crate::path::normalize_query_path(raw, &state.root)
+            let normalized = crate::path::normalize_query_path(raw, &state.shared.root)
                 .ok_or_else(|| McpError::invalid_params("cwd escapes the repository root", None))?;
             Some(normalized)
         }
         None => None,
     };
 
-    let session_id = state.shell_runtime.mint_session_id();
+    let session_id = state.shared.shell_runtime.mint_session_id();
 
     #[cfg_attr(not(all(feature = "comms", any(unix, windows))), allow(unused_mut))]
     let mut environment = build_environment(params.env.unwrap_or_default())?;
@@ -88,14 +88,15 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
     let (room_id, child_agent): (Option<String>, Option<String>) = (None, None);
 
     let spawned = state
+        .shared
         .shell_runtime
         .spawn(
             session_id.clone(),
             ShellCommand::Shell(params.command),
             cwd,
             environment,
-            state.config.shells.default_cols,
-            state.config.shells.default_rows,
+            state.shared.config.shells.default_cols,
+            state.shared.config.shells.default_rows,
         )
         .await;
 
@@ -112,16 +113,16 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
 
     let target = crate::shells::launcher::AttachTarget {
         session_name: name.as_str().to_string(),
-        socket_path: state.shell_runtime.socket_path().to_path_buf(),
-        cols: state.config.shells.default_cols,
-        rows: state.config.shells.default_rows,
+        socket_path: state.shared.shell_runtime.socket_path().to_path_buf(),
+        cols: state.shared.config.shells.default_cols,
+        rows: state.shared.config.shells.default_rows,
         exe: std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("basemind")),
     };
     let attach_command = target.attach_command();
 
-    let visual = state.config.shells.visual;
+    let visual = state.shared.config.shells.visual;
     if visual != crate::config::VisualMode::Headless {
-        let terminal = state.config.shells.terminal;
+        let terminal = state.shared.config.shells.terminal;
         if let Err(error) = crate::shells::launcher::present(visual, terminal, &target) {
             tracing::warn!(
                 error = %error,
@@ -314,6 +315,7 @@ async fn rollback_session_room(state: &ServerState, thread_id: &str) {
 pub(super) async fn run_shell_send(state: &ServerState, params: ShellSendParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
+        .shared
         .shell_runtime
         .rmux()
         .await
@@ -334,6 +336,7 @@ pub(super) async fn run_shell_capture(
 ) -> Result<CallToolResult, McpError> {
     let (_id, name) = require_session(state, &params.session_id).await?;
     let session = state
+        .shared
         .shell_runtime
         .rmux()
         .await
@@ -351,6 +354,7 @@ pub(super) async fn run_shell_capture(
 pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
+        .shared
         .shell_runtime
         .rmux()
         .await
@@ -361,7 +365,7 @@ pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams)
     let killed = crate::shells::session::kill_session(&session)
         .await
         .map_err(|e| mcp_internal("kill shell session", e))?;
-    state.shell_runtime.forget(&id).await;
+    state.shared.shell_runtime.forget(&id).await;
 
     json_result(&ShellKillResponse {
         session_id: id.to_string(),
@@ -383,6 +387,7 @@ pub(super) async fn run_shell_broadcast(
         ids.push(id);
     }
     let delivered = state
+        .shared
         .shell_runtime
         .broadcast(&ids, &params.text, params.enter)
         .await
@@ -399,6 +404,7 @@ pub(super) async fn run_shell_broadcast(
 /// thread is surfaced by `shell_spawn`'s own response instead.
 pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
+        .shared
         .shell_runtime
         .list()
         .await

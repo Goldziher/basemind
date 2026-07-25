@@ -190,6 +190,7 @@ pub(super) async fn run_proposals_mine(
     let repo = require_git_repo(state)?;
     let head = head_sha(repo)?;
     let commits = state
+        .shared
         .git_cache
         .log(repo, &head, None, window, true)
         .map_err(|e| McpError::internal_error(format!("git log: {e}"), None))?;
@@ -326,7 +327,7 @@ async fn apply_mined_candidates(
     candidates: Vec<(String, ProposalRecord)>,
 ) -> Result<u32, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -334,7 +335,7 @@ async fn apply_mined_candidates(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -346,12 +347,16 @@ async fn apply_mined_candidates(
         };
     }
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-    Ok(super::proposals_ops::apply_mine_core(idx, &state.scope, &candidates)?)
+    Ok(super::proposals_ops::apply_mine_core(
+        idx,
+        &state.shared.scope,
+        &candidates,
+    )?)
 }
 
 /// List pending proposals for the current scope, optionally filtered by kind.
@@ -396,7 +401,7 @@ pub(super) async fn run_proposals_list(
     };
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -409,7 +414,7 @@ pub(super) async fn run_proposals_list(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -425,13 +430,19 @@ pub(super) async fn run_proposals_list(
         };
     }
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-    let result =
-        super::proposals_ops::list_core(idx, &state.scope, &kind_bytes, limit, scan_cap, cursor_bytes.as_deref())?;
+    let result = super::proposals_ops::list_core(
+        idx,
+        &state.shared.scope,
+        &kind_bytes,
+        limit,
+        scan_cap,
+        cursor_bytes.as_deref(),
+    )?;
     json_result(&to_response(result.items, result.truncated, result.next_cursor))
 }
 
@@ -476,9 +487,9 @@ pub(super) async fn run_proposal_accept(
     };
 
     {
-        let cache = state.cache.load_full();
-        let root = state.root.clone();
-        let store_guard = state.store.read().await;
+        let cache = state.shared.cache.load_full();
+        let root = state.shared.root.clone();
+        let store_guard = state.shared.store.read().await;
         let verdict = super::helpers_governance::audit_one_record(&cache, &store_guard, &root, &record);
         record.verified = verdict.state;
         record.last_verified = now;
@@ -490,7 +501,7 @@ pub(super) async fn run_proposal_accept(
         let embedding = super::memory::embed_query(state, &proposal.description).await?;
         let lance = super::memory::lance_store(state).await?;
         let row = crate::lance::MemoryRow {
-            scope: state.scope.clone(),
+            scope: state.shared.scope.clone(),
             key: memory_key.clone(),
             value: proposal.description.clone(),
             tags,
@@ -518,7 +529,7 @@ pub(super) async fn run_proposal_accept(
 #[cfg(feature = "memory")]
 async fn read_proposal(state: &ServerState, id: &str) -> Result<Option<ProposalRecord>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -526,7 +537,7 @@ async fn read_proposal(state: &ServerState, id: &str) -> Result<Option<ProposalR
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -538,12 +549,12 @@ async fn read_proposal(state: &ServerState, id: &str) -> Result<Option<ProposalR
         };
     }
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-    Ok(super::proposals_ops::get_core(idx, &state.scope, id)?)
+    Ok(super::proposals_ops::get_core(idx, &state.shared.scope, id)?)
 }
 
 /// Promote an accepted proposal (fjall): write the audited memory `record` into the live keyspace and
@@ -557,7 +568,7 @@ async fn promote_proposal(
     record: &MemoryRecord,
 ) -> Result<(), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -569,7 +580,7 @@ async fn promote_proposal(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -581,14 +592,14 @@ async fn promote_proposal(
         };
     }
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
     Ok(super::proposals_ops::promote_core(
         idx,
-        &state.scope,
+        &state.shared.scope,
         memory_key,
         record,
         proposal_id,
@@ -607,7 +618,7 @@ pub(super) async fn run_proposal_reject(
     }
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -615,7 +626,7 @@ pub(super) async fn run_proposal_reject(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -627,12 +638,12 @@ pub(super) async fn run_proposal_reject(
         };
     }
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = store_guard
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("proposals index not available", None))?;
-    super::proposals_ops::reject_core(idx, &state.scope, &params.id)?;
+    super::proposals_ops::reject_core(idx, &state.shared.scope, &params.id)?;
 
     json_result(&ProposalRejectResponse { rejected: true })
 }

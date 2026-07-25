@@ -24,7 +24,7 @@ use super::run_tool;
 /// can't match an indexed file, so we fall back to the raw input and let the
 /// downstream tool report "file not indexed" rather than silently mangling it.
 fn resolve_path(server: &BasemindServer, path: &str) -> RelPath {
-    match normalize_query_path(path, &server.state.root) {
+    match normalize_query_path(path, &server.state.shared.root) {
         Some(rel) => RelPath::from(rel),
         None => RelPath::from(path),
     }

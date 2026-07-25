@@ -13,12 +13,12 @@ use super::{MapCache, ServerState};
 /// held read guard blocks the only in-process writer (`scan_and_refresh`) for the
 /// mark+sweep; cross-process scans are impossible because serve holds the flock.
 pub(super) async fn run_background_gc(state: Arc<ServerState>) {
-    if state.store.read().await.blobs_shared {
+    if state.shared.store.read().await.blobs_shared {
         tracing::debug!("background blob GC skipped: blob cache is shared across git worktrees");
         return;
     }
     let result = tokio::task::spawn_blocking(move || {
-        let store = state.store.blocking_read();
+        let store = state.shared.store.blocking_read();
         let referenced = crate::store_gc::collect_referenced_hashes(&store.basemind_dir)?;
         crate::store_gc::gc_blobs(&referenced)
     })
@@ -46,10 +46,10 @@ pub(super) async fn run_background_gc(state: Arc<ServerState>) {
 pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     tracing::info!("empty index on startup; running initial scan in background");
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         tokio::spawn(async move {
             use std::sync::atomic::Ordering;
-            state.initial_scan_active.store(true, Ordering::Relaxed);
+            state.shared.initial_scan_active.store(true, Ordering::Relaxed);
             let started = std::time::Instant::now();
             match super::daemon_forward::forward_rescan_and_refresh(&state, None, false, false).await {
                 Ok(report) => tracing::info!(
@@ -61,9 +61,10 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
                 Err(error) => tracing::warn!(%error, "initial forwarded scan failed"),
             }
             state
+                .shared
                 .initial_scan_ms
                 .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-            state.initial_scan_active.store(false, Ordering::Relaxed);
+            state.shared.initial_scan_active.store(false, Ordering::Relaxed);
             let embed_state = Arc::clone(&state);
             tokio::spawn(async move {
                 let embed_started = std::time::Instant::now();
@@ -83,7 +84,7 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
     }
     tokio::spawn(async move {
         use std::sync::atomic::Ordering;
-        state.initial_scan_active.store(true, Ordering::Relaxed);
+        state.shared.initial_scan_active.store(true, Ordering::Relaxed);
         let started = std::time::Instant::now();
         match helpers::scan_and_refresh(Arc::clone(&state), None, crate::scanner::EmbedMode::Deferred).await {
             Ok(report) => tracing::info!(
@@ -95,9 +96,10 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             Err(error) => tracing::warn!(%error, "initial background scan failed"),
         }
         state
+            .shared
             .initial_scan_ms
             .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-        state.initial_scan_active.store(false, Ordering::Relaxed);
+        state.shared.initial_scan_active.store(false, Ordering::Relaxed);
         let embed_state = Arc::clone(&state);
         tokio::spawn(async move {
             let embed_started = std::time::Instant::now();
@@ -132,20 +134,21 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
         let started = std::time::Instant::now();
         let build_state = Arc::clone(&state);
         let built = tokio::task::spawn_blocking(move || {
-            let store = build_state.store.blocking_read();
+            let store = build_state.shared.store.blocking_read();
             MapCache::build(&store)
         })
         .await;
         match built {
             Ok(cache) => {
                 let files = cache.by_path.len();
-                state.cache.store(Arc::new(cache));
-                state.cache_generation.fetch_add(1, Ordering::Relaxed);
+                state.shared.cache.store(Arc::new(cache));
+                state.shared.cache_generation.fetch_add(1, Ordering::Relaxed);
                 state
+                    .shared
                     .cache_warm_ms
                     .store(started.elapsed().as_millis() as u64, Ordering::Relaxed);
-                state.cache_warming.store(false, Ordering::Relaxed);
-                state.cache_ready.notify_waiters();
+                state.shared.cache_warming.store(false, Ordering::Relaxed);
+                state.shared.cache_ready.notify_waiters();
                 tracing::info!(
                     files,
                     elapsed_ms = started.elapsed().as_millis() as u64,
@@ -153,8 +156,8 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
                 );
             }
             Err(error) => {
-                state.cache_warming.store(false, Ordering::Relaxed);
-                state.cache_ready.notify_waiters();
+                state.shared.cache_warming.store(false, Ordering::Relaxed);
+                state.shared.cache_ready.notify_waiters();
                 tracing::error!(%error, "in-RAM code map warm task panicked; serving un-warmed cache");
             }
         }
@@ -171,7 +174,7 @@ fn refresh_batch(
     paths: Vec<std::path::PathBuf>,
 ) -> Result<(usize, usize, usize), String> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         let report = handle
             .block_on(super::daemon_forward::forward_rescan_and_refresh(
                 state,
@@ -217,8 +220,8 @@ fn refresh_batch(
 /// incremental refresh is logged and swallowed so a transient scan error never
 /// kills the watcher.
 pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
-    let root = state.root.clone();
-    let config = Arc::clone(&state.config);
+    let root = state.shared.root.clone();
+    let config = Arc::clone(&state.shared.config);
     let handle = tokio::runtime::Handle::current();
     let (_shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     std::thread::Builder::new()
@@ -229,9 +232,9 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
             let result = crate::watcher::watch_paths(&root, &config, shutdown_rx, |paths, _kind| {
                 use std::sync::atomic::Ordering;
                 let refresh_state = Arc::clone(&state);
-                refresh_state.rescan_active.store(true, Ordering::Relaxed);
+                refresh_state.shared.rescan_active.store(true, Ordering::Relaxed);
                 let outcome = refresh_batch(&handle, &refresh_state, paths);
-                refresh_state.rescan_active.store(false, Ordering::Relaxed);
+                refresh_state.shared.rescan_active.store(false, Ordering::Relaxed);
                 match outcome {
                     Ok((scanned, updated, removed)) => {
                         tracing::debug!(scanned, updated, removed, "serve watcher: incremental rescan complete")
@@ -255,15 +258,15 @@ pub(super) fn spawn_serve_watcher(state: Arc<ServerState>) {
 /// daemon (the sole writer); every other serve opens the index normally.
 fn reopen_read_only(state: &ServerState, view: &str) -> Result<crate::store::Store, crate::store::StoreError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
-        return crate::store::Store::open_read_only_no_index(state.root.as_path(), view);
+    if state.shared.daemon_writer {
+        return crate::store::Store::open_read_only_no_index(state.shared.root.as_path(), view);
     }
-    crate::store::Store::open_read_only(state.root.as_path(), view)
+    crate::store::Store::open_read_only(state.shared.root.as_path(), view)
 }
 
 pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
     let (basemind_dir, view) = {
-        let store = match state.store.try_read() {
+        let store = match state.shared.store.try_read() {
             Ok(g) => g,
             Err(_) => return,
         };
@@ -310,7 +313,12 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                 if !touches_index {
                     continue;
                 }
-                let view = state.store.try_read().map(|g| g.view.clone()).unwrap_or_default();
+                let view = state
+                    .shared
+                    .store
+                    .try_read()
+                    .map(|g| g.view.clone())
+                    .unwrap_or_default();
                 let new_store = match reopen_read_only(&state, &view) {
                     Ok(s) => s,
                     Err(e) => {
@@ -319,7 +327,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                     }
                 };
                 let fingerprint = super::map_fingerprint::index_fingerprint(&new_store);
-                if fingerprint == state.cache.load().fingerprint {
+                if fingerprint == state.shared.cache.load().fingerprint {
                     tracing::debug!("view watcher: index rewritten but unchanged; keeping the current MapCache");
                     continue;
                 }
@@ -328,8 +336,9 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                     files = new_cache.by_path.len(),
                     "view watcher: rebuilt MapCache from refreshed index"
                 );
-                state.cache.store(new_cache);
+                state.shared.cache.store(new_cache);
                 state
+                    .shared
                     .cache_generation
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }

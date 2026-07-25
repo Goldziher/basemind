@@ -63,7 +63,7 @@ impl BasemindServer {
             }
 
             let mut response = if params.l2 {
-                let store = self.state.store.read().await;
+                let store = self.state.shared.store.read().await;
                 let l1 = query::file_outline(&store, &params.path)
                     .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
                 let (symbols, imports) = l1_views(&l1);
@@ -116,7 +116,7 @@ impl BasemindServer {
                 }
                 r
             } else {
-                let cache = self.state.cache.load();
+                let cache = self.state.shared.cache.load();
                 if let Some(l1) = cache.by_path.get(&params.path) {
                     let (symbols, imports) = l1_views(l1);
                     OutlineResponse {
@@ -135,7 +135,7 @@ impl BasemindServer {
                         elapsed_us: 0,
                     }
                 } else {
-                    let store = self.state.store.read().await;
+                    let store = self.state.shared.store.read().await;
                     let l1 = query::file_outline(&store, &params.path)
                         .map_err(|e| McpError::invalid_params(format!("file_outline({}): {e}", params.path), None))?;
                     let (symbols, imports) = l1_views(&l1);
@@ -198,7 +198,7 @@ impl BasemindServer {
             let format = super::toon::ResponseFormat::parse(params.format.as_deref());
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-            let generation = self.state.cache_generation.load(Ordering::Relaxed);
+            let generation = self.state.shared.cache_generation.load(Ordering::Relaxed);
 
             let skip = match params.cursor.as_ref() {
                 Some(c) => {
@@ -246,7 +246,7 @@ impl BasemindServer {
             let mut total: usize = 0;
             let mut seen: usize = 0;
             let mut total_is_partial = false;
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             'outer: for (path, l1) in &cache.by_path {
                 for sym in &l1.symbols {
                     if finder.find(sym.name.as_bytes()).is_none() {
@@ -376,7 +376,7 @@ impl BasemindServer {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
             let paths: Vec<crate::path::RelPath> =
-                crate::extract::l3::dependents_of(&params.module, &self.state.cache.load().imports_index)
+                crate::extract::l3::dependents_of(&params.module, &self.state.shared.cache.load().imports_index)
                     .into_iter()
                     .map(|p| crate::path::RelPath::from(p.as_path()))
                     .collect();
@@ -408,19 +408,32 @@ impl BasemindServer {
             let __body = std::time::Instant::now();
             let indexing = self
                 .state
+                .shared
                 .initial_scan_active
                 .load(std::sync::atomic::Ordering::Relaxed);
             let index_build_ms = {
-                let ms = self.state.initial_scan_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let ms = self
+                    .state
+                    .shared
+                    .initial_scan_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 (ms > 0).then_some(ms)
             };
-            let warming = self.state.cache_warming.load(std::sync::atomic::Ordering::Relaxed);
+            let warming = self
+                .state
+                .shared
+                .cache_warming
+                .load(std::sync::atomic::Ordering::Relaxed);
             let warm_ms = {
-                let ms = self.state.cache_warm_ms.load(std::sync::atomic::Ordering::Relaxed);
+                let ms = self
+                    .state
+                    .shared
+                    .cache_warm_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 (ms > 0).then_some(ms)
             };
             let notice = self.state.lifecycle_notice();
-            let store = match self.state.store.try_read() {
+            let store = match self.state.shared.store.try_read() {
                 Ok(store) => store,
                 Err(_) => {
                     return json_result(&StatusResponse {
@@ -443,9 +456,10 @@ impl BasemindServer {
                             .map(|p| p.display().to_string())
                             .unwrap_or_else(|| "(unresolved)".to_string()),
                         schema_version: crate::extract::SCHEMA_VER,
-                        root: self.state.root.display().to_string(),
+                        root: self.state.shared.root.display().to_string(),
                         submodules: self
                             .state
+                            .shared
                             .repo
                             .as_ref()
                             .map(|r| r.submodule_paths())
@@ -466,6 +480,7 @@ impl BasemindServer {
                 .unwrap_or_else(|| "(unresolved)".to_string());
             let submodules = self
                 .state
+                .shared
                 .repo
                 .as_ref()
                 .map(|r| r.submodule_paths())
@@ -487,7 +502,7 @@ impl BasemindServer {
                 languages: by_lang,
                 cache_dir,
                 schema_version: crate::extract::SCHEMA_VER,
-                root: self.state.root.display().to_string(),
+                root: self.state.shared.root.display().to_string(),
                 submodules,
                 elapsed_us: elapsed_us(__body),
             })
@@ -518,10 +533,10 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            let store = self.state.store.read().await;
+            let store = self.state.shared.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             run_find_references(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;
@@ -561,14 +576,14 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            let store = self.state.store.read().await;
-            let cache = self.state.cache.load_full();
+            let store = self.state.shared.store.read().await;
+            let cache = self.state.shared.cache.load_full();
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            let refs = if self.state.daemon_writer {
+            let refs = if self.state.shared.daemon_writer {
                 let client = super::helpers_comms::resolve_comms_client(&self.state, None).await?;
                 RefsSource::Daemon {
                     client,
-                    root: self.state.root.clone(),
+                    root: self.state.shared.root.clone(),
                 }
             } else {
                 RefsSource::Local(&store)
@@ -578,7 +593,7 @@ impl BasemindServer {
             run_find_callers(
                 &store,
                 refs,
-                &self.state.root,
+                &self.state.shared.root,
                 &cache,
                 params,
                 self.state.lifecycle_notice(),
@@ -669,10 +684,10 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            let store = self.state.store.read().await;
+            let store = self.state.shared.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             run_find_implementations(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;
@@ -706,10 +721,10 @@ impl BasemindServer {
         let __result: Result<CallToolResult, McpError> = async {
             let __body = std::time::Instant::now();
             self.state.await_cache_ready().await;
-            let store = self.state.store.read().await;
+            let store = self.state.shared.store.read().await;
             let idx = store.index_db.as_ref().cloned();
             drop(store);
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             run_call_graph(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
         }
         .await;

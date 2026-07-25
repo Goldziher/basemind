@@ -28,7 +28,7 @@ pub(super) async fn run_goto_definition(
     params: GotoDefinitionParams,
 ) -> Result<CallToolResult, McpError> {
     let started = std::time::Instant::now();
-    let abs = state.root.join(params.path.to_path_buf());
+    let abs = state.shared.root.join(params.path.to_path_buf());
     let source = std::fs::read(&abs)
         .map_err(|e| McpError::invalid_params(format!("goto_definition: read {}: {e}", params.path), None))?;
 
@@ -43,7 +43,7 @@ pub(super) async fn run_goto_definition(
     })?;
 
     let resolved: Option<(RelPath, u32)> = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         let Some(entry) = store.lookup(&params.path) else {
             return Err(McpError::invalid_params(
                 format!("goto_definition: {} is not indexed", params.path),
@@ -95,7 +95,7 @@ async fn resolve_definition(
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
         let client = match super::helpers_comms::resolve_comms_client(state, None).await {
             Ok(client) => client,
@@ -108,7 +108,12 @@ async fn resolve_definition(
             use_path: use_path.clone(),
             use_start,
         };
-        return match client.lock().await.resolved_refs(state.root.clone(), query).await {
+        return match client
+            .lock()
+            .await
+            .resolved_refs(state.shared.root.clone(), query)
+            .await
+        {
             Ok(ResolvedRefResult::Definition(definition)) => definition,
             Ok(_) => None,
             Err(error) => {
@@ -142,7 +147,7 @@ fn definition_location(
             name,
         });
     }
-    let abs = state.root.join(def_path.to_path_buf());
+    let abs = state.shared.root.join(def_path.to_path_buf());
     let def_source = std::fs::read(&abs).ok()?;
     let (line, column) = offset_to_line_col(&def_source, def_start);
     let name = identifier_at(&def_source, def_start);

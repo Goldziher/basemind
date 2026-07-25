@@ -132,7 +132,7 @@ pub(super) async fn run_expand(
         .map_err(|e| McpError::invalid_params(format!("expand: invalid kind {:?}: {e}", params.kind), None))?;
 
     let l1 = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         query::file_outline(&store, &params.path)
             .map_err(|e| McpError::invalid_params(format!("expand: file_outline({}): {e}", params.path), None))?
     };
@@ -181,7 +181,7 @@ pub(super) async fn run_expand(
         }
     };
 
-    let abs = state.root.join(params.path.to_path_buf());
+    let abs = state.shared.root.join(params.path.to_path_buf());
     let file_bytes = std::fs::read(&abs)
         .map_err(|e| McpError::invalid_params(format!("expand: read {}: {e}", params.path), None))?;
 
@@ -246,13 +246,13 @@ async fn run_structural(
     state: &ServerState,
     path: &crate::path::RelPath,
 ) -> Result<rmcp::model::CallToolResult, McpError> {
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
     let l1 = query::file_outline(&store, path)
         .map_err(|e| McpError::invalid_params(format!("compress: file_outline({path}): {e}"), None))?;
 
     let original_bytes = l1.size_bytes as usize;
 
-    let abs = state.root.join(path.to_path_buf());
+    let abs = state.shared.root.join(path.to_path_buf());
     let original_tokens = match std::fs::read(&abs) {
         Ok(source) => tokens::count_tokens(&String::from_utf8_lossy(&source)),
         Err(_) => (l1.size_bytes) / 4,
@@ -348,7 +348,7 @@ pub(super) async fn run_delta(
 /// mirroring `textcompress::cli::changed_files`. Fail-open: no repo, or any git error, yields
 /// an empty list — a checkpoint must never fail just because the working tree is unreadable.
 fn changed_files(state: &ServerState) -> Vec<String> {
-    let Some(repo) = state.repo.as_ref() else {
+    let Some(repo) = state.shared.repo.as_ref() else {
         return Vec::new();
     };
     let Ok(status) = repo.status_porcelain() else {

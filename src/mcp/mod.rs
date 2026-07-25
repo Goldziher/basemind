@@ -59,6 +59,7 @@ mod prompts;
 pub(crate) mod proposals_ops;
 mod savings;
 mod server_handler;
+mod shared_state;
 mod state;
 mod telemetry;
 mod tokens;
@@ -99,20 +100,18 @@ mod types_shells;
 #[cfg(feature = "crawl")]
 mod types_web;
 
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use arc_swap::ArcSwap;
 use lru::LruCache;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
-use tokio::sync::RwLock;
 
 use crate::extract::FileMapL1;
 use crate::lang::LangId;
 use crate::store::Store;
 
+pub(crate) use shared_state::SharedReadStack;
 pub(crate) use state::{Lifecycle, MapCache, ServerState};
 
 /// Public re-export of every tool `*Params` type plus the `Parameters` wrapper, so the
@@ -294,90 +293,30 @@ impl BasemindServer {
         git_cache: Arc<crate::git_cache::GitCache>,
         options: ServerOptions,
     ) -> Self {
-        let scope = repo
-            .as_ref()
-            .map(|r| crate::git::scope_key(r))
-            .unwrap_or_else(|| format!("path:{}", root.display()));
         let agent_id = identity::resolve_agent_id(&config, &store);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
-        let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
-        let view_is_working = store.view == crate::store::VIEW_WORKING;
-        let fjall_index_empty = store
-            .index_db
-            .as_ref()
-            .map(|db| db.symbols_index_is_empty())
-            .unwrap_or(false);
-        let needs_initial_scan = (options.daemon_writer || !options.read_only)
-            && view_is_working
-            && (store.index.files.is_empty() || fjall_index_empty);
-        let defer_warm = options.background && !needs_initial_scan;
-        let cache = if defer_warm || options.lazy_cache {
-            Arc::new(MapCache::empty())
-        } else {
-            Arc::new(MapCache::build(&store))
-        };
-        tracing::info!(
-            files = store.index.files.len(),
-            corpus_bytes,
-            git = repo.is_some(),
-            scope = %scope,
-            deferred_warm = defer_warm,
-            lazy_cache = options.lazy_cache,
-            "code map ready for MCP server (preloaded, warming in background, or lazy)"
-        );
-        let outline_cache: Arc<OutlineCache> = Arc::new(Mutex::new(LruCache::new(
-            NonZeroUsize::new(OUTLINE_CACHE_CAP).expect("OUTLINE_CACHE_CAP > 0"),
-        )));
-        let telemetry_handle = Arc::new(telemetry::Telemetry::new(&store.basemind_dir));
-        #[cfg(feature = "crawl")]
-        let crawl_engine = match crate::web::build_engine(&config.crawl) {
-            Ok(e) => Some(e),
-            Err(error) => {
-                tracing::warn!(?error, "crawl engine init failed; web_* tools will report errors");
-                None
-            }
-        };
-        let state = Arc::new(ServerState {
-            store: RwLock::new(store),
+        // Boot decisions depend on the opened store, so compute them before it moves into the stack.
+        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
+        let shared = Arc::new(SharedReadStack::new(
+            store,
             root,
-            cache: ArcSwap::from(cache),
+            config,
             repo,
             git_cache,
             git_history,
-            outline_cache,
-            config,
-            telemetry: telemetry_handle,
-            corpus_bytes: std::sync::atomic::AtomicU64::new(corpus_bytes),
-            cache_generation: std::sync::atomic::AtomicU32::new(1),
-            scope,
+            options,
+        ));
+        let state = Arc::new(ServerState {
+            shared,
             agent_id,
-            #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-            lance: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "intelligence")]
-            embedder: tokio::sync::OnceCell::new(),
-            #[cfg(feature = "crawl")]
-            crawl_engine,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
-            #[cfg(all(feature = "shells", any(unix, windows)))]
-            shell_runtime: crate::shells::ShellRuntime::new(),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
-            initial_scan_active: std::sync::atomic::AtomicBool::new(false),
-            initial_scan_ms: std::sync::atomic::AtomicU64::new(0),
-            cache_warming: std::sync::atomic::AtomicBool::new(defer_warm),
-            cache_warm_ms: std::sync::atomic::AtomicU64::new(0),
-            cache_ready: tokio::sync::Notify::new(),
-            rescan_active: std::sync::atomic::AtomicBool::new(false),
-            lazy_cache: options.lazy_cache,
-            lazy_cache_built: tokio::sync::OnceCell::new(),
-            read_only: options.read_only,
-            #[cfg(all(feature = "comms", any(unix, windows)))]
-            daemon_writer: options.daemon_writer,
         });
         if options.background {
             let view_is_working = {
-                match state.store.try_read() {
+                match state.shared.store.try_read() {
                     Ok(g) => g.view == crate::store::VIEW_WORKING,
                     Err(_) => false,
                 }
@@ -490,13 +429,13 @@ impl BasemindServer {
     /// Only ever reached with `background: true` (i.e. `serve`). The one-shot CLI requests no sync at
     /// all: it exits in milliseconds, and a first build on a deep repo is a minutes-long walk.
     fn spawn_git_history_sync(state: &Arc<ServerState>, history_dir: &std::path::Path) {
-        let Some(index) = state.git_history.as_deref() else {
+        let Some(index) = state.shared.git_history.as_deref() else {
             return;
         };
         let _ = index;
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if index.is_daemon_backed() {
-            let root = state.root.clone();
+            let root = state.shared.root.clone();
             let agent_id = state.agent_id.clone();
             tokio::spawn(async move {
                 let Ok(agent) = crate::comms::ids::AgentId::parse(agent_id) else {
@@ -509,7 +448,7 @@ impl BasemindServer {
             });
             return;
         }
-        if let (Some(git_history), Some(repo)) = (state.git_history.clone(), state.repo.clone()) {
+        if let (Some(git_history), Some(repo)) = (state.shared.git_history.clone(), state.shared.repo.clone()) {
             let history_dir = history_dir.to_path_buf();
             tokio::task::spawn_blocking(move || {
                 match crate::git_history::builder::sync(&git_history, &repo, &history_dir) {

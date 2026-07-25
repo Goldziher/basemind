@@ -102,7 +102,7 @@ pub(super) async fn resolve_comms_client(
     if let Some(handle) = map.get(&target) {
         return Ok(handle.clone());
     }
-    let (remote, cwd) = scope_context_for(&state.root);
+    let (remote, cwd) = scope_context_for(&state.shared.root);
     let client = CommsClient::ensure_and_connect(target.clone(), remote, cwd)
         .await
         .map_err(comms_err)?;
@@ -120,7 +120,7 @@ pub(super) async fn resolve_comms_client(
 pub(super) async fn connect_ephemeral_client(state: &ServerState) -> Result<CommsClient, McpError> {
     let target = AgentId::parse(state.agent_id.clone())
         .map_err(|e| comms_err(format!("invalid agent id {:?}: {e}", state.agent_id)))?;
-    let (remote, cwd) = scope_context_for(&state.root);
+    let (remote, cwd) = scope_context_for(&state.shared.root);
     CommsClient::ensure_and_connect(target, remote, cwd)
         .await
         .map_err(comms_err)
@@ -200,7 +200,7 @@ pub(super) async fn run_thread_start(
 }
 
 pub(super) async fn run_thread_list(state: &ServerState, params: ThreadListParams) -> Result<CallToolResult, McpError> {
-    let (remote, cwd) = scope_context_for(&state.root);
+    let (remote, cwd) = scope_context_for(&state.shared.root);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let threads = client
@@ -365,7 +365,7 @@ pub(super) async fn run_inbox_read(state: &ServerState, params: InboxReadParams)
     let limit = clamp_limit(params.limit);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
-    let (remote, cwd) = scope_context_for(&state.root);
+    let (remote, cwd) = scope_context_for(&state.shared.root);
     let handle = resolve_comms_client(state, params.as_agent).await?;
     let mut client = handle.lock().await;
     let (metas, unread, next_cursor) = client
@@ -418,7 +418,7 @@ pub(super) async fn run_inbox_wait(state: &ServerState, params: InboxWaitParams)
     let timeout_secs = params.timeout_secs.unwrap_or(DEFAULT_WAIT_SECS).clamp(1, MAX_WAIT_SECS);
     let cursor = params.cursor.map(crate::comms::cursor::Cursor);
     let since = since_cutoff(params.since_hours);
-    let (remote, cwd) = scope_context_for(&state.root);
+    let (remote, cwd) = scope_context_for(&state.shared.root);
 
     let agent = match &params.as_agent {
         Some(raw) => AgentId::parse(raw.clone()).map_err(|e| comms_err(format!("invalid as_agent {raw:?}: {e}")))?,

@@ -1,87 +1,39 @@
-//! MCP server runtime state: the shared [`ServerState`], its [`Lifecycle`] classifier, and
-//! the in-RAM [`MapCache`] over every indexed file's L1 blob.
+//! MCP server per-connection state: [`ServerState`] (identity + a shared read stack), its
+//! [`Lifecycle`] classifier, and the in-RAM [`MapCache`] over every indexed file's L1 blob.
 //!
-//! Extracted from `mod.rs` to keep that file within the per-file size budget.
+//! The heavy, workspace-level read fields live on [`SharedReadStack`](super::SharedReadStack)
+//! (in `shared_state.rs`) so one stack can be shared — via an [`Arc`] — across many connections.
+//! `ServerState` keeps only what is specific to a single connection: the resolved agent identity,
+//! that identity's lazily-connected broker clients, and the client's requested log verbosity.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use tokio::sync::RwLock;
-
-use super::{OutlineCache, helpers_calls, helpers_impls, map_fingerprint, telemetry, types};
+use super::{SharedReadStack, helpers_calls, helpers_impls, map_fingerprint, types};
 use crate::extract::{FileMapL1, Import};
 use crate::store::Store;
 
+/// Per-connection MCP server state.
+///
+/// Holds one [`Arc<SharedReadStack>`](super::SharedReadStack) (the heavy read state, shared across
+/// connections) plus this connection's own identity. Field accesses to the shared read stack go
+/// through [`shared`](Self::shared); the identity fields (`agent_id`, `comms_clients`, `log_level`)
+/// are read directly.
 pub(crate) struct ServerState {
-    pub(crate) store: RwLock<Store>,
-    pub(crate) root: PathBuf,
-    /// In-RAM mirror of every indexed file's L1 blob.
-    ///
-    /// Cross-file queries (`search_symbols`, `dependents`) otherwise re-read 1 blob per file
-    /// per call — for a 39k-file repo that's seconds. With the preload they're pure-RAM scans.
-    /// Wrapped in `ArcSwap` so the filesystem watcher can publish a new snapshot without
-    /// blocking readers. Read-path tools do `.load_full()` once at the top to take a stable
-    /// `Arc<MapCache>` for the duration of the call.
-    pub(crate) cache: ArcSwap<MapCache>,
-    /// Discovered git repository, or `None` when serving against a non-git directory.
-    /// All git-aware tools (`working_tree_status`, `recent_changes`, …) check this and
-    /// return an MCP error if `None`.
-    pub(crate) repo: Option<Arc<crate::git::Repo>>,
-    /// Sha-keyed cache for commit-files diffs, log walks, and blame results.
-    pub(crate) git_cache: Arc<crate::git_cache::GitCache>,
-    /// Precomputed git-history index (posting lists `path → [commit]`). `Some` only on a writable
-    /// serve in a git repo with the index enabled; a read-only serve or a Fjall-lock collision
-    /// leaves it `None`, and the git tools fall back to the live walk. Used by the history tools
-    /// only when `last_indexed_head == HEAD` (the freshness gate), so it never serves stale results.
-    pub(crate) git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
-    /// `(blob_oid, lang) -> Arc<OutlineEntry>` cache that keeps `symbol_history` fast on
-    /// hot files even when the symbol's source blob shows up in many adjacent commits.
-    pub(crate) outline_cache: Arc<OutlineCache>,
-    /// Scanner config (include / exclude globs, eager_l2, document tier knobs, …).
-    /// Held on the server so the `rescan` MCP tool can re-run a scan in-process
-    /// without re-reading `.basemind/basemind.toml`.
-    pub(crate) config: Arc<crate::config::Config>,
-    /// Per-tool-call telemetry writer; appends to `.basemind/telemetry.jsonl`.
-    /// Always present (best-effort writes); the dashboard surfaces / statusline
-    /// read from the same file.
-    pub(crate) telemetry: Arc<telemetry::Telemetry>,
-    /// Sum of `size_bytes` across every indexed file. Captured at boot and
-    /// after each `rescan`. Feeds the corpus-baseline cost in
-    /// [`super::savings::estimate_from_text`].
-    pub(crate) corpus_bytes: std::sync::atomic::AtomicU64,
-    /// Monotonic counter bumped every time `cache` is swapped (boot, rescan, view watcher).
-    /// In-memory pagination cursors embed this value as a snapshot id so a resume call
-    /// against a stale generation can be detected and reported back as
-    /// `cursor_invalidated = true`.
-    pub(crate) cache_generation: std::sync::atomic::AtomicU32,
-    /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
-    /// Computed once at boot. Do NOT recompute per-call.
-    #[allow(dead_code)]
-    pub(crate) scope: String,
+    /// The workspace-level read stack shared across every connection to this `(root, view)`.
+    pub(crate) shared: Arc<SharedReadStack>,
     /// Owner segment for the individual-memory tier. Resolved once at boot by
     /// [`crate::comms::identity`] (validated through [`crate::comms::ids::AgentId`] so it is
     /// NUL-free), which never yields a shared constant — so two sessions cannot land on one
-    /// memory owner. Group-tier writes ignore it.
+    /// memory owner. Group-tier writes ignore it. Per-connection identity.
     #[allow(dead_code)]
     pub(crate) agent_id: String,
-    /// LanceDB vector store. Lazy-init on first memory/document/code-search call.
-    #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
-    pub(crate) lance: tokio::sync::OnceCell<Arc<crate::lance::LanceStore>>,
-    /// Shared embedding engine. Lazy-init on first embed call.
-    #[cfg(feature = "intelligence")]
-    pub(crate) embedder: tokio::sync::OnceCell<Arc<crate::embeddings::SharedEmbedder>>,
-    /// Shared crawlberg engine. Initialised at server boot from the `[crawl]`
-    /// config section; `None` if engine construction failed (the web_* tools
-    /// will return an MCP error rather than crash).
-    #[cfg(feature = "crawl")]
-    pub(crate) crawl_engine: Option<crawlberg::CrawlEngineHandle>,
     /// Per-identity registry of lazily-connected comms-broker clients, keyed by `AgentId`. The
     /// server's own identity (`agent_id`) connects directly; a sub-identity (driven via a tool's
     /// `as_agent` param) gets its own broker connection, so one `serve` process can act as many
     /// named agents. Entries are created on first use; a connect failure surfaces as an MCP error
-    /// on the triggering call, never at server boot.
+    /// on the triggering call, never at server boot. Per-connection identity.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) comms_clients: tokio::sync::Mutex<
         ahash::AHashMap<
@@ -89,68 +41,28 @@ pub(crate) struct ServerState {
             std::sync::Arc<tokio::sync::Mutex<crate::comms::client::CommsClient>>,
         >,
     >,
-    /// Embedded rmux-backed headless shell runtime. Lazily connects to (or
-    /// starts) the embedded daemon on the first `shell_*` tool call; cheap to
-    /// hold otherwise (no daemon spawn until first use).
-    #[cfg(all(feature = "shells", any(unix, windows)))]
-    pub(crate) shell_runtime: crate::shells::ShellRuntime,
     /// Minimum logging severity the client asked for via `logging/setLevel`, as an ordinal
     /// (see [`super::notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
-    /// the server honors the client's verbosity preference.
+    /// the server honors the client's verbosity preference. Per-connection.
     pub(crate) log_level: std::sync::atomic::AtomicU8,
-    /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
-    /// client polling `status` distinguish "index still building" from "index empty / no matches"
-    /// so the build cost is not silently folded into the first query's latency.
-    pub(crate) initial_scan_active: std::sync::atomic::AtomicBool,
-    /// Wall-clock duration of the boot-time initial scan, in milliseconds, once it completes
-    /// (`0` = no initial scan happened this session, or it is still running). Surfaced on `status`
-    /// as `index_build_ms` to report indexing time separately from query time.
-    pub(crate) initial_scan_ms: std::sync::atomic::AtomicU64,
-    /// True while the boot-time in-RAM code-map preload (`MapCache::build` over the existing blobs)
-    /// is still running. Deferring that build off the startup path is what lets `serve` answer the
-    /// MCP `initialize`/`tools/list` handshake immediately instead of blocking on a rayon `par_iter`
-    /// that can be starved for minutes by other sessions' scans. Cache-reading tools await
-    /// [`cache_ready`](Self::cache_ready) while this is set (see [`ServerState::await_cache_ready`]).
-    pub(crate) cache_warming: std::sync::atomic::AtomicBool,
-    /// Wall-clock duration of the boot-time cache preload, in milliseconds, once it completes
-    /// (`0` = still warming or no deferred preload this session). Surfaced on `status` as `warm_ms`.
-    pub(crate) cache_warm_ms: std::sync::atomic::AtomicU64,
-    /// Fired once when the deferred preload finishes and the full map is swapped in. Tools that read
-    /// the cache `notified().await` on this (bounded by [`CACHE_WARM_WAIT_CAP`]) so a query issued
-    /// during the warmup window returns COMPLETE data rather than an empty snapshot.
-    pub(crate) cache_ready: tokio::sync::Notify,
-    /// True while a watcher-driven incremental rescan (`scan_and_refresh` from the active filesystem
-    /// watcher) is in flight. Surfaced as the `Rescanning` lifecycle so a client sees "results may be
-    /// a moment stale" rather than treating a mid-rescan snapshot as final.
-    pub(crate) rescan_active: std::sync::atomic::AtomicBool,
-    /// True when the in-RAM code map is built ON DEMAND — at the first
-    /// [`await_cache_ready`](Self::await_cache_ready) barrier — instead of at construction.
+}
+
+impl ServerState {
+    /// Build a fresh per-connection state that shares the given [`SharedReadStack`].
     ///
-    /// Set only for the one-shot CLI. A CLI process answers exactly one tool call and exits, and
-    /// most tools (`repo_info`, `status`, every git tool) never read the map at all — yet
-    /// [`MapCache::build`] deserializes EVERY indexed file's L1 blob, so those tools were paying
-    /// seconds of whole-corpus startup for data they never touch. `serve` keeps eager/background
-    /// warming: it is long-lived, so the build amortizes over the session.
-    pub(crate) lazy_cache: bool,
-    /// Gates the one-time on-demand build under [`lazy_cache`](Self::lazy_cache). Concurrent
-    /// callers of the barrier all await the single build rather than racing to rebuild the map.
-    pub(crate) lazy_cache_built: tokio::sync::OnceCell<()>,
-    /// True when this serve fell back to a read-only store because another serve owns the
-    /// write lock for this repo (issue #27). The single in-process writer (`scan_and_refresh`,
-    /// behind the `rescan` tool) checks this and returns a clean error rather than writing
-    /// without the lock.
-    pub(crate) read_only: bool,
-    /// True when this serve delegates every write to the machine daemon (the sole fjall writer)
-    /// instead of writing locally. The store is opened read-only, but — unlike a plain
-    /// [`read_only`](Self::read_only) fallback — the empty-index auto-scan, the filesystem
-    /// watcher, and the `rescan` tool FORWARD their scans to the daemon over the socket and then
-    /// rebuild the in-RAM map from the daemon-written `index.msgpack`. Only ever true on a
-    /// `comms`-enabled build; always false otherwise, so the local-writer paths are unchanged.
-    ///
-    /// Only exists on a `comms` build: every read of this field lives behind the same `cfg`, so on
-    /// a non-`comms` build there is no daemon to forward to and the field would be dead.
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) daemon_writer: bool,
+    /// Each connection gets its own identity: a fresh (empty) `comms_clients` registry and the
+    /// default log verbosity. Not yet wired to a caller — the seam a future daemon-hosted transport
+    /// uses to hand every accepted connection the one shared read stack.
+    #[allow(dead_code)]
+    pub(crate) fn for_connection(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
+        Self {
+            shared,
+            agent_id,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
+            log_level: std::sync::atomic::AtomicU8::new(super::notifications::DEFAULT_LOG_ORDINAL),
+        }
+    }
 }
 
 /// Upper bound a cache-reading tool waits for the deferred boot preload to finish before serving from
@@ -195,9 +107,9 @@ impl ServerState {
     pub(crate) fn lifecycle(&self) -> Lifecycle {
         use std::sync::atomic::Ordering::Relaxed;
         Lifecycle::from_flags(
-            self.initial_scan_active.load(Relaxed),
-            self.cache_warming.load(Relaxed),
-            self.rescan_active.load(Relaxed),
+            self.shared.initial_scan_active.load(Relaxed),
+            self.shared.cache_warming.load(Relaxed),
+            self.shared.rescan_active.load(Relaxed),
         )
     }
 
@@ -216,15 +128,15 @@ impl ServerState {
     /// [`lifecycle_notice`](Self::lifecycle_notice) telling the client to poll.
     pub(crate) async fn await_cache_ready(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        if self.lazy_cache {
+        if self.shared.lazy_cache {
             self.build_cache_on_demand().await;
             return;
         }
-        if !self.cache_warming.load(Relaxed) {
+        if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
-        let notified = self.cache_ready.notified();
-        if !self.cache_warming.load(Relaxed) {
+        let notified = self.shared.cache_ready.notified();
+        if !self.shared.cache_warming.load(Relaxed) {
             return;
         }
         let _ = tokio::time::timeout(CACHE_WARM_WAIT_CAP, notified).await;
@@ -240,10 +152,11 @@ impl ServerState {
     /// the runtime check in [`crate::git_history::remote`].
     async fn build_cache_on_demand(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        self.lazy_cache_built
+        self.shared
+            .lazy_cache_built
             .get_or_init(|| async {
                 let started = std::time::Instant::now();
-                let store = self.store.read().await;
+                let store = self.shared.store.read().await;
                 let multi_thread = tokio::runtime::Handle::try_current()
                     .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
                     .unwrap_or(false);
@@ -253,10 +166,10 @@ impl ServerState {
                     MapCache::build(&store)
                 };
                 let files = cache.by_path.len();
-                self.cache.store(Arc::new(cache));
-                self.cache_generation.fetch_add(1, Relaxed);
+                self.shared.cache.store(Arc::new(cache));
+                self.shared.cache_generation.fetch_add(1, Relaxed);
                 let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                self.cache_warm_ms.store(elapsed_ms, Relaxed);
+                self.shared.cache_warm_ms.store(elapsed_ms, Relaxed);
                 tracing::debug!(files, elapsed_ms, "in-RAM code map built on demand");
             })
             .await;

@@ -71,6 +71,7 @@ pub(super) fn run_search_git_history(
             fts::tokenize(&params.pattern, &mut query_terms);
             let window = LOG_WALK_MAX as u32;
             let live = state
+                .shared
                 .git_cache
                 .log(repo, &head, None, window, false)
                 .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?;

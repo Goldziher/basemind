@@ -22,7 +22,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
     state.await_cache_ready().await;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
-    let generation = state.cache_generation.load(Ordering::Relaxed);
+    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
 
     let skip = match params.cursor.as_ref() {
         Some(c) => {
@@ -48,7 +48,7 @@ pub(super) async fn run_list_files(state: &ServerState, params: ListFilesParams)
         }
         None => 0,
     };
-    let store = state.store.read().await;
+    let store = state.shared.store.read().await;
 
     let path_finder = params
         .path_contains
@@ -120,7 +120,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
     state.await_cache_ready().await;
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let (limit, limit_clamped) = super::tools::effective_list_limit(params.limit);
-    let generation = state.cache_generation.load(Ordering::Relaxed);
+    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
 
     let skip = match params.cursor.as_ref() {
         Some(c) => {
@@ -147,7 +147,7 @@ pub(super) async fn run_find_files(state: &ServerState, params: FindFilesParams)
         None => 0,
     };
 
-    let cache = state.cache.load_full();
+    let cache = state.shared.cache.load_full();
     let prefix_filter = params.path_prefix.as_deref();
     let lang_filter = params.language.as_deref();
 

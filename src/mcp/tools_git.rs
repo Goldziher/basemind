@@ -134,6 +134,7 @@ impl BasemindServer {
                 Some(index) => index.recent_commits(0, walk_depth as usize, params.include_files),
                 None => self
                     .state
+                    .shared
                     .git_cache
                     .log(repo, &head, None, walk_depth, params.include_files)
                     .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
@@ -211,6 +212,7 @@ impl BasemindServer {
                 Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
                 None => self
                     .state
+                    .shared
                     .git_cache
                     .log(repo, &head, Some(&params.path), walk_depth, false)
                     .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
@@ -266,7 +268,7 @@ impl BasemindServer {
                 .map_err(|e| McpError::invalid_params(format!("resolve_rev({rev_spec}): {e}"), None))?;
 
             self.state.await_cache_ready().await;
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             let here = cache.by_path.get(&params.path).map(|l1| {
                 l1.symbols
                     .iter()
@@ -418,6 +420,7 @@ impl BasemindServer {
                 Some(index) => index.window_commits(window as usize),
                 None => self
                     .state
+                    .shared
                     .git_cache
                     .log(repo, &head, None, window, true)
                     .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
@@ -489,6 +492,7 @@ impl BasemindServer {
                 Some(index) => index.window_commits(window as usize),
                 None => self
                     .state
+                    .shared
                     .git_cache
                     .log(repo, &head, None, window, true)
                     .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
@@ -646,6 +650,7 @@ impl BasemindServer {
                 Some(index) => index.commits_touching(&params.path, 0, walk_depth as usize),
                 None => self
                     .state
+                    .shared
                     .git_cache
                     .log(repo, &head, Some(&params.path), walk_depth, false)
                     .map_err(|e| McpError::internal_error(format!("log: {e}"), None))?
@@ -665,7 +670,7 @@ impl BasemindServer {
                     .read_blob_at_rev_with_oid(&c.sha, &params.path)
                     .map_err(|e| McpError::internal_error(format!("blob: {e}"), None))?;
                 let fingerprint = match blob {
-                    Some((bytes, oid)) => outline_entry_for_blob(&self.state.outline_cache, oid, lang, bytes)
+                    Some((bytes, oid)) => outline_entry_for_blob(&self.state.shared.outline_cache, oid, lang, bytes)
                         .and_then(|entry| symbol_fingerprint(&entry, &params.name, kind, lang, hash_mode)),
                     None => None,
                 };
@@ -763,7 +768,12 @@ impl BasemindServer {
                 Some(c) => c.decode_in_memory()?.0.min(u32::MAX as u64) as u32,
                 None => 0,
             };
-            let result = match self.state.git_cache.blame(repo, &suspect_sha, &params.path, range) {
+            let result = match self
+                .state
+                .shared
+                .git_cache
+                .blame(repo, &suspect_sha, &params.path, range)
+            {
                 Ok(r) => r,
                 Err(e) => {
                     if let Some(too_large) = blame_too_large_response(&params.path, &suspect_sha, &e, __body) {
@@ -816,7 +826,7 @@ impl BasemindServer {
             super::helpers_git::reject_external_path(&params.path)?;
             let kind = params.kind.as_deref().map(parse_kind).transpose()?;
             self.state.await_cache_ready().await;
-            let cache = self.state.cache.load_full();
+            let cache = self.state.shared.cache.load_full();
             let l1 = cache.by_path.get(&params.path).ok_or_else(|| {
                 McpError::invalid_params(format!("file not indexed in current view: {}", params.path), None)
             })?;
@@ -849,6 +859,7 @@ impl BasemindServer {
             let result =
                 match self
                     .state
+                    .shared
                     .git_cache
                     .blame(repo, &suspect_sha, &params.path, Some((line_start, line_end)))
                 {

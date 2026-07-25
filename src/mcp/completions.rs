@@ -46,7 +46,7 @@ impl BasemindServer {
     /// Indexed symbol names that start with `prefix`, deduped and sorted, capped at
     /// [`MAX_COMPLETIONS`]. Pure in-RAM scan of the `MapCache` snapshot.
     fn complete_symbol_names(&self, prefix: &str) -> Vec<String> {
-        let cache = self.state.cache.load_full();
+        let cache = self.state.shared.cache.load_full();
         let mut names: BTreeSet<&str> = BTreeSet::new();
         for l1 in cache.by_path.values() {
             for symbol in &l1.symbols {
@@ -61,7 +61,7 @@ impl BasemindServer {
     /// Indexed repo-relative file paths that start with `prefix`, capped at [`MAX_COMPLETIONS`].
     /// `by_path` is a `BTreeMap`, so keys are already sorted and prefix matches are contiguous.
     fn complete_file_paths(&self, prefix: &str) -> Vec<String> {
-        let cache = self.state.cache.load_full();
+        let cache = self.state.shared.cache.load_full();
         cache
             .by_path
             .keys()

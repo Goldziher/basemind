@@ -41,7 +41,7 @@ pub(super) fn run_workspace_grep(
 ) -> Result<CallToolResult, McpError> {
     let format = super::toon::ResponseFormat::parse(params.format.as_deref());
     let limit = params.limit.unwrap_or(SEARCH_LIMIT_DEFAULT).min(SEARCH_LIMIT_MAX) as usize;
-    let generation = state.cache_generation.load(Ordering::Relaxed);
+    let generation = state.shared.cache_generation.load(Ordering::Relaxed);
 
     let (skip_files, skip_hits) = match params.cursor.as_ref() {
         Some(c) => {
@@ -77,7 +77,7 @@ pub(super) fn run_workspace_grep(
     let path_finder = params.path_contains.as_deref().map(|n| Finder::new(n.as_bytes()));
     let lang_filter = params.language.as_deref();
 
-    let cache = state.cache.load_full();
+    let cache = state.shared.cache.load_full();
 
     let candidates: Vec<(&RelPath, &crate::extract::FileMapL1)> = cache
         .by_path
@@ -204,7 +204,7 @@ fn count_all(
 /// Read an indexed file as UTF-8. Non-UTF-8 and unreadable files (deleted since the scan, permission
 /// denied) are skipped rather than failing the whole grep.
 fn read_indexed(state: &ServerState, path: &RelPath) -> Option<String> {
-    let abs = state.root.join(path.to_path_buf());
+    let abs = state.shared.root.join(path.to_path_buf());
     match std::fs::read_to_string(&abs) {
         Ok(source) => Some(source),
         Err(e) => {

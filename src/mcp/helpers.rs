@@ -208,7 +208,7 @@ pub(super) fn commit_to_view(c: crate::git::CommitInfo, include_files: bool) -> 
 }
 
 pub(super) fn require_git_repo(state: &ServerState) -> Result<&Arc<crate::git::Repo>, McpError> {
-    state.repo.as_ref().ok_or_else(|| {
+    state.shared.repo.as_ref().ok_or_else(|| {
         McpError::invalid_request(
             "this tool requires `basemind serve` to be run inside a git repository",
             None,
@@ -224,7 +224,7 @@ pub(super) fn git_history_if_fresh<'a>(
     state: &'a ServerState,
     head: &str,
 ) -> Option<&'a crate::git_history::GitHistoryIndex> {
-    let index = state.git_history.as_deref()?;
+    let index = state.shared.git_history.as_deref()?;
     (index.last_indexed_head_hex().as_deref() == Some(head)).then_some(index)
 }
 
@@ -505,7 +505,7 @@ pub(super) fn head_sha(repo: &crate::git::Repo) -> Result<String, McpError> {
 /// cache-swap path against the server's own `Store` — never releasing or colliding with
 /// the Fjall lock the `serve` process already holds.
 ///
-/// Holds the `state.store` write lock for the duration of the scan; MCP query tools block
+/// Holds the `state.shared.store` write lock for the duration of the scan; MCP query tools block
 /// while it runs (acceptable for small/medium repos — rescan is agent-triggered, not
 /// per-request). `scoped_paths` limits the scan to those repo-relative paths; `None` runs a
 /// full working-tree scan.
@@ -514,7 +514,7 @@ pub(super) async fn scan_and_refresh(
     scoped_paths: Option<Vec<std::path::PathBuf>>,
     embed: crate::scanner::EmbedMode,
 ) -> Result<crate::scanner::ScanReport, McpError> {
-    if state.read_only {
+    if state.shared.read_only {
         return Err(McpError::invalid_request(
             "this basemind serve is read-only: another serve process holds the write lock for \
              this repo, so it owns index refresh. Reads are served from the shared index; run \
@@ -522,13 +522,13 @@ pub(super) async fn scan_and_refresh(
             None,
         ));
     }
-    let root = state.root.clone();
-    let config = Arc::clone(&state.config);
+    let root = state.shared.root.clone();
+    let config = Arc::clone(&state.shared.config);
 
     let was_scoped = scoped_paths.is_some();
     let state_for_scan = Arc::clone(&state);
     let report = tokio::task::spawn_blocking(move || {
-        let mut store = state_for_scan.store.blocking_write();
+        let mut store = state_for_scan.shared.store.blocking_write();
         if let Some(paths) = scoped_paths {
             crate::scanner::scan_paths(&root, &mut store, &config, &paths, embed)
         } else {
@@ -563,20 +563,22 @@ pub(super) async fn scan_and_refresh(
         .collect();
 
     let new_cache = {
-        let store = state.store.read().await;
+        let store = state.shared.store.read().await;
         let corpus_bytes: u64 = store.index.files.values().map(|e| e.size_bytes).sum();
         state
+            .shared
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
         let cache = if was_scoped {
-            state.cache.load().with_delta(&store, &updated, &removed)
+            state.shared.cache.load().with_delta(&store, &updated, &removed)
         } else {
             super::MapCache::build(&store)
         };
         std::sync::Arc::new(cache)
     };
-    state.cache.store(new_cache);
+    state.shared.cache.store(new_cache);
     state
+        .shared
         .cache_generation
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -592,7 +594,7 @@ pub(super) async fn run_telemetry_summary(
     state: &ServerState,
     params: super::types::TelemetrySummaryParams,
 ) -> Result<CallToolResult, McpError> {
-    let response = super::telemetry::summarize(state.telemetry.path(), params).await?;
+    let response = super::telemetry::summarize(state.shared.telemetry.path(), params).await?;
     json_result(&response)
 }
 

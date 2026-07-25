@@ -290,10 +290,10 @@ pub(super) async fn run_memory_audit(
         super::types_memory::Visibility::Group => "",
     };
 
-    let cache = state.cache.load_full();
-    let root = state.root.clone();
+    let cache = state.shared.cache.load_full();
+    let root = state.shared.root.clone();
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
 
     let now = crate::lance::now_micros();
     let ctx = AuditCtx {
@@ -416,7 +416,7 @@ async fn scan_audit_keyspace(
     args: &super::proposals_ops::AuditScanArgs<'_>,
 ) -> Result<Vec<(String, Vec<u8>)>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
@@ -431,7 +431,7 @@ async fn scan_audit_keyspace(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -447,7 +447,7 @@ async fn scan_audit_keyspace(
         .index_db
         .as_ref()
         .ok_or_else(|| McpError::internal_error("memory_by_key index not available", None))?;
-    Ok(super::proposals_ops::audit_scan_core(idx, &state.scope, args)?)
+    Ok(super::proposals_ops::audit_scan_core(idx, &state.shared.scope, args)?)
 }
 
 /// Persist serve-computed audit verdicts, forwarding under `daemon_writer` and writing the local
@@ -459,7 +459,7 @@ async fn persist_audit_actions(
     actions: Vec<PersistAction>,
 ) -> Result<(), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    if state.daemon_writer {
+    if state.shared.daemon_writer {
         use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{AuditMutation, GovernanceOp, GovernanceOutcome};
 
@@ -477,7 +477,7 @@ async fn persist_audit_actions(
         let client = resolve_comms_client(state, None).await?;
         let mut guard = client.lock().await;
         let outcome = guard
-            .governance_op(state.root.clone(), state.scope.clone(), op)
+            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
             .await
             .map_err(comms_err)?;
         return match outcome {
@@ -497,17 +497,17 @@ async fn persist_audit_actions(
         if action.archive {
             write_archive(
                 idx,
-                &state.scope,
+                &state.shared.scope,
                 action.vis_byte,
                 &action.owner,
                 &action.key,
                 &action.record,
             )?;
-            delete_live(idx, &state.scope, action.vis_byte, &action.owner, &action.key)?;
+            delete_live(idx, &state.shared.scope, action.vis_byte, &action.owner, &action.key)?;
         } else {
             write_live(
                 idx,
-                &state.scope,
+                &state.shared.scope,
                 action.vis_byte,
                 &action.owner,
                 &action.key,
@@ -533,10 +533,10 @@ mod tests;
 /// The scope filter is a correctness guard — a memory from another repo would resolve its
 /// provenance against *this* repo's code map and be falsely flagged Stale.
 pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
-    let cache = state.cache.load_full();
-    let root = state.root.clone();
+    let cache = state.shared.cache.load_full();
+    let root = state.shared.root.clone();
 
-    let store_guard = state.store.read().await;
+    let store_guard = state.shared.store.read().await;
     let idx = match store_guard.index_db.as_ref() {
         Some(idx) => idx,
         None => return,
@@ -550,7 +550,7 @@ pub(super) async fn audit_scope_on_rescan(state: &Arc<ServerState>) {
         now: crate::lance::now_micros(),
     };
 
-    audit_scope_persist(idx, &ctx, &state.scope, DEFAULT_AUDIT_LIMIT as usize);
+    audit_scope_persist(idx, &ctx, &state.shared.scope, DEFAULT_AUDIT_LIMIT as usize);
 }
 
 /// Sync core of [`audit_scope_on_rescan`], split out so it is testable without standing up a
