@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.6] — 2026-07-25
+
+### Fixed
+
+- **The older-build daemon takeover now actually fires** (#44). `singleton::roundtrip` decoded a
+  bare `CommsResponse`, but the daemon frames every reply as a `CommsOut::Response` envelope, so the
+  decode always failed and `daemon_status` always returned `None`. `ensure_daemon` never entered its
+  version gate and reused whatever daemon held the socket — so a live pre-0.22.5 runaway daemon
+  survived the client upgrade instead of being reaped (it had to be killed by hand). The probe now
+  decodes the `CommsOut` envelope; the 0.22.5 cache/GC remediation actually reaches machines with a
+  lingering older daemon. Regression present since the takeover was introduced.
+
+### Changed
+
+- Refreshed the dependency lockfile (`auto_enums`, `derive_utils`). `cargo upgrade --incompatible`
+  is a no-op: every incompatible upgrade is a deliberately pinned crate (`arrow-*` `=58`, `oxc_*`,
+  `tree-sitter-python`).
+
 ## [0.22.5] — 2026-07-25
 
 Hardening release after a starved-GC incident: a pre-0.22.4 daemon stuck in the #44 re-embed loop
