@@ -80,8 +80,8 @@ impl RefsSource<'_> {
                     def_path: def_path.clone(),
                     def_start,
                 };
-                // The fjall prefix scan is blocking, so it runs off the reactor; a host error degrades
-                // to empty exactly like the `Daemon` arm, so `find_callers` still floors on the name scan.
+                // ~keep The fjall prefix scan is blocking, so it runs off the reactor; a host error degrades
+                // ~keep to empty exactly like the `Daemon` arm, so `find_callers` still floors on the name scan.
                 match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
                     Ok(Ok(ResolvedRefResult::References(uses))) => uses,
                     Ok(Ok(_)) => Vec::new(),

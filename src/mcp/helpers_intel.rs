@@ -96,9 +96,9 @@ async fn resolve_definition(
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if let Some(host) = &state.shared.host {
-        // Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
-        // rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
-        // like the daemon-forward arm, so goto reports no binding rather than erroring.
+        // ~keep Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
+        // ~keep rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
+        // ~keep like the daemon-forward arm, so goto reports no binding rather than erroring.
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
         let host = std::sync::Arc::clone(host);
         let root = state.shared.root.clone();

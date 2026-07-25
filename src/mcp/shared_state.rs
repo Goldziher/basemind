@@ -88,8 +88,8 @@ pub(crate) struct SharedReadStack {
     /// hold otherwise (no daemon spawn until first use).
     ///
     // NOTE: shared per-workspace here (it is a handle to the singleton rmux daemon). Flag for later
-    // review: sharing one shell runtime across connections means shell sessions are not isolated
-    // per connection identity.
+    // ~keep review: sharing one shell runtime across connections means shell sessions are not isolated
+    // ~keep per connection identity.
     #[cfg(all(feature = "shells", any(unix, windows)))]
     pub(crate) shell_runtime: crate::shells::ShellRuntime,
     /// True while the boot-time initial scan (auto-scan of an empty index) is running. Lets a
@@ -183,9 +183,9 @@ impl SharedReadStack {
     /// The single sanctioned constructor for the shared stack — `BasemindServer::new_with_options`
     /// calls it, and a future daemon-hosted path can reuse it to build one stack shared across many
     /// [`ServerState`](super::ServerState) connections.
-    // Each argument is a distinct pre-resolved dependency of the read stack (store, git handles,
-    // config, options, host seam); bundling them into a params struct would only relocate the same
-    // fields with no clarity gain, so the eighth (cfg-gated `host`) argument is accepted here.
+    // ~keep Each argument is a distinct pre-resolved dependency of the read stack (store, git handles,
+    // ~keep config, options, host seam); bundling them into a params struct would only relocate the same
+    // ~keep fields with no clarity gain, so the eighth (cfg-gated `host`) argument is accepted here.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,

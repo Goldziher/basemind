@@ -326,9 +326,9 @@ impl WorkspacePool {
 
         let mut map = self.lock_map();
         while map.len() >= self.cap {
-            // Only evict entries with no live relay connection — a hosted workspace must not be
-            // dropped from under an in-flight rmcp session. If every entry is busy, exceed the cap
-            // rather than evict an active one (the sweep reclaims it once its connections drain).
+            // ~keep Only evict entries with no live relay connection — a hosted workspace must not be
+            // ~keep dropped from under an in-flight rmcp session. If every entry is busy, exceed the cap
+            // ~keep rather than evict an active one (the sweep reclaims it once its connections drain).
             let victim = map
                 .values()
                 .filter(|e| e.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0)

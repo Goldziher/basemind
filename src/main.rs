@@ -671,8 +671,8 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
             anyhow::bail!("daemon declined relay: {:?}", welcome.code);
         }
 
-        // Accepted: from here the session is committed — no fallback is possible because stdin is
-        // being forwarded to the daemon. Always resolve to Ok(()).
+        // ~keep Accepted: from here the session is committed — no fallback is possible because stdin is
+        // ~keep being forwarded to the daemon. Always resolve to Ok(()).
         tracing::info!(
             pid = std::process::id(),
             daemon_version = %welcome.daemon_version,

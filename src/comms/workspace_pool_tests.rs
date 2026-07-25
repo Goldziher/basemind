@@ -312,7 +312,7 @@ fn active_connection_guard_blocks_lru_eviction() {
         .expect("scan ws1");
     let guard = pool.begin_conn(ws1.path()).expect("begin conn ws1");
 
-    // ws2 opens past the cap, but ws1 has a live connection, so it must NOT be evicted.
+    // ~keep ws2 opens past the cap, but ws1 has a live connection, so it must NOT be evicted.
     pool.rescan(ws2.path(), None, false, false, &ScanCancel::default())
         .expect("scan ws2");
     assert_eq!(pool.len(), 2, "an active connection holds ws1 hot past the cap");
@@ -321,7 +321,7 @@ fn active_connection_guard_blocks_lru_eviction() {
         "ws1 stays hot while a connection is served against it"
     );
 
-    // Once the connection drains, ws1 is evictable again.
+    // ~keep Once the connection drains, ws1 is evictable again.
     drop(guard);
     let ws3 = workspace_with_sources();
     pool.rescan(ws3.path(), None, false, false, &ScanCancel::default())

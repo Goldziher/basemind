@@ -319,7 +319,7 @@ impl BasemindServer {
         let agent_id = identity::resolve_agent_id(&config, &store);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
         let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
-        // Boot decisions depend on the opened store, so compute them before it moves into the stack.
+        // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
         let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
         let shared = Arc::new(SharedReadStack::new(
             store,
@@ -329,8 +329,8 @@ impl BasemindServer {
             git_cache,
             git_history,
             options,
-            // In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
-            // (not this seam) handles writes when a daemon is up.
+            // ~keep In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
+            // ~keep (not this seam) handles writes when a daemon is up.
             #[cfg(all(feature = "comms", any(unix, windows)))]
             None,
         ));
@@ -478,11 +478,11 @@ impl BasemindServer {
             git_cache,
             git_history,
             options,
-            // The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
-            // the pool instead of looping back over the daemon's own socket.
+            // ~keep The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
+            // ~keep the pool instead of looping back over the daemon's own socket.
             Some(host),
         ));
-        // The warden shares the stack by Arc and owns every background facility for the workspace.
+        // ~keep The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
         background::spawn_serve_watcher(Arc::clone(&warden));
         Self::spawn_git_history_sync(&warden, &history_dir);

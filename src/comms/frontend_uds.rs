@@ -139,12 +139,12 @@ mod imp {
                             continue;
                         }
                         let guard = broker.register_link();
-                        // Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
-                        // client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
-                        // legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
-                        // peeking one byte discriminates without consuming it. A relay session is
-                        // hosted by the broker (shared read stack + rmcp router); everything else is a
-                        // legacy comms link, byte-for-byte the existing path.
+                        // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
+                        // ~keep client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
+                        // ~keep legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
+                        // ~keep peeking one byte discriminates without consuming it. A relay session is
+                        // ~keep hosted by the broker (shared read stack + rmcp router); everything else is a
+                        // ~keep legacy comms link, byte-for-byte the existing path.
                         let is_relay =
                             peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
                         if is_relay {
@@ -185,8 +185,8 @@ mod imp {
             let mut byte = 0u8;
             let peeked = stream.try_io(Interest::READABLE, || {
                 // SAFETY: `stream`'s fd is a live connected socket for the duration of this call;
-                // `byte` is a valid 1-byte writable buffer; `MSG_PEEK` leaves the datum queued so
-                // the subsequent real read still sees it. `recv` returns the byte count or -1.
+                // ~keep `byte` is a valid 1-byte writable buffer; `MSG_PEEK` leaves the datum queued so
+                // ~keep the subsequent real read still sees it. `recv` returns the byte count or -1.
                 let n = unsafe {
                     super::recv(
                         stream.as_raw_fd(),
