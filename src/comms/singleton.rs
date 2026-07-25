@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use directories::ProjectDirs;
 
-use super::protocol::{CommsRequest, CommsResponse, PROTO_VER, StatusReport};
+use super::protocol::{CommsOut, CommsRequest, CommsResponse, PROTO_VER, StatusReport};
 
 /// Subdirectory under the user data dir holding the comms socket + store.
 const COMMS_SUBDIR: &str = "comms";
@@ -326,7 +326,12 @@ fn request_stop(socket_path: &Path) {
 }
 
 /// Connect to the daemon endpoint, send one length-delimited msgpack request, and decode the one
-/// framed [`CommsResponse`]. `None` on any transport/codec failure. Bounds the response to 64 KiB.
+/// framed reply. `None` on any transport/codec failure. Bounds the response to 64 KiB.
+///
+/// The daemon frames every reply as a [`CommsOut`] envelope (see `frontend_uds::send`), so we
+/// decode `CommsOut` and unwrap its `Response`. Decoding a bare [`CommsResponse`] here silently
+/// failed for every reply — which left [`daemon_status`] returning `None` and the version-gated
+/// takeover in [`ensure_daemon`] never firing against a live daemon.
 fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
     use std::io::{Read, Write};
     let mut stream = open_endpoint(socket_path)?;
@@ -342,7 +347,10 @@ fn roundtrip(socket_path: &Path, req: &CommsRequest) -> Option<CommsResponse> {
     }
     let mut buf = vec![0u8; rlen];
     stream.read_exact(&mut buf).ok()?;
-    rmp_serde::from_slice::<CommsResponse>(&buf).ok()
+    match rmp_serde::from_slice::<CommsOut>(&buf).ok()? {
+        CommsOut::Response(resp) => Some(resp),
+        CommsOut::Notification(_) => None,
+    }
 }
 
 /// Open the platform endpoint (Unix socket / Windows named pipe) with short read/write timeouts.
@@ -594,6 +602,48 @@ mod tests {
             1,
             "exactly one binder may win the singleton lock"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn daemon_status_decodes_the_commsout_response_envelope() {
+        use super::super::protocol::{CommsOut, CommsResponse, StatusReport};
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("status.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+
+        let want = StatusReport {
+            pid: 4242,
+            version: "0.22.4".to_string(),
+            proto_ver: PROTO_VER,
+            uptime_secs: 99,
+            threads: 3,
+            subscribers: 0,
+        };
+        let reply = want.clone();
+        // A faithful daemon: read the framed request, reply with the SAME CommsOut::Response ~keep
+        // envelope the real UDS front-end sends (`frontend_uds::send`), not a bare CommsResponse. ~keep
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut prefix = [0u8; 4];
+            stream.read_exact(&mut prefix).expect("read len");
+            let len = u32::from_be_bytes(prefix) as usize;
+            let mut req = vec![0u8; len];
+            stream.read_exact(&mut req).expect("read req");
+            let body = rmp_serde::to_vec_named(&CommsOut::Response(CommsResponse::Status(reply))).expect("encode");
+            let out_len = u32::try_from(body.len()).expect("len fits");
+            stream.write_all(&out_len.to_be_bytes()).expect("write len");
+            stream.write_all(&body).expect("write body");
+        });
+
+        let got = daemon_status(&socket).expect("daemon_status must decode the CommsOut envelope");
+        server.join().expect("server thread");
+        assert_eq!(got.pid, want.pid);
+        assert_eq!(got.version, want.version);
+        assert_eq!(got.proto_ver, want.proto_ver);
     }
 
     #[tokio::test]
