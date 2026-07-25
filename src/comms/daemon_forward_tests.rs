@@ -11,6 +11,79 @@ fn temp_broker() -> (tempfile::TempDir, Arc<Broker>) {
     (dir, Arc::new(Broker::new(store)))
 }
 
+/// Run a `git` subcommand in `repo` with a fixed identity, asserting success. Mirrors the fixture
+/// setup in `tests/git_smoke.rs`: basemind never writes to a repo, so building the fixture through
+/// the real `git` CLI is the most representative way to exercise the history reader.
+fn git(repo: &std::path::Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@e.x")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@e.x")
+        .status()
+        .expect("git in PATH");
+    assert!(status.success(), "git {args:?} failed");
+}
+
+/// The daemon-hosted git-history seam: a hosted connection runs its history ops IN-PROCESS through
+/// [`Broker::run_git_history_inproc`] and the [`HistoryHost`](crate::git_history::remote::HistoryHost)
+/// trait, instead of dialing the daemon over its own socket. This asserts a `Sync` builds the index
+/// and a subsequent read returns the committed history — through the trait object the hosted stack
+/// actually holds, so the whole wiring (not just the inherent method) is covered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosted_git_history_runs_in_process() {
+    use crate::git_history::proto::{GitHistoryOp, GitHistoryReply};
+    use crate::git_history::remote::HistoryHost;
+
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+
+    let repo = tempfile::tempdir().expect("workspace");
+    let root = repo.path();
+    git(root, &["init", "-q"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
+    std::fs::write(root.join("lib.rs"), "pub fn hosted_history() {}\n").expect("write source");
+    git(root, &["add", "lib.rs"]);
+    git(root, &["commit", "-qm", "seed hosted history"]);
+
+    // ~keep Sync builds the index in-process (through the daemon's per-repo build lock).
+    match broker
+        .run_git_history_inproc(root.to_path_buf(), GitHistoryOp::Sync)
+        .await
+        .expect("in-process sync")
+    {
+        GitHistoryReply::Synced(_) => {}
+        other => panic!("expected Synced, got {other:?}"),
+    }
+
+    // ~keep Read back through the HistoryHost trait object — exactly what a hosted stack holds.
+    let host: Arc<dyn HistoryHost> = Arc::clone(&broker) as Arc<dyn HistoryHost>;
+    let reply = host
+        .run_history(
+            root.to_path_buf(),
+            GitHistoryOp::RecentCommits {
+                skip: 0,
+                take: 10,
+                include_files: false,
+            },
+        )
+        .await
+        .expect("in-process recent-commits");
+    match reply {
+        GitHistoryReply::Commits(commits) => {
+            assert_eq!(
+                commits.len(),
+                1,
+                "the one seeded commit is indexed and read back in-process"
+            );
+            assert_eq!(commits[0].summary, "seed hosted history");
+        }
+        other => panic!("expected Commits, got {other:?}"),
+    }
+}
+
 /// A draining daemon must REFUSE new scans, not run them as doomed partial passes: the drain
 /// token is process-global and never un-trips, and a cancelled pass never advances the
 /// coalescing generation — so accepting the request would burn a full tree walk for a result

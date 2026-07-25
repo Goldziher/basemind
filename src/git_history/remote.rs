@@ -24,7 +24,9 @@
 //! multi-threaded runtime `basemind serve` runs on. Off a multi-thread runtime (a `current_thread`
 //! test, a rayon worker) the call degrades to `None` rather than panicking, and the caller live-walks.
 
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use tokio::runtime::{Handle, RuntimeFlavor};
@@ -34,6 +36,26 @@ use super::proto::{GitHistoryOp, GitHistoryReply, SyncOutcome};
 use crate::comms::client::CommsClient;
 use crate::comms::ids::AgentId;
 use crate::git::CommitInfo;
+use crate::git_history::GitHistoryError;
+
+/// In-process access to the daemon-held git-history index, for a daemon-hosted connection.
+///
+/// A daemon that hosts the rmcp router ([`crate::mcp::BasemindServer::from_shared`]) runs the same
+/// tool bodies as a `daemon_writer` serve, whose history reads FORWARD to the daemon — but here the
+/// daemon would be dialing itself. This port lets those reads run in-process instead. The implementor
+/// (the [`Broker`](crate::comms::daemon::Broker)) owns the repo's single open handle and its build
+/// lock, so a hosted caller and a socket-forwarding one share exactly one index and one build.
+///
+/// The method is async so [`RemoteHistory::call`]'s existing `block_in_place`/`block_on` bridge drives
+/// it with no nested runtime; it is boxed so the trait stays object-safe without an `async-trait` dep.
+pub trait HistoryHost: Send + Sync {
+    /// Run one op against the daemon's in-process index.
+    fn run_history(
+        &self,
+        root: PathBuf,
+        op: GitHistoryOp,
+    ) -> Pin<Box<dyn Future<Output = Result<GitHistoryReply, GitHistoryError>> + Send + '_>>;
+}
 
 /// A git-history index whose storage lives in the daemon. Cloneable; the lazily-established
 /// connection is shared between clones.
@@ -45,8 +67,11 @@ pub struct RemoteHistory {
     agent: AgentId,
     /// The query connection, dialed on first use. Dedicated to git-history reads: sharing serve's
     /// main comms client would serialize a history query behind a multi-minute forwarded scan (which
-    /// holds that client's lock for its whole duration).
+    /// holds that client's lock for its whole duration). Unused (and never dialed) when `host` is set.
     client: Arc<OnceCell<Arc<Mutex<CommsClient>>>>,
+    /// In-process host, set only for a daemon-hosted connection: reads run through it instead of the
+    /// socket, so the daemon does not loop back to itself.
+    host: Option<Arc<dyn HistoryHost>>,
 }
 
 impl RemoteHistory {
@@ -58,7 +83,24 @@ impl RemoteHistory {
             root,
             agent,
             client: Arc::new(OnceCell::new()),
+            host: None,
         }
+    }
+
+    /// A daemon-backed handle whose daemon is *this process*: reads run in-process through `host`
+    /// rather than over the socket. Used by a daemon-hosted connection.
+    pub fn hosted(root: PathBuf, agent: AgentId, host: Arc<dyn HistoryHost>) -> Self {
+        Self {
+            root,
+            agent,
+            client: Arc::new(OnceCell::new()),
+            host: Some(host),
+        }
+    }
+
+    /// The in-process host, if this is a hosted handle. Drives the startup sync in-process.
+    pub(crate) fn host(&self) -> Option<Arc<dyn HistoryHost>> {
+        self.host.clone()
     }
 
     /// The HEAD the daemon's index is synced to, or `None` when unbuilt / unreachable. `None` makes
@@ -93,6 +135,13 @@ impl RemoteHistory {
     }
 
     async fn call_async(&self, op: GitHistoryOp) -> Option<GitHistoryReply> {
+        if let Some(host) = &self.host {
+            return host
+                .run_history(self.root.clone(), op)
+                .await
+                .inspect_err(|error| tracing::warn!(%error, "git-history: in-process query failed; tools live-walk"))
+                .ok();
+        }
         let client = self
             .client
             .get_or_try_init(|| async {

@@ -127,6 +127,10 @@ pub enum GitHistoryError {
     /// request to it instead of building locally. Never reached from a standalone process.
     #[error("git-history index is daemon-backed; this process cannot write it")]
     NotLocal,
+    /// The git-history index is disabled by configuration (`BASEMIND_GH_INDEX=0`). Returned by the
+    /// daemon's in-process runner so both the forwarded and the hosted path report it uniformly.
+    #[error("git-history index disabled (BASEMIND_GH_INDEX=0)")]
+    Disabled,
 }
 
 /// Per-commit metadata stored in `gh_commit_by_ord`. File paths are interned to `path_id` (u32) so
@@ -212,12 +216,38 @@ impl GitHistoryIndex {
         }
     }
 
+    /// A DAEMON-BACKED handle whose daemon is *this process* — a daemon-hosted connection. Instead of
+    /// dialing the daemon over its own socket (a loopback), history ops run in-process through `host`,
+    /// which shares the daemon's single open handle and per-repo build lock. Takes no lock and
+    /// performs no IO.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub fn hosted(
+        root: std::path::PathBuf,
+        agent: crate::comms::ids::AgentId,
+        host: std::sync::Arc<dyn remote::HistoryHost>,
+    ) -> Self {
+        Self {
+            backend: Backend::Remote(remote::RemoteHistory::hosted(root, agent, host)),
+        }
+    }
+
     /// True when this handle forwards to the daemon rather than holding the database. The write side
     /// keys off it: the builder can only run in the process that owns the lock, so a daemon-backed
     /// session must ASK the daemon to build instead of calling the builder itself.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub fn is_daemon_backed(&self) -> bool {
         matches!(self.backend, Backend::Remote(_))
+    }
+
+    /// The in-process host of a daemon-hosted handle, if any. A hosted connection uses it to run the
+    /// startup git-history sync directly (through the daemon's build lock) instead of forwarding the
+    /// `Sync` op back over the socket. `None` for a local handle or a socket-forwarding one.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn history_host(&self) -> Option<std::sync::Arc<dyn remote::HistoryHost>> {
+        match &self.backend {
+            Backend::Remote(remote) => remote.host(),
+            Backend::Local(_) => None,
+        }
     }
 
     /// The local database, or `None` for a daemon-backed handle. Every write path (the builder) and

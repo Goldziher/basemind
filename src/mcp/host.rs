@@ -14,11 +14,11 @@
 //! transport-specific error type. The forwarding layer stays intact for the FALLBACK path (a thin
 //! `daemon_writer` serve with no in-process pool); only the hosted path uses this seam.
 //!
-//! DEFERRED: git-history is intentionally NOT part of this seam yet. The daemon-backed git-history
-//! handle already works (the daemon is the sole holder of `git-history.fjall/`), so a hosted
-//! connection keeps forwarding those ops via
-//! [`CommsClient::git_history`](crate::comms::client::CommsClient::git_history) for now — routing it
-//! in-process is a follow-up, not a correctness gap.
+//! Git-history has its own parallel seam — [`HistoryHost`](crate::git_history::remote::HistoryHost),
+//! implemented by the daemon [`Broker`](crate::comms::daemon::Broker) rather than the pool, because
+//! the Broker (not the pool) is the sole holder of `git-history.fjall/`. A hosted connection runs its
+//! history reads and its startup sync in-process through that seam instead of forwarding them back
+//! over the daemon's own socket.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 

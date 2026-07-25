@@ -318,7 +318,17 @@ impl BasemindServer {
     ) -> Self {
         let agent_id = identity::resolve_agent_id(&config, &store);
         let history_dir = crate::git_history::shared_history_basemind_dir(&root);
-        let git_history = Self::open_git_history(&root, &history_dir, repo.is_some(), &agent_id, &options);
+        let git_history = Self::open_git_history(
+            &root,
+            &history_dir,
+            repo.is_some(),
+            &agent_id,
+            &options,
+            // ~keep In-process serve / CLI: no daemon hosting us, so history reads use the socket-forward
+            // ~keep path (or a local handle) — never the in-process seam.
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            None,
+        );
         // ~keep Boot decisions depend on the opened store, so compute them before it moves into the stack.
         let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
         let shared = Arc::new(SharedReadStack::new(
@@ -439,6 +449,7 @@ impl BasemindServer {
     pub(crate) fn build_hosted_read_stack(
         root: &std::path::Path,
         host: Arc<dyn HostBackend>,
+        git_history_host: Arc<dyn crate::git_history::remote::HistoryHost>,
     ) -> anyhow::Result<Arc<SharedReadStack>> {
         use anyhow::Context as _;
 
@@ -468,7 +479,14 @@ impl BasemindServer {
         };
         let agent_id = identity::resolve_agent_id(&config, &store);
         let history_dir = crate::git_history::shared_history_basemind_dir(root);
-        let git_history = Self::open_git_history(root, &history_dir, repo.is_some(), &agent_id, &options);
+        let git_history = Self::open_git_history(
+            root,
+            &history_dir,
+            repo.is_some(),
+            &agent_id,
+            &options,
+            Some(git_history_host),
+        );
         let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
         let shared = Arc::new(SharedReadStack::new(
             store,
@@ -517,6 +535,11 @@ impl BasemindServer {
         has_repo: bool,
         agent_id: &str,
         options: &ServerOptions,
+        // ~keep A daemon-hosted connection passes the daemon itself as the in-process history host, so
+        // ~keep its reads run through the shared handle instead of looping back over the daemon's socket.
+        #[cfg(all(feature = "comms", any(unix, windows)))] git_history_host: Option<
+            Arc<dyn crate::git_history::remote::HistoryHost>,
+        >,
     ) -> Option<Arc<crate::git_history::GitHistoryIndex>> {
         if !has_repo || !crate::git_history::index_enabled() {
             return None;
@@ -526,6 +549,13 @@ impl BasemindServer {
             let agent = crate::comms::ids::AgentId::parse(agent_id.to_string())
                 .inspect_err(|error| tracing::warn!(%error, "git-history: bad agent id; tools will live-walk"))
                 .ok()?;
+            if let Some(host) = git_history_host {
+                return Some(Arc::new(crate::git_history::GitHistoryIndex::hosted(
+                    root.to_path_buf(),
+                    agent,
+                    host,
+                )));
+            }
             return Some(Arc::new(crate::git_history::GitHistoryIndex::remote(
                 root.to_path_buf(),
                 agent,
@@ -560,6 +590,22 @@ impl BasemindServer {
             return;
         };
         let _ = index;
+        // ~keep A daemon-hosted handle syncs in-process through the seam (the daemon's own build lock),
+        // ~keep never over the socket back to itself.
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        if let Some(host) = index.history_host() {
+            let root = state.shared.root.clone();
+            tokio::spawn(async move {
+                match host
+                    .run_history(root, crate::git_history::proto::GitHistoryOp::Sync)
+                    .await
+                {
+                    Ok(reply) => tracing::info!(?reply, "git-history index synced in-process (hosted)"),
+                    Err(error) => tracing::warn!(%error, "git-history in-process sync failed; history tools live-walk"),
+                }
+            });
+            return;
+        }
         #[cfg(all(feature = "comms", any(unix, windows)))]
         if index.is_daemon_backed() {
             let root = state.shared.root.clone();

@@ -258,12 +258,14 @@ impl WorkspacePool {
     ///
     /// `host` is the in-process host seam handed to the built stack (the pool itself), so the hosted
     /// connection's writes / rescans / resolved-refs reach the pool directly instead of dialing the
-    /// daemon over its own socket.
+    /// daemon over its own socket. `git_history_host` is the same seam for git-history reads (the
+    /// daemon Broker, the sole holder of `git-history.fjall/`).
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) async fn get_or_build_serve_state(
         &self,
         root: &Path,
         host: std::sync::Arc<dyn crate::mcp::HostBackend>,
+        git_history_host: std::sync::Arc<dyn crate::git_history::remote::HistoryHost>,
     ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
         let entry = self.get_or_open(root).map_err(anyhow::Error::new)?;
         entry.touch();
@@ -272,7 +274,7 @@ impl WorkspacePool {
             .serve_state
             .get_or_try_init(|| async move {
                 tokio::task::spawn_blocking(move || {
-                    crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host)
+                    crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host, git_history_host)
                 })
                 .await
                 .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
