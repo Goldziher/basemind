@@ -807,6 +807,73 @@ async fn blob_gc_waits_for_an_in_flight_rescan() {
     gc.await.expect("blob GC runs once no rescan holds the read lock");
 }
 
+/// The wait for the blob-GC write lock is BOUNDED: behind a rescan that never ends (the runaway
+/// case), the sweep must come back `Starved` so the GC task skips the cycle and retries later —
+/// an unbounded wait here is how the maintenance loop silently parked forever while the cache
+/// grew to 116 GB.
+#[tokio::test]
+async fn blob_gc_returns_starved_instead_of_hanging_behind_an_endless_rescan() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+
+    let _rescan_guard = broker.blob_gc_lock.read().await;
+
+    let result = broker.run_blob_gc_with_lock_timeout(Duration::from_millis(50)).await;
+    assert!(
+        matches!(result, Err(crate::store_gc::GcError::Starved(_))),
+        "a sweep that cannot win the lock within its bound reports Starved, got {result:?}"
+    );
+}
+
+/// Every completed destructive sweep records its outcome to `gc-state.json`, so `cache_stats`
+/// can show WHEN GC last actually ran — the observability whose absence let the starved-GC
+/// incident go unnoticed.
+#[tokio::test]
+async fn a_completed_sweep_persists_gc_state() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+
+    broker.run_blob_gc().await.expect("sweep");
+
+    let state = crate::store_gc::read_gc_state().expect("gc-state.json must exist after a completed sweep");
+    assert!(state.at_epoch_secs > 0, "the sweep timestamp is recorded");
+}
+
+/// A draining daemon must REFUSE new scans, not run them as doomed partial passes: the drain
+/// token is process-global and never un-trips, and a cancelled pass never advances the
+/// coalescing generation — so accepting the request would burn a full tree walk for a result
+/// the dispatch layer surfaces as an error anyway.
+#[tokio::test]
+async fn rescan_is_refused_while_draining() {
+    crate::store::init_isolated_cache();
+    let (_d, broker) = temp_broker();
+    let (tx, _rx) = mpsc::channel(8);
+
+    broker.begin_drain().await;
+
+    let ws = tempfile::tempdir().expect("workspace");
+    std::fs::write(ws.path().join("main.rs"), "pub fn f() {}\n").expect("write source");
+    let mut session = Session::default();
+    let resp = broker
+        .handle(
+            CommsRequest::Rescan {
+                root: ws.path().to_path_buf(),
+                paths: None,
+                full: true,
+                embed: false,
+            },
+            &mut session,
+            &tx,
+        )
+        .await;
+    match resp {
+        CommsResponse::Error { code, .. } => {
+            assert_eq!(code, "rescan_draining", "the refusal is distinguishable from a failure")
+        }
+        other => panic!("a draining daemon must refuse the rescan, got {other:?}"),
+    }
+}
+
 /// End-to-end correctness (not just lock timing): racing a real full rescan against the destructive
 /// global blob sweep, repeatedly, must never leave the index pointing at a reaped blob. A rescan
 /// writes fresh content-addressed blobs but only rewrites `index.msgpack` (which the sweep

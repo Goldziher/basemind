@@ -20,6 +20,12 @@ use crate::comms::store::CommsStore;
 /// default 24h recency reads long before [`MESSAGE_TTL`](crate::comms::store::MESSAGE_TTL).
 const PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
+/// How often the global blob GC + budget sweep runs, on its OWN task — deliberately not part of
+/// the prune loop. The GC can block up to its lock-timeout behind a long rescan (it takes the
+/// blob-GC write lock; every rescan holds the read side), and when it shared a loop with the
+/// cheap prunes one starved GC silently stopped ALL maintenance — the 116 GB incident.
+const GC_EVERY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// How often the Unix socket-ownership watchdog verifies we still own our bound socket. Short, so
 /// an orphaned daemon (its socket reclaimed by another) self-terminates within seconds.
 #[cfg(unix)]
@@ -136,19 +142,24 @@ pub fn run() -> Result<()> {
                 if evicted > 0 {
                     tracing::info!(evicted, "daemon: shed idle hot workspaces from RAM");
                 }
-                // Cross-workspace blob GC over the machine-global store: reference-count against ~keep
-                // EVERY workspace and reap blobs no workspace points at. Safe only here — the daemon ~keep
-                // is the sole caller that sees all references. Routed through the broker so it takes ~keep
-                // the blob-GC write lock and never sweeps while a rescan is writing fresh blobs. ~keep
-                match broker_for_prune.run_blob_gc().await {
-                    Ok(report) if report.removed > 0 => tracing::info!(
-                        removed = report.removed,
-                        bytes_freed = report.bytes_freed,
-                        "daemon: reclaimed orphaned global blobs"
-                    ),
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(%error, "daemon: global blob GC failed"),
-                }
+            }
+        });
+
+        // Cross-workspace blob GC over the machine-global store: reference-count against ~keep
+        // EVERY workspace and reap blobs no workspace points at. Safe only here — the daemon ~keep
+        // is the sole caller that sees all references. Routed through the broker so it takes ~keep
+        // the blob-GC write lock and never sweeps while a rescan is writing fresh blobs. ~keep
+        // Runs on its own task — never sharing a loop with the cheap prunes above — and sweeps ~keep
+        // once at startup: a daemon that restarts more often than GC_EVERY must still reclaim, ~keep
+        // and a GC starved behind a rescan must never stall the rest of the maintenance. ~keep
+        let broker_for_gc = broker.clone();
+        tokio::spawn(async move {
+            run_gc_cycle(&broker_for_gc).await;
+            let mut tick = tokio::time::interval(GC_EVERY);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                run_gc_cycle(&broker_for_gc).await;
             }
         });
 
@@ -230,6 +241,29 @@ impl CommsFrontendObj for NamedPipeFrontendBox {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send>> {
         use crate::comms::transport::CommsFrontend;
         Box::pin(async move { Box::new(self.0).serve(broker, shutdown).await })
+    }
+}
+
+/// One blob-GC + budget sweep, with every outcome logged: reclaim at info, a starved cycle at
+/// warn (skipped, retried next tick — never wedged), any other failure at warn.
+async fn run_gc_cycle(broker: &Broker) {
+    match broker.run_blob_gc().await {
+        Ok(report) if report.removed > 0 || report.workspaces_reaped > 0 || report.workspaces_evicted > 0 => {
+            tracing::info!(
+                removed = report.removed,
+                bytes_freed = report.bytes_freed,
+                workspaces_reaped = report.workspaces_reaped,
+                workspace_bytes_freed = report.workspace_bytes_freed,
+                workspaces_evicted = report.workspaces_evicted,
+                evicted_bytes_freed = report.evicted_bytes_freed,
+                "daemon: reclaimed global cache"
+            );
+        }
+        Ok(_) => {}
+        Err(error @ crate::store_gc::GcError::Starved(_)) => {
+            tracing::warn!(%error, "daemon: blob GC starved this cycle; retrying on the next tick");
+        }
+        Err(error) => tracing::warn!(%error, "daemon: global blob GC failed"),
     }
 }
 

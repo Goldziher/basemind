@@ -173,6 +173,12 @@ impl WorkspacePool {
                 return Ok((stats, false));
             }
         }
+        // Re-check the drain token AFTER winning the store lock: a request that queued behind a
+        // pass the drain cancelled must fail fast here, not start its own doomed walk — a
+        // cancelled pass never advances `full_scan_gen`, so the coalescing above cannot catch it.
+        if cancel.is_cancelled() {
+            return Ok((ScanStats::default(), true));
+        }
         let report = if incremental {
             let paths = paths.as_deref().unwrap_or_default();
             scanner::scan_paths_with_cancel(&entry.root, &mut store, &entry.config, paths, mode, cancel)?

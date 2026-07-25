@@ -97,6 +97,12 @@ pub const DRAIN_GRACE: Duration = Duration::from_secs(10);
 /// Poll cadence while waiting out [`DRAIN_GRACE`].
 const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
 
+/// How long a GC cycle waits for the blob-GC write lock before declaring itself starved and
+/// skipping the cycle. Every rescan holds the read side for its whole duration, so this must be
+/// long enough to outlast a legitimate big-monorepo scan yet bounded — an unbounded wait behind
+/// a runaway rescan is how the maintenance loop silently parked forever (116 GB incident).
+const GC_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 /// RAII refcount for one connected link, held for the link's whole life; see
 /// [`Broker::register_link`].
 ///
@@ -491,9 +497,24 @@ impl Broker {
     /// daemon does with no client attached, so without it the idle reaper could fire mid-sweep and
     /// take the process down between the workspace reap and the blob reap.
     pub async fn run_blob_gc(&self) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
+        self.run_blob_gc_with_lock_timeout(GC_LOCK_TIMEOUT).await
+    }
+
+    /// [`Broker::run_blob_gc`] with an explicit bound on how long the sweep waits for the
+    /// blob-GC write lock. The wait must be bounded: a runaway rescan holds the read side for
+    /// its whole (potentially unbounded) duration, and an unbounded `write().await` here is how
+    /// the maintenance loop silently parked forever while the cache grew to 116 GB. On timeout
+    /// the cycle returns [`GcError::Starved`](crate::store_gc::GcError::Starved) — skipped and
+    /// retried on the next tick, never wedged. Test seam: tests pass a tiny bound.
+    pub(crate) async fn run_blob_gc_with_lock_timeout(
+        &self,
+        lock_timeout: std::time::Duration,
+    ) -> Result<crate::store_gc::GcReport, crate::store_gc::GcError> {
         let _working = self.begin_work();
-        let _sweep_guard = self.blob_gc_lock.write().await;
-        tokio::task::spawn_blocking(crate::store_gc::reap_and_gc_global)
+        let Ok(_sweep_guard) = tokio::time::timeout(lock_timeout, self.blob_gc_lock.write()).await else {
+            return Err(crate::store_gc::GcError::Starved(lock_timeout));
+        };
+        tokio::task::spawn_blocking(crate::store_gc::reap_gc_and_enforce_budget)
             .await
             .map_err(|join| crate::store_gc::GcError::Join(join.to_string()))?
     }
@@ -631,6 +652,16 @@ impl Broker {
         embed: bool,
     ) -> CommsResponse {
         self.mark_active().await;
+        // A tripped scan token means the daemon is draining (every drain route cancels first, ~keep
+        // and the token never un-trips). Launching a scan now would only produce a doomed ~keep
+        // partial pass that defeats coalescing — refuse instead; the client retries against ~keep
+        // the next daemon. ~keep
+        if self.scan_cancel.is_cancelled() {
+            return CommsResponse::Error {
+                code: "rescan_draining".to_string(),
+                message: "daemon draining; rescan refused (retry against the next daemon)".to_string(),
+            };
+        }
         let _rescan_guard = self.blob_gc_lock.read().await;
         let pool = Arc::clone(&self.workspaces);
         let cancel = self.scan_cancel.clone();

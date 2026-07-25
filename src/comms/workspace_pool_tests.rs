@@ -278,3 +278,28 @@ fn sequential_full_rescans_do_not_coalesce() {
     assert_eq!(second.updated, 0, "a sequential rescan really re-walks");
     assert_eq!(second.skipped_unchanged, 2);
 }
+
+/// A request whose drain token is already tripped must fail fast as a cancelled pass — never
+/// start its own tree walk. This covers the request that queued on the store mutex behind a
+/// pass the drain cancelled: the cancelled pass never advances `full_scan_gen`, so generation
+/// coalescing cannot catch it, and only this re-check stops a re-walk storm.
+#[test]
+fn a_tripped_cancel_token_fails_fast_without_walking() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+
+    let tripped = ScanCancel::default();
+    tripped.cancel();
+    let (stats, cancelled) = pool
+        .rescan(ws.path(), None, true, false, &tripped)
+        .expect("a tripped token is a cancelled pass, not an error");
+    assert!(cancelled, "the pass reports itself cancelled");
+    assert_eq!(stats.scanned, 0, "no files were walked");
+
+    let (stats, cancelled) = pool
+        .rescan(ws.path(), None, true, false, &ScanCancel::default())
+        .expect("a fresh token scans normally");
+    assert!(!cancelled);
+    assert_eq!(stats.scanned, 2, "the cancelled pass left no coalescing residue");
+}
