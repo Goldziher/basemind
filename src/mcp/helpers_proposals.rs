@@ -328,16 +328,10 @@ async fn apply_mined_candidates(
 ) -> Result<u32, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::ProposalsMineApply { candidates };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::Mined { count } => Ok(count),
             other => Err(McpError::internal_error(
@@ -402,7 +396,6 @@ pub(super) async fn run_proposals_list(
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::ProposalsList {
@@ -411,12 +404,7 @@ pub(super) async fn run_proposals_list(
             scan_cap: scan_cap as u32,
             cursor: cursor_bytes,
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::ProposalsListed {
                 items,
@@ -530,16 +518,10 @@ pub(super) async fn run_proposal_accept(
 async fn read_proposal(state: &ServerState, id: &str) -> Result<Option<ProposalRecord>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::ProposalGet { id: id.to_string() };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::Proposal(record) => Ok(record),
             other => Err(McpError::internal_error(
@@ -569,7 +551,6 @@ async fn promote_proposal(
 ) -> Result<(), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::ProposalPromote {
@@ -577,12 +558,7 @@ async fn promote_proposal(
             memory_key: memory_key.to_string(),
             record: record.clone(),
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::Promoted => Ok(()),
             other => Err(McpError::internal_error(
@@ -619,16 +595,10 @@ pub(super) async fn run_proposal_reject(
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::ProposalReject { id: params.id.clone() };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::Rejected => json_result(&ProposalRejectResponse { rejected: true }),
             other => Err(McpError::internal_error(

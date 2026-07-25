@@ -417,7 +417,6 @@ async fn scan_audit_keyspace(
 ) -> Result<Vec<(String, Vec<u8>)>, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{GovernanceOp, GovernanceOutcome};
 
         let op = GovernanceOp::AuditScan {
@@ -428,12 +427,7 @@ async fn scan_audit_keyspace(
             limit: args.limit as u32,
             scan_cap: args.scan_cap as u32,
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::AuditScanned { items } => Ok(items),
             other => Err(McpError::internal_error(
@@ -460,7 +454,6 @@ async fn persist_audit_actions(
 ) -> Result<(), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::proposals_proto::{AuditMutation, GovernanceOp, GovernanceOutcome};
 
         let mutations: Vec<AuditMutation> = actions
@@ -474,12 +467,7 @@ async fn persist_audit_actions(
             })
             .collect();
         let op = GovernanceOp::AuditPersist { mutations };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .governance_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_governance_op(state, op).await?;
         return match outcome {
             GovernanceOutcome::AuditPersisted => Ok(()),
             other => Err(McpError::internal_error(

@@ -579,7 +579,14 @@ impl BasemindServer {
             let store = self.state.shared.store.read().await;
             let cache = self.state.shared.cache.load_full();
             #[cfg(all(feature = "comms", any(unix, windows)))]
-            let refs = if self.state.shared.daemon_writer {
+            let refs = if let Some(host) = &self.state.shared.host {
+                // Daemon-hosted: resolve in-process through the pool's read-write index (fixes the
+                // Seam-B degradation) instead of dialing the daemon over its own socket.
+                RefsSource::Host {
+                    host: std::sync::Arc::clone(host),
+                    root: self.state.shared.root.clone(),
+                }
+            } else if self.state.shared.daemon_writer {
                 let client = super::helpers_comms::resolve_comms_client(&self.state, None).await?;
                 RefsSource::Daemon {
                     client,

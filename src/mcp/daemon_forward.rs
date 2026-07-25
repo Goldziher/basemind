@@ -39,8 +39,40 @@ pub(super) async fn forward_rescan_and_refresh(
         .rescan(state.shared.root.clone(), paths, full, embed)
         .await
         .map_err(comms_err)?;
-    refresh_readonly_map(state).await?;
+    refresh_cache_after_scan(state).await?;
     Ok(report)
+}
+
+/// Route a read-only serve's scan to the machine's sole fjall writer, then refresh the in-RAM map.
+///
+/// On the DAEMON-HOSTED path ([`state.shared.host`](ServerState) is `Some`) the writer pool is
+/// in-process, so the scan runs directly through it on a blocking thread — no socket loopback, which
+/// on the daemon would mean the daemon dialing itself. Every other `daemon_writer` serve has no host
+/// and [`forward_rescan_and_refresh`] ships the scan over the socket. Both then rebuild the read-only
+/// map from the index the writer just wrote via the shared [`refresh_cache_after_scan`] tail — so the
+/// refresh half is written once.
+pub(super) async fn writer_rescan_and_refresh(
+    state: &Arc<ServerState>,
+    paths: Option<Vec<PathBuf>>,
+    full: bool,
+    embed: bool,
+) -> Result<RescanReport, McpError> {
+    if let Some(host) = &state.shared.host {
+        let host = Arc::clone(host);
+        let root = state.shared.root.clone();
+        let stats = tokio::task::spawn_blocking(move || host.host_rescan(&root, paths, full, embed))
+            .await
+            .map_err(|error| McpError::internal_error(format!("host rescan task panicked: {error}"), None))?
+            .map_err(|error| McpError::internal_error(format!("host rescan: {error}"), None))?;
+        refresh_cache_after_scan(state).await?;
+        return Ok(RescanReport {
+            scanned: stats.scanned,
+            updated: stats.updated,
+            removed: stats.removed,
+            elapsed_ms: 0,
+        });
+    }
+    forward_rescan_and_refresh(state, paths, full, embed).await
 }
 
 /// Refresh serve's read-only view from the current (daemon-written) `index.msgpack`: reopen the
@@ -52,7 +84,7 @@ pub(super) async fn forward_rescan_and_refresh(
 /// new cache, but store-reading tools (`status`'s `file_count`, corpus bytes) read `store.index`
 /// directly — without replacing the store they would report the pre-scan (often empty) index
 /// forever. This is the forward-path counterpart to a local scan mutating the store in place.
-async fn refresh_readonly_map(state: &Arc<ServerState>) -> Result<(), McpError> {
+async fn refresh_cache_after_scan(state: &Arc<ServerState>) -> Result<(), McpError> {
     let view = state.shared.store.read().await.view.clone();
     let root = state.shared.root.clone();
     let current_fingerprint = state.shared.cache.load().fingerprint;

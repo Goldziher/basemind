@@ -125,7 +125,7 @@ impl Broker {
 /// `crate::query` resolvers, which read the fjall `refs_by_def` / `refs_by_path` partitions when the
 /// index is open — as it always is on the daemon (sole writer, opens read-write) — so the reply
 /// carries the full cross-file edge set. A degraded index (no fjall) falls back to intra-file blobs.
-fn resolve_refs_against(
+pub(crate) fn resolve_refs_against(
     store: &crate::store::Store,
     query: &crate::comms::resolved_proto::ResolvedRefQuery,
 ) -> crate::comms::resolved_proto::ResolvedRefResult {

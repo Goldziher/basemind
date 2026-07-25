@@ -255,10 +255,15 @@ impl WorkspacePool {
     /// a blocking whole-corpus `MapCache::build`, so it runs on a blocking thread — and spawns the
     /// workspace's single freshness warden; every later caller gets the same `Arc` from the
     /// [`OnceCell`](tokio::sync::OnceCell). Concurrent first callers all await the one build.
+    ///
+    /// `host` is the in-process host seam handed to the built stack (the pool itself), so the hosted
+    /// connection's writes / rescans / resolved-refs reach the pool directly instead of dialing the
+    /// daemon over its own socket.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) async fn get_or_build_serve_state(
         &self,
         root: &Path,
+        host: std::sync::Arc<dyn crate::mcp::HostBackend>,
     ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
         let entry = self.get_or_open(root).map_err(anyhow::Error::new)?;
         entry.touch();
@@ -266,9 +271,11 @@ impl WorkspacePool {
         let shared = entry
             .serve_state
             .get_or_try_init(|| async move {
-                tokio::task::spawn_blocking(move || crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf))
-                    .await
-                    .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
+                tokio::task::spawn_blocking(move || {
+                    crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf, host)
+                })
+                .await
+                .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
             })
             .await?;
         Ok(std::sync::Arc::clone(shared))
@@ -373,6 +380,75 @@ impl WorkspacePool {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.lock_map().len()
+    }
+}
+
+/// The in-process host seam: a daemon-hosted read stack routes its writes / rescans / precise
+/// resolved-reference reads straight through the pool (the machine's sole fjall writer) instead of
+/// forwarding them over the daemon's own socket — the daemon would otherwise dial itself. Mirrors
+/// the forwarded-op handlers in [`daemon_forward_handlers`](super::daemon_forward_handlers) exactly;
+/// the pool's per-workspace store lock supplies the same serialization the socket path relied on.
+///
+/// Methods are synchronous (the pool's API is blocking); call sites run them under `spawn_blocking`.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+impl crate::mcp::HostBackend for WorkspacePool {
+    fn host_rescan(
+        &self,
+        root: &Path,
+        paths: Option<Vec<PathBuf>>,
+        full: bool,
+        embed: bool,
+    ) -> Result<ScanStats, String> {
+        self.rescan(root, paths, full, embed, &ScanCancel::default())
+            .map(|(stats, _cancelled)| stats)
+            .map_err(|error| error.to_string())
+    }
+
+    fn host_resolved_refs(
+        &self,
+        root: &Path,
+        query: crate::comms::resolved_proto::ResolvedRefQuery,
+    ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, String> {
+        self.with_workspace(root, |store| {
+            super::daemon_forward_handlers::resolve_refs_against(store, &query)
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    #[cfg(feature = "memory")]
+    fn host_memory(
+        &self,
+        root: &Path,
+        scope: &str,
+        op: crate::comms::memory_proto::MemoryOp,
+    ) -> Result<crate::comms::memory_proto::MemoryOutcome, String> {
+        self.with_workspace_mut(root, |store| {
+            let idx = store
+                .index_db
+                .as_ref()
+                .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
+            crate::mcp::memory_ops::run_memory_op(idx, scope, &op)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
+    }
+
+    #[cfg(feature = "memory")]
+    fn host_governance(
+        &self,
+        root: &Path,
+        scope: &str,
+        op: crate::comms::proposals_proto::GovernanceOp,
+    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, String> {
+        self.with_workspace_mut(root, |store| {
+            let idx = store
+                .index_db
+                .as_ref()
+                .ok_or(crate::mcp::memory_ops::MemoryOpError::IndexUnavailable)?;
+            crate::mcp::proposals_ops::run_governance_op(idx, scope, &op)
+        })
+        .map_err(|error| error.to_string())
+        .and_then(|result| result.map_err(|error| error.to_string()))
     }
 }
 

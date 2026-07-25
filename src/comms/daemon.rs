@@ -398,7 +398,8 @@ impl Broker {
 
         // Build/fetch the shared stack BEFORE accepting, so a build failure still lets the client
         // fall back rather than being told "accepted" against a stack we cannot serve.
-        let shared = match self.workspaces.get_or_build_serve_state(&hello.root).await {
+        let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
+        let shared = match self.workspaces.get_or_build_serve_state(&hello.root, host).await {
             Ok(shared) => shared,
             Err(error) => {
                 tracing::warn!(%error, root = %hello.root.display(), "relay: hosting read stack failed");

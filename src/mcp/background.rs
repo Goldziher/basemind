@@ -51,14 +51,14 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             use std::sync::atomic::Ordering;
             state.shared.initial_scan_active.store(true, Ordering::Relaxed);
             let started = std::time::Instant::now();
-            match super::daemon_forward::forward_rescan_and_refresh(&state, None, false, false).await {
+            match super::daemon_forward::writer_rescan_and_refresh(&state, None, false, false).await {
                 Ok(report) => tracing::info!(
                     scanned = report.scanned,
                     updated = report.updated,
                     elapsed_ms = started.elapsed().as_millis() as u64,
-                    "initial scan complete (forwarded to daemon; embeddings deferred)"
+                    "initial scan complete (via daemon writer; embeddings deferred)"
                 ),
-                Err(error) => tracing::warn!(%error, "initial forwarded scan failed"),
+                Err(error) => tracing::warn!(%error, "initial writer scan failed"),
             }
             state
                 .shared
@@ -69,14 +69,14 @@ pub(super) fn spawn_initial_scan(state: Arc<ServerState>) {
             tokio::spawn(async move {
                 let embed_started = std::time::Instant::now();
                 tracing::info!("background embedding pass starting (forwarded to daemon)");
-                match super::daemon_forward::forward_rescan_and_refresh(&embed_state, None, false, true).await {
+                match super::daemon_forward::writer_rescan_and_refresh(&embed_state, None, false, true).await {
                     Ok(report) => tracing::info!(
                         scanned = report.scanned,
                         updated = report.updated,
                         elapsed_ms = embed_started.elapsed().as_millis() as u64,
-                        "background embedding pass complete (forwarded to daemon)"
+                        "background embedding pass complete (via daemon writer)"
                     ),
-                    Err(error) => tracing::warn!(%error, "background forwarded embedding pass failed"),
+                    Err(error) => tracing::warn!(%error, "background writer embedding pass failed"),
                 }
             });
         });
@@ -176,7 +176,7 @@ fn refresh_batch(
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         let report = handle
-            .block_on(super::daemon_forward::forward_rescan_and_refresh(
+            .block_on(super::daemon_forward::writer_rescan_and_refresh(
                 state,
                 Some(paths),
                 false,

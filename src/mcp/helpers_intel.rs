@@ -95,6 +95,31 @@ async fn resolve_definition(
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     let _ = state;
     #[cfg(all(feature = "comms", any(unix, windows)))]
+    if let Some(host) = &state.shared.host {
+        // Daemon-hosted: resolve the cross-file binding in-process through the pool's read-write index
+        // rather than dialing the daemon over its own socket. A host error degrades to `None`, exactly
+        // like the daemon-forward arm, so goto reports no binding rather than erroring.
+        use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
+        let host = std::sync::Arc::clone(host);
+        let root = state.shared.root.clone();
+        let query = ResolvedRefQuery::DefinitionOf {
+            use_path: use_path.clone(),
+            use_start,
+        };
+        return match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
+            Ok(Ok(ResolvedRefResult::Definition(definition))) => definition,
+            Ok(Ok(_)) => None,
+            Ok(Err(error)) => {
+                tracing::debug!(%error, "goto_definition: host resolved-refs failed; no cross-file binding");
+                None
+            }
+            Err(join) => {
+                tracing::debug!(%join, "goto_definition: host resolved-refs task panicked; no cross-file binding");
+                None
+            }
+        };
+    }
+    #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
         use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
         let client = match super::helpers_comms::resolve_comms_client(state, None).await {

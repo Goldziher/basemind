@@ -209,7 +209,6 @@ async fn memory_put_fjall(
 ) -> Result<(i64, i64), McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Put {
@@ -219,12 +218,7 @@ async fn memory_put_fjall(
             value: value.to_string(),
             tags: tags.to_vec(),
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
         return match outcome {
             MemoryOutcome::Put { created_at, updated_at } => Ok((created_at, updated_at)),
             other => Err(McpError::internal_error(
@@ -258,7 +252,6 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Get {
@@ -266,12 +259,7 @@ pub(super) async fn run_memory_get(state: &ServerState, params: MemoryGetParams)
             owner: owner.to_string(),
             key: params.key.clone(),
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
         let entry = match outcome {
             MemoryOutcome::Got(entry) => entry.map(wire_to_entry),
             other => {
@@ -321,7 +309,6 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
 
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::List {
@@ -332,12 +319,7 @@ pub(super) async fn run_memory_list(state: &ServerState, params: MemoryListParam
             limit: limit as u32,
             cursor: cursor_bytes,
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
         return match outcome {
             MemoryOutcome::Listed {
                 entries,
@@ -462,7 +444,6 @@ pub(super) async fn run_memory_delete(
 async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key: &str) -> Result<bool, McpError> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     if state.shared.daemon_writer {
-        use super::helpers_comms::{comms_err, resolve_comms_client};
         use crate::comms::memory_proto::{MemoryOp, MemoryOutcome};
 
         let op = MemoryOp::Delete {
@@ -470,12 +451,7 @@ async fn memory_delete_fjall(state: &ServerState, vis_byte: u8, owner: &str, key
             owner: owner.to_string(),
             key: key.to_string(),
         };
-        let client = resolve_comms_client(state, None).await?;
-        let mut guard = client.lock().await;
-        let outcome = guard
-            .memory_op(state.shared.root.clone(), state.shared.scope.clone(), op)
-            .await
-            .map_err(comms_err)?;
+        let outcome = super::helpers_comms::dispatch_memory_op(state, op).await?;
         return match outcome {
             MemoryOutcome::Deleted { deleted } => Ok(deleted),
             other => Err(McpError::internal_error(

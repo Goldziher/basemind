@@ -35,6 +35,17 @@ pub(super) enum RefsSource<'a> {
         /// Canonical workspace root, selecting the daemon's hot workspace.
         root: std::path::PathBuf,
     },
+    /// Resolve IN-PROCESS through the daemon's own workspace pool — the daemon-HOSTED path. The pool
+    /// holds the workspace's read-write fjall index (the sole writer), so this serves the cross-file
+    /// `refs_by_def` edges the hosted stack's index-less store cannot see, WITHOUT the daemon dialing
+    /// itself over the socket (which the `Daemon` arm would do).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Host {
+        /// The daemon's workspace pool, as the in-process host seam.
+        host: std::sync::Arc<dyn crate::mcp::HostBackend>,
+        /// Canonical workspace root, selecting the pool's hot workspace.
+        root: std::path::PathBuf,
+    },
 }
 
 impl RefsSource<'_> {
@@ -56,6 +67,30 @@ impl RefsSource<'_> {
                     Ok(_) => Vec::new(),
                     Err(error) => {
                         tracing::debug!(%error, "find_callers: daemon resolved-refs forward failed; name-based fallback");
+                        Vec::new()
+                    }
+                }
+            }
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            RefsSource::Host { host, root } => {
+                use crate::comms::resolved_proto::{ResolvedRefQuery, ResolvedRefResult};
+                let host = std::sync::Arc::clone(host);
+                let root = root.clone();
+                let query = ResolvedRefQuery::ReferencesTo {
+                    def_path: def_path.clone(),
+                    def_start,
+                };
+                // The fjall prefix scan is blocking, so it runs off the reactor; a host error degrades
+                // to empty exactly like the `Daemon` arm, so `find_callers` still floors on the name scan.
+                match tokio::task::spawn_blocking(move || host.host_resolved_refs(&root, query)).await {
+                    Ok(Ok(ResolvedRefResult::References(uses))) => uses,
+                    Ok(Ok(_)) => Vec::new(),
+                    Ok(Err(error)) => {
+                        tracing::debug!(%error, "find_callers: host resolved-refs failed; name-based fallback");
+                        Vec::new()
+                    }
+                    Err(join) => {
+                        tracing::debug!(%join, "find_callers: host resolved-refs task panicked; name-based fallback");
                         Vec::new()
                     }
                 }

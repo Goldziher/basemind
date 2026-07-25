@@ -145,6 +145,14 @@ pub(crate) struct SharedReadStack {
     /// a non-`comms` build there is no daemon to forward to and the field would be dead.
     #[cfg(all(feature = "comms", any(unix, windows)))]
     pub(crate) daemon_writer: bool,
+    /// In-process host seam for a DAEMON-HOSTED read stack: the daemon's own workspace pool (the
+    /// machine's sole fjall writer). When `Some`, the writer / resolved-refs branch sites route
+    /// directly through it instead of forwarding to the daemon over a socket — closing the
+    /// daemon-dials-itself loopback and, crucially, serving resolved-refs from the pool's read-write
+    /// fjall index (which a `daemon_writer` serve's index-less store cannot see). `None` on every
+    /// non-hosted stack (in-process serve / CLI), where the `daemon_writer` FORWARD path stays live.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
 }
 
 /// Boot decisions derived purely from the opened store + [`ServerOptions`]: whether an empty-index
@@ -175,6 +183,10 @@ impl SharedReadStack {
     /// The single sanctioned constructor for the shared stack — `BasemindServer::new_with_options`
     /// calls it, and a future daemon-hosted path can reuse it to build one stack shared across many
     /// [`ServerState`](super::ServerState) connections.
+    // Each argument is a distinct pre-resolved dependency of the read stack (store, git handles,
+    // config, options, host seam); bundling them into a params struct would only relocate the same
+    // fields with no clarity gain, so the eighth (cfg-gated `host`) argument is accepted here.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         store: Store,
         root: PathBuf,
@@ -183,6 +195,7 @@ impl SharedReadStack {
         git_cache: Arc<crate::git_cache::GitCache>,
         git_history: Option<Arc<crate::git_history::GitHistoryIndex>>,
         options: ServerOptions,
+        #[cfg(all(feature = "comms", any(unix, windows)))] host: Option<std::sync::Arc<dyn crate::mcp::HostBackend>>,
     ) -> Self {
         let scope = repo
             .as_ref()
@@ -248,6 +261,8 @@ impl SharedReadStack {
             read_only: options.read_only,
             #[cfg(all(feature = "comms", any(unix, windows)))]
             daemon_writer: options.daemon_writer,
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            host,
         }
     }
 }

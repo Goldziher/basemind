@@ -44,6 +44,8 @@ mod helpers_shells;
 mod helpers_telemetry;
 #[cfg(feature = "crawl")]
 mod helpers_web;
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod host;
 mod identity;
 mod kneedle;
 mod lean;
@@ -111,6 +113,8 @@ use crate::extract::FileMapL1;
 use crate::lang::LangId;
 use crate::store::Store;
 
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) use host::HostBackend;
 pub(crate) use shared_state::SharedReadStack;
 pub(crate) use state::{Lifecycle, MapCache, ServerState};
 
@@ -325,6 +329,10 @@ impl BasemindServer {
             git_cache,
             git_history,
             options,
+            // In-process serve / CLI: no daemon-hosted pool, so the `daemon_writer` FORWARD path
+            // (not this seam) handles writes when a daemon is up.
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            None,
         ));
         let state = Arc::new(ServerState {
             shared,
@@ -428,7 +436,10 @@ impl BasemindServer {
     /// (no fjall lock), so the shared `MapCache` still builds its in-RAM call/impl indexes exactly as
     /// a thin serve does.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    pub(crate) fn build_hosted_read_stack(root: &std::path::Path) -> anyhow::Result<Arc<SharedReadStack>> {
+    pub(crate) fn build_hosted_read_stack(
+        root: &std::path::Path,
+        host: Arc<dyn HostBackend>,
+    ) -> anyhow::Result<Arc<SharedReadStack>> {
         use anyhow::Context as _;
 
         let view = crate::store::VIEW_WORKING;
@@ -467,6 +478,9 @@ impl BasemindServer {
             git_cache,
             git_history,
             options,
+            // The daemon-hosted seam: hosted writes / rescans / resolved-refs run directly through
+            // the pool instead of looping back over the daemon's own socket.
+            Some(host),
         ));
         // The warden shares the stack by Arc and owns every background facility for the workspace.
         let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
