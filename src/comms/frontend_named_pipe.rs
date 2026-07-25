@@ -19,9 +19,11 @@
 #[cfg(windows)]
 mod imp {
     use std::ffi::OsString;
+    use std::pin::Pin;
     use std::sync::Arc;
+    use std::task::{Context, Poll};
 
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
     use tokio::sync::watch;
     use tokio_util::bytes::{Bytes, BytesMut};
@@ -33,6 +35,56 @@ mod imp {
 
     /// Read chunk size pulled from the pipe per `read_buf` call.
     const READ_CHUNK: usize = 8 * 1024;
+
+    /// An `AsyncRead` + `AsyncWrite` stream that replays a consumed PREFIX before delegating to the
+    /// inner stream.
+    ///
+    /// Windows named pipes have no non-destructive peek like Unix `MSG_PEEK`, so the accept loop
+    /// discriminates a relay connection from a legacy comms link by *consuming* the first byte. This
+    /// wrapper hands that byte back: the relay handshake ([`Broker::serve_relay_connection`]) then
+    /// reads the full [`RELAY_MAGIC`](crate::comms::relay::RELAY_MAGIC) as if nothing had been taken.
+    struct PrefixReader<S> {
+        prefix: Vec<u8>,
+        pos: usize,
+        inner: S,
+    }
+
+    impl<S> PrefixReader<S> {
+        fn new(prefix: Vec<u8>, inner: S) -> Self {
+            Self { prefix, pos: 0, inner }
+        }
+    }
+
+    impl<S: AsyncRead + Unpin> AsyncRead for PrefixReader<S> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.pos < self.prefix.len() {
+                let remaining = &self.prefix[self.pos..];
+                let take = remaining.len().min(buf.remaining());
+                buf.put_slice(&remaining[..take]);
+                self.pos += take;
+                return Poll::Ready(Ok(()));
+            }
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixReader<S> {
+        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+            Pin::new(&mut self.inner).poll_write(cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
 
     /// A framed named-pipe link to one client.
     ///
@@ -55,6 +107,15 @@ mod imp {
                 codec,
                 read_buf: BytesMut::with_capacity(READ_CHUNK),
             }
+        }
+
+        /// Wrap a connected pipe whose leading `prefix` byte(s) were already consumed by the accept
+        /// loop's relay/legacy routing. Seeding the frame buffer replays them so the codec still sees
+        /// the whole length-delimited frame.
+        pub fn with_prefix(server: NamedPipeServer, prefix: &[u8]) -> Self {
+            let mut link = Self::new(server);
+            link.read_buf.extend_from_slice(prefix);
+            link
         }
     }
 
@@ -129,7 +190,33 @@ mod imp {
                         let connected = server;
                         server = ServerOptions::new().create(&self.pipe_name)?;
                         let guard = broker.register_link();
-                        tokio::spawn(serve_link(broker.clone(), NamedPipeLink::new(connected), guard));
+                        let broker = broker.clone();
+                        // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. Windows
+                        // ~keep named pipes have no MSG_PEEK, so consume the first byte and replay it: a
+                        // ~keep relay client writes RELAY_MAGIC (first byte 0x42), disjoint from a legacy
+                        // ~keep length-delimited frame's first byte (0x00 for any body < 16 MiB). A relay
+                        // ~keep session is hosted by the broker; everything else is a legacy comms link.
+                        tokio::spawn(async move {
+                            let mut connected = connected;
+                            let first = match connected.read_u8().await {
+                                Ok(byte) => byte,
+                                // ~keep A connection that yields no first byte (EOF/error) has nothing to
+                                // ~keep serve on either path, so drop it. The Unix peek instead routes such
+                                // ~keep a connection to the legacy path, which then closes on its own EOF —
+                                // ~keep same end state, one fewer hop.
+                                Err(error) => {
+                                    tracing::warn!(error = %error, "comms: pipe first-byte read failed");
+                                    return;
+                                }
+                            };
+                            if first == crate::comms::relay::RELAY_MAGIC[0] {
+                                broker
+                                    .serve_relay_connection(PrefixReader::new(vec![first], connected), guard)
+                                    .await;
+                            } else {
+                                serve_link(broker, NamedPipeLink::with_prefix(connected, &[first]), guard).await;
+                            }
+                        });
                     }
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
