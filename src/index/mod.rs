@@ -157,9 +157,8 @@ pub enum IndexError {
 #[derive(Clone)]
 pub struct IndexDb {
     pub(crate) db: Database,
-    /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; kept on the handle for
-    /// future meta writes.
-    #[allow(dead_code)]
+    /// Carries the `schema_ver` row read + stamped in [`IndexDb::open`]; also read and written
+    /// by the BM25 corpus-stats recompute.
     pub(crate) meta: Keyspace,
     pub(crate) symbols_by_path: Keyspace,
     /// Reserved fast-path partition: written on every upsert so that future name-based

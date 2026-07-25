@@ -210,9 +210,9 @@ fn refresh_batch(
 /// the "cannot block the current thread from within a runtime" guard never trips.
 ///
 /// Lifetime: the thread is detached and runs for the process lifetime, mirroring
-/// `spawn_view_watcher`. The `shutdown` oneshot sender is dropped immediately, so
-/// `watch_paths`'s `shutdown.try_recv()` returns `Disconnected` only if the loop
-/// ever polls it after the sender drops — in practice the loop exits when the
+/// `spawn_view_watcher`. The `shutdown` oneshot sender is moved INTO the thread
+/// and held for its whole life (`_keep_sender_alive`), so `watch_paths`'s
+/// `shutdown.try_recv()` never sees `Disconnected` — the loop exits when the
 /// process tears down stdio and the debouncer channel closes. A failed
 /// incremental refresh is logged and swallowed so a transient scan error never
 /// kills the watcher.
