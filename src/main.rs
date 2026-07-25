@@ -615,7 +615,8 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
 fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
-        let force_inproc = std::env::var_os("BASEMIND_SERVE_INPROCESS").is_some();
+        let force_inproc =
+            std::env::var_os("BASEMIND_SERVE_INPROCESS").is_some() || basemind::mcp::serve_requires_in_process();
         if !force_inproc && view == basemind::store::VIEW_WORKING {
             match try_serve_relay(root, view) {
                 Ok(()) => return Ok(()),

@@ -300,3 +300,60 @@ fn a_tripped_cancel_token_fails_fast_without_walking() {
     assert!(!cancelled);
     assert_eq!(stats.scanned, 2, "the cancelled pass left no coalescing residue");
 }
+
+#[test]
+fn active_connection_guard_blocks_lru_eviction() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(1);
+    let ws1 = workspace_with_sources();
+    let ws2 = workspace_with_sources();
+
+    pool.rescan(ws1.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws1");
+    let guard = pool.begin_conn(ws1.path()).expect("begin conn ws1");
+
+    // ws2 opens past the cap, but ws1 has a live connection, so it must NOT be evicted.
+    pool.rescan(ws2.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws2");
+    assert_eq!(pool.len(), 2, "an active connection holds ws1 hot past the cap");
+    assert!(
+        pool.accessed().iter().any(|w| w.root == ws1.path()),
+        "ws1 stays hot while a connection is served against it"
+    );
+
+    // Once the connection drains, ws1 is evictable again.
+    drop(guard);
+    let ws3 = workspace_with_sources();
+    pool.rescan(ws3.path(), None, false, false, &ScanCancel::default())
+        .expect("scan ws3");
+    assert!(
+        pool.accessed().iter().all(|w| w.root != ws1.path()),
+        "ws1 is evictable once no connection holds it"
+    );
+}
+
+#[test]
+fn active_connection_guard_blocks_idle_sweep() {
+    store::init_isolated_cache();
+    let pool = WorkspacePool::new(4);
+    let ws = workspace_with_sources();
+
+    pool.rescan(ws.path(), None, false, false, &ScanCancel::default())
+        .expect("scan");
+    let guard = pool.begin_conn(ws.path()).expect("begin conn");
+
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        0,
+        "an active connection is never idle-swept, even at a zero idle threshold"
+    );
+    assert_eq!(pool.len(), 1);
+
+    drop(guard);
+    assert_eq!(
+        pool.evict_idle(Duration::ZERO),
+        1,
+        "the workspace is idle-swept once its last connection drains"
+    );
+    assert_eq!(pool.len(), 0);
+}

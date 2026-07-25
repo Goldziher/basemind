@@ -153,6 +153,18 @@ pub mod params {
 
 pub use params::Parameters;
 
+/// Whether `basemind serve` must run the MCP server IN-PROCESS rather than relaying to the shared
+/// daemon, because this invocation carries per-client configuration the daemon cannot honor.
+///
+/// Today that is the lean tool surface (`BASEMIND_MCP_LEAN`): the surface is decided from the
+/// serving process's own environment, but a shared daemon advertises the full surface identically to
+/// every connection, so a lean client must serve itself. `serve` checks this before dialing the
+/// daemon and falls back to the in-process path when it is true.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub fn serve_requires_in_process() -> bool {
+    lean::lean_mode_enabled()
+}
+
 /// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
 /// language we'd extract with, hold onto the parsed `FileMapL1` and the source bytes so
 /// repeated visits to the same blob (across commits, modes, or tool calls) skip the
@@ -162,6 +174,13 @@ pub use params::Parameters;
 /// Cap chosen to bound steady-state memory at a few MB for typical repositories: 512
 /// entries × ~few KiB per `FileMapL1` + Arc'd source = on the order of 1–10 MiB.
 pub(crate) const OUTLINE_CACHE_CAP: usize = 512;
+
+/// Per-category LRU capacity for a daemon-hosted workspace's git cache (commit_files, log, blame).
+/// Matches the `basemind serve --git-cache-mem` default (1024): the daemon holds one git cache per
+/// hot workspace, shared across all connections, so the same budget an in-process serve used per
+/// process now serves every client of that workspace.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) const HOSTED_GIT_CACHE_MEM: usize = 1024;
 
 pub(crate) struct OutlineEntry {
     pub map: Arc<FileMapL1>,
@@ -339,6 +358,19 @@ impl BasemindServer {
                 });
             }
         }
+        Self {
+            state,
+            tool_router: Self::assemble_router(),
+            prompt_router: Self::prompt_router(),
+        }
+    }
+
+    /// Assemble the full tool router (every feature-gated tool group). Shared by
+    /// [`new_with_options`](Self::new_with_options) and [`from_shared`](Self::from_shared) so a
+    /// daemon-hosted per-connection server exposes exactly the same tool surface as an in-process
+    /// one — the router is pure (no per-connection state), so building it per connection is a µs
+    /// pointer-assembly, not a rebuild of anything heavy.
+    fn assemble_router() -> ToolRouter<Self> {
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
             + Self::tool_router_archmap()
@@ -361,11 +393,92 @@ impl BasemindServer {
         {
             router += Self::tool_router_shells();
         }
+        router
+    }
+
+    /// Build a per-connection server that SHARES a workspace's [`SharedReadStack`] rather than
+    /// opening its own. This is the daemon-hosted seam: the daemon builds one shared read stack per
+    /// hot workspace (see [`build_hosted_read_stack`](Self::build_hosted_read_stack)) and hands every
+    /// accepted relay connection its own `BasemindServer` over that one stack — so the heavy state
+    /// (in-RAM `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not once per
+    /// client. Spawns NO background facilities: freshness is owned by the workspace's single warden
+    /// (built alongside the shared stack), never per connection. `agent_id` comes from the
+    /// connection's [`RelayHello`](crate::comms::relay::RelayHello), so each client keeps its own
+    /// memory-owner identity even while sharing the read stack.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn from_shared(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
         Self {
-            state,
-            tool_router: router,
+            state: Arc::new(ServerState::for_connection(shared, agent_id)),
+            tool_router: Self::assemble_router(),
             prompt_router: Self::prompt_router(),
         }
+    }
+
+    /// Build (once) the shared read stack the daemon hosts for one workspace, plus its single
+    /// "warden" — a background-running [`ServerState`] that owns freshness for the whole workspace:
+    /// the empty-index auto-scan, the live filesystem watcher, cache warming, and the git-history
+    /// sync. The warden shares the returned [`SharedReadStack`] by `Arc`, so when its watcher
+    /// rebuilds the in-RAM map every hosted connection sees the refreshed snapshot at once. This is
+    /// the N-watchers-per-workspace → one-watcher-per-workspace consolidation: per-connection
+    /// servers ([`from_shared`](Self::from_shared)) spawn nothing.
+    ///
+    /// The warden uses the same topology as today's thin `serve` (`read_only` + `daemon_writer`), so
+    /// its scans forward to the daemon's sole-writer pool over the existing path — no new scan/write
+    /// machinery. The store is [`open_read_only_no_index`](crate::store::Store::open_read_only_no_index)
+    /// (no fjall lock), so the shared `MapCache` still builds its in-RAM call/impl indexes exactly as
+    /// a thin serve does.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn build_hosted_read_stack(root: &std::path::Path) -> anyhow::Result<Arc<SharedReadStack>> {
+        use anyhow::Context as _;
+
+        let view = crate::store::VIEW_WORKING;
+        let store = crate::store::Store::open_read_only_no_index(root, view).context("open hosted read stack store")?;
+        debug_assert!(
+            store.index_db.is_none(),
+            "hosted read stack must be index-less so MapCache builds in-RAM call/impl indexes"
+        );
+        let basemind_dir = crate::store::workspace_cache_dir(root);
+        let config = Arc::new(match crate::config::load_with_overrides(root, None, None) {
+            Ok(loaded) => loaded.config,
+            Err(crate::config::ConfigError::NotFound(_)) => crate::config::default_for_root(root),
+            Err(error) => return Err(anyhow::Error::new(error).context("load hosted workspace config")),
+        });
+        let repo = crate::git::Repo::discover(root).ok().map(Arc::new);
+        let git_cache = Arc::new(
+            crate::git_cache::GitCache::open(&basemind_dir, HOSTED_GIT_CACHE_MEM, true)
+                .context("open hosted git cache")?,
+        );
+        let options = ServerOptions {
+            background: true,
+            watch: true,
+            read_only: true,
+            daemon_writer: true,
+            lazy_cache: false,
+        };
+        let agent_id = identity::resolve_agent_id(&config, &store);
+        let history_dir = crate::git_history::shared_history_basemind_dir(root);
+        let git_history = Self::open_git_history(root, &history_dir, repo.is_some(), &agent_id, &options);
+        let (needs_initial_scan, defer_warm) = shared_state::boot_plan(&store, &options);
+        let shared = Arc::new(SharedReadStack::new(
+            store,
+            root.to_path_buf(),
+            config,
+            repo,
+            git_cache,
+            git_history,
+            options,
+        ));
+        // The warden shares the stack by Arc and owns every background facility for the workspace.
+        let warden = Arc::new(ServerState::for_connection(Arc::clone(&shared), agent_id));
+        background::spawn_serve_watcher(Arc::clone(&warden));
+        Self::spawn_git_history_sync(&warden, &history_dir);
+        if needs_initial_scan {
+            background::spawn_initial_scan(Arc::clone(&warden));
+        } else if defer_warm {
+            background::spawn_cache_warm(Arc::clone(&warden));
+        }
+        tracing::info!(root = %root.display(), needs_initial_scan, "daemon hosting read stack for workspace");
+        Ok(shared)
     }
 
     /// The git-history handle this session gets, if any. Fjall's directory lock is exclusive — even a

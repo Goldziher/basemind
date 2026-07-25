@@ -139,7 +139,19 @@ mod imp {
                             continue;
                         }
                         let guard = broker.register_link();
-                        tokio::spawn(serve_link(broker.clone(), UdsLink::new(stream, peer), guard));
+                        // Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
+                        // client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
+                        // legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
+                        // peeking one byte discriminates without consuming it. A relay session is
+                        // hosted by the broker (shared read stack + rmcp router); everything else is a
+                        // legacy comms link, byte-for-byte the existing path.
+                        let is_relay =
+                            peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
+                        if is_relay {
+                            tokio::spawn(broker.clone().serve_relay_connection(stream, guard));
+                        } else {
+                            tokio::spawn(serve_link(broker.clone(), UdsLink::new(stream, peer), guard));
+                        }
                     }
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
@@ -160,6 +172,43 @@ mod imp {
     fn peer_cred_of(stream: &UnixStream) -> PeerCred {
         super::peer_cred_from_fd(stream.as_raw_fd())
     }
+
+    /// Peek the first byte of a freshly accepted stream WITHOUT consuming it (via `MSG_PEEK`), so the
+    /// accept loop can route a relay connection (first byte [`RELAY_MAGIC`](crate::comms::relay::RELAY_MAGIC)`[0]`
+    /// = `0x42`) apart from a legacy comms link (a length-delimited frame under 16 MiB starts `0x00`).
+    /// Returns `None` on EOF or any error, which the caller treats as "not a relay" (the legacy path,
+    /// which then fails the frame decode or serves normally).
+    async fn peek_first_byte(stream: &UnixStream) -> Option<u8> {
+        use tokio::io::Interest;
+        loop {
+            stream.readable().await.ok()?;
+            let mut byte = 0u8;
+            let peeked = stream.try_io(Interest::READABLE, || {
+                // SAFETY: `stream`'s fd is a live connected socket for the duration of this call;
+                // `byte` is a valid 1-byte writable buffer; `MSG_PEEK` leaves the datum queued so
+                // the subsequent real read still sees it. `recv` returns the byte count or -1.
+                let n = unsafe {
+                    super::recv(
+                        stream.as_raw_fd(),
+                        std::ptr::from_mut(&mut byte).cast(),
+                        1,
+                        super::MSG_PEEK,
+                    )
+                };
+                if n < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(n)
+                }
+            });
+            match peeked {
+                Ok(0) => return None,
+                Ok(_) => return Some(byte),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => return None,
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -179,6 +228,11 @@ pub fn daemon_uid() -> u32 {
     0
 }
 
+/// POSIX `MSG_PEEK` flag for [`recv`]: return data from the socket queue without consuming it.
+/// `0x2` on both Linux and macOS.
+#[cfg(unix)]
+const MSG_PEEK: i32 = 0x2;
+
 #[cfg(unix)]
 unsafe extern "C" {
     /// POSIX `getuid(2)`.
@@ -186,6 +240,10 @@ unsafe extern "C" {
 
     /// POSIX `getsockopt(2)`. Used to read peer credentials.
     fn getsockopt(sockfd: i32, level: i32, optname: i32, optval: *mut core::ffi::c_void, optlen: *mut u32) -> i32;
+
+    /// POSIX `recv(2)`. Used with [`MSG_PEEK`] to sniff a connection's first byte without consuming
+    /// it, so the accept loop can route a relay (rmcp) connection apart from a legacy comms link.
+    fn recv(sockfd: i32, buf: *mut core::ffi::c_void, len: usize, flags: i32) -> isize;
 }
 
 /// Read peer credentials from a raw socket fd.

@@ -68,6 +68,17 @@ struct WorkspaceEntry {
     /// requests instead of re-scanning; an `Inline` result satisfies a `Deferred` request but not
     /// vice versa.
     last_full: Mutex<Option<(u64, EmbedMode, ScanStats)>>,
+    /// The daemon-hosted shared read stack for this workspace, built once on the first relay
+    /// connection and shared (by `Arc`) across every connection thereafter — so the heavy read
+    /// state (in-RAM `MapCache`, LanceDB, ONNX, git caches) is resident once per workspace, not
+    /// once per client. `None`/uninitialised until the first relay connection; a pure comms build
+    /// without any relay client never pays for it.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    serve_state: tokio::sync::OnceCell<std::sync::Arc<crate::mcp::SharedReadStack>>,
+    /// Count of relay connections currently being served against this workspace's shared read
+    /// stack. Eviction (LRU + idle sweep) skips any entry with a live connection so a hosted
+    /// workspace is never dropped from under an in-flight rmcp session.
+    active_conns: std::sync::atomic::AtomicUsize,
 }
 
 impl WorkspaceEntry {
@@ -80,6 +91,24 @@ impl WorkspaceEntry {
     /// Stamp this entry as used now.
     fn touch(&self) {
         *self.last_used.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+    }
+}
+
+/// RAII guard for one live relay connection to a hosted workspace. Held for the lifetime of the
+/// rmcp session; its [`Drop`] decrements the workspace's `active_conns` so the eviction sweep can
+/// reclaim the entry once the last connection drains. Created by
+/// [`WorkspacePool::begin_conn`](WorkspacePool::begin_conn).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) struct ServeConnGuard {
+    entry: std::sync::Arc<WorkspaceEntry>,
+}
+
+#[cfg(all(feature = "comms", any(unix, windows)))]
+impl Drop for ServeConnGuard {
+    fn drop(&mut self) {
+        self.entry
+            .active_conns
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -220,6 +249,42 @@ impl WorkspacePool {
         Ok(f(&mut store))
     }
 
+    /// Build (once) or fetch the daemon-hosted shared read stack for `root`, opening the workspace
+    /// into the pool if cold. The first caller runs
+    /// [`build_hosted_read_stack`](crate::mcp::BasemindServer::build_hosted_read_stack) — which does
+    /// a blocking whole-corpus `MapCache::build`, so it runs on a blocking thread — and spawns the
+    /// workspace's single freshness warden; every later caller gets the same `Arc` from the
+    /// [`OnceCell`](tokio::sync::OnceCell). Concurrent first callers all await the one build.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) async fn get_or_build_serve_state(
+        &self,
+        root: &Path,
+    ) -> anyhow::Result<std::sync::Arc<crate::mcp::SharedReadStack>> {
+        let entry = self.get_or_open(root).map_err(anyhow::Error::new)?;
+        entry.touch();
+        let root_buf = root.to_path_buf();
+        let shared = entry
+            .serve_state
+            .get_or_try_init(|| async move {
+                tokio::task::spawn_blocking(move || crate::mcp::BasemindServer::build_hosted_read_stack(&root_buf))
+                    .await
+                    .map_err(|join| anyhow::anyhow!("hosted read stack build panicked: {join}"))?
+            })
+            .await?;
+        Ok(std::sync::Arc::clone(shared))
+    }
+
+    /// Register one relay connection against `root`, returning a guard that decrements the live-count
+    /// on drop. While any guard is held, eviction (LRU + idle sweep) skips this workspace, so its
+    /// shared read stack is never dropped from under an in-flight rmcp session.
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    pub(crate) fn begin_conn(&self, root: &Path) -> Result<ServeConnGuard, WorkspacePoolError> {
+        let entry = self.get_or_open(root)?;
+        entry.touch();
+        entry.active_conns.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        Ok(ServeConnGuard { entry })
+    }
+
     /// Fetch the entry for `root`, opening it read-write and inserting it (evicting LRU past the
     /// cap) if cold. The returned `Arc` lets the caller run the scan after the map lock is dropped.
     fn get_or_open(&self, root: &Path) -> Result<std::sync::Arc<WorkspaceEntry>, WorkspacePoolError> {
@@ -247,11 +312,21 @@ impl WorkspacePool {
             last_used: Mutex::new(Instant::now()),
             full_scan_gen: std::sync::atomic::AtomicU64::new(0),
             last_full: Mutex::new(None),
+            #[cfg(all(feature = "comms", any(unix, windows)))]
+            serve_state: tokio::sync::OnceCell::new(),
+            active_conns: std::sync::atomic::AtomicUsize::new(0),
         });
 
         let mut map = self.lock_map();
         while map.len() >= self.cap {
-            let victim = map.values().min_by_key(|e| e.last_used()).map(|e| e.key.clone());
+            // Only evict entries with no live relay connection — a hosted workspace must not be
+            // dropped from under an in-flight rmcp session. If every entry is busy, exceed the cap
+            // rather than evict an active one (the sweep reclaims it once its connections drain).
+            let victim = map
+                .values()
+                .filter(|e| e.active_conns.load(std::sync::atomic::Ordering::Acquire) == 0)
+                .min_by_key(|e| e.last_used())
+                .map(|e| e.key.clone());
             match victim {
                 Some(victim) => {
                     map.remove(&victim);
@@ -281,10 +356,11 @@ impl WorkspacePool {
     /// Evict every entry idle for at least `idle`, returning the count dropped. The staleness
     /// collector calls this to shed cold workspaces from RAM (their on-disk cache survives).
     pub(crate) fn evict_idle(&self, idle: Duration) -> usize {
+        use std::sync::atomic::Ordering::Acquire;
         let mut map = self.lock_map();
         let stale: Vec<String> = map
             .values()
-            .filter(|e| e.last_used().elapsed() >= idle)
+            .filter(|e| e.last_used().elapsed() >= idle && e.active_conns.load(Acquire) == 0)
             .map(|e| e.key.clone())
             .collect();
         for key in &stale {

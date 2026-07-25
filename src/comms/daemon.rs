@@ -344,6 +344,104 @@ impl Broker {
         LinkGuard { broker: self.clone() }
     }
 
+    /// Serve one accepted RELAY connection: run the relay handshake, then — if accepted — host the
+    /// full rmcp code-map router over the raw stream, sharing this workspace's one
+    /// [`SharedReadStack`](crate::mcp::SharedReadStack) across every connection.
+    ///
+    /// The accept loop routes a connection here after peeking [`relay::RELAY_MAGIC`](super::relay::RELAY_MAGIC);
+    /// this consumes the magic, reads the [`RelayHello`](super::relay::RelayHello), and validates it.
+    /// A proto/view mismatch, or a failure to build the workspace's shared stack, is answered with a
+    /// non-accepting [`RelayWelcome`](super::relay::RelayWelcome) so the client falls back to an
+    /// in-process serve — the daemon never bricks a client. `link` is the accept-loop link guard,
+    /// held for the whole session so the idle reaper counts this rmcp client as live.
+    pub async fn serve_relay_connection<S>(self: Arc<Self>, mut stream: S, link: LinkGuard)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use super::relay;
+        use tokio::io::AsyncReadExt as _;
+
+        self.mark_active().await;
+        let mut magic = [0u8; relay::RELAY_MAGIC.len()];
+        if let Err(error) = stream.read_exact(&mut magic).await {
+            tracing::warn!(%error, "relay: reading preamble failed");
+            return;
+        }
+        if magic != relay::RELAY_MAGIC {
+            tracing::warn!("relay: preamble mismatch after peek; dropping");
+            return;
+        }
+        let hello = match relay::read_hello(&mut stream).await {
+            Ok(hello) => hello,
+            Err(error) => {
+                tracing::warn!(%error, "relay: reading hello failed");
+                return;
+            }
+        };
+
+        let daemon_version = env!("CARGO_PKG_VERSION").to_string();
+        let decline = |code: &str| relay::RelayWelcome {
+            relay_proto_ver: relay::RELAY_PROTO_VER,
+            daemon_version: daemon_version.clone(),
+            accepted: false,
+            code: Some(code.to_string()),
+        };
+
+        if hello.relay_proto_ver != relay::RELAY_PROTO_VER {
+            let _ = relay::write_welcome(&mut stream, &decline("relay_proto_skew")).await;
+            return;
+        }
+        if hello.view != crate::store::VIEW_WORKING {
+            let _ = relay::write_welcome(&mut stream, &decline("view_unsupported")).await;
+            return;
+        }
+
+        // Build/fetch the shared stack BEFORE accepting, so a build failure still lets the client
+        // fall back rather than being told "accepted" against a stack we cannot serve.
+        let shared = match self.workspaces.get_or_build_serve_state(&hello.root).await {
+            Ok(shared) => shared,
+            Err(error) => {
+                tracing::warn!(%error, root = %hello.root.display(), "relay: hosting read stack failed");
+                let _ = relay::write_welcome(&mut stream, &decline("host_build_failed")).await;
+                return;
+            }
+        };
+        let _conn = match self.workspaces.begin_conn(&hello.root) {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(%error, "relay: connection accounting failed");
+                let _ = relay::write_welcome(&mut stream, &decline("host_build_failed")).await;
+                return;
+            }
+        };
+
+        let welcome = relay::RelayWelcome {
+            relay_proto_ver: relay::RELAY_PROTO_VER,
+            daemon_version,
+            accepted: true,
+            code: None,
+        };
+        if let Err(error) = relay::write_welcome(&mut stream, &welcome).await {
+            tracing::warn!(%error, "relay: sending welcome failed");
+            return;
+        }
+
+        let agent = hello.agent.to_string();
+        tracing::info!(agent = %agent, root = %hello.root.display(), "relay: hosting rmcp session");
+        let server = crate::mcp::BasemindServer::from_shared(shared, agent);
+        let (read_half, write_half) = tokio::io::split(stream);
+        match rmcp::ServiceExt::serve(server, (read_half, write_half)).await {
+            Ok(running) => {
+                if let Err(error) = running.waiting().await {
+                    tracing::info!(%error, "relay: rmcp session ended with error");
+                }
+            }
+            Err(error) => tracing::warn!(%error, "relay: rmcp serve failed to start"),
+        }
+        drop(_conn);
+        drop(link);
+    }
+
     /// Mark a unit of daemon-internal work as running for as long as the returned guard lives, so
     /// the idle reaper cannot mistake it for idleness. See [`WorkGuard`].
     pub fn begin_work(&self) -> WorkGuard<'_> {
