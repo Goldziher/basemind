@@ -12,10 +12,18 @@ pub mod ids;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod client;
+/// Second `impl CommsClient` block: the daemon-forwarding rescan / memory / governance /
+/// resolved-refs / git-history RPCs, split out of `client.rs` for the line cap.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod client_forward;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon;
+/// Second `impl Broker` block: the forwarded memory / governance / resolved-refs handlers, split
+/// out of `daemon.rs` for the line cap.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_forward_handlers;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_handlers;
 #[cfg(all(feature = "comms", any(unix, windows)))]

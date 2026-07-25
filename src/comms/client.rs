@@ -580,112 +580,6 @@ impl CommsClient {
         }
     }
 
-    /// Ask the daemon (the machine's sole fjall writer) to scan or rescan a workspace. Front-ends
-    /// forward their writes here so concurrent read-only sessions never contend for the index lock.
-    /// A non-empty `paths` (with `full == false`) drives an incremental rescan; otherwise the whole
-    /// working tree is scanned. `embed` requests an
-    /// [`EmbedMode::Inline`](crate::scanner::EmbedMode::Inline) vector-fill pass (documents + code
-    /// chunks); `false` is the fast `Deferred` code-map pass. Idempotent, so the transparent
-    /// reconnect-and-retry is replay-safe.
-    pub async fn rescan(
-        &mut self,
-        root: PathBuf,
-        paths: Option<Vec<PathBuf>>,
-        full: bool,
-        embed: bool,
-    ) -> Result<RescanReport, CommsClientError> {
-        match self
-            .request(CommsRequest::Rescan {
-                root,
-                paths,
-                full,
-                embed,
-            })
-            .await?
-        {
-            CommsResponse::Rescanned {
-                scanned,
-                updated,
-                removed,
-                elapsed_ms,
-            } => Ok(RescanReport {
-                scanned,
-                updated,
-                removed,
-                elapsed_ms,
-            }),
-            other => Err(self.shape_err(other, "rescan")),
-        }
-    }
-
-    /// Forward a CORE memory operation to the daemon (the sole fjall writer). A `daemon_writer`
-    /// serve resolves the namespace + scope and ships the op here; the vector (LanceDB) half stays
-    /// serve-side. Idempotent for get/list/delete; `put` is a preserving RMW, so a replayed retry is
-    /// safe.
-    #[cfg(feature = "memory")]
-    pub async fn memory_op(
-        &mut self,
-        root: PathBuf,
-        scope: String,
-        op: crate::comms::memory_proto::MemoryOp,
-    ) -> Result<crate::comms::memory_proto::MemoryOutcome, CommsClientError> {
-        match self.request(CommsRequest::Memory { root, scope, op }).await? {
-            CommsResponse::Memory(outcome) => Ok(outcome),
-            other => Err(self.shape_err(other, "memory_op")),
-        }
-    }
-
-    /// Forward a PROPOSAL governance operation to the daemon (the sole fjall writer). A
-    /// `daemon_writer` serve does the git-log mining / audit verdict / LanceDB embed on its side and
-    /// ships only the fjall reads/writes here. Idempotent for list/get; reject + promote are
-    /// terminal writes and mine-apply is tombstone-guarded, so a replayed retry is safe.
-    #[cfg(feature = "memory")]
-    pub async fn governance_op(
-        &mut self,
-        root: PathBuf,
-        scope: String,
-        op: crate::comms::proposals_proto::GovernanceOp,
-    ) -> Result<crate::comms::proposals_proto::GovernanceOutcome, CommsClientError> {
-        match self.request(CommsRequest::Governance { root, scope, op }).await? {
-            CommsResponse::Governance(outcome) => Ok(outcome),
-            other => Err(self.shape_err(other, "governance_op")),
-        }
-    }
-
-    /// Forward a precise resolved-reference read to the daemon (the sole fjall writer, holding the
-    /// cross-file `refs_by_def` / `refs_by_path` index a `daemon_writer` serve cannot see). Backs
-    /// the precise cross-file `find_callers` / `goto_definition` path. A pure read, so the
-    /// transparent reconnect-and-retry is replay-safe.
-    pub async fn resolved_refs(
-        &mut self,
-        root: PathBuf,
-        query: crate::comms::resolved_proto::ResolvedRefQuery,
-    ) -> Result<crate::comms::resolved_proto::ResolvedRefResult, CommsClientError> {
-        match self.request(CommsRequest::ResolvedRefs { root, query }).await? {
-            CommsResponse::ResolvedRefs(result) => Ok(result),
-            other => Err(self.shape_err(other, "resolved_refs")),
-        }
-    }
-
-    /// Forward a git-history operation to the daemon — the sole holder of `git-history.fjall/`
-    /// (fjall's directory lock is exclusive, so no front-end may open it). Backs both the index
-    /// BUILD a `daemon_writer` serve requests at startup instead of running it in-process, and the
-    /// history reads its `recent_changes` / `commits_touching` / `hot_files` / `search_git_history`
-    /// tools would otherwise have to degrade to a live walk.
-    ///
-    /// Every op is idempotent — the reads are pure and `Sync` is freshness-checked (a replayed sync
-    /// against an up-to-date index is a no-op) — so the transparent reconnect-and-retry is safe.
-    pub async fn git_history(
-        &mut self,
-        root: PathBuf,
-        op: crate::git_history::proto::GitHistoryOp,
-    ) -> Result<crate::git_history::proto::GitHistoryReply, CommsClientError> {
-        match self.request(CommsRequest::GitHistory { root, op }).await? {
-            CommsResponse::GitHistory(reply) => Ok(reply),
-            other => Err(self.shape_err(other, "git_history")),
-        }
-    }
-
     /// List the workspaces the daemon currently holds hot (drives the `basemind statusline` CLI).
     pub async fn accessed_paths(&mut self) -> Result<Vec<AccessedWorkspace>, CommsClientError> {
         match self.request(CommsRequest::AccessedPaths).await? {
@@ -774,7 +668,7 @@ impl CommsClient {
         }
     }
 
-    fn shape_err(&self, resp: CommsResponse, request: &'static str) -> CommsClientError {
+    pub(super) fn shape_err(&self, resp: CommsResponse, request: &'static str) -> CommsClientError {
         match resp {
             CommsResponse::Error { code, message } => CommsClientError::Broker { code, message },
             _ => CommsClientError::Unexpected { request },
@@ -801,7 +695,7 @@ impl CommsClient {
     /// is narrow (a crash between store-commit and socket-write) and the worst case is a duplicate
     /// coordination message — not corruption — which is an accepted trade-off for making `thread_post`
     /// survive the daemon dying at all. (A client-supplied idempotency key would close it; deferred.)
-    async fn request(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
+    pub(super) async fn request(&mut self, req: CommsRequest) -> Result<CommsResponse, CommsClientError> {
         match self.send_and_await(req.clone()).await {
             Ok(resp) => Ok(resp),
             Err(err) if is_connection_lost(&err) => {

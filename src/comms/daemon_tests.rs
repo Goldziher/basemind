@@ -839,41 +839,6 @@ async fn a_completed_sweep_persists_gc_state() {
     assert!(state.at_epoch_secs > 0, "the sweep timestamp is recorded");
 }
 
-/// A draining daemon must REFUSE new scans, not run them as doomed partial passes: the drain
-/// token is process-global and never un-trips, and a cancelled pass never advances the
-/// coalescing generation — so accepting the request would burn a full tree walk for a result
-/// the dispatch layer surfaces as an error anyway.
-#[tokio::test]
-async fn rescan_is_refused_while_draining() {
-    crate::store::init_isolated_cache();
-    let (_d, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
-
-    broker.begin_drain().await;
-
-    let ws = tempfile::tempdir().expect("workspace");
-    std::fs::write(ws.path().join("main.rs"), "pub fn f() {}\n").expect("write source");
-    let mut session = Session::default();
-    let resp = broker
-        .handle(
-            CommsRequest::Rescan {
-                root: ws.path().to_path_buf(),
-                paths: None,
-                full: true,
-                embed: false,
-            },
-            &mut session,
-            &tx,
-        )
-        .await;
-    match resp {
-        CommsResponse::Error { code, .. } => {
-            assert_eq!(code, "rescan_draining", "the refusal is distinguishable from a failure")
-        }
-        other => panic!("a draining daemon must refuse the rescan, got {other:?}"),
-    }
-}
-
 /// End-to-end correctness (not just lock timing): racing a real full rescan against the destructive
 /// global blob sweep, repeatedly, must never leave the index pointing at a reaped blob. A rescan
 /// writes fresh content-addressed blobs but only rewrites `index.msgpack` (which the sweep
@@ -949,44 +914,4 @@ async fn archive_idle_threads_flips_stale_active_threads() {
     let archived = broker.archive_idle_threads(THREAD_IDLE_TTL).expect("archive");
     assert_eq!(archived, 1);
     assert!(!broker.store.get_thread(&thread).unwrap().unwrap().active);
-}
-
-#[tokio::test]
-async fn rescan_request_indexes_a_workspace_and_surfaces_it_as_accessed() {
-    crate::store::init_isolated_cache();
-    let (_d, broker) = temp_broker();
-    let (tx, _rx) = mpsc::channel(8);
-    let mut session = Session::default();
-
-    let ws = tempfile::tempdir().expect("workspace");
-    std::fs::write(ws.path().join("lib.rs"), "pub fn indexed() -> u32 { 7 }\n").expect("write source");
-
-    let resp = broker
-        .handle(
-            CommsRequest::Rescan {
-                root: ws.path().to_path_buf(),
-                paths: None,
-                full: false,
-                embed: false,
-            },
-            &mut session,
-            &tx,
-        )
-        .await;
-    match resp {
-        CommsResponse::Rescanned { scanned, updated, .. } => {
-            assert_eq!(scanned, 1);
-            assert_eq!(updated, 1);
-        }
-        other => panic!("expected Rescanned, got {other:?}"),
-    }
-
-    let accessed = broker.handle(CommsRequest::AccessedPaths, &mut session, &tx).await;
-    match accessed {
-        CommsResponse::Accessed { workspaces } => {
-            assert_eq!(workspaces.len(), 1);
-            assert_eq!(workspaces[0].root, ws.path());
-        }
-        other => panic!("expected Accessed, got {other:?}"),
-    }
 }
