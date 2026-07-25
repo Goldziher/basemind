@@ -57,6 +57,10 @@ const BLOB_GC_GRACE: Duration = Duration::from_secs(6 * 60 * 60);
 /// re-exported here so callers see one GC surface.
 pub use crate::store_gc_workspace::{ReapReport, reap_orphaned_workspaces};
 
+/// Cache size-budget enforcement + persisted last-GC state — the third leg of keeping the
+/// machine-global cache bounded (and observable). Re-exported so callers see one GC surface.
+pub use crate::store_gc_budget::{GcState, cache_budget_bytes, enforce_cache_budget, persist_gc_state, read_gc_state};
+
 /// Whole-component cleanup + cache introspection — responsibility (2) in the module doc above.
 /// Lives in its own module to keep this file under the module size cap; re-exported here so
 /// callers keep importing the whole cache surface from `crate::store_gc`.
@@ -83,6 +87,12 @@ pub enum GcError {
     /// The blocking GC task panicked or was cancelled before returning a report.
     #[error("blob GC task failed to join: {0}")]
     Join(String),
+    /// The sweep could not acquire the blob-GC write lock within its bound — a rescan held the
+    /// store the whole time. The cycle is skipped (and retried on the next tick) instead of
+    /// parking the maintenance task forever, which is how the starved-GC incident stayed
+    /// invisible while the cache grew unbounded.
+    #[error("blob GC starved: a rescan held the store lock beyond {0:?}; skipping this cycle")]
+    Starved(Duration),
 }
 
 /// Result of a blob garbage-collection sweep.
@@ -102,6 +112,14 @@ pub struct GcReport {
     /// [`Self::bytes_freed`], which counts only global-blob bytes.
     #[serde(default)]
     pub workspace_bytes_freed: u64,
+    /// Cold workspace dirs evicted by cache-budget enforcement (see
+    /// [`crate::store_gc_budget::enforce_cache_budget`]). `0` on every path that does not
+    /// enforce the budget.
+    #[serde(default)]
+    pub workspaces_evicted: usize,
+    /// Bytes reclaimed by those evictions. Disjoint from the other byte counters.
+    #[serde(default)]
+    pub evicted_bytes_freed: u64,
 }
 
 /// Enumerate every view's `index.msgpack` and union the hex content hashes it references.
@@ -305,6 +323,27 @@ pub fn reap_and_gc_global() -> Result<GcReport, GcError> {
     let mut report = gc_global_blobs()?;
     report.workspaces_reaped = reaped.reaped;
     report.workspace_bytes_freed = reaped.bytes_freed;
+    Ok(report)
+}
+
+/// The daemon's complete maintenance sweep: [`reap_and_gc_global`], then cache-budget
+/// enforcement (evicting cold workspaces when the cache exceeds
+/// [`cache_budget_bytes`], followed by a second blob sweep so the evicted workspaces' blobs are
+/// reclaimed in the same cycle), and finally persistence of the sweep's outcome to
+/// `gc-state.json` so `cache_stats` can show when GC last actually ran.
+pub fn reap_gc_and_enforce_budget() -> Result<GcReport, GcError> {
+    let mut report = reap_and_gc_global()?;
+    if let Some(budget) = cache_budget_bytes() {
+        let evicted = enforce_cache_budget(budget)?;
+        if evicted.evicted > 0 {
+            report.workspaces_evicted = evicted.evicted;
+            report.evicted_bytes_freed = evicted.bytes_freed;
+            let resweep = gc_global_blobs()?;
+            report.removed += resweep.removed;
+            report.bytes_freed += resweep.bytes_freed;
+        }
+    }
+    persist_gc_state(&report);
     Ok(report)
 }
 

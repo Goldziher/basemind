@@ -51,6 +51,46 @@ pub(super) struct CacheStatsResponse {
     /// Peak resident set size of the serving process over its lifetime, in bytes; `null` when
     /// unreadable.
     pub peak_rss_bytes: Option<u64>,
+    /// Outcome of the most recent destructive GC sweep, or `null` when none has ever completed
+    /// on this machine (which, on a long-lived install, means GC is not running — investigate).
+    pub last_gc: Option<LastGcResponse>,
+}
+
+/// MCP-facing mirror of [`crate::store_gc_budget::GcState`] — the persisted outcome of the most
+/// recent destructive GC sweep.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(super) struct LastGcResponse {
+    /// When the sweep finished (seconds since the Unix epoch).
+    pub at_epoch_secs: u64,
+    /// Blob files inspected.
+    pub scanned: usize,
+    /// Orphan blob files removed.
+    pub removed: usize,
+    /// Blob bytes reclaimed.
+    pub bytes_freed: u64,
+    /// Orphaned workspace dirs reaped.
+    pub workspaces_reaped: usize,
+    /// Bytes reclaimed by reaping those dirs.
+    pub workspace_bytes_freed: u64,
+    /// Cold workspace dirs evicted by cache-budget enforcement.
+    pub workspaces_evicted: usize,
+    /// Bytes reclaimed by those evictions.
+    pub evicted_bytes_freed: u64,
+}
+
+impl From<crate::store_gc_budget::GcState> for LastGcResponse {
+    fn from(s: crate::store_gc_budget::GcState) -> Self {
+        Self {
+            at_epoch_secs: s.at_epoch_secs,
+            scanned: s.scanned,
+            removed: s.removed,
+            bytes_freed: s.bytes_freed,
+            workspaces_reaped: s.workspaces_reaped,
+            workspace_bytes_freed: s.workspace_bytes_freed,
+            workspaces_evicted: s.workspaces_evicted,
+            evicted_bytes_freed: s.evicted_bytes_freed,
+        }
+    }
 }
 
 impl From<crate::store_gc::CacheStats> for CacheStatsResponse {
@@ -70,6 +110,7 @@ impl From<crate::store_gc::CacheStats> for CacheStatsResponse {
             per_view_file_count: s.per_view_file_count,
             rss_bytes: s.rss_bytes,
             peak_rss_bytes: s.peak_rss_bytes,
+            last_gc: s.last_gc.map(LastGcResponse::from),
         }
     }
 }

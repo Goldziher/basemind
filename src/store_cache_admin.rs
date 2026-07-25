@@ -123,6 +123,10 @@ pub struct CacheStats {
     /// Peak resident set size of the reporting process over its lifetime, in bytes; `None` when
     /// unreadable. See [`crate::sysres`].
     pub peak_rss_bytes: Option<u64>,
+    /// Outcome of the most recent destructive GC sweep (persisted to `gc-state.json` by the
+    /// daemon). `None` means no sweep has ever completed on this machine — on a long-lived
+    /// install that is itself the red flag the field exists to surface.
+    pub last_gc: Option<crate::store_gc_budget::GcState>,
 }
 
 /// Clear a whole cache component. Reuses the store's existing wipe helpers where they
@@ -253,6 +257,11 @@ pub(crate) fn cache_stats_in(basemind_dir: &Path, blobs_dir: &Path) -> Result<Ca
         per_view_file_count: per_view_file_count(basemind_dir)?,
         rss_bytes: rss.current_bytes,
         peak_rss_bytes: rss.peak_bytes,
+        // gc-state.json sits next to blobs/ in the cache root, so deriving it from the injected ~keep
+        // blob dir keeps the test seam hermetic (prod: cache/blobs → cache/gc-state.json). ~keep
+        last_gc: blobs_dir.parent().and_then(|cache| {
+            crate::store_gc_budget::read_gc_state_at(&cache.join(crate::store_gc_budget::GC_STATE_FILE))
+        }),
     })
 }
 
