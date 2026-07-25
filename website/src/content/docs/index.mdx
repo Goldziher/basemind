@@ -5,15 +5,15 @@ description: >-
   git intelligence, shared memory, and agent-to-agent comms — served over MCP.
 template: splash
 hero:
+  title: The context and communication layer for coding agents
   tagline: >-
-    The context and communication layer for coding agents. Turn any repo into an always-current map of
-    its code, documents, history, and memory — so agents answer from structure and search instead of
-    burning their context window on grep and file reads.
+    Turn any repo into an always-current map of its code, documents, history, and memory — so agents
+    answer from structure and search instead of burning their context window on grep and file reads.
   image:
     file: ../../assets/mark.svg
   actions:
-    - text: Get started
-      link: /start/introduction/
+    - text: Scan a repo and ask your first questions
+      link: /start/quickstart/
       icon: right-arrow
       variant: primary
     - text: View on GitHub
@@ -24,10 +24,12 @@ hero:
 
 import { Card, CardGrid, LinkCard, Tabs, TabItem, Code } from '@astrojs/starlight/components';
 
-Code map across **300+ languages** · documents in **90+ formats** · semantic + full-text search ·
-git history & blame · shared memory · web crawl · agent-to-agent comms. One server does both jobs —
-and every answer comes back as **paths, line numbers, and signatures, not whole files**, so a
-question about your code costs a small fraction of the tokens it takes to read the source.
+A code map across **300+ languages**, and documents in **90+ formats** — one server does both jobs.
+
+It also gives you semantic + full-text search, git history & blame, shared memory, web crawl, and
+agent-to-agent comms. Every answer comes back as **paths, line numbers, and signatures, not whole
+files**, so a question about your code costs a small fraction of the tokens it takes to read the
+source.
 
 ## The operating rule: basemind first, shell/grep/git fallback
 
