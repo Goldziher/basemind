@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an older daemon (which rejects the `RELAY_MAGIC` preamble as an over-long frame), a proto/view
   mismatch, or `BASEMIND_MCP_LEAN` / a non-working view / `BASEMIND_SERVE_INPROCESS` — serves
   in-process exactly as before, so a client is never bricked. No blob/index schema change.
+- **Daemon-hosted git-history now runs in-process** instead of the daemon dialing itself. A hosted
+  connection's history reads and its startup sync route through a new in-process seam
+  (`HistoryHost`, implemented by the daemon `Broker`) that shares the Broker's single open
+  `git-history.fjall/` handle and per-repo build lock — so `recent_changes` / `commits_touching` /
+  `blame_*` / `search_git_history` no longer pay a unix-socket round trip per call on the hosted
+  path, while the single-holder + single-flight-build invariants are unchanged. A thin
+  `daemon_writer` serve (the fallback) still forwards over the socket.
+- **The `serve` relay now works on Windows named pipes.** Named pipes have no non-destructive peek
+  (the Unix path uses `MSG_PEEK`), so the accept loop consumes the connection's first byte and
+  replays it — to the relay handshake via a small `PrefixReader`, or to a legacy comms link via a
+  seeded frame buffer — routing rmcp relay connections apart from comms links without a fallback to
+  in-process serve.
 
 ### Fixed
 
