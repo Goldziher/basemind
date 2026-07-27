@@ -116,17 +116,24 @@ pub(crate) const INIT_SCAFFOLD_TOML: &str = r##"# basemind configuration — htt
 # embed_exclude = []
 "##;
 
-/// Where to inject the usage rules. `Auto` follows detection priority
-/// (ai-rulez → CLAUDE.md → AGENTS.md → create CLAUDE.md).
+/// Where to inject the usage rules. `Auto` never writes a COMMITTED agent-instructions file
+/// (`CLAUDE.md` / `AGENTS.md`) without an explicit opt-in: it routes to ai-rulez when that owns
+/// governance, otherwise to the personal, gitignored `*.local.md` sibling. The interactive prompt
+/// and the `/bm-init` slash command offer the committed files as an explicit choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum RulesTarget {
-    /// Detect the source of truth automatically (default).
+    /// Detect the target automatically (default): ai-rulez if it owns governance, else the
+    /// gitignored `CLAUDE.local.md` / `AGENTS.local.md` — never a committed file unasked.
     #[default]
     Auto,
-    /// Force the CLAUDE.md delimited block.
+    /// Force the committed `CLAUDE.md` delimited block.
     Claude,
-    /// Force the AGENTS.md delimited block.
+    /// Force the personal, gitignored `CLAUDE.local.md` delimited block.
+    ClaudeLocal,
+    /// Force the committed `AGENTS.md` delimited block.
     Agents,
+    /// Force the personal, gitignored `AGENTS.local.md` delimited block.
+    AgentsLocal,
     /// Force an ai-rulez rule file (`.ai-rulez/rules/basemind-usage.md`).
     AiRulez,
     /// Write no rules at all (same as `--no-rules`).
@@ -192,9 +199,11 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
         setup_notes: !args.no_setup_notes,
     };
 
+    let rules_target = resolve_rules_target(root, args)?;
+
     let mut changes = Vec::new();
     changes.push(plan_config(root)?);
-    if let Some(rule_change) = plan_rules(root, args, &caps, sections)? {
+    if let Some(rule_change) = plan_rules(root, args, rules_target, &caps, sections)? {
         changes.push(rule_change);
     }
 
@@ -223,6 +232,58 @@ pub fn run(root: &Path, args: &InitArgs) -> Result<()> {
         println!("basemind init: nothing to do — already up to date.");
     }
     Ok(())
+}
+
+/// Decide the effective rules target, applying the "ask before touching a committed file" policy.
+///
+/// Precedence: an explicit `--rules-target` (anything but `auto`) or `--no-rules` wins verbatim;
+/// then ai-rulez governance when `.ai-rulez/config.toml` is present; then — only in an interactive
+/// TTY — prompt the user to choose between the personal `*.local.md` files and the committed
+/// `CLAUDE.md` / `AGENTS.md`. Non-interactively (`--yes` / piped) `Auto` is returned unchanged and
+/// [`resolve_rules_plan`] applies its safe local default, so a scripted run never silently edits a
+/// committed agent-instructions file.
+fn resolve_rules_target(root: &Path, args: &InitArgs) -> Result<RulesTarget> {
+    if args.no_rules {
+        return Ok(RulesTarget::None);
+    }
+    if args.rules_target != RulesTarget::Auto {
+        return Ok(args.rules_target);
+    }
+    if root.join(".ai-rulez").join("config.toml").exists() {
+        return Ok(RulesTarget::AiRulez);
+    }
+    if !args.yes && std::io::stdin().is_terminal() {
+        return prompt_rules_target();
+    }
+    Ok(RulesTarget::Auto)
+}
+
+/// Interactive prompt for where the rules block should land. Hand-rolled over stdin (no new crate).
+/// A blank answer accepts the recommended default: the personal, gitignored `CLAUDE.local.md`, so
+/// the committed, shared `CLAUDE.md` / `AGENTS.md` are only written when explicitly chosen.
+fn prompt_rules_target() -> Result<RulesTarget> {
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    println!("Where should the basemind rules block go?");
+    println!("  1) CLAUDE.local.md  — personal, gitignored (recommended)");
+    println!("  2) CLAUDE.md        — committed, shared with everyone on the repo");
+    println!("  3) AGENTS.local.md  — personal, gitignored");
+    println!("  4) AGENTS.md        — committed, shared with everyone on the repo");
+    println!("  5) none             — write no rules");
+    write!(stdout, "Choose [1-5, blank = 1]: ").context("write prompt")?;
+    stdout.flush().context("flush prompt")?;
+    let mut line = String::new();
+    stdin.read_line(&mut line).context("read stdin")?;
+    Ok(match line.trim() {
+        "" | "1" => RulesTarget::ClaudeLocal,
+        "2" => RulesTarget::Claude,
+        "3" => RulesTarget::AgentsLocal,
+        "4" => RulesTarget::Agents,
+        "5" => RulesTarget::None,
+        // ~keep An unrecognized answer falls back to the safe, gitignored recommendation rather
+        // ~keep than guessing a committed file.
+        _ => RulesTarget::ClaudeLocal,
+    })
 }
 
 /// Resolve the selected capability set from flags + interactivity.
@@ -315,6 +376,7 @@ fn plan_config(root: &Path) -> Result<Change> {
 
 /// Which agent-instructions file owns the rules, after resolving `--rules-target`/`--no-rules`
 /// against the detection priority.
+#[derive(Debug)]
 enum RulesPlan {
     /// Skip rules entirely.
     Skip,
@@ -324,37 +386,51 @@ enum RulesPlan {
     Delimited(PathBuf),
 }
 
-/// Resolve where the rules go. Detection priority for `auto`:
-/// `.ai-rulez/config.toml` → CLAUDE.md → AGENTS.md → create CLAUDE.md.
-fn resolve_rules_plan(root: &Path, args: &InitArgs) -> RulesPlan {
-    if args.no_rules || args.rules_target == RulesTarget::None {
+/// Resolve where the rules go from an already-decided `target` (the interactive prompt / ai-rulez
+/// precedence is applied upstream in [`resolve_rules_target`]). `Auto` here is the NON-interactive
+/// fallback and is deliberately safe: it never writes a committed `CLAUDE.md` / `AGENTS.md`, only
+/// the gitignored `*.local.md` sibling (or ai-rulez when it owns governance).
+fn resolve_rules_plan(root: &Path, target: RulesTarget, no_rules: bool) -> RulesPlan {
+    if no_rules || target == RulesTarget::None {
         return RulesPlan::Skip;
     }
     let ai_rulez_rule = root.join(".ai-rulez").join("rules").join("basemind-usage.md");
     let claude = root.join("CLAUDE.md");
+    let claude_local = root.join("CLAUDE.local.md");
     let agents = root.join("AGENTS.md");
-    match args.rules_target {
+    let agents_local = root.join("AGENTS.local.md");
+    match target {
         RulesTarget::AiRulez => RulesPlan::AiRulez(ai_rulez_rule),
         RulesTarget::Claude => RulesPlan::Delimited(claude),
+        RulesTarget::ClaudeLocal => RulesPlan::Delimited(claude_local),
         RulesTarget::Agents => RulesPlan::Delimited(agents),
+        RulesTarget::AgentsLocal => RulesPlan::Delimited(agents_local),
         RulesTarget::None => RulesPlan::Skip,
         RulesTarget::Auto => {
+            // ~keep Never auto-write a COMMITTED agent-instructions file — that's a shared,
+            // ~keep version-controlled surface the user must opt into. Prefer ai-rulez governance,
+            // ~keep else the personal `*.local.md` sibling, matching whichever committed convention
+            // ~keep the repo already uses (AGENTS-only repos get AGENTS.local.md).
             if root.join(".ai-rulez").join("config.toml").exists() {
                 RulesPlan::AiRulez(ai_rulez_rule)
-            } else if claude.exists() {
-                RulesPlan::Delimited(claude)
-            } else if agents.exists() {
-                RulesPlan::Delimited(agents)
+            } else if agents.exists() && !claude.exists() {
+                RulesPlan::Delimited(agents_local)
             } else {
-                RulesPlan::Delimited(claude)
+                RulesPlan::Delimited(claude_local)
             }
         }
     }
 }
 
 /// Plan the rules write. Returns `None` only when rules are skipped.
-fn plan_rules(root: &Path, args: &InitArgs, caps: &[Capability], sections: BlockSections) -> Result<Option<Change>> {
-    match resolve_rules_plan(root, args) {
+fn plan_rules(
+    root: &Path,
+    args: &InitArgs,
+    target: RulesTarget,
+    caps: &[Capability],
+    sections: BlockSections,
+) -> Result<Option<Change>> {
+    match resolve_rules_plan(root, target, args.no_rules) {
         RulesPlan::Skip => Ok(Some(Change::NoOp {
             note: "rules: skipped (--no-rules / --rules-target none)".to_string(),
         })),
@@ -546,13 +622,61 @@ mod tests {
 
     #[test]
     fn none_target_skips_rules() {
-        let args = InitArgs {
-            rules_target: RulesTarget::None,
-            ..Default::default()
-        };
         assert!(matches!(
-            resolve_rules_plan(Path::new("/nonexistent"), &args),
+            resolve_rules_plan(Path::new("/nonexistent"), RulesTarget::None, false),
             RulesPlan::Skip
         ));
+    }
+
+    #[test]
+    fn auto_never_targets_a_committed_file() {
+        // ~keep The non-interactive Auto fallback must resolve to a gitignored *.local.md sibling,
+        // ~keep never the committed CLAUDE.md / AGENTS.md.
+        let dir = tempfile::tempdir().expect("tempdir");
+        match resolve_rules_plan(dir.path(), RulesTarget::Auto, false) {
+            RulesPlan::Delimited(path) => assert_eq!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some("CLAUDE.local.md"),
+                "fresh repo Auto must land in CLAUDE.local.md, got {}",
+                path.display()
+            ),
+            other => panic!("expected a delimited CLAUDE.local.md plan, got {other:?}"),
+        }
+
+        std::fs::write(dir.path().join("AGENTS.md"), "# Agents\n").expect("seed AGENTS.md");
+        match resolve_rules_plan(dir.path(), RulesTarget::Auto, false) {
+            RulesPlan::Delimited(path) => assert_eq!(
+                path.file_name().and_then(|n| n.to_str()),
+                Some("AGENTS.local.md"),
+                "an AGENTS.md-only repo must land in AGENTS.local.md, got {}",
+                path.display()
+            ),
+            other => panic!("expected a delimited AGENTS.local.md plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_local_and_committed_targets_resolve_to_their_files() {
+        let root = Path::new("/nonexistent");
+        let name = |plan: RulesPlan| match plan {
+            RulesPlan::Delimited(path) => path.file_name().and_then(|n| n.to_str()).map(str::to_owned),
+            other => panic!("expected delimited plan, got {other:?}"),
+        };
+        assert_eq!(
+            name(resolve_rules_plan(root, RulesTarget::ClaudeLocal, false)).as_deref(),
+            Some("CLAUDE.local.md")
+        );
+        assert_eq!(
+            name(resolve_rules_plan(root, RulesTarget::Claude, false)).as_deref(),
+            Some("CLAUDE.md")
+        );
+        assert_eq!(
+            name(resolve_rules_plan(root, RulesTarget::AgentsLocal, false)).as_deref(),
+            Some("AGENTS.local.md")
+        );
+        assert_eq!(
+            name(resolve_rules_plan(root, RulesTarget::Agents, false)).as_deref(),
+            Some("AGENTS.md")
+        );
     }
 }

@@ -38,7 +38,7 @@ fn count_markers(haystack: &str) -> usize {
 }
 
 #[test]
-fn fresh_dir_writes_config_and_claude_block_without_gitignore() {
+fn fresh_dir_writes_config_and_claude_local_block_without_gitignore() {
     let dir = tmpdir();
     let root = dir.path();
     run_init(root, &["--yes"]);
@@ -54,10 +54,30 @@ fn fresh_dir_writes_config_and_claude_block_without_gitignore() {
         "init must not create a .gitignore for a nonexistent in-repo cache"
     );
 
-    let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("CLAUDE.md created");
+    // ~keep Non-interactive Auto must land in the personal, gitignored CLAUDE.local.md — never the
+    // ~keep committed CLAUDE.md — so onboarding never edits a shared file without an explicit opt-in.
+    let claude_local = std::fs::read_to_string(root.join("CLAUDE.local.md")).expect("CLAUDE.local.md created");
+    assert_eq!(count_markers(&claude_local), 1, "exactly one managed block");
+    assert!(claude_local.contains(END_MARKER), "END marker present");
+    assert!(claude_local.contains("basemind"), "block advertises basemind usage");
+    assert!(
+        !root.join("CLAUDE.md").exists(),
+        "committed CLAUDE.md must NOT be created by a non-interactive Auto run"
+    );
+}
+
+#[test]
+fn explicit_claude_target_writes_the_committed_file() {
+    let dir = tmpdir();
+    let root = dir.path();
+    run_init(root, &["--yes", "--rules-target", "claude"]);
+
+    let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("CLAUDE.md created on explicit opt-in");
     assert_eq!(count_markers(&claude), 1, "exactly one managed block");
-    assert!(claude.contains(END_MARKER), "END marker present");
-    assert!(claude.contains("basemind"), "block advertises basemind usage");
+    assert!(
+        !root.join("CLAUDE.local.md").exists(),
+        "the local sibling must not be written when the committed file is chosen"
+    );
 }
 
 #[test]
@@ -67,7 +87,7 @@ fn init_is_idempotent_single_block_and_print_shows_no_change() {
     run_init(root, &["--yes"]);
     run_init(root, &["--yes"]);
 
-    let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
+    let claude = std::fs::read_to_string(root.join("CLAUDE.local.md")).expect("read CLAUDE.local.md");
     assert_eq!(
         count_markers(&claude),
         1,
@@ -90,7 +110,8 @@ fn existing_claude_content_is_preserved_verbatim() {
     let handwritten = "# My Project\n\nSome hand-written guidance.\n\nDo not delete me.\n";
     std::fs::write(root.join("CLAUDE.md"), handwritten).expect("seed CLAUDE.md");
 
-    run_init(root, &["--yes"]);
+    // ~keep Splicing into the committed CLAUDE.md is opt-in now, so target it explicitly.
+    run_init(root, &["--yes", "--rules-target", "claude"]);
 
     let claude = std::fs::read_to_string(root.join("CLAUDE.md")).expect("read CLAUDE.md");
     assert!(
@@ -128,19 +149,23 @@ fn ai_rulez_present_writes_rule_file_and_leaves_claude_untouched() {
 }
 
 #[test]
-fn agents_md_is_used_when_it_is_the_only_rules_file() {
+fn agents_local_is_used_when_agents_md_is_the_only_committed_file() {
     let dir = tmpdir();
     let root = dir.path();
     std::fs::write(root.join("AGENTS.md"), "# Agents\n\nkeep me\n").expect("seed AGENTS.md");
 
     run_init(root, &["--yes"]);
 
+    // ~keep An AGENTS.md-only repo gets the block in AGENTS.local.md — matching the repo's
+    // ~keep convention while leaving the committed AGENTS.md untouched.
+    let agents_local = std::fs::read_to_string(root.join("AGENTS.local.md")).expect("read AGENTS.local.md");
+    assert_eq!(count_markers(&agents_local), 1, "block injected into AGENTS.local.md");
     let agents = std::fs::read_to_string(root.join("AGENTS.md")).expect("read AGENTS.md");
-    assert_eq!(count_markers(&agents), 1, "block injected into AGENTS.md");
+    assert_eq!(count_markers(&agents), 0, "committed AGENTS.md must be left untouched");
     assert!(agents.contains("keep me"), "pre-existing AGENTS.md content preserved");
     assert!(
-        !root.join("CLAUDE.md").exists(),
-        "CLAUDE.md must not be created when AGENTS.md already owns the rules"
+        !root.join("CLAUDE.md").exists() && !root.join("CLAUDE.local.md").exists(),
+        "no CLAUDE.* created when AGENTS.md is the repo's convention"
     );
 }
 
@@ -153,6 +178,10 @@ fn print_dry_run_writes_nothing_on_a_fresh_repo() {
     assert!(!root.join("basemind.toml").exists(), "--print must not write config");
     assert!(!root.join(".gitignore").exists(), "--print must not write .gitignore");
     assert!(!root.join("CLAUDE.md").exists(), "--print must not write rules");
+    assert!(
+        !root.join("CLAUDE.local.md").exists(),
+        "--print must not write the local rules file"
+    );
     assert!(
         out.to_lowercase().contains("would") || out.to_lowercase().contains("would change"),
         "--print should report the pending changes it would make, got:\n{out}"
@@ -193,11 +222,15 @@ fn init_refuses_to_corrupt_a_file_with_a_broken_marker() {
     let broken = format!("# My Project\n\nkeep me\n\n{BEGIN_MARKER}\nstale rules\n\ntrailing user content\n");
     std::fs::write(root.join("CLAUDE.md"), &broken).expect("seed broken CLAUDE.md");
 
+    // ~keep Target the committed CLAUDE.md explicitly (Auto would route to CLAUDE.local.md) so the
+    // ~keep malformed-marker bail is exercised against the seeded file.
     let output = Command::new(env!("CARGO_BIN_EXE_basemind"))
         .arg("--root")
         .arg(root)
         .arg("init")
         .arg("--yes")
+        .arg("--rules-target")
+        .arg("claude")
         .output()
         .expect("spawn basemind init");
     assert!(!output.status.success(), "init must fail on a malformed marker");
