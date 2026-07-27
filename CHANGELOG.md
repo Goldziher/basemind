@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.22.8] — 2026-07-27
+
+### Changed
+
+- **`basemind init` no longer writes a committed `CLAUDE.md` / `AGENTS.md` unasked.** The rules
+  block is a shared, version-controlled surface, so onboarding now defaults to the personal,
+  gitignored sibling instead: `--rules-target auto` (the default) routes to ai-rulez when it owns
+  governance, otherwise to `CLAUDE.local.md` (or `AGENTS.local.md` when the repo uses AGENTS) —
+  never a committed file. The `/bm-init` slash command asks the user where the block should go, and
+  the interactive CLI prompts for it; `--rules-target` gains `claude-local` / `agents-local`
+  values, and `claude` / `agents` remain as the explicit opt-in to the committed files.
+
+### Fixed
+
+- **Comms daemon readiness flake (`spawned comms daemon did not become ready within the timeout`).**
+  The Unix comms front-end peeked a freshly-accepted connection's first byte _inline in the accept
+  loop_ (`peek_first_byte(&stream).await` before the spawn), so a single client that connected but
+  was slow or silent to send its first byte parked the entire accept loop on `readable()`. Every
+  other client then sat unaccepted in the kernel backlog — including `ensure_daemon`'s readiness
+  probe, whose short timeout reported a perfectly healthy, still-running daemon as unreachable, which
+  in turn spawned a replacement that hit `AddrInUse` and exited (`SpawnTimeout`). The peek + relay/
+  legacy routing now runs _inside_ the per-connection spawned task, so the accept loop only
+  `accept()`s and `spawn`s and never awaits client I/O — a slow/silent client harms only its own
+  task. This aligns the Unix path with the Windows named-pipe front-end, which already reads the
+  first byte in-task. No blob/index schema change.
+
 ## [0.22.7] — 2026-07-25
 
 ### Changed
