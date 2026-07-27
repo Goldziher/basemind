@@ -139,19 +139,30 @@ mod imp {
                             continue;
                         }
                         let guard = broker.register_link();
+                        let broker = broker.clone();
+                        // ~keep Peek the first byte INSIDE the spawned task, never in the accept loop.
+                        // ~keep `peek_first_byte` awaits the client's first byte; doing it inline here
+                        // ~keep would park the whole accept loop on one slow/silent connection, leaving
+                        // ~keep every other client unaccepted in the backlog — including ensure_daemon's
+                        // ~keep readiness probe, whose timeout then reports a healthy daemon as unreachable
+                        // ~keep (the SpawnTimeout flake). The Windows named-pipe front-end reads its first
+                        // ~keep byte in-task for the same reason.
+                        //
                         // ~keep Route a RELAY (rmcp) connection apart from a legacy comms link. A relay
                         // ~keep client writes RELAY_MAGIC first, whose first byte (0x42) is disjoint from a
                         // ~keep legacy length-delimited frame's first byte (0x00 for any body < 16 MiB), so
                         // ~keep peeking one byte discriminates without consuming it. A relay session is
                         // ~keep hosted by the broker (shared read stack + rmcp router); everything else is a
                         // ~keep legacy comms link, byte-for-byte the existing path.
-                        let is_relay =
-                            peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
-                        if is_relay {
-                            tokio::spawn(broker.clone().serve_relay_connection(stream, guard));
-                        } else {
-                            tokio::spawn(serve_link(broker.clone(), UdsLink::new(stream, peer), guard));
-                        }
+                        tokio::spawn(async move {
+                            let is_relay =
+                                peek_first_byte(&stream).await == Some(crate::comms::relay::RELAY_MAGIC[0]);
+                            if is_relay {
+                                broker.serve_relay_connection(stream, guard).await;
+                            } else {
+                                serve_link(broker, UdsLink::new(stream, peer), guard).await;
+                            }
+                        });
                     }
                     _ = shutdown.changed() => {
                         if *shutdown.borrow() {
@@ -311,4 +322,73 @@ pub(crate) fn peer_cred_from_fd(fd: i32) -> crate::comms::transport::PeerCred {
         }
     }
     crate::comms::transport::PeerCred::default()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{UnixListener, UnixStream};
+    use tokio::sync::watch;
+
+    use super::UdsFrontend;
+    use crate::comms::daemon::Broker;
+    use crate::comms::protocol::{CommsOut, CommsRequest, CommsResponse};
+    use crate::comms::store::CommsStore;
+    use crate::comms::transport::CommsFrontend;
+
+    async fn send_req(stream: &mut UnixStream, req: &CommsRequest) {
+        let body = rmp_serde::to_vec_named(req).expect("encode");
+        let len = u32::try_from(body.len()).expect("len fits");
+        stream.write_all(&len.to_be_bytes()).await.expect("write len");
+        stream.write_all(&body).await.expect("write body");
+        stream.flush().await.expect("flush");
+    }
+
+    async fn read_resp(stream: &mut UnixStream) -> CommsOut {
+        let mut prefix = [0u8; 4];
+        stream.read_exact(&mut prefix).await.expect("read len");
+        let len = u32::from_be_bytes(prefix) as usize;
+        let mut buf = vec![0u8; len];
+        stream.read_exact(&mut buf).await.expect("read body");
+        rmp_serde::from_slice(&buf).expect("decode")
+    }
+
+    /// The accept loop must never park on a freshly-accepted client's first byte: one client that
+    /// connects and then stays silent must NOT stall service to every other client. Regression for
+    /// the comms-daemon readiness flake — an inline `peek_first_byte` in the accept loop let a
+    /// single slow/silent connection freeze new accepts, so `ensure_daemon`'s probe timed out
+    /// against a perfectly healthy daemon and surfaced `SpawnTimeout`.
+    #[tokio::test]
+    async fn a_silent_client_does_not_stall_the_accept_loop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = Arc::new(CommsStore::open(dir.path()).expect("store"));
+        let broker = Arc::new(Broker::new(store));
+
+        let socket = dir.path().join("accept.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let frontend = UdsFrontend::from_listener(listener, socket.clone());
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        tokio::spawn(Box::new(frontend).serve(broker, shutdown_rx));
+
+        // Client A connects and then says NOTHING, holding the connection open. Under the bug this
+        // parks the accept loop in `peek_first_byte`, leaving everyone after it unaccepted.
+        let _silent = UnixStream::connect(&socket).await.expect("connect A");
+        // Give the accept loop time to accept A and (buggily) park on its first-byte peek.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Client B must still be served promptly.
+        let mut b = UnixStream::connect(&socket).await.expect("connect B");
+        send_req(&mut b, &CommsRequest::Ping).await;
+        let resp = tokio::time::timeout(Duration::from_secs(3), read_resp(&mut b))
+            .await
+            .expect("B must be served even while A is silent — otherwise the accept loop is stalled");
+        assert_eq!(
+            resp,
+            CommsOut::Response(CommsResponse::Pong),
+            "B's Ping must be answered with Pong"
+        );
+    }
 }
