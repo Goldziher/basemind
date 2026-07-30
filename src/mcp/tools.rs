@@ -21,6 +21,7 @@ use crate::query;
 impl BasemindServer {
     /// File outline: symbols + imports (L1), optionally calls + docs (L2).
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::OutlineResponse>()",
         description = "Structural outline of a file: each symbol (name, kind, start row/col) plus \
                        imports. `l2: true` adds calls + doc comments (only if an L2 blob exists for \
                        the current content). `max_tokens` budgets the `symbols` list (not \
@@ -173,6 +174,7 @@ impl BasemindServer {
 
     /// Substring search across symbol names, optionally filtered by kind.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::SearchResponse>()",
         description = "Search indexed symbols whose name contains `needle` (case-sensitive \
                        substring). Optional `kind` filter (function/struct/class/...). Up to \
                        `limit` hits (default 100, max 1000): path + line/col + signature. \
@@ -313,6 +315,7 @@ impl BasemindServer {
 
     /// List indexed files, optionally filtered by path substring and/or language.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::ListFilesResponse>()",
         description = "List indexed files with language + size. Optional `path_contains` substring \
                        and `language` filter (rust/python/typescript/tsx/javascript/go). Default \
                        limit 200, max 5000 (a larger request is clamped, setting \
@@ -335,6 +338,7 @@ impl BasemindServer {
 
     /// Fuzzy filename/path search over indexed paths — an fzf/fd-style replacement for shell `find`.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindFilesResponse>()",
         description = "Fuzzy subsequence match of `query` against every indexed path (fzf/fd-style: \
                        letters of `query` must appear in order, not necessarily contiguous; \
                        case-insensitive). Ranked by `nucleo-matcher` score (path-aware bonuses for \
@@ -361,6 +365,7 @@ impl BasemindServer {
 
     /// Heuristic reverse-dependency lookup via import statements.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::DependentsResponse>()",
         description = "Indexed files whose imports mention `module`. Heuristic: substring match \
                        against each import's recorded module path. \
                        `elapsed_us` = server-side handler latency in µs (excludes transport).",
@@ -394,6 +399,7 @@ impl BasemindServer {
 
     /// High-level repo + cache state.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::StatusResponse>()",
         description = "Indexed-repo report: file count, on-disk `blob_count`, total bytes, \
                        per-language breakdown, root path, grammar cache directory, schema \
                        version. A `note` appears when the view index is empty but blobs exist \
@@ -514,6 +520,7 @@ impl BasemindServer {
 
     /// Incoming call sites for any callee whose identifier contains `name`.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindReferencesResponse>()",
         description = "Call sites whose callee identifier contains `name` (case-sensitive \
                        substring). Fjall-backed over L2 captures; hits are (path, line, column, \
                        exact callee). Name-only, no scope resolution: `Foo::bar()` and `bar()` \
@@ -546,6 +553,7 @@ impl BasemindServer {
 
     /// Callers of a specific definition (path + name + optional kind).
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindCallersResponse>()",
         description = "Call sites of a specific definition (`path` + `name` + optional kind). \
                        Resolves the definition via the symbols index (echoed in `definition`), then \
                        reports EVERY call site whose callee matches `name` — the same name-based, \
@@ -615,6 +623,7 @@ impl BasemindServer {
 
     /// Resolve a reference position to its scope/import-resolved definition.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::GotoDefinitionResponse>()",
         description = "Resolve the reference at `path`:`line`:`column` to its definition — \
                        scope-resolved, NOT name-matched, so it never conflates same-named symbols. \
                        Returns the definition `{path, line, column, name}` (`path` may be another \
@@ -642,6 +651,7 @@ impl BasemindServer {
 
     /// Regex content search across indexed files.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::WorkspaceGrepResponse>()",
         description = "Regex search across indexed files (`pattern` is Rust regex syntax). Returns \
                        line + column + matched text plus optional 1-line context. Prefer \
                        `search_symbols` for a plain substring identifier (index-backed, faster). \
@@ -672,6 +682,7 @@ impl BasemindServer {
 
     /// Types / classes that implement, extend, or inherit from a name containing `trait_name`.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_impls::FindImplementationsResponse>()",
         description = "Types that implement/extend/inherit `trait_name` (trait / interface / base \
                        class). Returns (trait, implementor, file, line, column). `trait_name` is a \
                        case-sensitive substring match (full-partition scan). Covers Rust, Python, \
@@ -710,6 +721,7 @@ impl BasemindServer {
 
     /// Transitive call-graph walk from a root function.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_graph::CallGraphResponse>()",
         description = "BFS the call graph from a function. `direction=\"callers\"` (default) walks \
                        who calls `name`; `\"callees\"` walks what `name` calls. Returns a DAG \
                        (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
@@ -741,6 +753,7 @@ impl BasemindServer {
 
     /// Workdir + branch + HEAD sha.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::RepoInfoResponse>()",
         description = "Repository identity: workdir path, current branch (if HEAD is on one), full \
                        + short HEAD sha. Pairs with `working_tree_status`. \
                        `elapsed_us` = server-side handler latency in µs (excludes transport).",

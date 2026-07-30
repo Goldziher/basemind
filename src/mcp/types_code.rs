@@ -59,8 +59,7 @@ pub struct GetChunkParams {
 
 /// One pointer hit from `search_code`. Deliberately carries NO body — call `get_chunk` for the
 /// source. Mirrors the `search_symbols`/`outline` → `expand` two-call token pattern.
-#[cfg(feature = "code-search")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct CodeSearchHit {
     pub path: String,
     pub chunk_id: String,
@@ -102,8 +101,7 @@ pub(crate) struct CodeSearchHit {
     pub exact_rank: Option<u32>,
 }
 
-#[cfg(feature = "code-search")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct SearchCodeResponse {
     pub query: String,
     /// True when a `max_tokens` budget dropped trailing `hits`. No cursor — raise `max_tokens`.
@@ -120,8 +118,7 @@ pub(crate) struct SearchCodeResponse {
 }
 
 /// Response for `get_chunk` — the full chunk body plus its metadata.
-#[cfg(feature = "code-search")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct GetChunkResponse {
     pub path: String,
     pub chunk_id: String,

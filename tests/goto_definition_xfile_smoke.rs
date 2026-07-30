@@ -28,10 +28,8 @@ use basemind::scanner::{EmbedMode, ScanSource, scan};
 use basemind::store::{Store, VIEW_WORKING};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 fn write(root: &Path, rel: &str, body: &str) {
     let abs = root.join(rel);
@@ -70,11 +68,9 @@ async fn serve(root: &Path) -> Server {
     scan(root, &mut store, &cfg, ScanSource::WorkingTree, EmbedMode::Inline).unwrap();
     drop(store);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 

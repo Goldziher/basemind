@@ -35,6 +35,10 @@ pub mod frontend_uds;
 /// The daemon's git-history half: the pool of open per-repo indexes + the forwarded-op handler.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) mod git_history_ops;
+/// The daemon's second MCP front-end: a stateless streamable-HTTP transport (rmcp 3.0, SEP-2567)
+/// hosted alongside the Unix-socket relay.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod http_frontend;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod keys;
 #[cfg(all(feature = "comms", feature = "memory"))]

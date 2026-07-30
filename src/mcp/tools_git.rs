@@ -18,6 +18,7 @@ use super::types::*;
 impl BasemindServer {
     /// Full-text search over commit history (author / message / body).
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::SearchGitHistoryResponse>()",
         description = "Full-text search over the ENTIRE branch history — author name + email, commit \
                        summary, and full message body. THIS is the tool for \"what did <author> do\", \
                        \"find the commit that mentions X\", or \"<author>'s last commit\": it scans \
@@ -47,6 +48,7 @@ impl BasemindServer {
 
     /// `git status --porcelain` shape for an agent.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::WorkingTreeStatusView>()",
         description = "What's dirty in the working tree: staged adds/modifies/deletes, working-tree \
                        modifications, untracked files. `is_clean: true` if all five buckets are \
                        empty. Requires a git repo. `elapsed_us` = server-side handler latency in µs \
@@ -87,6 +89,7 @@ impl BasemindServer {
 
     /// Walk HEAD ancestry and return the last N commits.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::RecentChangesResponse>()",
         description = "Last N commits on the current branch, newest first — a bounded recency \
                        window, NOT a search. Each: sha, summary (first message line), author, unix \
                        timestamp, and — when `include_files=true` (default) — the per-file change \
@@ -168,6 +171,7 @@ impl BasemindServer {
 
     /// Filter the log to commits whose tree differs from the parent at `path`.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::CommitsTouchingResponse>()",
         description = "Commits that modified `path`, newest first. Same per-commit shape as \
                        `recent_changes` minus the per-file list (path is implicit). `limit` is \
                        page size (default 20, max 100). `cursor` pages results (invalidate when \
@@ -247,6 +251,7 @@ impl BasemindServer {
 
     /// Symbol-level diff between the served view and another rev.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::DiffOutlineResponse>()",
         description = "Diff the symbol set of `path` between the current view and `rev` (default \
                        HEAD): `added` (in view, not at `rev`), `removed` (at `rev`, not in view), \
                        `common` — 'what symbols did this branch add' without reading source. \
@@ -373,6 +378,7 @@ impl BasemindServer {
 
     /// Cheap pickaxe: regex over changed file paths in HEAD ancestry.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::FindCommitsByPathResponse>()",
         description = "Recent commits (default last 200, max 1000) whose changed-file list has a \
                        path matching the regex `pattern`. Matches paths only, not patch text \
                        (cheaper than `git log -G`). `limit` is page size (default 50, max 500). \
@@ -470,6 +476,7 @@ impl BasemindServer {
 
     /// Most-changed files in a recent commit window.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::HotFilesResponse>()",
         description = "Top-K files most-frequently modified in the last `window` commits on the \
                        current branch (default 200, max 2000). Each entry: per-kind breakdown \
                        (added/modified/deleted) — a repo churn map. `elapsed_us` = server-side \
@@ -540,6 +547,7 @@ impl BasemindServer {
 
     /// Content-level diff between two revs for one file.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::DiffFileResponse>()",
         description = "Hunks for `path` between `rev_old` and `rev_new`. Each hunk: old/new 1-based \
                        line ranges plus changed text ('-'/'+' prefixed). If the file is absent on \
                        one side, `present_at_old` / `present_at_new` flag it and hunks describe \
@@ -594,6 +602,7 @@ impl BasemindServer {
 
     /// Tree-sitter × git: commits where a specific symbol's body changed.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::SymbolHistoryResponse>()",
         description = "Commits where the named symbol's body bytes changed (or it was \
                        added/removed): `recent_changes` filtered by symbol identity, not file \
                        identity, via tree-sitter outlines. `limit` is page size (default 20, max \
@@ -729,6 +738,7 @@ impl BasemindServer {
 
     /// Line-level blame, optionally clamped to a 1-based inclusive line range.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::BlameResponse>()",
         description = "Blame the file at `rev` (default HEAD): one hunk per consecutive run of \
                        lines sharing a source commit. Optional 1-based `line_start`/`line_end` \
                        clamp a range. Each hunk: commit sha, author, unix time, summary, renamed \
@@ -806,6 +816,7 @@ impl BasemindServer {
 
     /// Blame clamped to a specific tree-sitter symbol.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_git::BlameSymbolResponse>()",
         description = "Blame only the lines of a named symbol in a file. Resolves the symbol via \
                        the cached L1 outline (must be indexed in the current view) and feeds its \
                        line range to `blame_file`. `kind` disambiguates same-named symbols. \

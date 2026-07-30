@@ -79,6 +79,50 @@ enum CommsRpc {
     Status,
 }
 
+/// How long `daemon ensure` waits for the streamable-HTTP transport to answer after ensuring the
+/// daemon is up. Generous relative to a cold daemon spawn + bind.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+const HTTP_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Dispatch a `basemind daemon` subcommand.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub(crate) fn cmd_daemon(action: crate::DaemonCmd, json: bool) -> Result<()> {
+    match action {
+        crate::DaemonCmd::Ensure => cmd_daemon_ensure(json),
+    }
+}
+
+/// Ensure the daemon is running and its streamable-HTTP MCP transport is ready, then print the base
+/// URL. This is what a launcher/hook calls; it only implements the verb (no manifest wiring here).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn cmd_daemon_ensure(json: bool) -> Result<()> {
+    use basemind::comms::http_frontend;
+    use basemind::comms::singleton;
+
+    let paths = singleton::resolve_paths().context("resolve comms paths")?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+
+    let addr = runtime.block_on(async move {
+        singleton::ensure_daemon(&paths)
+            .await
+            .map_err(|e| anyhow::anyhow!("ensure comms daemon: {e}"))?;
+        http_frontend::await_http_ready(&paths.comms_dir, HTTP_READY_TIMEOUT)
+            .await
+            .context("wait for streamable-HTTP MCP transport")
+    })?;
+
+    let url = http_frontend::base_url(&addr);
+    if json {
+        println!("{{\"ready\":true,\"addr\":\"{addr}\",\"url\":\"{url}\"}}");
+    } else {
+        println!("{url}");
+    }
+    Ok(())
+}
+
 /// Ensure a daemon is running, spawning it detached if needed.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_start() -> Result<()> {

@@ -14,8 +14,8 @@ use super::ServerState;
 use super::helpers::json_result;
 use super::types_shells::{
     ShellBroadcastParams, ShellBroadcastResponse, ShellCaptureParams, ShellCaptureResponse, ShellEnv, ShellKillParams,
-    ShellKillResponse, ShellListParams, ShellListResponse, ShellSendParams, ShellSessionView, ShellSpawnParams,
-    ShellSpawnResponse,
+    ShellKillResponse, ShellListParams, ShellListResponse, ShellSendParams, ShellSendResponse, ShellSessionView,
+    ShellSpawnParams, ShellSpawnResponse,
 };
 use crate::shells::SessionId;
 use crate::shells::session::ShellCommand;
@@ -326,7 +326,10 @@ pub(super) async fn run_shell_send(state: &ServerState, params: ShellSendParams)
     crate::shells::session::send_text(&session, &params.text, params.enter)
         .await
         .map_err(|e| mcp_internal("send to shell session", e))?;
-    json_result(&serde_json::json!({ "session_id": id.to_string(), "sent": true }))
+    json_result(&ShellSendResponse {
+        session_id: id.to_string(),
+        sent: true,
+    })
 }
 
 /// `shell_capture`: return the visible screen text of a session's primary pane.

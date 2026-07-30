@@ -14,6 +14,7 @@ use super::types_compress::{CheckpointParams, CompressParams, DeltaParams, Detec
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_compress")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_compress::ExpandResponse>()",
         description = "Return the full source body of one symbol resolved by path + name \
             (+ optional kind) from the L1 outline byte range. This is the companion to `compress`, \
             which returns signatures only: use `compress {path}` to get the outline of a file, \
@@ -37,6 +38,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_compress::CompressResponse>()",
         description = "Code-aware token compression. \
             For indexed source files (supply `path`): returns the L1 structural outline \
             (imports + symbol signatures) from the code map — bodies are never included. \
@@ -65,6 +67,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<crate::textcompress::delta::DeltaOutcome>()",
         description = "Compute a compact +N/-M line-diff from `old` to `new` — the stateless \
             re-read primitive: when re-reading content you've already seen, emit only what \
             changed instead of the full text. Both sides are supplied inline (unlike the CLI, \
@@ -86,6 +89,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<crate::textcompress::checkpoint::Checkpoint>()",
         description = "Extract decisions, errors, and changed files from session `text` (a \
             transcript chunk or concatenated tool output) into a compact, credential-safe \
             checkpoint — persist or re-inject this instead of the whole session. \
@@ -113,6 +117,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<crate::textcompress::waste::WasteReport>()",
         description = "Flag redundant reads, repeated queries, and oversized reads from a \
             JSON-Lines tool-call `log` (one `{\"tool\", \"target\", \"bytes\"}` record per \
             line; malformed or `tool`-less lines are silently skipped). Three detectors, each \

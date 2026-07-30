@@ -184,6 +184,20 @@ pub fn run() -> Result<()> {
             });
         }
 
+        // Second MCP front-end: the stateless streamable-HTTP transport, hosted alongside the ~keep
+        // UDS relay on the SAME daemon. Additive — a bind failure logs loudly and leaves the UDS ~keep
+        // relay running; HTTP is never a precondition for comms. Tied to the same shutdown watch. ~keep
+        let broker_for_http = broker.clone();
+        let http_comms_dir = paths.comms_dir.clone();
+        let http_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                crate::comms::http_frontend::serve_http(broker_for_http, http_comms_dir, http_shutdown).await
+            {
+                tracing::error!(%error, "comms: streamable-HTTP MCP front-end failed to start");
+            }
+        });
+
         #[cfg(unix)]
         let frontend: Box<dyn CommsFrontendObj> = Box::new(UdsFrontendBox(
             crate::comms::frontend_uds::UdsFrontend::from_listener(listener, paths.socket_path.clone()),

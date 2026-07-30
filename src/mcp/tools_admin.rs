@@ -17,6 +17,7 @@ use super::types::{CacheClearParams, CacheGcParams, CacheStatsParams, RescanPara
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_admin")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::RescanResponse>()",
         description = "Re-scan the working tree (or only `paths`) in-process: re-parses changed \
             files, updates the Fjall index, rebuilds the in-RAM cache. Holds an exclusive lock — \
             other MCP queries block until it returns (<1s for ~100 files). Use after editing code \
@@ -34,7 +35,7 @@ impl BasemindServer {
         &self,
         Parameters(p): Parameters<RescanParams>,
         peer: rmcp::Peer<rmcp::RoleServer>,
-        meta: rmcp::model::Meta,
+        meta: rmcp::model::RequestMetaObject,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
@@ -48,6 +49,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::TelemetrySummaryResponse>()",
         description = "Aggregate `.basemind/telemetry.jsonl` into a usage summary: total tool \
             calls, per-tool histogram, total response bytes, estimated tokens saved vs the \
             grep+Read baseline. Optional `window` (`today` default, `1h`, `24h`, `all`) and `tool` \
@@ -67,6 +69,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_admin::CacheStatsResponse>()",
         description = "Resource footprint of basemind: on-disk size + blob accounting + process \
             RAM. Reports recursive byte sizes per component (blobs / views / lance / git-cache / \
             telemetry / git-history), the ground-truth `total_bytes` for the whole `.basemind/` \
@@ -89,6 +92,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_admin::CacheGcResponse>()",
         description = "Garbage-collect orphaned extraction blobs from `.basemind/blobs/`. Blobs are \
             content-addressed and shared across views; re-scans and branch switches orphan blobs \
             no view references. Mark-and-sweep reclaims only those (referenced blobs untouched). \
@@ -111,6 +115,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_admin::CacheClearResponse>()",
         description = "Clear a `.basemind/` cache component: \
             `blobs|views|lance|git-cache|telemetry|all`. Non-live caches (`git-cache`, \
             `telemetry`, `lance`) clear freely. `blobs` needs `confirm=true` (an in-process \

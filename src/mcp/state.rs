@@ -45,6 +45,12 @@ pub(crate) struct ServerState {
     /// (see [`super::notifications::level_ordinal`]). Defaults to `Info`. Checked before every log emit so
     /// the server honors the client's verbosity preference. Per-connection.
     pub(crate) log_level: std::sync::atomic::AtomicU8,
+    /// Whether this server advertises the lean three-tool surface (see [`super::lean`]). Resolved
+    /// ONCE at construction from `BASEMIND_MCP_LEAN` (the value does not change mid-session), so the
+    /// decision is stable and per-server rather than a per-request global-env read — which lets
+    /// several servers with different surfaces coexist in one process (integration tests). The
+    /// in-memory test serve overrides it directly.
+    pub(crate) lean: std::sync::atomic::AtomicBool,
 }
 
 impl ServerState {
@@ -61,6 +67,7 @@ impl ServerState {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
             log_level: std::sync::atomic::AtomicU8::new(super::notifications::DEFAULT_LOG_ORDINAL),
+            lean: std::sync::atomic::AtomicBool::new(super::lean::lean_mode_enabled()),
         }
     }
 }

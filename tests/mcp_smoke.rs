@@ -19,10 +19,8 @@ use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -141,6 +139,20 @@ fn raw_text(result: &CallToolResult) -> String {
         .unwrap_or_default()
 }
 
+/// SEP-2106 contract: every tool result carries `structured_content` equal to the parsed JSON
+/// text mirror, so typed clients get the same payload without re-parsing the text block.
+fn assert_structured_matches_text(result: &CallToolResult) {
+    let structured = result
+        .structured_content
+        .as_ref()
+        .expect("tool result must carry SEP-2106 structured_content");
+    assert_eq!(
+        structured,
+        &decode_text(result),
+        "structured_content must match the JSON text mirror"
+    );
+}
+
 fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     let mut params = CallToolRequestParams::new(name);
     if let Some(obj) = args.as_object() {
@@ -155,11 +167,9 @@ async fn mcp_server_exercises_representative_tools() {
     let root = dir.path();
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let instructions = service
@@ -193,12 +203,12 @@ async fn mcp_server_exercises_representative_tools() {
         "typescript should be present: {langs:?}"
     );
 
-    let body = decode_text(
-        &service
-            .call_tool(call_params("outline", json!({ "path": "a.rs", "l2": false })))
-            .await
-            .expect("outline"),
-    );
+    let outline_result = service
+        .call_tool(call_params("outline", json!({ "path": "a.rs", "l2": false })))
+        .await
+        .expect("outline");
+    assert_structured_matches_text(&outline_result);
+    let body = decode_text(&outline_result);
     let symbols = body.get("symbols").and_then(Value::as_array).expect("symbols");
     let names: Vec<String> = symbols
         .iter()
@@ -2305,11 +2315,9 @@ async fn spawn_paging_server() -> (TempDir, rmcp::service::RunningService<rmcp::
     let dir = build_paging_repo();
     let root = dir.path();
     run_scan(root);
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
     (dir, service)
 }
@@ -2728,11 +2736,9 @@ async fn reranks_search_results() {
     let dir = build_repo();
     let root = dir.path();
     run_scan(root);
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let no_rerank = service
@@ -2798,11 +2804,9 @@ async fn summarizes_via_extractive_default() {
     let root = dir.path();
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let result = service
@@ -2859,11 +2863,9 @@ async fn search_documents_accepts_post_filter_params() {
     let root = dir.path();
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let result = service
@@ -3163,14 +3165,24 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
     )
     .expect("write headless shells config");
 
-    let socket = dir.path().join("shells.sock");
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let socket_for_env = socket.clone();
-    let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-        c.env("BASEMIND_SHELLS_SOCKET", &socket_for_env);
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    // SAFETY: single-threaded test setup before the in-process server touches rmux; this is the ~keep
+    // only shells test in the binary, so no sibling test observes these vars concurrently. ~keep
+    //   - BASEMIND_SHELLS_SOCKET sandboxes the embedded daemon on a per-test socket. ~keep
+    //   - point_sdk_daemon_at makes the embedded rmux daemon re-exec the real `basemind` binary; ~keep
+    //     `current_exe()` here is the test harness, which cannot host the daemon (the child-process ~keep
+    //     serve used to supply this via `main`). ~keep
+    unsafe {
+        std::env::set_var("BASEMIND_SHELLS_SOCKET", dir.path().join("shells.sock"));
+        basemind::shells::daemon::point_sdk_daemon_at(std::path::Path::new(env!("CARGO_BIN_EXE_basemind")));
+        // The embedded rmux daemon is a cold re-exec of the ~1 GB `--features full` debug binary; ~keep
+        // paging it in on a busy machine can exceed the rmux SDK's 5 s default startup deadline (a warm ~keep
+        // binary answers in ~50 ms). Production re-execs the already-resident daemon binary, so this ~keep
+        // generous timeout only accommodates the test's cold-start; it never masks a real hang. ~keep
+        std::env::set_var("RMUX_SDK_TIMEOUT_MS", "60000");
+    }
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let spawned = service
@@ -3251,17 +3263,18 @@ async fn shell_tools_spawn_capture_kill_through_mcp() {
 /// Spawn `basemind serve` against `root`, optionally setting `BASEMIND_MCP_LEAN`, and return the
 /// connected rmcp client service.
 async fn spawn_serve(root: &Path, lean: Option<&str>) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let lean = lean.map(str::to_string);
-    let root = root.to_path_buf();
-    let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root").arg(&root).arg("serve").arg("--view").arg("working");
-        c.env_remove("BASEMIND_MCP_LEAN");
-        if let Some(v) = &lean {
-            c.env("BASEMIND_MCP_LEAN", v);
-        }
+    // Force the lean surface per-server (env-independent) so a lean and a full server can coexist
+    // in this one test process. Mirrors `lean_mode_enabled`'s truthiness for the tested values.
+    let lean_on = lean.is_some_and(|v| {
+        let v = v.trim();
+        !(v.is_empty()
+            || v.eq_ignore_ascii_case("0")
+            || v.eq_ignore_ascii_case("off")
+            || v.eq_ignore_ascii_case("false"))
     });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory_lean(root, "working", lean_on)
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 
@@ -3337,6 +3350,48 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
 ///   `invoke_tool { search_symbols }` returns the same payload as a direct `search_symbols` call.
 /// * flag UNSET → the full surface is advertised unchanged (well over the three wrappers, and
 ///   `search_symbols` is callable directly).
+/// SEP-2106: every code-map tool advertises an `output_schema` on its `Tool` definition, so a
+/// client can validate the `structured_content` it already receives. Asserts the representative
+/// always-available read-only tools carry a non-`None` output schema shaped as a JSON object.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_advertise_output_schema() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let server = spawn_serve(root, None).await;
+    let tools = server.list_all_tools().await.expect("list tools");
+
+    let schema_of = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("tool {name} present in full surface"))
+            .output_schema
+            .clone()
+    };
+    for name in [
+        "outline",
+        "search_symbols",
+        "find_references",
+        "find_callers",
+        "call_graph",
+        "find_implementations",
+        "list_files",
+        "repo_info",
+        "status",
+    ] {
+        let schema = schema_of(name).unwrap_or_else(|| panic!("tool {name} must advertise output_schema"));
+        assert_eq!(
+            schema.get("type").and_then(|v| v.as_str()),
+            Some("object"),
+            "tool {name} output_schema must be a JSON object schema: {schema:?}"
+        );
+    }
+
+    let _ = server.cancel().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
     let dir = build_repo();
@@ -3625,13 +3680,9 @@ async fn rescan_emits_logging_and_progress_notifications() {
     let logs = Arc::clone(&capture.logs);
     let progress = Arc::clone(&capture.progress);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let root_buf = root.to_path_buf();
-    let cmd = AsyncCommand::new(bin).configure(move |c| {
-        c.arg("--root").arg(&root_buf).arg("serve").arg("--view").arg("working");
-        c.env_remove("BASEMIND_MCP_LEAN");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let server = capture.serve(transport).await.expect("rmcp handshake");
 
     let mut params = call_params("rescan", json!({}));
@@ -4014,11 +4065,9 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
     git(root, &["commit", "-qm", "init"]);
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let references = decode_text(

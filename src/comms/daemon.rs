@@ -139,6 +139,24 @@ impl Drop for WorkGuard<'_> {
     }
 }
 
+/// RAII marker that one streamable-HTTP request is being served; see [`Broker::begin_http_request`].
+///
+/// The HTTP front-end is stateless — no persistent connection survives between requests — so the
+/// link refcount that pins a UDS session cannot pin an HTTP one. This guard fills that gap: while it
+/// lives the request counts as in-flight (the idle reaper skips the daemon), and both its
+/// construction and its drop stamp `last_http_ms` so a burst of short requests keeps the daemon
+/// warm across the gaps between them, exactly as `last_activity_ms` does for UDS links.
+pub struct HttpActivityGuard {
+    broker: Arc<Broker>,
+}
+
+impl Drop for HttpActivityGuard {
+    fn drop(&mut self) {
+        self.broker.http_inflight.fetch_sub(1, Ordering::SeqCst);
+        self.broker.stamp_http_activity();
+    }
+}
+
 /// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
 /// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
 /// (`archive_idle`) applies this; the creator or a human can archive sooner.
@@ -251,6 +269,17 @@ pub struct Broker {
     /// idle reaper would otherwise be free to tear down mid-sweep.
     work_inflight: AtomicUsize,
     last_activity_ms: AtomicU64,
+    /// In-flight streamable-HTTP requests (see [`Broker::begin_http_request`]). The HTTP front-end
+    /// is stateless — nothing holds a link between requests — so `link_count` cannot represent an
+    /// active HTTP client. This counter does: a request in flight pins the daemon exactly as a
+    /// connected UDS link would, so the idle reaper cannot tear the process down mid-request.
+    http_inflight: AtomicUsize,
+    /// Milliseconds (since [`started`](Self::started)) of the last streamable-HTTP request, stamped
+    /// on both the start and the end of every request. Feeds the idle predicate the same way
+    /// `last_activity_ms` does for UDS links: a request within the idle window keeps the daemon
+    /// alive even though no persistent connection is held between requests. Initial `0` reads as
+    /// "epoch" — identical to `last_activity_ms`, so an HTTP-idle daemon reaps on the normal window.
+    last_http_ms: AtomicU64,
     pub(super) next_sub: AtomicU64,
     pub(super) started: Instant,
     pub(super) version: String,
@@ -293,6 +322,8 @@ impl Broker {
             link_count: AtomicUsize::new(0),
             work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
+            http_inflight: AtomicUsize::new(0),
+            last_http_ms: AtomicU64::new(0),
             next_sub: AtomicU64::new(1),
             started: Instant::now(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -448,6 +479,46 @@ impl Broker {
         drop(link);
     }
 
+    /// Stamp "now" as the last streamable-HTTP request time. Called at the start and end of every
+    /// HTTP request via [`HttpActivityGuard`].
+    pub fn stamp_http_activity(&self) {
+        self.last_http_ms
+            .store(self.started.elapsed().as_millis() as u64, Ordering::SeqCst);
+    }
+
+    /// Mark one streamable-HTTP request as in flight for as long as the returned guard lives, and
+    /// stamp HTTP activity now. See [`HttpActivityGuard`] and [`Broker::is_idle_for`].
+    pub fn begin_http_request(self: &Arc<Self>) -> HttpActivityGuard {
+        self.http_inflight.fetch_add(1, Ordering::SeqCst);
+        self.stamp_http_activity();
+        HttpActivityGuard { broker: self.clone() }
+    }
+
+    /// Resolve a repo `root` to its daemon-hosted [`SharedReadStack`](crate::mcp::SharedReadStack),
+    /// building it on first touch. This is the HTTP front-end's per-request seam: it mirrors exactly
+    /// what [`serve_relay_connection`](Self::serve_relay_connection) does for a UDS relay client —
+    /// same host backend (the workspace pool) and git-history host (this broker) — so an HTTP request
+    /// and a relay connection to the same workspace share one resident read stack.
+    pub(crate) async fn host_read_stack(
+        self: &Arc<Self>,
+        root: &std::path::Path,
+    ) -> anyhow::Result<Arc<crate::mcp::SharedReadStack>> {
+        let host = Arc::clone(&self.workspaces) as Arc<dyn crate::mcp::HostBackend>;
+        let git_history_host = Arc::clone(self) as Arc<dyn crate::git_history::remote::HistoryHost>;
+        self.workspaces
+            .get_or_build_serve_state(root, host, git_history_host)
+            .await
+    }
+
+    /// Register one HTTP request against a hosted workspace, returning a guard that keeps the
+    /// eviction sweep from dropping the workspace's shared read stack while the request runs.
+    pub(crate) fn begin_workspace_conn(
+        &self,
+        root: &std::path::Path,
+    ) -> Result<super::workspace_pool::ServeConnGuard, String> {
+        self.workspaces.begin_conn(root).map_err(|error| error.to_string())
+    }
+
     /// Mark a unit of daemon-internal work as running for as long as the returned guard lives, so
     /// the idle reaper cannot mistake it for idleness. See [`WorkGuard`].
     pub fn begin_work(&self) -> WorkGuard<'_> {
@@ -462,7 +533,7 @@ impl Broker {
 
     /// What "idle" MEANS — and why each clause is here.
     ///
-    /// A daemon is idle only when *nothing can be waiting on it*. Three independent things can make
+    /// A daemon is idle only when *nothing can be waiting on it*. Four independent things can make
     /// that false, and socket traffic is NOT one of them:
     ///
     /// 1. **A connected link** (`link_count`). This is the load-bearing clause, and it is a
@@ -474,11 +545,16 @@ impl Broker {
     /// 2. **Daemon-internal work** (`work_inflight`). The one class of work no link covers: sweeps
     ///    the daemon starts on its own, above all the cross-workspace blob GC, which runs with no
     ///    client attached and must not be torn mid-sweep. [`Broker::begin_work`] pins these.
-    /// 3. **An already-started drain.** Draining/Stopped is terminal; re-reaping is meaningless.
+    /// 3. **A streamable-HTTP request in flight** (`http_inflight`). The HTTP front-end is stateless
+    ///    — no persistent connection survives between requests — so the link refcount cannot pin it.
+    ///    [`Broker::begin_http_request`] fills the gap, and also stamps `last_http_ms` so a burst of
+    ///    short requests keeps the daemon warm across the gaps between them.
+    /// 4. **An already-started drain.** Draining/Stopped is terminal; re-reaping is meaningless.
     ///
-    /// Only once all three are clear does the elapsed-time test apply, and `last_activity_ms` is
-    /// stamped on every link connect/disconnect — so the window measures time since the daemon last
-    /// had anyone to serve, not time since the last packet.
+    /// Only once all four are clear does the elapsed-time test apply. `last_activity_ms` is stamped
+    /// on every link connect/disconnect and `last_http_ms` on every HTTP request, so the window
+    /// measures time since the daemon last had *anyone* to serve — over either front-end — not time
+    /// since the last packet. See [`Broker::elapsed_since_activity`].
     pub async fn is_idle_for(&self, idle_for: Duration) -> bool {
         if self.link_count.load(Ordering::SeqCst) != 0 {
             return false;
@@ -486,12 +562,28 @@ impl Broker {
         if self.work_inflight.load(Ordering::SeqCst) != 0 {
             return false;
         }
+        // A stateless HTTP request in flight pins the daemon just like a connected UDS link. ~keep
+        if self.http_inflight.load(Ordering::SeqCst) != 0 {
+            return false;
+        }
         if matches!(self.state().await, LifecycleState::Draining | LifecycleState::Stopped) {
             return false;
         }
+        self.elapsed_since_activity() >= idle_for.as_millis() as u64
+    }
+
+    /// Milliseconds since the daemon last had anyone to serve — the max recency across UDS links
+    /// (`last_activity_ms`) and streamable-HTTP requests (`last_http_ms`). Taking the more-recent of
+    /// the two is what stops the reaper from tearing down a daemon that is busy over HTTP but silent
+    /// on the socket (or vice versa). Both fields start at `0` ("epoch"), so a daemon that has never
+    /// seen either kind of traffic still reaps on the normal window.
+    fn elapsed_since_activity(&self) -> u64 {
         let now_ms = self.started.elapsed().as_millis() as u64;
-        let last = self.last_activity_ms.load(Ordering::SeqCst);
-        now_ms.saturating_sub(last) >= idle_for.as_millis() as u64
+        let last = self
+            .last_activity_ms
+            .load(Ordering::SeqCst)
+            .max(self.last_http_ms.load(Ordering::SeqCst));
+        now_ms.saturating_sub(last)
     }
 
     /// The idle reaper's ONE entry point: re-check idleness and flip to `Draining` under the
@@ -515,12 +607,13 @@ impl Broker {
             if matches!(reg.state, LifecycleState::Draining | LifecycleState::Stopped) {
                 return false;
             }
-            if self.link_count.load(Ordering::SeqCst) != 0 || self.work_inflight.load(Ordering::SeqCst) != 0 {
+            if self.link_count.load(Ordering::SeqCst) != 0
+                || self.work_inflight.load(Ordering::SeqCst) != 0
+                || self.http_inflight.load(Ordering::SeqCst) != 0
+            {
                 return false;
             }
-            let now_ms = self.started.elapsed().as_millis() as u64;
-            let last = self.last_activity_ms.load(Ordering::SeqCst);
-            if now_ms.saturating_sub(last) < idle_for.as_millis() as u64 {
+            if self.elapsed_since_activity() < idle_for.as_millis() as u64 {
                 return false;
             }
             reg.state = LifecycleState::Draining;

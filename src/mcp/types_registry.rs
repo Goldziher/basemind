@@ -21,7 +21,7 @@ pub struct WorkspacesParams {
 }
 
 /// One workspace row in a `workspaces` response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspaceDto {
     /// Stable workspace key (blake3 of the canonical root); also the cache-dir identity.
     pub key: String,
@@ -56,7 +56,7 @@ impl From<&WorkspaceRecord> for WorkspaceDto {
 }
 
 /// Response for `workspaces`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspacesResponse {
     /// Number of workspaces returned.
     pub total: usize,
@@ -75,7 +75,7 @@ pub struct WorktreesParams {
 }
 
 /// One worktree row in a `worktrees` response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreeDto {
     /// Owning repo id.
     pub repo_id: String,
@@ -114,7 +114,7 @@ impl From<&WorktreeRecord> for WorktreeDto {
 }
 
 /// Response for `worktrees`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreesResponse {
     /// The repo id queried.
     pub repo_id: String,
@@ -135,7 +135,7 @@ pub struct BranchesParams {
 }
 
 /// One branch row in a `branches` response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct BranchDto {
     /// Owning repo id.
     pub repo_id: String,
@@ -159,7 +159,7 @@ impl From<&BranchRecord> for BranchDto {
 }
 
 /// Response for `branches`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct BranchesResponse {
     /// The repo id queried.
     pub repo_id: String,
@@ -194,7 +194,7 @@ pub struct WorktreeReleaseParams {
 }
 
 /// Response for `worktree_claim` / `worktree_release`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreeClaimResponse {
     /// The owning repo id.
     pub repo_id: String,

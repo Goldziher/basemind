@@ -1,10 +1,13 @@
 //! Request / response shapes for the memory MCP tools (`memory_put` / `_get` / `_list` /
 //! `_search` / `_delete`).
 //!
-//! Split out of `types.rs` to keep that file within the per-file size budget. Parameter structs
-//! derive `Deserialize + Serialize + JsonSchema`; response/record structs are `#[cfg(feature =
-//! "memory")]`-gated since they only exist when the LanceDB-backed memory store is compiled in.
-//! The [`Visibility`] tier selector is always compiled — it is part of every memory param shape.
+//! Split out of `types.rs` to keep that file within the per-file size budget. Parameter and
+//! response structs derive `Serialize + JsonSchema` and are always compiled so each tool can
+//! advertise a SEP-2106 `output_schema` even without the `memory` feature (the response structs
+//! carry only plain fields — nothing behind the gate leaks in). The blob-record types
+//! (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) stay `#[cfg(feature = "memory")]`-gated
+//! since they only exist when the LanceDB-backed memory store is compiled in. The [`Visibility`]
+//! tier selector is always compiled — it is part of every memory param shape.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
@@ -50,8 +53,7 @@ pub struct MemoryPutParams {
     pub visibility: Visibility,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryPutResponse {
     pub key: String,
     pub created_at: i64,
@@ -67,8 +69,7 @@ pub struct MemoryGetParams {
     pub visibility: Visibility,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(super) struct MemoryEntry {
     pub key: String,
     pub value: String,
@@ -94,8 +95,7 @@ pub struct MemoryListParams {
     pub visibility: Visibility,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryListResponse {
     pub total: usize,
     pub truncated: bool,
@@ -127,8 +127,7 @@ pub struct MemorySearchParams {
     pub visibility: Visibility,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemorySearchHit {
     pub key: String,
     pub value: String,
@@ -136,8 +135,7 @@ pub(super) struct MemorySearchHit {
     pub distance: f32,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemorySearchResponse {
     pub query: String,
     pub hits: Vec<MemorySearchHit>,
@@ -159,8 +157,7 @@ pub struct MemoryDeleteParams {
     pub visibility: Visibility,
 }
 
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryDeleteResponse {
     pub deleted: bool,
 }

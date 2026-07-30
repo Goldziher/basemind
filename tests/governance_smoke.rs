@@ -32,10 +32,8 @@ use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 /// Run a `git` command in `repo`, propagating identity env vars so CI works.
 fn git(repo: &Path, args: &[&str]) {
@@ -213,11 +211,9 @@ fn build_two_cluster_repo() -> TempDir {
 
 /// Spawn a `basemind serve` subprocess and return the rmcp service handle.
 async fn spawn_serve(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 

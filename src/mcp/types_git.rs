@@ -167,7 +167,7 @@ pub struct BlameSymbolParams {
     pub cursor: Option<Cursor>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct CommitView {
     pub sha: String,
     pub short_sha: String,
@@ -178,7 +178,7 @@ pub(in crate::mcp) struct CommitView {
     pub files: Option<Vec<CommitFileView>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct CommitFileView {
     pub path: RelPath,
     pub change: &'static str,
@@ -186,7 +186,7 @@ pub(in crate::mcp) struct CommitFileView {
 
 /// A `search_git_history` hit — carries the author email and full commit body (the fields the FTS
 /// index adds over the other git tools' [`CommitView`]).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct GitCommitHit {
     pub sha: String,
     pub short_sha: String,
@@ -200,7 +200,7 @@ pub(in crate::mcp) struct GitCommitHit {
     pub body: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SearchGitHistoryResponse {
     pub commits: Vec<GitCommitHit>,
     /// `true` when served from the bounded live-walk fallback (the git-history index wasn't fresh),
@@ -221,7 +221,7 @@ pub(in crate::mcp) struct SearchGitHistoryResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct WorkingTreeStatusView {
     pub staged_added: Vec<RelPath>,
     pub staged_modified: Vec<RelPath>,
@@ -238,7 +238,7 @@ pub(in crate::mcp) struct WorkingTreeStatusView {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct RecentChangesResponse {
     pub commits: Vec<CommitView>,
     /// `true` when the walk may have stopped early (today: shallow clone). Agents should
@@ -263,7 +263,7 @@ pub(in crate::mcp) struct RecentChangesResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct CommitsTouchingResponse {
     pub path: RelPath,
     pub commits: Vec<CommitView>,
@@ -287,13 +287,13 @@ pub(in crate::mcp) struct CommitsTouchingResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct DiffSymbolView {
     pub name: String,
     pub kind: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct DiffOutlineResponse {
     pub path: RelPath,
     pub rev: String,
@@ -311,7 +311,7 @@ pub(in crate::mcp) struct DiffOutlineResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct BlameHunkView {
     pub commit_sha: String,
     pub short_sha: String,
@@ -325,7 +325,7 @@ pub(in crate::mcp) struct BlameHunkView {
     pub source_path: Option<RelPath>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct BlameResponse {
     pub path: RelPath,
     pub suspect_sha: String,
@@ -347,7 +347,7 @@ pub(in crate::mcp) struct BlameResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct BlameSymbolResponse {
     pub path: RelPath,
     pub suspect_sha: String,
@@ -373,7 +373,7 @@ pub(in crate::mcp) struct BlameSymbolResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct FindCommitsByPathResponse {
     pub pattern: String,
     pub window_inspected: u32,
@@ -394,7 +394,7 @@ pub(in crate::mcp) struct FindCommitsByPathResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct HotFileEntry {
     pub path: RelPath,
     pub commits_touching: u32,
@@ -403,7 +403,7 @@ pub(in crate::mcp) struct HotFileEntry {
     pub deleted: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct HotFilesResponse {
     pub window_inspected: u32,
     pub total_files_changed: u32,
@@ -417,7 +417,7 @@ pub(in crate::mcp) struct HotFilesResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct HunkView {
     pub kind: &'static str,
     pub old_line_start: u32,
@@ -427,7 +427,7 @@ pub(in crate::mcp) struct HunkView {
     pub text: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct DiffFileResponse {
     pub path: RelPath,
     pub rev_old: String,
@@ -444,7 +444,7 @@ pub(in crate::mcp) struct DiffFileResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SymbolHistoryEntry {
     pub sha: String,
     pub short_sha: String,
@@ -479,7 +479,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(in crate::mcp) struct SymbolHistoryResponse {
     pub path: RelPath,
     pub name: String,

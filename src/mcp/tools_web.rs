@@ -21,6 +21,7 @@ use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_web")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_web::WebScrapeResponse>()",
         description = "Fetch one http/https URL, extract markdown, chunk + embed into the documents \
         vector store (scope `web:<host>`). Respects robots.txt by default. `index=false` fetches \
         metadata only, skipping embedding. Use to pull a known doc/spec/blog post into RAG. \
@@ -44,6 +45,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_web::WebCrawlResponse>()",
         description = "Crawl a site from `url` to the configured depth; index each page into the \
         documents vector store under one shared scope. Bounded by `[crawl].max_pages` / \
         `max_depth` in basemind.toml (per-call overrides advisory). Respects robots.txt by \
@@ -67,6 +69,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_web::WebMapResponse>()",
         description = "Discover URLs on a site via sitemap + link map without fetching page bodies. \
         Returns each URL with lastmod / changefreq / priority hints when present. Use to scope a \
         follow-up `web_crawl` or pick targeted `web_scrape` calls. Capped by `limit` (default 100, \

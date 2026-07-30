@@ -5,12 +5,18 @@
 
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CompleteRequestParams, CompleteResult, GetPromptRequestParams, GetPromptResult, ListPromptsResult,
+    CacheScope, CompleteRequestParams, CompleteResult, GetPromptRequestParams, GetPromptResponse, ListPromptsResult,
     PaginatedRequestParams, ServerCapabilities, ServerInfo,
 };
 use rmcp::tool_handler;
 
-use super::{BasemindServer, lean, notifications};
+use super::{BasemindServer, lean, notifications, tasks};
+
+/// SEP-2549 cache TTL advertised on `tools/list` and `prompts/list`. The advertised tool and prompt
+/// sets are fixed for the lifetime of a server process (they change only with the binary/schema, not
+/// with the index), so a compliant client can safely cache the schemas for this window instead of
+/// re-listing every session. Scoped `Public` because the surface is not client- or user-specific.
+pub(super) const LIST_CACHE_TTL_MS: u64 = 300_000;
 
 #[tool_handler(router = self.tool_router.clone())]
 impl ServerHandler for BasemindServer {
@@ -24,35 +30,76 @@ impl ServerHandler for BasemindServer {
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
-        if lean::lean_mode_enabled() {
+        if self.lean_enabled() {
             return Ok(lean::lean_list_tools());
         }
-        Ok(rmcp::model::ListToolsResult {
-            tools: self.tool_router.list_all(),
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(
+            rmcp::model::ListToolsResult::with_all_items(self.tool_router.list_all())
+                .with_ttl_ms(LIST_CACHE_TTL_MS)
+                .with_cache_scope(CacheScope::Public),
+        )
     }
 
     /// `tools/call`. Default: dispatch through the static router exactly as the macro would.
     /// In lean mode, route the three wrapper tools through `lean::lean_call_tool`, which itself
     /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
+    ///
+    /// SEP-2663 Tasks: before the synchronous dispatch, a slow tool ([`tasks::SLOW_TOOLS`]) called by
+    /// a client that declared the tasks extension is offloaded onto the [`TaskManager`] and answered
+    /// with a pollable task handle instead of a blocked call. Every other case takes the normal path.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<rmcp::model::CallToolResult, rmcp::ErrorData> {
-        if lean::lean_mode_enabled() {
+    ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        if self.lean_enabled() {
             return lean::lean_call_tool(self, &self.tool_router, request, context).await;
+        }
+        let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
+        if client_supports_tasks && tasks::is_slow_tool(&request.name) {
+            return Ok(rmcp::model::CallToolResponse::Task(tasks::spawn_slow_tool(
+                self, request, context,
+            )));
         }
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
         self.tool_router.call(tcc).await
     }
 
+    /// SEP-2663 `tasks/get`: report the current state of a spawned task. Thin delegation to the
+    /// [`TaskManager`]; an unknown `task_id` surfaces as `-32602 Invalid params`.
+    async fn get_task(
+        &self,
+        request: rmcp::model::GetTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::GetTaskResult, rmcp::ErrorData> {
+        Ok(rmcp::model::GetTaskResult::new(self.tasks.get_task(&request.task_id)?))
+    }
+
+    /// SEP-2663 `tasks/update`: deliver responses to a task's outstanding input requests. basemind's
+    /// slow tools do not currently request mid-task input, so this is a compliant no-op ack for tasks
+    /// with no pending inputs; the delegation keeps the door open for future `request_input` callers.
+    async fn update_task(
+        &self,
+        request: rmcp::model::UpdateTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        self.tasks.update_task(&request.task_id, request.input_responses)
+    }
+
+    /// SEP-2663 `tasks/cancel`: cooperative cancellation. Acks immediately; the running tool observes
+    /// the request at its next await point (see [`tasks::spawn_slow_tool`]) and settles the task.
+    async fn cancel_task(
+        &self,
+        request: rmcp::model::CancelTaskParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<(), rmcp::ErrorData> {
+        self.tasks.cancel_task(&request.task_id)
+    }
+
     /// `get_tool` introspection. Default mirrors the macro (router lookup); in lean mode it
     /// reports the three wrapper tools so task-support validation matches the advertised surface.
     fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
-        if lean::lean_mode_enabled() {
+        if self.lean_enabled() {
             return lean::lean_get_tool(name);
         }
         self.tool_router.get(name).cloned()
@@ -66,11 +113,9 @@ impl ServerHandler for BasemindServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<ListPromptsResult, rmcp::ErrorData> {
-        Ok(ListPromptsResult {
-            prompts: self.prompt_router.list_all(),
-            meta: None,
-            next_cursor: None,
-        })
+        Ok(ListPromptsResult::with_all_items(self.prompt_router.list_all())
+            .with_ttl_ms(LIST_CACHE_TTL_MS)
+            .with_cache_scope(CacheScope::Public))
     }
 
     /// `prompts/get`: render one prompt template with its arguments, via the prompt router.
@@ -78,7 +123,7 @@ impl ServerHandler for BasemindServer {
         &self,
         request: GetPromptRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<GetPromptResult, rmcp::ErrorData> {
+    ) -> Result<GetPromptResponse, rmcp::ErrorData> {
         let prompt_context =
             rmcp::handler::server::prompt::PromptContext::new(self, request.name, request.arguments, context);
         self.prompt_router.get_prompt(prompt_context).await
@@ -118,6 +163,7 @@ impl ServerHandler for BasemindServer {
                 .enable_prompts()
                 .enable_completions()
                 .enable_logging()
+                .enable_tasks()
                 .build(),
         )
         .with_instructions(

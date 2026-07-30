@@ -26,9 +26,7 @@ use basemind::comms::ids::AgentId;
 use basemind::comms::singleton::{CommsPaths, comms_socket_path, probe_alive};
 use basemind::git_history::proto::{GitHistoryOp, GitHistoryReply, SyncOutcome};
 use rmcp::ServiceExt;
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 /// A commit-message body token that exists ONLY in a commit body — never in a summary, an author
 /// name, or a file. The live-walk fallback in `search_git_history` searches summaries + authors of a
@@ -81,13 +79,13 @@ fn build_repo() -> TempDir {
     dir
 }
 
-/// Spawn a real `basemind serve` (a `comms` build ⇒ `read_only` + `daemon_writer`) and handshake.
+/// Serve in-process as a `read_only` + `daemon_writer` server — the exact shape a `comms`-build
+/// `basemind serve` takes, so it holds no fjall index / git-history lock and forwards writes to the
+/// daemon (the property these tests assert).
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory_daemon_writer(root, "working")
+        .await
+        .expect("in-memory daemon-writer serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 

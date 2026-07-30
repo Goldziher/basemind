@@ -47,6 +47,8 @@ mod helpers_web;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod host;
 mod identity;
+#[cfg(feature = "test-support")]
+pub mod in_memory;
 mod kneedle;
 mod lean;
 mod lenient;
@@ -59,10 +61,12 @@ mod notifications;
 mod prompts;
 #[cfg(feature = "memory")]
 pub(crate) mod proposals_ops;
+mod router_cache;
 mod savings;
 mod server_handler;
 mod shared_state;
 mod state;
+mod tasks;
 mod telemetry;
 mod tokens;
 mod tools;
@@ -108,6 +112,7 @@ use std::sync::{Arc, Mutex};
 use lru::LruCache;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::handler::server::tool::ToolRouter;
+use rmcp::task_manager::TaskManager;
 
 use crate::extract::FileMapL1;
 use crate::lang::LangId;
@@ -115,6 +120,10 @@ use crate::store::Store;
 
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub(crate) use host::HostBackend;
+#[cfg(all(feature = "test-support", feature = "comms", any(unix, windows)))]
+pub use in_memory::serve_in_memory_daemon_writer;
+#[cfg(feature = "test-support")]
+pub use in_memory::{serve_in_memory, serve_in_memory_lean};
 pub(crate) use shared_state::SharedReadStack;
 pub(crate) use state::{Lifecycle, MapCache, ServerState};
 
@@ -157,18 +166,6 @@ pub mod params {
 
 pub use params::Parameters;
 
-/// Whether `basemind serve` must run the MCP server IN-PROCESS rather than relaying to the shared
-/// daemon, because this invocation carries per-client configuration the daemon cannot honor.
-///
-/// Today that is the lean tool surface (`BASEMIND_MCP_LEAN`): the surface is decided from the
-/// serving process's own environment, but a shared daemon advertises the full surface identically to
-/// every connection, so a lean client must serve itself. `serve` checks this before dialing the
-/// daemon and falls back to the in-process path when it is true.
-#[cfg(all(feature = "comms", any(unix, windows)))]
-pub fn serve_requires_in_process() -> bool {
-    lean::lean_mode_enabled()
-}
-
 /// In-memory cache for `symbol_history`-style workflows: given a blob's git OID and the
 /// language we'd extract with, hold onto the parsed `FileMapL1` and the source bytes so
 /// repeated visits to the same blob (across commits, modes, or tool calls) skip the
@@ -203,6 +200,9 @@ pub struct BasemindServer {
     /// Reusable prompt templates (`prompts/list` + `prompts/get`). Built by the
     /// `#[prompt_router]` macro in [`prompts`]; `list_prompts` / `get_prompt` delegate here.
     prompt_router: PromptRouter<Self>,
+    /// SEP-2663 Tasks extension executor. Slow tools (see [`tasks::SLOW_TOOLS`]) offload their work
+    /// here for task-capable clients; cheaply cloneable and shared across every clone of the server.
+    tasks: TaskManager,
 }
 
 /// Construction-time switches for [`BasemindServer`].
@@ -350,6 +350,7 @@ impl BasemindServer {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             comms_clients: tokio::sync::Mutex::new(ahash::AHashMap::new()),
             log_level: std::sync::atomic::AtomicU8::new(notifications::DEFAULT_LOG_ORDINAL),
+            lean: std::sync::atomic::AtomicBool::new(lean::lean_mode_enabled()),
         });
         if options.background {
             let view_is_working = {
@@ -378,16 +379,24 @@ impl BasemindServer {
         }
         Self {
             state,
-            tool_router: Self::assemble_router(),
-            prompt_router: Self::prompt_router(),
+            tool_router: router_cache::cached_tool_router(),
+            prompt_router: router_cache::cached_prompt_router(),
+            tasks: TaskManager::new(),
         }
     }
 
-    /// Assemble the full tool router (every feature-gated tool group). Shared by
-    /// [`new_with_options`](Self::new_with_options) and [`from_shared`](Self::from_shared) so a
-    /// daemon-hosted per-connection server exposes exactly the same tool surface as an in-process
-    /// one — the router is pure (no per-connection state), so building it per connection is a µs
-    /// pointer-assembly, not a rebuild of anything heavy.
+    /// Whether this server advertises the lean three-tool surface. Resolved once at construction
+    /// (see [`ServerState::lean`]) and read here per request, so the decision is per-server rather
+    /// than a global-env read.
+    pub(crate) fn lean_enabled(&self) -> bool {
+        self.state.lean.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Assemble the full tool router (every feature-gated tool group). Pure and argument-free —
+    /// its output is invariant for the life of the process, so [`new_with_options`]
+    /// (Self::new_with_options) and [`from_shared`](Self::from_shared) never call this directly;
+    /// they go through [`router_cache::cached_tool_router`], which builds it once behind a
+    /// `OnceLock` and hands back a clone. This is the one-time builder the cache calls into.
     fn assemble_router() -> ToolRouter<Self> {
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
@@ -427,8 +436,9 @@ impl BasemindServer {
     pub(crate) fn from_shared(shared: Arc<SharedReadStack>, agent_id: String) -> Self {
         Self {
             state: Arc::new(ServerState::for_connection(shared, agent_id)),
-            tool_router: Self::assemble_router(),
-            prompt_router: Self::prompt_router(),
+            tool_router: router_cache::cached_tool_router(),
+            prompt_router: router_cache::cached_prompt_router(),
+            tasks: TaskManager::new(),
         }
     }
 

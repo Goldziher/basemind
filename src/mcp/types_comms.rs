@@ -37,7 +37,7 @@ pub struct AgentRegisterParams {
 }
 
 /// Response for `agent_register`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentRegisterResponse {
     /// The agent id the card was registered under.
     pub agent_id: String,
@@ -58,7 +58,7 @@ pub struct AgentListParams {
 }
 
 /// One agent row in an `agent_list` response (front-matter view of an `AgentRecord`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentSummary {
     /// Stable agent identity.
     pub agent_id: String,
@@ -77,7 +77,7 @@ pub(super) struct AgentSummary {
 }
 
 /// Response for `agent_list`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AgentListResponse {
     /// Number of agents returned.
     pub total: usize,
@@ -86,7 +86,7 @@ pub(super) struct AgentListResponse {
 }
 
 /// A thread front-matter view shared by `thread_start` and `thread_list`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadSummary {
     /// Stable thread id.
     pub id: String,
@@ -152,7 +152,7 @@ pub struct ThreadStartParams {
 }
 
 /// Response for `thread_start`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadStartResponse {
     /// The created thread.
     pub thread: ThreadSummary,
@@ -175,7 +175,7 @@ pub struct ThreadListParams {
 }
 
 /// Response for `thread_list`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadListResponse {
     /// Number of threads returned.
     pub total: usize,
@@ -204,7 +204,7 @@ pub struct ThreadLeaveParams {
 }
 
 /// Response for `thread_join` / `thread_leave`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMembershipResponse {
     /// The thread acted on.
     pub thread: String,
@@ -227,7 +227,7 @@ pub struct ThreadMembersParams {
 }
 
 /// Response for `thread_members`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMembersResponse {
     /// The thread queried.
     pub thread: String,
@@ -248,7 +248,7 @@ pub struct ThreadMemberParams {
 }
 
 /// Response for `thread_add_member` / `thread_remove_member`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadMemberChangeResponse {
     /// The thread acted on.
     pub thread: String,
@@ -273,7 +273,7 @@ pub struct ThreadArchiveParams {
 }
 
 /// Response for `thread_archive`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadArchiveResponse {
     /// The thread archived.
     pub thread: String,
@@ -303,7 +303,7 @@ pub struct ThreadPostParams {
 }
 
 /// Response for `thread_post`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadPostResponse {
     /// The id of the message just stored.
     pub message_id: String,
@@ -330,7 +330,7 @@ pub struct ThreadHistoryParams {
 
 /// Front-matter view of a message. Surfaces [`MessageMeta`] front-matter plus its per-thread
 /// `seq` — NO body. Fetch the body with `message_get`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MessageFrontMatter {
     /// Globally unique message id (pass to `message_get` or `inbox_ack`).
     pub id: String,
@@ -377,7 +377,7 @@ impl MessageFrontMatter {
 }
 
 /// Response for `thread_history`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ThreadHistoryResponse {
     /// Number of messages in this page.
     pub total: usize,
@@ -399,7 +399,7 @@ pub struct MessageGetParams {
 }
 
 /// Response for `message_get`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MessageGetResponse {
     /// The message id queried.
     pub message_id: String,
@@ -431,7 +431,7 @@ pub struct InboxReadParams {
 }
 
 /// Response for `inbox_read`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxReadResponse {
     /// Number of messages in this page.
     pub total: usize,
@@ -468,7 +468,7 @@ pub struct InboxAckParams {
 }
 
 /// One `(thread, new_seq)` cursor advance recorded by `inbox_ack`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct CursorAdvance {
     /// The thread whose per-agent read cursor advanced.
     pub thread: String,
@@ -477,7 +477,7 @@ pub(super) struct CursorAdvance {
 }
 
 /// Response for `inbox_ack`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxAckResponse {
     /// Number of message ids that resolved and were acked.
     pub acked: usize,
@@ -509,7 +509,7 @@ pub struct InboxWaitParams {
 }
 
 /// Response for `inbox_wait`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct InboxWaitResponse {
     /// True when the call returned because `timeout_secs` elapsed with nothing new to report.
     pub timed_out: bool,

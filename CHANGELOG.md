@@ -8,6 +8,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.23.0] — 2026-07-30
+
+Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`** (`RELEASE_MINOR`
+22 → 23). Rebuild is automatic from source; no action needed.
+
+### Added
+
+- **Streamable-HTTP MCP transport (rmcp 3.0, SEP-2567), hosted by the comms daemon.** The single
+  machine-global daemon now serves the rmcp router over a stateless loopback-HTTP front-end
+  (`127.0.0.1:51786` by default, `BASEMIND_HTTP_ADDR` to override; the bound address is published to
+  `<comms_dir>/http.addr`) in addition to its Unix-socket relay. HTTP-native clients dial
+  `http://127.0.0.1:<port>/mcp?root=<repo>` directly — no per-session server process. `basemind
+  daemon ensure` brings the daemon + transport up and prints the URL.
+- **Structured tool output (SEP-2106).** Every tool advertises an `outputSchema` and returns
+  `structuredContent` alongside the text mirror, so compliant clients get typed results.
+- **`tools/list` / `prompts/list` cache hints (SEP-2549)** — the tool surface is static per process,
+  so the daemon advertises a TTL + public cache scope and clients stop re-listing every session.
+- **Long-running tools as pollable tasks (SEP-2663).** Slow tools (`rescan`, and the feature-gated
+  `search_documents` / `web_scrape` / `web_crawl` / `web_map`) run as cancellable tasks when the
+  client declares the Tasks capability; other clients keep the synchronous path.
+
+### Changed
+
+- **rmcp 2.2 → 3.0**, plus `arrow`, `lancedb`, `xberg`, `crawlberg`, and `jsonschema` dependency
+  bumps.
+- **`basemind serve` is now a thin stdio↔daemon relay, not a server in its own right.** It ensures
+  the daemon (the sole rmcp host and Fjall writer) and byte-pumps stdin/stdout to the daemon's relay
+  socket. Every stdio MCP client keeps working with no config change; the daemon outlives any single
+  client. The Claude Code and Cursor plugins switch to the HTTP transport (`type: http`) and dial the
+  daemon directly.
+
+### Fixed
+
+- **The MCP transport "drops and never returns" hang.** `serve` previously fell back to an
+  in-process stdio server whose lifetime was bound to the stdin pipe, so a slow tool call that timed
+  out and closed stdin killed the whole server — and it did not come back until the client respawned
+  it. The daemon-hosted model decouples server lifetime from any single connection: a dropped client
+  ends only the throwaway relay (or a single stateless HTTP request), and the warm daemon serves the
+  next connection immediately.
+
 ## [0.22.8] — 2026-07-27
 
 ### Changed

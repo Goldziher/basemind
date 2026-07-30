@@ -29,6 +29,7 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_code")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_code::SearchCodeResponse>()",
         description = "Search indexed source-code chunks. `mode` picks the strategy: \"hybrid\" \
         (default) fuses three lanes via Reciprocal Rank Fusion — vector KNN (semantic), native BM25 \
         (keyword), and an exact symbol lane that resolves an identifier-shaped query to the chunks \
@@ -74,6 +75,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_code::GetChunkResponse>()",
         description = "Fetch one code chunk's source body by `path` (from a `search_code` hit). \
         Disambiguate within a file with `chunk_id` or `byte_start`; both may be omitted when the \
         file has a single chunk. Returns the chunk text plus its symbol, signature, doc, and \

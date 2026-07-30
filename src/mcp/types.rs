@@ -245,7 +245,7 @@ pub(super) fn default_true() -> bool {
     true
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct OutlineResponse {
     pub path: RelPath,
     pub language: String,
@@ -276,7 +276,7 @@ pub(super) struct OutlineResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SymbolView {
     pub name: String,
     pub kind: &'static str,
@@ -288,7 +288,7 @@ pub(super) struct SymbolView {
     pub signature: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ImportView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
@@ -296,19 +296,19 @@ pub(super) struct ImportView {
     pub start_byte: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct CallView {
     pub callee: String,
     pub start_byte: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DocView {
     pub text: String,
     pub start_byte: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchHitView {
     pub path: RelPath,
     pub name: String,
@@ -319,7 +319,7 @@ pub(super) struct SearchHitView {
     pub signature: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct SearchResponse {
     /// Matches scanned up to the per-call cap (`limit * 64`, min 2000) — NOT the global
     /// corpus total. When the cap is hit this is a lower bound; see `total_is_partial`.
@@ -353,14 +353,14 @@ pub(super) struct SearchResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ListFilesEntry {
     pub path: RelPath,
     pub language: String,
     pub size_bytes: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ListFilesResponse {
     pub total: usize,
     pub returned: usize,
@@ -392,7 +392,7 @@ pub(super) struct ListFilesResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindFilesEntry {
     pub path: RelPath,
     pub language: String,
@@ -402,7 +402,7 @@ pub(super) struct FindFilesEntry {
     pub score: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindFilesResponse {
     pub total: usize,
     pub returned: usize,
@@ -435,7 +435,7 @@ pub(super) struct FindFilesResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DependentsResponse {
     pub module: String,
     pub paths: Vec<RelPath>,
@@ -451,7 +451,7 @@ pub(super) struct DependentsResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct StatusResponse {
     pub file_count: usize,
     /// Count of content-addressed blob files in `.basemind/blobs/` (one `.fm.msgpack` per
@@ -512,7 +512,7 @@ pub(super) struct StatusResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ReferenceHit {
     pub path: RelPath,
     /// 1-based.
@@ -536,7 +536,7 @@ pub(super) struct ReferenceHit {
     pub resolved: Option<bool>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindReferencesResponse {
     pub name: String,
     pub total: u32,
@@ -563,7 +563,7 @@ pub(super) struct FindReferencesResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct FindCallersResponse {
     /// Echo of the definition we resolved before scanning for callers.
     pub definition: Option<DefinitionView>,
@@ -602,7 +602,7 @@ pub(super) struct FindCallersResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DefinitionView {
     pub path: RelPath,
     pub name: String,
@@ -612,7 +612,7 @@ pub(super) struct DefinitionView {
 }
 
 /// A resolved definition site returned by `goto_definition`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct DefinitionLocation {
     pub path: RelPath,
     /// 1-based.
@@ -624,7 +624,7 @@ pub(super) struct DefinitionLocation {
     pub name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct GotoDefinitionResponse {
     /// Echo of the queried file.
     pub path: RelPath,
@@ -643,7 +643,7 @@ pub(super) struct GotoDefinitionResponse {
     pub elapsed_us: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct RepoInfoResponse {
     pub workdir: String,
     pub head_sha: Option<String>,
@@ -772,7 +772,7 @@ pub struct RescanParams {
     pub full: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct RescanResponse {
     pub scanned: usize,
     pub updated: usize,
@@ -795,7 +795,7 @@ pub struct TelemetrySummaryParams {
     pub tool: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct TelemetrySummaryResponse {
     pub window: String,
     pub total_calls: usize,
@@ -812,21 +812,21 @@ pub(super) struct TelemetrySummaryResponse {
     pub savings_note: &'static str,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ToolCallCount {
     pub tool: String,
     pub calls: usize,
     pub est_tokens_saved: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct BaselineCount {
     pub baseline: String,
     pub calls: usize,
     pub est_tokens_saved: u64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct RecentCallView {
     pub ts_micros: i64,
     pub tool: String,

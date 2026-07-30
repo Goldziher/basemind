@@ -30,6 +30,7 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryPutResponse>()",
         description = "Persist a key-value in scoped memory (scope = git remote URL). Upsert \
         semantics. `embed=true` also stores in LanceDB for `memory_search`. Needs --features \
         memory.",
@@ -65,6 +66,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryEntry>()",
         description = "Exact-key lookup in scoped memory. Returns entry \
         (key,value,tags,timestamps) or null. Fjall only, no vector touch. \
         Needs --features memory.",
@@ -95,6 +97,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryListResponse>()",
         description = "List scoped memory entries. `prefix` is a key-prefix filter (not \
         substring); `tag` is exact. Values truncated ~200 chars. Default 100, max 1000. \
         `cursor` pages results. `elapsed_us` = server-side handler latency in µs (excludes \
@@ -126,6 +129,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemorySearchResponse>()",
         description = "Vector KNN over stored memory. Embeds `query`, KNN in the scope-filtered \
         LanceDB memory table; `tag` is a post-KNN exact filter. Default 10, max 100 by L2 \
         distance. `elapsed_us` = server-side handler latency in µs (excludes transport). Needs \
@@ -157,6 +161,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryDeleteResponse>()",
         description = "Delete memory entry by exact key from Fjall and LanceDB. \
         Returns {deleted:true} when found. Needs --features memory.",
         annotations(
@@ -190,6 +195,35 @@ impl BasemindServer {
         __result
     }
 
+    // `search_documents` is split across two `#[cfg]` variants so its SEP-2106 `output_schema` is ~keep
+    // advertised only when the `documents` feature (and thus the `SearchDocumentsResponse` type, ~keep
+    // which nests the `documents`-gated `extract::doc` NER/summary shapes) is compiled in. Without ~keep
+    // the feature the tool exists but errors, so it carries no output schema. ~keep
+    #[cfg(feature = "documents")]
+    #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_documents::SearchDocumentsResponse>()",
+        description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
+        `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
+        filter. `scope` selects which ingestion scope to search and defaults to this repo's — \
+        pages ingested by `web_scrape` / `web_crawl` live under `web:<host>` (those tools echo \
+        the scope back), so pass it to reach them. Default 10, max 100. `max_tokens` budgets the \
+        hits (best-first, sets `budgeted`; no cursor — raise it for more). `format:\"toon\"` for \
+        compact rows (overrides config). `elapsed_us` = server-side handler latency in µs \
+        (excludes transport). Needs --features documents.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    pub(crate) async fn search_documents(
+        &self,
+        Parameters(Lenient(p)): Parameters<Lenient<SearchDocumentsParams>>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = super::memory::run_search_documents(&self.state, p).await;
+        record_call(&self.state, "search_documents", &__params_json, __started, &__result);
+        __result
+    }
+
+    #[cfg(not(feature = "documents"))]
     #[tool(
         description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
         `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
@@ -207,20 +241,8 @@ impl BasemindServer {
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "documents")]
-            {
-                return super::memory::run_search_documents(&self.state, p).await;
-            }
-            #[cfg(not(feature = "documents"))]
-            {
-                let _ = p;
-                return not_enabled("documents");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("documents")
-        }
-        .await;
+        let _ = p;
+        let __result: Result<CallToolResult, McpError> = not_enabled("documents");
         record_call(&self.state, "search_documents", &__params_json, __started, &__result);
         __result
     }

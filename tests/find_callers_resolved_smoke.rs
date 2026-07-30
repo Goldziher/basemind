@@ -20,10 +20,8 @@ use std::process::Command;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -101,11 +99,9 @@ async fn find_callers_flags_scope_resolved_hits_without_dropping_same_named_ones
     let root = dir.path();
     run_scan(root);
 
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
     let body = decode_text(

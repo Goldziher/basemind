@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// Opaque resume token. Pass the `next_cursor` from a previous page back as `cursor` to fetch
 /// the following page. Stable across daemon restarts — append-only log, content-free position.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct Cursor(pub String);
 

@@ -59,7 +59,11 @@ pub(super) fn format_result<T: Serialize>(value: &T, fmt: ResponseFormat) -> Res
         ResponseFormat::Toon => {
             let json = serde_json::to_value(value)
                 .map_err(|e| McpError::internal_error(format!("toon: serialize: {e}"), None))?;
-            Ok(CallToolResult::success(vec![ContentBlock::text(encode(&json))]))
+            // Keep the compact TOON table as the text mirror, but still carry SEP-2106
+            // structured_content (format-independent) so typed clients get the parsed result.
+            let mut result = CallToolResult::success(vec![ContentBlock::text(encode(&json))]);
+            result.structured_content = Some(json);
+            Ok(result)
         }
     }
 }

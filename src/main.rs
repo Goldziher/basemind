@@ -117,7 +117,9 @@ enum Cmd {
     /// Flag wasteful tool usage (redundant reads, repeated queries, oversized
     /// reads) from a JSON-Lines tool-call log read from stdin. Pure analysis.
     DetectWaste(basemind::textcompress::cli::DetectWasteArgs),
-    /// Run an MCP server (stdio) exposing the code map to AI agents.
+    /// Run an MCP server for a stdio client: ensure the daemon (the real server) is up, then relay
+    /// this process's stdin/stdout to it. HTTP-native clients skip this and dial the daemon URL
+    /// directly (see `daemon ensure`).
     Serve(ServeArgs),
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
@@ -138,6 +140,21 @@ enum Cmd {
         #[command(subcommand)]
         action: basemind::cli::registry::RegistryCmd,
     },
+    /// Manage the daemon that hosts the streamable-HTTP MCP transport (needs `--features comms`).
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonCmd,
+    },
+}
+
+/// Subcommands for `basemind daemon`: the streamable-HTTP MCP transport lifecycle.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[derive(Subcommand, Debug)]
+enum DaemonCmd {
+    /// Ensure the daemon is running and its HTTP transport is ready, then print the base MCP URL.
+    /// Idempotent — a no-op when a current daemon already answers.
+    Ensure,
 }
 
 /// Subcommands for `basemind comms`: daemon lifecycle plus the agent verbs.
@@ -330,13 +347,15 @@ fn main() -> Result<()> {
         Cmd::Delta(args) => basemind::textcompress::cli::run_delta(&args),
         Cmd::Checkpoint(args) => basemind::textcompress::cli::run_checkpoint(&root, &args),
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
-        Cmd::Serve(args) => cmd_serve(&root, &view, &args),
+        Cmd::Serve(args) => cmd_serve(&root, &view, &args, json),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         Cmd::Statusline => comms_cli::cmd_statusline(),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(&root, action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Registry { action } => basemind::cli::registry::run(&root, json, action),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        Cmd::Daemon { action } => comms_cli::cmd_daemon(action, json),
     }
 }
 
@@ -356,7 +375,7 @@ fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
             | Cmd::Cache(_)
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Registry { .. });
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Registry { .. } | Cmd::Daemon { .. });
     #[cfg(all(feature = "shells", any(unix, windows)))]
     let consumes_json = consumes_json || matches!(cmd, Cmd::Shells(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));
@@ -608,31 +627,60 @@ fn cmd_watch(root: &std::path::Path, verbosity: Verbosity, no_color: bool) -> Re
     }
 }
 
-/// Dispatch `basemind serve`. On a `comms` build serving the working view, first try to become a
-/// thin relay to the singleton daemon (which hosts the actual rmcp router); on ANY failure — or
-/// when the kill-switch `BASEMIND_SERVE_INPROCESS` is set, or for a non-working view — fall back to
-/// the in-process server. The fallback is total: a client is never bricked by a relay problem.
-fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    {
-        let force_inproc =
-            std::env::var_os("BASEMIND_SERVE_INPROCESS").is_some() || basemind::mcp::serve_requires_in_process();
-        if !force_inproc && view == basemind::store::VIEW_WORKING {
-            match try_serve_relay(root, view) {
-                Ok(()) => return Ok(()),
-                Err(error) => tracing::info!(%error, "relay to daemon unavailable; serving in-process"),
-            }
+/// Dispatch `basemind serve`: a thin stdio↔daemon relay, not a server in its own right.
+///
+/// The comms daemon is the sole MCP server — it hosts the rmcp router over BOTH a Unix-socket relay
+/// and a streamable-HTTP front-end. This verb ensures that daemon is up, then byte-pumps this
+/// process's stdin/stdout to the daemon's relay socket, so any MCP client that speaks stdio reaches
+/// the daemon-hosted router. The daemon outlives any single client: when the client disconnects the
+/// pump ends and `serve` exits, but the daemon (and its warm index) stays up for the next client —
+/// which is why a dropped stdio connection no longer bricks the workspace (the old in-process stdio
+/// server, whose lifetime was bound to the pipe, was the "drops and never returns" bug). HTTP-native
+/// clients skip `serve` entirely and dial the daemon URL directly (see `basemind daemon ensure`).
+/// Without the `comms` feature there is no daemon to relay to, so it errors with guidance.
+fn cmd_serve(root: &std::path::Path, view: &str, args: &ServeArgs, json: bool) -> Result<()> {
+    // `ServeArgs` (git-cache / `--no-watch` / documents) configure the daemon-hosted workspace, not
+    // this thin relay; the daemon honors them when it first builds the workspace. `--json` is a
+    // rendering flag for the tool subcommands and has no meaning for a raw stdio relay.
+    let _ = (args, json);
+    // Bug #18 guard (transport-independent): a named view that was never scanned must fail fast with
+    // actionable guidance instead of implying a server for an index that does not exist. The working
+    // view is exempt (it auto-scans on first daemon touch).
+    if view != basemind::store::VIEW_WORKING {
+        let index_path = basemind::store::workspace_cache_dir(root)
+            .join(basemind::store::VIEWS_DIR)
+            .join(view)
+            .join(basemind::store::INDEX_FILE);
+        if !index_path.exists() {
+            anyhow::bail!(
+                "view {view:?} has not been scanned; run `basemind scan --view {view}` first \
+                 (or omit --view to serve the working view)"
+            );
         }
     }
-    cmd_serve_inprocess(root, view, args)
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    {
+        // No in-process fallback: relaying is the only path. If it fails the client sees a clear
+        // error rather than silently degrading to a fragile pipe-bound server.
+        try_serve_relay(root, view).context(
+            "relay to the basemind daemon failed; run `basemind daemon ensure` to check the daemon, \
+             then retry",
+        )
+    }
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    {
+        let _ = root;
+        anyhow::bail!(
+            "`basemind serve` needs the comms daemon to host the MCP server; rebuild with \
+             `--features comms` (the stdio MCP server is served by relaying to that daemon)."
+        )
+    }
 }
 
-/// Thin relay body: dial the singleton daemon and pump raw bytes between this process's
-/// stdin/stdout and the daemon socket so the daemon hosts the rmcp router. Returns `Ok(())` when
-/// the session ends cleanly (either side closing the pipe is normal). Returns `Err` ONLY before the
-/// relay is accepted — i.e. while it is still safe to fall back to an in-process serve without
-/// having consumed any of the client's stdin. Once the daemon accepts and the byte pump starts,
-/// the session is committed: it always resolves to `Ok(())` so we never double-serve.
+/// Thin relay body: ensure the daemon, dial its relay socket, handshake, then pump raw bytes between
+/// this process's stdin/stdout and the socket until either side closes. Once the handshake is
+/// accepted the session is committed — stdin is being forwarded to the daemon, so there is no way
+/// back to an in-process server; the pump always resolves to `Ok(())` on clean EOF.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
     use basemind::comms::{identity, relay, singleton};
@@ -671,8 +719,6 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
             anyhow::bail!("daemon declined relay: {:?}", welcome.code);
         }
 
-        // ~keep Accepted: from here the session is committed — no fallback is possible because stdin is
-        // ~keep being forwarded to the daemon. Always resolve to Ok(()).
         tracing::info!(
             pid = std::process::id(),
             daemon_version = %welcome.daemon_version,
@@ -698,9 +744,7 @@ fn try_serve_relay(root: &std::path::Path, view: &str) -> Result<()> {
     })
 }
 
-/// Log the end of one relay copy direction. EOF (`Ok`) and the expected teardown kinds
-/// (`BrokenPipe` / `UnexpectedEof` / `ConnectionReset`) are normal end-of-session signals logged at
-/// debug; anything else is logged at info. Either way the session resolves cleanly.
+/// Log the end of one relay pump direction, treating an expected peer-close as debug-level noise.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn log_pump_end(direction: &str, result: std::io::Result<u64>) {
     match result {
@@ -719,16 +763,13 @@ fn log_pump_end(direction: &str, result: std::io::Result<u64>) {
     }
 }
 
-/// Open the platform stream to the daemon endpoint for a relay session. Mirrors the private
-/// `CommsClient::connect_stream`: a Unix socket connect on unix, a busy-pipe-retrying named-pipe
-/// open on windows. Returns a stream that is `AsyncRead + AsyncWrite + Unpin` and splittable.
+/// Dial the daemon's relay endpoint: a Unix-domain socket on unix.
 #[cfg(all(feature = "comms", unix))]
 async fn relay_connect_stream(socket_path: &std::path::Path) -> std::io::Result<tokio::net::UnixStream> {
     tokio::net::UnixStream::connect(socket_path).await
 }
 
-/// Windows named-pipe variant of [`relay_connect_stream`]. A busy pipe (`ERROR_PIPE_BUSY`, 231)
-/// means the server is mid-`connect()` for another client; retry briefly before giving up.
+/// Dial the daemon's relay endpoint: a named pipe on Windows, retrying while the pipe is busy.
 #[cfg(all(feature = "comms", windows))]
 async fn relay_connect_stream(
     socket_path: &std::path::Path,
@@ -752,100 +793,6 @@ async fn relay_connect_stream(
             Err(source) => return Err(source),
         }
     }
-}
-
-/// The in-process serve body: open the store, build a [`basemind::mcp::BasemindServer`], and serve
-/// it over stdio. This is the behavior `basemind serve` had before the relay was added, and the
-/// guaranteed fallback whenever the relay is unavailable.
-fn cmd_serve_inprocess(root: &std::path::Path, view: &str, args: &ServeArgs) -> Result<()> {
-    if view != basemind::store::VIEW_WORKING {
-        let index_path = basemind::store::workspace_cache_dir(root)
-            .join(basemind::store::VIEWS_DIR)
-            .join(view)
-            .join(basemind::store::INDEX_FILE);
-        if !index_path.exists() {
-            anyhow::bail!(
-                "view {view:?} has not been scanned; run `basemind scan --view {view}` first \
-                 (or omit --view to serve the working view)"
-            );
-        }
-    }
-    #[cfg(all(feature = "comms", any(unix, windows)))]
-    let (store, read_only, daemon_writer) = (
-        Store::open_read_only_no_index(root, view).context("open store read-only")?,
-        true,
-        true,
-    );
-    #[cfg(not(all(feature = "comms", any(unix, windows))))]
-    let (store, read_only, daemon_writer) = match Store::open_with_holder(root, view, LockHolder::Serve) {
-        Ok(store) => (store, false, false),
-        Err(error) if error.is_lock_contention() => {
-            match &error {
-                basemind::store::StoreError::Locked { .. } => tracing::warn!(
-                    %error,
-                    "store write-lock held by another basemind process; starting read-only (reads from the shared index)"
-                ),
-                _ => tracing::warn!(
-                    %error,
-                    "Fjall index lock still contended after retry (a transient reader, not another serve); starting read-only (reads from the shared index)"
-                ),
-            }
-            let store = Store::open_read_only(root, view).context("open store read-only")?;
-            (store, true, false)
-        }
-        Err(error) => return Err(anyhow::Error::new(error).context("open store")),
-    };
-    let basemind_dir = basemind::store::workspace_cache_dir(root);
-    let root_buf = root.to_path_buf();
-    let config = Arc::new(load_or_default_with(root, Some(args.documents.clone()))?);
-
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("build tokio runtime")?;
-
-    let repo = basemind::git::Repo::discover(root).ok().map(Arc::new);
-    let git_cache = Arc::new(
-        basemind::git_cache::GitCache::open(&basemind_dir, args.git_cache_mem, !args.no_git_cache_disk)
-            .context("open git cache")?,
-    );
-
-    let options = basemind::mcp::ServerOptions {
-        background: true,
-        watch: !args.no_watch,
-        read_only,
-        daemon_writer,
-        lazy_cache: false,
-    };
-    tracing::info!(
-        pid = std::process::id(),
-        version = env!("CARGO_PKG_VERSION"),
-        view,
-        read_only,
-        root = %root.display(),
-        "basemind serve: MCP server starting"
-    );
-    let outcome = runtime.block_on(async move {
-        use rmcp::ServiceExt;
-        let server = basemind::mcp::BasemindServer::new_with_options(store, root_buf, config, repo, git_cache, options);
-        let transport = rmcp::transport::stdio();
-        let service = server
-            .serve(transport)
-            .await
-            .map_err(|e| anyhow::anyhow!("rmcp serve: {e}"))?;
-        service
-            .waiting()
-            .await
-            .map_err(|e| anyhow::anyhow!("rmcp waiting: {e}"))?;
-        Ok::<(), anyhow::Error>(())
-    });
-    match &outcome {
-        Ok(()) => tracing::info!(pid = std::process::id(), "basemind serve: client disconnected, exiting"),
-        Err(error) => {
-            tracing::error!(pid = std::process::id(), %error, "basemind serve: exiting on error")
-        }
-    }
-    outcome
 }
 
 fn cmd_hook_install(root: &std::path::Path) -> Result<()> {

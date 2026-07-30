@@ -16,6 +16,7 @@ use super::types_archmap::ArchitectureMapParams;
 impl BasemindServer {
     /// Deterministic architecture overview from the call graph.
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_archmap::ArchitectureMapResponse>()",
         description = "Architecture map of the repo (or a `focus` subtree), ranked by graph \
                        centrality + git churn. `granularity`: \"module\" (default, directory-level \
                        dependency graph), \"file\", or \"symbol\" (hub functions ranked by \

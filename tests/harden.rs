@@ -1,8 +1,11 @@
 //! Real-OSS hardening harness — Stage 1 of the hardening iteration.
 //!
-//! Drives `basemind serve` against a previously-cloned repository (typically under
-//! `/tmp/basemind-harden/`), exercises every MCP tool, asserts pass/fail criteria,
-//! and emits an NDJSON record per repo for the orchestrator.
+//! Drives an in-process `basemind` MCP server (`serve_in_memory`, over an in-memory duplex
+//! transport — the local-writer topology, not a spawned child process) against a
+//! previously-cloned repository (typically under `/tmp/basemind-harden/`), exercises every MCP
+//! tool, asserts pass/fail criteria, and emits an NDJSON record per repo for the orchestrator.
+//! HTTP-transport and `comms`-build `daemon_writer` coverage are NOT this harness's concern —
+//! that lives in `tests/git_history_daemon.rs`.
 //!
 //! Invocation (orchestrated by `scripts/harden.sh`):
 //!
@@ -26,10 +29,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use rmcp::{ServiceExt, service::RoleClient, service::RunningService};
 use serde_json::{Value, json};
-use tokio::process::Command;
 
 /// Per-tool wall-clock ceiling. Any call exceeding this fails the harness.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -116,17 +117,10 @@ struct RepoRecord {
 
 type ServiceHandle = RunningService<RoleClient, ()>;
 
-fn basemind_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_basemind")
-}
-
 async fn connect(repo_root: &Path) -> ServiceHandle {
-    let bin = basemind_bin();
-    let root = repo_root.to_path_buf();
-    let cmd = Command::new(bin).configure(|c| {
-        c.arg("--root").arg(&root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(repo_root, "working")
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake with basemind serve")
 }
 

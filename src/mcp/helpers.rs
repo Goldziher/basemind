@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use rmcp::ErrorData as McpError;
-use rmcp::model::{CallToolResult, ContentBlock};
+use rmcp::model::CallToolResult;
 use serde::Serialize;
 
 use super::ServerState;
@@ -116,10 +116,17 @@ pub(super) fn parse_kind(s: &str) -> Result<SymbolKind, McpError> {
     })
 }
 
+/// Build a successful tool result carrying both a text mirror and SEP-2106 `structured_content`.
+///
+/// Every tool routes its response through here, so populating `structured_content` in one place
+/// gives the whole MCP surface typed output: `CallToolResult::structured` sets the parsed JSON on
+/// `structured_content` (for clients that consume typed results) and keeps a `to_string()` text
+/// block in `content` (for clients that only read text). The tool's `output_schema` is advertised
+/// separately on each `#[tool]` definition.
 pub(super) fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
-    let content =
-        ContentBlock::json(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
-    Ok(CallToolResult::success(vec![content]))
+    let value =
+        serde_json::to_value(value).map_err(|e| McpError::internal_error(format!("serialize response: {e}"), None))?;
+    Ok(CallToolResult::structured(value))
 }
 
 pub(super) use timing::elapsed_us;

@@ -83,7 +83,7 @@ pub struct FileMapDoc {
 /// Mirror of `xberg::keywords::Keyword`, narrowed to the fields we persist.
 /// We do not re-export xberg's `Keyword` directly because we control the
 /// on-disk blob shape and want a forward-compatible string for `algorithm`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct DocKeyword {
     /// Verbatim keyword span.
     pub text: String,
@@ -97,7 +97,7 @@ pub struct DocKeyword {
 /// Mirror of `xberg::types::entity::Entity` with `EntityCategory` flattened
 /// to a string. Flattening keeps the blob shape forward-compatible: xberg
 /// can add `EntityCategory` variants without invalidating our cached blobs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct DocEntity {
     /// Lowercase category name — `"person"`, `"organization"`, `"location"`,
     /// `"date"`, `"time"`, `"money"`, `"percent"`, `"email"`, `"phone"`,
@@ -118,7 +118,7 @@ pub struct DocEntity {
 /// Mirror of `xberg::DocumentSummary` with `SummaryStrategy` flattened to
 /// a string. Flattening keeps the blob shape forward-compatible: xberg can
 /// add `SummaryStrategy` variants without invalidating our cached blobs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct DocSummary {
     /// Plain-prose summary text.
     pub text: String,

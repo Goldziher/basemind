@@ -19,10 +19,8 @@ use std::time::Duration;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 
 /// A commit-message body token that exists ONLY in a commit body — never in a summary, an author
 /// name, or a file. The live-walk fallback in `search_git_history` searches summaries + authors of a
@@ -96,14 +94,15 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     params
 }
 
-/// Spawn a real `basemind serve` and complete the rmcp handshake. On a `comms` build this session is
-/// `read_only` + `daemon_writer`; on a default build it is the local writer.
+/// Spawn an in-memory `basemind serve` session and complete the rmcp handshake. This is the plain
+/// local-writer topology (`serve_in_memory`): the session opens the store read-write and builds the
+/// git-history index in-process, exactly like a default (non-`comms`) `basemind serve`. Genuine
+/// `comms`-build `daemon_writer` history coverage — where serve is read-only and the DAEMON builds
+/// and answers from the index — lives in `tests/git_history_daemon.rs`.
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 

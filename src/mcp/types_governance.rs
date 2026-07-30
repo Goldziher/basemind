@@ -1,13 +1,13 @@
 //! Request / response shapes for the governance MCP tools (`memory_audit`, `proposals_mine`,
 //! `proposals_list`, `proposal_accept`, `proposal_reject`).
 //!
-//! `MemoryAuditParams` is always compiled so the `not_enabled` fallback in
-//! `tools_governance.rs` can deserialize the params correctly.  All response
-//! types are `#[cfg(feature = "memory")]`-gated because they reference
-//! `VerifyState`, which lives behind that gate.
-//!
-//! Proposal param structs are always compiled (shims need them regardless of the feature gate).
-//! `ProposalRecord` and response types are `#[cfg(feature = "memory")]`-gated.
+//! Param structs are always compiled so the `not_enabled` fallback in `tools_governance.rs` can
+//! deserialize params regardless of the feature gate. The response/view structs
+//! (`MemoryAuditResponse`, `AuditResult`, `ProposalEntry`, `Proposals*Response`, `Proposal*Response`)
+//! are also always compiled so each tool can advertise a SEP-2106 `output_schema` even in a build
+//! without the `memory` feature — they carry only plain fields, so nothing behind the gate leaks in.
+//! The blob-record + internal types (`ProposalRecord`, `AuditVerdict`, `VerifyState`) stay
+//! `#[cfg(feature = "memory")]`-gated.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
@@ -38,8 +38,7 @@ pub struct MemoryAuditParams {
 }
 
 /// Per-record audit outcome.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AuditResult {
     /// The memory key.
     pub key: String,
@@ -54,8 +53,7 @@ pub(super) struct AuditResult {
 }
 
 /// Response from `memory_audit`.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryAuditResponse {
     /// Number of records examined.
     pub audited: usize,
@@ -159,8 +157,7 @@ pub struct ProposalRejectParams {
 }
 
 /// One entry in the `proposals_list` response.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalEntry {
     pub id: String,
     pub kind: u8,
@@ -174,8 +171,7 @@ pub(super) struct ProposalEntry {
 }
 
 /// Response from `proposals_mine`.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalsMineResponse {
     /// Number of new proposals written (existing proposals for the same candidate are overwritten).
     pub mined: usize,
@@ -186,8 +182,7 @@ pub(super) struct ProposalsMineResponse {
 }
 
 /// Response from `proposals_list`.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalsListResponse {
     pub total: usize,
     pub truncated: bool,
@@ -197,8 +192,7 @@ pub(super) struct ProposalsListResponse {
 }
 
 /// Response from `proposal_accept`.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalAcceptResponse {
     pub accepted: bool,
     /// The memory key under which the accepted proposal was stored.
@@ -206,8 +200,7 @@ pub(super) struct ProposalAcceptResponse {
 }
 
 /// Response from `proposal_reject`.
-#[cfg(feature = "memory")]
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalRejectResponse {
     pub rejected: bool,
 }

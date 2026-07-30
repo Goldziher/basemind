@@ -23,6 +23,7 @@ use super::types_comms::{
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_comms")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::AgentRegisterResponse>()",
         description = "Register or update this agent's A2A card (name/description/version/skills) \
         with the user-global comms broker. Spawns the broker daemon on first use. \
         Needs --features comms.",
@@ -45,6 +46,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::AgentListResponse>()",
         description = "List agents known to the comms broker, optionally restricted to the \
         members of one thread. Returns front-matter (id, card fields, first/last seen). \
         Needs --features comms.",
@@ -62,6 +64,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadStartResponse>()",
         description = "Start a conversation THREAD addressed by AT LEAST TWO of `subject` (topic \
         string), `path` (a path or globset glob like `src/**`), and `members` (explicit agent ids). \
         Fewer than two is rejected. You become the creator and a member. Discovery is scoped — a \
@@ -86,6 +89,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadListResponse>()",
         description = "List threads DISCOVERABLE to this agent: those it is a member of, those \
         whose path glob matches this server's cwd, or (with `subject_contains`) those whose subject \
         contains the filter. NEVER all threads. Archived threads are excluded unless \
@@ -105,6 +109,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembershipResponse>()",
         description = "Join a thread (durable membership; drives the inbox). Needs --features comms.",
         annotations(
             read_only_hint = false,
@@ -125,6 +130,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembershipResponse>()",
         description = "Leave a thread you are a member of. Needs --features comms.",
         annotations(
             read_only_hint = false,
@@ -145,6 +151,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMembersResponse>()",
         description = "List the members of a thread. Needs --features comms.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -160,6 +167,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMemberChangeResponse>()",
         description = "Add a member to a thread. Only the thread CREATOR may do this. \
         Needs --features comms.",
         annotations(
@@ -181,6 +189,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadMemberChangeResponse>()",
         description = "Remove a member from a thread. Only the thread CREATOR may do this. \
         Needs --features comms.",
         annotations(
@@ -208,6 +217,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadArchiveResponse>()",
         description = "Archive a thread. Only the thread CREATOR (or a human via the CLI) may do \
         this; the system also auto-archives idle threads. Archived threads drop out of active \
         listings but their history stays readable. Idempotent. Needs --features comms.",
@@ -230,6 +240,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadPostResponse>()",
         description = "Post a message (subject + optional markdown body + tags + reply_to) to a \
         thread. Returns the new message_id. The body is stored separately from front-matter. \
         Needs --features comms.",
@@ -252,6 +263,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::ThreadHistoryResponse>()",
         description = "Read a thread's history oldest-first, FRONT-MATTER ONLY (id, from, subject, \
         ts, age_secs, tags) — bodies are NOT included; fetch them with message_get. Defaults to the \
         last 24h of messages; pass `since_hours` for a different window or `since_hours=0` for ALL \
@@ -271,6 +283,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::MessageGetResponse>()",
         description = "Fetch a single message BODY by id (the only body path; history/inbox \
         return front-matter only). Body is returned as a UTF-8 (lossy) markdown string. \
         Needs --features comms.",
@@ -288,6 +301,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxReadResponse>()",
         description = "Read this agent's inbox: new FRONT-MATTER across all JOINED threads \
         (bodies NOT included — use message_get). Each row carries `age_secs`. Defaults to the last \
         24h; pass `since_hours` for a different window or `since_hours=0` for ALL unread. \
@@ -312,6 +326,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxAckResponse>()",
         description = "Acknowledge inbox messages by ADVANCING this agent's per-thread read \
         cursors — it does NOT delete anything and does NOT affect the shared log or any other \
         agent's inbox. Two modes, combinable: pass `message_ids` to ack specific messages, and/or \
@@ -336,6 +351,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_comms::InboxWaitResponse>()",
         description = "Block up to `timeout_secs` (default 30, max 300) and return as soon as a \
         peer posts to a JOINED thread — or to the single thread in `thread`, if set — or on \
         timeout. Replaces a caller looping inbox_read / thread_list. NEVER marks read (no \

@@ -55,7 +55,7 @@ pub struct SearchDocumentsParams {
 pub(crate) use crate::extract::doc::{DocEntity, DocKeyword, DocSummary};
 
 #[cfg(feature = "documents")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct DocumentSearchHit {
     pub path: String,
     pub chunk_idx: u32,
@@ -83,7 +83,7 @@ pub(crate) struct DocumentSearchHit {
 }
 
 #[cfg(feature = "documents")]
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(crate) struct SearchDocumentsResponse {
     pub query: String,
     /// True when a `max_tokens` budget dropped trailing `hits`. `search_documents` has no

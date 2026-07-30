@@ -22,6 +22,7 @@ use super::types_shells::{
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_shells")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellSpawnResponse>()",
         description = "Spawn a detached headless shell session backed by the embedded rmux daemon \
         and return a stable `session_id`. `command` runs through the login shell (e.g. \
         `bash -lc '<command>'`). Optional `cwd` (repo-relative), `env` (key/value list), and \
@@ -48,6 +49,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellSendResponse>()",
         description = "Write `text` to a headless shell session's stdin, addressed by `session_id` \
         (from `shell_spawn`). When `enter` is true (default) a trailing newline is appended so the \
         line executes; set `enter=false` to send a raw keystroke fragment. Use `shell_capture` \
@@ -71,6 +73,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellCaptureResponse>()",
         description = "Capture the currently-visible screen text of a headless shell session, \
         addressed by `session_id`. Returns the rendered pane with trailing blank lines trimmed; \
         pass `lines` to get only the last N non-blank rows (the most recent output). This is a \
@@ -89,6 +92,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellKillResponse>()",
         description = "Kill a headless shell session by `session_id` and forget its mapping. \
         Returns `killed=true` when a live session was terminated, `false` when it was already \
         gone. Needs --features shells.",
@@ -111,6 +115,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellBroadcastResponse>()",
         description = "Broadcast the same `text` to many headless shell sessions at once, addressed \
         by a list of `session_ids` (each from `shell_spawn`). Every id must be a known, live session \
         of this server; an unknown id fails the whole broadcast before any pane is written. When \
@@ -136,6 +141,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellListResponse>()",
         description = "List the headless shell sessions this server spawned, each flagged with its \
         liveness (`alive=true` while the daemon still reports it; `false` once it has exited but the \
         mapping lingers). Takes no arguments. Use this to discover `session_id`s for `shell_send` / \

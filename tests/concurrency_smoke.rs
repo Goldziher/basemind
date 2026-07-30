@@ -14,10 +14,8 @@ use std::time::Duration;
 
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult};
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use tokio::process::Command as AsyncCommand;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
@@ -105,18 +103,21 @@ fn call_params(name: &'static str, args: Value) -> CallToolRequestParams {
     params
 }
 
-/// Spawn a basemind serve process and complete the rmcp handshake.
+/// Spawn a basemind serve process (plain, ALWAYS-WRITABLE local topology) and complete the rmcp
+/// handshake.
 ///
 /// Returns the `RunningService`. Callers that need concurrent access should
 /// clone the inner `Peer` via `service.peer().clone()` — `Peer` is `Clone`
 /// and `call_tool` takes `&self`, so many tasks can share a single `Peer`.
 /// To tear down, call `service.cancel().await` (takes ownership).
+///
+/// This is the local-writer / read-only-fallback shape (`serve_in_memory`), NOT the comms-build
+/// `daemon_writer` topology — tests that assert daemon-forward semantics must use
+/// [`spawn_daemon_writer_server`] instead.
 async fn spawn_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
-    let bin = env!("CARGO_BIN_EXE_basemind");
-    let cmd = AsyncCommand::new(bin).configure(|c| {
-        c.arg("--root").arg(root).arg("serve").arg("--view").arg("working");
-    });
-    let transport = TokioChildProcess::new(cmd).expect("spawn basemind serve");
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
     ().serve(transport).await.expect("rmcp handshake")
 }
 
@@ -539,6 +540,63 @@ fn symbol_names(body: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The isolated comms dir `init_isolated_cache` pointed this process — and every child it spawns —
+/// at, so the daemon, its socket, and every index stay in a per-process tempdir. Mirrors
+/// `tests/git_history_daemon.rs`.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn comms_paths() -> basemind::comms::singleton::CommsPaths {
+    let comms_dir = std::path::PathBuf::from(std::env::var("BASEMIND_COMMS_DIR").expect("isolated comms dir"));
+    basemind::comms::singleton::CommsPaths {
+        socket_path: basemind::comms::singleton::comms_socket_path(&comms_dir),
+        comms_dir,
+    }
+}
+
+/// Bring up a REAL `basemind comms daemon` and wait for it to answer.
+///
+/// Never call `CommsClient::ensure_and_connect` from a TEST: its spawn strategy execs
+/// `current_exe()`, which here is the test harness binary — libtest reads `comms daemon` as a filter
+/// argument and re-runs the whole suite, which spawns another "daemon", and so on. Spawn the real
+/// binary explicitly instead. Idempotent: a second daemon on the same socket loses the bind race and
+/// exits, so racing tests converge on one. Mirrors `tests/git_history_daemon.rs`.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[allow(clippy::zombie_processes)]
+fn ensure_real_daemon() {
+    let paths = comms_paths();
+    if basemind::comms::singleton::probe_alive(&paths.socket_path) {
+        return;
+    }
+    let _child = Command::new(env!("CARGO_BIN_EXE_basemind"))
+        .args(["comms", "daemon"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn comms daemon");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if basemind::comms::singleton::probe_alive(&paths.socket_path) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    panic!("comms daemon did not become ready");
+}
+
+/// Spawn a serve session in the `daemon_writer` topology — the exact shape a `comms`-build `basemind
+/// serve` takes: opens blobs-only (`read_only`, no fjall index lock) and forwards every write to the
+/// machine daemon. Unlike [`spawn_server`] (always writable, local), this REQUIRES a real running
+/// comms daemon (brought up by [`ensure_real_daemon`]) for forwarded writes and resolved reads to
+/// land — so these tests genuinely exercise the daemon-forward path rather than a local writer.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+async fn spawn_daemon_writer_server(root: &Path) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    ensure_real_daemon();
+    let transport = basemind::mcp::serve_in_memory_daemon_writer(root, "working")
+        .await
+        .expect("in-memory daemon-writer serve");
+    ().serve(transport).await.expect("rmcp handshake")
+}
+
 /// Seam B serve-flip, end to end: a comms-build `serve` opens read-only and forwards writes to the
 /// machine daemon (the sole fjall writer). From an EMPTY index, a forwarded `rescan` makes the
 /// daemon scan and the serve rebuilds its map from what the daemon wrote, so `search_symbols`
@@ -550,7 +608,7 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     let dir = build_repo();
     let root = dir.path();
 
-    let serve_a = spawn_server(root).await;
+    let serve_a = spawn_daemon_writer_server(root).await;
     let peer_a = serve_a.peer().clone();
 
     let rescan = peer_a
@@ -576,7 +634,7 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
         "serve A sees 'alpha' after the daemon-forwarded scan: {names_a:?}"
     );
 
-    let serve_b = spawn_server(root).await;
+    let serve_b = spawn_daemon_writer_server(root).await;
     let peer_b = serve_b.peer().clone();
     let search_b = peer_b
         .call_tool(call_params("search_symbols", json!({ "needle": "Beta", "limit": 10 })))
@@ -634,7 +692,7 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
     let dir = build_ts_crossfile_repo();
     let root = dir.path();
 
-    let serve = spawn_server(root).await;
+    let serve = spawn_daemon_writer_server(root).await;
     let peer = serve.peer().clone();
 
     let rescan = peer
@@ -693,7 +751,7 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
     git(root, &["add", "lib.py", "main.py"]);
     git(root, &["commit", "-qm", "init"]);
 
-    let serve = spawn_server(root).await;
+    let serve = spawn_daemon_writer_server(root).await;
     let peer = serve.peer().clone();
 
     let rescan = peer

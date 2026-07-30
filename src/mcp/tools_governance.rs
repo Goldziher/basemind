@@ -31,6 +31,7 @@ fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_governance")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_governance::MemoryAuditResponse>()",
         description = "Verify stored memories' code references against the live index. \
         Checks file provenance (file deleted → Stale), symbol provenance (symbol missing or \
         body changed via structural hash → Stale), and command provenance (advisory only). \
@@ -72,6 +73,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_governance::ProposalsMineResponse>()",
         description = "Mine co-change skill proposals from recent git history using association-rule \
         analysis. For each commit, counts pairs of files that changed together; emits a candidate when \
         `support` (co-change count) >= `min_support` (default 5) AND `confidence` \
@@ -108,6 +110,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_governance::ProposalsListResponse>()",
         description = "List pending governance proposals for this repo scope. \
         Optional `kind` filter: `\"skill\"` (co-change) or `\"memory\"` (future use); omit for all. \
         Capped at `limit` results (default 100, max 1000). \
@@ -142,6 +145,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_governance::ProposalAcceptResponse>()",
         description = "Accept a co-change proposal: promote it to a searchable, LanceDB-embedded \
         memory record tagged `[\"skill\",\"cochange\"]` with file provenance set from the proposal's \
         file-set. Stamps `verified` via the W10 audit engine (file-existence check against the live \
@@ -182,6 +186,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_governance::ProposalRejectResponse>()",
         description = "Reject a pending proposal: delete it from the proposals keyspace and write \
         a tombstone so `proposals_mine` will not resurface the same candidate in future runs. \
         Optional `reason` is logged but not persisted. \

@@ -22,6 +22,7 @@ use super::types_registry::{
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_registry")]
 impl BasemindServer {
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorkspacesResponse>()",
         description = "List every workspace the machine registry has seen: git worktrees and plain \
         (non-git) directories, each with its stable key, kind, root, owning repo id, and last-seen \
         time. Reads the comms daemon's machine registry (populated as serve sessions connect). \
@@ -40,6 +41,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreesResponse>()",
         description = "List the worktrees of a registered repo by its `repo_id` (a normalized remote \
         URL, else `path:<root>`; see `workspaces` for known ids). Each row carries the worktree name \
         (`(main)` or the linked directory name), checkout path, head sha, branch, and any advisory \
@@ -59,6 +61,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::BranchesResponse>()",
         description = "List the local branches of a registered repo by its `repo_id`, each with its \
         short name and 40-hex head sha. Reads the machine registry; an unknown repo id returns an \
         empty list. Needs --features comms.",
@@ -73,6 +76,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreeClaimResponse>()",
         description = "ADVISORY-claim a worktree of a registered repo for this agent, to signal to \
         peers that you're working it. The claim is a COORDINATION HINT recorded in the machine \
         registry — it enforces NOTHING and blocks no file access. Returns `held: true` when the \
@@ -97,6 +101,7 @@ impl BasemindServer {
     }
 
     #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreeClaimResponse>()",
         description = "Release YOUR advisory claim on a worktree (the inverse of `worktree_claim`). \
         Only clears a claim held by this agent. Returns `held: true` when a claim of yours was \
         cleared, `false` when the worktree is unknown or held by someone else / no one. \

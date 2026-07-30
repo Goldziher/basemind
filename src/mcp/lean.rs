@@ -20,7 +20,8 @@ use rmcp::ErrorData as McpError;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, JsonObject, ListToolsResult, Tool, ToolAnnotations, object,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, JsonObject, ListToolsResult,
+    Tool, ToolAnnotations, object,
 };
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
@@ -120,13 +121,12 @@ pub(super) fn lean_get_tool(name: &str) -> Option<Tool> {
     lean_tool_definitions().into_iter().find(|t| t.name == name)
 }
 
-/// Lean-mode `list_tools`: advertise only the three wrapper tools.
+/// Lean-mode `list_tools`: advertise only the three wrapper tools, with the same SEP-2549 cache
+/// hints the full surface sets (the lean tool set is just as static per process).
 pub(super) fn lean_list_tools() -> ListToolsResult {
-    ListToolsResult {
-        tools: lean_tool_definitions(),
-        meta: None,
-        next_cursor: None,
-    }
+    ListToolsResult::with_all_items(lean_tool_definitions())
+        .with_ttl_ms(super::server_handler::LIST_CACHE_TTL_MS)
+        .with_cache_scope(CacheScope::Public)
 }
 
 /// Extract a required `&str` field from the wrapper arguments object.
@@ -159,7 +159,7 @@ pub(super) async fn lean_call_tool(
     router: &ToolRouter<BasemindServer>,
     request: CallToolRequestParams,
     context: RequestContext<rmcp::RoleServer>,
-) -> Result<CallToolResult, McpError> {
+) -> Result<CallToolResponse, McpError> {
     match request.name.as_ref() {
         TOOL_LIST => {
             let rows: Vec<Value> = router
@@ -172,7 +172,7 @@ pub(super) async fn lean_call_tool(
                     })
                 })
                 .collect();
-            structured_ok(json!({ "tools": rows }))
+            structured_ok(json!({ "tools": rows })).map(Into::into)
         }
         TOOL_GET_SCHEMA => {
             let tool_name = required_str(request.arguments.as_ref(), "tool_name")?;
@@ -185,6 +185,7 @@ pub(super) async fn lean_call_tool(
                 "description": tool.description,
                 "input_schema": tool.input_schema,
             }))
+            .map(Into::into)
         }
         TOOL_INVOKE => {
             let tool_name = required_str(request.arguments.as_ref(), "tool_name")?;

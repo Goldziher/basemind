@@ -14,9 +14,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# 1. Pre-warm in the background; `--version` triggers the launcher's install path
-#    then exits immediately. Never block or fail session startup on this.
-("${PLUGIN_ROOT}/scripts/mcp-launch.sh" --version >/dev/null 2>&1 &) || true
+# 1. Ensure the daemon that hosts the streamable-HTTP MCP transport is listening BEFORE the client
+#    dials its URL. SessionStart command hooks run before MCP servers connect, so this runs the
+#    launcher's `daemon ensure` synchronously (which also warms the version-matched binary cache on
+#    first run, then returns fast when the daemon is already up). `daemon ensure` self-bounds its
+#    wait, and we wrap it in `timeout` when available; either way it is fail-open so it never blocks
+#    or fails session startup.
+if command -v timeout >/dev/null 2>&1; then
+  timeout 30 "${PLUGIN_ROOT}/scripts/mcp-launch.sh" daemon ensure >/dev/null 2>&1 || true
+else
+  "${PLUGIN_ROOT}/scripts/mcp-launch.sh" daemon ensure >/dev/null 2>&1 || true
+fi
 
 # 2. Always inject the context-economy operating discipline.
 CONTEXT="basemind is available over MCP in this session — a tree-sitter code map + git context, served from a machine-global index cache (~/.local/share/basemind/, keyed by workspace; nothing is written into the repo) via a background daemon, so any number of sessions on this repo read and write concurrently. Prefer it over grep/read for structural and historical questions: its tools return paths, line numbers, and signatures, not file bodies, so they cost a fraction of the tokens of reading source. Default workflow: outline a file before opening it (then read only the span you need); search_symbols instead of grep for a definition; find_references/find_callers instead of grepping call sites; find_files (fuzzy fzf/fd-style) to locate a file by a name fragment; workspace_grep instead of shelling out to ripgrep; rescan after edits instead of reconnecting. Do not re-read a file basemind already mapped."

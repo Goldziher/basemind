@@ -81,6 +81,15 @@ fn default_true() -> bool {
     true
 }
 
+/// Response from `shell_send`.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ShellSendResponse {
+    /// The `session_id` that received the input.
+    pub session_id: String,
+    /// `true` once the text was written to the session's stdin.
+    pub sent: bool,
+}
+
 /// Parameters for `shell_capture`.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ShellCaptureParams {

@@ -25,7 +25,7 @@ impl WebScrapeParams {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WebScrapeResponse {
     pub url: String,
     pub final_url: String,
@@ -54,7 +54,7 @@ pub struct WebCrawlParams {
     pub scope: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WebCrawlResponse {
     pub seed_url: String,
     pub pages_visited: usize,
@@ -69,7 +69,7 @@ pub(super) struct WebCrawlResponse {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WebCrawlPageOutcome {
     pub url: String,
     pub status_code: u16,
@@ -90,7 +90,7 @@ pub struct WebMapParams {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WebMapResponse {
     pub url: String,
     /// URLs discovered, up to the crawlberg fetch cap that bounds peak memory (crawlberg#33). A
@@ -103,7 +103,7 @@ pub(super) struct WebMapResponse {
     pub urls: Vec<WebMapEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WebMapEntry {
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
