@@ -287,9 +287,14 @@ impl Broker {
     /// owns the registry as its sole writer; the coordination tools read/mutate through it. Tests
     /// inject an isolated registry here.
     pub fn with_registry(store: Arc<CommsStore>, machine_registry: MachineRegistry) -> Self {
+        let workspaces = Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP));
+        // Adopt the pool's drain token so `begin_drain`'s cancel reaches BOTH dispatch paths: the
+        // socket path (which clones `self.scan_cancel` into `pool.rescan`) and the in-process host
+        // seam (`WorkspacePool::host_rescan`, which uses the pool's own copy). One flag, every scan.
+        let scan_cancel = workspaces.scan_cancel();
         Self {
             store,
-            workspaces: Arc::new(WorkspacePool::new(workspace_pool::DEFAULT_HOT_CAP)),
+            workspaces,
             git_history: std::sync::Mutex::new(AHashMap::new()),
             git_history_open_lock: Mutex::new(()),
             registry: Mutex::new(Registry {
@@ -299,7 +304,7 @@ impl Broker {
             machine_registry: Mutex::new(machine_registry),
             blob_gc_lock: RwLock::new(()),
             shutdown: std::sync::OnceLock::new(),
-            scan_cancel: crate::scanner::ScanCancel::new(),
+            scan_cancel,
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
             work_inflight: AtomicUsize::new(0),

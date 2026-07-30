@@ -138,6 +138,12 @@ pub(crate) struct WorkspacePool {
     open_lock: Mutex<()>,
     /// Maximum hot entries; opening past this evicts the least-recently-used.
     cap: usize,
+    /// The broker's drain token, shared so the in-process host-rescan seam
+    /// ([`HostBackend::host_rescan`](crate::mcp::HostBackend::host_rescan)) cancels on drain exactly
+    /// like the socket path does. The broker adopts this token (see [`Self::scan_cancel`]) rather
+    /// than holding a separate one, so `begin_drain` trips a single flag that every scan path — socket
+    /// or hosted — observes at per-file granularity.
+    scan_cancel: ScanCancel,
 }
 
 impl WorkspacePool {
@@ -147,7 +153,14 @@ impl WorkspacePool {
             map: Mutex::new(AHashMap::new()),
             open_lock: Mutex::new(()),
             cap: cap.max(1),
+            scan_cancel: ScanCancel::new(),
         }
+    }
+
+    /// The pool's drain token, for the broker to adopt as its own so a single `cancel()` stops
+    /// scans on both the socket dispatch path and the in-process host seam.
+    pub(crate) fn scan_cancel(&self) -> ScanCancel {
+        self.scan_cancel.clone()
     }
 
     /// Lock the map, recovering from poisoning.
@@ -401,7 +414,11 @@ impl crate::mcp::HostBackend for WorkspacePool {
         full: bool,
         embed: bool,
     ) -> Result<ScanStats, String> {
-        self.rescan(root, paths, full, embed, &ScanCancel::default())
+        // Use the broker's shared drain token (not a throwaway `default()`), so a hosted mid-scan — ~keep
+        // e.g. a full-corpus Inline embed pass — honors `comms stop` / SIGTERM within one file ~keep
+        // instead of pinning the runtime until the 15s teardown backstop. The socket path already ~keep
+        // threads this token; the host seam must too. ~keep
+        self.rescan(root, paths, full, embed, &self.scan_cancel)
             .map(|(stats, _cancelled)| stats)
             .map_err(|error| error.to_string())
     }

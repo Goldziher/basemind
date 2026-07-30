@@ -16,6 +16,36 @@ fn workspace_with_sources() -> tempfile::TempDir {
 }
 
 #[test]
+fn host_rescan_honors_the_pools_shared_drain_token() {
+    // Regression (issue #44 follow-up): the in-process host seam must scan under the broker's shared ~keep
+    // drain token, NOT a throwaway `ScanCancel::default()`. The broker adopts the pool's token (see ~keep
+    // `Broker::with_registry`), so tripping it — as `begin_drain` does on `comms stop` / SIGTERM — ~keep
+    // must short-circuit a hosted rescan instead of pinning the runtime through a full, possibly ~keep
+    // embedding, scan pass. The old code passed `ScanCancel::default()` here, so a draining daemon ~keep
+    // could not interrupt a hosted mid-scan. ~keep
+    use crate::mcp::HostBackend;
+    store::init_isolated_cache();
+
+    // Baseline: an un-drained pool runs the hosted scan normally.
+    let live = WorkspacePool::new(DEFAULT_HOT_CAP);
+    let ws = workspace_with_sources();
+    let stats = live.host_rescan(ws.path(), None, false, false).expect("hosted scan");
+    assert_eq!(stats.scanned, 2, "an un-drained hosted rescan scans both sources");
+
+    // Drained: tripping the pool's shared token short-circuits host_rescan before it scans anything.
+    let drained = WorkspacePool::new(DEFAULT_HOT_CAP);
+    drained.scan_cancel().cancel();
+    let ws2 = workspace_with_sources();
+    let stats = drained
+        .host_rescan(ws2.path(), None, false, false)
+        .expect("drained hosted scan");
+    assert_eq!(
+        stats.scanned, 0,
+        "a drained pool must not run a hosted scan — the shared token wins"
+    );
+}
+
+#[test]
 fn rescan_indexes_sources_and_is_idempotent() {
     store::init_isolated_cache();
     let pool = WorkspacePool::new(DEFAULT_HOT_CAP);
