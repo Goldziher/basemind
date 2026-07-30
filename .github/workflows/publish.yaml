@@ -323,7 +323,11 @@ jobs:
             os: macos-15-intel
             features: full,ort-dynamic
           - triple: x86_64-pc-windows-msvc
-            os: windows-latest
+            # Pinned to windows-2022 (VS2022 / MSVC 14.4x). `windows-latest` rolled to a VS18 /
+            # MSVC 14.51 image that fails to compile xberg-libwpd's vendored C++
+            # (`make_shared<WP6SubDocument>`); 14.4x — the toolchain that shipped every prior
+            # release — compiles it. Revisit when the newer MSVC (or upstream libwpd) handles it.
+            os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
