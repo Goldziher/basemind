@@ -268,6 +268,29 @@ impl Store {
         Ok(Some(map))
     }
 
+    /// Refresh a REUSED document blob's mtime to now (best-effort).
+    ///
+    /// The blob GC keeps an *unreferenced* blob only while its mtime is within `BLOB_GC_GRACE`
+    /// (`src/store_gc.rs`). A long-lived document whose content never changes is reused, never
+    /// rewritten, so its blob mtime stays frozen at first-write and eventually ages past the grace —
+    /// and then a `NoCache` rename's transient entry-less window (issue #44: the remove half drops the
+    /// `DocEntry` before the create half re-references the same hash) lets the sweep reap the blob,
+    /// forcing a full re-extract + re-embed on the next encounter. Bumping mtime on every reuse keeps
+    /// an actively-scanned doc's blob "young", so the grace actually covers those rename windows.
+    /// Best-effort: a failure (blob already gone, read-only fs) only forgoes the protection for this
+    /// cycle — it never fails the scan.
+    #[cfg(feature = "documents")]
+    pub fn touch_doc_blob(&self, hash_hex: &str) {
+        let path = self.blob_path_doc_hex(hash_hex);
+        if let Err(error) = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_modified(std::time::SystemTime::now()))
+        {
+            tracing::debug!(%error, path = %path.display(), "touch_doc_blob: refreshing mtime failed");
+        }
+    }
+
     /// Path of a file's resolution blob (`<hash>.rref.msgpack`) — the per-file code-intelligence
     /// facts (intra-file resolved edges + import/export list). A sibling of the `.fm`/`.doc`
     /// blobs, content-addressed by source hash. Unframed single-map msgpack, like the doc tier.

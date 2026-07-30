@@ -16,6 +16,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 use basemind::config::ConfigV1;
 use basemind::scanner::{EmbedMode, ScanReport, ScanSource, scan, scan_paths};
@@ -126,6 +127,54 @@ fn rename_churn_reuses_cached_extraction() {
     assert!(
         store.lookup_doc("alpha-renamed.svg").is_some(),
         "new rel tracked in doc_files"
+    );
+}
+
+/// GAP-3 regression (#44 follow-up): a rename reuses the cached blob, but the blob GC only keeps an
+/// *unreferenced* blob while its mtime is within the grace window. A long-lived doc's blob is reused,
+/// never rewritten, so its mtime freezes at first-write and ages past the grace — and a NoCache
+/// rename's transient entry-less gap then lets the sweep reap it, re-triggering a full extract/embed.
+/// Reuse must refresh the blob mtime so the grace keeps protecting an actively-scanned doc.
+#[test]
+fn rename_reuse_refreshes_the_doc_blob_mtime_for_gc_grace() {
+    let (dir, cfg) = fixture();
+    let root = dir.path();
+    let mut store = Store::open(root, basemind::store::VIEW_WORKING).unwrap();
+    full_scan(root, &mut store, &cfg);
+
+    let hash_hex = store.lookup_doc("alpha.svg").expect("alpha tracked").hash_hex.clone();
+    let blob = store.blob_path_doc_hex(&hash_hex);
+    assert!(blob.exists(), "doc blob written on the first scan");
+
+    // Age the blob well past any GC grace window.
+    let stale = SystemTime::now() - Duration::from_secs(48 * 60 * 60);
+    fs::File::options()
+        .write(true)
+        .open(&blob)
+        .and_then(|f| f.set_modified(stale))
+        .expect("age the blob mtime");
+
+    // Rename so the new path misses the path-keyed DocEntry fast path and hits the content-hash reuse.
+    fs::rename(root.join("alpha.svg"), root.join("alpha-renamed.svg")).unwrap();
+    let report = scan_paths(
+        root,
+        &mut store,
+        &cfg,
+        &[root.join("alpha.svg"), root.join("alpha-renamed.svg")],
+        EmbedMode::Inline,
+    )
+    .unwrap();
+    assert_eq!(
+        report.stats.reused_doc_extraction, 1,
+        "rename served from the cached blob"
+    );
+
+    // The reuse refreshed the blob mtime to ~now, so an unreferenced-window GC sweep would spare it.
+    let mtime = fs::metadata(&blob).unwrap().modified().unwrap();
+    let age = SystemTime::now().duration_since(mtime).unwrap_or(Duration::ZERO);
+    assert!(
+        age < Duration::from_secs(300),
+        "reuse must refresh the blob mtime so the GC grace still covers it; age was {age:?}"
     );
 }
 

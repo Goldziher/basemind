@@ -265,6 +265,9 @@ pub(crate) fn extract_and_persist_doc(
     if let Some(cached) = store.read_doc_by_hex(hash_hex).ok().flatten()
         && cached_doc_is_reusable(&cached, cfg, embed)
     {
+        // Keep this reused blob "young" so the blob GC's grace window protects it through a NoCache
+        // rename's transient entry-less gap (issue #44) instead of reaping it and forcing a re-embed.
+        store.touch_doc_blob(hash_hex);
         return Ok(Some(pending_from_doc(&cached, rel, hash_hex, scope, cfg, embed, true)));
     }
 
