@@ -26,6 +26,10 @@ pub mod daemon;
 mod daemon_forward_handlers;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_handlers;
+/// Second `impl Broker` block: the streamable-HTTP per-request seam (activity guard, workspace
+/// read-stack resolution, connection accounting), split out of `daemon.rs` for the line cap.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod daemon_http;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_inproc;
 #[cfg(all(feature = "comms", any(unix, windows)))]
