@@ -451,10 +451,13 @@ fn process_doc(
     let hash_hex = hashing::hex_str(&hex_buf);
 
     if let Some(existing) = store.lookup_doc(rel)
-        && existing.hash_hex == hash_hex
-        && existing.embedding_preset == config.documents.embedding_preset
+        && crate::scanner_docs::doc_entry_settled(
+            existing,
+            hash_hex,
+            &config.documents.embedding_preset,
+            crate::scanner_docs::doc_embed_requested(rel, &config.documents, embed),
+        )
         && store.blob_path_doc_hex(hash_hex).exists()
-        && (existing.embedded || !crate::scanner_docs::doc_embed_requested(rel, &config.documents, embed))
     {
         return FileResult::bare(rel.to_string(), FileStatus::Unchanged);
     }
@@ -485,6 +488,7 @@ fn process_doc(
                 size_bytes,
                 mtime,
                 embedded: batch.embedded,
+                embed_attempted: batch.embed_attempted,
             };
             let doc_upsert = match embed {
                 EmbedMode::Inline => Some(doc_entry),

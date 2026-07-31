@@ -70,6 +70,12 @@ pub(crate) struct PendingDocBatch {
     /// embedded doc from a tracked-but-vectorless one (issue #44). True when the pass didn't ask to
     /// embed, when vectors are present, or when the doc has no chunks to embed.
     pub embedded: bool,
+    /// Whether this pass actually ran an embedding attempt on the doc (embedding requested, freshly
+    /// extracted) — even if xberg returned no vectors. Persisted onto
+    /// [`crate::store::DocEntry::embed_attempted`] so the unchanged fast path stops re-extracting and
+    /// re-embedding a deterministically-unembeddable doc on every scan (issue #44 follow-up). See that
+    /// field for the full healing contract.
+    pub embed_attempted: bool,
     /// True when this batch came from the cached-blob reuse branch of `extract_and_persist_doc`
     /// rather than a fresh xberg extraction. Drives the `reused_doc_extraction` scan counter — the
     /// observable proof that churn (renames, rewrites) does not re-run extraction or embedding.
@@ -290,6 +296,23 @@ pub(crate) fn doc_embed_requested(rel: &str, cfg: &DocumentsConfig, mode: EmbedM
     matches!(mode, EmbedMode::Inline) && cfg.embed && !crate::scanner_filter::embed_excluded(rel, &cfg.embed_exclude)
 }
 
+/// The pure (IO-free) half of the `process_doc` unchanged fast path: does a tracked entry settle the
+/// current pass without re-processing? True when the content hash and preset both match AND either
+/// the doc is embedded, a prior pass already attempted embedding (issue #44 follow-up — a failed
+/// attempt must not be re-extracted + retried every scan), or this pass does not ask to embed. The
+/// caller ANDs this with a blob-existence probe (the blob may have been GC'd out from under a
+/// still-tracked entry).
+pub(crate) fn doc_entry_settled(
+    existing: &crate::store::DocEntry,
+    hash_hex: &str,
+    embedding_preset: &str,
+    embed_requested: bool,
+) -> bool {
+    existing.hash_hex == hash_hex
+        && existing.embedding_preset == embedding_preset
+        && (existing.embedded || existing.embed_attempted || !embed_requested)
+}
+
 /// True when a cached document blob can be reused without re-extraction. When embedding is on the
 /// cached blob must carry embeddings produced by the current preset — matching both its **dimension**
 /// AND its **model**. The model check is load-bearing: `balanced` and `multilingual` share dim 768,
@@ -345,6 +368,9 @@ fn pending_from_doc(
         embedding_dim,
         emit_rows,
         embedded: !embed || embedding_dim > 0 || chunk_count == 0,
+        // Only a fresh extraction (`!reused`) ran an attempt; a reused blob already carries vectors ~keep
+        // (the reuse gate requires them), so `embedded` covers it and the flag is moot there. ~keep
+        embed_attempted: embed && !reused,
         reused,
     }
 }
@@ -609,10 +635,120 @@ mod tests {
             embedding_dim: 768,
             emit_rows: true,
             embedded: true,
+            embed_attempted: true,
             reused: false,
         };
         assert!(batch.emit_rows);
         assert_eq!(batch.chunk_count, 3);
+    }
+
+    /// Build a minimal document fixture: `chunk_count` chunks, each carrying an `embedding_dim`-long
+    /// vector (dim `0` leaves the chunks vectorless — the failed-embed shape).
+    fn doc_fixture(chunk_count: usize, embedding_dim: u16) -> crate::extract::doc::FileMapDoc {
+        use crate::extract::doc::{DocChunk, FileMapDoc};
+        let chunks = (0..chunk_count)
+            .map(|i| DocChunk {
+                byte_start: i as u32,
+                byte_end: i as u32 + 1,
+                text: format!("chunk {i}"),
+                embedding: vec![0.0_f32; embedding_dim as usize],
+            })
+            .collect();
+        FileMapDoc {
+            schema_ver: 0,
+            mime_type: "application/pdf".to_string(),
+            content: "body".to_string(),
+            metadata: Vec::new(),
+            detected_languages: Vec::new(),
+            chunks,
+            embedding_model: if embedding_dim > 0 {
+                "balanced".to_string()
+            } else {
+                String::new()
+            },
+            embedding_dim,
+            keywords: Vec::new(),
+            entities: Vec::new(),
+            summary: None,
+        }
+    }
+
+    /// GAP-2 regression (#44 follow-up): a fresh extraction that asked to embed but got zero vectors
+    /// back (an unembeddable body / missing ONNX) is recorded as *attempted* — so the fast path can
+    /// stop re-extracting it every scan — while `embedded` stays false because no vectors exist. A
+    /// successful embed sets both; an embed-off pass sets neither attempt nor a false `embedded`.
+    #[test]
+    fn pending_from_doc_marks_a_failed_embed_as_attempted_not_embedded() {
+        let cfg = DocumentsConfig::default();
+
+        let failed = doc_fixture(3, 0);
+        let batch = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
+        assert!(!batch.embedded, "no vectors => not embedded");
+        assert!(
+            batch.embed_attempted,
+            "a fresh embed-requested extraction counts as an attempt"
+        );
+        assert!(!batch.emit_rows, "a vectorless doc emits no LanceDB rows");
+
+        let ok = doc_fixture(3, 768);
+        let batch = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, false);
+        assert!(
+            batch.embedded && batch.embed_attempted,
+            "a successful embed sets both flags"
+        );
+
+        let off = pending_from_doc(&failed, "docs/a.pdf", "hash", "repo:x", &cfg, false, false);
+        assert!(off.embedded, "embed off leaves the requirement trivially satisfied");
+        assert!(!off.embed_attempted, "embed off ran no attempt");
+
+        let reused = pending_from_doc(&ok, "docs/a.pdf", "hash", "repo:x", &cfg, true, true);
+        assert!(
+            !reused.embed_attempted,
+            "a reused blob ran no fresh attempt (already embedded)"
+        );
+    }
+
+    /// GAP-2 regression (#44 follow-up): the fast-path predicate must treat an already-attempted doc
+    /// as settled so a deterministically-unembeddable file stops thrashing, while a legacy entry
+    /// (attempt flag absent, deserialized `false`) still heals exactly once, and a content-hash or
+    /// preset change re-opens the attempt.
+    #[test]
+    fn doc_entry_settled_backs_off_after_a_failed_embed_attempt() {
+        use crate::store::DocEntry;
+        let base = DocEntry {
+            hash_hex: "h".to_string(),
+            embedding_preset: "balanced".to_string(),
+            size_bytes: 10,
+            mtime: 0,
+            embedded: false,
+            embed_attempted: true,
+        };
+        assert!(
+            doc_entry_settled(&base, "h", "balanced", true),
+            "attempted-but-vectorless: settled, do not re-extract every scan"
+        );
+
+        let legacy = DocEntry {
+            embed_attempted: false,
+            ..base.clone()
+        };
+        assert!(
+            !doc_entry_settled(&legacy, "h", "balanced", true),
+            "a pre-field entry heals exactly once (attempt flag defaults false)"
+        );
+
+        assert!(
+            !doc_entry_settled(&base, "h2", "balanced", true),
+            "a content-hash change re-opens the attempt"
+        );
+        assert!(
+            !doc_entry_settled(&base, "h", "multilingual", true),
+            "a preset change re-opens the attempt"
+        );
+        assert!(
+            doc_entry_settled(&legacy, "h", "balanced", false),
+            "no embed requested this pass: settled regardless of the attempt flag"
+        );
     }
 
     /// `doc_embed_requested` is the single gate both `extract_and_persist_doc` and the

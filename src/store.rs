@@ -204,14 +204,28 @@ pub struct DocEntry {
     /// File mtime in nanoseconds since the epoch (0 = unknown). Recorded for symmetry with
     /// [`FileEntry`]; the doc unchanged-skip currently keys on the content hash, not mtime.
     pub mtime: i64,
-    /// Whether the pass that recorded this entry left the doc's embedding requirement satisfied
-    /// (vectors present, doc chunkless, or the pass didn't ask to embed). The unchanged fast path
-    /// consults this so a tracked-but-vectorless doc no longer short-circuits an embedding pass —
-    /// the quiescent half of the issue-#44 re-embed loop. Additive msgpack field: entries written
-    /// before it existed deserialize as `false`, costing exactly one healing re-process on the
-    /// next embedding pass (whose result now persists, see `Store::write_doc`).
+    /// Whether the pass that recorded this entry left the doc's embedding requirement satisfied —
+    /// vectors present, doc chunkless, or the pass didn't ask to embed. The unchanged fast path
+    /// consults this (alongside [`Self::embed_attempted`]) so a tracked-but-vectorless doc that has
+    /// *never* been embed-attempted still short-circuits into a re-embed — the quiescent half of the
+    /// issue-#44 re-embed loop. Additive msgpack field: entries written before it existed deserialize
+    /// as `false`, costing exactly one healing re-process on the next embedding pass (whose result now
+    /// persists, see `Store::write_doc`).
     #[serde(default)]
     pub embedded: bool,
+    /// Whether a prior `Inline` pass actually ran an embedding attempt on this exact content under
+    /// this exact preset — regardless of whether xberg returned any vectors. Distinct from
+    /// [`Self::embedded`] (true only when vectors are present or none were needed): a doc whose
+    /// embedding *failed* (xberg yielded zero vectors — missing ONNX runtime, an unembeddable body)
+    /// has `embedded == false` but `embed_attempted == true`. The unchanged fast path treats an
+    /// already-attempted doc as settled, so a deterministically-unembeddable file is not re-extracted
+    /// and re-embedded on every scan (issue #44 follow-up: the "no backoff" gap). A content-hash or
+    /// preset change independently re-opens the attempt (both break the fast path on their own); a
+    /// pure environment fix — installing ONNX without touching the file or preset — heals on the next
+    /// full re-index. Additive msgpack field: pre-existing entries deserialize as `false`, costing
+    /// exactly one healing re-process.
+    #[serde(default)]
+    pub embed_attempted: bool,
 }
 
 pub struct Store {

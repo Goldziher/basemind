@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
-## [0.23.0] — 2026-07-30
+## [0.23.0] — 2026-07-31
 
 Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`** (`RELEASE_MINOR`
 22 → 23). Rebuild is automatic from source; no action needed.
@@ -47,6 +47,14 @@ Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`**
   it. The daemon-hosted model decouples server lifetime from any single connection: a dropped client
   ends only the throwaway relay (or a single stateless HTTP request), and the warm daemon serves the
   next connection immediately.
+- **Document re-embed loop follow-ups (issue #44).** Three residual thrash paths on the document
+  tier are closed: (1) a hosted rescan now honors the daemon drain token, so `comms stop` / SIGTERM
+  interrupts a mid-scan instead of letting it run to completion; (2) a reused document blob has its
+  mtime refreshed on every scan, so the blob GC's grace window keeps protecting an actively-scanned
+  doc through a rename's transient entry-less gap instead of reaping it and forcing a full re-embed;
+  (3) a doc whose embedding deterministically yields no vectors (an unembeddable body, a missing ONNX
+  runtime) is now recorded as _attempted_ and no longer re-extracted + re-embedded on every scan — a
+  content-hash or embedding-preset change re-opens the attempt.
 
 ## [0.22.8] — 2026-07-27
 
