@@ -21,9 +21,11 @@ pub use crate::store_layout::LANCE_DIR;
 #[cfg(any(feature = "test-support", test))]
 pub use crate::store_layout::init_isolated_cache;
 pub use crate::store_layout::{
-    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR,
-    WORKSPACE_MARKER_FILE, WORKSPACES_DIR, WorkspaceMarker, cache_root, ensure_workspace_marker, global_blobs_dir,
-    read_workspace_marker, view_name_for_rev, workspace_cache_dir, workspace_key,
+    BLOBS_DIR, CACHE_DIR, DATA_HOME_ENV, INDEX_FILE, LOCK_FILE, LOCK_META_FILE, STATUS_SIDECAR_FILE,
+    STATUS_SIDECAR_SCHEMA_VER, StatusSidecar, VIEW_STAGED, VIEW_WORKING, VIEWS_DIR, WORKSPACE_MARKER_FILE,
+    WORKSPACES_DIR, WorkspaceMarker, cache_root, count_fm_blobs, ensure_workspace_marker, global_blobs_dir,
+    read_status_sidecar, read_workspace_marker, status_sidecar_path, view_name_for_rev, workspace_cache_dir,
+    workspace_key, write_status_sidecar,
 };
 
 /// Which basemind command is taking the exclusive store lock. Threaded from the caller
@@ -470,6 +472,20 @@ impl Store {
             source,
         })?;
         Ok(())
+    }
+
+    /// Refresh the cheap `status.json` sidecar for a shell statusline (see [`StatusSidecar`]).
+    ///
+    /// A no-op for non-working views: the statusline only ever reflects the working view, and writing
+    /// from a `staged`/`rev-*` scan would clobber it with the wrong counts. Best-effort — a failed
+    /// write is swallowed by [`write_status_sidecar`], so it never affects a scan's success.
+    pub fn write_status_sidecar(&self) {
+        if self.view != VIEW_WORKING {
+            return;
+        }
+        let file_count = self.index.files.len();
+        let blob_count = count_fm_blobs(&self.blobs_dir);
+        write_status_sidecar(&self.basemind_dir, file_count, blob_count);
     }
 }
 

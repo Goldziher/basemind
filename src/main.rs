@@ -349,7 +349,9 @@ fn main() -> Result<()> {
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args, json),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
-        Cmd::Statusline => comms_cli::cmd_statusline(),
+        // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
+        // `basemind statusline` keeps the daemon hot-workspace summary.
+        Cmd::Statusline => comms_cli::cmd_statusline(cli.root.as_ref().map(|_| root.as_path())),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(&root, action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]

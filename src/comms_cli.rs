@@ -8,10 +8,21 @@
 use anyhow::Context;
 use anyhow::Result;
 
-/// Print a compact statusline of the daemon's hot workspaces. Fast and silent by design: a missing
-/// daemon (or any error) prints nothing and exits 0 so a shell statusline degrades cleanly. Without
-/// the `comms` feature there is no daemon, so it is a no-op.
-pub(crate) fn cmd_statusline() -> Result<()> {
+/// Print a statusline. Two modes:
+///
+/// - `root == Some(path)` (invoked as `basemind statusline --root <path>`): render the compact
+///   per-repo line for that workspace, read CHEAPLY from the `status.json` sidecar + `telemetry.jsonl`
+///   — never opening the Fjall index (no [`basemind::store::Store::open`], no index recovery), so it
+///   is safe to refresh every few seconds. This is the path the shell plugin delegates to when the
+///   index lives in the machine-global cache (nothing in the repo to read).
+/// - `root == None` (invoked as bare `basemind statusline`): the daemon hot-workspace summary
+///   (unchanged). Fast and silent: a missing daemon prints nothing and exits 0. Without the `comms`
+///   feature there is no daemon, so that path is a no-op.
+pub(crate) fn cmd_statusline(root: Option<&std::path::Path>) -> Result<()> {
+    if let Some(root) = root {
+        println!("{}", render_repo_statusline(root));
+        return Ok(());
+    }
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
         use basemind::comms::client::CommsClient;
@@ -36,6 +47,138 @@ pub(crate) fn cmd_statusline() -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ANSI palette mirroring `.claude-plugin/statusline.sh` so the delegated line matches the shell's
+// aesthetic. True-color brand orange (#F97316) + 256-color accents; a single `\x1b[0m` resets each span.
+const BRAND: &str = "\x1b[38;2;249;115;22m";
+const CYAN: &str = "\x1b[38;5;51m";
+const MAGENTA: &str = "\x1b[38;5;201m";
+const LABEL: &str = "\x1b[38;5;255m";
+const SEP: &str = "\x1b[38;5;240m";
+const BOLD: &str = "\x1b[1m";
+const RESET: &str = "\x1b[0m";
+const BRAND_GLYPH: &str = "◆";
+
+/// The `◆ basemind` brand mark, matching the shell renderer's `mark()`.
+fn brand_mark() -> String {
+    format!("{BRAND}{BRAND_GLYPH}{RESET} {BOLD}{BRAND}basemind{RESET}")
+}
+
+/// Render the compact per-repo statusline for `root`, reading ONLY the cheap `status.json` sidecar
+/// and `telemetry.jsonl` tail — never opening the index. When the workspace has no sidecar (never
+/// scanned, or an unrecognized schema), returns the same "no index" hint the shell shows so the bar
+/// is never blank.
+fn render_repo_statusline(root: &std::path::Path) -> String {
+    use basemind::store::{read_status_sidecar, workspace_cache_dir};
+
+    let basemind_dir = workspace_cache_dir(root);
+    let Some(status) = read_status_sidecar(&basemind_dir) else {
+        return format!(
+            "{} {SEP}│{RESET} {LABEL}no index — run:{RESET} {BOLD}{CYAN}basemind scan{RESET}",
+            brand_mark()
+        );
+    };
+
+    let age = format_scan_age(status.scanned_unix);
+    let (calls, saved) = telemetry_today(&basemind_dir);
+
+    let mut out = format!(
+        "{}  {BOLD}{CYAN}{}{RESET} {LABEL}files{RESET} {SEP}·{RESET} {BOLD}{CYAN}{age}{RESET}",
+        brand_mark(),
+        fmt_count(status.file_count as u64),
+    );
+    out.push_str(&format!(
+        "  {SEP}│{RESET}  {BOLD}{MAGENTA}{}{RESET} {LABEL}calls{RESET} {SEP}·{RESET} {BOLD}{MAGENTA}{}{RESET} {LABEL}saved{RESET}",
+        fmt_count(calls),
+        fmt_count(saved),
+    ));
+    out
+}
+
+/// Human-readable age of a Unix-epoch-seconds scan timestamp (`Ns/Nm/Nh/Nd ago`), mirroring the
+/// shell renderer's buckets. `"never"` when the timestamp is non-positive or in the future.
+fn format_scan_age(scanned_unix: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - scanned_unix;
+    if scanned_unix <= 0 || delta < 0 {
+        return "never".to_string();
+    }
+    if delta < 60 {
+        format!("{delta}s ago")
+    } else if delta < 3_600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h ago", delta / 3_600)
+    } else {
+        format!("{}d ago", delta / 86_400)
+    }
+}
+
+/// One telemetry row, read for its two aggregate fields only. Unknown fields are ignored by serde,
+/// so this stays forward-compatible with the full `TelemetryRow` schema without coupling to it.
+#[derive(serde::Deserialize)]
+struct StatuslineTelemetryRow {
+    ts_micros: i64,
+    #[serde(default)]
+    est_tokens_saved: u64,
+}
+
+/// Aggregate today's `(calls, est_tokens_saved)` from `telemetry.jsonl`, tailing the last rows and
+/// counting those within the last 24h — the same "today" window the MCP telemetry summary uses.
+/// Best-effort: a missing/unreadable log yields `(0, 0)`.
+fn telemetry_today(basemind_dir: &std::path::Path) -> (u64, u64) {
+    use std::io::{BufRead, BufReader};
+
+    const TAIL_ROWS: usize = 2_000;
+    const DAY_MICROS: i64 = 24 * 3_600 * 1_000_000;
+
+    let now_micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    let cutoff = now_micros.saturating_sub(DAY_MICROS);
+
+    let Ok(file) = std::fs::File::open(basemind_dir.join("telemetry.jsonl")) else {
+        return (0, 0);
+    };
+    let mut tail: std::collections::VecDeque<StatuslineTelemetryRow> =
+        std::collections::VecDeque::with_capacity(TAIL_ROWS);
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(row) = serde_json::from_str::<StatuslineTelemetryRow>(&line) {
+            if tail.len() == TAIL_ROWS {
+                tail.pop_front();
+            }
+            tail.push_back(row);
+        }
+    }
+    let mut calls = 0u64;
+    let mut saved = 0u64;
+    for row in tail.iter().filter(|r| r.ts_micros >= cutoff) {
+        calls += 1;
+        saved = saved.saturating_add(row.est_tokens_saved);
+    }
+    (calls, saved)
+}
+
+/// Compact count formatting mirroring the shell renderer's `fmt_count`: plain under 1k, one-decimal
+/// `k` under 10k, integer `k` under 1M, integer `M` beyond.
+fn fmt_count(n: u64) -> String {
+    if n < 1_000 {
+        format!("{n}")
+    } else if n < 10_000 {
+        format!("{}.{}k", n / 1_000, (n * 10 / 1_000) % 10)
+    } else if n < 1_000_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        format!("{}M", n / 1_000_000)
+    }
 }
 
 /// Render the daemon's hot-workspace snapshot into one compact line (e.g. `bm: web · api +2 · 5

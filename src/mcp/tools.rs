@@ -817,14 +817,7 @@ pub(super) fn search_max_total(limit: usize) -> usize {
 ///
 /// Returns `0` when the blobs directory is absent or unreadable; the count is advisory.
 pub(super) fn count_fm_blobs() -> usize {
-    let blobs_dir = crate::store::global_blobs_dir();
-    let Ok(entries) = std::fs::read_dir(&blobs_dir) else {
-        return 0;
-    };
-    entries
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
-        .count()
+    crate::store::count_fm_blobs(&crate::store::global_blobs_dir())
 }
 
 /// Build the `status` divergence note (bug #10): when the current view's index is empty

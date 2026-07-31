@@ -107,11 +107,17 @@ else
 fi
 
 empty_dir="$(mktemp -d)"
-trap 'rm -rf "$FIXTURE" "$empty_dir"' EXIT
+# Missing .basemind/ now delegates to `basemind statusline --root`. Shadow the binary with a stub that
+# returns nothing, so this deterministically exercises the shell's own fallback (Part C: never blank)
+# regardless of whatever basemind is installed on this machine.
+stub_bin="$(mktemp -d)"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$stub_bin/basemind"
+chmod +x "$stub_bin/basemind"
+trap 'rm -rf "$FIXTURE" "$empty_dir" "$stub_bin"' EXIT
 empty_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$empty_dir")"
-empty_output="$(printf '%s' "$empty_payload" | "$STATUSLINE")"
+empty_output="$(printf '%s' "$empty_payload" | PATH="$stub_bin:$PATH" "$STATUSLINE")"
 if [[ "$empty_output" == *'no index'* ]] && [[ "$empty_output" == *'basemind scan'* ]]; then
-	printf '  ok  missing .basemind/ shows actionable hint\n'
+	printf '  ok  missing .basemind/ + empty delegate output falls back to actionable hint\n'
 else
 	printf '  FAIL expected actionable hint, got: %q\n' "$empty_output" >&2
 	fail=1
@@ -143,6 +149,86 @@ if [[ "$picked_mtime" == *"/0.9.0/"* ]]; then
 	printf '  ok  mtime ordering (ls -dt) demonstrably picks the WRONG version (0.9.0)\n'
 else
 	printf '  note mtime ordering picked %q (fixture timing); sort -V guard still holds\n' "$picked_mtime"
+fi
+
+# Global-cache mode: no in-repo .basemind/. The shell must delegate to `basemind statusline --root`,
+# which reads the status.json sidecar the scanner writes into the machine-global cache. Needs the
+# real binary (for the real workspace_key); skips cleanly if it can't be built.
+gc_bin=""
+for candidate in "$REPO_ROOT/target/release/basemind" "$REPO_ROOT/target/debug/basemind"; do
+	[[ -x "$candidate" ]] && gc_bin="$candidate" && break
+done
+if [[ -z "$gc_bin" ]] && command -v cargo >/dev/null 2>&1; then
+	printf '  .. building basemind for global-cache-mode check\n'
+	(cd "$REPO_ROOT" && cargo build --quiet --features comms --bin basemind) && gc_bin="$REPO_ROOT/target/debug/basemind"
+fi
+
+if [[ -x "$gc_bin" ]]; then
+	gc_data="$(mktemp -d)"
+	gc_repo="$(mktemp -d)"
+	printf 'fn main() { println!("a"); }\n' >"$gc_repo/a.rs"
+	printf 'pub fn b() -> i32 { 1 }\n' >"$gc_repo/b.rs"
+	printf 'pub fn c() -> i32 { 2 }\n' >"$gc_repo/c.rs"
+	git -C "$gc_repo" init -q >/dev/null 2>&1 || true
+	BASEMIND_DATA_HOME="$gc_data" "$gc_bin" scan --root "$gc_repo" >/dev/null 2>&1 || true
+
+	gc_keydir="$(find "$gc_data/cache/workspaces" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+	if [[ -n "$gc_keydir" && -f "$gc_keydir/status.json" ]]; then
+		printf '  ok  scan wrote status.json sidecar into the global-cache workspace dir\n'
+	else
+		printf '  FAIL scan did not write a status.json sidecar under %q\n' "$gc_data" >&2
+		fail=1
+	fi
+
+	gc_now_us="$(($(date +%s) * 1000000))"
+	printf '{"ts_micros":%d,"tool":"outline","resp_bytes":10,"est_tokens_saved":500,"saved_baseline":"read"}\n' \
+		"$gc_now_us" >"$gc_keydir/telemetry.jsonl"
+
+	# The shell resolves the repo root upward, so point current_dir at the scanned root itself. Put the
+	# real binary first on PATH so the shell's `command -v basemind` finds it, and export the isolated
+	# cache so `statusline --root` reads the fixture we just built.
+	gc_payload="$(printf '{"workspace":{"current_dir":"%s"}}' "$gc_repo")"
+	gc_output="$(printf '%s' "$gc_payload" |
+		PATH="$(dirname "$gc_bin"):$PATH" BASEMIND_DATA_HOME="$gc_data" "$STATUSLINE")"
+	gc_clean="$(printf '%s' "$gc_output" | sed -E $'s/\033\\[[0-9;:]*m//g')"
+	rm -rf "$gc_data" "$gc_repo"
+
+	if [[ "$gc_clean" == *'◆'* && "$gc_clean" == *'basemind'* ]]; then
+		printf '  ok  global-cache mode renders the basemind brand line (delegated)\n'
+	else
+		printf '  FAIL global-cache mode should render the brand line; got: %q\n' "$gc_clean" >&2
+		fail=1
+	fi
+	if [[ "$gc_clean" == *'3 files'* ]]; then
+		printf '  ok  global-cache mode shows the sidecar file count (3 files)\n'
+	else
+		printf '  FAIL global-cache mode should show "3 files"; got: %q\n' "$gc_clean" >&2
+		fail=1
+	fi
+	if [[ "$gc_clean" == *'no index'* ]]; then
+		printf '  FAIL global-cache mode wrongly fell back to the no-index hint; got: %q\n' "$gc_clean" >&2
+		fail=1
+	else
+		printf '  ok  global-cache mode does NOT show the stale "no index" hint (bug fixed)\n'
+	fi
+
+	# Real binary, isolated empty cache, unscanned repo → the delegated line is the actionable
+	# "no index" hint (Part B's no-sidecar branch), proving `--root` never touches the daemon.
+	gc_data2="$(mktemp -d)"
+	gc_repo2="$(mktemp -d)"
+	gc_payload2="$(printf '{"workspace":{"current_dir":"%s"}}' "$gc_repo2")"
+	gc_output2="$(printf '%s' "$gc_payload2" |
+		PATH="$(dirname "$gc_bin"):$PATH" BASEMIND_DATA_HOME="$gc_data2" "$STATUSLINE")"
+	gc_clean2="$(printf '%s' "$gc_output2" | sed -E $'s/\033\\[[0-9;:]*m//g')"
+	rm -rf "$gc_data2" "$gc_repo2"
+	if [[ "$gc_clean2" == *'no index'* && "$gc_clean2" == *'basemind scan'* ]]; then
+		printf '  ok  unscanned repo delegates to the actionable no-index hint (real binary)\n'
+	else
+		printf '  FAIL unscanned repo should delegate to no-index hint; got: %q\n' "$gc_clean2" >&2
+		fail=1
+	fi
+else
+	printf '  skip global-cache-mode check (no basemind binary and no cargo to build one)\n'
 fi
 
 if [[ $fail -eq 0 ]]; then

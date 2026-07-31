@@ -39,6 +39,15 @@ pub const LOCK_META_FILE: &str = ".lock.meta";
 /// dirs self-heal; best-effort and non-load-bearing, exactly like `.lock.meta` — a missing marker
 /// only means the dir is unverifiable, and the reaper's conservative policy keeps it.
 pub const WORKSPACE_MARKER_FILE: &str = "workspace.json";
+/// Cheap status sidecar written next to [`WORKSPACE_MARKER_FILE`] after a working-view
+/// scan/rescan. It lets a shell statusline render file counts + scan age WITHOUT opening the Fjall
+/// index — which would force a full index recovery (heavy log spam, slow) on every ~5s refresh.
+/// Best-effort and non-load-bearing, exactly like `workspace.json`: a missing/corrupt sidecar just
+/// degrades the statusline to a "no index" hint. See [`write_status_sidecar`] / [`read_status_sidecar`].
+pub const STATUS_SIDECAR_FILE: &str = "status.json";
+/// Schema version of [`StatusSidecar`]. Bump on any incompatible field change; [`read_status_sidecar`]
+/// ignores a sidecar whose `schema_ver` it does not recognize (forward-compat, like a schema wipe).
+pub const STATUS_SIDECAR_SCHEMA_VER: u32 = 1;
 pub const VIEWS_DIR: &str = "views";
 /// Lazy-opened LanceDB store directory under `.basemind/`. Created on first use.
 #[cfg(feature = "intelligence")]
@@ -148,6 +157,72 @@ pub fn read_workspace_marker(basemind_dir: &Path) -> Option<WorkspaceMarker> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// The cheap `status.json` sidecar: a snapshot of a working view's size (file + blob counts) and
+/// when it was last scanned. Written after every working-view scan/rescan so a shell statusline can
+/// render the rich per-repo line by reading one tiny JSON file instead of opening the Fjall index.
+///
+/// Deliberately minimal and best-effort: it mirrors `workspace.json`'s "additive, non-load-bearing"
+/// contract, never gates a scan, and is safe to be absent (the reader degrades to a "no index" hint).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StatusSidecar {
+    /// Sidecar schema version; see [`STATUS_SIDECAR_SCHEMA_VER`].
+    pub schema_ver: u32,
+    /// Number of code files in the working view's index (`Index::files.len()` — the same population
+    /// the MCP `status` tool reports as `file_count`).
+    pub file_count: usize,
+    /// Number of content-addressed filemap blobs on disk (`*.fm.msgpack` in the global blob store),
+    /// counted consistently with the MCP `status` tool's `blob_count`.
+    pub blob_count: usize,
+    /// Unix-epoch seconds when the sidecar was written (i.e. when the scan that produced it finished).
+    pub scanned_unix: i64,
+}
+
+/// Path of the `status.json` sidecar inside a workspace cache dir.
+pub fn status_sidecar_path(basemind_dir: &Path) -> PathBuf {
+    basemind_dir.join(STATUS_SIDECAR_FILE)
+}
+
+/// Count content-addressed filemap blobs (`*.fm.msgpack`) in `blobs_dir` — the same population the
+/// MCP `status` tool reports as `blob_count`. Returns `0` when the directory is absent or unreadable;
+/// the count is advisory, never load-bearing.
+pub fn count_fm_blobs(blobs_dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(blobs_dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".fm.msgpack")))
+        .count()
+}
+
+/// Best-effort atomic write of the `status.json` sidecar into `basemind_dir`. `scanned_unix` is set
+/// to now. Errors are swallowed deliberately, mirroring [`ensure_workspace_marker`] — a failed
+/// sidecar write must never fail a scan, and a stale/absent sidecar only degrades the statusline.
+pub fn write_status_sidecar(basemind_dir: &Path, file_count: usize, blob_count: usize) {
+    let scanned_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let sidecar = StatusSidecar {
+        schema_ver: STATUS_SIDECAR_SCHEMA_VER,
+        file_count,
+        blob_count,
+        scanned_unix,
+    };
+    let Ok(bytes) = serde_json::to_vec(&sidecar) else {
+        return;
+    };
+    let _ = write_bytes_atomic(status_sidecar_path(basemind_dir), &bytes);
+}
+
+/// Read the `status.json` sidecar. `None` when it is absent, unparsable, or carries an unrecognized
+/// `schema_ver` — the caller must then treat the workspace as unscanned (render the "no index" hint).
+pub fn read_status_sidecar(basemind_dir: &Path) -> Option<StatusSidecar> {
+    let bytes = std::fs::read(status_sidecar_path(basemind_dir)).ok()?;
+    let sidecar: StatusSidecar = serde_json::from_slice(&bytes).ok()?;
+    (sidecar.schema_ver == STATUS_SIDECAR_SCHEMA_VER).then_some(sidecar)
+}
+
 /// Redirect [`cache_root`] at a per-process temp dir for the whole test binary.
 ///
 /// Sets `$BASEMIND_DATA_HOME` exactly once (via [`std::sync::Once`]) to a leaked [`tempfile::TempDir`]
@@ -173,4 +248,69 @@ pub fn init_isolated_cache() {
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
         }
     });
+}
+
+#[cfg(test)]
+mod status_sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn write_then_read_round_trips_counts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_status_sidecar(dir.path(), 42, 7);
+        let sidecar = read_status_sidecar(dir.path()).expect("sidecar present after write");
+        assert_eq!(sidecar.schema_ver, STATUS_SIDECAR_SCHEMA_VER);
+        assert_eq!(sidecar.file_count, 42);
+        assert_eq!(sidecar.blob_count, 7);
+        assert!(
+            sidecar.scanned_unix > 0,
+            "scanned_unix should be a real epoch, got {}",
+            sidecar.scanned_unix
+        );
+    }
+
+    #[test]
+    fn read_is_none_when_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(read_status_sidecar(dir.path()), None);
+    }
+
+    #[test]
+    fn read_rejects_unrecognized_schema_ver() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bytes = serde_json::to_vec(&StatusSidecar {
+            schema_ver: STATUS_SIDECAR_SCHEMA_VER + 1,
+            file_count: 1,
+            blob_count: 1,
+            scanned_unix: 1,
+        })
+        .expect("serialize");
+        std::fs::write(status_sidecar_path(dir.path()), bytes).expect("write");
+        assert_eq!(
+            read_status_sidecar(dir.path()),
+            None,
+            "a future schema_ver must be ignored, not misread"
+        );
+    }
+
+    #[test]
+    fn count_fm_blobs_counts_only_fm_msgpack() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for name in [
+            "a.fm.msgpack",
+            "b.fm.msgpack",
+            "c.doc.msgpack",
+            "d.txt",
+            "e.fm.msgpack.tmp",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").expect("write blob");
+        }
+        assert_eq!(count_fm_blobs(dir.path()), 2, "only *.fm.msgpack files count");
+    }
+
+    #[test]
+    fn count_fm_blobs_is_zero_for_missing_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(count_fm_blobs(&dir.path().join("does-not-exist")), 0);
+    }
 }

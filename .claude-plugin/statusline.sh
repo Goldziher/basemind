@@ -154,8 +154,23 @@ bm_version() {
 
 build_basemind_line() {
 	if [[ ! -d "$bm_dir" ]]; then
-		printf '%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
-			"$(mark)" "$sep" "$reset" "$label" "$reset" "$bold" "$cyan" "$reset"
+		# Global-cache mode: no in-repo .basemind/. The index lives in the machine-global cache, keyed
+		# by a blake3 of the canonical repo path the shell cannot reproduce — so delegate to the binary,
+		# which reads the cheap status.json sidecar (no index open). Fall back to a non-blank hint.
+		local delegated=""
+		if command -v basemind >/dev/null 2>&1; then
+			if command -v timeout >/dev/null 2>&1; then
+				delegated="$(timeout 2 basemind statusline --root "$cwd" 2>/dev/null || true)"
+			else
+				delegated="$(basemind statusline --root "$cwd" 2>/dev/null || true)"
+			fi
+		fi
+		if [[ -n "$delegated" ]]; then
+			printf '%s' "$delegated"
+		else
+			printf '%s %s│%s %sno index — run:%s %s%sbasemind scan%s' \
+				"$(mark)" "$sep" "$reset" "$label" "$reset" "$bold" "$cyan" "$reset"
+		fi
 		return
 	fi
 	local blobs_dir="${bm_dir}/blobs"

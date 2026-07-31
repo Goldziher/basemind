@@ -436,6 +436,9 @@ pub fn scan_with_cancel(
 /// A lane that mutates `store.index` must flush again after itself (only the doc-removal lane does).
 fn flush_code_map(store: &Store) -> Result<(), ScanError> {
     store.flush()?;
+    // Refresh the cheap statusline sidecar the moment the code map is durable, so a shell
+    // statusline sees fresh counts without ever opening the Fjall index. Best-effort by design.
+    store.write_status_sidecar();
     Ok(())
 }
 
