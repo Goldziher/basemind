@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [0.23.1] — 2026-07-31
+
+### Fixed
+
+- **Blank statusline in global-cache mode.** With the index living in the machine-global cache there
+  is no in-repo `.basemind/` for the shell statusline to read, so it fell back to a permanent "no
+  index" hint even on a freshly-scanned repo. `basemind statusline` gains a `--root <path>` mode that
+  renders the rich per-repo line (file count · scan age · today's calls · tokens saved) from a cheap
+  new `status.json` sidecar plus the `telemetry.jsonl` tail — never opening the Fjall index, so it is
+  safe to refresh every few seconds. The sidecar is written after every working-view scan/rescan and
+  is additive/best-effort (a missing or unrecognized-schema sidecar degrades to the "no index" hint).
+  No blob/index schema change.
+
 ## [0.23.0] — 2026-07-31
 
 Minor release: **`.basemind/` is wiped and rebuilt on the next `basemind scan`** (`RELEASE_MINOR`
