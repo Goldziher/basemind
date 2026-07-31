@@ -136,23 +136,41 @@ runs:
         }
 
         # Force libz-sys (pulled in by xberg-libwpd for WordPerfect decompression) to build its
-        # bundled zlib from source and link it statically. Otherwise its build script probes vcpkg
-        # via the `vcpkg` crate, emits a bare `-l zlib`, and the final basemind.exe link fails
-        # non-deterministically with LNK1181 (cannot open 'zlib.lib') because the vcpkg crate
-        # defaults to the dynamic x64-windows triplet whose zlib.lib is not on the linker path.
-        # LIBZ_SYS_STATIC=1 makes libz-sys self-contained, independent of any vcpkg zlib.
+        # bundled zlib from source and link it statically, so it never probes vcpkg for zlib.
         Add-Content -Path $env:GITHUB_ENV -Value "LIBZ_SYS_STATIC=1"
 
-        # Install libheif via vcpkg (heif/x265/de265 image codecs). vcpkg resolves zlib as a
-        # libheif build-time transitive on its own; basemind's own zlib link is handled above.
+        # Install zlib + libheif via vcpkg (heif/x265/de265 image codecs).
         $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
         $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
         if (Test-Path $vcpkgExe) {
-          Write-Host "Installing libheif via vcpkg..."
-          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse || `
-            Write-Host "::warning::Failed to install libheif via vcpkg"
+          Write-Host "Installing zlib + libheif via vcpkg..."
+          & $vcpkgExe install "zlib:x64-windows-static-md" "libheif:x64-windows-static-md" --recurse || `
+            Write-Host "::warning::Failed to install libheif/zlib via vcpkg"
 
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+
+          # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate, which emits a
+          # bare `-l zlib` (=> the linker opens `zlib.lib` off a LIBPATH). vcpkg's static-md zlib
+          # port installs its static archive as `zlibstatic.lib`, NOT `zlib.lib`, so the final
+          # basemind.exe link dies with LNK1181 (cannot open 'zlib.lib'). Alias whatever zlib static
+          # archive vcpkg produced to `zlib.lib` in the installed lib dir that is already on LIBPATH.
+          $libDir = Join-Path $vcpkgRoot "installed\x64-windows-static-md\lib"
+          Write-Host "zlib archives present in ${libDir}:"
+          Get-ChildItem -Path $libDir -Filter "*zlib*.lib" -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "  $($_.Name)" }
+          $zlibTarget = Join-Path $libDir "zlib.lib"
+          if (-not (Test-Path $zlibTarget)) {
+            $alt = Get-ChildItem -Path $libDir -Filter "*zlib*.lib" -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -notmatch 'd\.lib$' } | Select-Object -First 1
+            if ($alt) {
+              Copy-Item -Path $alt.FullName -Destination $zlibTarget -Force
+              Write-Host "Aliased $($alt.Name) -> zlib.lib in $libDir"
+            } else {
+              Write-Host "::warning::No zlib static archive found in $libDir to alias to zlib.lib"
+            }
+          } else {
+            Write-Host "zlib.lib already present in $libDir"
+          }
         }
 
         Write-Host "::endgroup::"
