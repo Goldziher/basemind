@@ -135,17 +135,22 @@ runs:
           Add-Content -Path $env:GITHUB_ENV -Value "TESSDATA_PREFIX=$tessdataPath"
         }
 
-        # Install libheif + zlib via vcpkg. zlib is listed explicitly (not just as a libheif
-        # transitive) because libz-sys probes vcpkg, emits a bare `-l zlib` + the vcpkg search
-        # path, and then the link fails with LNK1181 (cannot open 'zlib.lib') whenever the
-        # transitive zlib port did not actually materialize on a fresh runner. Installing it
-        # directly guarantees zlib.lib is on the LIBPATH libz-sys already points at.
+        # Force libz-sys (pulled in by xberg-libwpd for WordPerfect decompression) to build its
+        # bundled zlib from source and link it statically. Otherwise its build script probes vcpkg
+        # via the `vcpkg` crate, emits a bare `-l zlib`, and the final basemind.exe link fails
+        # non-deterministically with LNK1181 (cannot open 'zlib.lib') because the vcpkg crate
+        # defaults to the dynamic x64-windows triplet whose zlib.lib is not on the linker path.
+        # LIBZ_SYS_STATIC=1 makes libz-sys self-contained, independent of any vcpkg zlib.
+        Add-Content -Path $env:GITHUB_ENV -Value "LIBZ_SYS_STATIC=1"
+
+        # Install libheif via vcpkg (heif/x265/de265 image codecs). vcpkg resolves zlib as a
+        # libheif build-time transitive on its own; basemind's own zlib link is handled above.
         $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
         $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
         if (Test-Path $vcpkgExe) {
-          Write-Host "Installing libheif + zlib via vcpkg..."
-          & $vcpkgExe install "zlib:x64-windows-static-md" "libheif:x64-windows-static-md" --recurse || `
-            Write-Host "::warning::Failed to install libheif/zlib via vcpkg"
+          Write-Host "Installing libheif via vcpkg..."
+          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse || `
+            Write-Host "::warning::Failed to install libheif via vcpkg"
 
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
         }
