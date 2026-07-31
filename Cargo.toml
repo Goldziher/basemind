@@ -198,7 +198,7 @@ tree-sitter-graph = { package = "basemind-tree-sitter-graph", version = "0.12.0"
 tree-sitter-language-pack = "1.13.6"
 tree-sitter-stack-graphs = { package = "basemind-tree-sitter-stack-graphs", version = "0.10.0", path = "crates/tree-sitter-stack-graphs", optional = true }
 url = { version = "2", features = ["serde"], optional = true }
-xberg = { version = "1.0.3", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
+xberg = { version = "1.0.5", default-features = false, features = ["tokio-runtime", "simd-utf8"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mach2 = "0.6"

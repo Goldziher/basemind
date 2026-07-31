@@ -12820,9 +12820,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df43293344d903df0a8a61343ae0abe0df6b0ea98ddb3ccc5e48edb63b1dfb0"
+checksum = "8c23d4b5378e2c6bf57e641d699a25f1282860e6745e5ce8424c2b300c5dfba2"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -12926,9 +12926,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca87331fab8757b665485630bd33f3f18c97d360c53646c5dcbdab2d510b9d20"
+checksum = "ec26e8d7e11a9d2530e2b3c60616d92000b168c108441d2de60997e5f94eff31"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -12942,9 +12942,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "289e5ac2e1613052deff29c81e6b1e1fab58760dc21866703869dd32828a3b81"
+checksum = "716d223d8297ff2248521ef3349d09e4628f06bc3aa25b84c27c8b7288a51886"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -12955,9 +12955,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libwpd"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e913a2dc8287351426cbdc13c47a40f66cfc162529c273adac68e8058381935"
+checksum = "d6e808e35f6591ec6b3cbe169a7522eaee17e5c8b98d8e63596f7d644bfa80a5"
 dependencies = [
  "cc",
  "flate2",
@@ -12970,9 +12970,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca14ada53805b85e90cd1efba41d8296e17a6a7b146a2a6f268a2362d4d96565"
+checksum = "b0d112e4c386c35d593719b957ec33c8c0d9c540a42d6f4d084b3531638ef54b"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -12987,9 +12987,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.3"
+version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cde973717370389d4f61089607d148b98625af5ad564bf4357a7e522384809ca"
+checksum = "22109dad5ca474c3ab85063cbe4d8c94cb4c75331b9cb1485c09e7800da12c8c"
 dependencies = [
  "cc",
  "cmake",
