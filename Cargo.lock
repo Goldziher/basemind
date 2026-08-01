@@ -1572,7 +1572,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1864,9 +1864,9 @@ dependencies = [
 
 [[package]]
 name = "crawlberg"
-version = "1.1.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fad20a8cbaf622455f025ccabec52e08a2b1b1396e7bb18420aebeafa1bffdee"
+checksum = "eac8cce13584ef865e2af85b49f33699dce7b1da16da01e4bad95c8c26354d36"
 dependencies = [
  "ahash 0.8.12",
  "aho-corasick",
@@ -3018,7 +3018,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3213,7 +3213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7666,7 +7666,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9065,7 +9065,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9976,7 +9976,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10035,7 +10035,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -10056,7 +10056,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11137,7 +11137,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -11795,15 +11795,15 @@ checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
 
 [[package]]
 name = "uncore"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f92176b7addb1e89c8eb8a18dd775e337a2e1058e8c3e88bfbd24cabed5e8afb"
+checksum = "a7b3c5d5402af48b31a5631b055de44fe97ddede8f7876c36b2e6ea23e1dd503"
 
 [[package]]
 name = "unhwp"
-version = "0.7.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3511b46fc5005c29922443250a97ddbfae492672379e97f295d53a39e16403c"
+checksum = "d5751339eec5a3b764e583764d5901b28aa8a23af3df5f14fdd456355fa62801"
 dependencies = [
  "cfb 0.10.0",
  "flate2",
@@ -12389,7 +12389,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -12828,9 +12828,9 @@ dependencies = [
 
 [[package]]
 name = "xberg"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f434f7b3c6cc669dc2b8a83e2138dea32c5b65740998329dad797272a317c460"
+checksum = "7a315f5bed2a3805654aa70d9ee97ed42b0bd0782160bb0dfb318994b3924782"
 dependencies = [
  "ahash 0.8.12",
  "async-trait",
@@ -12934,9 +12934,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-gliner"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05cc3f5f20a4d8df8e8836132b5ce9f7659fae206a70be4f1ad0935aacb58f01"
+checksum = "883c7e80361a96d58fc9f322a80b48b6d6500df9b32d9efc5abdf17e1773d34f"
 dependencies = [
  "getrandom 0.2.17",
  "getrandom 0.3.4",
@@ -12950,9 +12950,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libheif"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a79a00759cca1cc3d39e21b8d65d008d6c12432e0cfcf1fc8accafb5c085fd"
+checksum = "36237ec435721606e964efe4fc3c0e710dc8aa15427454932987b3074579b4ba"
 dependencies = [
  "cfg-if 1.0.4",
  "enumn",
@@ -12963,9 +12963,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-libwpd"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "120469c34d58b88b901e12644a6c58c432d13add66f658dc64b04ff89c3b7cc0"
+checksum = "f5e5765deaa088a7b5c91cf52ed26688c849d602c16b035ec98d9ee7e0589301"
 dependencies = [
  "cc",
  "flate2",
@@ -12978,9 +12978,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-paddle-ocr"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaef1e824dcf791b02e2ab017fc821fcab12b2c15b5ebec1027e5ba0d5078533"
+checksum = "2f251e22ef310f410eadd47880a2d908ea99ff1f8f7ba95ac1ac285019e03228"
 dependencies = [
  "geo-clipper",
  "geo-types",
@@ -12995,9 +12995,9 @@ dependencies = [
 
 [[package]]
 name = "xberg-tesseract"
-version = "1.0.6"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86d04c996ca342e8943449a23cc92d584e94d944dc383fca44d76abad70a7359"
+checksum = "b12a4230821edff1d69039c6394f9de5e686bf8afb5ebecac2b7deb48d51e752"
 dependencies = [
  "cc",
  "cmake",
