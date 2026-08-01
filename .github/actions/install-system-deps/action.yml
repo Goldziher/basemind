@@ -139,50 +139,45 @@ runs:
         # bundled zlib from source and link it statically, so it never probes vcpkg for zlib.
         Add-Content -Path $env:GITHUB_ENV -Value "LIBZ_SYS_STATIC=1"
 
-        # Install zlib + libheif via vcpkg (heif/x265/de265 image codecs).
+        # Install libheif via vcpkg (heif/x265/de265 image codecs).
         $vcpkgRoot = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
         $vcpkgExe = Join-Path $vcpkgRoot "vcpkg.exe"
         if (Test-Path $vcpkgExe) {
-          Write-Host "Installing zlib + libheif via vcpkg..."
-          & $vcpkgExe install "zlib:x64-windows-static-md" "libheif:x64-windows-static-md" --recurse || `
-            Write-Host "::warning::Failed to install libheif/zlib via vcpkg"
+          Write-Host "Installing libheif via vcpkg..."
+          & $vcpkgExe install "libheif:x64-windows-static-md" --recurse || `
+            Write-Host "::warning::Failed to install libheif via vcpkg"
 
           Add-Content -Path $env:GITHUB_ENV -Value "VCPKG_ROOT=$vcpkgRoot"
+        }
 
-          # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate, which emits a
-          # bare `-l zlib` (=> the linker opens `zlib.lib` off a LIBPATH). The installed lib dir
-          # (C:\vcpkg\installed\x64-windows-static-md\lib) is on LIBPATH, but vcpkg builds a
-          # freshly-requested zlib into its per-port staging dir (C:\vcpkg\packages\zlib_...\lib)
-          # and, on this runner, does NOT merge it into the installed tree — so the final
-          # basemind.exe link dies with LNK1181 (cannot open 'zlib.lib'). Locate whatever zlib
-          # static archive vcpkg produced (installed or packages dir) and place it as `zlib.lib`
-          # in the installed lib dir that is already on LIBPATH.
-          $installedLib = Join-Path $vcpkgRoot "installed\x64-windows-static-md\lib"
-          $pkgLib = Join-Path $vcpkgRoot "packages\zlib_x64-windows-static-md\lib"
-          $zlibTarget = Join-Path $installedLib "zlib.lib"
-          if (-not (Test-Path $zlibTarget)) {
-            $src = $null
-            foreach ($dir in @($installedLib, $pkgLib)) {
-              if (Test-Path $dir) {
-                Write-Host "*.lib in ${dir}:"
-                Get-ChildItem -Path $dir -Filter "*.lib" -ErrorAction SilentlyContinue |
-                  ForEach-Object { Write-Host "  $($_.Name)" }
-                if (-not $src) {
-                  $src = Get-ChildItem -Path $dir -Filter "*zlib*.lib" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.Name -notmatch 'd\.lib$' } | Select-Object -First 1
-                }
-              }
-            }
-            if ($src) {
-              if (-not (Test-Path $installedLib)) { New-Item -ItemType Directory -Path $installedLib -Force | Out-Null }
-              Copy-Item -Path $src.FullName -Destination $zlibTarget -Force
-              Write-Host "Aliased $($src.FullName) -> $zlibTarget"
-            } else {
-              Write-Host "::warning::No zlib static archive found in installed or packages lib dirs"
-            }
-          } else {
-            Write-Host "zlib.lib already present in $installedLib"
-          }
+        # libheif-sys resolves libheif's zlib dependency through the `vcpkg` crate and emits a
+        # bare `-l zlib`, so the final basemind.exe link opens `zlib.lib` off a LIBPATH. But vcpkg
+        # builds a freshly-requested zlib into a per-port staging dir, submits it to its binary
+        # cache, and cleans up — so NO zlib.lib survives on disk in the installed tree by link
+        # time, and the link dies with LNK1181 (cannot open 'zlib.lib'). Build a static zlib.lib
+        # from source ourselves (timing-independent of vcpkg's cache dance) and add its directory
+        # to this target's linker search path via CARGO_TARGET_*_RUSTFLAGS (the same target-scoped
+        # mechanism the Linux glibc-floor step uses — it never clobbers the global LIB/RUSTFLAGS).
+        $zlibVersion = "1.3.1"
+        $zlibSrc = Join-Path $env:RUNNER_TEMP "zlib-src"
+        $zlibBuild = Join-Path $env:RUNNER_TEMP "zlib-build"
+        $zlibFix = "C:\zlibfix"
+        Remove-Item -Recurse -Force $zlibSrc, $zlibBuild -ErrorAction SilentlyContinue
+        git clone --depth 1 --branch "v$zlibVersion" https://github.com/madler/zlib.git $zlibSrc
+        cmake -S $zlibSrc -B $zlibBuild -A x64 -DCMAKE_BUILD_TYPE=Release -DZLIB_BUILD_EXAMPLES=OFF
+        cmake --build $zlibBuild --config Release --target zlibstatic
+        $built = Get-ChildItem -Path $zlibBuild -Recurse -Filter "zlibstatic*.lib" -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -notmatch 'd\.lib$' } | Select-Object -First 1
+        if ($built) {
+          New-Item -ItemType Directory -Path $zlibFix -Force | Out-Null
+          Copy-Item -Path $built.FullName -Destination (Join-Path $zlibFix "zlib.lib") -Force
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-L native=$($zlibFix -replace '\\','/')"
+          Write-Host "Built static zlib.lib from $($built.FullName) -> $zlibFix"
+        } else {
+          Write-Host "::error::Failed to build zlib.lib from source"
+          Get-ChildItem -Path $zlibBuild -Recurse -Filter "*.lib" -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "  $($_.FullName)" }
         }
 
         Write-Host "::endgroup::"
