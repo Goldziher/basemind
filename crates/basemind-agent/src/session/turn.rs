@@ -307,6 +307,7 @@ fn assistant_message(assembled: &AssembledTurn) -> Message {
         tool_calls: (!assembled.tool_calls.is_empty()).then(|| assembled.tool_calls.clone()),
         refusal: None,
         function_call: None,
+        reasoning_content: None,
     })
 }
 
