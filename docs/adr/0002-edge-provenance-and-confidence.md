@@ -7,78 +7,67 @@
 
 ## Context
 
-Competing knowledge-graph tools (e.g. graphify) tag every edge with a confidence/provenance label —
-`EXTRACTED` (explicit in the source), `INFERRED` (derived by resolution), `AMBIGUOUS` (uncertain) —
-and a numeric `confidence_score`. This lets a reader trust a call edge proven by scope resolution
-differently from one matched only by name, and lets the renderer style them differently (solid vs
-dashed).
+Not every edge in a code graph is equally trustworthy. An edge proven by scope and import resolution
+— we know exactly which definition a use binds to — is a stronger fact than an edge matched only by
+name, which is stronger than a purely heuristic guess. Knowledge-graph tools in this space make that
+distinction explicit: they tag every edge with a provenance/confidence label (EXTRACTED / INFERRED /
+AMBIGUOUS) and a numeric score, so a reader can weight a proven binding differently from a name
+match and a renderer can style them differently.
 
-basemind does not surface this today, but it already *computes the distinction*:
+basemind already *computes* this distinction — it knows when a reference has been resolved to a
+specific definition, when it only matched a name, and when a relationship is a pure heuristic — but
+it never surfaces that as a first-class, uniform signal. Fragments leak out of individual
+capabilities (one lookup reports whether a hit was resolved), with no shared model. Resolution
+coverage is also legitimately uneven: intra-file resolution exists for every language, cross-file
+resolution is proven for some languages and name-only for others. So the *same* kind of edge can be
+proven in one place and merely inferred in another — a real property we should report honestly, not
+hide.
 
-- `find_callers` refines each call hit with a `resolved: bool` and reports a `resolved_total`
-  (`src/mcp/helpers_calls.rs`), where `resolved: true` means scope/import resolution **proved** the
-  binding via the `refs_by_def` keyspace, and `false` means only a name-level match in
-  `calls_by_callee`. This is a latent two-state provenance signal exposed on one tool.
-- Resolution coverage is uneven by construction: intra-file resolution exists for all languages
-  (tree-sitter `locals`), cross-file resolution exists for JS/TS (oxc) and is name-only elsewhere
-  (see the cross-file-resolution coverage notes). So the same edge kind can be EXTRACTED in one file
-  and INFERRED in another.
-- `import`/`inherit` edges are name-level joins (`imports_by_module`, `implementations_by_trait`),
-  and `dependents` is an explicit substring heuristic — a natural AMBIGUOUS tier.
-
-There is no `confidence` field on any edge struct today, and `ArchEdge.kind` is always `"calls"`
-(ADR-0001). We need a single, consistent provenance model for the unified graph so traversal
-(weighting), the renderer (styling), and export interop all read the same signal.
+The unified graph (ADR-0001) needs one consistent provenance model so that traversal (weighting),
+rendering (styling), and export interop all read the same signal.
 
 ## Decision
 
-Adopt a three-level edge provenance tag on the unified `codegraph` (ADR-0001), derived at query time
-from signals basemind already stores — **no new stored bit, no schema bump**:
+Attach a **three-level provenance tag plus a numeric confidence** to every edge of the unified graph,
+**derived at query time from the resolution state basemind already computes — no new persisted bit
+and no schema bump:**
 
-- **EXTRACTED** — resolution-proven: the edge is backed by a `refs_by_def` resolved use→def binding
-  (the `resolved: true` case), or is otherwise explicit in the source (e.g. a direct import
-  statement, a `contains` nesting edge).
-- **INFERRED** — name-level: call edges matched only via `calls_by_callee`, and import/inherit edges
-  resolved by name against `symbols_by_name`, where resolution did not prove the target.
-- **AMBIGUOUS** — heuristic or many-to-one: the `dependents` substring match, and name-level edges
-  whose name resolves to multiple candidate definitions.
+- **EXTRACTED** — proven: the edge is backed by a resolved use→definition binding, or is otherwise
+  explicit in the source (a direct import, a containment/nesting edge).
+- **INFERRED** — name-level: the target matched by name but resolution did not prove it.
+- **AMBIGUOUS** — heuristic or one-name-to-many: a substring/heuristic relationship, or a name that
+  resolves to several candidate definitions.
 
-Alongside the tag we carry a `confidence_score: f32` (EXTRACTED = 1.0, INFERRED = 0.5,
-AMBIGUOUS = 0.2) to mirror graphify's `graph.json` for export interop (ADR-0005) and to give
-traversal a default edge weight (ADR-0003).
+Alongside the tag, carry a numeric confidence on a small fixed ladder (EXTRACTED = 1.0,
+INFERRED = 0.5, AMBIGUOUS = 0.2) — enough to mirror the common graph-exchange formats for export
+interop (ADR-0005) and to give traversal a default edge weight (ADR-0003). As part of this we also
+**emit the import and inherit edge kinds** into the graph and the architecture map, each carrying its
+provenance tag (they exist in the index; only surfacing them is missing).
 
-We also **emit the reserved `imports` and `inherits` edge lanes** into `architecture_map` and the
-unified graph (they exist in the keyspaces; only the emit step is missing), each carrying its
-provenance tag.
-
-Provenance is **derived on read** from the existing keyspaces. Only if profiling shows the
-derivation is too costly on the hot path do we persist a confidence bit on cross-file resolved edges
-— and that would be a separate change gated on an `INDEX_SCHEMA_VER` bump per the
-`index-keyspace-evolution` skill, with the wipe noted in the CHANGELOG. This ADR does not take that
-step.
+Provenance is **derived on read**. Only if profiling later shows the derivation is too costly on the
+hot path do we persist a confidence bit — and that would be a separate change gated on a schema
+version bump and its wipe-and-rescan migration, noted in the changelog per project policy. This ADR
+does not take that step.
 
 ## Consequences
 
-- Every consumer of `codegraph` gets a uniform provenance signal: traversal can prefer proven paths
-  (Dijkstra weight = inverse confidence), the renderer can style EXTRACTED solid / INFERRED dashed /
-  AMBIGUOUS faint, and `graph.json` export matches the field names competitors use.
-- `find_callers`' existing `resolved`/`resolved_total` becomes the EXTRACTED anchor of a broader,
-  consistent model rather than a one-off boolean.
-- The confidence of a given edge can legitimately differ across files/languages (reflecting real
-  resolution coverage); this is honest, but tool descriptions must state that INFERRED ≠ wrong, only
-  unproven.
-- No migration/wipe now. A future persisted-confidence optimization remains available behind a
-  schema bump if needed.
+- Every consumer of the graph gets one uniform provenance signal: traversal can prefer proven paths
+  (weight = inverse confidence), the renderer can style EXTRACTED solid / INFERRED dashed /
+  AMBIGUOUS faint, and exports match the field names the ecosystem already uses.
+- The confidence of a given edge can legitimately differ across files and languages, reflecting real
+  resolution coverage. This is honest, but every tool description and UI affordance must state that
+  INFERRED means *unproven*, not *wrong*.
+- No migration or wipe now; a persisted-confidence optimization stays available behind a future
+  schema bump if measurement demands it.
 
 ## Alternatives considered
 
-- **Two-state (resolved / unresolved) only.** Rejected: collapses genuinely heuristic edges
-  (`dependents` substring, multi-def names) into "unresolved", losing the AMBIGUOUS signal that
-  readers and the renderer want; the three-level model matches the ecosystem and costs nothing extra
-  to derive.
-- **Persist a confidence byte on every edge now.** Rejected as premature optimization: forces an
-  index-schema bump and wipe for a value we can derive from data we already read; revisit only if
+- **A two-state resolved/unresolved flag only.** Rejected: it collapses genuinely heuristic edges
+  into "unresolved" and loses the AMBIGUOUS signal that readers and the renderer want; the
+  three-level model matches the ecosystem and costs nothing extra to derive.
+- **Persist a confidence value on every edge now.** Rejected as premature optimization: it forces a
+  schema bump and wipe for a value we can derive from state we already compute; revisit only if
   measured hot-path cost demands it.
-- **Free-form numeric scores per language/heuristic.** Rejected: harder to reason about and to map
-  to renderer styling; a small fixed ladder (1.0 / 0.5 / 0.2) tied to the three tags is enough and
-  is interoperable with existing `graph.json` consumers.
+- **Free-form per-language / per-heuristic numeric scores.** Rejected: harder to reason about and to
+  map to renderer styling; a small fixed ladder tied to the three tags is enough and is interoperable
+  with existing graph consumers.

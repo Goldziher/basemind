@@ -3,73 +3,69 @@
 - **Status:** Proposed
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
-- **Related:** ADR-0002 (edge provenance + confidence), ADR-0003 (graph traversal tools),
+- **Related:** ADR-0002 (edge provenance + confidence), ADR-0003 (graph traversal),
   ADR-0004 (community detection), ADR-0005 (rendering engine)
 
 ## Context
 
-basemind's relationship data is real but fragmented across per-relation Fjall keyspaces and is only
-ever assembled into a graph on-demand, per-tool, for one purpose:
+basemind knows the relationships between code elements — which symbol calls which, what a file
+imports, what a type inherits or implements, and which uses it has *resolved* to a specific
+definition. That knowledge is real and already indexed. What it lacks is a single, shared notion of
+"the graph": today every capability that needs relationships assembles its own one-off walk for one
+purpose (the architecture map builds a whole-repo graph, ranks it, and throws it away; the call
+graph does a separate rooted walk) and then discards it. There is no typed, multi-edge graph object
+that different capabilities can agree on.
 
-- `architecture_map` builds an in-memory `RepoGraph` from scratch on every call
-  (`src/mcp/helpers_archmap.rs`, `RepoGraph::build`), runs PageRank + Tarjan SCC over it, then
-  discards it. Its edges are **single-typed** — `ArchEdge.kind` is always `"calls"`; the
-  `imports`/`inherits` lanes are declared but not emitted (`src/mcp/types_archmap.rs:36`).
-- `call_graph` does its own rooted, bounded BFS over call sites (`src/mcp/helpers_graph.rs`), a
-  separate walk with no shared graph object.
-- The underlying edges live in distinct keyspaces: `calls_by_callee`/`calls_by_path` (name-level
-  call edges), `imports_by_module`/`imports_by_path` (import edges), `implementations_by_trait`/
-  `implementations_by_path` (inheritance/impl edges), and `refs_by_def`/`refs_by_path` (**resolved**
-  use→def edges — intra-file for all languages, cross-file for JS/TS via oxc). Node identity is
-  consistently expressible as `(rel_path, start_byte)` with byte/row/col spans on every record.
+We are about to add traversal (ADR-0003), community detection (ADR-0004), a rendering engine
+(ADR-0005), and an interactive UI (ADR-0006/0007) — every one of which needs *the same* typed graph
+over the same nodes. Building a third, fourth, and fifth bespoke walk would duplicate the traversal
+logic and let the capabilities quietly disagree on what counts as an edge.
 
-We are about to add graph traversal (ADR-0003), modularity communities (ADR-0004), and a rendering
-engine (ADR-0005) — all of which need a *typed, multi-edge* graph over the same nodes. Building a
-third, fourth, and fifth bespoke walk (each re-deriving adjacency from raw keyspaces) would
-duplicate the hot-path scan logic and let the tools drift apart on what counts as an edge.
-
-Constraints: the module-size cap (1000 lines/file), the perf discipline (ahash/memchr, no clones in
-inner loops, rayon not tokio on scan paths), and schema-and-blob compat (a persisted graph would be
-a new keyspace with a version bump and wipe-on-mismatch).
+The constraints that bound the choice: basemind is offline, deterministic, and LLM-free; it holds
+its index in a content-addressed store with an explicit schema version, so any *persisted* graph
+would be new state carrying a version and a wipe-and-rebuild migration; and it is a hot-path scanner
+where the cost of assembling relationships must stay bounded.
 
 ## Decision
 
-Introduce one shared **`codegraph`** module that builds a typed, in-memory, multi-edge graph over
-the existing keyspaces, and make `architecture_map`, the traversal tools (ADR-0003), and the
-renderer (ADR-0005) all consume it.
+Introduce **one shared code-graph model** that every graph-consuming capability reads:
 
-- **Node identity:** `(RelPath, start_byte)`, carrying the symbol name/kind/signature/span from the
-  L1 outline where available; file-level nodes for imports.
-- **Edge kinds (typed):** `calls | imports | inherits | uses | contains | resolves`, each edge
-  tagged with provenance/confidence per ADR-0002. `contains` is the file→symbol / symbol→symbol
-  nesting edge; `resolves` is the proven use→def edge from `refs_by_def`.
-- **Construction:** extend/refactor the existing `RepoGraph::build` into `codegraph` rather than
-  inventing a new loader — same prefix-scan-plus-L1-cache approach, same `ARCHMAP_EDGE_SCAN_CAP`
-  bound, same ahash/memchr discipline. Callers request only the edge kinds and scope they need.
-- **Lifetime:** the graph stays **built-on-demand and in-memory** (rebuilt per query, bounded), not
-  persisted. No new Fjall keyspace, **no index-schema bump** — this is a read-side abstraction.
+- **Typed, multi-edge.** Distinct edge kinds — calls, imports, inherits/implements, resolved
+  references (a proven use→definition binding), and containment (file→symbol / symbol→symbol
+  nesting) — rather than a single undifferentiated "related to". Later ADRs add document and
+  rationale edges (ADR-0008/0009) as further kinds on the same model.
+- **Stable node identity.** A node is a code location (path plus its span), language-agnostic and
+  deduplicated, so the same symbol is the same node across every capability and every edge kind.
+- **Built on demand, in memory, not persisted.** The graph is assembled per query from relationships
+  basemind already indexes, bounded by the same scan discipline the architecture map already honors,
+  and discarded after. This keeps it a **read-side abstraction with no new persisted state and no
+  schema bump.**
+
+Every graph capability — the existing architecture map, the new traversal tools, the renderer, and
+the UI — consumes this one model instead of re-deriving adjacency for itself.
 
 ## Consequences
 
-- Traversal, communities, and rendering share one definition of "the graph" and one hot-path
-  builder; a new edge kind or provenance rule is added once and every consumer benefits.
-- `architecture_map`'s reserved `imports`/`inherits` lanes become real (delivered together with
-  ADR-0002), and `call_graph` can be re-expressed as a traversal over `codegraph` (ADR-0003) instead
-  of a bespoke BFS.
-- Cost stays proportional to the scan already done by `architecture_map`; the shared builder must
-  keep its scan-cap and be measured against the harden baselines when it changes.
-- Because nothing is persisted, there is no migration and no wipe. If per-query rebuild latency
-  later becomes the bottleneck for interactive traversal or the UI, a persisted adjacency keyspace
-  is a *future* ADR — deliberately out of scope here.
+- Traversal, communities, rendering, and the UI share one definition of "the graph" and one builder;
+  a new edge kind or a new provenance rule (ADR-0002) is added once and every consumer benefits.
+- The architecture map's currently-reserved import/inherit lanes become real edges on the shared
+  model (delivered with ADR-0002), and the rooted call graph becomes one traversal over it
+  (ADR-0003) rather than a separate walk.
+- Cost stays proportional to the scan the architecture map already does; the shared builder must keep
+  its bound and be measured against the performance baselines whenever it changes.
+- Because nothing is persisted, there is no migration and no wipe. If per-query rebuild latency later
+  becomes the bottleneck for interactive traversal or the UI, persisting adjacency is a *future* ADR
+  — deliberately out of scope here.
 
 ## Alternatives considered
 
-- **Persist a graph / adjacency keyspace (or embed a graph DB).** Rejected as premature: the
-  per-call rebuild is already fast enough for `architecture_map` at scale, it matches basemind's
-  current design, and a persisted graph adds a schema version, a wipe-on-mismatch migration, and
-  write-path cost on every scan — none of which we need until traversal latency proves it.
-- **Leave each tool with its own walk and just add two more.** Rejected: duplicates hot-path scan
-  logic, invites edge-definition drift between `architecture_map`, `call_graph`, traversal, and the
-  renderer, and multiplies the surface that has to honor the scan-cap and perf rules.
-- **Model the graph in the document/LanceDB layer.** Rejected: that store is a vector RAG corpus
-  with no byte-precise code node identity; the code graph belongs over the Fjall code keyspaces.
+- **Persist a graph / adjacency store (or embed a graph database).** Rejected as premature: the
+  per-call rebuild is already fast enough at scale and matches basemind's design, whereas a persisted
+  graph adds a schema version, a wipe-on-mismatch migration, and write-path cost on every scan — none
+  of which we need until traversal latency proves it.
+- **Leave each capability with its own walk and just add three more.** Rejected: duplicates the
+  traversal logic, invites edge-definition drift between the architecture map, the call graph,
+  traversal, and the renderer, and multiplies the surface that must honor the scan bound.
+- **Model the graph in the document / vector layer.** Rejected: that store is a RAG corpus with no
+  byte-precise code node identity; the code graph belongs over the code relationships, and documents
+  join it later as their own node kind (ADR-0008).

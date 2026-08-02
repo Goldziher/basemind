@@ -34,8 +34,21 @@ Keep ADRs short — a decision, not a design doc. Link related ADRs by number.
 
 ## Index
 
+The ADRs below (0001–0010) form one roadmap: give basemind a knowledge-graph capability layer
+(typed graph, traversal, communities), a rendering engine, an interactive UI, and document/rationale
+graph edges. They are sequenced by dependency — foundations first, then the capabilities built on
+them.
+
 | ADR | Title | Status |
 |---|---|---|
 | [0000](0000-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0001](0001-unified-typed-code-graph.md) | Unified typed code-graph model | Proposed |
 | [0002](0002-edge-provenance-and-confidence.md) | Edge provenance and confidence | Proposed |
+| [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Proposed |
+| [0004](0004-community-detection.md) | Community detection and deterministic labels | Proposed |
+| [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Proposed |
+| [0006](0006-interactive-ui-tauri.md) | Interactive UI — Tauri desktop app | Proposed |
+| [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Proposed |
+| [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Proposed |
+| [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Proposed |
+| [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Proposed |
