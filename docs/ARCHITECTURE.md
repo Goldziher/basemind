@@ -13,6 +13,9 @@ tree-sitter. The fork root-caused and fixed two upstream panics and drops the C-
 sqlite, and visualization modules basemind doesn't use. It backs the Python/Java half of the
 code-intelligence tier (see [Code intelligence](#code-intelligence-precise-resolution) below).
 
+> This document describes the system as-built. For *why* a given decision was made and which
+> alternatives were rejected, see the Architecture Decision Records in [`adr/`](adr/README.md).
+
 ```text
                     ┌─────────────┐
                     │ basemind    │
