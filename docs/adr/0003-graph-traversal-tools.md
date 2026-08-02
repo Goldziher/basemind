@@ -24,7 +24,10 @@ bounded, deterministic capabilities over the shared graph.
 Add **three traversal capabilities** over the unified graph, each exposed as an MCP tool:
 
 - **path** — the shortest (and optionally k-shortest) path between two symbols across mixed edge
-  kinds, **confidence-weighted** so proven edges (ADR-0002) are preferred over inferred ones.
+  kinds, **confidence-weighted** so proven edges (ADR-0002) are preferred over inferred ones. By
+  default `path` traverses *relationship* edges (calls, imports, inherits, resolved references) and
+  **excludes containment/nesting**, which would otherwise yield structurally valid but semantically
+  meaningless routes (A → its parent module → B); the caller can opt containment back in.
 - **neighbors** — N-hop expansion outward from a symbol, filterable by edge kind, direction, and a
   minimum confidence floor.
 - **subgraph** (explain) — the scoped neighborhood around a symbol or a query, cut to the significant

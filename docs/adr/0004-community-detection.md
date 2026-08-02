@@ -25,7 +25,10 @@ Add **modularity community detection** to the graph, alongside the existing cycl
 
 - **Default algorithm: label propagation** — near-linear and hot-path friendly, made **deterministic**
   by pinning the seed and iterating in a fixed, sorted order (basemind's hashing is randomized, so
-  iteration order must be fixed explicitly).
+  iteration order must be fixed explicitly). "Deterministic" here means *reproducible for a given graph
+  state* — the same repo yields the same communities every run — not stability across small edits, and
+  label propagation can still produce lower-quality clusters on some graphs (which is what the Louvain
+  opt-in is for).
 - **Opt-in higher-quality algorithm (Louvain)** for callers who want cluster quality over speed.
 - **Deterministic, LLM-free labels** — each community is named from its dominant path prefix and its
   most central member, so labels are reproducible without a model.

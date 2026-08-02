@@ -39,8 +39,11 @@ there is demand.
   and tested rather than inventing a UI protocol.
 - Offline and self-contained, consistent with basemind's guarantees.
 - Release packaging gains one binary, launched by the established sibling-exec pattern.
-- Trade-off: a GUI toolchain (Tauri and the system webview) enters the build and release matrix. It
-  is gated behind a crate/feature (ADR-0010) so default builds are unaffected until opted in.
+- Trade-off: a GUI toolchain enters the build and release matrix — concretely a system webview
+  dependency per platform (WebKitGTK on Linux, WebView2 on Windows), added to a release matrix that is
+  already delicate with per-platform native-library packaging. ADR-0010 owns these platform
+  dependencies; they are the main reason the UI is feature-gated and kept on the branch until stable,
+  so default builds are unaffected until opted in.
 
 ## Alternatives considered
 

@@ -37,6 +37,11 @@ a rendered export (ADR-0005) and returning its path, rather than failing.
   format to maintain.
 - Trade-off: the rich path needs a UI instance and a live display channel; the graceful export
   fallback keeps the tool useful headless.
+- Feasibility constraint: an MCP server often runs with no attached GUI session — headless, over SSH,
+  or launched in a background/daemon context — where it cannot open a window at all, and even on a
+  local desktop the serve process's access to the user's display/session is not guaranteed. The export
+  fallback is therefore the reliable baseline and the live window is the enhancement, not the reverse;
+  "launch if absent" will legitimately land on the fallback in many environments.
 
 ## Alternatives considered
 

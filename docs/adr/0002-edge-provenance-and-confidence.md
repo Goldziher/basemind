@@ -32,22 +32,35 @@ Attach a **three-level provenance tag plus a numeric confidence** to every edge 
 **derived at query time from the resolution state basemind already computes — no new persisted bit
 and no schema bump:**
 
-- **EXTRACTED** — proven: the edge is backed by a resolved use→definition binding, or is otherwise
-  explicit in the source (a direct import, a containment/nesting edge).
-- **INFERRED** — name-level: the target matched by name but resolution did not prove it.
+- **EXTRACTED** — the edge's *target node* is proven: a resolved use→definition binding, or an edge
+  whose target is structurally unambiguous (a containment/nesting edge). Note the subtlety: the
+  *existence* of an import or an inheritance is explicit in the source, but *which definition it binds
+  to* is not — so a bare import/inherit is **not** EXTRACTED unless its target has actually been
+  resolved.
+- **INFERRED** — the target matched by name but resolution did not prove it: name-level call edges,
+  and import/inherit edges bound to a definition only by name.
 - **AMBIGUOUS** — heuristic or one-name-to-many: a substring/heuristic relationship, or a name that
   resolves to several candidate definitions.
 
 Alongside the tag, carry a numeric confidence on a small fixed ladder (EXTRACTED = 1.0,
-INFERRED = 0.5, AMBIGUOUS = 0.2) — enough to mirror the common graph-exchange formats for export
-interop (ADR-0005) and to give traversal a default edge weight (ADR-0003). As part of this we also
-**emit the import and inherit edge kinds** into the graph and the architecture map, each carrying its
-provenance tag (they exist in the index; only surfacing them is missing).
+INFERRED = 0.5, AMBIGUOUS = 0.2), primarily as a default edge weight for traversal (ADR-0003) and a
+styling signal for the renderer (ADR-0005). It also lines up with the common graph-exchange formats —
+a convenient interop bonus, not the reason for the ladder.
 
-Provenance is **derived on read**. Only if profiling later shows the derivation is too costly on the
-hot path do we persist a confidence bit — and that would be a separate change gated on a schema
-version bump and its wipe-and-rescan migration, noted in the changelog per project policy. This ADR
-does not take that step.
+As part of this we **emit the import and inherit edge kinds** into the graph and the architecture map.
+Their *records* already exist in the index, but only as names (a module name; a trait/impl name) with
+no resolved target — so emitting them as edges-to-nodes means resolving those names first, and the
+resulting edges are INFERRED (or AMBIGUOUS for multi-definition names) by construction. This is real
+resolution work, not a free surfacing step.
+
+Provenance is **derived on read** from the resolved-reference index. That index is not reachable in
+every serve mode: a read-only or daemon-writer server reaches the resolved cross-file bindings only
+by forwarding to the daemon, and a degraded read-only fallback sees intra-file bindings only. The
+graph must therefore either forward provenance derivation the same way reads are forwarded, or label
+honestly — an edge whose proof is unreachable in the current mode is reported as INFERRED, never
+falsely EXTRACTED. Only if profiling later shows the derivation is too costly on the hot path do we
+persist a confidence bit — a separate change gated on a schema version bump and its wipe-and-rescan
+migration, noted in the changelog per project policy. This ADR does not take that step.
 
 ## Consequences
 
@@ -57,6 +70,10 @@ does not take that step.
 - The confidence of a given edge can legitimately differ across files and languages, reflecting real
   resolution coverage. This is honest, but every tool description and UI affordance must state that
   INFERRED means *unproven*, not *wrong*.
+- Provenance accuracy is serve-mode-dependent: outside the writer, cross-file EXTRACTED can degrade to
+  INFERRED unless derivation is forwarded to the daemon. The rule is that the graph degrades *down*
+  (proof unreachable → INFERRED), never up — so a reported EXTRACTED is always trustworthy, and the
+  only failure mode is under-claiming confidence, not over-claiming it.
 - No migration or wipe now; a persisted-confidence optimization stays available behind a future
   schema bump if measurement demands it.
 

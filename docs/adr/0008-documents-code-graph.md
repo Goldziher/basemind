@@ -22,6 +22,13 @@ each edge **provenance/confidence-tagged per ADR-0002** (a resolved path/symbol 
 than a bare name mention). This unifies the RAG corpus with the code map behind one traversal
 (ADR-0003) and one rendering (ADR-0005) surface.
 
+**Persist, don't derive.** Resolving symbol and path mentions across document text is extraction work
+as costly per query as rationale extraction (ADR-0009) — so, unlike the resolution signals ADR-0002
+derives on read, doc→symbol links are computed once at document-scan time and stored. They live in the
+document store alongside the chunks they annotate (rebuilt on document rescan and versioned with that
+store), so this does **not** touch the code index's schema version; the code-index node-kind bump is
+ADR-0009's, not this one.
+
 **Audio/video transcription stays deferred** — it is a large dependency for marginal near-term value.
 We link the text, Office, HTML, and image-OCR corpus that basemind already extracts.
 

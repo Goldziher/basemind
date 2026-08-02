@@ -26,9 +26,10 @@ to first-class rationale nodes** on the unified graph (ADR-0001), and **link eac
 annotates (by proximity to the containing symbol) and to any decision record it cites. basemind's own
 `docs/adr/` records are ingested the same way, so the decision graph is self-hosting.
 
-This introduces a **new node kind with persisted extraction**, and therefore **requires an index
-schema version bump** and its wipe-and-rescan migration — called out explicitly, as the first ADR in
-this series to need one, and noted in the changelog per project policy. Classification of free-form
+This introduces a **new node kind with persisted extraction** in the code index, and therefore
+**requires a code-index schema version bump** and its wipe-and-rescan migration — called out
+explicitly, as the first ADR in this series to bump the code-index schema (ADR-0008 also persists, but
+in the document store, not the code index), and noted in the changelog per project policy. Classification of free-form
 comments is heuristic, so rationale links carry a confidence tag (ADR-0002).
 
 ## Consequences

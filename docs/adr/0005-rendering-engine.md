@@ -44,7 +44,11 @@ path** shared by the headless tools and by the desktop UI (ADR-0006).
 - The UI (ADR-0006) becomes a thin interactive shell over a payload that already renders headless —
   no separate rendering stack for the GUI.
 - Deterministic outputs are snapshot-testable; interop is a diff against the standard node-link shape.
-- Trade-off: vendoring interactive JS grows the build; keep it to one small, well-known library.
+- Trade-off: vendoring interactive JS grows the build. The library choice is constrained on three axes
+  at once — offline/self-contained, small enough to vendor, and capable enough to render thousands of
+  nodes with live search and filtering — and these pull against each other. The specific library is a
+  conscious pick made at implementation time, backstopped by the community meta-graph fallback
+  (ADR-0004) when a graph is too large to draw node-for-node.
 
 ## Alternatives considered
 

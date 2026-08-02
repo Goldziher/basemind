@@ -10,7 +10,10 @@
 
 basemind knows the relationships between code elements — which symbol calls which, what a file
 imports, what a type inherits or implements, and which uses it has *resolved* to a specific
-definition. That knowledge is real and already indexed. What it lacks is a single, shared notion of
+definition. That knowledge is real and already indexed — but at two different strengths: some of it
+is resolved to a concrete target (use→definition bindings), while much of it is only name-level
+(imports and inheritance are recorded as *names*, not as resolved targets). ADR-0002 makes that
+strength difference first-class. What it lacks is a single, shared notion of
 "the graph": today every capability that needs relationships assembles its own one-off walk for one
 purpose (the architecture map builds a whole-repo graph, ranks it, and throws it away; the call
 graph does a separate rooted walk) and then discards it. There is no typed, multi-edge graph object
@@ -34,8 +37,12 @@ Introduce **one shared code-graph model** that every graph-consuming capability 
   references (a proven use→definition binding), and containment (file→symbol / symbol→symbol
   nesting) — rather than a single undifferentiated "related to". Later ADRs add document and
   rationale edges (ADR-0008/0009) as further kinds on the same model.
-- **Stable node identity.** A node is a code location (path plus its span), language-agnostic and
-  deduplicated, so the same symbol is the same node across every capability and every edge kind.
+- **Stable node identity.** A resolved node is a code location (path plus its span),
+  language-agnostic and deduplicated, so the same symbol is the same node across every capability and
+  every edge kind. Edges whose target is only a name that does not resolve to a definition — an
+  unresolved import module, an inferred call, a name with no unique definition — point at a **virtual
+  name node** keyed by that name (a first-class but unresolved endpoint) rather than being silently
+  dropped, so the graph stays well-defined for exactly the inferred/ambiguous edges ADR-0002 tags.
 - **Built on demand, in memory, not persisted.** The graph is assembled per query from relationships
   basemind already indexes, bounded by the same scan discipline the architecture map already honors,
   and discarded after. This keeps it a **read-side abstraction with no new persisted state and no
@@ -49,7 +56,11 @@ the UI — consumes this one model instead of re-deriving adjacency for itself.
 - Traversal, communities, rendering, and the UI share one definition of "the graph" and one builder;
   a new edge kind or a new provenance rule (ADR-0002) is added once and every consumer benefits.
 - The architecture map's currently-reserved import/inherit lanes become real edges on the shared
-  model (delivered with ADR-0002), and the rooted call graph becomes one traversal over it
+  model (delivered with ADR-0002). These are stored name-level today (an import records a module
+  name, an inherit records a trait/impl name — neither carries a resolved target), so turning them
+  into edges-to-nodes requires resolving that name to a definition, and the resulting edges are
+  inferred/ambiguous by construction rather than proven (ADR-0002) — this is real resolution work,
+  not a free surfacing step. The rooted call graph becomes one traversal over the shared model
   (ADR-0003) rather than a separate walk.
 - Cost stays proportional to the scan the architecture map already does; the shared builder must keep
   its bound and be measured against the performance baselines whenever it changes.

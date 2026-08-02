@@ -23,6 +23,11 @@ individual sessions don't re-litigate it each time.
 - **Land the index/graph/rendering capabilities as core, main-mergeable work** as each stabilizes
   (ADR-0001 through ADR-0005, ADR-0008, ADR-0009). They extend the product and should not wait on the
   GUI.
+- **Mechanism.** Development currently happens on the agent-layer branch, so the core graph work is
+  authored to have **no dependency on the agent layer**, and reaches main either directly (authored on
+  a branch cut from main) or by cherry-pick — **not** by merging the agent-layer branch wholesale,
+  which would drag the unfinished UI along. The agent-layer branch is kept rebased on top of main as
+  each piece of core work lands, so the branch only ever carries the UI-specific delta.
 - **Keep the interactive UI work on the agent-layer branch** until it is stable, then merge (ADR-0006,
   ADR-0007). It carries the new GUI toolchain and depends on the branch's transport seam.
 - **Feature-gate by cost:** traversal and rendering in default builds; the **UI behind a
