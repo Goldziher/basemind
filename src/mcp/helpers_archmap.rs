@@ -21,6 +21,7 @@ use rmcp::model::CallToolResult;
 
 use super::MapCache;
 use super::budget::apply_budget;
+use super::codegraph::{self, BuildOpts, EdgeKind, EdgeKindSet, Provenance};
 use super::helpers::{elapsed_us, json_result, kind_to_str};
 use super::helpers_calls::for_each_call_in_file;
 use super::helpers_graph::is_function_like;
@@ -34,6 +35,9 @@ use crate::path::RelPath;
 const ARCHMAP_EDGE_SCAN_CAP: usize = 4_000_000;
 const PAGERANK_ITERS: usize = 20;
 const PAGERANK_DAMPING: f64 = 0.85;
+
+/// Inter-group non-call edges: `(from_group, to_group, kind) -> (weight, provenance)`.
+type LaneEdges = AHashMap<(u32, u32, EdgeKind), (u32, Provenance)>;
 
 /// A directed weighted graph in adjacency form. `out[i]` / `in_[i]` are sorted for
 /// deterministic iteration (PageRank / Tarjan discovery order).
@@ -277,6 +281,8 @@ pub(crate) fn run_architecture_map(
     match params.granularity.as_str() {
         "module" => run_tier_grouped(
             &rg,
+            idx,
+            cache,
             churn,
             focus,
             Some(depth),
@@ -286,7 +292,9 @@ pub(crate) fn run_architecture_map(
             notice,
             started,
         ),
-        "file" => run_tier_grouped(&rg, churn, focus, None, &params, max_nodes, max_edges, notice, started),
+        "file" => run_tier_grouped(
+            &rg, idx, cache, churn, focus, None, &params, max_nodes, max_edges, notice, started,
+        ),
         "symbol" => run_tier_symbol(
             &rg, cache, idx, churn, focus, &params, max_nodes, max_edges, notice, started,
         ),
@@ -327,6 +335,8 @@ fn dir_label(path: &str, depth: usize) -> String {
 #[allow(clippy::too_many_arguments)]
 fn run_tier_grouped(
     rg: &RepoGraph,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
     focus: Option<&str>,
     rollup: Option<usize>,
@@ -454,16 +464,19 @@ fn run_tier_grouped(
         }
     }
 
-    let edges = emit_edges(&gedges, &local_of, max_edges);
+    let sel = EdgeKindSet::from_edges_param(&params.edges);
+    let (lane, lane_truncated) = grouped_lane_edges(idx, cache, rg, &group_of, sel, focus)?;
+    let edge_count_total = ((if sel.calls { gedges.len() } else { 0 }) + lane.len()) as u32;
+    let edges = emit_grouped_edges(&gedges, &lane, &local_of, sel.calls, max_edges);
 
     json_result(&ArchitectureMapResponse {
         granularity: params.granularity.clone(),
         node_count_total: ngroups as u32,
-        edge_count_total: gedges.len() as u32,
+        edge_count_total,
         nodes,
         edges,
         cycles,
-        truncated: rg.truncated,
+        truncated: rg.truncated || lane_truncated,
         truncation_reason: rg.truncation_reason,
         budgeted: budgeted.budgeted,
         notice,
@@ -524,22 +537,110 @@ fn build_cycles(
     (out, scc_of_local)
 }
 
-/// Emit inter-group edges whose endpoints both survived, heaviest first, capped.
-fn emit_edges(gedges: &AHashMap<(u32, u32), u32>, local_of: &AHashMap<u32, u32>, max_edges: usize) -> Vec<ArchEdge> {
-    let mut edges: Vec<ArchEdge> = gedges
-        .iter()
-        .filter_map(|(&(s, d), &w)| {
-            let from = *local_of.get(&s)?;
-            let to = *local_of.get(&d)?;
-            Some(ArchEdge {
+/// Aggregate codegraph import/inherit edges to the tier's group granularity. Returns
+/// `(gs, gd, kind) -> (weight, provenance)` for inter-group edges, provenance folded to the
+/// strongest tier. Empty when no non-call lane is selected — so the default `edges="calls"`
+/// path builds no codegraph and pays nothing extra.
+fn grouped_lane_edges(
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    rg: &RepoGraph,
+    group_of: &[Option<u32>],
+    sel: EdgeKindSet,
+    focus: Option<&str>,
+) -> Result<(LaneEdges, bool), McpError> {
+    let mut out: LaneEdges = AHashMap::new();
+    if !sel.imports && !sel.inherits {
+        return Ok((out, false));
+    }
+    let lane_kinds = EdgeKindSet {
+        calls: false,
+        imports: sel.imports,
+        inherits: sel.inherits,
+        contains: false,
+    };
+    let cg = codegraph::build(
+        idx,
+        cache,
+        &BuildOpts {
+            kinds: lane_kinds,
+            focus: focus.map(str::to_string),
+            scan_cap: ARCHMAP_EDGE_SCAN_CAP,
+        },
+    )?;
+    let mut file_id: AHashMap<&RelPath, u32> = AHashMap::with_capacity(rg.files.len());
+    for (i, p) in rg.files.iter().enumerate() {
+        file_id.insert(p, i as u32);
+    }
+    for e in &cg.edges {
+        let (Some(sf), Some(df)) = (e.from.file(), e.to.file()) else {
+            continue;
+        };
+        let (Some(&sfi), Some(&dfi)) = (file_id.get(sf), file_id.get(df)) else {
+            continue;
+        };
+        let (Some(gs), Some(gd)) = (group_of[sfi as usize], group_of[dfi as usize]) else {
+            continue;
+        };
+        if gs == gd {
+            continue;
+        }
+        out.entry((gs, gd, e.kind))
+            .and_modify(|(w, p)| {
+                *w += e.weight;
+                if e.provenance.rank() > p.rank() {
+                    *p = e.provenance;
+                }
+            })
+            .or_insert((e.weight, e.provenance));
+    }
+    Ok((out, cg.truncated))
+}
+
+/// Merge call + lane edges among surviving groups, heaviest first, capped. Call edges are
+/// name-based at this granularity, so they carry the INFERRED floor (ADR-0002); lane edges
+/// carry the provenance derived by the codegraph.
+fn emit_grouped_edges(
+    gedges: &AHashMap<(u32, u32), u32>,
+    lane: &LaneEdges,
+    local_of: &AHashMap<u32, u32>,
+    include_calls: bool,
+    max_edges: usize,
+) -> Vec<ArchEdge> {
+    let mut edges: Vec<ArchEdge> = Vec::new();
+    if include_calls {
+        for (&(s, d), &w) in gedges {
+            if let (Some(&from), Some(&to)) = (local_of.get(&s), local_of.get(&d)) {
+                edges.push(ArchEdge {
+                    from,
+                    to,
+                    weight: w,
+                    kind: "calls".to_string(),
+                    provenance: Provenance::Inferred.as_str().to_string(),
+                    confidence: Provenance::Inferred.confidence(),
+                });
+            }
+        }
+    }
+    for (&(s, d, kind), &(w, prov)) in lane {
+        if let (Some(&from), Some(&to)) = (local_of.get(&s), local_of.get(&d)) {
+            edges.push(ArchEdge {
                 from,
                 to,
                 weight: w,
-                kind: "calls".to_string(),
-            })
-        })
-        .collect();
-    edges.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.from.cmp(&b.from)).then(a.to.cmp(&b.to)));
+                kind: kind.as_str().to_string(),
+                provenance: prov.as_str().to_string(),
+                confidence: prov.confidence(),
+            });
+        }
+    }
+    edges.sort_by(|a, b| {
+        b.weight
+            .cmp(&a.weight)
+            .then(a.from.cmp(&b.from))
+            .then(a.to.cmp(&b.to))
+            .then_with(|| a.kind.cmp(&b.kind))
+    });
     edges.truncate(max_edges);
     edges
 }
@@ -682,6 +783,10 @@ fn run_tier_symbol(
             to,
             weight: w,
             kind: "calls".to_string(),
+            // Symbol-tier edges are name-based call edges; import/inherit lanes are a
+            // file/module-tier surface this iteration (ADR-0002).
+            provenance: Provenance::Inferred.as_str().to_string(),
+            confidence: Provenance::Inferred.confidence(),
         })
         .collect();
     edges.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.from.cmp(&b.from)).then(a.to.cmp(&b.to)));

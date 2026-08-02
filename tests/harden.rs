@@ -718,6 +718,16 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: architecture_map(module) returned {archmap_nodes} nodes (expected ≥ 5)"
                 ));
             }
+            let import_edges = repo_record
+                .canaries
+                .get("archmap_import_edges")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if import_edges < 1 {
+                failures.push(format!(
+                    "tokio canary: architecture_map(module, edges=all) returned {import_edges} import edges (expected ≥ 1)"
+                ));
+            }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -962,6 +972,25 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("archmap_module_nodes".into(), json!(nodes));
+            }
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "architecture_map",
+                    &json!({ "granularity": "module", "depth": 2, "max_nodes": 100, "max_edges": 2000, "edges": "all", "include_churn": false }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let import_edges = body
+                    .get("edges")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter(|e| e.get("kind").and_then(Value::as_str) == Some("imports"))
+                            .count() as u64
+                    })
+                    .unwrap_or(0);
+                record.canaries.insert("archmap_import_edges".into(), json!(import_edges));
             }
             if let Ok(out) = svc
                 .call_tool(call_params(

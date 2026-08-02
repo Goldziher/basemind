@@ -11,6 +11,7 @@
 pub mod agent_api;
 mod background;
 mod budget;
+mod codegraph;
 mod completions;
 pub(crate) mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]

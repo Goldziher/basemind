@@ -1,6 +1,6 @@
 # ADR-0002: Edge provenance and confidence
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0003 (traversal), ADR-0005 (rendering engine)

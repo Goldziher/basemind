@@ -33,8 +33,11 @@ pub struct ArchitectureMapParams {
     /// components). Default 2, minimum 1.
     #[serde(default)]
     pub depth: Option<u32>,
-    /// Edge lanes. `"calls"` (default) uses name→definition call edges. `"imports"` /
-    /// `"both"` are reserved — import edges are heuristic and not emitted yet.
+    /// Edge lanes (module/file tiers). `"calls"` (default) name→definition call edges;
+    /// `"imports"` and `"inherits"` the import / inheritance lanes; `"both"` = calls+imports;
+    /// `"all"` = calls+imports+inherits. Import/inherit edges are name-resolved, so they carry
+    /// `"inferred"` / `"ambiguous"` provenance (never `"extracted"` to a node). The symbol tier
+    /// is call-edges only.
     #[serde(default = "default_edges")]
     pub edges: String,
     /// Overlay git churn (commits-touching over the last `churn_window` commits) onto the
@@ -135,10 +138,22 @@ pub struct ArchEdge {
     pub from: u32,
     /// Destination node response-local id.
     pub to: u32,
-    /// Aggregate call-site count on this edge.
+    /// Aggregate multiplicity on this edge (call-site count for `"calls"`; relationship
+    /// count for `"imports"` / `"inherits"`).
     pub weight: u32,
-    /// Edge lane — `"calls"`.
+    /// Edge lane — `"calls"` (name→definition call edges), `"imports"`, or `"inherits"`,
+    /// per the `edges` request param.
     pub kind: String,
+    /// Provenance tag (ADR-0002): `"extracted"` (resolution-proven), `"inferred"`
+    /// (name-level; correct but unproven), or `"ambiguous"` (a name resolving to several
+    /// definitions). Call edges at this granularity are name-based, so they report the
+    /// `"inferred"` floor; import/inherit edges report the strongest tier among the
+    /// relationships they aggregate. `#[serde(default)]` keeps the field additive.
+    #[serde(default)]
+    pub provenance: String,
+    /// Numeric confidence matching `provenance` on the fixed ladder: `1.0` / `0.5` / `0.2`.
+    #[serde(default)]
+    pub confidence: f32,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]

@@ -4118,3 +4118,63 @@ async fn find_callers_never_reports_a_resolution_limited_subset_as_complete() {
     );
     let _ = service.cancel().await;
 }
+
+/// ADR-0001/0002: `architecture_map`'s `edges` param is live (calls/imports/inherits) and
+/// every edge carries a provenance tag + numeric confidence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn architecture_map_emits_typed_provenance_edges() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("core.rs"),
+        "pub fn engine() {}\npub fn helper() { engine(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.rs"),
+        "use crate::core::engine;\npub fn run() { engine(); helper(); }\n",
+    )
+    .unwrap();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({"granularity": "file", "edges": "all", "include_churn": false}),
+            ))
+            .await
+            .expect("architecture_map"),
+    );
+    let edges = body.get("edges").and_then(Value::as_array).expect("edges array");
+    assert!(!edges.is_empty(), "file tier should have inter-file edges: {body}");
+
+    // Every edge carries a provenance tag on the fixed ladder and a matching confidence.
+    for e in edges {
+        let prov = e.get("provenance").and_then(Value::as_str).expect("edge provenance");
+        let conf = e.get("confidence").and_then(Value::as_f64).expect("edge confidence");
+        match prov {
+            "extracted" => assert_eq!(conf, 1.0),
+            "inferred" => assert_eq!(conf, 0.5),
+            "ambiguous" => assert_eq!(conf, 0.2),
+            other => panic!("unexpected provenance tag {other:?} in {e}"),
+        }
+    }
+
+    // `edges: "all"` surfaces the previously-dead import lane, not just calls.
+    let has_import = edges
+        .iter()
+        .any(|e| e.get("kind").and_then(Value::as_str) == Some("imports"));
+    assert!(
+        has_import,
+        "edges=all must surface import edges beyond calls: {edges:?}"
+    );
+
+    let _ = service.cancel().await;
+}

@@ -716,7 +716,7 @@ machine-readable output.
 | `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
 | `implementations <trait>` | Types that implement or inherit from a name. |
 | `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
-| `architecture-map [--granularity --focus --depth --edges --include-churn]` | Deterministic architecture overview: hub modules/symbols ranked by graph centrality + churn, plus dependency cycles (SCCs). |
+| `architecture-map [--granularity --focus --depth --edges --include-churn]` | Deterministic architecture overview: hub modules/symbols ranked by graph centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
 | `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
 | `list-files [--path-contains --language]` | List indexed files. |
 | `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
