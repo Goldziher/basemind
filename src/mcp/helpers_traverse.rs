@@ -253,7 +253,7 @@ pub(super) fn run_path(
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let kinds = kinds_from(&params.edges, params.include_contains)?;
 
-    let (mut adj, _scan_truncated) = build_adjacency(idx, cache, kinds)?;
+    let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
     let sources: Vec<u32> = resolve_roots(cache, &params.from, params.from_path.as_ref())
         .iter()
         .map(|k| adj.intern(k))
@@ -285,6 +285,7 @@ pub(super) fn run_path(
         nodes,
         edges,
         cost,
+        truncated: scan_truncated,
         notice,
         elapsed_us: elapsed_us(started),
     })

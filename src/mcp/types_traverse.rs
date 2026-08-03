@@ -172,6 +172,11 @@ pub struct PathResponse {
     pub edges: Vec<GraphEdge>,
     /// Total confidence-weighted cost of the path (lower = shorter/more proven). 0 when not found.
     pub cost: u32,
+    /// True when the code-graph scan hit its cap before the build completed: a `found:false` here
+    /// may be a partial-scan artifact, not a proof that no route exists. Distinguishes "unreachable"
+    /// from "not scanned far enough", matching `neighbors`/`subgraph`.
+    #[serde(default)]
+    pub truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
     /// Server-side handler latency in microseconds (excludes transport).

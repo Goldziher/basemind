@@ -4282,6 +4282,12 @@ async fn traversal_tools_walk_the_shared_graph() {
         .map(|a| a.len())
         .unwrap_or(0);
     assert_eq!(edge_count, names.len() - 1, "one edge between each pair of path nodes");
+    // path reports scan truncation like its siblings — a small fixture never hits the cap.
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(false),
+        "path exposes truncated=false on a complete scan: {body}"
+    );
     assert_graph_edges_well_formed(&body);
 
     // subgraph(helper): a readable neighborhood; nodes carry a centrality score.

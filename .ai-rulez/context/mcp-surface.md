@@ -27,7 +27,7 @@ priority: high
 | `call_graph` | Rooted call BFS from a definition, `callees`/`callers` direction, depth-bounded. Name-keyed. |
 | `architecture_map` | Whole-repo map: PageRank + SCC clusters, module/file/symbol granularity. `edges` lanes (calls/imports/inherits) carry provenance + confidence. |
 | `neighbors` | N-hop neighborhood around a symbol. `direction` (out/in/both), `edges` lanes (all/calls/imports/inherits/both/contains), `depth`, `min_confidence`, `max_nodes`. Two-phase: discover nodes, then induced edges among them. |
-| `path` | Confidence-weighted shortest path between two symbols (integer Dijkstra). Containment excluded by default (`include_contains` to add). Returns ordered nodes/edges + total `cost`. |
+| `path` | Confidence-weighted shortest path between two symbols (integer Dijkstra). Containment excluded by default (`include_contains` to add). Returns ordered nodes/edges + total `cost`; `truncated` flags a partial-scan `found:false`. |
 | `subgraph` | Neighborhood around a symbol cut to the `max_nodes` most central nodes (weighted degree). Roots always kept. Edges carry provenance/confidence. |
 | `communities` | Cluster the graph into de-facto modules. `algorithm` (label_propagation default / louvain opt-in), deterministic LLM-free labels (dominant path prefix + most central member). Largest first, capped. |
 | `graph_export` | Render the graph over one canonical payload: `format` node_link (default) / dot / mermaid / graphml / cypher / html (self-contained offline interactive page, zero deps). `focus`/`edges`/`algorithm`/`min_confidence`/`max_nodes`. Deterministic, offline (no CDN). Static SVG + Tauri desktop app deferred to ADR-0006. |
