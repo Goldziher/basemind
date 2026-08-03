@@ -39,6 +39,10 @@ const PAGERANK_DAMPING: f64 = 0.85;
 /// Inter-group non-call edges: `(from_group, to_group, kind) -> (weight, provenance)`.
 type LaneEdges = AHashMap<(u32, u32, EdgeKind), (u32, Provenance)>;
 
+/// Symbol-tier second-pass output: per-survivor distinct-callee fan-out (indexed by local id)
+/// plus the name-based inter-survivor edge weights `(from_local, to_local) -> weight`.
+type SymbolCallEdges = (Vec<u32>, AHashMap<(u32, u32), u32>);
+
 /// A directed weighted graph in adjacency form. `out[i]` / `in_[i]` are sorted for
 /// deterministic iteration (PageRank / Tarjan discovery order).
 struct Graph {
@@ -266,6 +270,7 @@ impl RepoGraph {
 /// Body of the `architecture_map` tool. `churn` (commits-touching per file) is `None`
 /// when the overlay is disabled or there's no git repo.
 pub(crate) fn run_architecture_map(
+    shared: &super::shared_state::SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
@@ -282,6 +287,7 @@ pub(crate) fn run_architecture_map(
 
     match params.granularity.as_str() {
         "module" => run_tier_grouped(
+            shared,
             &rg,
             idx,
             cache,
@@ -295,7 +301,7 @@ pub(crate) fn run_architecture_map(
             started,
         ),
         "file" => run_tier_grouped(
-            &rg, idx, cache, churn, focus, None, &params, max_nodes, max_edges, notice, started,
+            shared, &rg, idx, cache, churn, focus, None, &params, max_nodes, max_edges, notice, started,
         ),
         "symbol" => run_tier_symbol(
             &rg, cache, idx, churn, focus, &params, max_nodes, max_edges, notice, started,
@@ -334,20 +340,39 @@ fn dir_label(path: &str, depth: usize) -> String {
     dirs[..take].join("/")
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_tier_grouped(
+/// Group-assignment bookkeeping produced by [`assign_file_groups`], carried as a unit so the
+/// four parallel per-group vectors stay index-aligned by group id.
+struct FileGroups {
+    /// file id → group id (`None` = file filtered out by `focus`).
+    group_of: Vec<Option<u32>>,
+    /// group id → label (directory prefix, or the file path at file granularity).
+    labels: Vec<String>,
+    /// group id → representative path (only populated at file granularity).
+    group_paths: Vec<Option<RelPath>>,
+    /// group id → summed churn of its member files.
+    group_churn: Vec<u32>,
+}
+
+/// Ranking outputs [`rank_groups`] hands to [`build_group_nodes`]. `scores`/`prn` stay
+/// full-length (indexed by group id) so the node builder can look them up directly.
+struct GroupRanking {
+    /// Surviving group ids in ranked order, already knee-cut to `max_nodes`.
+    survivor_gids: Vec<u32>,
+    /// group id → blended score.
+    scores: Vec<f64>,
+    /// group id → normalized PageRank (reported on each node).
+    prn: Vec<f64>,
+}
+
+/// First pass: fold each in-focus file into its group (directory rollup or the file itself),
+/// minting stable ascending group ids and accumulating per-group churn. Isolated so the
+/// grouping bookkeeping stays separate from graph construction and ranking.
+fn assign_file_groups(
     rg: &RepoGraph,
-    idx: Option<&IndexDb>,
-    cache: &MapCache,
-    churn: Option<&AHashMap<RelPath, u32>>,
     focus: Option<&str>,
     rollup: Option<usize>,
-    params: &ArchitectureMapParams,
-    max_nodes: usize,
-    max_edges: usize,
-    notice: Option<super::types::LifecycleNotice>,
-    started: std::time::Instant,
-) -> Result<CallToolResult, McpError> {
+    churn: Option<&AHashMap<RelPath, u32>>,
+) -> FileGroups {
     let mut group_of: Vec<Option<u32>> = vec![None; rg.files.len()];
     let mut label_to_gid: AHashMap<String, u32> = AHashMap::new();
     let mut labels: Vec<String> = Vec::new();
@@ -384,8 +409,17 @@ fn run_tier_grouped(
         }
     }
 
-    let ngroups = labels.len();
+    FileGroups {
+        group_of,
+        labels,
+        group_paths,
+        group_churn,
+    }
+}
 
+/// Collapse file-level call edges to inter-group edges and materialize the group-level
+/// [`Graph`]. Kept separate so PageRank/SCC run over an already-aggregated adjacency.
+fn build_group_graph(rg: &RepoGraph, group_of: &[Option<u32>], ngroups: usize) -> (AHashMap<(u32, u32), u32>, Graph) {
     let mut gedges: AHashMap<(u32, u32), u32> = AHashMap::new();
     for s in 0..rg.files.len() {
         let Some(gs) = group_of[s] else { continue };
@@ -403,16 +437,22 @@ fn run_tier_grouped(
         g.in_[d as usize].push((s, w));
     }
     g.sort();
-    let pr = g.pagerank();
-    let comp = g.tarjan_scc();
+    (gedges, g)
+}
 
+/// Blend degree + PageRank + churn into a per-group score, then knee-cut the ranked head to at
+/// most `max_nodes` survivors. Returns the ranking inputs the node builder reuses (`scores`,
+/// `prn`) alongside the surviving ids, so all scoring math lives in one place.
+fn rank_groups(g: &Graph, group_churn: &[u32], labels: &[String], has_churn: bool, max_nodes: usize) -> GroupRanking {
+    let ngroups = g.n;
+    let pr = g.pagerank();
     let deg: Vec<f64> = (0..ngroups).map(|i| (g.fan_in(i) + g.fan_out(i)) as f64).collect();
     let prv: Vec<f64> = pr.iter().map(|&r| r as f64).collect();
     let chv: Vec<f64> = group_churn.iter().map(|&c| c as f64).collect();
     let degn = minmax_norm(&deg);
     let prn = minmax_norm(&prv);
     let chn = minmax_norm(&chv);
-    let (w_pr, w_deg, w_churn) = weights(churn.is_some());
+    let (w_pr, w_deg, w_churn) = weights(has_churn);
     let scores: Vec<f64> = (0..ngroups)
         .map(|i| w_pr * prn[i] + w_deg * degn[i] + w_churn * chn[i])
         .collect();
@@ -427,7 +467,34 @@ fn run_tier_grouped(
     let ranked_scores: Vec<f64> = order.iter().map(|&i| scores[i]).collect();
     let cut = knee_cutoff(&ranked_scores).min(max_nodes).min(ngroups);
     let survivor_gids: Vec<u32> = order[..cut].iter().map(|&i| i as u32).collect();
+    GroupRanking {
+        survivor_gids,
+        scores,
+        prn,
+    }
+}
 
+/// Materialize surviving groups into [`ArchNode`] rows, apply the token budget, then stamp SCC
+/// cluster ids. Bundled because budget truncation decides `kept`, which the cycle pass consumes.
+/// Returns the kept nodes, the `gid -> local` remap edges need, the cycle clusters, and whether
+/// the budget trimmed the list.
+#[allow(clippy::too_many_arguments)]
+fn build_group_nodes(
+    ranking: &GroupRanking,
+    g: &Graph,
+    labels: &[String],
+    group_paths: &[Option<RelPath>],
+    group_churn: &[u32],
+    churn: Option<&AHashMap<RelPath, u32>>,
+    comp: &[u32],
+    gedges: &AHashMap<(u32, u32), u32>,
+    max_tokens: Option<u32>,
+) -> (Vec<ArchNode>, AHashMap<u32, u32>, Vec<CycleCluster>, bool) {
+    let GroupRanking {
+        survivor_gids,
+        scores,
+        prn,
+    } = ranking;
     let prelim: Vec<ArchNode> = survivor_gids
         .iter()
         .enumerate()
@@ -450,7 +517,7 @@ fn run_tier_grouped(
             }
         })
         .collect();
-    let budgeted = apply_budget(prelim, params.max_tokens);
+    let budgeted = apply_budget(prelim, max_tokens);
     let mut nodes = budgeted.items;
     let kept = nodes.len();
 
@@ -459,15 +526,55 @@ fn run_tier_grouped(
         local_of.insert(gid, local as u32);
     }
 
-    let (cycles, scc_of_local) = build_cycles(&comp, &survivor_gids[..kept], &gedges, &local_of);
+    let (cycles, scc_of_local) = build_cycles(comp, &survivor_gids[..kept], gedges, &local_of);
     for node in &mut nodes {
         if let Some(&sid) = scc_of_local.get(&node.id) {
             node.scc_id = Some(sid);
         }
     }
+    (nodes, local_of, cycles, budgeted.budgeted)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_tier_grouped(
+    shared: &super::shared_state::SharedReadStack,
+    rg: &RepoGraph,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    churn: Option<&AHashMap<RelPath, u32>>,
+    focus: Option<&str>,
+    rollup: Option<usize>,
+    params: &ArchitectureMapParams,
+    max_nodes: usize,
+    max_edges: usize,
+    notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    let FileGroups {
+        group_of,
+        labels,
+        group_paths,
+        group_churn,
+    } = assign_file_groups(rg, focus, rollup, churn);
+    let ngroups = labels.len();
+
+    let (gedges, g) = build_group_graph(rg, &group_of, ngroups);
+    let comp = g.tarjan_scc();
+    let ranking = rank_groups(&g, &group_churn, &labels, churn.is_some(), max_nodes);
+    let (nodes, local_of, cycles, budgeted) = build_group_nodes(
+        &ranking,
+        &g,
+        &labels,
+        &group_paths,
+        &group_churn,
+        churn,
+        &comp,
+        &gedges,
+        params.max_tokens,
+    );
 
     let sel = EdgeKindSet::from_edges_param(&params.edges);
-    let (lane, lane_truncated) = grouped_lane_edges(idx, cache, rg, &group_of, sel, focus)?;
+    let (lane, lane_truncated) = grouped_lane_edges(shared, idx, cache, rg, &group_of, sel, focus)?;
     let edge_count_total = ((if sel.calls { gedges.len() } else { 0 }) + lane.len()) as u32;
     let edges = emit_grouped_edges(&gedges, &lane, &local_of, sel.calls, max_edges);
 
@@ -480,7 +587,7 @@ fn run_tier_grouped(
         cycles,
         truncated: rg.truncated || lane_truncated,
         truncation_reason: rg.truncation_reason,
-        budgeted: budgeted.budgeted,
+        budgeted,
         notice,
         elapsed_us: elapsed_us(started),
     })
@@ -544,6 +651,7 @@ fn build_cycles(
 /// strongest tier. Empty when no non-call lane is selected — so the default `edges="calls"`
 /// path builds no codegraph and pays nothing extra.
 fn grouped_lane_edges(
+    shared: &super::shared_state::SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     rg: &RepoGraph,
@@ -561,7 +669,7 @@ fn grouped_lane_edges(
         inherits: sel.inherits,
         contains: false,
     };
-    let cg = codegraph::build(
+    let cg = shared.graph(
         idx,
         cache,
         &BuildOpts {
@@ -663,19 +771,16 @@ struct SymCand {
     churn: u32,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_tier_symbol(
+/// Collect in-focus function-like symbols, score each by specificity-weighted hub-ness
+/// (`fan_in / def_count`), sort deterministically, and knee-cut to `max_nodes`. Returns the
+/// surviving candidates plus the pre-cut population size (`node_count_total`, reported honestly).
+fn collect_symbol_candidates(
     rg: &RepoGraph,
     cache: &MapCache,
-    idx: Option<&IndexDb>,
     churn: Option<&AHashMap<RelPath, u32>>,
     focus: Option<&str>,
-    params: &ArchitectureMapParams,
     max_nodes: usize,
-    max_edges: usize,
-    notice: Option<super::types::LifecycleNotice>,
-    started: std::time::Instant,
-) -> Result<CallToolResult, McpError> {
+) -> (Vec<SymCand>, u32) {
     let mut cands: Vec<SymCand> = Vec::new();
     for (path, l1) in &cache.by_path {
         let ps = path.as_str().unwrap_or("");
@@ -718,8 +823,17 @@ fn run_tier_symbol(
     let hub_curve: Vec<f64> = cands.iter().map(|c| c.hub).collect();
     let cut = knee_cutoff(&hub_curve).min(max_nodes).min(cands.len());
     cands.truncate(cut);
-    let survivors = cands;
+    (cands, node_count_total)
+}
 
+/// Second pass over each survivor file's call sites: attribute every call to the enclosing
+/// survivor by byte-range containment, building name-based inter-survivor edges and per-symbol
+/// distinct-callee fan-out. Isolated because it is the only `?`-fallible (call-index) step here.
+fn build_symbol_call_edges(
+    survivors: &[SymCand],
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+) -> Result<SymbolCallEdges, McpError> {
     let mut by_file: AHashMap<RelPath, Vec<u32>> = AHashMap::new();
     let mut name_to_locals: AHashMap<&str, Vec<u32>> = AHashMap::new();
     for (loc, s) in survivors.iter().enumerate() {
@@ -750,7 +864,17 @@ fn run_tier_symbol(
         })?;
     }
     let fan_out: Vec<u32> = fan_out_sets.iter().map(|s| s.len() as u32).collect();
+    Ok((fan_out, edge_map))
+}
 
+/// Build the symbol-tier [`ArchNode`] rows (normalized hub `score`, reported `fan_in`, computed
+/// `fan_out`) and apply the token budget. Returns the kept rows and whether the budget trimmed.
+fn build_symbol_nodes(
+    survivors: &[SymCand],
+    fan_out: &[u32],
+    churn: Option<&AHashMap<RelPath, u32>>,
+    max_tokens: Option<u32>,
+) -> (Vec<ArchNode>, bool) {
     let hubv: Vec<f64> = survivors.iter().map(|c| c.hub).collect();
     let hubn = minmax_norm(&hubv);
 
@@ -773,10 +897,13 @@ fn run_tier_symbol(
             scc_id: None,
         })
         .collect();
-    let budgeted = apply_budget(prelim, params.max_tokens);
-    let nodes = budgeted.items;
-    let kept = nodes.len();
+    let budgeted = apply_budget(prelim, max_tokens);
+    (budgeted.items, budgeted.budgeted)
+}
 
+/// Keep only edges between budget-surviving symbols (`local < kept`), sort heaviest-first, and
+/// cap to `max_edges`. Returns the capped edges plus the pre-cap total for `edge_count_total`.
+fn finalize_symbol_edges(edge_map: &AHashMap<(u32, u32), u32>, kept: usize, max_edges: usize) -> (Vec<ArchEdge>, u32) {
     let mut edges: Vec<ArchEdge> = edge_map
         .iter()
         .filter(|((from, to), _)| (*from as usize) < kept && (*to as usize) < kept)
@@ -794,6 +921,27 @@ fn run_tier_symbol(
     edges.sort_by(|a, b| b.weight.cmp(&a.weight).then(a.from.cmp(&b.from)).then(a.to.cmp(&b.to)));
     let edge_count_total = edges.len() as u32;
     edges.truncate(max_edges);
+    (edges, edge_count_total)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_tier_symbol(
+    rg: &RepoGraph,
+    cache: &MapCache,
+    idx: Option<&IndexDb>,
+    churn: Option<&AHashMap<RelPath, u32>>,
+    focus: Option<&str>,
+    params: &ArchitectureMapParams,
+    max_nodes: usize,
+    max_edges: usize,
+    notice: Option<super::types::LifecycleNotice>,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    let (survivors, node_count_total) = collect_symbol_candidates(rg, cache, churn, focus, max_nodes);
+    let (fan_out, edge_map) = build_symbol_call_edges(&survivors, idx, cache)?;
+    let (nodes, budgeted) = build_symbol_nodes(&survivors, &fan_out, churn, params.max_tokens);
+    let kept = nodes.len();
+    let (edges, edge_count_total) = finalize_symbol_edges(&edge_map, kept, max_edges);
 
     json_result(&ArchitectureMapResponse {
         granularity: params.granularity.clone(),
@@ -804,7 +952,7 @@ fn run_tier_symbol(
         cycles: Vec::new(),
         truncated: rg.truncated,
         truncation_reason: rg.truncation_reason,
-        budgeted: budgeted.budgeted,
+        budgeted,
         notice,
         elapsed_us: elapsed_us(started),
     })

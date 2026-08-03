@@ -51,6 +51,7 @@ impl BasemindServer {
                 None
             };
             run_architecture_map(
+                &self.state.shared,
                 idx.as_ref(),
                 &cache,
                 churn.as_ref(),
