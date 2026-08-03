@@ -699,6 +699,34 @@ async fn mcp_server_exercises_representative_tools() {
         "architecture_map file-tier node order must be deterministic across calls"
     );
 
+    // Module tier is the DEFAULT granularity and the only path through the directory-rollup grouping
+    // (`assign_file_groups`); exercise it end-to-end for node emission + cross-call determinism.
+    let modm = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({ "granularity": "module", "include_churn": false }),
+            ))
+            .await
+            .expect("architecture_map module"),
+    );
+    let mod_nodes = modm.get("nodes").and_then(Value::as_array).expect("module nodes");
+    assert!(!mod_nodes.is_empty(), "module tier must emit grouped nodes: {modm:?}");
+    let modm2 = decode_text(
+        &service
+            .call_tool(call_params(
+                "architecture_map",
+                json!({ "granularity": "module", "include_churn": false }),
+            ))
+            .await
+            .expect("architecture_map module (repeat)"),
+    );
+    assert_eq!(
+        modm.get("nodes"),
+        modm2.get("nodes"),
+        "architecture_map module-tier node order must be deterministic across calls"
+    );
+
     let page1 = decode_text(
         &service
             .call_tool(call_params("search_symbols", json!({ "needle": "a", "limit": 1 })))

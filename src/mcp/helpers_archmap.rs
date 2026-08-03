@@ -478,13 +478,10 @@ fn rank_groups(g: &Graph, group_churn: &[u32], labels: &[String], has_churn: boo
 /// cluster ids. Bundled because budget truncation decides `kept`, which the cycle pass consumes.
 /// Returns the kept nodes, the `gid -> local` remap edges need, the cycle clusters, and whether
 /// the budget trimmed the list.
-#[allow(clippy::too_many_arguments)]
 fn build_group_nodes(
     ranking: &GroupRanking,
     g: &Graph,
-    labels: &[String],
-    group_paths: &[Option<RelPath>],
-    group_churn: &[u32],
+    groups: &FileGroups,
     churn: Option<&AHashMap<RelPath, u32>>,
     comp: &[u32],
     gedges: &AHashMap<(u32, u32), u32>,
@@ -502,8 +499,8 @@ fn build_group_nodes(
             let gi = gid as usize;
             ArchNode {
                 id: local as u32,
-                label: labels[gi].clone(),
-                path: group_paths[gi].clone(),
+                label: groups.labels[gi].clone(),
+                path: groups.group_paths[gi].clone(),
                 name: None,
                 kind: None,
                 start_row: None,
@@ -511,7 +508,7 @@ fn build_group_nodes(
                 fan_in: g.fan_in(gi),
                 fan_out: g.fan_out(gi),
                 pagerank: Some(prn[gi] as f32),
-                commits_touching: churn.map(|_| group_churn[gi]),
+                commits_touching: churn.map(|_| groups.group_churn[gi]),
                 score: scores[gi] as f32,
                 scc_id: None,
             }
@@ -550,31 +547,17 @@ fn run_tier_grouped(
     notice: Option<super::types::LifecycleNotice>,
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
-    let FileGroups {
-        group_of,
-        labels,
-        group_paths,
-        group_churn,
-    } = assign_file_groups(rg, focus, rollup, churn);
-    let ngroups = labels.len();
+    let groups = assign_file_groups(rg, focus, rollup, churn);
+    let ngroups = groups.labels.len();
 
-    let (gedges, g) = build_group_graph(rg, &group_of, ngroups);
+    let (gedges, g) = build_group_graph(rg, &groups.group_of, ngroups);
     let comp = g.tarjan_scc();
-    let ranking = rank_groups(&g, &group_churn, &labels, churn.is_some(), max_nodes);
-    let (nodes, local_of, cycles, budgeted) = build_group_nodes(
-        &ranking,
-        &g,
-        &labels,
-        &group_paths,
-        &group_churn,
-        churn,
-        &comp,
-        &gedges,
-        params.max_tokens,
-    );
+    let ranking = rank_groups(&g, &groups.group_churn, &groups.labels, churn.is_some(), max_nodes);
+    let (nodes, local_of, cycles, budgeted) =
+        build_group_nodes(&ranking, &g, &groups, churn, &comp, &gedges, params.max_tokens);
 
     let sel = EdgeKindSet::from_edges_param(&params.edges);
-    let (lane, lane_truncated) = grouped_lane_edges(shared, idx, cache, rg, &group_of, sel, focus)?;
+    let (lane, lane_truncated) = grouped_lane_edges(shared, idx, cache, rg, &groups.group_of, sel, focus)?;
     let edge_count_total = ((if sel.calls { gedges.len() } else { 0 }) + lane.len()) as u32;
     let edges = emit_grouped_edges(&gedges, &lane, &local_of, sel.calls, max_edges);
 
