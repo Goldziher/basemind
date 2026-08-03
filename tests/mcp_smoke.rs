@@ -4496,6 +4496,31 @@ async fn graph_export_renders_every_format() {
         assert!(content.contains(needle), "format {fmt} missing {needle:?}: {content}");
     }
 
+    // max_nodes=2 caps the view below the node count, flags truncated, and every edge endpoint
+    // stays within the remapped node range.
+    let capped = service
+        .call_tool(call_params(
+            "graph_export",
+            json!({"format": "node_link", "edges": "all", "max_nodes": 2}),
+        ))
+        .await
+        .expect("graph_export capped");
+    let body = decode_text(&capped);
+    let node_count = body.get("node_count").and_then(Value::as_u64).unwrap_or(0);
+    assert!(node_count <= 2, "capped to max_nodes: {body}");
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(true),
+        "capping flags truncated: {body}"
+    );
+    let doc: Value = serde_json::from_str(body.get("content").and_then(Value::as_str).unwrap()).unwrap();
+    for link in doc.get("links").and_then(Value::as_array).into_iter().flatten() {
+        for end in ["source", "target"] {
+            let idx = link.get(end).and_then(Value::as_u64).unwrap();
+            assert!(idx < node_count, "edge {end} {idx} in range after cap: {link}");
+        }
+    }
+
     // An invalid format is rejected, not silently defaulted.
     let bogus = service
         .call_tool(call_params("graph_export", json!({"format": "svg"})))

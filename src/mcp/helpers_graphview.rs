@@ -27,10 +27,49 @@ const GRAPHVIEW_COMMUNITY_ITERS: u32 = 50;
 const DEFAULT_MAX_NODES: u32 = 500;
 const MAX_MAX_NODES: u32 = 2000;
 
+/// Label each detected community from its members (most central first): dominant path prefix + most
+/// central member (ADR-0004). Returns a label per dense community id.
+fn label_communities(adj: &Adjacency, cache: &MapCache, partition: &community::Partition) -> Vec<String> {
+    let mut by_comm: Vec<Vec<u32>> = vec![Vec::new(); partition.num_communities as usize];
+    for (id, &c) in partition.community_of.iter().enumerate() {
+        by_comm[c as usize].push(id as u32);
+    }
+    by_comm
+        .iter_mut()
+        .map(|members| {
+            members.sort_by(|&a, &b| {
+                partition.centrality[b as usize]
+                    .cmp(&partition.centrality[a as usize])
+                    .then(a.cmp(&b))
+            });
+            label_for(adj, cache, members)
+        })
+        .collect()
+}
+
+/// Keep the most central `max_nodes` node ids (centrality desc, id asc), returned in ascending id
+/// order for stable output. Returns the kept original ids, a map from original id → dense output
+/// index, and whether the view was capped.
+fn select_nodes(partition: &community::Partition, n: usize, max_nodes: usize) -> (Vec<u32>, AHashMap<u32, u32>, bool) {
+    let mut order: Vec<u32> = (0..n as u32).collect();
+    order.sort_by(|&a, &b| {
+        partition.centrality[b as usize]
+            .cmp(&partition.centrality[a as usize])
+            .then(a.cmp(&b))
+    });
+    let capped = order.len() > max_nodes;
+    order.truncate(max_nodes);
+    order.sort_unstable();
+    let mut remap: AHashMap<u32, u32> = AHashMap::with_capacity(order.len());
+    for (new_id, &orig) in order.iter().enumerate() {
+        remap.insert(orig, new_id as u32);
+    }
+    (order, remap, capped)
+}
+
 /// Assemble the canonical graph-view payload from the shared code-graph. `max_nodes` keeps the most
 /// central nodes (id-ascending among the kept set for readable output) and the edges induced among
 /// them; `truncated` flags a capped or scan-truncated view.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_graph_view(
     idx: Option<&IndexDb>,
     cache: &MapCache,
@@ -60,39 +99,9 @@ pub(super) fn build_graph_view(
         truncated: scan_truncated,
     };
     let adj = Adjacency::build(&graph);
-    let n = adj.node_count();
     let partition = community::detect(&adj, algo, GRAPHVIEW_COMMUNITY_ITERS);
-
-    // Label each community from its members (most central first).
-    let mut by_comm: Vec<Vec<u32>> = vec![Vec::new(); partition.num_communities as usize];
-    for (id, &c) in partition.community_of.iter().enumerate() {
-        by_comm[c as usize].push(id as u32);
-    }
-    let mut comm_label: Vec<String> = Vec::with_capacity(by_comm.len());
-    for members in &mut by_comm {
-        members.sort_by(|&a, &b| {
-            partition.centrality[b as usize]
-                .cmp(&partition.centrality[a as usize])
-                .then(a.cmp(&b))
-        });
-        comm_label.push(label_for(&adj, cache, members));
-    }
-
-    // Keep the most central `max_nodes` (centrality desc, id asc), then emit in ascending original
-    // id order so node numbering is stable and readable.
-    let mut order: Vec<u32> = (0..n as u32).collect();
-    order.sort_by(|&a, &b| {
-        partition.centrality[b as usize]
-            .cmp(&partition.centrality[a as usize])
-            .then(a.cmp(&b))
-    });
-    let capped = order.len() > max_nodes;
-    order.truncate(max_nodes);
-    order.sort_unstable();
-    let mut remap: AHashMap<u32, u32> = AHashMap::with_capacity(order.len());
-    for (new_id, &orig) in order.iter().enumerate() {
-        remap.insert(orig, new_id as u32);
-    }
+    let comm_label = label_communities(&adj, cache, &partition);
+    let (order, remap, capped) = select_nodes(&partition, adj.node_count(), max_nodes);
 
     let nodes: Vec<GraphViewNode> = order
         .iter()

@@ -147,22 +147,27 @@ fn to_node_link(view: &GraphView) -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Escape a string for a DOT double-quoted id/label: backslash and double-quote.
+/// Escape a string for a DOT double-quoted id/label: backslash and double-quote, and collapse raw
+/// newlines to spaces so a name can't spread the label across lines.
 fn dot_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r'], " ")
 }
 
 fn to_dot(view: &GraphView) -> String {
     let mut out = String::new();
     out.push_str("digraph basemind {\n  rankdir=LR;\n  node [shape=box];\n");
     for n in &view.nodes {
-        let loc = path_str(n).map(|p| format!("\\n{p}")).unwrap_or_default();
+        // Escape name and path independently, then join with the DOT line-break `\n`, so the
+        // escaper never turns the separator itself into a literal backslash-n.
+        let label = match path_str(n) {
+            Some(p) => format!("{}\\n{}", dot_escape(&n.name), dot_escape(p)),
+            None => dot_escape(&n.name),
+        };
         let _ = writeln!(
             out,
-            "  n{} [label=\"{}{}\", tooltip=\"{}\"];",
+            "  n{} [label=\"{}\", tooltip=\"{}\"];",
             n.id,
-            dot_escape(&n.name),
-            dot_escape(&loc),
+            label,
             dot_escape(&n.community_label)
         );
     }
@@ -196,9 +201,16 @@ fn to_mermaid(view: &GraphView) -> String {
     out
 }
 
-/// Escape text for an XML attribute/body.
+/// Escape text for an XML attribute/body. Drops C0 control characters XML 1.0 forbids (everything
+/// below U+0020 except tab/newline/carriage-return) — they have no legal escape and would make the
+/// document non-well-formed.
 fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
+    let cleaned: String = s
+        .chars()
+        .filter(|&c| c == '\t' || c == '\n' || c == '\r' || c >= ' ')
+        .collect();
+    cleaned
+        .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
@@ -275,9 +287,17 @@ fn cypher_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "\\'")
 }
 
-/// Map an edge kind to a Cypher relationship type (uppercase, the community convention).
+/// Map an edge kind to a Cypher relationship type (uppercase, the community convention). The rel
+/// type is emitted unquoted, so restrict it to a safe `[A-Z0-9_]` token defensively — `kind` is a
+/// fixed enum (calls/imports/inherits/contains) today, but this keeps a future variant from ever
+/// becoming an injection point.
 fn cypher_rel(kind: &str) -> String {
-    kind.to_ascii_uppercase()
+    let rel: String = kind
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .to_ascii_uppercase();
+    if rel.is_empty() { "REL".to_string() } else { rel }
 }
 
 fn to_cypher(view: &GraphView) -> String {
@@ -320,7 +340,7 @@ mod tests {
             nodes: vec![
                 GraphViewNode {
                     id: 0,
-                    name: "engine".into(),
+                    name: "wr<a>&p".into(), // angle brackets + ampersand exercise XML escaping
                     kind: "function".into(),
                     path: Some(RelPath::from("src/core.rs")),
                     start_row: Some(1),
@@ -331,7 +351,7 @@ mod tests {
                 },
                 GraphViewNode {
                     id: 1,
-                    name: "he\"lper".into(), // embedded quote exercises escaping
+                    name: "he\"l'p\\er".into(), // quote + single-quote + backslash exercise DOT/Cypher
                     kind: "function".into(),
                     path: Some(RelPath::from("src/core.rs")),
                     start_row: Some(2),
@@ -372,8 +392,9 @@ mod tests {
         assert_eq!(v["links"].as_array().unwrap().len(), 1);
         assert_eq!(v["links"][0]["source"], serde_json::json!(1));
         assert_eq!(v["links"][0]["target"], serde_json::json!(0));
-        // The embedded quote round-trips through JSON without corrupting the document.
-        assert_eq!(v["nodes"][1]["label"], serde_json::json!("he\"lper"));
+        // Hostile characters round-trip through JSON exactly, without corrupting the document.
+        assert_eq!(v["nodes"][0]["label"], serde_json::json!("wr<a>&p"));
+        assert_eq!(v["nodes"][1]["label"], serde_json::json!("he\"l'p\\er"));
     }
 
     #[test]
@@ -381,8 +402,8 @@ mod tests {
         let out = render(&sample(), GraphFormat::Dot);
         assert!(out.starts_with("digraph basemind {"));
         assert!(out.contains("n1 -> n0"));
-        // The embedded double-quote must be backslash-escaped, not left raw.
-        assert!(out.contains("he\\\"lper"), "dot label escaping: {out}");
+        // Backslash escaped to `\\`, then the double-quote to `\"` — `he"l'p\er` → `he\"l'p\\er`.
+        assert!(out.contains("he\\\"l'p\\\\er"), "dot label escaping: {out}");
     }
 
     #[test]
@@ -390,14 +411,16 @@ mod tests {
         let out = render(&sample(), GraphFormat::Mermaid);
         assert!(out.starts_with("graph LR"));
         assert!(out.contains("n1 -->|calls| n0"));
-        assert!(out.contains("he&quot;lper"), "mermaid quote escaping: {out}");
+        assert!(out.contains("he&quot;l'p\\er"), "mermaid quote escaping: {out}");
     }
 
     #[test]
     fn graphml_is_escaped_xml() {
         let out = render(&sample(), GraphFormat::GraphMl);
         assert!(out.contains("<graphml"));
-        assert!(out.contains("he&quot;lper"), "xml attr escaping: {out}");
+        // Angle brackets and ampersand must all be entity-escaped in the element body.
+        assert!(out.contains("wr&lt;a&gt;&amp;p"), "xml body escaping: {out}");
+        assert!(out.contains("he&quot;l&apos;p\\er"), "xml quote/apos escaping: {out}");
         assert!(out.contains("source=\"n1\" target=\"n0\""));
     }
 
@@ -406,8 +429,26 @@ mod tests {
         let out = render(&sample(), GraphFormat::Cypher);
         assert!(out.contains("CREATE (n0:Symbol"));
         assert!(out.contains("-[:CALLS "), "kind maps to uppercase rel type: {out}");
-        // Single quotes in a name would break the literal if unescaped.
-        assert!(out.contains("he\"lper") || out.contains("he\\\"lper"));
+        // Backslash → `\\` and single-quote → `\'` keep the single-quoted literal closed:
+        // `he"l'p\er` → `he"l\'p\\er`.
+        assert!(out.contains("he\"l\\'p\\\\er"), "cypher literal escaping: {out}");
+    }
+
+    #[test]
+    fn cypher_rel_rejects_unsafe_kind() {
+        // Defense in depth: a non-enum kind is sanitized to a safe token, never injected raw.
+        assert_eq!(cypher_rel("calls"), "CALLS");
+        assert_eq!(cypher_rel("x]->(m) DETACH DELETE n //"), "XMDETACHDELETEN");
+        assert_eq!(cypher_rel("!!!"), "REL");
+    }
+
+    #[test]
+    fn xml_escape_drops_forbidden_control_chars() {
+        // A raw C0 control char (U+0001) has no legal XML escape; it must be dropped, not emitted.
+        let out = xml_escape("a\u{01}b");
+        assert_eq!(out, "ab");
+        // Tab/newline/return are legal and preserved.
+        assert_eq!(xml_escape("a\tb\nc"), "a\tb\nc");
     }
 
     #[test]
