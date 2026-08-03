@@ -728,6 +728,16 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: architecture_map(module, edges=all) returned {import_edges} import edges (expected ≥ 1)"
                 ));
             }
+            let neighbor_nodes = repo_record
+                .canaries
+                .get("neighbors_spawn_nodes")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if neighbor_nodes < 2 {
+                failures.push(format!(
+                    "tokio canary: neighbors(\"spawn\", in, depth=2) returned {neighbor_nodes} nodes (expected ≥ 2)"
+                ));
+            }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -991,6 +1001,21 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     })
                     .unwrap_or(0);
                 record.canaries.insert("archmap_import_edges".into(), json!(import_edges));
+            }
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "neighbors",
+                    &json!({ "name": "spawn", "direction": "in", "depth": 2, "edges": "calls", "max_nodes": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let nodes = body
+                    .get("nodes")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+                record.canaries.insert("neighbors_spawn_nodes".into(), json!(nodes));
             }
             if let Ok(out) = svc
                 .call_tool(call_params(

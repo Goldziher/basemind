@@ -44,7 +44,7 @@ them.
 | [0000](0000-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0001](0001-unified-typed-code-graph.md) | Unified typed code-graph model | Accepted |
 | [0002](0002-edge-provenance-and-confidence.md) | Edge provenance and confidence | Accepted |
-| [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Proposed |
+| [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Accepted |
 | [0004](0004-community-detection.md) | Community detection and deterministic labels | Proposed |
 | [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Proposed |
 | [0006](0006-interactive-ui-tauri.md) | Interactive UI — Tauri desktop app | Proposed |

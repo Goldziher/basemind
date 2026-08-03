@@ -4178,3 +4178,128 @@ async fn architecture_map_emits_typed_provenance_edges() {
 
     let _ = service.cancel().await;
 }
+
+/// Assert every edge in a traversal payload carries a provenance tag on the fixed ladder with
+/// a matching confidence, and that its `from`/`to` index valid nodes.
+fn assert_graph_edges_well_formed(body: &Value) {
+    let nodes = body.get("nodes").and_then(Value::as_array).expect("nodes array");
+    let edges = body.get("edges").and_then(Value::as_array).expect("edges array");
+    for e in edges {
+        let prov = e.get("provenance").and_then(Value::as_str).expect("edge provenance");
+        let conf = e.get("confidence").and_then(Value::as_f64).expect("edge confidence");
+        match prov {
+            "extracted" => assert_eq!(conf, 1.0),
+            "inferred" => assert_eq!(conf, 0.5),
+            "ambiguous" => assert_eq!(conf, 0.2),
+            other => panic!("unexpected provenance tag {other:?} in {e}"),
+        }
+        let from = e.get("from").and_then(Value::as_u64).expect("edge from") as usize;
+        let to = e.get("to").and_then(Value::as_u64).expect("edge to") as usize;
+        assert!(
+            from < nodes.len() && to < nodes.len(),
+            "edge endpoints index into nodes: {e}"
+        );
+    }
+}
+
+/// ADR-0003: the `neighbors`, `path`, and `subgraph` traversal tools walk the shared code-graph
+/// and report typed, provenance-tagged edges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn traversal_tools_walk_the_shared_graph() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    // Call chain across files: run -> helper -> engine.
+    std::fs::write(
+        root.join("core.rs"),
+        "pub fn engine() {}\npub fn helper() { engine(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.rs"),
+        "use crate::core::helper;\npub fn run() { helper(); }\n",
+    )
+    .unwrap();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    // neighbors(helper, both): reaches engine (helper->engine) and run (run->helper).
+    let neighbors = service
+        .call_tool(call_params(
+            "neighbors",
+            json!({"name": "helper", "direction": "both", "depth": 2, "edges": "all"}),
+        ))
+        .await
+        .expect("neighbors");
+    assert_structured_matches_text(&neighbors);
+    let body = decode_text(&neighbors);
+    let nodes = body.get("nodes").and_then(Value::as_array).expect("nodes");
+    assert_eq!(
+        nodes[0].get("name").and_then(Value::as_str),
+        Some("helper"),
+        "root is the first node: {body}"
+    );
+    let reached: Vec<&str> = nodes
+        .iter()
+        .filter_map(|n| n.get("name").and_then(Value::as_str))
+        .collect();
+    assert!(reached.contains(&"engine"), "helper should reach engine: {reached:?}");
+    assert!(
+        reached.contains(&"run"),
+        "run should reach helper (incoming): {reached:?}"
+    );
+    assert_graph_edges_well_formed(&body);
+
+    // path(run -> engine): the confidence-weighted route run -> helper -> engine.
+    let path = service
+        .call_tool(call_params(
+            "path",
+            json!({"from": "run", "to": "engine", "edges": "calls"}),
+        ))
+        .await
+        .expect("path");
+    let body = decode_text(&path);
+    assert_eq!(
+        body.get("found").and_then(Value::as_bool),
+        Some(true),
+        "route found: {body}"
+    );
+    let names: Vec<&str> = body
+        .get("nodes")
+        .and_then(Value::as_array)
+        .expect("path nodes")
+        .iter()
+        .filter_map(|n| n.get("name").and_then(Value::as_str))
+        .collect();
+    assert_eq!(names, vec!["run", "helper", "engine"], "ordered path: {body}");
+    let edge_count = body
+        .get("edges")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(edge_count, names.len() - 1, "one edge between each pair of path nodes");
+    assert_graph_edges_well_formed(&body);
+
+    // subgraph(helper): a readable neighborhood; nodes carry a centrality score.
+    let subgraph = service
+        .call_tool(call_params(
+            "subgraph",
+            json!({"name": "helper", "depth": 2, "edges": "all", "max_nodes": 10}),
+        ))
+        .await
+        .expect("subgraph");
+    let body = decode_text(&subgraph);
+    let nodes = body.get("nodes").and_then(Value::as_array).expect("subgraph nodes");
+    assert!(!nodes.is_empty(), "subgraph has nodes: {body}");
+    assert!(
+        nodes.iter().all(|n| n.get("centrality").is_some()),
+        "every subgraph node carries a centrality score: {body}"
+    );
+    assert_graph_edges_well_formed(&body);
+
+    let _ = service.cancel().await;
+}

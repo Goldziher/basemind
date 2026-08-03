@@ -1,6 +1,6 @@
 # ADR-0003: Graph traversal capabilities
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0002 (edge provenance + confidence),
@@ -48,6 +48,10 @@ separate walk.
   neighborhood to expand, a subgraph to draw.
 - Traversal cost is bounded by the same scan discipline as the architecture map and is measured
   against the performance baselines; hub nodes cannot trigger unbounded work.
+- The three tools (`neighbors`, `path`, `subgraph`) ship over the shared model. Re-expressing the
+  existing `call_graph` on the same traversal is **deferred**: its name-keyed BFS is covered by live
+  harden canaries, so replacing it is tracked as a separate, independently-verified change rather
+  than folded into the tool-addition commit.
 
 ## Alternatives considered
 

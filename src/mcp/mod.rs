@@ -44,6 +44,7 @@ mod helpers_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod helpers_shells;
 mod helpers_telemetry;
+mod helpers_traverse;
 #[cfg(feature = "crawl")]
 mod helpers_web;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -85,9 +86,11 @@ mod tools_memory;
 mod tools_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod tools_shells;
+mod tools_traverse;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod toon;
+mod traverse;
 mod types;
 mod types_admin;
 mod types_archmap;
@@ -105,6 +108,7 @@ pub(crate) mod types_memory;
 mod types_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod types_shells;
+mod types_traverse;
 #[cfg(feature = "crawl")]
 mod types_web;
 
@@ -403,6 +407,7 @@ impl BasemindServer {
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
             + Self::tool_router_archmap()
+            + Self::tool_router_traverse()
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()

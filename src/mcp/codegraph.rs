@@ -153,6 +153,17 @@ impl EdgeKindSet {
         }
     }
 
+    /// Whether the given edge kind is one of the selected lanes. Traversal (ADR-0003) uses
+    /// this to filter edges to the lanes a query asked for.
+    pub(crate) fn contains_kind(&self, kind: EdgeKind) -> bool {
+        match kind {
+            EdgeKind::Calls => self.calls,
+            EdgeKind::Imports => self.imports,
+            EdgeKind::Inherits => self.inherits,
+            EdgeKind::Contains => self.contains,
+        }
+    }
+
     /// Map `architecture_map`'s `edges` param to lanes. `contains` is noise at file/module
     /// granularity (self-loops), so `"all"` here means calls+imports+inherits.
     pub(crate) fn from_edges_param(s: &str) -> Self {
@@ -204,10 +215,7 @@ pub(crate) struct CodeGraph {
 /// The leaf identifier of a module path — the last non-empty component after splitting on
 /// `.`, `/`, or `:`. `crate::mod_a::Widget` → `Widget`, `a/b/c` → `c`, `foo.bar` → `bar`.
 fn module_leaf(module: &str) -> &str {
-    module
-        .rsplit(['.', '/', ':'])
-        .find(|s| !s.is_empty())
-        .unwrap_or(module)
+    module.rsplit(['.', '/', ':']).find(|s| !s.is_empty()).unwrap_or(module)
 }
 
 /// The trailing identifier in an import's raw text — the fallback when the grammar didn't
