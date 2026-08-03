@@ -46,7 +46,7 @@ them.
 | [0002](0002-edge-provenance-and-confidence.md) | Edge provenance and confidence | Accepted |
 | [0003](0003-graph-traversal-tools.md) | Graph traversal capabilities | Accepted |
 | [0004](0004-community-detection.md) | Community detection and deterministic labels | Accepted |
-| [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Proposed |
+| [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Accepted |
 | [0006](0006-interactive-ui-tauri.md) | Interactive UI — Tauri desktop app | Proposed |
 | [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Proposed |
 | [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Proposed |

@@ -4430,3 +4430,77 @@ async fn communities_cluster_the_shared_graph() {
 
     let _ = service.cancel().await;
 }
+
+/// ADR-0005: the `graph_export` tool renders the shared code-graph into text formats over one
+/// canonical payload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graph_export_renders_every_format() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("core.rs"),
+        "pub fn engine() {}\npub fn helper() { engine(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.rs"),
+        "use crate::core::helper;\npub fn run() { helper(); }\n",
+    )
+    .unwrap();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    // node_link: the response body carries valid node-link JSON as a string.
+    let export = service
+        .call_tool(call_params(
+            "graph_export",
+            json!({"format": "node_link", "edges": "all"}),
+        ))
+        .await
+        .expect("graph_export node_link");
+    assert_structured_matches_text(&export);
+    let body = decode_text(&export);
+    assert_eq!(body.get("format").and_then(Value::as_str), Some("node_link"), "{body}");
+    assert!(
+        body.get("node_count").and_then(Value::as_u64).unwrap_or(0) >= 3,
+        "nodes: {body}"
+    );
+    let content = body.get("content").and_then(Value::as_str).expect("content");
+    let doc: Value = serde_json::from_str(content).expect("content is valid node-link JSON");
+    assert!(
+        doc.get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    );
+    assert!(doc.get("links").and_then(Value::as_array).is_some());
+
+    // Each remaining format renders and echoes its name with a recognizable header/keyword.
+    for (fmt, needle) in [
+        ("dot", "digraph basemind"),
+        ("mermaid", "graph LR"),
+        ("graphml", "<graphml"),
+        ("cypher", "CREATE ("),
+    ] {
+        let out = service
+            .call_tool(call_params("graph_export", json!({"format": fmt})))
+            .await
+            .unwrap_or_else(|_| panic!("graph_export {fmt}"));
+        let body = decode_text(&out);
+        assert_eq!(body.get("format").and_then(Value::as_str), Some(fmt), "{body}");
+        let content = body.get("content").and_then(Value::as_str).unwrap_or("");
+        assert!(content.contains(needle), "format {fmt} missing {needle:?}: {content}");
+    }
+
+    // An invalid format is rejected, not silently defaulted.
+    let bogus = service
+        .call_tool(call_params("graph_export", json!({"format": "svg"})))
+        .await;
+    assert!(bogus.is_err(), "an unsupported format must be an error");
+
+    let _ = service.cancel().await;
+}

@@ -122,8 +122,7 @@ impl Adjacency {
         id
     }
 
-    /// The id of an already-interned node, or `None` if the node has no edges in the graph.
-    #[cfg(test)]
+    /// The id of an already-interned node, or `None` if the node is absent from the graph.
     pub(crate) fn id(&self, key: &NodeKey) -> Option<u32> {
         self.index_of.get(key).copied()
     }

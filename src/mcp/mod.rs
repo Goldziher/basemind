@@ -17,6 +17,7 @@ mod completions;
 pub(crate) mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
+mod graph_view;
 mod helpers;
 mod helpers_admin;
 mod helpers_archmap;
@@ -36,6 +37,7 @@ mod helpers_git;
 #[cfg(feature = "memory")]
 mod helpers_governance;
 mod helpers_graph;
+mod helpers_graphview;
 mod helpers_grep;
 mod helpers_impls;
 mod helpers_intel;
@@ -84,6 +86,7 @@ mod tools_community;
 mod tools_compress;
 mod tools_git;
 mod tools_governance;
+mod tools_graphview;
 mod tools_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_registry;
@@ -106,6 +109,7 @@ mod types_documents;
 mod types_git;
 pub(crate) mod types_governance;
 mod types_graph;
+mod types_graphview;
 mod types_impls;
 pub(crate) mod types_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -413,6 +417,7 @@ impl BasemindServer {
             + Self::tool_router_archmap()
             + Self::tool_router_traverse()
             + Self::tool_router_community()
+            + Self::tool_router_graphview()
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()

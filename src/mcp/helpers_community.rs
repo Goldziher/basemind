@@ -30,7 +30,7 @@ const MAX_MEMBERS_PER: u32 = 100;
 
 /// Deterministic, LLM-free label for a community: its dominant directory prefix joined to its most
 /// central member's name. `ranked` is the community's node ids, most central first.
-fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> String {
+pub(super) fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> String {
     let central = describe(cache, adj.node(ranked[0]));
     let central_name = if central.name.is_empty() {
         central.kind

@@ -1,6 +1,6 @@
 # ADR-0005: Rendering engine — one payload, pluggable renderers
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0002 (edge provenance + confidence),
@@ -44,6 +44,12 @@ path** shared by the headless tools and by the desktop UI (ADR-0006).
 - The UI (ADR-0006) becomes a thin interactive shell over a payload that already renders headless —
   no separate rendering stack for the GUI.
 - Deterministic outputs are snapshot-testable; interop is a diff against the standard node-link shape.
+- Shipped as the `graph_export` MCP tool over the canonical `GraphView` payload: the **text/machine
+  renderers** (node-link JSON, DOT, Mermaid, GraphML, Cypher) — pure, deterministic, offline, no new
+  dependencies. **Deferred to the UI ADRs (0006/0007):** the SVG picture and the self-contained
+  interactive HTML page (the latter requires the vendored-JS library pick, which belongs with the
+  desktop UI), plus writing exports to the machine-global cache (today `graph_export` returns the
+  rendered content inline).
 - Trade-off: vendoring interactive JS grows the build. The library choice is constrained on three axes
   at once — offline/self-contained, small enough to vendor, and capable enough to render thousands of
   nodes with live search and filtering — and these pull against each other. The specific library is a
