@@ -38,7 +38,9 @@ pub struct GraphNode {
     /// order is the path itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
-    /// Local centrality score (`subgraph` only): higher = more central in the neighborhood.
+    /// Centrality score (higher = more central): local walk-centrality within the returned
+    /// neighborhood for `subgraph`, global weighted-degree over the detection graph for
+    /// `communities`. Absent on tools that don't rank nodes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub centrality: Option<u64>,
 }

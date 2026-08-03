@@ -4399,6 +4399,29 @@ async fn communities_cluster_the_shared_graph() {
         "louvain algorithm echoed: {body}"
     );
 
+    // max_communities=1 caps the returned list below the detected count and flags truncated.
+    let capped = service
+        .call_tool(call_params(
+            "communities",
+            json!({"algorithm": "label_propagation", "max_communities": 1}),
+        ))
+        .await
+        .expect("communities capped");
+    let body = decode_text(&capped);
+    let returned = body
+        .get("communities")
+        .and_then(Value::as_array)
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let detected = body.get("num_communities").and_then(Value::as_u64).unwrap_or(0);
+    assert_eq!(returned, 1, "capped to one community: {body}");
+    assert!(detected >= 2, "the two modules are distinct, so ≥2 detected: {body}");
+    assert_eq!(
+        body.get("truncated").and_then(Value::as_bool),
+        Some(true),
+        "capping the community list flags truncated: {body}"
+    );
+
     // An invalid algorithm is rejected, not silently defaulted.
     let bogus = service
         .call_tool(call_params("communities", json!({"algorithm": "kmeans"})))

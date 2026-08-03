@@ -21,9 +21,6 @@ use super::types_community::{CommunitiesParams, CommunitiesResponse, Community};
 use super::types_traverse::GraphNode;
 use crate::index::IndexDb;
 
-/// Community detection builds the whole graph, so the call scan is capped like the traversal and
-/// architecture-map tools — a hub root cannot trigger unbounded work.
-const COMMUNITY_SCAN_CAP: usize = 4_000_000;
 /// Sweep bound for both detection algorithms; they converge well inside this on real graphs.
 const COMMUNITY_MAX_ITERS: u32 = 50;
 const DEFAULT_MAX_COMMUNITIES: u32 = 50;
@@ -41,8 +38,9 @@ fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> String {
         central.name
     };
 
-    // Dominant directory: most frequent parent dir among member paths; ties break to the smallest
-    // dir string so the label is reproducible.
+    // Dominant directory: most frequent parent dir over the *full* member list (not the capped
+    // subset), so the label reflects the whole community; ties break to the smallest dir string
+    // so it is reproducible.
     let mut dir_counts: AHashMap<String, u32> = AHashMap::new();
     for &id in ranked {
         if let Some(path) = adj.node(id).file().and_then(|p| p.as_str()) {
@@ -94,7 +92,7 @@ pub(super) fn run_communities(
         &BuildOpts {
             kinds,
             focus: None,
-            scan_cap: COMMUNITY_SCAN_CAP,
+            scan_cap: codegraph::CODEGRAPH_SCAN_CAP,
         },
     )?;
     let scan_truncated = built.truncated;

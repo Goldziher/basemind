@@ -131,13 +131,17 @@ fn compact(labels: &[u32]) -> (Vec<u32>, u32) {
 fn label_propagation(graph: &Undirected, max_iters: u32) -> Vec<u32> {
     let n = graph.node_count();
     let mut label: Vec<u32> = (0..n as u32).collect();
+    // Scratch reused across every node/iteration — `clear()` keeps the backing capacity, so after ~keep
+    // the first few nodes the sweep is allocation-free (no per-node map/vec alloc on large graphs). ~keep
+    let mut tally: AHashMap<u32, u64> = AHashMap::new();
+    let mut entries: Vec<(u32, u64)> = Vec::new();
     for _ in 0..max_iters {
         let mut changed = false;
         for id in 0..n {
             if graph.nbr[id].is_empty() {
                 continue;
             }
-            let mut tally: AHashMap<u32, u64> = AHashMap::new();
+            tally.clear();
             for &(other, w) in &graph.nbr[id] {
                 *tally.entry(label[other as usize]).or_insert(0) += w;
             }
@@ -146,7 +150,8 @@ fn label_propagation(graph: &Undirected, max_iters: u32) -> Vec<u32> {
             // Deterministic argmax: higher weight wins; on a tie the smaller label wins. The
             // current label is only displaced by a strict weight improvement or an equal-weight
             // tie held by a smaller label id, which damps oscillation.
-            let mut entries: Vec<(u32, u64)> = tally.into_iter().collect();
+            entries.clear();
+            entries.extend(tally.iter().map(|(&l, &w)| (l, w)));
             entries.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             if let Some(&(cand, cand_w)) = entries.first()
                 && cand != current
@@ -177,6 +182,10 @@ fn louvain_local_moving(graph: &Undirected, max_iters: u32) -> Vec<u32> {
     }
     let inv_two_m = 1.0f64 / graph.two_m as f64;
 
+    // Scratch reused across every node/iteration — `clear()` keeps capacity so the sweep is ~keep
+    // allocation-free after the first few nodes on large graphs. ~keep
+    let mut w_to: AHashMap<u32, u64> = AHashMap::new();
+    let mut cands: Vec<(u32, u64)> = Vec::new();
     for _ in 0..max_iters {
         let mut moved = false;
         for id in 0..n {
@@ -189,7 +198,7 @@ fn louvain_local_moving(graph: &Undirected, max_iters: u32) -> Vec<u32> {
             comm_tot[own as usize] -= graph.degree[id];
 
             // Weight from this node into each neighbouring community.
-            let mut w_to: AHashMap<u32, u64> = AHashMap::new();
+            w_to.clear();
             for &(other, w) in &graph.nbr[id] {
                 *w_to.entry(comm[other as usize]).or_insert(0) += w;
             }
@@ -199,9 +208,10 @@ fn louvain_local_moving(graph: &Undirected, max_iters: u32) -> Vec<u32> {
             let mut best_comm = own;
             let mut best_gain =
                 w_to.get(&own).copied().unwrap_or(0) as f64 - comm_tot[own as usize] as f64 * k_i * inv_two_m;
-            let mut cands: Vec<(u32, u64)> = w_to.into_iter().collect();
+            cands.clear();
+            cands.extend(w_to.iter().map(|(&c, &w)| (c, w)));
             cands.sort_by_key(|&(c, _)| c);
-            for (cand, w) in cands {
+            for &(cand, w) in &cands {
                 let gain = w as f64 - comm_tot[cand as usize] as f64 * k_i * inv_two_m;
                 if gain > best_gain {
                     best_gain = gain;
@@ -407,6 +417,67 @@ mod tests {
         assert_eq!(c, 30, "C has three incident extracted edges");
         assert_eq!(a, 20, "A has two");
         assert!(c > a);
+    }
+
+    #[test]
+    fn confidence_weights_scale_centrality() {
+        // A calls B (extracted → 10) and C via an ambiguous edge (→ round(0.2*10)=2). A's degree ~keep
+        // folds both: 12. This pins the confidence→weight mapping the algorithms rank on. ~keep
+        let g = CodeGraph {
+            edges: vec![
+                edge("A", "B", Provenance::Extracted),
+                edge("A", "C", Provenance::Ambiguous),
+            ],
+            truncated: false,
+        };
+        let adj = Adjacency::build(&g);
+        let p = detect(&adj, CommunityAlgo::LabelPropagation, 20);
+        assert_eq!(p.centrality[id_of(&adj, "A") as usize], 12);
+        assert_eq!(p.centrality[id_of(&adj, "B") as usize], 10);
+        assert_eq!(p.centrality[id_of(&adj, "C") as usize], 2);
+    }
+
+    #[test]
+    fn reciprocal_edges_pull_twice() {
+        // A→B and B→A both extracted: the pair aggregates to weight 20, so each endpoint's degree
+        // is 20 rather than 10 — reciprocal relationships pull harder.
+        let g = CodeGraph {
+            edges: vec![
+                edge("A", "B", Provenance::Extracted),
+                edge("B", "A", Provenance::Extracted),
+            ],
+            truncated: false,
+        };
+        let adj = Adjacency::build(&g);
+        let p = detect(&adj, CommunityAlgo::Louvain, 20);
+        assert_eq!(p.centrality[id_of(&adj, "A") as usize], 20);
+        assert_eq!(p.centrality[id_of(&adj, "B") as usize], 20);
+    }
+
+    #[test]
+    fn parse_covers_every_synonym() {
+        for s in ["label_propagation", "labelprop", "lpa", "label"] {
+            assert_eq!(CommunityAlgo::parse(s), Some(CommunityAlgo::LabelPropagation), "{s}");
+        }
+        for s in ["louvain", "modularity"] {
+            assert_eq!(CommunityAlgo::parse(s), Some(CommunityAlgo::Louvain), "{s}");
+        }
+    }
+
+    #[test]
+    fn self_loop_only_node_forms_one_community() {
+        // A recursive call (A→A) leaves A with no undirected neighbours (self-loops dropped) and
+        // zero degree, exercising the Louvain two_m==0 short-circuit and the LPA empty-nbr skip.
+        let g = CodeGraph {
+            edges: vec![edge("A", "A", Provenance::Extracted)],
+            truncated: false,
+        };
+        let adj = Adjacency::build(&g);
+        for algo in [CommunityAlgo::LabelPropagation, CommunityAlgo::Louvain] {
+            let p = detect(&adj, algo, 20);
+            assert_eq!(p.num_communities, 1, "{algo:?}");
+            assert_eq!(p.centrality[id_of(&adj, "A") as usize], 0, "{algo:?}");
+        }
     }
 
     #[test]

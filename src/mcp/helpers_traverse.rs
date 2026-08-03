@@ -22,9 +22,6 @@ use super::types_traverse::{
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-/// Traversal builds the whole graph then walks it, so the call scan is capped like the
-/// architecture map's — a hub root cannot trigger unbounded work.
-const TRAVERSE_SCAN_CAP: usize = 4_000_000;
 const DEFAULT_DEPTH: u32 = 2;
 const MAX_DEPTH: u32 = 4;
 const DEFAULT_MAX_NODES: u32 = 100;
@@ -146,7 +143,7 @@ fn build_adjacency(idx: Option<&IndexDb>, cache: &MapCache, kinds: EdgeKindSet) 
         &BuildOpts {
             kinds,
             focus: None,
-            scan_cap: TRAVERSE_SCAN_CAP,
+            scan_cap: codegraph::CODEGRAPH_SCAN_CAP,
         },
     )?;
     let truncated = graph.truncated;

@@ -196,6 +196,11 @@ impl EdgeKindSet {
     }
 }
 
+/// Default hard cap on call sites scanned when building the graph — shared by every on-demand
+/// consumer (`architecture_map`, the traversal tools, community detection) so the bound is bumped
+/// in one place. Bounds work on huge repos; a hub root cannot trigger unbounded work.
+pub(crate) const CODEGRAPH_SCAN_CAP: usize = 4_000_000;
+
 /// Inputs to a graph build.
 pub(crate) struct BuildOpts {
     pub(crate) kinds: EdgeKindSet,

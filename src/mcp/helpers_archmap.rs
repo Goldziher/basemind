@@ -12,7 +12,7 @@
 //! optional git-churn overlay, ranks, knee-cuts, and budgets the result. Outputs are
 //! paths/lines/signatures + edges, never prose.
 //!
-//! The graph is rebuilt per call (bounded by [`ARCHMAP_EDGE_SCAN_CAP`]); memoizing it
+//! The graph is rebuilt per call (bounded by [`codegraph::CODEGRAPH_SCAN_CAP`]); memoizing it
 //! against `cache_generation` is a future optimization, not needed for an occasional tool.
 
 use ahash::{AHashMap, AHashSet};
@@ -30,9 +30,6 @@ use super::types_archmap::{ArchEdge, ArchNode, ArchitectureMapParams, Architectu
 use crate::index::IndexDb;
 use crate::path::RelPath;
 
-/// Hard upper bound on call sites scanned while building the graph. Bounds work on huge
-/// repos; when hit the response is marked `truncated` with reason `"scan_cap"`.
-const ARCHMAP_EDGE_SCAN_CAP: usize = 4_000_000;
 const PAGERANK_ITERS: usize = 20;
 const PAGERANK_DAMPING: f64 = 0.85;
 
@@ -276,7 +273,7 @@ pub(crate) fn run_architecture_map(
     let depth = params.depth.unwrap_or(2).max(1) as usize;
     let focus = params.focus.as_deref();
 
-    let rg = RepoGraph::build(idx, cache, ARCHMAP_EDGE_SCAN_CAP)?;
+    let rg = RepoGraph::build(idx, cache, codegraph::CODEGRAPH_SCAN_CAP)?;
 
     match params.granularity.as_str() {
         "module" => run_tier_grouped(
@@ -565,7 +562,7 @@ fn grouped_lane_edges(
         &BuildOpts {
             kinds: lane_kinds,
             focus: focus.map(str::to_string),
-            scan_cap: ARCHMAP_EDGE_SCAN_CAP,
+            scan_cap: codegraph::CODEGRAPH_SCAN_CAP,
         },
     )?;
     let mut file_id: AHashMap<&RelPath, u32> = AHashMap::with_capacity(rg.files.len());

@@ -143,7 +143,7 @@ impl Adjacency {
     /// (`edge.weight * round(confidence * 10)`) so a proven edge pulls harder than an ambiguous
     /// one. Parallel edges are yielded separately; callers that need per-neighbor totals sum them.
     pub(crate) fn undirected_weighted(&self, id: u32) -> impl Iterator<Item = (u32, u64)> + '_ {
-        let weigh = |e: &AdjEdge| e.weight as u64 * (e.provenance.confidence() * 10.0) as u64;
+        let weigh = |e: &AdjEdge| e.weight as u64 * (e.provenance.confidence() * 10.0).round() as u64;
         self.out[id as usize]
             .iter()
             .map(move |e| (e.other, weigh(e)))
@@ -385,7 +385,7 @@ pub(crate) fn subgraph(
     // within the gathered neighborhood. Integer, so ranking is exact. ~keep
     let mut score: AHashMap<u32, u64> = walk.nodes.iter().map(|&(id, _)| (id, 0u64)).collect();
     for e in &walk.edges {
-        let w = e.weight as u64 * (e.provenance.confidence() * 10.0) as u64;
+        let w = e.weight as u64 * (e.provenance.confidence() * 10.0).round() as u64;
         if let Some(s) = score.get_mut(&e.from) {
             *s += w;
         }
