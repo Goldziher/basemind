@@ -929,12 +929,18 @@ mod tests {
         };
         let all = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
         let calls = build_memoized(&memo, idx, &cache, &opts(calls_only)).expect("calls lane");
-        assert!(!Arc::ptr_eq(&all, &calls), "distinct lane sets are distinct cache entries");
+        assert!(
+            !Arc::ptr_eq(&all, &calls),
+            "distinct lane sets are distinct cache entries"
+        );
 
         // idx presence is part of the key: the same lanes without a live index build a distinct entry
         // (call edges degrade to a different provenance tier).
         let no_idx = build_memoized(&memo, None, &cache, &opts(EdgeKindSet::all())).expect("no-index build");
-        assert!(!Arc::ptr_eq(&all, &no_idx), "idx=Some and idx=None are distinct cache entries");
+        assert!(
+            !Arc::ptr_eq(&all, &no_idx),
+            "idx=Some and idx=None are distinct cache entries"
+        );
 
         // Every key coexists in the LRU (cap 16 » 3): re-fetching returns each one's own cached Arc.
         let all_again = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes again");
@@ -952,7 +958,10 @@ mod tests {
         let (_da, store_a, cache_a) = scan_repo(&[("m.rs", "pub fn a() {}\npub fn caller() { a(); }\n")]);
         let (_db, store_b, cache_b) =
             scan_repo(&[("m.rs", "pub fn a() {}\npub fn b() {}\npub fn caller() { a(); b(); }\n")]);
-        assert_ne!(cache_a.fingerprint, cache_b.fingerprint, "different content must fingerprint differently");
+        assert_ne!(
+            cache_a.fingerprint, cache_b.fingerprint,
+            "different content must fingerprint differently"
+        );
         let memo = Mutex::new(new_graph_memo());
 
         let ga = build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a");
@@ -961,6 +970,9 @@ mod tests {
 
         let ga_again =
             build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a again");
-        assert!(Arc::ptr_eq(&ga, &ga_again), "snapshot A still hits its own entry after B was inserted");
+        assert!(
+            Arc::ptr_eq(&ga, &ga_again),
+            "snapshot A still hits its own entry after B was inserted"
+        );
     }
 }
