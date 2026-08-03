@@ -463,17 +463,26 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
 
         // Function-like symbols in this file, for attributing a call site to its enclosing
         // definition (innermost by start byte).
-        let fns: Vec<(u32, u32)> = l1
+        let mut fns: Vec<(u32, u32)> = l1
             .symbols
             .iter()
             .filter(|s| is_function_like(s.kind))
             .map(|s| (s.start_byte, s.end_byte))
             .collect();
+        // Sorted by start byte so `enclosing` can binary-search the innermost container instead of
+        // scanning every function per call site.
+        fns.sort_unstable_by_key(|&(sb, _)| sb);
         let enclosing = |call_byte: u32| -> NodeKey {
+            // Among functions starting at or before `call_byte` (the prefix `fns[..hi]`), the
+            // innermost container is the one with the largest start byte that also still encloses
+            // `call_byte`. Scanning that prefix right-to-left, the first `eb > call_byte` is exactly
+            // that max-start container — byte-identical to the old linear max-start scan.
+            let hi = fns.partition_point(|&(sb, _)| sb <= call_byte);
             let mut best: Option<u32> = None;
-            for &(sb, eb) in &fns {
-                if sb <= call_byte && call_byte < eb && best.is_none_or(|b| sb > b) {
+            for &(sb, eb) in fns[..hi].iter().rev() {
+                if call_byte < eb {
                     best = Some(sb);
+                    break;
                 }
             }
             match best {
@@ -801,6 +810,30 @@ mod tests {
         let ka: Vec<_> = a.edges.iter().map(key).collect();
         let kb: Vec<_> = b.edges.iter().map(key).collect();
         assert_eq!(ka, kb, "graph build must be deterministic across calls");
+    }
+
+    #[test]
+    fn call_attributes_to_innermost_enclosing_function() {
+        // `inner` is nested inside `outer`; the call to `helper` sits in `inner`'s body, so the
+        // call edge must originate from the innermost enclosing symbol (`inner`), not `outer`.
+        let (_d, store, cache) = scan_repo(&[(
+            "nested.rs",
+            "pub fn helper() {}\n\
+             pub fn outer() {\n\
+                 fn inner() { helper(); }\n\
+             }\n",
+        )]);
+        let g = built(&store, &cache, EdgeKindSet::all());
+        let call = g
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls && name_of("nested.rs", &e.to, &cache).as_deref() == Some("helper"))
+            .expect("a call edge to helper");
+        assert_eq!(
+            name_of("nested.rs", &call.from, &cache).as_deref(),
+            Some("inner"),
+            "a call in the nested fn must attribute to the innermost enclosing symbol"
+        );
     }
 
     /// Cross-file/intra-file resolved call proof (EXTRACTED) is only available when a

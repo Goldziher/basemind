@@ -18,6 +18,7 @@
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
+use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
 
@@ -72,8 +73,10 @@ pub(crate) struct AdjEdge {
 /// `u32` indices into `nodes`; `out[id]` and `inc[id]` hold the forward/backward incident
 /// edges. Built once per query and discarded.
 pub(crate) struct Adjacency {
-    nodes: Vec<NodeKey>,
-    index_of: AHashMap<NodeKey, u32>,
+    // Each node is stored once behind an `Arc` shared between `nodes` and `index_of`, so interning
+    // a fresh node deep-clones the (heap `RelPath`) key only once and both sides hold a refcount.
+    nodes: Vec<Arc<NodeKey>>,
+    index_of: AHashMap<Arc<NodeKey>, u32>,
     out: Vec<Vec<AdjEdge>>,
     inc: Vec<Vec<AdjEdge>>,
 }
@@ -115,10 +118,11 @@ impl Adjacency {
             return id;
         }
         let id = self.nodes.len() as u32;
-        self.nodes.push(key.clone());
+        let k = Arc::new(key.clone());
+        self.nodes.push(Arc::clone(&k));
         self.out.push(Vec::new());
         self.inc.push(Vec::new());
-        self.index_of.insert(key.clone(), id);
+        self.index_of.insert(k, id);
         id
     }
 
@@ -129,7 +133,7 @@ impl Adjacency {
 
     /// The node behind an id.
     pub(crate) fn node(&self, id: u32) -> &NodeKey {
-        &self.nodes[id as usize]
+        self.nodes[id as usize].as_ref()
     }
 
     /// Number of interned nodes.
