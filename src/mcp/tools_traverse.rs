@@ -26,7 +26,8 @@ impl BasemindServer {
                        radius; `min_confidence` floors edge confidence. Every edge carries \
                        `kind` + `provenance` (extracted/inferred/ambiguous) + numeric \
                        `confidence` (ADR-0002); node refs in edges index into `nodes`. \
-                       Deterministic, no LLM, bounded (`max_nodes`, default 100, max 500). \
+                       Deterministic, no LLM, bounded (`max_nodes`, default 100, max 500). An \
+                       unresolved `name` returns an empty result, not an error. \
                        `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
@@ -91,7 +92,8 @@ impl BasemindServer {
                        floors edge confidence. Nodes carry a `centrality` score; every edge \
                        carries `kind`/`provenance`/`confidence` (ADR-0002); edge node refs index \
                        into `nodes`. Deterministic, no LLM. `truncated` flags when nodes were \
-                       cut. `elapsed_us` = server-side handler latency in µs (excludes transport).",
+                       cut; an unresolved `name` returns an empty result, not an error. \
+                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub(crate) async fn subgraph(

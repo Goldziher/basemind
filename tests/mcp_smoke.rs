@@ -4209,7 +4209,7 @@ async fn traversal_tools_walk_the_shared_graph() {
     basemind::store::init_isolated_cache();
     let dir = TempDir::new().expect("tempdir");
     let root = dir.path();
-    // Call chain across files: run -> helper -> engine.
+    // Call chain across files: run -> helper -> engine. ~keep
     std::fs::write(
         root.join("core.rs"),
         "pub fn engine() {}\npub fn helper() { engine(); }\n",
@@ -4227,7 +4227,7 @@ async fn traversal_tools_walk_the_shared_graph() {
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    // neighbors(helper, both): reaches engine (helper->engine) and run (run->helper).
+    // neighbors(helper, both): reaches engine (helper->engine) and run (run->helper). ~keep
     let neighbors = service
         .call_tool(call_params(
             "neighbors",
@@ -4254,7 +4254,7 @@ async fn traversal_tools_walk_the_shared_graph() {
     );
     assert_graph_edges_well_formed(&body);
 
-    // path(run -> engine): the confidence-weighted route run -> helper -> engine.
+    // path(run -> engine): the confidence-weighted route run -> helper -> engine. ~keep
     let path = service
         .call_tool(call_params(
             "path",
@@ -4300,6 +4300,34 @@ async fn traversal_tools_walk_the_shared_graph() {
         "every subgraph node carries a centrality score: {body}"
     );
     assert_graph_edges_well_formed(&body);
+
+    // edges="contains" honors the containment lane — it must not silently degrade to calls-only.
+    let contains = service
+        .call_tool(call_params(
+            "neighbors",
+            json!({"name": "engine", "direction": "both", "edges": "contains"}),
+        ))
+        .await
+        .expect("neighbors contains");
+    let body = decode_text(&contains);
+    let has_contains = body
+        .get("edges")
+        .and_then(Value::as_array)
+        .map(|es| {
+            es.iter()
+                .any(|e| e.get("kind").and_then(Value::as_str) == Some("contains"))
+        })
+        .unwrap_or(false);
+    assert!(has_contains, "edges=contains must yield a containment edge: {body}");
+
+    // A bogus edges value is rejected, not silently coerced to a different lane set.
+    let bogus = service
+        .call_tool(call_params("neighbors", json!({"name": "engine", "edges": "nonsense"})))
+        .await;
+    assert!(
+        bogus.is_err(),
+        "an invalid edges value must be an error, not a silent default"
+    );
 
     let _ = service.cancel().await;
 }

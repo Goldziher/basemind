@@ -405,6 +405,21 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
                 json!({ "name": sym, "direction": "callers", "max_depth": 2 }),
             )
             .await;
+            call(
+                svc,
+                &mut records,
+                "neighbors",
+                json!({ "name": sym, "direction": "both", "depth": 2, "max_nodes": 100 }),
+            )
+            .await;
+            call(svc, &mut records, "path", json!({ "from": sym, "to": sym })).await;
+            call(
+                svc,
+                &mut records,
+                "subgraph",
+                json!({ "name": sym, "depth": 2, "max_nodes": 30 }),
+            )
+            .await;
         }
     }
 

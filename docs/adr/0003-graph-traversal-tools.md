@@ -23,7 +23,7 @@ bounded, deterministic capabilities over the shared graph.
 
 Add **three traversal capabilities** over the unified graph, each exposed as an MCP tool:
 
-- **path** — the shortest (and optionally k-shortest) path between two symbols across mixed edge
+- **path** — the shortest path between two symbols across mixed edge
   kinds, **confidence-weighted** so proven edges (ADR-0002) are preferred over inferred ones. By
   default `path` traverses *relationship* edges (calls, imports, inherits, resolved references) and
   **excludes containment/nesting**, which would otherwise yield structurally valid but semantically
@@ -35,10 +35,14 @@ Add **three traversal capabilities** over the unified graph, each exposed as an 
 
 Algorithm choice follows the question: an unweighted breadth-first walk (bidirectional for the path
 query) when edge weights don't matter, and a confidence-weighted shortest-path search when they do.
-Everything is **bounded** — result limits, a token budget, a traversal scan cap, and pagination —
-following basemind's existing tool conventions, and everything is **deterministic and LLM-free**. The
-existing rooted call graph is re-expressed as one traversal over the shared model rather than a
-separate walk.
+Everything is **bounded** — node caps (`max_nodes`), a hop-depth cap, and a traversal scan cap
+(plus a Dijkstra relaxation cap for `path`) — following basemind's existing tool conventions, and
+everything is **deterministic and LLM-free**. Over-cap results set a `truncated` flag rather than
+paginating.
+
+Shipped scope is the single shortest path (not k-shortest), the three tools as MCP surface, and the
+bounds above. Re-expressing the existing rooted `call_graph` over the shared model is deferred (see
+Consequences); k-shortest paths and cursor pagination are out of scope unless real demand appears.
 
 ## Consequences
 

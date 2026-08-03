@@ -79,7 +79,7 @@ pub struct NeighborsParams {
     /// `"inherits"`, `"both"` (calls+imports), or `"contains"`.
     #[serde(default = "default_traverse_edges")]
     pub edges: String,
-    /// Minimum edge confidence to traverse (0.0–1.0). Default 0.0 (keep everything).
+    /// Minimum edge confidence to traverse (0.0–1.0, clamped). Default 0.0 (keep everything).
     #[serde(default)]
     pub min_confidence: Option<f32>,
     /// Hard cap on nodes returned. Default 100, max 500.
@@ -109,7 +109,7 @@ pub struct PathParams {
     /// Include containment (file→symbol) edges in the search. Default false.
     #[serde(default)]
     pub include_contains: bool,
-    /// Minimum edge confidence to cross (0.0–1.0). Default 0.0.
+    /// Minimum edge confidence to cross (0.0–1.0, clamped). Default 0.0.
     #[serde(default)]
     pub min_confidence: Option<f32>,
 }
@@ -125,10 +125,11 @@ pub struct SubgraphParams {
     /// Hop radius gathered before the centrality cut. Default 2, capped at 4.
     #[serde(default)]
     pub depth: Option<u32>,
-    /// Edge lanes to include: `"all"` (default), `"calls"`, `"imports"`, `"inherits"`, `"both"`.
+    /// Edge lanes to include: `"all"` (default; calls+imports+inherits), `"calls"`, `"imports"`,
+    /// `"inherits"`, `"both"` (calls+imports), or `"contains"`.
     #[serde(default = "default_traverse_edges")]
     pub edges: String,
-    /// Minimum edge confidence to include (0.0–1.0). Default 0.0.
+    /// Minimum edge confidence to include (0.0–1.0, clamped). Default 0.0.
     #[serde(default)]
     pub min_confidence: Option<f32>,
     /// Keep only this many most-central nodes (roots always kept). Default 30, max 200.

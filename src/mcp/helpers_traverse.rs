@@ -34,14 +34,31 @@ const MAX_SUBGRAPH_KEEP: u32 = 200;
 /// Dijkstra relaxation cap for `path` — bounds work when neither endpoint connects.
 const PATH_RELAX_CAP: usize = 200_000;
 
-/// Turn the `edges` param into a lane set, optionally forcing the containment lane on (for
-/// `path`'s `include_contains`).
-fn kinds_from(edges: &str, include_contains: bool) -> EdgeKindSet {
-    let mut set = EdgeKindSet::from_edges_param(edges);
-    if include_contains {
-        set.contains = true;
-    }
-    set
+/// Turn the `edges` param into a lane set, validating the value (unknown lanes fail loud rather
+/// than silently degrading to calls-only). Unlike `architecture_map`'s parser, `"contains"` is a
+/// selectable lane here; `include_contains` forces the containment lane on regardless (for
+/// `path`'s `include_contains`). `"all"` is calls+imports+inherits — containment stays opt-in.
+fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKindSet, McpError> {
+    let (calls, imports, inherits, contains) = match edges {
+        "all" => (true, true, true, false),
+        "calls" => (true, false, false, false),
+        "imports" => (false, true, false, false),
+        "inherits" => (false, false, true, false),
+        "both" => (true, true, false, false),
+        "contains" => (false, false, false, true),
+        other => {
+            return Err(McpError::invalid_params(
+                format!("edges must be all/calls/imports/inherits/both/contains, got {other:?}"),
+                None,
+            ));
+        }
+    };
+    Ok(EdgeKindSet {
+        calls,
+        imports,
+        inherits,
+        contains: contains || include_contains,
+    })
 }
 
 /// Resolve a symbol name (optionally pinned to one path) to its definition-site node keys.
@@ -187,8 +204,8 @@ pub(super) fn run_neighbors(
     })?;
     let depth = params.depth.unwrap_or(DEFAULT_DEPTH).min(MAX_DEPTH);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
-    let min_conf = params.min_confidence.unwrap_or(0.0);
-    let kinds = kinds_from(&params.edges, false);
+    let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
+    let kinds = kinds_from(&params.edges, false)?;
 
     let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
     let roots: Vec<u32> = resolve_roots(cache, &params.name, params.path.as_ref())
@@ -236,8 +253,8 @@ pub(super) fn run_path(
     notice: Option<LifecycleNotice>,
     started: std::time::Instant,
 ) -> Result<CallToolResult, McpError> {
-    let min_conf = params.min_confidence.unwrap_or(0.0);
-    let kinds = kinds_from(&params.edges, params.include_contains);
+    let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
+    let kinds = kinds_from(&params.edges, params.include_contains)?;
 
     let (mut adj, _scan_truncated) = build_adjacency(idx, cache, kinds)?;
     let sources: Vec<u32> = resolve_roots(cache, &params.from, params.from_path.as_ref())
@@ -286,8 +303,8 @@ pub(super) fn run_subgraph(
 ) -> Result<CallToolResult, McpError> {
     let depth = params.depth.unwrap_or(DEFAULT_DEPTH).min(MAX_DEPTH);
     let max_keep = params.max_nodes.unwrap_or(DEFAULT_SUBGRAPH_KEEP).min(MAX_SUBGRAPH_KEEP) as usize;
-    let min_conf = params.min_confidence.unwrap_or(0.0);
-    let kinds = kinds_from(&params.edges, false);
+    let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
+    let kinds = kinds_from(&params.edges, false)?;
 
     let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
     let roots: Vec<u32> = resolve_roots(cache, &params.name, params.path.as_ref())

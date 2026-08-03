@@ -103,6 +103,8 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "architecture_map" => (actual, "no_baseline"),
 
+        "neighbors" | "path" | "subgraph" => (actual, "no_baseline"),
+
         "search_documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
         "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),

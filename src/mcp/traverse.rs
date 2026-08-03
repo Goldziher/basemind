@@ -206,12 +206,36 @@ pub(crate) fn neighbors(adj: &Adjacency, roots: &[u32], dir: Dir, kinds: EdgeKin
         queue.push_back(r);
     }
 
+    // Phase 1 — discover the node set by BFS, bounded by depth and `max_nodes`. Only nodes are
+    // admitted here; edges are collected in phase 2 once the set is final, so the result never
+    // references a node the cap excluded (the `Walk` contract: edges only among returned nodes).
     while let Some(id) = queue.pop_front() {
         let depth = depth_of[&id];
         if depth >= bounds.depth {
             continue;
         }
+        for (_, _, e) in adj.incident(id, dir, kinds, bounds.min_conf) {
+            if depth_of.contains_key(&e.other) {
+                continue;
+            }
+            if walk.nodes.len() >= bounds.max_nodes {
+                walk.truncated = true;
+                continue;
+            }
+            depth_of.insert(e.other, depth + 1);
+            walk.nodes.push((e.other, depth + 1));
+            queue.push_back(e.other);
+        }
+    }
+
+    // Phase 2 — induced edges: every selected edge between two admitted nodes, including edges
+    // among the outermost (max-depth) ring that phase 1's expansion never visits. Deduped by
+    // `(from, to, kind)`; iteration follows the deterministic node-discovery order.
+    for &(id, _) in &walk.nodes {
         for (from, to, e) in adj.incident(id, dir, kinds, bounds.min_conf) {
+            if !depth_of.contains_key(&e.other) {
+                continue;
+            }
             if seen_edges.insert((from, to, e.kind)) {
                 walk.edges.push(WalkEdge {
                     from,
@@ -220,15 +244,6 @@ pub(crate) fn neighbors(adj: &Adjacency, roots: &[u32], dir: Dir, kinds: EdgeKin
                     provenance: e.provenance,
                     weight: e.weight,
                 });
-            }
-            if !depth_of.contains_key(&e.other) {
-                if walk.nodes.len() >= bounds.max_nodes {
-                    walk.truncated = true;
-                    continue;
-                }
-                depth_of.insert(e.other, depth + 1);
-                walk.nodes.push((e.other, depth + 1));
-                queue.push_back(e.other);
             }
         }
     }
@@ -371,8 +386,11 @@ pub(crate) fn subgraph(
         rb.cmp(&ra).then_with(|| b.1.cmp(&a.1)).then_with(|| a.0.cmp(&b.0))
     });
 
-    let truncated = walk.truncated || ranked.len() > max_keep;
-    ranked.truncate(max_keep);
+    // Never cut below the root set — the contract guarantees roots are always kept, even when
+    // more names resolve to roots than `max_keep`.
+    let keep = max_keep.max(root_set.len());
+    let truncated = walk.truncated || ranked.len() > keep;
+    ranked.truncate(keep);
     let kept: AHashSet<u32> = ranked.iter().map(|&(id, _)| id).collect();
     let edges: Vec<WalkEdge> = walk
         .edges
@@ -638,6 +656,121 @@ mod tests {
         for e in &sg.edges {
             assert!(kept.contains(&e.from) && kept.contains(&e.to));
         }
+    }
+
+    /// A → B, A → C, B → C — a triangle where B and C both sit at depth 1 from A. Exercises
+    /// edges among nodes on the outermost (max-depth) ring.
+    fn triangle_graph() -> CodeGraph {
+        CodeGraph {
+            edges: vec![
+                edge("A", "B", EdgeKind::Calls, Provenance::Extracted, 1),
+                edge("A", "C", EdgeKind::Calls, Provenance::Extracted, 1),
+                edge("B", "C", EdgeKind::Calls, Provenance::Extracted, 1),
+            ],
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn neighbors_max_nodes_emits_no_dangling_edge() {
+        let g = chain_graph();
+        let adj = Adjacency::build(&g);
+        let a = id_of(&adj, "A");
+        let walk = neighbors(
+            &adj,
+            &[a],
+            Dir::Both,
+            ALL,
+            Bounds {
+                depth: 10,
+                max_nodes: 2,
+                min_conf: 0.0,
+            },
+        );
+        // Every edge endpoint must be a returned node — the cap must not leave a dangling edge.
+        let node_set: AHashSet<u32> = walk.nodes.iter().map(|&(id, _)| id).collect();
+        for e in &walk.edges {
+            assert!(
+                node_set.contains(&e.from) && node_set.contains(&e.to),
+                "edge {:?}→{:?} references a node cut by max_nodes",
+                e.from,
+                e.to
+            );
+        }
+    }
+
+    #[test]
+    fn neighbors_emits_edges_among_frontier_peers() {
+        let g = triangle_graph();
+        let adj = Adjacency::build(&g);
+        let a = id_of(&adj, "A");
+        let b = id_of(&adj, "B");
+        let c = id_of(&adj, "C");
+        // Depth 1 from A: B and C are both frontier nodes. The B→C edge between them must be
+        // present even though neither frontier node is expanded.
+        let walk = neighbors(
+            &adj,
+            &[a],
+            Dir::Out,
+            CALLS,
+            Bounds {
+                depth: 1,
+                max_nodes: 100,
+                min_conf: 0.0,
+            },
+        );
+        assert!(
+            walk.edges.iter().any(|e| e.from == b && e.to == c),
+            "the B→C edge among two depth-1 frontier peers is missing"
+        );
+    }
+
+    #[test]
+    fn subgraph_keeps_all_roots_even_when_over_max_keep() {
+        let g = chain_graph();
+        let adj = Adjacency::build(&g);
+        let roots = [id_of(&adj, "A"), id_of(&adj, "B"), id_of(&adj, "C")];
+        // max_keep is below the root count; every root must still survive the cut.
+        let sg = subgraph(
+            &adj,
+            &roots,
+            ALL,
+            Bounds {
+                depth: 1,
+                max_nodes: 100,
+                min_conf: 0.0,
+            },
+            1,
+        );
+        let kept: AHashSet<u32> = sg.nodes.iter().map(|&(id, _)| id).collect();
+        for r in roots {
+            assert!(kept.contains(&r), "root {r:?} was dropped despite the keep guarantee");
+        }
+    }
+
+    #[test]
+    fn shortest_path_zero_when_source_is_target() {
+        let g = chain_graph();
+        let adj = Adjacency::build(&g);
+        let a = id_of(&adj, "A");
+        let targets: AHashSet<u32> = [a].into_iter().collect();
+        let path = shortest_path(&adj, &[a], &targets, CALLS, 0.0, 10_000).expect("self is reachable");
+        assert_eq!(names(&adj, &path.nodes), vec!["A"]);
+        assert_eq!(path.cost, 0);
+    }
+
+    #[test]
+    fn shortest_path_multi_target_picks_nearest() {
+        let g = chain_graph();
+        let adj = Adjacency::build(&g);
+        let a = id_of(&adj, "A");
+        let c = id_of(&adj, "C");
+        let d = id_of(&adj, "D");
+        // From A: D via the 1-hop ambiguous shortcut (cost 18) beats C via A→B→C (cost 20).
+        let targets: AHashSet<u32> = [c, d].into_iter().collect();
+        let path = shortest_path(&adj, &[a], &targets, CALLS, 0.0, 10_000).expect("a target is reachable");
+        assert_eq!(names(&adj, &path.nodes), vec!["A", "D"]);
+        assert_eq!(path.cost, edge_cost(Provenance::Ambiguous));
     }
 
     #[test]
