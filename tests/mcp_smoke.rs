@@ -4335,6 +4335,43 @@ async fn traversal_tools_walk_the_shared_graph() {
         "an invalid edges value must be an error, not a silent default"
     );
 
+    // Unresolved-name contract (stated in each tool's description): an unknown symbol yields an
+    // empty result, never an error — so an agent can probe freely without exception handling.
+    let missing = service
+        .call_tool(call_params("neighbors", json!({"name": "does_not_exist_zzz"})))
+        .await
+        .expect("neighbors on an unknown name returns Ok, not an error");
+    assert!(
+        decode_text(&missing)
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.is_empty()),
+        "neighbors of an unresolved name is empty"
+    );
+    let missing = service
+        .call_tool(call_params("subgraph", json!({"name": "does_not_exist_zzz"})))
+        .await
+        .expect("subgraph on an unknown name returns Ok, not an error");
+    assert!(
+        decode_text(&missing)
+            .get("nodes")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.is_empty()),
+        "subgraph of an unresolved name is empty"
+    );
+    let missing = service
+        .call_tool(call_params(
+            "path",
+            json!({"from": "does_not_exist_zzz", "to": "engine"}),
+        ))
+        .await
+        .expect("path from an unknown source returns Ok, not an error");
+    assert_eq!(
+        decode_text(&missing).get("found").and_then(Value::as_bool),
+        Some(false),
+        "path from an unresolved source is not found, not an error"
+    );
+
     let _ = service.cancel().await;
 }
 
