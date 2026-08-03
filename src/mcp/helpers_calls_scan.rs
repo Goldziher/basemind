@@ -315,18 +315,6 @@ impl InRamCallIndex {
         Self { entries, by_path }
     }
 
-    /// Call sites whose callee is exactly `name`, as `(path, start_byte)`. Mirrors a
-    /// `calls_by_callee` exact-name scan for the call-graph "callers" direction.
-    pub(crate) fn callers_of<'a>(
-        &'a self,
-        name: &'a str,
-    ) -> impl Iterator<Item = (&'a crate::path::RelPath, u32)> + 'a {
-        self.entries
-            .iter()
-            .filter(move |c| c.callee == name)
-            .map(|c| (&c.rel, c.start_byte))
-    }
-
     /// All call sites in `rel`, for the call-graph "callees" direction (the
     /// `calls_by_path` keyspace).
     pub(crate) fn calls_in_file(&self, rel: &crate::path::RelPath) -> &[CallRef] {

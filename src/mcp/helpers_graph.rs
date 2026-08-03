@@ -1,30 +1,36 @@
-//! Body of the `call_graph` MCP tool.
+//! Body of the `call_graph` MCP tool — re-expressed over the shared `codegraph` (ADR-0001).
 //!
-//! BFS-walks the call graph from a root name in either direction:
+//! Rather than re-scanning `calls_by_callee` / `calls_by_path` itself, `call_graph` now builds
+//! the calls lane of the shared, memoized [`codegraph`](super::codegraph) once (an `Arc` clone
+//! when another graph tool already built it this snapshot) and **projects its resolved `Calls`
+//! edges to function-name granularity** — the node model this tool has always exposed. From that
+//! projection it BFS-walks in either direction:
 //!
-//! - `direction = "callers"` — for each frontier symbol F, prefix-scan
-//!   `calls_by_callee` on F's name → resolve each call site's containing function
-//!   via the in-RAM L1 outline → push containing functions as the next frontier.
-//! - `direction = "callees"` — for each frontier symbol F, find F's L1 symbol(s),
-//!   prefix-scan `calls_by_path` for F's file, filter to calls inside F's byte
-//!   range → push unique callee names as the next frontier.
+//! - `direction = "callers"` — who calls into `name`: the projected callers of each frontier name.
+//! - `direction = "callees"` — what `name` calls: the projected callees of each frontier name.
 //!
-//! Cycle detection is name-keyed: a visited set of strings. Recursive functions
-//! land at the root with one self-edge.
+//! Cycle detection is name-keyed (a visited set of names); a recursive function lands at the root
+//! with one self-edge.
+//!
+//! One deliberate consequence of reading the typed graph: a call whose callee does **not** resolve
+//! to an in-repo function-like definition (an external/library call such as `println!`) carries no
+//! edge in `codegraph`, so it no longer surfaces as an empty-`sites` callee node. `call_graph` now
+//! reports only resolved, in-repo call relationships — consistent with the rest of the graph layer.
+//! File-scope call sites (a call enclosed by no function) likewise attribute to no caller name and
+//! are dropped, exactly as before.
 
 use std::collections::VecDeque;
-use std::ops::Bound;
 
 use ahash::{AHashMap, AHashSet};
 use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::MapCache;
-use super::cursor::prefix_upper_bound;
+use super::codegraph::{self, BuildOpts, CodeGraph, EdgeKind, EdgeKindSet, NodeKey};
 use super::helpers::{elapsed_us, json_result, kind_to_str};
-use super::helpers_calls::for_each_call_in_file;
+use super::shared_state::SharedReadStack;
 use super::types_graph::{CallGraphNode, CallGraphParams, CallGraphResponse, CallGraphSite};
-use crate::extract::{FileMapL1, Symbol, SymbolKind};
+use crate::extract::SymbolKind;
 use crate::path::RelPath;
 
 const MAX_DEPTH_CEILING: u32 = 6;
@@ -32,10 +38,10 @@ const MAX_NODES_CEILING: u32 = 500;
 const DEFAULT_MAX_DEPTH: u32 = 3;
 const DEFAULT_MAX_NODES: u32 = 100;
 
-/// Function-like symbol kinds that can act as call-graph nodes. A call site whose
-/// enclosing symbol is not one of these (e.g. a top-level expression in a Python
-/// module body) is treated as file-scope and dropped — there's no parent function
-/// to attribute the call to.
+/// Function-like symbol kinds that can act as call-graph nodes. A call site whose enclosing
+/// symbol is not one of these (e.g. a top-level expression in a Python module body) is treated
+/// as file-scope and dropped — there's no parent function to attribute the call to. Shared with
+/// [`codegraph`](super::codegraph), which uses the same predicate when attributing call edges.
 pub(super) fn is_function_like(kind: SymbolKind) -> bool {
     matches!(
         kind,
@@ -43,8 +49,9 @@ pub(super) fn is_function_like(kind: SymbolKind) -> bool {
     )
 }
 
-/// Entry point — wraps the BFS body, packs the result into a `CallToolResult`.
+/// Entry point — builds the shared calls graph, projects it, and runs the BFS.
 pub(super) fn run_call_graph(
+    shared: &SharedReadStack,
     idx: Option<&crate::index::IndexDb>,
     params: CallGraphParams,
     cache: &MapCache,
@@ -64,10 +71,46 @@ pub(super) fn run_call_graph(
     let max_depth = params.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).min(MAX_DEPTH_CEILING);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_NODES_CEILING) as usize;
 
+    // Build (or reuse) the calls lane of the shared graph over the whole repo — `focus` is left
+    // unset so this shares the memo entry other graph tools use; the `path` param scopes only the
+    // root node here, not the whole build.
+    let graph = shared.graph(
+        idx,
+        cache,
+        &BuildOpts {
+            kinds: EdgeKindSet::from_edges_param("calls"),
+            focus: None,
+            scan_cap: codegraph::CODEGRAPH_SCAN_CAP,
+        },
+    )?;
+    // `(path, start_byte)` → function-name index, built once from this snapshot and shared by the
+    // projection and the (rare) callees-with-path root seed below.
+    let name_index = build_name_index(cache);
+    let projection = CallProjection::build(&graph, cache, &name_index);
+
     let outcome = if direction == "callers" {
-        bfs_callers(idx, cache, &params.name, params.path.as_ref(), max_depth, max_nodes)?
+        projection.bfs_callers(
+            &params.name,
+            params.path.as_ref(),
+            max_depth,
+            max_nodes,
+            graph.truncated,
+        )
     } else {
-        bfs_callees(idx, cache, &params.name, params.path.as_ref(), max_depth, max_nodes)?
+        // `path` disambiguates which root definition's body seeds the walk (depth 0 only), so its
+        // callees come from just the matching sites rather than every same-named definition.
+        let root_override = params
+            .path
+            .as_ref()
+            .map(|p| root_path_callees(&graph, &name_index, &params.name, p));
+        projection.bfs_callees(
+            &params.name,
+            params.path.as_ref(),
+            root_override.as_deref(),
+            max_depth,
+            max_nodes,
+            graph.truncated,
+        )
     };
 
     json_result(&CallGraphResponse {
@@ -87,387 +130,351 @@ struct BfsOutcome {
     truncation_reason: Option<&'static str>,
 }
 
-/// Build the root node: every definition site of `name` (filtered to function-like
-/// kinds, optionally restricted to `path_filter`).
-fn build_root(name: &str, cache: &MapCache, path_filter: Option<&RelPath>) -> CallGraphNode {
-    let mut sites: Vec<CallGraphSite> = Vec::new();
-    let iter: Box<dyn Iterator<Item = (&RelPath, &FileMapL1)>> = match path_filter {
-        Some(p) => match cache.by_path.get(p) {
-            Some(l1) => Box::new(std::iter::once((p, l1))),
-            None => Box::new(std::iter::empty()),
-        },
-        None => Box::new(cache.by_path.iter()),
-    };
-    for (path, l1) in iter {
-        for sym in &l1.symbols {
-            if sym.name == name && is_function_like(sym.kind) {
-                sites.push(CallGraphSite {
-                    path: path.clone(),
-                    kind: kind_to_str(sym.kind).to_string(),
-                    start_row: sym.start_row,
-                    start_col: sym.start_col,
-                });
-            }
-        }
-    }
-    CallGraphNode {
-        name: name.to_string(),
-        depth: 0,
-        edges_to: Vec::new(),
-        sites,
-    }
-}
+/// `(path, start_byte)` → function-like symbol name, borrowed from the cache. Only function-like
+/// symbols are indexed, so a `Symbol` node that shares a start byte with a co-located non-function
+/// symbol (a struct/class declaration at the same offset) resolves to the function — the endpoints
+/// of a `Calls` edge are always function-like. An `O(1)` lookup replacing a per-edge linear scan.
+type NameIndex<'c> = AHashMap<&'c RelPath, AHashMap<u32, &'c str>>;
 
-/// Locate the function-like symbol that contains `start_byte` in `l1`. Picks the
-/// *tightest* match (smallest byte range that still covers `start_byte`) so nested
-/// function definitions attribute correctly. Returns `None` when no function-like
-/// symbol wraps the call site (file-scope call).
-fn containing_function(l1: &FileMapL1, start_byte: u32) -> Option<&Symbol> {
-    let mut best: Option<&Symbol> = None;
-    for sym in &l1.symbols {
-        if !is_function_like(sym.kind) {
-            continue;
-        }
-        if sym.start_byte <= start_byte && start_byte < sym.end_byte {
-            let span = sym.end_byte.saturating_sub(sym.start_byte);
-            let best_span = best
-                .map(|s| s.end_byte.saturating_sub(s.start_byte))
-                .unwrap_or(u32::MAX);
-            if span < best_span {
-                best = Some(sym);
-            }
-        }
-    }
-    best
-}
-
-/// BFS upward: who calls into `name`?
-fn bfs_callers(
-    idx: Option<&crate::index::IndexDb>,
-    cache: &MapCache,
-    root_name: &str,
-    path_filter: Option<&RelPath>,
-    max_depth: u32,
-    max_nodes: usize,
-) -> Result<BfsOutcome, McpError> {
-    let mut nodes: Vec<CallGraphNode> = vec![build_root(root_name, cache, path_filter)];
-    let mut index_of: AHashMap<String, u32> = AHashMap::new();
-    index_of.insert(root_name.to_string(), 0);
-
-    let mut frontier: VecDeque<(String, u32)> = VecDeque::new();
-    frontier.push_back((root_name.to_string(), 0));
-
-    let scan_cap = max_nodes.saturating_mul(8).max(2_000);
-    let mut truncated = false;
-    let mut truncation_reason: Option<&'static str> = None;
-    let mut hit_scan_cap = false;
-    let mut depth_gated = false;
-
-    while let Some((current_name, depth)) = frontier.pop_front() {
-        if depth >= max_depth {
-            depth_gated = true;
-            continue;
-        }
-        let parents = match collect_callers(idx, cache, &current_name, scan_cap) {
-            Ok(p) => p,
-            Err(CallerScanError::ScanCap) => {
-                hit_scan_cap = true;
-                AHashMap::new()
-            }
-            Err(CallerScanError::Other(e)) => return Err(e),
-        };
-
-        let current_idx = *index_of.get(&current_name).expect("frontier entry must be indexed");
-
-        for (parent_name, parent_sites) in parents {
-            if parent_name == current_name {
-                if !nodes[current_idx as usize].edges_to.contains(&current_idx) {
-                    nodes[current_idx as usize].edges_to.push(current_idx);
-                }
-                continue;
-            }
-            let already = index_of.get(&parent_name).copied();
-            let parent_idx = match already {
-                Some(i) => i,
-                None => {
-                    if nodes.len() >= max_nodes {
-                        truncated = true;
-                        truncation_reason = Some("max_nodes");
-                        break;
-                    }
-                    let new_idx = nodes.len() as u32;
-                    nodes.push(CallGraphNode {
-                        name: parent_name.clone(),
-                        depth: depth + 1,
-                        edges_to: Vec::new(),
-                        sites: parent_sites,
-                    });
-                    index_of.insert(parent_name.clone(), new_idx);
-                    frontier.push_back((parent_name, depth + 1));
-                    new_idx
-                }
-            };
-            if !nodes[parent_idx as usize].edges_to.contains(&current_idx) {
-                nodes[parent_idx as usize].edges_to.push(current_idx);
-            }
-        }
-        if truncation_reason == Some("max_nodes") {
-            break;
-        }
-    }
-
-    if truncation_reason.is_none() && hit_scan_cap {
-        truncated = true;
-        truncation_reason = Some("scan_cap");
-    }
-    if truncation_reason.is_none() && depth_gated {
-        truncated = true;
-        truncation_reason = Some("max_depth");
-    }
-
-    Ok(BfsOutcome {
-        nodes,
-        truncated,
-        truncation_reason,
-    })
-}
-
-enum CallerScanError {
-    ScanCap,
-    Other(McpError),
-}
-
-/// For one frontier name, return `{ parent_name → [definition sites] }` of every
-/// containing function that calls `name`.
-fn collect_callers(
-    idx: Option<&crate::index::IndexDb>,
-    cache: &MapCache,
-    name: &str,
-    scan_cap: usize,
-) -> Result<AHashMap<String, Vec<CallGraphSite>>, CallerScanError> {
-    let mut parents: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
-    let mut seen_sites: AHashSet<(RelPath, u32, u32)> = AHashSet::new();
-    let mut scanned: usize = 0;
-
-    let mut record = |rel: RelPath, start_byte: u32| {
-        let Some(l1) = cache.by_path.get(&rel) else {
-            return;
-        };
-        let Some(parent_sym) = containing_function(l1, start_byte) else {
-            return;
-        };
-        let site = CallGraphSite {
-            path: rel.clone(),
-            kind: kind_to_str(parent_sym.kind).to_string(),
-            start_row: parent_sym.start_row,
-            start_col: parent_sym.start_col,
-        };
-        if seen_sites.insert((rel, site.start_row, site.start_col)) {
-            parents.entry(parent_sym.name.clone()).or_default().push(site);
-        }
-    };
-
-    match idx {
-        Some(idx) => {
-            let prefix = crate::index::keys::calls_by_callee_prefix(name);
-            let upper_bound: Bound<Vec<u8>> = match prefix_upper_bound(&prefix) {
-                Some(b) => Bound::Excluded(b),
-                None => Bound::Unbounded,
-            };
-            let lower = Bound::Included(prefix);
-            for guard in idx.calls_by_callee.range::<Vec<u8>, _>((lower, upper_bound)) {
-                scanned += 1;
-                if scanned > scan_cap {
-                    return Err(CallerScanError::ScanCap);
-                }
-                let (k, _) = guard
-                    .into_inner()
-                    .map_err(|e| CallerScanError::Other(McpError::internal_error(format!("index iter: {e}"), None)))?;
-                let Some((callee, rel, start_byte)) = crate::index::keys::parse_call_by_callee(&k) else {
-                    continue;
-                };
-                if callee != name {
-                    continue;
-                }
-                record(rel, start_byte);
-            }
-        }
-        None => {
-            let Some(calls) = cache.calls.as_ref() else {
-                return Ok(parents);
-            };
-            for (rel, start_byte) in calls.callers_of(name) {
-                scanned += 1;
-                if scanned > scan_cap {
-                    return Err(CallerScanError::ScanCap);
-                }
-                record(rel.clone(), start_byte);
-            }
-        }
-    }
-    Ok(parents)
-}
-
-/// BFS downward: what does `name` itself call?
-fn bfs_callees(
-    idx: Option<&crate::index::IndexDb>,
-    cache: &MapCache,
-    root_name: &str,
-    path_filter: Option<&RelPath>,
-    max_depth: u32,
-    max_nodes: usize,
-) -> Result<BfsOutcome, McpError> {
-    let mut nodes: Vec<CallGraphNode> = vec![build_root(root_name, cache, path_filter)];
-    let mut index_of: AHashMap<String, u32> = AHashMap::new();
-    index_of.insert(root_name.to_string(), 0);
-
-    let mut frontier: VecDeque<(String, u32)> = VecDeque::new();
-    frontier.push_back((root_name.to_string(), 0));
-
-    let scan_cap = max_nodes.saturating_mul(8).max(2_000);
-    let mut truncated = false;
-    let mut truncation_reason: Option<&'static str> = None;
-    let mut hit_scan_cap = false;
-    let mut depth_gated = false;
-
-    let mut name_to_sites: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
+fn build_name_index(cache: &MapCache) -> NameIndex<'_> {
+    let mut index: NameIndex<'_> = AHashMap::new();
     for (path, l1) in &cache.by_path {
         for sym in &l1.symbols {
             if is_function_like(sym.kind) {
-                name_to_sites.entry(sym.name.clone()).or_default().push(CallGraphSite {
-                    path: path.clone(),
-                    kind: kind_to_str(sym.kind).to_string(),
-                    start_row: sym.start_row,
-                    start_col: sym.start_col,
-                });
+                index
+                    .entry(path)
+                    .or_default()
+                    .entry(sym.start_byte)
+                    .or_insert(sym.name.as_str());
             }
         }
     }
-
-    while let Some((current_name, depth)) = frontier.pop_front() {
-        if depth >= max_depth {
-            depth_gated = true;
-            continue;
-        }
-        let callees = match collect_callees_for_name(
-            idx,
-            cache,
-            &current_name,
-            if depth == 0 { path_filter } else { None },
-            scan_cap,
-        ) {
-            Ok(c) => c,
-            Err(CallerScanError::ScanCap) => {
-                hit_scan_cap = true;
-                AHashSet::new()
-            }
-            Err(CallerScanError::Other(e)) => return Err(e),
-        };
-
-        let current_idx = *index_of.get(&current_name).expect("frontier entry must be indexed");
-
-        for callee in callees {
-            if callee == current_name {
-                if !nodes[current_idx as usize].edges_to.contains(&current_idx) {
-                    nodes[current_idx as usize].edges_to.push(current_idx);
-                }
-                continue;
-            }
-            let already = index_of.get(&callee).copied();
-            let child_idx = match already {
-                Some(i) => i,
-                None => {
-                    if nodes.len() >= max_nodes {
-                        truncated = true;
-                        truncation_reason = Some("max_nodes");
-                        break;
-                    }
-                    let new_idx = nodes.len() as u32;
-                    let sites = name_to_sites.get(callee.as_str()).cloned().unwrap_or_default();
-                    nodes.push(CallGraphNode {
-                        name: callee.clone(),
-                        depth: depth + 1,
-                        edges_to: Vec::new(),
-                        sites,
-                    });
-                    index_of.insert(callee.clone(), new_idx);
-                    frontier.push_back((callee, depth + 1));
-                    new_idx
-                }
-            };
-            if !nodes[current_idx as usize].edges_to.contains(&child_idx) {
-                nodes[current_idx as usize].edges_to.push(child_idx);
-            }
-        }
-        if truncation_reason == Some("max_nodes") {
-            break;
-        }
-    }
-
-    if truncation_reason.is_none() && hit_scan_cap {
-        truncated = true;
-        truncation_reason = Some("scan_cap");
-    }
-    if truncation_reason.is_none() && depth_gated {
-        truncated = true;
-        truncation_reason = Some("max_depth");
-    }
-
-    Ok(BfsOutcome {
-        nodes,
-        truncated,
-        truncation_reason,
-    })
+    index
 }
 
-/// Collect unique callee names invoked from inside every definition site of `name`
-/// (optionally restricted to one path).
-fn collect_callees_for_name(
-    idx: Option<&crate::index::IndexDb>,
-    cache: &MapCache,
-    name: &str,
-    path_filter: Option<&RelPath>,
-    scan_cap: usize,
-) -> Result<AHashSet<String>, CallerScanError> {
-    let mut callees: AHashSet<String> = AHashSet::new();
-    let mut scanned: usize = 0;
+/// The function-like symbol name a resolved `Symbol` node points at. `File` / `Name` nodes
+/// (file-scope callers, unresolved targets) have no function name.
+fn name_at<'c>(index: &NameIndex<'c>, key: &NodeKey) -> Option<&'c str> {
+    if let NodeKey::Symbol { path, start_byte } = key {
+        return index.get(path).and_then(|by_byte| by_byte.get(start_byte)).copied();
+    }
+    None
+}
 
-    let iter: Box<dyn Iterator<Item = (&RelPath, &FileMapL1)>> = match path_filter {
-        Some(p) => match cache.by_path.get(p) {
-            Some(l1) => Box::new(std::iter::once((p, l1))),
-            None => Box::new(std::iter::empty()),
-        },
-        None => Box::new(cache.by_path.iter()),
-    };
-
-    for (path, l1) in iter {
-        let matching: Vec<&Symbol> = l1
-            .symbols
-            .iter()
-            .filter(|s| s.name == name && is_function_like(s.kind))
-            .collect();
-        if matching.is_empty() {
+/// The resolved callee names invoked from the definition(s) of `root_name` located in `path` —
+/// the depth-0 seed for a `callees` walk when a `path` disambiguates overloaded roots.
+fn root_path_callees<'c>(
+    graph: &CodeGraph,
+    name_index: &NameIndex<'c>,
+    root_name: &str,
+    path: &RelPath,
+) -> Vec<String> {
+    let mut set: AHashSet<&'c str> = AHashSet::new();
+    for edge in &graph.edges {
+        if edge.kind != EdgeKind::Calls {
             continue;
         }
-        let mut cap_hit = false;
-        for_each_call_in_file(idx, cache, path, |callee, start_byte| {
-            scanned += 1;
-            if scanned > scan_cap {
-                cap_hit = true;
-                return false;
-            }
-            if matching
-                .iter()
-                .any(|s| s.start_byte <= start_byte && start_byte < s.end_byte)
-            {
-                callees.insert(callee.to_string());
-            }
-            true
-        })
-        .map_err(CallerScanError::Other)?;
-        if cap_hit {
-            return Err(CallerScanError::ScanCap);
+        if let NodeKey::Symbol { path: from_path, .. } = &edge.from
+            && from_path == path
+            && name_at(name_index, &edge.from) == Some(root_name)
+            && let Some(to) = name_at(name_index, &edge.to)
+        {
+            set.insert(to);
         }
     }
-    Ok(callees)
+    let mut names: Vec<String> = set.into_iter().map(str::to_string).collect();
+    names.sort_unstable();
+    names
+}
+
+/// The calls lane of a [`CodeGraph`] projected to function-name granularity: the node model
+/// `call_graph` exposes. Adjacency lists are sorted for deterministic BFS order.
+struct CallProjection {
+    /// callee name → caller names (function-scope callers only).
+    callers_of: AHashMap<String, Vec<String>>,
+    /// caller name → resolved callee names.
+    callees_of: AHashMap<String, Vec<String>>,
+    /// name → every function-like definition site (a node's `sites`).
+    sites_of: AHashMap<String, Vec<CallGraphSite>>,
+}
+
+impl CallProjection {
+    fn build(graph: &CodeGraph, cache: &MapCache, name_index: &NameIndex) -> Self {
+        let mut sites_of: AHashMap<String, Vec<CallGraphSite>> = AHashMap::new();
+        for (path, l1) in &cache.by_path {
+            for sym in &l1.symbols {
+                if is_function_like(sym.kind) {
+                    sites_of.entry(sym.name.clone()).or_default().push(CallGraphSite {
+                        path: path.clone(),
+                        kind: kind_to_str(sym.kind).to_string(),
+                        start_row: sym.start_row,
+                        start_col: sym.start_col,
+                    });
+                }
+            }
+        }
+        for sites in sites_of.values_mut() {
+            sites.sort_by(|a, b| {
+                a.path
+                    .cmp(&b.path)
+                    .then(a.start_row.cmp(&b.start_row))
+                    .then(a.start_col.cmp(&b.start_col))
+            });
+            sites.dedup_by(|a, b| a.path == b.path && a.start_row == b.start_row && a.start_col == b.start_col);
+        }
+
+        let mut callers_set: AHashMap<String, AHashSet<String>> = AHashMap::new();
+        let mut callees_set: AHashMap<String, AHashSet<String>> = AHashMap::new();
+        for edge in &graph.edges {
+            if edge.kind != EdgeKind::Calls {
+                continue;
+            }
+            // A `Calls` edge runs enclosing-function → resolved-definition. Both endpoints must be
+            // named function-like symbols; a file-scope caller (`File` node) or a virtual target is
+            // dropped — the historical call_graph attributed only to function-like symbols.
+            let (Some(from_name), Some(to_name)) = (name_at(name_index, &edge.from), name_at(name_index, &edge.to))
+            else {
+                continue;
+            };
+            callers_set
+                .entry(to_name.to_string())
+                .or_default()
+                .insert(from_name.to_string());
+            callees_set
+                .entry(from_name.to_string())
+                .or_default()
+                .insert(to_name.to_string());
+        }
+
+        CallProjection {
+            callers_of: sorted_adjacency(callers_set),
+            callees_of: sorted_adjacency(callees_set),
+            sites_of,
+        }
+    }
+
+    /// Definition sites of a root name, narrowed to `path_filter` when the caller disambiguated.
+    fn root_sites(&self, name: &str, path_filter: Option<&RelPath>) -> Vec<CallGraphSite> {
+        let all = self.sites_of.get(name).cloned().unwrap_or_default();
+        match path_filter {
+            Some(p) => all.into_iter().filter(|s| &s.path == p).collect(),
+            None => all,
+        }
+    }
+
+    /// Every definition site of a non-root node's name (path filtering applies to the root only).
+    fn node_sites(&self, name: &str) -> Vec<CallGraphSite> {
+        self.sites_of.get(name).cloned().unwrap_or_default()
+    }
+
+    /// BFS upward: who calls into `root_name`?
+    fn bfs_callers(
+        &self,
+        root_name: &str,
+        path_filter: Option<&RelPath>,
+        max_depth: u32,
+        max_nodes: usize,
+        build_truncated: bool,
+    ) -> BfsOutcome {
+        let mut walk = Bfs::new(root_name, self.root_sites(root_name, path_filter), max_nodes);
+        let empty: Vec<String> = Vec::new();
+        while let Some((current, depth)) = walk.frontier.pop_front() {
+            if depth >= max_depth {
+                walk.depth_gated = true;
+                continue;
+            }
+            let current_idx = walk.index_of[&current];
+            let parents = self.callers_of.get(&current).unwrap_or(&empty);
+            let mut hit_cap = false;
+            for parent in parents {
+                // A caller→callee edge points from the parent (caller) to `current` (callee).
+                if !walk.link(parent, current_idx, depth, |n| self.node_sites(n)) {
+                    hit_cap = true;
+                    break;
+                }
+            }
+            if hit_cap {
+                break;
+            }
+        }
+        walk.finish(build_truncated)
+    }
+
+    /// BFS downward: what does `root_name` call?
+    fn bfs_callees(
+        &self,
+        root_name: &str,
+        path_filter: Option<&RelPath>,
+        root_override: Option<&[String]>,
+        max_depth: u32,
+        max_nodes: usize,
+        build_truncated: bool,
+    ) -> BfsOutcome {
+        let mut walk = Bfs::new(root_name, self.root_sites(root_name, path_filter), max_nodes);
+        let empty: Vec<String> = Vec::new();
+        while let Some((current, depth)) = walk.frontier.pop_front() {
+            if depth >= max_depth {
+                walk.depth_gated = true;
+                continue;
+            }
+            let current_idx = walk.index_of[&current];
+            let callees: &[String] = match (depth, root_override) {
+                (0, Some(seed)) => seed,
+                _ => self.callees_of.get(&current).map(Vec::as_slice).unwrap_or(&empty),
+            };
+            let mut hit_cap = false;
+            for callee in callees {
+                // A caller→callee edge points from `current` (caller) to the child (callee).
+                if !walk.link_child(current_idx, callee, depth, |n| self.node_sites(n)) {
+                    hit_cap = true;
+                    break;
+                }
+            }
+            if hit_cap {
+                break;
+            }
+        }
+        walk.finish(build_truncated)
+    }
+}
+
+/// Shared BFS scaffolding: node vec, name→index map, frontier queue, and truncation flags. The
+/// two directions differ only in which end of a discovered edge is the new node.
+struct Bfs {
+    nodes: Vec<CallGraphNode>,
+    index_of: AHashMap<String, u32>,
+    frontier: VecDeque<(String, u32)>,
+    max_nodes: usize,
+    truncated: bool,
+    truncation_reason: Option<&'static str>,
+    depth_gated: bool,
+}
+
+impl Bfs {
+    fn new(root_name: &str, root_sites: Vec<CallGraphSite>, max_nodes: usize) -> Self {
+        let mut index_of = AHashMap::new();
+        index_of.insert(root_name.to_string(), 0u32);
+        let mut frontier = VecDeque::new();
+        frontier.push_back((root_name.to_string(), 0u32));
+        Bfs {
+            nodes: vec![CallGraphNode {
+                name: root_name.to_string(),
+                depth: 0,
+                edges_to: Vec::new(),
+                sites: root_sites,
+            }],
+            index_of,
+            frontier,
+            max_nodes,
+            truncated: false,
+            truncation_reason: None,
+            depth_gated: false,
+        }
+    }
+
+    /// Intern `name` as a node at `depth + 1` (or reuse an existing one), enqueueing it on first
+    /// sight. Returns its index, or `None` when a new node would exceed `max_nodes`.
+    fn intern(&mut self, name: &str, depth: u32, sites: impl FnOnce(&str) -> Vec<CallGraphSite>) -> Option<u32> {
+        if let Some(&idx) = self.index_of.get(name) {
+            return Some(idx);
+        }
+        if self.nodes.len() >= self.max_nodes {
+            self.truncated = true;
+            self.truncation_reason = Some("max_nodes");
+            return None;
+        }
+        let idx = self.nodes.len() as u32;
+        self.nodes.push(CallGraphNode {
+            name: name.to_string(),
+            depth: depth + 1,
+            edges_to: Vec::new(),
+            sites: sites(name),
+        });
+        self.index_of.insert(name.to_string(), idx);
+        self.frontier.push_back((name.to_string(), depth + 1));
+        Some(idx)
+    }
+
+    fn add_edge(&mut self, from_idx: u32, to_idx: u32) {
+        let edges = &mut self.nodes[from_idx as usize].edges_to;
+        if !edges.contains(&to_idx) {
+            edges.push(to_idx);
+        }
+    }
+
+    /// `callers` step: `parent` (a caller) links to `current` (the callee). Returns `false` when
+    /// the node budget is exhausted (caller should stop).
+    fn link(
+        &mut self,
+        parent: &str,
+        current_idx: u32,
+        depth: u32,
+        sites: impl FnOnce(&str) -> Vec<CallGraphSite>,
+    ) -> bool {
+        let current_name = &self.nodes[current_idx as usize].name;
+        if parent == current_name {
+            self.add_edge(current_idx, current_idx);
+            return true;
+        }
+        match self.intern(parent, depth, sites) {
+            Some(parent_idx) => {
+                self.add_edge(parent_idx, current_idx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `callees` step: `current` (a caller) links to `child` (the callee). Returns `false` when
+    /// the node budget is exhausted.
+    fn link_child(
+        &mut self,
+        current_idx: u32,
+        child: &str,
+        depth: u32,
+        sites: impl FnOnce(&str) -> Vec<CallGraphSite>,
+    ) -> bool {
+        let current_name = &self.nodes[current_idx as usize].name;
+        if child == current_name {
+            self.add_edge(current_idx, current_idx);
+            return true;
+        }
+        match self.intern(child, depth, sites) {
+            Some(child_idx) => {
+                self.add_edge(current_idx, child_idx);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Resolve the final truncation flag. Precedence: an exhausted node budget (already recorded)
+    /// wins; then a truncated underlying graph build (`scan_cap`); then a depth-gated frontier.
+    fn finish(mut self, build_truncated: bool) -> BfsOutcome {
+        if self.truncation_reason.is_none() && build_truncated {
+            self.truncated = true;
+            self.truncation_reason = Some("scan_cap");
+        }
+        if self.truncation_reason.is_none() && self.depth_gated {
+            self.truncated = true;
+            self.truncation_reason = Some("max_depth");
+        }
+        BfsOutcome {
+            nodes: self.nodes,
+            truncated: self.truncated,
+            truncation_reason: self.truncation_reason,
+        }
+    }
+}
+
+/// Collapse a `name → set of names` adjacency into sorted, deduplicated lists for deterministic
+/// BFS traversal order (the underlying `AHashSet` iteration order is not stable).
+fn sorted_adjacency(map: AHashMap<String, AHashSet<String>>) -> AHashMap<String, Vec<String>> {
+    map.into_iter()
+        .map(|(key, set)| {
+            let mut names: Vec<String> = set.into_iter().collect();
+            names.sort_unstable();
+            (key, names)
+        })
+        .collect()
 }

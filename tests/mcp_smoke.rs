@@ -609,6 +609,37 @@ async fn mcp_server_exercises_representative_tools() {
         "outer.edges_to should reference middle (index {middle_idx}): got {outer_edges:?}"
     );
 
+    // callees over codegraph: `caller()` (c.rs) invokes `alpha`, `zed`, and the undefined ~keep
+    // `other()`. Resolved in-repo callees surface; the unresolved external call carries no ~keep
+    // graph edge, so it is not a node — the resolved-only contract this migration locks in. ~keep
+    let body = decode_text(
+        &service
+            .call_tool(call_params(
+                "call_graph",
+                json!({ "name": "caller", "direction": "callees", "max_depth": 1 }),
+            ))
+            .await
+            .expect("call_graph callees"),
+    );
+    let nodes = body.get("nodes").and_then(Value::as_array).expect("callee nodes");
+    let names: Vec<String> = nodes
+        .iter()
+        .filter_map(|n| n.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    assert_eq!(
+        nodes[0].get("name").and_then(Value::as_str),
+        Some("caller"),
+        "callees root is `caller`: {names:?}"
+    );
+    assert!(
+        names.contains(&"alpha".to_string()) && names.contains(&"zed".to_string()),
+        "callees must surface the resolved in-repo targets `alpha` and `zed`: {names:?}"
+    );
+    assert!(
+        !names.contains(&"other".to_string()),
+        "an unresolved external call (`other`) carries no graph edge and must not appear: {names:?}"
+    );
+
     let sym = decode_text(
         &service
             .call_tool(call_params(

@@ -724,7 +724,9 @@ impl BasemindServer {
         output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_graph::CallGraphResponse>()",
         description = "BFS the call graph from a function. `direction=\"callers\"` (default) walks \
                        who calls `name`; `\"callees\"` walks what `name` calls. Returns a DAG \
-                       (`nodes` + `edges_to` indices). Bounded by `max_depth` (default 3, max 6) \
+                       (`nodes` + `edges_to` indices). Only resolved, in-repo calls are edges: a \
+                       call to an unindexed/external symbol (a library function) carries no node. \
+                       Bounded by `max_depth` (default 3, max 6) \
                        and `max_nodes` (default 100, max 500). `name` is exact (not substring); \
                        use `path` to disambiguate overloads. Cycles detected; recursion surfaces \
                        as a self-edge on the root. \
@@ -744,7 +746,14 @@ impl BasemindServer {
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.shared.cache.load_full();
-            run_call_graph(idx.as_ref(), params, &cache, self.state.lifecycle_notice(), __body)
+            run_call_graph(
+                &self.state.shared,
+                idx.as_ref(),
+                params,
+                &cache,
+                self.state.lifecycle_notice(),
+                __body,
+            )
         }
         .await;
         record_call(&self.state, "call_graph", &__params_json, __started, &__result);

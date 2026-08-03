@@ -104,8 +104,8 @@ impl RefsSource<'_> {
 /// `false` from `f` stops iteration early — used to enforce per-file scan caps.
 ///
 /// Shared by `helpers_archmap::RepoGraph::build`, `helpers_archmap::run_tier_symbol`,
-/// and `helpers_graph::collect_callees_for_name`. Keeping the dual-backend dispatch here
-/// removes the duplicate scan loops those callers previously maintained inline.
+/// and `codegraph::build` (which backs `call_graph`). Keeping the dual-backend dispatch
+/// here removes the duplicate scan loops those callers previously maintained inline.
 pub(super) fn for_each_call_in_file<F: FnMut(&str, u32) -> bool>(
     idx: Option<&IndexDb>,
     cache: &MapCache,

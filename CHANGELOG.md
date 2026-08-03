@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Keep a Changelog repeats Added/Changed/Fixed headings per version. -->
 <!-- markdownlint-disable MD024 -->
 
+## [Unreleased]
+
+### Changed
+
+- **`call_graph` is re-expressed over the shared `codegraph`.** The tool no longer maintains its own
+  call scan; it projects the resolved `Calls` edges of the shared, memoized graph the other graph
+  tools already read. One user-visible consequence: a call whose callee does not resolve to an
+  in-repo function-like definition (an external/library call) no longer surfaces as an empty-`sites`
+  callee node — `call_graph` now reports only resolved, in-repo call relationships. The `callers`
+  direction is unchanged. Read-side only; no blob/index schema change.
+
 ## [0.23.1] — 2026-07-31
 
 ### Fixed
