@@ -181,7 +181,7 @@ pub enum QueryCmd {
         #[arg(long)]
         members_per_community: Option<u32>,
     },
-    /// Render the code-graph to a text format (node_link/dot/mermaid/graphml/cypher/html).
+    /// Render the code-graph to a text format (node_link/dot/mermaid/graphml/cypher/html/svg).
     GraphExport {
         #[arg(long, default_value = "node_link")]
         format: String,
@@ -195,6 +195,9 @@ pub enum QueryCmd {
         min_confidence: Option<f32>,
         #[arg(long)]
         max_nodes: Option<u32>,
+        /// Also write the rendered export to the cache and print its path in `output_path`.
+        #[arg(long)]
+        write: bool,
     },
     /// Regex content search across indexed files.
     Grep {
@@ -481,6 +484,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
             algorithm,
             min_confidence,
             max_nodes,
+            write,
         } => {
             let p = GraphExportParams {
                 format,
@@ -489,6 +493,7 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
                 algorithm,
                 min_confidence,
                 max_nodes,
+                write,
             };
             let r = run_tool("graph_export", server.graph_export(Parameters(p)).await)?;
             emit("graph_export", &r, opts, out)

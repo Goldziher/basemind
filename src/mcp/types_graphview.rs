@@ -21,7 +21,8 @@ fn default_graphview_algorithm() -> String {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct GraphExportParams {
     /// Output format: `"node_link"` (default; node-link JSON), `"dot"` (Graphviz), `"mermaid"`,
-    /// `"graphml"`, `"cypher"`, or `"html"` (a self-contained, offline interactive page).
+    /// `"graphml"`, `"cypher"`, `"html"` (a self-contained, offline interactive page), or `"svg"`
+    /// (a static, self-contained SVG picture with a server-side deterministic layout).
     #[serde(default = "default_graphview_format")]
     pub format: String,
     /// Repo-relative path prefix to scope the graph; omit for the whole repo.
@@ -41,6 +42,12 @@ pub struct GraphExportParams {
     /// Cap on nodes in the rendered view, most central first. Default 500, max 2000.
     #[serde(default)]
     pub max_nodes: Option<u32>,
+    /// When true, also write the rendered content to a file in basemind's machine-global cache
+    /// (`<workspace-cache>/exports/graph-<hash>.<ext>`) and return its absolute path in
+    /// `output_path`. Off by default — the content is always returned inline regardless. Useful for
+    /// large `html`/`svg` exports and for handing a stable file path to a viewer.
+    #[serde(default)]
+    pub write: bool,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -57,6 +64,9 @@ pub struct GraphExportResponse {
     pub community_count: u32,
     /// True when the underlying scan was truncated or the view was capped by `max_nodes`.
     pub truncated: bool,
+    /// Absolute path of the file written to the cache when `write` was set; omitted otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
     /// Server-side handler latency in microseconds (excludes transport).

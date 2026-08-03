@@ -65,6 +65,8 @@ pub(crate) enum GraphFormat {
     Cypher,
     /// A self-contained, offline interactive HTML page (zero dependencies).
     Html,
+    /// A static, self-contained SVG picture (server-side deterministic layout).
+    Svg,
 }
 
 impl GraphFormat {
@@ -77,6 +79,7 @@ impl GraphFormat {
             "graphml" => Some(GraphFormat::GraphMl),
             "cypher" => Some(GraphFormat::Cypher),
             "html" | "interactive" => Some(GraphFormat::Html),
+            "svg" => Some(GraphFormat::Svg),
             _ => None,
         }
     }
@@ -89,6 +92,20 @@ impl GraphFormat {
             GraphFormat::GraphMl => "graphml",
             GraphFormat::Cypher => "cypher",
             GraphFormat::Html => "html",
+            GraphFormat::Svg => "svg",
+        }
+    }
+
+    /// File extension for this format, used when an export is written to the cache (ADR-0005).
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            GraphFormat::NodeLink => "json",
+            GraphFormat::Dot => "dot",
+            GraphFormat::Mermaid => "mmd",
+            GraphFormat::GraphMl => "graphml",
+            GraphFormat::Cypher => "cypher",
+            GraphFormat::Html => "html",
+            GraphFormat::Svg => "svg",
         }
     }
 }
@@ -102,6 +119,7 @@ pub(crate) fn render(view: &GraphView, format: GraphFormat) -> String {
         GraphFormat::GraphMl => to_graphml(view),
         GraphFormat::Cypher => to_cypher(view),
         GraphFormat::Html => super::graph_html::to_html(view),
+        GraphFormat::Svg => super::graph_svg::to_svg(view),
     }
 }
 
@@ -225,7 +243,7 @@ fn to_mermaid(view: &GraphView) -> String {
 /// Escape text for an XML attribute/body. Drops control characters (C0 below U+0020 that XML 1.0
 /// forbids, plus DEL/C1) except tab/newline/carriage-return — they have no legal escape and would
 /// make the document non-well-formed — then escapes the five XML metacharacters.
-fn xml_escape(s: &str) -> String {
+pub(super) fn xml_escape(s: &str) -> String {
     strip_control(s, &['\t', '\n', '\r'])
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -400,6 +418,7 @@ mod tests {
         assert_eq!(GraphFormat::parse("cypher"), Some(GraphFormat::Cypher));
         assert_eq!(GraphFormat::parse("html"), Some(GraphFormat::Html));
         assert_eq!(GraphFormat::parse("interactive"), Some(GraphFormat::Html));
+        assert_eq!(GraphFormat::parse("svg"), Some(GraphFormat::Svg));
         assert_eq!(GraphFormat::parse("bogus"), None);
     }
 
@@ -495,6 +514,7 @@ mod tests {
             GraphFormat::Mermaid,
             GraphFormat::Cypher,
             GraphFormat::GraphMl,
+            GraphFormat::Svg,
         ] {
             let out = render(&view, fmt);
             assert!(
@@ -514,6 +534,7 @@ mod tests {
             GraphFormat::GraphMl,
             GraphFormat::Cypher,
             GraphFormat::Html,
+            GraphFormat::Svg,
         ] {
             assert_eq!(render(&v, f), render(&v, f), "{f:?}");
         }

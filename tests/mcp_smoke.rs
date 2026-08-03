@@ -4557,6 +4557,7 @@ async fn graph_export_renders_every_format() {
         ("graphml", "<graphml"),
         ("cypher", "CREATE ("),
         ("html", "<!doctype html>"),
+        ("svg", "<svg xmlns="),
     ] {
         let out = service
             .call_tool(call_params("graph_export", json!({"format": fmt})))
@@ -4593,9 +4594,39 @@ async fn graph_export_renders_every_format() {
         }
     }
 
+    // write: true persists the rendered content to the cache and returns its path; the inline
+    // content is still returned, and the on-disk file matches it byte-for-byte.
+    let written = service
+        .call_tool(call_params("graph_export", json!({"format": "svg", "write": true})))
+        .await
+        .expect("graph_export write");
+    let body = decode_text(&written);
+    let output_path = body
+        .get("output_path")
+        .and_then(Value::as_str)
+        .expect("output_path present when write=true");
+    assert!(
+        output_path.ends_with(".svg"),
+        "export named by format extension: {output_path}"
+    );
+    let on_disk = std::fs::read_to_string(output_path).expect("export file exists on disk");
+    let inline = body.get("content").and_then(Value::as_str).expect("content");
+    assert_eq!(on_disk, inline, "written file matches inline content");
+    assert!(on_disk.contains("<svg xmlns="), "written file is the SVG document");
+
+    // Without write, no file path is returned.
+    let unwritten = service
+        .call_tool(call_params("graph_export", json!({"format": "svg"})))
+        .await
+        .expect("graph_export no-write");
+    assert!(
+        decode_text(&unwritten).get("output_path").is_none(),
+        "output_path omitted when write is not set"
+    );
+
     // An invalid format is rejected, not silently defaulted.
     let bogus = service
-        .call_tool(call_params("graph_export", json!({"format": "svg"})))
+        .call_tool(call_params("graph_export", json!({"format": "nonesuch"})))
         .await;
     assert!(bogus.is_err(), "an unsupported format must be an error");
 

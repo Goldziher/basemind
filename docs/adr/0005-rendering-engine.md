@@ -33,9 +33,9 @@ Define **one canonical graph-view payload** and a set of **pluggable renderers**
   - an interactive view — a fully self-contained, **offline** HTML page with all assets vendored at
     build time (**no CDN**, unlike comparable tools).
 
-Every graph capability (ADR-0003) gains a format/export option, and an export writes to basemind's
-machine-global cache by default with an optional explicit path. This engine is the **single rendering
-path** shared by the headless tools and by the desktop UI (ADR-0006).
+Every graph capability (ADR-0003) gains a format/export option, and an export can be written to
+basemind's machine-global cache (opt-in per call, under a content-addressed name). This engine is
+the **single rendering path** shared by the headless tools and by the desktop UI (ADR-0006).
 
 ## Consequences
 
@@ -50,8 +50,14 @@ path** shared by the headless tools and by the desktop UI (ADR-0006).
   page carries a **zero-dependency** vanilla-JS canvas engine (pan/zoom/search/community legend)
   inlined into a single document; no CDN and no vendored third-party library, so the file works
   straight off disk. This is the shared artifact the agent-launchable display (ADR-0007) opens.
-  **Still deferred:** the static SVG picture, writing exports to the machine-global cache (today
-  `graph_export` returns the rendered content inline), and the Tauri desktop shell (ADR-0006).
+  A **static SVG picture** (`format: "svg"`) completes the renderer set: it bakes the *same*
+  deterministic force layout the HTML engine runs in the browser — identical constants, no
+  randomness — into resolved `<line>`/`<circle>` geometry server-side, with community colors baked
+  HSL→RGB so it renders in plain SVG viewers. `graph_export` can also **write** the rendered content
+  to the machine-global cache (`write: true` → `<workspace-cache>/exports/graph-<hash>.<ext>`,
+  content-addressed so there is no caller-supplied path component) and return the absolute
+  `output_path`; writing is opt-in so the inline-content contract is unchanged by default.
+  **Still deferred:** the Tauri desktop shell (ADR-0006).
 - Trade-off resolved by **not vendoring a third-party library at all**: the interactive page ships a
   hand-rolled, zero-dependency vanilla-JS canvas engine instead. This keeps the artifact fully
   self-contained and sidesteps the offline-vs-size-vs-capability tension a vendored library would have

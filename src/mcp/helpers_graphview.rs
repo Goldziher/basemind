@@ -163,11 +163,74 @@ pub(super) fn build_graph_view(
     })
 }
 
+/// Sub-directory of the per-workspace cache that holds written exports (ADR-0005).
+const EXPORTS_DIR: &str = "exports";
+/// Hex prefix length of the content hash used in an export filename — 16 hex chars (64 bits) is
+/// collision-safe for a per-workspace export directory while keeping the name short.
+const EXPORT_HASH_PREFIX: usize = 16;
+/// Soft byte budget for the `exports/` directory. Each distinct render (varying focus / max_nodes /
+/// format) is a new content-addressed file that would otherwise accumulate forever; after writing,
+/// the oldest files are evicted until the directory is back under this budget. `html`/`svg` at the
+/// `max_nodes` cap can be hundreds of KB, so 64 MiB holds a generous working set without unbounded
+/// growth. A self-contained bound, independent of the blob-store GC (which never sees this dir).
+const EXPORTS_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Write a rendered export to `<basemind_dir>/exports/graph-<content-hash>.<ext>` and return its
+/// absolute path. The filename is content-addressed (a blake3 of the rendered bytes), so it is
+/// deterministic, dedups identical renders, and carries no caller-supplied path component — there is
+/// no traversal surface (CWE-22). An I/O failure is surfaced as an MCP internal error, not swallowed.
+fn write_export(basemind_dir: &std::path::Path, format: GraphFormat, content: &str) -> Result<String, McpError> {
+    let dir = basemind_dir.join(EXPORTS_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| McpError::internal_error(format!("create exports dir: {e}"), None))?;
+    let hash = crate::hashing::hex(&crate::hashing::hash_bytes(content.as_bytes()));
+    let name = format!("graph-{}.{}", &hash[..EXPORT_HASH_PREFIX], format.extension());
+    let path = dir.join(name);
+    crate::store_blob::write_bytes_atomic(path.clone(), content.as_bytes())
+        .map_err(|e| McpError::internal_error(format!("write export: {e}"), None))?;
+    prune_exports(&dir, EXPORTS_BUDGET_BYTES);
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Evict the oldest exports (by modified time) until the directory is at or under `budget` bytes,
+/// always keeping the most recently written file. Best-effort: any metadata / remove error is
+/// ignored — an over-budget cache is a soft concern, never a reason to fail the export the caller
+/// just asked for.
+fn prune_exports(dir: &std::path::Path, budget: u64) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, u64, std::path::PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            let meta = e.metadata().ok()?;
+            if !meta.is_file() {
+                return None;
+            }
+            Some((meta.modified().ok()?, meta.len(), e.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
+    if total <= budget {
+        return;
+    }
+    // Oldest first; stop before the last (newest) entry so the just-written file always survives.
+    files.sort_by_key(|(mtime, _, _)| *mtime);
+    for (_, len, path) in files.iter().take(files.len().saturating_sub(1)) {
+        if total <= budget {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            total = total.saturating_sub(*len);
+        }
+    }
+}
+
 /// `graph_export` — render the code-graph into a chosen text format.
 pub(super) fn run_graph_export(
     shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
+    basemind_dir: &std::path::Path,
     params: GraphExportParams,
     notice: Option<LifecycleNotice>,
     started: std::time::Instant,
@@ -175,7 +238,7 @@ pub(super) fn run_graph_export(
     let format = GraphFormat::parse(&params.format).ok_or_else(|| {
         McpError::invalid_params(
             format!(
-                "format must be node_link/dot/mermaid/graphml/cypher/html, got {:?}",
+                "format must be node_link/dot/mermaid/graphml/cypher/html/svg, got {:?}",
                 params.format
             ),
             None,
@@ -206,6 +269,12 @@ pub(super) fn run_graph_export(
     let truncated = view.truncated;
     let content = graph_view::render(&view, format);
 
+    let output_path = if params.write {
+        Some(write_export(basemind_dir, format, &content)?)
+    } else {
+        None
+    };
+
     json_result(&GraphExportResponse {
         format: format.as_str().to_string(),
         content,
@@ -213,7 +282,47 @@ pub(super) fn run_graph_export(
         edge_count,
         community_count,
         truncated,
+        output_path,
         notice,
         elapsed_us: elapsed_us(started),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prune_exports_evicts_down_to_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Five equal-size files (1000 bytes each, total 5000). With a 2500-byte budget the eviction
+        // count is deterministic regardless of mtime tie-breaking: 5000 → delete until ≤ 2500 leaves
+        // exactly two files (2000 bytes). The just-written (last) file is always retained.
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("graph-{i}.svg")), vec![b'x'; 1000]).expect("write");
+        }
+        prune_exports(dir.path(), 2500);
+        let remaining: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read_dir")
+            .filter_map(Result::ok)
+            .collect();
+        let total: u64 = remaining.iter().map(|e| e.metadata().unwrap().len()).sum();
+        assert!(
+            total <= 2500,
+            "pruned under budget, got {total} bytes across {} files",
+            remaining.len()
+        );
+        assert_eq!(remaining.len(), 2, "keeps exactly the files that fit the budget");
+    }
+
+    #[test]
+    fn prune_exports_is_a_noop_under_budget() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..3 {
+            std::fs::write(dir.path().join(format!("graph-{i}.svg")), vec![b'x'; 100]).expect("write");
+        }
+        prune_exports(dir.path(), 64 * 1024);
+        let count = std::fs::read_dir(dir.path()).expect("read_dir").count();
+        assert_eq!(count, 3, "nothing evicted when the directory is under budget");
+    }
 }
