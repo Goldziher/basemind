@@ -45,7 +45,14 @@ impl BasemindServer {
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.shared.cache.load_full();
-            run_communities(idx.as_ref(), &cache, params, self.state.lifecycle_notice(), __body)
+            run_communities(
+                &self.state.shared,
+                idx.as_ref(),
+                &cache,
+                params,
+                self.state.lifecycle_notice(),
+                __body,
+            )
         }
         .await;
         record_call(&self.state, "communities", &__params_json, __started, &__result);

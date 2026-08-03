@@ -46,7 +46,14 @@ impl BasemindServer {
             let idx = store.index_db.as_ref().cloned();
             drop(store);
             let cache = self.state.shared.cache.load_full();
-            run_graph_export(idx.as_ref(), &cache, params, self.state.lifecycle_notice(), __body)
+            run_graph_export(
+                &self.state.shared,
+                idx.as_ref(),
+                &cache,
+                params,
+                self.state.lifecycle_notice(),
+                __body,
+            )
         }
         .await;
         record_call(&self.state, "graph_export", &__params_json, __started, &__result);

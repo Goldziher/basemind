@@ -17,6 +17,7 @@ use super::graph_view::{self, GraphFormat, GraphView, GraphViewEdge, GraphViewNo
 use super::helpers::{elapsed_us, json_result};
 use super::helpers_community::label_for;
 use super::helpers_traverse::{describe, kinds_from};
+use super::shared_state::SharedReadStack;
 use super::traverse::Adjacency;
 use super::types::LifecycleNotice;
 use super::types_graphview::{GraphExportParams, GraphExportResponse};
@@ -70,7 +71,11 @@ fn select_nodes(partition: &community::Partition, n: usize, max_nodes: usize) ->
 /// Assemble the canonical graph-view payload from the shared code-graph. `max_nodes` keeps the most
 /// central nodes (id-ascending among the kept set for readable output) and the edges induced among
 /// them; `truncated` flags a capped or scan-truncated view.
+// The build inputs (graph handle + lane/confidence/algo/focus/cap) are all independent scalars a
+// single caller derives from params; bundling them into a struct would only add indirection.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_graph_view(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     kinds: EdgeKindSet,
@@ -79,7 +84,7 @@ pub(super) fn build_graph_view(
     focus: Option<String>,
     max_nodes: usize,
 ) -> Result<GraphView, McpError> {
-    let built = codegraph::build(
+    let built = shared.graph(
         idx,
         cache,
         &BuildOpts {
@@ -91,8 +96,9 @@ pub(super) fn build_graph_view(
     let scan_truncated = built.truncated;
     let edges: Vec<CodeEdge> = built
         .edges
-        .into_iter()
+        .iter()
         .filter(|e| e.provenance.confidence() >= min_conf)
+        .cloned()
         .collect();
     let graph = CodeGraph {
         edges,
@@ -155,6 +161,7 @@ pub(super) fn build_graph_view(
 
 /// `graph_export` — render the code-graph into a chosen text format.
 pub(super) fn run_graph_export(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     params: GraphExportParams,
@@ -183,7 +190,7 @@ pub(super) fn run_graph_export(
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let max_nodes = params.max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
 
-    let view = build_graph_view(idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
+    let view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, params.focus, max_nodes)?;
 
     let mut comms: AHashSet<u32> = AHashSet::new();
     for node in &view.nodes {

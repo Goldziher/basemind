@@ -15,6 +15,7 @@ use super::codegraph::{self, BuildOpts, CodeEdge, CodeGraph};
 use super::community::{self, CommunityAlgo};
 use super::helpers::{elapsed_us, json_result};
 use super::helpers_traverse::{describe, kinds_from};
+use super::shared_state::SharedReadStack;
 use super::traverse::Adjacency;
 use super::types::LifecycleNotice;
 use super::types_community::{CommunitiesParams, CommunitiesResponse, Community};
@@ -41,17 +42,17 @@ pub(super) fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> St
     // Dominant directory: most frequent parent dir over the *full* member list (not the capped
     // subset), so the label reflects the whole community; ties break to the smallest dir string
     // so it is reproducible.
-    let mut dir_counts: AHashMap<String, u32> = AHashMap::new();
+    let mut dir_counts: AHashMap<&str, u32> = AHashMap::new();
     for &id in ranked {
         if let Some(path) = adj.node(id).file().and_then(|p| p.as_str()) {
             let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
             if !dir.is_empty() {
-                *dir_counts.entry(dir.to_string()).or_insert(0) += 1;
+                *dir_counts.entry(dir).or_insert(0) += 1;
             }
         }
     }
-    let mut dirs: Vec<(String, u32)> = dir_counts.into_iter().collect();
-    dirs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut dirs: Vec<(&str, u32)> = dir_counts.into_iter().collect();
+    dirs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
     match dirs.into_iter().next() {
         Some((dir, _)) => format!("{dir} · {central_name}"),
         None => central_name,
@@ -60,6 +61,7 @@ pub(super) fn label_for(adj: &Adjacency, cache: &MapCache, ranked: &[u32]) -> St
 
 /// `communities` — cluster the code-graph into de-facto modules with deterministic labels.
 pub(super) fn run_communities(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     params: CommunitiesParams,
@@ -86,7 +88,7 @@ pub(super) fn run_communities(
         .unwrap_or(DEFAULT_MEMBERS_PER)
         .min(MAX_MEMBERS_PER) as usize;
 
-    let built = codegraph::build(
+    let built = shared.graph(
         idx,
         cache,
         &BuildOpts {
@@ -100,8 +102,9 @@ pub(super) fn run_communities(
     // the caller trusts.
     let edges: Vec<CodeEdge> = built
         .edges
-        .into_iter()
+        .iter()
         .filter(|e| e.provenance.confidence() >= min_conf)
+        .cloned()
         .collect();
     let edge_count = edges.len() as u32;
     let graph = CodeGraph {
