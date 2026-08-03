@@ -17,9 +17,11 @@
 //! falsely EXTRACTED. Import and inheritance edges are name-resolved by construction, so
 //! they are INFERRED (one candidate) or AMBIGUOUS (several) — never EXTRACTED to a node.
 
-use std::sync::{Arc, Mutex};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use ahash::{AHashMap, AHashSet};
+use lru::LruCache;
 use rmcp::ErrorData as McpError;
 
 use super::MapCache;
@@ -219,73 +221,54 @@ pub(crate) struct CodeGraph {
     pub(crate) truncated: bool,
 }
 
-/// Cache key for a built graph: the requested lanes, the focus prefix, and whether a live index was
-/// present (which determines the provenance tier of call edges, so `Some`/`None` builds differ).
-/// `min_confidence` is deliberately absent — it is a per-call post-build filter over the same graph.
-pub(crate) type GraphKey = (EdgeKindSet, Option<String>, bool);
+/// Cache key for a built graph. `fingerprint` is the content fingerprint of the [`MapCache`] the
+/// graph was built from — read from that same cache, so a key can never name a graph built from a
+/// different snapshot than it claims. The lanes and `focus` prefix select which relationships are
+/// built; `idx_present` records whether a live index proved call edges (`Some`/`None` changes the
+/// provenance tier). `min_confidence` is deliberately absent — it is a per-call post-build filter.
+pub(crate) type GraphKey = (u64, EdgeKindSet, Option<String>, bool);
 
-/// Hard cap on distinct graphs held at once. `focus` is caller-supplied, so the key space is
-/// unbounded in principle; the working set is tiny (a handful of lane/focus combos), so overflow
-/// clears the whole memo rather than running an LRU — simpler, and a rebuild on the next miss is cheap
-/// relative to the win of collapsing the common repeat-call case to an `Arc` clone.
+/// Capacity of the graph memo — distinct `(fingerprint, lanes, focus, idx-mode)` graphs held at once.
+/// `focus` is caller-supplied so the key space is unbounded in principle; an LRU bounds RAM while
+/// letting several fingerprints and lane sets coexist (e.g. across a rescan window) rather than
+/// thrashing a single slot. Small: the working set is a handful of lane/focus combos per snapshot.
 const GRAPH_MEMO_CAP: usize = 16;
 
-/// Generation-keyed memo of built [`CodeGraph`]s (ADR-0001..0005 shared build). Every graph tool
-/// rebuilds the whole-repo graph on each call; keying it on `cache_generation` — bumped on every
-/// `cache` swap, the only event that changes `build()`'s inputs (in-RAM `by_path` + the Fjall index,
-/// which advance together on a source change) — collapses repeat calls within one generation to a
-/// clone. The whole map is dropped when the generation advances, so a stale graph can never be served.
-#[derive(Default)]
-pub(crate) struct GraphMemo {
-    generation: u32,
-    entries: AHashMap<GraphKey, Arc<CodeGraph>>,
+/// The graph memo: an LRU of built [`CodeGraph`]s shared by every graph tool (ADR-0001..0005). Each
+/// entry is keyed by the content fingerprint of the cache it was built from, so a superseded graph is
+/// simply a key no current cache matches — it ages out by LRU rather than ever being served. Repeat
+/// calls against one snapshot collapse to an `Arc` clone.
+pub(crate) type GraphMemo = LruCache<GraphKey, Arc<CodeGraph>>;
+
+/// An empty graph memo at the shared capacity.
+pub(crate) fn new_graph_memo() -> GraphMemo {
+    LruCache::new(NonZeroUsize::new(GRAPH_MEMO_CAP).expect("GRAPH_MEMO_CAP > 0"))
 }
 
-impl GraphMemo {
-    /// Fetch the cached graph for `key`, resetting the memo first if `generation` moved past what it
-    /// holds. Returns `None` on a miss (including the reset case).
-    fn get(&mut self, generation: u32, key: &GraphKey) -> Option<Arc<CodeGraph>> {
-        self.sync_generation(generation);
-        self.entries.get(key).cloned()
-    }
-
-    /// Store `graph` under `key`, first resetting on a generation advance and clearing on overflow.
-    fn insert(&mut self, generation: u32, key: GraphKey, graph: Arc<CodeGraph>) {
-        self.sync_generation(generation);
-        if self.entries.len() >= GRAPH_MEMO_CAP {
-            self.entries.clear();
-        }
-        self.entries.insert(key, graph);
-    }
-
-    fn sync_generation(&mut self, generation: u32) {
-        if self.generation != generation {
-            self.entries.clear();
-            self.generation = generation;
-        }
-    }
-}
-
-/// Build the graph for `opts`, served from `memo` when a graph for the same `(kinds, focus, idx-mode)`
-/// was already built at the current `generation`. On a miss the build runs OUTSIDE the lock — it can
-/// take tens of ms on a large repo, so holding the mutex across it would stall every other graph tool;
-/// a rare concurrent double-build right after a generation bump is bounded and harmless (both produce
-/// the same deterministic graph). Callers pass the generation they captured alongside `cache`.
+/// Build the graph for `opts`, served from `memo` when a graph for the same
+/// `(fingerprint, lanes, focus, idx-mode)` was already built. The fingerprint is read from `cache`
+/// itself, so a hit is always a graph built from the exact snapshot the caller holds — no separate
+/// generation counter to fall out of step with it. On a miss the build runs OUTSIDE the lock: it can
+/// take tens of ms on a large repo, so holding the mutex across it would stall every other graph
+/// tool, and a rare concurrent double-build is bounded and harmless (both produce the same
+/// deterministic graph). A poisoned lock is recovered — a lost memo entry only costs one rebuild.
 pub(crate) fn build_memoized(
     memo: &Mutex<GraphMemo>,
-    generation: u32,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     opts: &BuildOpts,
 ) -> Result<Arc<CodeGraph>, McpError> {
-    let key: GraphKey = (opts.kinds, opts.focus.clone(), idx.is_some());
-    if let Some(hit) = memo.lock().expect("graph_memo mutex poisoned").get(generation, &key) {
+    // The key omits scan_cap; every consumer must pass the shared cap or a hit could return a graph
+    // truncated under a different bound.
+    debug_assert_eq!(opts.scan_cap, CODEGRAPH_SCAN_CAP);
+    let key: GraphKey = (cache.fingerprint, opts.kinds, opts.focus.clone(), idx.is_some());
+    if let Some(hit) = memo.lock().unwrap_or_else(PoisonError::into_inner).get(&key).cloned() {
         return Ok(hit);
     }
     let graph = Arc::new(build(idx, cache, opts)?);
     memo.lock()
-        .expect("graph_memo mutex poisoned")
-        .insert(generation, key, Arc::clone(&graph));
+        .unwrap_or_else(PoisonError::into_inner)
+        .put(key, Arc::clone(&graph));
     Ok(graph)
 }
 
@@ -476,7 +459,10 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             // Among functions starting at or before `call_byte` (the prefix `fns[..hi]`), the
             // innermost container is the one with the largest start byte that also still encloses
             // `call_byte`. Scanning that prefix right-to-left, the first `eb > call_byte` is exactly
-            // that max-start container — byte-identical to the old linear max-start scan.
+            // that max-start container — byte-identical to the old linear max-start scan. A call
+            // outside every function (before the first, or in a gap between siblings) matches nothing
+            // and falls to the file node; two functions sharing a start byte are interchangeable here
+            // since a `Symbol` node's identity is its start byte alone.
             let hi = fns.partition_point(|&(sb, _)| sb <= call_byte);
             let mut best: Option<u32> = None;
             for &(sb, eb) in fns[..hi].iter().rev() {
@@ -836,6 +822,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn call_outside_every_function_attributes_to_the_file() {
+        // The module-scope `helper()` call is enclosed by no function (it precedes `outer`), so it
+        // falls to the file node; the call inside `outer` attributes to `outer`. Guards the
+        // `enclosing` fallback path the partition-point rewrite must preserve.
+        let (_d, store, cache) = scan_repo(&[(
+            "m.py",
+            "def helper():\n    pass\n\nhelper()\n\ndef outer():\n    helper()\n",
+        )]);
+        let g = built(&store, &cache, EdgeKindSet::all());
+        let calls: Vec<&CodeEdge> = g
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls && name_of("m.py", &e.to, &cache).as_deref() == Some("helper"))
+            .collect();
+        assert!(
+            calls.iter().any(|e| matches!(e.from, NodeKey::File { .. })),
+            "the module-scope call must attribute to the file node, not a function"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|e| name_of("m.py", &e.from, &cache).as_deref() == Some("outer")),
+            "the in-function call must attribute to outer"
+        );
+    }
+
     /// Cross-file/intra-file resolved call proof (EXTRACTED) is only available when a
     /// precise-resolution feature is compiled in. Under default features call edges degrade
     /// down to INFERRED — which the other tests already cover — so this proof is gated.
@@ -878,21 +891,21 @@ mod tests {
         BuildOpts {
             kinds,
             focus: None,
-            scan_cap: 1_000_000,
+            scan_cap: CODEGRAPH_SCAN_CAP,
         }
     }
 
     #[test]
-    fn memo_serves_the_same_build_within_a_generation() {
+    fn memo_serves_the_same_build_for_one_snapshot() {
         let (_dir, store, cache) = provenance_fixture();
         let idx = store.index_db.as_ref();
-        let memo = Mutex::new(GraphMemo::default());
+        let memo = Mutex::new(new_graph_memo());
 
-        let first = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
-        let second = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("second build");
+        let first = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
+        let second = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("second build");
         assert!(
             Arc::ptr_eq(&first, &second),
-            "same key + generation must return the cached Arc"
+            "same cache + key must return the cached Arc"
         );
 
         // The cached graph matches a fresh, un-memoized build.
@@ -905,33 +918,49 @@ mod tests {
     }
 
     #[test]
-    fn memo_keys_on_lanes_and_invalidates_on_generation() {
+    fn memo_keys_on_lanes_and_index_mode() {
         let (_dir, store, cache) = provenance_fixture();
         let idx = store.index_db.as_ref();
-        let memo = Mutex::new(GraphMemo::default());
+        let memo = Mutex::new(new_graph_memo());
 
         let calls_only = EdgeKindSet {
             calls: true,
             ..EdgeKindSet::none()
         };
-        let all = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
-        let calls = build_memoized(&memo, 1, idx, &cache, &opts(calls_only)).expect("calls lane");
-        assert!(
-            !Arc::ptr_eq(&all, &calls),
-            "distinct lane sets are distinct cache entries"
-        );
-        // Both keys coexist: re-fetching each returns its own cached Arc.
-        let all_again = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes again");
+        let all = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
+        let calls = build_memoized(&memo, idx, &cache, &opts(calls_only)).expect("calls lane");
+        assert!(!Arc::ptr_eq(&all, &calls), "distinct lane sets are distinct cache entries");
+
+        // idx presence is part of the key: the same lanes without a live index build a distinct entry
+        // (call edges degrade to a different provenance tier).
+        let no_idx = build_memoized(&memo, None, &cache, &opts(EdgeKindSet::all())).expect("no-index build");
+        assert!(!Arc::ptr_eq(&all, &no_idx), "idx=Some and idx=None are distinct cache entries");
+
+        // Every key coexists in the LRU (cap 16 » 3): re-fetching returns each one's own cached Arc.
+        let all_again = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes again");
         assert!(
             Arc::ptr_eq(&all, &all_again),
-            "the all-lanes entry survives an intervening distinct-key build"
+            "the all-lanes entry survives intervening distinct-key builds"
         );
+    }
 
-        // A generation bump drops every entry, so the next build is fresh.
-        let after_bump = build_memoized(&memo, 2, idx, &cache, &opts(EdgeKindSet::all())).expect("post-bump build");
-        assert!(
-            !Arc::ptr_eq(&all, &after_bump),
-            "a generation advance must invalidate the memo"
-        );
+    #[test]
+    fn memo_isolates_snapshots_by_fingerprint() {
+        // Two repos with different content have different cache fingerprints, so a build over one
+        // never serves the other's graph, and each keeps its own entry (proving the fingerprint is
+        // part of the key — a stale snapshot cannot masquerade as a fresh one).
+        let (_da, store_a, cache_a) = scan_repo(&[("m.rs", "pub fn a() {}\npub fn caller() { a(); }\n")]);
+        let (_db, store_b, cache_b) =
+            scan_repo(&[("m.rs", "pub fn a() {}\npub fn b() {}\npub fn caller() { a(); b(); }\n")]);
+        assert_ne!(cache_a.fingerprint, cache_b.fingerprint, "different content must fingerprint differently");
+        let memo = Mutex::new(new_graph_memo());
+
+        let ga = build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a");
+        let gb = build_memoized(&memo, store_b.index_db.as_ref(), &cache_b, &opts(EdgeKindSet::all())).expect("b");
+        assert!(!Arc::ptr_eq(&ga, &gb), "distinct fingerprints are distinct entries");
+
+        let ga_again =
+            build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a again");
+        assert!(Arc::ptr_eq(&ga, &ga_again), "snapshot A still hits its own entry after B was inserted");
     }
 }

@@ -246,7 +246,7 @@ impl SharedReadStack {
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
-            graph_memo: Mutex::new(super::codegraph::GraphMemo::default()),
+            graph_memo: Mutex::new(super::codegraph::new_graph_memo()),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
@@ -273,17 +273,16 @@ impl SharedReadStack {
     }
 
     /// Build the shared code-graph for `opts`, served from [`graph_memo`](Self::graph_memo) when an
-    /// identical graph was already built at the current cache generation. This is the single entry
-    /// point every graph tool uses instead of calling [`super::codegraph::build`] directly, so repeat
-    /// calls within one index generation collapse to an `Arc` clone. The generation is captured here,
-    /// next to the same `cache` snapshot the caller passes in.
+    /// identical graph was already built for the same cache snapshot. This is the single entry point
+    /// every graph tool uses instead of calling [`super::codegraph::build`] directly, so repeat calls
+    /// against one snapshot collapse to an `Arc` clone. The memo keys on the cache's own content
+    /// fingerprint, so it invalidates itself the moment the caller's `cache` differs.
     pub(crate) fn graph(
         &self,
         idx: Option<&crate::index::IndexDb>,
         cache: &MapCache,
         opts: &super::codegraph::BuildOpts,
     ) -> Result<Arc<super::codegraph::CodeGraph>, rmcp::ErrorData> {
-        let generation = self.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
-        super::codegraph::build_memoized(&self.graph_memo, generation, idx, cache, opts)
+        super::codegraph::build_memoized(&self.graph_memo, idx, cache, opts)
     }
 }
