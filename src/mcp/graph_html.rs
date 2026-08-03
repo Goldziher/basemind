@@ -22,7 +22,10 @@ pub(super) fn to_html(view: &GraphView) -> String {
     let json = to_node_link(view);
     // Neutralize the only sequences that could break out of the <script type="application/json">
     // block. These characters only ever appear inside JSON string values (names/paths/labels), so
-    // escaping them keeps the document valid and JSON.parse restores the originals.
+    // escaping them keeps the document valid and JSON.parse restores the originals. Escaping is
+    // character-level (not substring), so it holds for every case/whitespace/comment variant of
+    // `</script>`. The replacement order is safe: no output (`<`/`>`/`&`) contains a
+    // not-yet-processed search char.
     let safe = json
         .replace('<', "\\u003c")
         .replace('>', "\\u003e")
@@ -37,6 +40,7 @@ const TEMPLATE: &str = r####"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
 <title>basemind graph</title>
 <style>
   :root { color-scheme: dark; }
@@ -126,10 +130,16 @@ const TEMPLATE: &str = r####"<!doctype html>
 
   function matches(n) { return query && (n.label || "").toLowerCase().indexOf(query) >= 0; }
 
-  function draw() {
+  // Resize reallocates the backing store (which resets the transform); draw() only paints, so a
+  // pan/zoom/search redraw never reallocates the canvas.
+  function resize() {
     var dpr = window.devicePixelRatio || 1;
     cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+
+  function draw() {
     ctx.clearRect(0, 0, innerWidth, innerHeight);
     ctx.lineWidth = 1;
     links.forEach(function (l) {
@@ -195,8 +205,8 @@ const TEMPLATE: &str = r####"<!doctype html>
   document.getElementById("search").addEventListener("input", function (e) {
     query = e.target.value.trim().toLowerCase(); draw();
   });
-  window.addEventListener("resize", draw);
-  fit(); draw();
+  window.addEventListener("resize", resize);
+  fit(); resize();
 })();
 </script>
 </body>
@@ -210,10 +220,14 @@ mod tests {
     use crate::path::RelPath;
 
     fn view() -> GraphView {
+        view_named("engine</script><script>alert(1)")
+    }
+
+    fn view_named(name: &str) -> GraphView {
         GraphView {
             nodes: vec![GraphViewNode {
                 id: 0,
-                name: "engine</script><script>alert(1)".into(), // breakout attempt
+                name: name.into(),
                 kind: "function".into(),
                 path: Some(RelPath::from("src/core.rs")),
                 start_row: Some(1),
@@ -249,17 +263,46 @@ mod tests {
         assert!(!out.contains(DATA_PLACEHOLDER), "data placeholder spliced");
     }
 
+    /// Extract the text content of the `<script type="application/json">` data block.
+    fn data_block(html: &str) -> &str {
+        let marker = "type=\"application/json\">";
+        let start = html.find(marker).expect("data script") + marker.len();
+        let rest = &html[start..];
+        &rest[..rest.find("</script>").expect("close tag")]
+    }
+
     #[test]
     fn embedded_data_cannot_break_out_of_the_script_block() {
-        let out = to_html(&view());
-        // The literal `</script>` from the hostile name must NOT appear inside the data block; it is
-        // escaped to </script>, so the data <script> stays open until its real close tag.
-        // Exactly two real </script> tags exist (the data block's and the engine's).
-        assert_eq!(out.matches("</script>").count(), 2, "no injected closing tag");
-        assert!(
-            out.contains("\\u003c/script\\u003e") || out.contains("\\u003cscript"),
-            "name was escaped"
-        );
+        // The defense is character-level (escape every `<`/`>`/`&`), so it must hold across case,
+        // whitespace, comment, and CDATA-style close-tag variants — not just the exact lowercase form.
+        for hostile in [
+            "engine</script><script>alert(1)",
+            "x</SCRIPT ><script>1",
+            "y</script\t>z",
+            "a<!--</script>--><img>",
+            "b]]></script>",
+        ] {
+            let out = to_html(&view_named(hostile));
+            // Exactly two real </script> tags: the data block's and the engine's — none injected.
+            assert_eq!(
+                out.matches("</script>").count(),
+                2,
+                "injected close tag for {hostile:?}"
+            );
+            let block = data_block(&out);
+            // No raw angle bracket survives in the data span for the HTML tokenizer to act on.
+            assert!(
+                !block.contains('<') && !block.contains('>'),
+                "raw angle bracket in data for {hostile:?}: {block}"
+            );
+            // ...and the block is still valid JSON that restores the original string exactly.
+            let doc: serde_json::Value = serde_json::from_str(block).expect("data block is valid JSON");
+            assert_eq!(
+                doc["nodes"][0]["label"],
+                serde_json::json!(hostile),
+                "round-trip {hostile:?}"
+            );
+        }
     }
 
     #[test]

@@ -7,9 +7,10 @@
 //!
 //! The renderers are **pure and deterministic** (they iterate the view in id order, so the same
 //! view always yields byte-identical output — snapshot-testable) and **offline** (plain strings, no
-//! assets, no network). This pass ships the machine/text formats; SVG and the self-contained
-//! interactive HTML page are deferred to the UI ADRs (0006/0007). The view builder that assembles a
-//! `GraphView` from the shared code-graph lives in `helpers_graphview` (it needs the L1 cache).
+//! assets, no network). This ships the machine/text formats plus the self-contained interactive
+//! HTML page (see `graph_html` for the [`GraphFormat::Html`] renderer); a static SVG picture is the
+//! one format still deferred. The view builder that assembles a `GraphView` from the shared
+//! code-graph lives in `helpers_graphview` (it needs the L1 cache).
 
 use std::fmt::Write as _;
 
@@ -149,7 +150,10 @@ pub(super) fn to_node_link(view: &GraphView) -> String {
         "nodes": nodes,
         "links": links,
     });
-    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "graph-view node-link serialization failed; emitting empty graph");
+        "{}".to_string()
+    })
 }
 
 /// Escape a string for a DOT double-quoted id/label: backslash and double-quote, and collapse raw
@@ -385,6 +389,8 @@ mod tests {
         assert_eq!(GraphFormat::parse("mermaid"), Some(GraphFormat::Mermaid));
         assert_eq!(GraphFormat::parse("graphml"), Some(GraphFormat::GraphMl));
         assert_eq!(GraphFormat::parse("cypher"), Some(GraphFormat::Cypher));
+        assert_eq!(GraphFormat::parse("html"), Some(GraphFormat::Html));
+        assert_eq!(GraphFormat::parse("interactive"), Some(GraphFormat::Html));
         assert_eq!(GraphFormat::parse("bogus"), None);
     }
 
@@ -465,6 +471,7 @@ mod tests {
             GraphFormat::Mermaid,
             GraphFormat::GraphMl,
             GraphFormat::Cypher,
+            GraphFormat::Html,
         ] {
             assert_eq!(render(&v, f), render(&v, f), "{f:?}");
         }

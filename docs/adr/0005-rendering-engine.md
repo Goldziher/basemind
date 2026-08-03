@@ -52,11 +52,12 @@ path** shared by the headless tools and by the desktop UI (ADR-0006).
   straight off disk. This is the shared artifact the agent-launchable display (ADR-0007) opens.
   **Still deferred:** the static SVG picture, writing exports to the machine-global cache (today
   `graph_export` returns the rendered content inline), and the Tauri desktop shell (ADR-0006).
-- Trade-off: vendoring interactive JS grows the build. The library choice is constrained on three axes
-  at once — offline/self-contained, small enough to vendor, and capable enough to render thousands of
-  nodes with live search and filtering — and these pull against each other. The specific library is a
-  conscious pick made at implementation time, backstopped by the community meta-graph fallback
-  (ADR-0004) when a graph is too large to draw node-for-node.
+- Trade-off resolved by **not vendoring a third-party library at all**: the interactive page ships a
+  hand-rolled, zero-dependency vanilla-JS canvas engine instead. This keeps the artifact fully
+  self-contained and sidesteps the offline-vs-size-vs-capability tension a vendored library would have
+  forced, at the cost of a simpler force layout than a mature graph library. The `max_nodes` cap
+  bounds the client-side O(n²) layout; the community meta-graph fallback (ADR-0004) remains the answer
+  for graphs too large to draw node-for-node.
 
 ## Alternatives considered
 

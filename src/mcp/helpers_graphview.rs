@@ -162,7 +162,7 @@ pub(super) fn run_graph_export(
     let format = GraphFormat::parse(&params.format).ok_or_else(|| {
         McpError::invalid_params(
             format!(
-                "format must be node_link/dot/mermaid/graphml/cypher, got {:?}",
+                "format must be node_link/dot/mermaid/graphml/cypher/html, got {:?}",
                 params.format
             ),
             None,
