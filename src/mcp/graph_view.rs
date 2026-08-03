@@ -62,6 +62,8 @@ pub(crate) enum GraphFormat {
     GraphMl,
     /// Cypher `CREATE` statements for Neo4j-style import.
     Cypher,
+    /// A self-contained, offline interactive HTML page (zero dependencies).
+    Html,
 }
 
 impl GraphFormat {
@@ -73,6 +75,7 @@ impl GraphFormat {
             "mermaid" => Some(GraphFormat::Mermaid),
             "graphml" => Some(GraphFormat::GraphMl),
             "cypher" => Some(GraphFormat::Cypher),
+            "html" | "interactive" => Some(GraphFormat::Html),
             _ => None,
         }
     }
@@ -84,6 +87,7 @@ impl GraphFormat {
             GraphFormat::Mermaid => "mermaid",
             GraphFormat::GraphMl => "graphml",
             GraphFormat::Cypher => "cypher",
+            GraphFormat::Html => "html",
         }
     }
 }
@@ -96,6 +100,7 @@ pub(crate) fn render(view: &GraphView, format: GraphFormat) -> String {
         GraphFormat::Mermaid => to_mermaid(view),
         GraphFormat::GraphMl => to_graphml(view),
         GraphFormat::Cypher => to_cypher(view),
+        GraphFormat::Html => super::graph_html::to_html(view),
     }
 }
 
@@ -105,7 +110,7 @@ fn path_str(node: &GraphViewNode) -> Option<&str> {
 
 /// Node-link JSON — a superset of the NetworkX/D3 shape so it interoperates with existing graph
 /// consumers. Built via `serde_json` so escaping is handled correctly.
-fn to_node_link(view: &GraphView) -> String {
+pub(super) fn to_node_link(view: &GraphView) -> String {
     let nodes: Vec<serde_json::Value> = view
         .nodes
         .iter()

@@ -30,7 +30,7 @@ priority: high
 | `path` | Confidence-weighted shortest path between two symbols (integer Dijkstra). Containment excluded by default (`include_contains` to add). Returns ordered nodes/edges + total `cost`. |
 | `subgraph` | Neighborhood around a symbol cut to the `max_nodes` most central nodes (weighted degree). Roots always kept. Edges carry provenance/confidence. |
 | `communities` | Cluster the graph into de-facto modules. `algorithm` (label_propagation default / louvain opt-in), deterministic LLM-free labels (dominant path prefix + most central member). Largest first, capped. |
-| `graph_export` | Render the graph as text over one canonical payload: `format` node_link (default) / dot / mermaid / graphml / cypher. `focus`/`edges`/`algorithm`/`min_confidence`/`max_nodes`. Deterministic, offline (no CDN). SVG + interactive HTML deferred to the UI ADRs. |
+| `graph_export` | Render the graph over one canonical payload: `format` node_link (default) / dot / mermaid / graphml / cypher / html (self-contained offline interactive page, zero deps). `focus`/`edges`/`algorithm`/`min_confidence`/`max_nodes`. Deterministic, offline (no CDN). Static SVG + Tauri desktop app deferred to ADR-0006. |
 
 ### Git tools (require `basemind serve` inside a git repo)
 

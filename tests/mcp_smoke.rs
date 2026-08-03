@@ -4485,6 +4485,7 @@ async fn graph_export_renders_every_format() {
         ("mermaid", "graph LR"),
         ("graphml", "<graphml"),
         ("cypher", "CREATE ("),
+        ("html", "<!doctype html>"),
     ] {
         let out = service
             .call_tool(call_params("graph_export", json!({"format": fmt})))

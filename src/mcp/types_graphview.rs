@@ -21,7 +21,7 @@ fn default_graphview_algorithm() -> String {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct GraphExportParams {
     /// Output format: `"node_link"` (default; node-link JSON), `"dot"` (Graphviz), `"mermaid"`,
-    /// `"graphml"`, or `"cypher"`.
+    /// `"graphml"`, `"cypher"`, or `"html"` (a self-contained, offline interactive page).
     #[serde(default = "default_graphview_format")]
     pub format: String,
     /// Repo-relative path prefix to scope the graph; omit for the whole repo.

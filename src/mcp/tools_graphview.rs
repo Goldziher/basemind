@@ -17,9 +17,11 @@ impl BasemindServer {
     /// Render/export the typed code-graph into a text format.
     #[tool(
         output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_graphview::GraphExportResponse>()",
-        description = "Export the unified code-graph as text in a chosen `format`: \"node_link\" \
+        description = "Export the unified code-graph in a chosen `format`: \"node_link\" \
                        (default; node-link JSON, the common interchange shape), \"dot\" (Graphviz), \
-                       \"mermaid\", \"graphml\", or \"cypher\". One canonical payload feeds every \
+                       \"mermaid\", \"graphml\", \"cypher\", or \"html\" — a single self-contained, \
+                       offline interactive page (pan/zoom/search/community legend, zero \
+                       dependencies, no CDN). One canonical payload feeds every \
                        renderer — nodes carry identity/label/location/kind + community + \
                        centrality (ADR-0004), edges carry kind + provenance/confidence/weight \
                        (ADR-0002). `focus` scopes to a path prefix; `edges` picks the lanes \

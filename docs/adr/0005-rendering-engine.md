@@ -45,11 +45,13 @@ path** shared by the headless tools and by the desktop UI (ADR-0006).
   no separate rendering stack for the GUI.
 - Deterministic outputs are snapshot-testable; interop is a diff against the standard node-link shape.
 - Shipped as the `graph_export` MCP tool over the canonical `GraphView` payload: the **text/machine
-  renderers** (node-link JSON, DOT, Mermaid, GraphML, Cypher) — pure, deterministic, offline, no new
-  dependencies. **Deferred to the UI ADRs (0006/0007):** the SVG picture and the self-contained
-  interactive HTML page (the latter requires the vendored-JS library pick, which belongs with the
-  desktop UI), plus writing exports to the machine-global cache (today `graph_export` returns the
-  rendered content inline).
+  renderers** (node-link JSON, DOT, Mermaid, GraphML, Cypher) plus the **self-contained, offline
+  interactive HTML page** (`format: "html"`) — all pure, deterministic, and offline. The interactive
+  page carries a **zero-dependency** vanilla-JS canvas engine (pan/zoom/search/community legend)
+  inlined into a single document; no CDN and no vendored third-party library, so the file works
+  straight off disk. This is the shared artifact the agent-launchable display (ADR-0007) opens.
+  **Still deferred:** the static SVG picture, writing exports to the machine-global cache (today
+  `graph_export` returns the rendered content inline), and the Tauri desktop shell (ADR-0006).
 - Trade-off: vendoring interactive JS grows the build. The library choice is constrained on three axes
   at once — offline/self-contained, small enough to vendor, and capable enough to render thousands of
   nodes with live search and filtering — and these pull against each other. The specific library is a
