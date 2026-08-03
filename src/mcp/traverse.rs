@@ -133,6 +133,23 @@ impl Adjacency {
         &self.nodes[id as usize]
     }
 
+    /// Number of interned nodes.
+    pub(crate) fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Undirected incident edges of `id` for community detection: `(other_id, weight)` over both
+    /// directions, unfiltered by kind/confidence. Weight folds provenance confidence in
+    /// (`edge.weight * round(confidence * 10)`) so a proven edge pulls harder than an ambiguous
+    /// one. Parallel edges are yielded separately; callers that need per-neighbor totals sum them.
+    pub(crate) fn undirected_weighted(&self, id: u32) -> impl Iterator<Item = (u32, u64)> + '_ {
+        let weigh = |e: &AdjEdge| e.weight as u64 * (e.provenance.confidence() * 10.0) as u64;
+        self.out[id as usize]
+            .iter()
+            .map(move |e| (e.other, weigh(e)))
+            .chain(self.inc[id as usize].iter().map(move |e| (e.other, weigh(e))))
+    }
+
     /// Incident edges of `id` in traversal direction `dir`, filtered to the selected `kinds`
     /// and to edges whose confidence is at least `min_conf`. Each yielded tuple is the
     /// *directed* edge as it appears in the graph — `(from_id, to_id, AdjEdge)` — so callers

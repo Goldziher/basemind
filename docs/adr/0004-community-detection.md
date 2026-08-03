@@ -1,6 +1,6 @@
 # ADR-0004: Community detection and deterministic labels
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0005 (rendering engine),
@@ -45,6 +45,11 @@ harness.
 - Determinism holds across runs — the same community assignments and labels every time — which is what
   makes the UI stable and the outputs snapshot-testable.
 - One more bounded pass over the graph; guarded against the performance baselines.
+- Shipped as the `communities` MCP tool over the shared graph, with label propagation as the default
+  and **Louvain shipped as its first (local-moving) level** — a deterministic modularity optimiser.
+  Multi-level Louvain aggregation is deferred; the local-moving level already improves on label
+  propagation on bridged graphs. Wiring community ids into `neighbors`/`subgraph` responses and the
+  renderer (ADR-0005) is left to those consumers.
 
 ## Alternatives considered
 

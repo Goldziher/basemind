@@ -38,7 +38,7 @@ const PATH_RELAX_CAP: usize = 200_000;
 /// than silently degrading to calls-only). Unlike `architecture_map`'s parser, `"contains"` is a
 /// selectable lane here; `include_contains` forces the containment lane on regardless (for
 /// `path`'s `include_contains`). `"all"` is calls+imports+inherits — containment stays opt-in.
-fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKindSet, McpError> {
+pub(super) fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKindSet, McpError> {
     let (calls, imports, inherits, contains) = match edges {
         "all" => (true, true, true, false),
         "calls" => (true, false, false, false),
@@ -85,7 +85,7 @@ fn resolve_roots(cache: &MapCache, name: &str, path_filter: Option<&RelPath>) ->
 
 /// Describe a node key for the response — resolving a `Symbol` back to its name/kind/location
 /// via the cache, a `File` to its basename, and a virtual `Name` to an `external` node.
-fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
+pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
     match key {
         NodeKey::Symbol { path, start_byte } => {
             let found = cache

@@ -4331,3 +4331,79 @@ async fn traversal_tools_walk_the_shared_graph() {
 
     let _ = service.cancel().await;
 }
+
+/// ADR-0004: the `communities` tool clusters the shared code-graph into de-facto modules with
+/// deterministic, LLM-free labels.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn communities_cluster_the_shared_graph() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    // Two clusters: a math module (add/mul/compute) and a text module (upper/lower/render), each
+    // internally wired, joined by a single cross-cluster call.
+    std::fs::write(
+        root.join("math.rs"),
+        "pub fn add() {}\npub fn mul() { add(); }\npub fn compute() { add(); mul(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("text.rs"),
+        "pub fn upper() {}\npub fn lower() { upper(); }\npub fn render() { upper(); lower(); }\n",
+    )
+    .unwrap();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let communities = service
+        .call_tool(call_params(
+            "communities",
+            json!({"algorithm": "label_propagation", "edges": "all"}),
+        ))
+        .await
+        .expect("communities");
+    assert_structured_matches_text(&communities);
+    let body = decode_text(&communities);
+    assert_eq!(
+        body.get("algorithm").and_then(Value::as_str),
+        Some("label_propagation"),
+        "algorithm is echoed: {body}"
+    );
+    let list = body.get("communities").and_then(Value::as_array).expect("communities");
+    assert!(!list.is_empty(), "at least one community detected: {body}");
+    for c in list {
+        assert!(
+            c.get("label").and_then(Value::as_str).is_some_and(|s| !s.is_empty()),
+            "every community has a non-empty label: {c}"
+        );
+        let members = c.get("members").and_then(Value::as_array).expect("members");
+        assert!(!members.is_empty(), "community has members: {c}");
+        assert!(
+            members.iter().all(|m| m.get("centrality").is_some()),
+            "every member carries a centrality score: {c}"
+        );
+    }
+
+    // Louvain is the opt-in higher-quality algorithm; it must also run and echo its name.
+    let louvain = service
+        .call_tool(call_params("communities", json!({"algorithm": "louvain"})))
+        .await
+        .expect("communities louvain");
+    let body = decode_text(&louvain);
+    assert_eq!(
+        body.get("algorithm").and_then(Value::as_str),
+        Some("louvain"),
+        "louvain algorithm echoed: {body}"
+    );
+
+    // An invalid algorithm is rejected, not silently defaulted.
+    let bogus = service
+        .call_tool(call_params("communities", json!({"algorithm": "kmeans"})))
+        .await;
+    assert!(bogus.is_err(), "an invalid algorithm must be an error");
+
+    let _ = service.cancel().await;
+}

@@ -29,6 +29,7 @@ priority: high
 | `neighbors` | N-hop neighborhood around a symbol. `direction` (out/in/both), `edges` lanes (all/calls/imports/inherits/both/contains), `depth`, `min_confidence`, `max_nodes`. Two-phase: discover nodes, then induced edges among them. |
 | `path` | Confidence-weighted shortest path between two symbols (integer Dijkstra). Containment excluded by default (`include_contains` to add). Returns ordered nodes/edges + total `cost`. |
 | `subgraph` | Neighborhood around a symbol cut to the `max_nodes` most central nodes (weighted degree). Roots always kept. Edges carry provenance/confidence. |
+| `communities` | Cluster the graph into de-facto modules. `algorithm` (label_propagation default / louvain opt-in), deterministic LLM-free labels (dominant path prefix + most central member). Largest first, capped. |
 
 ### Git tools (require `basemind serve` inside a git repo)
 

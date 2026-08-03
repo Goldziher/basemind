@@ -431,6 +431,14 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    call(
+        svc,
+        &mut records,
+        "communities",
+        json!({ "algorithm": "label_propagation", "edges": "all", "max_communities": 50 }),
+    )
+    .await;
+
     if let Some(sample) = sample {
         call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
 
@@ -753,6 +761,16 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: neighbors(\"spawn\", in, depth=2) returned {neighbor_nodes} nodes (expected ≥ 2)"
                 ));
             }
+            let louvain_communities = repo_record
+                .canaries
+                .get("louvain_communities")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if louvain_communities < 2 {
+                failures.push(format!(
+                    "tokio canary: communities(louvain) returned {louvain_communities} communities (expected ≥ 2)"
+                ));
+            }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -1031,6 +1049,17 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("neighbors_spawn_nodes".into(), json!(nodes));
+            }
+            if let Ok(out) = svc
+                .call_tool(call_params(
+                    "communities",
+                    &json!({ "algorithm": "louvain", "edges": "all", "max_communities": 200 }),
+                ))
+                .await
+            {
+                let body = decode_text(&out);
+                let num = body.get("num_communities").and_then(Value::as_u64).unwrap_or(0);
+                record.canaries.insert("louvain_communities".into(), json!(num));
             }
             if let Ok(out) = svc
                 .call_tool(call_params(

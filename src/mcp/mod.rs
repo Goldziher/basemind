@@ -12,6 +12,7 @@ pub mod agent_api;
 mod background;
 mod budget;
 mod codegraph;
+mod community;
 mod completions;
 pub(crate) mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -25,6 +26,7 @@ mod helpers_calls_scan;
 mod helpers_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod helpers_comms;
+mod helpers_community;
 mod helpers_compress;
 #[cfg(feature = "documents")]
 mod helpers_documents;
@@ -78,6 +80,7 @@ mod tools_archmap;
 mod tools_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
+mod tools_community;
 mod tools_compress;
 mod tools_git;
 mod tools_governance;
@@ -97,6 +100,7 @@ mod types_archmap;
 mod types_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod types_comms;
+mod types_community;
 mod types_compress;
 mod types_documents;
 mod types_git;
@@ -408,6 +412,7 @@ impl BasemindServer {
         let mut router = Self::tool_router_core()
             + Self::tool_router_archmap()
             + Self::tool_router_traverse()
+            + Self::tool_router_community()
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()
