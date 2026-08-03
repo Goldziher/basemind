@@ -11,7 +11,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::MapCache;
-use super::codegraph::{self, BuildOpts, CodeEdge, CodeGraph, EdgeKindSet};
+use super::codegraph::{self, BuildOpts, CodeEdge, EdgeKindSet};
 use super::community::{self, CommunityAlgo};
 use super::graph_view::{self, GraphFormat, GraphView, GraphViewEdge, GraphViewNode};
 use super::helpers::{elapsed_us, json_result};
@@ -94,17 +94,21 @@ pub(super) fn build_graph_view(
         },
     )?;
     let scan_truncated = built.truncated;
-    let edges: Vec<CodeEdge> = built
-        .edges
-        .iter()
-        .filter(|e| e.provenance.confidence() >= min_conf)
-        .cloned()
-        .collect();
-    let graph = CodeGraph {
-        edges,
-        truncated: scan_truncated,
+    // Only materialize a filtered edge set when a confidence floor is set; otherwise borrow the
+    // memoized graph's edges directly so a cache hit stays a pure `Arc` clone.
+    let filtered: Vec<CodeEdge>;
+    let edges: &[CodeEdge] = if min_conf > 0.0 {
+        filtered = built
+            .edges
+            .iter()
+            .filter(|e| e.provenance.confidence() >= min_conf)
+            .cloned()
+            .collect();
+        &filtered
+    } else {
+        &built.edges
     };
-    let adj = Adjacency::build(&graph);
+    let adj = Adjacency::build_from_edges(edges);
     // Community detection runs over the full graph before the `max_nodes` cut below (intentional):
     // dominant-cluster labels must reflect the whole partition, not an arbitrary pre-truncated slice.
     let partition = community::detect(&adj, algo, GRAPHVIEW_COMMUNITY_ITERS);
@@ -136,7 +140,7 @@ pub(super) fn build_graph_view(
         .collect();
 
     let mut view_edges: Vec<GraphViewEdge> = Vec::new();
-    for e in &graph.edges {
+    for e in edges {
         let from = adj.id(&e.from).and_then(|i| remap.get(&i).copied());
         let to = adj.id(&e.to).and_then(|i| remap.get(&i).copied());
         let (Some(from), Some(to)) = (from, to) else {

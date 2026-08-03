@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use ahash::{AHashMap, AHashSet};
 
-use super::codegraph::{CodeGraph, EdgeKind, EdgeKindSet, NodeKey, Provenance};
+use super::codegraph::{CodeEdge, CodeGraph, EdgeKind, EdgeKindSet, NodeKey, Provenance};
 
 /// Traversal direction over the directed graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,13 +86,20 @@ impl Adjacency {
     /// Iteration follows `graph.edges`, which `codegraph::build` already sorts, so the
     /// resulting order is deterministic.
     pub(crate) fn build(graph: &CodeGraph) -> Self {
+        Self::build_from_edges(&graph.edges)
+    }
+
+    /// Build the adjacency directly from an edge slice. Lets a caller that applies a per-call
+    /// confidence filter feed the memoized graph's edges by reference — borrowing the whole set
+    /// when no filter is active — instead of cloning them into a throwaway [`CodeGraph`].
+    pub(crate) fn build_from_edges(edges: &[CodeEdge]) -> Self {
         let mut adj = Adjacency {
             nodes: Vec::new(),
             index_of: AHashMap::new(),
             out: Vec::new(),
             inc: Vec::new(),
         };
-        for e in &graph.edges {
+        for e in edges {
             let from = adj.intern(&e.from);
             let to = adj.intern(&e.to);
             adj.out[from as usize].push(AdjEdge {
@@ -430,7 +437,6 @@ pub(crate) fn subgraph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::codegraph::{CodeEdge, CodeGraph};
 
     fn n(name: &str) -> NodeKey {
         NodeKey::Name(name.to_string())

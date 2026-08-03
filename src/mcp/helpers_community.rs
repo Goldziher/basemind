@@ -11,7 +11,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::CallToolResult;
 
 use super::MapCache;
-use super::codegraph::{self, BuildOpts, CodeEdge, CodeGraph};
+use super::codegraph::{self, BuildOpts, CodeEdge};
 use super::community::{self, CommunityAlgo};
 use super::helpers::{elapsed_us, json_result};
 use super::helpers_traverse::{describe, kinds_from};
@@ -98,20 +98,21 @@ pub(super) fn run_communities(
         },
     )?;
     let scan_truncated = built.truncated;
-    // The confidence floor drops weak edges before detection so a community reflects only edges
-    // the caller trusts.
-    let edges: Vec<CodeEdge> = built
-        .edges
-        .iter()
-        .filter(|e| e.provenance.confidence() >= min_conf)
-        .cloned()
-        .collect();
-    let edge_count = edges.len() as u32;
-    let graph = CodeGraph {
-        edges,
-        truncated: scan_truncated,
+    // The confidence floor drops weak edges before detection so a community reflects only edges the
+    // caller trusts. Only materialize a filtered set when a floor is set; otherwise build the
+    // adjacency straight from the memoized graph's edges so a cache hit stays a pure `Arc` clone.
+    let filtered: Vec<CodeEdge>;
+    let (adj, edge_count) = if min_conf > 0.0 {
+        filtered = built
+            .edges
+            .iter()
+            .filter(|e| e.provenance.confidence() >= min_conf)
+            .cloned()
+            .collect();
+        (Adjacency::build_from_edges(&filtered), filtered.len() as u32)
+    } else {
+        (Adjacency::build_from_edges(&built.edges), built.edges.len() as u32)
     };
-    let adj = Adjacency::build(&graph);
     let node_count = adj.node_count() as u32;
 
     let partition = community::detect(&adj, algo, COMMUNITY_MAX_ITERS);
