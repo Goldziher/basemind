@@ -163,11 +163,13 @@ pub mod params {
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_archmap::ArchitectureMapParams;
     pub use super::types_code::{GetChunkParams, SearchCodeParams};
+    pub use super::types_community::CommunitiesParams;
     pub use super::types_compress::ExpandParams;
     pub use super::types_governance::{
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
     };
     pub use super::types_graph::CallGraphParams;
+    pub use super::types_graphview::GraphExportParams;
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
@@ -177,6 +179,7 @@ pub mod params {
         ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams, ShellSendParams,
         ShellSpawnParams,
     };
+    pub use super::types_traverse::{NeighborsParams, PathParams, SubgraphParams};
 }
 
 pub use params::Parameters;

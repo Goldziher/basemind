@@ -122,6 +122,80 @@ pub enum QueryCmd {
         #[arg(long)]
         max_tokens: Option<u32>,
     },
+    /// N-hop neighborhood around a symbol over the unified code-graph.
+    Neighbors {
+        name: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        #[arg(long)]
+        depth: Option<u32>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+    },
+    /// Confidence-weighted shortest path between two symbols over the code-graph.
+    Path {
+        from: String,
+        to: String,
+        #[arg(long)]
+        from_path: Option<String>,
+        #[arg(long)]
+        to_path: Option<String>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        /// Include containment (file→symbol) edges in the search.
+        #[arg(long)]
+        include_contains: bool,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+    },
+    /// Readable neighborhood subgraph around a symbol, cut to the central head.
+    Subgraph {
+        name: String,
+        #[arg(long)]
+        path: Option<String>,
+        #[arg(long)]
+        depth: Option<u32>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+    },
+    /// Detect communities (de-facto modules) over the code-graph.
+    Communities {
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long, default_value = "label_propagation")]
+        algorithm: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_communities: Option<u32>,
+        #[arg(long)]
+        members_per_community: Option<u32>,
+    },
+    /// Render the code-graph to a text format (node_link/dot/mermaid/graphml/cypher/html).
+    GraphExport {
+        #[arg(long, default_value = "node_link")]
+        format: String,
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long, default_value = "label_propagation")]
+        algorithm: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+    },
     /// Regex content search across indexed files.
     Grep {
         pattern: String,
@@ -321,6 +395,103 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
             };
             let r = run_tool("architecture_map", server.architecture_map(Parameters(p)).await)?;
             emit("architecture_map", &r, opts, out)
+        }
+        QueryCmd::Neighbors {
+            name,
+            path,
+            direction,
+            depth,
+            edges,
+            min_confidence,
+            max_nodes,
+        } => {
+            let p = NeighborsParams {
+                name,
+                path: path.map(|s| resolve_path(server, &s)),
+                direction,
+                depth,
+                edges,
+                min_confidence,
+                max_nodes,
+            };
+            let r = run_tool("neighbors", server.neighbors(Parameters(p)).await)?;
+            emit("neighbors", &r, opts, out)
+        }
+        QueryCmd::Path {
+            from,
+            to,
+            from_path,
+            to_path,
+            edges,
+            include_contains,
+            min_confidence,
+        } => {
+            let p = PathParams {
+                from,
+                from_path: from_path.map(|s| resolve_path(server, &s)),
+                to,
+                to_path: to_path.map(|s| resolve_path(server, &s)),
+                edges,
+                include_contains,
+                min_confidence,
+            };
+            let r = run_tool("path", server.path(Parameters(p)).await)?;
+            emit("path", &r, opts, out)
+        }
+        QueryCmd::Subgraph {
+            name,
+            path,
+            depth,
+            edges,
+            min_confidence,
+            max_nodes,
+        } => {
+            let p = SubgraphParams {
+                name,
+                path: path.map(|s| resolve_path(server, &s)),
+                depth,
+                edges,
+                min_confidence,
+                max_nodes,
+            };
+            let r = run_tool("subgraph", server.subgraph(Parameters(p)).await)?;
+            emit("subgraph", &r, opts, out)
+        }
+        QueryCmd::Communities {
+            edges,
+            algorithm,
+            min_confidence,
+            max_communities,
+            members_per_community,
+        } => {
+            let p = CommunitiesParams {
+                edges,
+                algorithm,
+                min_confidence,
+                max_communities,
+                members_per_community,
+            };
+            let r = run_tool("communities", server.communities(Parameters(p)).await)?;
+            emit("communities", &r, opts, out)
+        }
+        QueryCmd::GraphExport {
+            format,
+            focus,
+            edges,
+            algorithm,
+            min_confidence,
+            max_nodes,
+        } => {
+            let p = GraphExportParams {
+                format,
+                focus,
+                edges,
+                algorithm,
+                min_confidence,
+                max_nodes,
+            };
+            let r = run_tool("graph_export", server.graph_export(Parameters(p)).await)?;
+            emit("graph_export", &r, opts, out)
         }
         QueryCmd::Grep {
             pattern,
