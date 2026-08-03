@@ -17,6 +17,8 @@
 //! falsely EXTRACTED. Import and inheritance edges are name-resolved by construction, so
 //! they are INFERRED (one candidate) or AMBIGUOUS (several) — never EXTRACTED to a node.
 
+use std::sync::{Arc, Mutex};
+
 use ahash::{AHashMap, AHashSet};
 use rmcp::ErrorData as McpError;
 
@@ -124,7 +126,7 @@ pub(crate) struct CodeEdge {
 }
 
 /// Which edge lanes to build.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct EdgeKindSet {
     pub(crate) calls: bool,
     pub(crate) imports: bool,
@@ -215,6 +217,76 @@ pub(crate) struct CodeGraph {
     pub(crate) edges: Vec<CodeEdge>,
     /// True when the call scan hit `scan_cap` and the graph is over a partial set.
     pub(crate) truncated: bool,
+}
+
+/// Cache key for a built graph: the requested lanes, the focus prefix, and whether a live index was
+/// present (which determines the provenance tier of call edges, so `Some`/`None` builds differ).
+/// `min_confidence` is deliberately absent — it is a per-call post-build filter over the same graph.
+pub(crate) type GraphKey = (EdgeKindSet, Option<String>, bool);
+
+/// Hard cap on distinct graphs held at once. `focus` is caller-supplied, so the key space is
+/// unbounded in principle; the working set is tiny (a handful of lane/focus combos), so overflow
+/// clears the whole memo rather than running an LRU — simpler, and a rebuild on the next miss is cheap
+/// relative to the win of collapsing the common repeat-call case to an `Arc` clone.
+const GRAPH_MEMO_CAP: usize = 16;
+
+/// Generation-keyed memo of built [`CodeGraph`]s (ADR-0001..0005 shared build). Every graph tool
+/// rebuilds the whole-repo graph on each call; keying it on `cache_generation` — bumped on every
+/// `cache` swap, the only event that changes `build()`'s inputs (in-RAM `by_path` + the Fjall index,
+/// which advance together on a source change) — collapses repeat calls within one generation to a
+/// clone. The whole map is dropped when the generation advances, so a stale graph can never be served.
+#[derive(Default)]
+pub(crate) struct GraphMemo {
+    generation: u32,
+    entries: AHashMap<GraphKey, Arc<CodeGraph>>,
+}
+
+impl GraphMemo {
+    /// Fetch the cached graph for `key`, resetting the memo first if `generation` moved past what it
+    /// holds. Returns `None` on a miss (including the reset case).
+    fn get(&mut self, generation: u32, key: &GraphKey) -> Option<Arc<CodeGraph>> {
+        self.sync_generation(generation);
+        self.entries.get(key).cloned()
+    }
+
+    /// Store `graph` under `key`, first resetting on a generation advance and clearing on overflow.
+    fn insert(&mut self, generation: u32, key: GraphKey, graph: Arc<CodeGraph>) {
+        self.sync_generation(generation);
+        if self.entries.len() >= GRAPH_MEMO_CAP {
+            self.entries.clear();
+        }
+        self.entries.insert(key, graph);
+    }
+
+    fn sync_generation(&mut self, generation: u32) {
+        if self.generation != generation {
+            self.entries.clear();
+            self.generation = generation;
+        }
+    }
+}
+
+/// Build the graph for `opts`, served from `memo` when a graph for the same `(kinds, focus, idx-mode)`
+/// was already built at the current `generation`. On a miss the build runs OUTSIDE the lock — it can
+/// take tens of ms on a large repo, so holding the mutex across it would stall every other graph tool;
+/// a rare concurrent double-build right after a generation bump is bounded and harmless (both produce
+/// the same deterministic graph). Callers pass the generation they captured alongside `cache`.
+pub(crate) fn build_memoized(
+    memo: &Mutex<GraphMemo>,
+    generation: u32,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    opts: &BuildOpts,
+) -> Result<Arc<CodeGraph>, McpError> {
+    let key: GraphKey = (opts.kinds, opts.focus.clone(), idx.is_some());
+    if let Some(hit) = memo.lock().expect("graph_memo mutex poisoned").get(generation, &key) {
+        return Ok(hit);
+    }
+    let graph = Arc::new(build(idx, cache, opts)?);
+    memo.lock()
+        .expect("graph_memo mutex poisoned")
+        .insert(generation, key, Arc::clone(&graph));
+    Ok(graph)
 }
 
 /// The leaf identifier of a module path — the last non-empty component after splitting on
@@ -766,6 +838,67 @@ mod tests {
         assert!(
             has_extracted_call,
             "a resolved cross-file call should be EXTRACTED under intel features"
+        );
+    }
+
+    fn opts(kinds: EdgeKindSet) -> BuildOpts {
+        BuildOpts {
+            kinds,
+            focus: None,
+            scan_cap: 1_000_000,
+        }
+    }
+
+    #[test]
+    fn memo_serves_the_same_build_within_a_generation() {
+        let (_dir, store, cache) = provenance_fixture();
+        let idx = store.index_db.as_ref();
+        let memo = Mutex::new(GraphMemo::default());
+
+        let first = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
+        let second = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("second build");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same key + generation must return the cached Arc"
+        );
+
+        // The cached graph matches a fresh, un-memoized build.
+        let fresh = built(&store, &cache, EdgeKindSet::all());
+        assert_eq!(
+            first.edges.len(),
+            fresh.edges.len(),
+            "memoized graph must equal a direct build"
+        );
+    }
+
+    #[test]
+    fn memo_keys_on_lanes_and_invalidates_on_generation() {
+        let (_dir, store, cache) = provenance_fixture();
+        let idx = store.index_db.as_ref();
+        let memo = Mutex::new(GraphMemo::default());
+
+        let calls_only = EdgeKindSet {
+            calls: true,
+            ..EdgeKindSet::none()
+        };
+        let all = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
+        let calls = build_memoized(&memo, 1, idx, &cache, &opts(calls_only)).expect("calls lane");
+        assert!(
+            !Arc::ptr_eq(&all, &calls),
+            "distinct lane sets are distinct cache entries"
+        );
+        // Both keys coexist: re-fetching each returns its own cached Arc.
+        let all_again = build_memoized(&memo, 1, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes again");
+        assert!(
+            Arc::ptr_eq(&all, &all_again),
+            "the all-lanes entry survives an intervening distinct-key build"
+        );
+
+        // A generation bump drops every entry, so the next build is fresh.
+        let after_bump = build_memoized(&memo, 2, idx, &cache, &opts(EdgeKindSet::all())).expect("post-bump build");
+        assert!(
+            !Arc::ptr_eq(&all, &after_bump),
+            "a generation advance must invalidate the memo"
         );
     }
 }

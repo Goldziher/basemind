@@ -68,6 +68,11 @@ pub(crate) struct SharedReadStack {
     /// against a stale generation can be detected and reported back as
     /// `cursor_invalidated = true`.
     pub(crate) cache_generation: AtomicU32,
+    /// Generation-keyed memo of built code-graphs, shared by every graph tool (`neighbors`/`path`/
+    /// `subgraph`/`communities`/`architecture_map`/`graph_export`). Keyed on the current
+    /// [`cache_generation`](Self::cache_generation), so it is invalidated wholesale on any `cache`
+    /// swap and never serves a stale graph. See [`super::codegraph::GraphMemo`].
+    pub(crate) graph_memo: Mutex<super::codegraph::GraphMemo>,
     /// Per-repo scope key for LanceDB tables and `memory_by_key` Fjall keyspace.
     /// Computed once at boot. Do NOT recompute per-call.
     #[allow(dead_code)]
@@ -241,6 +246,7 @@ impl SharedReadStack {
             telemetry: telemetry_handle,
             corpus_bytes: AtomicU64::new(corpus_bytes),
             cache_generation: AtomicU32::new(1),
+            graph_memo: Mutex::new(super::codegraph::GraphMemo::default()),
             scope,
             #[cfg(any(feature = "memory", feature = "documents", feature = "code-search"))]
             lance: tokio::sync::OnceCell::new(),
@@ -264,5 +270,20 @@ impl SharedReadStack {
             #[cfg(all(feature = "comms", any(unix, windows)))]
             host,
         }
+    }
+
+    /// Build the shared code-graph for `opts`, served from [`graph_memo`](Self::graph_memo) when an
+    /// identical graph was already built at the current cache generation. This is the single entry
+    /// point every graph tool uses instead of calling [`super::codegraph::build`] directly, so repeat
+    /// calls within one index generation collapse to an `Arc` clone. The generation is captured here,
+    /// next to the same `cache` snapshot the caller passes in.
+    pub(crate) fn graph(
+        &self,
+        idx: Option<&crate::index::IndexDb>,
+        cache: &MapCache,
+        opts: &super::codegraph::BuildOpts,
+    ) -> Result<Arc<super::codegraph::CodeGraph>, rmcp::ErrorData> {
+        let generation = self.cache_generation.load(std::sync::atomic::Ordering::Relaxed);
+        super::codegraph::build_memoized(&self.graph_memo, generation, idx, cache, opts)
     }
 }

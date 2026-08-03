@@ -13,6 +13,7 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::codegraph::{self, BuildOpts, EdgeKindSet, NodeKey};
 use super::helpers::{elapsed_us, json_result, kind_to_str};
+use super::shared_state::SharedReadStack;
 use super::traverse::{self, Adjacency, Bounds, Dir, Path, Subgraph, Walk, WalkEdge};
 use super::types::LifecycleNotice;
 use super::types_traverse::{
@@ -136,8 +137,13 @@ pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
 
 /// Build the shared code-graph over `kinds` and intern it into an adjacency. Returns the
 /// adjacency plus whether the underlying call scan was truncated.
-fn build_adjacency(idx: Option<&IndexDb>, cache: &MapCache, kinds: EdgeKindSet) -> Result<(Adjacency, bool), McpError> {
-    let graph = codegraph::build(
+fn build_adjacency(
+    shared: &SharedReadStack,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    kinds: EdgeKindSet,
+) -> Result<(Adjacency, bool), McpError> {
+    let graph = shared.graph(
         idx,
         cache,
         &BuildOpts {
@@ -187,6 +193,7 @@ fn remap_edges(edges: &[WalkEdge], index_of: &AHashMap<u32, u32>) -> Vec<GraphEd
 
 /// `neighbors` — N-hop expansion around a symbol.
 pub(super) fn run_neighbors(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     params: NeighborsParams,
@@ -204,7 +211,7 @@ pub(super) fn run_neighbors(
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let kinds = kinds_from(&params.edges, false)?;
 
-    let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
+    let (mut adj, scan_truncated) = build_adjacency(shared, idx, cache, kinds)?;
     let roots: Vec<u32> = resolve_roots(cache, &params.name, params.path.as_ref())
         .iter()
         .map(|k| adj.intern(k))
@@ -244,6 +251,7 @@ pub(super) fn run_neighbors(
 
 /// `path` — confidence-weighted shortest route between two symbols.
 pub(super) fn run_path(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     params: PathParams,
@@ -253,7 +261,7 @@ pub(super) fn run_path(
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let kinds = kinds_from(&params.edges, params.include_contains)?;
 
-    let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
+    let (mut adj, scan_truncated) = build_adjacency(shared, idx, cache, kinds)?;
     let sources: Vec<u32> = resolve_roots(cache, &params.from, params.from_path.as_ref())
         .iter()
         .map(|k| adj.intern(k))
@@ -293,6 +301,7 @@ pub(super) fn run_path(
 
 /// `subgraph` — the neighborhood around a symbol, cut to the central head.
 pub(super) fn run_subgraph(
+    shared: &SharedReadStack,
     idx: Option<&IndexDb>,
     cache: &MapCache,
     params: SubgraphParams,
@@ -304,7 +313,7 @@ pub(super) fn run_subgraph(
     let min_conf = params.min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
     let kinds = kinds_from(&params.edges, false)?;
 
-    let (mut adj, scan_truncated) = build_adjacency(idx, cache, kinds)?;
+    let (mut adj, scan_truncated) = build_adjacency(shared, idx, cache, kinds)?;
     let roots: Vec<u32> = resolve_roots(cache, &params.name, params.path.as_ref())
         .iter()
         .map(|k| adj.intern(k))
