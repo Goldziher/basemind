@@ -12,8 +12,11 @@
 //! optional git-churn overlay, ranks, knee-cuts, and budgets the result. Outputs are
 //! paths/lines/signatures + edges, never prose.
 //!
-//! The graph is rebuilt per call (bounded by [`codegraph::CODEGRAPH_SCAN_CAP`]); memoizing it
-//! against `cache_generation` is a future optimization, not needed for an occasional tool.
+//! The graph is rebuilt per call (bounded by [`codegraph::CODEGRAPH_SCAN_CAP`]) — a full-repo scan
+//! shared by every `codegraph` consumer (`architecture_map` plus the ADR-0003/0004/0005 tools
+//! `neighbors`/`path`/`subgraph`/`communities`/`graph_export`, all of which an agent may call
+//! repeatedly). Memoizing the built graph against `cache_generation` is the standing follow-up
+//! (tracked) — deferred until it can be measured on a quiet machine with the harden harness.
 
 use ahash::{AHashMap, AHashSet};
 use rmcp::ErrorData as McpError;
@@ -130,8 +133,6 @@ impl Graph {
                     on_stack[vu] = true;
                 }
                 if pi < self.out[vu].len() {
-                    // Safe: we entered this iteration via `while let Some(_) = work.last()`, so the
-                    // stack is non-empty and `last_mut()` yields the same frame.
                     work.last_mut()
                         .expect("work frame present inside the last()-guarded loop")
                         .1 += 1;
@@ -145,8 +146,6 @@ impl Graph {
                 } else {
                     if low[vu] == index[vu] {
                         loop {
-                            // Safe: `v` is on the stack (pushed when first visited), so popping the
-                            // SCC always reaches it before the stack empties.
                             let w = stack.pop().expect("root v is on the stack until the SCC closes");
                             on_stack[w as usize] = false;
                             comp[w as usize] = comp_counter;

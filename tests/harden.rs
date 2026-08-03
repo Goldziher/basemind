@@ -789,6 +789,27 @@ fn assert_passing(repo_name: &str, scan: &ScanOutcome, repo_record: &mut RepoRec
                     "tokio canary: graph_export(node_link) rendered {graph_export_nodes} nodes (expected ≥ 2)"
                 ));
             }
+            // Machine-independent latency guard: neighbors and architecture_map pay the same shared ~keep
+            // codegraph build, so a ratio (not an absolute-ms threshold that would be machine- ~keep
+            // dependent) catches a gross regression — rebuilding the graph several times, or an ~keep
+            // O(n²) blow-up — while the +50ms floor absorbs timer noise on sub-millisecond runs. ~keep
+            let archmap_us = repo_record
+                .canaries
+                .get("archmap_module_elapsed_us")
+                .and_then(Value::as_u64);
+            let neighbors_us = repo_record
+                .canaries
+                .get("neighbors_spawn_elapsed_us")
+                .and_then(Value::as_u64);
+            if let (Some(archmap_us), Some(neighbors_us)) = (archmap_us, neighbors_us) {
+                let ceiling = archmap_us.saturating_mul(8).saturating_add(50_000);
+                if neighbors_us > ceiling {
+                    failures.push(format!(
+                        "tokio canary: neighbors latency {neighbors_us}µs > 8× architecture_map \
+                         baseline {archmap_us}µs + 50ms ({ceiling}µs) — shared-build regression?"
+                    ));
+                }
+            }
             if cfg!(feature = "code-search")
                 && let Some(hits) = repo_record
                     .canaries
@@ -1033,6 +1054,11 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("archmap_module_nodes".into(), json!(nodes));
+                // Baseline for the shared codegraph-build cost: every graph tool pays this same
+                // full-repo build, so it anchors the machine-independent latency ratio below.
+                if let Some(us) = body.get("elapsed_us").and_then(Value::as_u64) {
+                    record.canaries.insert("archmap_module_elapsed_us".into(), json!(us));
+                }
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
@@ -1067,6 +1093,9 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .map(|a| a.len() as u64)
                     .unwrap_or(0);
                 record.canaries.insert("neighbors_spawn_nodes".into(), json!(nodes));
+                if let Some(us) = body.get("elapsed_us").and_then(Value::as_u64) {
+                    record.canaries.insert("neighbors_spawn_elapsed_us".into(), json!(us));
+                }
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
