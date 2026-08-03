@@ -206,7 +206,9 @@ pub(crate) struct Bounds {
 
 /// N-hop expansion from `roots`, following `dir` over the selected `kinds`. Deterministic:
 /// BFS in adjacency order (itself derived from the sorted graph), edges deduplicated by
-/// `(from, to, kind)`. Stops adding nodes once `max_nodes` is reached and flags `truncated`.
+/// `(from, to, kind)`. Stops adding *non-root* nodes once `max_nodes` is reached and flags
+/// `truncated`. Roots are admitted unconditionally (they must be present), so a name resolving to
+/// more than `max_nodes` definition sites can exceed the cap — bounded only by the repo's symbol count.
 pub(crate) fn neighbors(adj: &Adjacency, roots: &[u32], dir: Dir, kinds: EdgeKindSet, bounds: Bounds) -> Walk {
     let mut walk = Walk::default();
     let mut depth_of: AHashMap<u32, u32> = AHashMap::new();

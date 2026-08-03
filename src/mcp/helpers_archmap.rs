@@ -130,7 +130,11 @@ impl Graph {
                     on_stack[vu] = true;
                 }
                 if pi < self.out[vu].len() {
-                    work.last_mut().unwrap().1 += 1;
+                    // Safe: we entered this iteration via `while let Some(_) = work.last()`, so the
+                    // stack is non-empty and `last_mut()` yields the same frame.
+                    work.last_mut()
+                        .expect("work frame present inside the last()-guarded loop")
+                        .1 += 1;
                     let w = self.out[vu][pi].0;
                     let wu = w as usize;
                     if index[wu] == u32::MAX {
@@ -141,7 +145,9 @@ impl Graph {
                 } else {
                     if low[vu] == index[vu] {
                         loop {
-                            let w = stack.pop().unwrap();
+                            // Safe: `v` is on the stack (pushed when first visited), so popping the
+                            // SCC always reaches it before the stack empties.
+                            let w = stack.pop().expect("root v is on the stack until the SCC closes");
                             on_stack[w as usize] = false;
                             comp[w as usize] = comp_counter;
                             if w == v {

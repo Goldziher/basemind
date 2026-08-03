@@ -99,6 +99,8 @@ pub(super) fn build_graph_view(
         truncated: scan_truncated,
     };
     let adj = Adjacency::build(&graph);
+    // Community detection runs over the full graph before the `max_nodes` cut below (intentional):
+    // dominant-cluster labels must reflect the whole partition, not an arbitrary pre-truncated slice.
     let partition = community::detect(&adj, algo, GRAPHVIEW_COMMUNITY_ITERS);
     let comm_label = label_communities(&adj, cache, &partition);
     let (order, remap, capped) = select_nodes(&partition, adj.node_count(), max_nodes);

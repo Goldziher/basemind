@@ -259,6 +259,44 @@ fn import_leaf(imp: &crate::extract::Import) -> Option<&str> {
 /// folds to the strongest tier across duplicates.
 type EdgeKey = (NodeKey, NodeKey, EdgeKind);
 
+/// Repo-wide symbol table: name → the definition sites (path, start byte, kind) carrying it.
+type DefsByName<'a> = AHashMap<&'a str, Vec<(&'a RelPath, u32, crate::extract::SymbolKind)>>;
+
+/// Stage the name-resolved edge(s) for one import/inherit reference from `from` to `name`. One
+/// candidate ⇒ INFERRED; several ⇒ AMBIGUOUS (one edge per candidate); none ⇒ a single INFERRED
+/// edge to a virtual `Name` node. Never EXTRACTED — a bare import/inherit is name-level, not a
+/// proven binding (ADR-0002). Shared by the imports and inherits lanes.
+fn resolve_named_edge(
+    push: &mut impl FnMut(NodeKey, NodeKey, EdgeKind, Provenance, u32),
+    defs_by_name: &DefsByName<'_>,
+    from: NodeKey,
+    name: &str,
+    kind: EdgeKind,
+) {
+    match defs_by_name.get(name).filter(|c| !c.is_empty()) {
+        None => push(from, NodeKey::Name(name.to_string()), kind, Provenance::Inferred, 1),
+        Some(cands) => {
+            let prov = if cands.len() > 1 {
+                Provenance::Ambiguous
+            } else {
+                Provenance::Inferred
+            };
+            for (dp, ds, _k) in cands {
+                push(
+                    from.clone(),
+                    NodeKey::Symbol {
+                        path: (*dp).clone(),
+                        start_byte: *ds,
+                    },
+                    kind,
+                    prov,
+                    1,
+                );
+            }
+        }
+    }
+}
+
 /// Build the typed, provenance-tagged graph over the current index snapshot + L1 cache.
 ///
 /// `idx = Some` enables proof of call edges via the resolved-reference index; `idx = None`
@@ -274,7 +312,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
 
     // Repo-wide name → definition sites, so a target resolves even when the source file is
     // outside `focus`. `>1` distinct sites for a name is what makes a resolution ambiguous.
-    let mut defs_by_name: AHashMap<&str, Vec<(&RelPath, u32, crate::extract::SymbolKind)>> = AHashMap::new();
+    let mut defs_by_name: DefsByName<'_> = AHashMap::new();
     for (path, l1) in &cache.by_path {
         for sym in &l1.symbols {
             defs_by_name
@@ -324,71 +362,26 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
         if kinds.imports {
             for imp in &l1.imports {
                 let Some(leaf) = import_leaf(imp) else { continue };
-                match defs_by_name.get(leaf).filter(|c| !c.is_empty()) {
-                    None => push(
-                        NodeKey::File { path: path.clone() },
-                        NodeKey::Name(leaf.to_string()),
-                        EdgeKind::Imports,
-                        Provenance::Inferred,
-                        1,
-                    ),
-                    Some(cands) => {
-                        let prov = if cands.len() > 1 {
-                            Provenance::Ambiguous
-                        } else {
-                            Provenance::Inferred
-                        };
-                        for (dp, ds, _k) in cands {
-                            push(
-                                NodeKey::File { path: path.clone() },
-                                NodeKey::Symbol {
-                                    path: (*dp).clone(),
-                                    start_byte: *ds,
-                                },
-                                EdgeKind::Imports,
-                                prov,
-                                1,
-                            );
-                        }
-                    }
-                }
+                resolve_named_edge(
+                    &mut push,
+                    &defs_by_name,
+                    NodeKey::File { path: path.clone() },
+                    leaf,
+                    EdgeKind::Imports,
+                );
             }
         }
 
         if kinds.inherits {
             for imp in &l1.implementations {
+                // The `from` node is the impl site keyed by byte offset; that offset need not match
+                // an outline symbol, in which case the node stays identity-consistent but renders
+                // with an empty label (cosmetic only — `describe` falls back to the kind).
                 let from = NodeKey::Symbol {
                     path: path.clone(),
                     start_byte: imp.start_byte,
                 };
-                match defs_by_name.get(imp.trait_name.as_str()).filter(|c| !c.is_empty()) {
-                    None => push(
-                        from,
-                        NodeKey::Name(imp.trait_name.clone()),
-                        EdgeKind::Inherits,
-                        Provenance::Inferred,
-                        1,
-                    ),
-                    Some(cands) => {
-                        let prov = if cands.len() > 1 {
-                            Provenance::Ambiguous
-                        } else {
-                            Provenance::Inferred
-                        };
-                        for (dp, ds, _k) in cands {
-                            push(
-                                from.clone(),
-                                NodeKey::Symbol {
-                                    path: (*dp).clone(),
-                                    start_byte: *ds,
-                                },
-                                EdgeKind::Inherits,
-                                prov,
-                                1,
-                            );
-                        }
-                    }
-                }
+                resolve_named_edge(&mut push, &defs_by_name, from, &imp.trait_name, EdgeKind::Inherits);
             }
         }
 
