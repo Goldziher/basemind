@@ -156,10 +156,21 @@ pub(super) fn to_node_link(view: &GraphView) -> String {
     })
 }
 
-/// Escape a string for a DOT double-quoted id/label: backslash and double-quote, and collapse raw
-/// newlines to spaces so a name can't spread the label across lines.
+/// Drop control characters (the Unicode `Cc` category: C0 `<0x20`, DEL `0x7F`, and C1 `0x80..=0x9F`)
+/// except those in `keep`. A scanned repo can hold hostile identifiers/filenames; a raw ESC/BEL/CSI
+/// reaching `graph_export`'s `content` would execute in any terminal that prints it (CWE-150). Shared
+/// by every text renderer so the guarantee is uniform (`to_node_link`/`to_html` are already safe —
+/// serde_json escapes all control bytes).
+fn strip_control(s: &str, keep: &[char]) -> String {
+    s.chars().filter(|c| !c.is_control() || keep.contains(c)).collect()
+}
+
+/// Escape a string for a DOT double-quoted id/label: strip control bytes, collapse raw newlines to
+/// spaces so a name can't spread the label across lines, then escape backslash and double-quote.
 fn dot_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"").replace(['\n', '\r'], " ")
+    strip_control(&s.replace(['\n', '\r'], " "), &[])
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
 }
 
 fn to_dot(view: &GraphView) -> String {
@@ -194,9 +205,10 @@ fn to_dot(view: &GraphView) -> String {
     out
 }
 
-/// Escape a label for a Mermaid node text wrapped in double quotes.
+/// Escape a label for a Mermaid node text wrapped in double quotes: strip control bytes, collapse
+/// newlines to spaces, and neutralize the closing quote.
 fn mermaid_escape(s: &str) -> String {
-    s.replace('"', "&quot;").replace(['\n', '\r'], " ")
+    strip_control(&s.replace(['\n', '\r'], " "), &[]).replace('"', "&quot;")
 }
 
 fn to_mermaid(view: &GraphView) -> String {
@@ -210,15 +222,11 @@ fn to_mermaid(view: &GraphView) -> String {
     out
 }
 
-/// Escape text for an XML attribute/body. Drops C0 control characters XML 1.0 forbids (everything
-/// below U+0020 except tab/newline/carriage-return) — they have no legal escape and would make the
-/// document non-well-formed.
+/// Escape text for an XML attribute/body. Drops control characters (C0 below U+0020 that XML 1.0
+/// forbids, plus DEL/C1) except tab/newline/carriage-return — they have no legal escape and would
+/// make the document non-well-formed — then escapes the five XML metacharacters.
 fn xml_escape(s: &str) -> String {
-    let cleaned: String = s
-        .chars()
-        .filter(|&c| c == '\t' || c == '\n' || c == '\r' || c >= ' ')
-        .collect();
-    cleaned
+    strip_control(s, &['\t', '\n', '\r'])
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -291,9 +299,10 @@ fn to_graphml(view: &GraphView) -> String {
     out
 }
 
-/// Escape a string for a single-quoted Cypher literal.
+/// Escape a string for a single-quoted Cypher literal: strip control bytes, then escape backslash
+/// and single-quote.
 fn cypher_escape(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\'', "\\'")
+    strip_control(s, &[]).replace('\\', "\\\\").replace('\'', "\\'")
 }
 
 /// Map an edge kind to a Cypher relationship type (uppercase, the community convention). The rel
@@ -460,6 +469,39 @@ mod tests {
         assert_eq!(out, "ab");
         // Tab/newline/return are legal and preserved.
         assert_eq!(xml_escape("a\tb\nc"), "a\tb\nc");
+    }
+
+    #[test]
+    fn renderers_strip_terminal_escape_sequences() {
+        // A hostile identifier carrying ESC (OSC/CSI introducer) + BEL must never reach the
+        // terminal-facing output verbatim (CWE-150) — dot/mermaid/cypher/graphml all strip controls.
+        let hostile = "ev\u{1b}]0;pwned\u{07}il\u{1b}[2J";
+        for escaped in [
+            dot_escape(hostile),
+            mermaid_escape(hostile),
+            cypher_escape(hostile),
+            xml_escape(hostile),
+        ] {
+            assert!(
+                !escaped.contains('\u{1b}') && !escaped.contains('\u{07}'),
+                "control byte survived escaping: {escaped:?}"
+            );
+        }
+        // End-to-end through a rendered document, with the hostile name on a real node.
+        let mut view = sample();
+        view.nodes[0].name = hostile.into();
+        for fmt in [
+            GraphFormat::Dot,
+            GraphFormat::Mermaid,
+            GraphFormat::Cypher,
+            GraphFormat::GraphMl,
+        ] {
+            let out = render(&view, fmt);
+            assert!(
+                !out.contains('\u{1b}') && !out.contains('\u{07}'),
+                "{fmt:?} leaked a raw control byte"
+            );
+        }
     }
 
     #[test]

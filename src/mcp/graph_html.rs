@@ -40,7 +40,7 @@ const TEMPLATE: &str = r####"<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>basemind graph</title>
 <style>
   :root { color-scheme: dark; }
@@ -261,6 +261,12 @@ mod tests {
         assert!(!out.contains("src=\"//"), "no protocol-relative src");
         // The placeholder was replaced with real data.
         assert!(!out.contains(DATA_PLACEHOLDER), "data placeholder spliced");
+        // A locked-down CSP: no default sources, and base/form vectors closed (not covered by
+        // default-src per CSP3), so a future escaping regression can't inject a <base>/<form>.
+        assert!(
+            out.contains("default-src 'none'") && out.contains("base-uri 'none'") && out.contains("form-action 'none'"),
+            "CSP pins default-src/base-uri/form-action to none"
+        );
     }
 
     /// Extract the text content of the `<script type="application/json">` data block.
