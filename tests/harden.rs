@@ -456,6 +456,14 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    call(
+        svc,
+        &mut records,
+        "ui",
+        json!({ "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
+    )
+    .await;
+
     if let Some(sample) = sample {
         call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
 

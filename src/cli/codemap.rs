@@ -217,6 +217,25 @@ pub enum QueryCmd {
         #[arg(long = "no-open")]
         no_open: bool,
     },
+    /// Open the interactive basemind UI (ADR-0006): render the graph and return a URL — a live
+    /// `http://…/ui` page when a basemind daemon is serving, else a `file://` export.
+    Ui {
+        #[arg(long, default_value = "html")]
+        format: String,
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long, default_value = "label_propagation")]
+        algorithm: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+        /// Only resolve/write the UI and print its URL; do not open a viewer.
+        #[arg(long = "no-open")]
+        no_open: bool,
+    },
     /// Regex content search across indexed files.
     Grep {
         pattern: String,
@@ -536,6 +555,27 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
             };
             let r = run_tool("display", server.display(Parameters(p)).await)?;
             emit("display", &r, opts, out)
+        }
+        QueryCmd::Ui {
+            format,
+            focus,
+            edges,
+            algorithm,
+            min_confidence,
+            max_nodes,
+            no_open,
+        } => {
+            let p = UiParams {
+                format,
+                focus,
+                edges,
+                algorithm,
+                min_confidence,
+                max_nodes,
+                open: !no_open,
+            };
+            let r = run_tool("ui", server.ui(Parameters(p)).await)?;
+            emit("ui", &r, opts, out)
         }
         QueryCmd::Grep {
             pattern,

@@ -68,8 +68,15 @@ const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:51786";
 /// Portfile name under `comms_dir` holding the actually-bound `host:port`, so tooling reads the
 /// address instead of assuming the default port.
 const PORTFILE_NAME: &str = "http.addr";
-/// The one path the transport serves. Anything else is a 404.
+/// The MCP JSON-RPC transport path. Anything other than this or [`UI_PATH`] is a 404.
 const MCP_PATH: &str = "/mcp";
+/// The interactive-UI path (ADR-0006): `GET /ui?root=<abs>&…` serves the self-contained graph page
+/// for a workspace, so a browser (or the Tauri shell) can drive the same view the `ui` tool resolves.
+const UI_PATH: &str = "/ui";
+/// How long [`served_ui_url`] waits for the daemon port to answer before deciding it is not serving.
+/// A live loopback daemon answers in well under this; a stale portfile (crashed daemon) fails fast so
+/// the `ui` tool degrades to the file export instead of handing back a dead link.
+const UI_PROBE_TIMEOUT: Duration = Duration::from_millis(150);
 /// Owner-only mode for the portfile, matching the socket's `0600`.
 #[cfg(unix)]
 const PORTFILE_MODE: u32 = 0o600;
@@ -144,6 +151,62 @@ fn text_response(status: StatusCode, message: &str) -> Response<HttpBody> {
         .expect("text response builds from constant parts")
 }
 
+/// Build an HTML/SVG HTTP response with a boxed body matching [`HttpBody`]. `content_type` is one of
+/// the two constants the UI renderer returns, so the header is always valid.
+fn html_response(status: StatusCode, body: String, content_type: &str) -> Response<HttpBody> {
+    Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, content_type)
+        .body(Full::new(Bytes::from(body)).boxed())
+        .expect("html response builds from a valid header + body")
+}
+
+/// The `/ui` route's parsed query: the required workspace `root` plus the same graph-shaping knobs the
+/// `ui` tool exposes, each defaulted exactly as the tool defaults them so the served page matches.
+struct UiRenderArgs {
+    root: PathBuf,
+    format: String,
+    edges: String,
+    algorithm: String,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    focus: Option<String>,
+}
+
+/// Parse `root` (required) and the optional graph knobs from a `/ui` request query. Returns `None`
+/// only when `root` is missing/blank; unknown keys and unparseable numbers are ignored (best-effort,
+/// like the tool's own defaulting).
+fn parse_ui_args(query: Option<&str>) -> Option<UiRenderArgs> {
+    let query = query?;
+    let (mut root, mut format, mut edges, mut algorithm, mut focus) = (None, None, None, None, None);
+    let (mut min_confidence, mut max_nodes) = (None, None);
+    for (key, value) in form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "root" => root = Some(value.into_owned()),
+            "format" => format = Some(value.into_owned()),
+            "edges" => edges = Some(value.into_owned()),
+            "algorithm" | "algo" => algorithm = Some(value.into_owned()),
+            "min_confidence" => min_confidence = value.parse::<f32>().ok(),
+            "max_nodes" => max_nodes = value.parse::<u32>().ok(),
+            "focus" => focus = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    let non_blank = |value: String| Some(value).filter(|v| !v.trim().is_empty());
+    let root = root.and_then(non_blank)?;
+    Some(UiRenderArgs {
+        root: PathBuf::from(root),
+        format: format.and_then(non_blank).unwrap_or_else(|| "html".to_string()),
+        edges: edges.and_then(non_blank).unwrap_or_else(|| "all".to_string()),
+        algorithm: algorithm
+            .and_then(non_blank)
+            .unwrap_or_else(|| "label_propagation".to_string()),
+        min_confidence,
+        max_nodes,
+        focus: focus.and_then(non_blank),
+    })
+}
+
 /// The per-request router: shared across every accepted connection, cheap to clone.
 struct HttpRouter {
     broker: Arc<Broker>,
@@ -163,8 +226,17 @@ impl HttpRouter {
         // tear the process down mid-request. See `Broker::begin_http_request`.
         let _activity = self.broker.begin_http_request();
 
+        // The interactive-UI route (ADR-0006) serves an HTML/SVG page for a browser; it precedes the
+        // MCP JSON-RPC branch and is the only other path this server answers.
+        if request.uri().path() == UI_PATH {
+            return self.handle_ui(&request).await;
+        }
+
         if request.uri().path() != MCP_PATH {
-            return text_response(StatusCode::NOT_FOUND, "not found: this server serves POST /mcp only");
+            return text_response(
+                StatusCode::NOT_FOUND,
+                "not found: this server serves POST /mcp and GET /ui only",
+            );
         }
         let Some((raw_root, agent)) = parse_target(request.uri().query()) else {
             return text_response(StatusCode::NOT_FOUND, "not found: missing ?root=<abs-repo-path>");
@@ -219,6 +291,53 @@ impl HttpRouter {
             .with_cancellation_token(self.cancel.child_token());
         let service = StreamableHttpService::new(factory, self.session_manager.clone(), config);
         service.handle(request).await
+    }
+
+    /// Serve `GET /ui?root=<abs>&…`: render the interactive graph page for a workspace and return it
+    /// as HTML/SVG. Mirrors [`handle`]'s workspace resolution (canonicalize → host the read stack →
+    /// pin the workspace against eviction), then renders through the shared `render_ui_http` path the
+    /// `ui` tool also uses. Never bricks the connection — every failure is an HTTP status.
+    async fn handle_ui(&self, request: &Request<Incoming>) -> Response<HttpBody> {
+        let Some(args) = parse_ui_args(request.uri().query()) else {
+            return text_response(StatusCode::BAD_REQUEST, "bad request: missing ?root=<abs-repo-path>");
+        };
+        let Ok(root) = std::fs::canonicalize(&args.root) else {
+            return text_response(
+                StatusCode::NOT_FOUND,
+                "not found: root does not resolve to an existing path",
+            );
+        };
+        let shared = match self.broker.host_read_stack(&root).await {
+            Ok(shared) => shared,
+            Err(error) => {
+                tracing::warn!(%error, root = %root.display(), "http /ui: hosting read stack failed");
+                return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+            }
+        };
+        // Pin the workspace against eviction for the render's lifetime, mirroring the MCP branch.
+        let _conn = match self.broker.begin_workspace_conn(&root) {
+            Ok(guard) => guard,
+            Err(error) => {
+                tracing::warn!(%error, root = %root.display(), "http /ui: workspace connection accounting failed");
+                return text_response(StatusCode::NOT_FOUND, "not found: workspace could not be hosted");
+            }
+        };
+        let agent_id = identity::cli_agent_id(&root).into_string();
+        let server = BasemindServer::from_shared(shared, agent_id);
+        match server
+            .render_ui_http(
+                &args.format,
+                &args.edges,
+                &args.algorithm,
+                args.min_confidence,
+                args.max_nodes,
+                args.focus,
+            )
+            .await
+        {
+            Ok((body, content_type)) => html_response(StatusCode::OK, body, content_type),
+            Err(error) => text_response(StatusCode::BAD_REQUEST, &format!("bad request: {}", error.message)),
+        }
     }
 }
 
@@ -358,6 +477,66 @@ pub fn base_url(addr: &str) -> String {
     format!("http://{addr}{MCP_PATH}")
 }
 
+/// Assemble the `/ui` URL for a served workspace: `http://<addr>/ui?root=…&…` with every value
+/// percent-encoded. Pure (no I/O) so the URL assembly is unit-testable.
+#[allow(clippy::too_many_arguments)]
+fn build_ui_url(
+    addr: &SocketAddr,
+    root: &Path,
+    format: &str,
+    edges: &str,
+    algorithm: &str,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    focus: Option<&str>,
+) -> String {
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    ser.append_pair("root", &root.to_string_lossy());
+    ser.append_pair("format", format);
+    ser.append_pair("edges", edges);
+    ser.append_pair("algorithm", algorithm);
+    if let Some(confidence) = min_confidence {
+        ser.append_pair("min_confidence", &confidence.to_string());
+    }
+    if let Some(max) = max_nodes {
+        ser.append_pair("max_nodes", &max.to_string());
+    }
+    if let Some(prefix) = focus {
+        ser.append_pair("focus", prefix);
+    }
+    format!("http://{addr}/ui?{}", ser.finish())
+}
+
+/// Resolve the live `/ui` URL for `root` when a basemind daemon is serving HTTP on this machine, else
+/// `None` (portfile absent/unreadable, or the port is not answering). Called by the `ui` tool
+/// (`crate::mcp`) to prefer a live served page over the static file export.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn served_ui_url(
+    root: &Path,
+    format: &str,
+    edges: &str,
+    algorithm: &str,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    focus: Option<&str>,
+) -> Option<String> {
+    let paths = super::singleton::resolve_paths().ok()?;
+    let addr = read_portfile(&paths.comms_dir)?;
+    // Confirm a daemon is actually answering before advertising the URL — a stale portfile (crashed
+    // daemon) must degrade to the file export, not hand back a dead link.
+    std::net::TcpStream::connect_timeout(&addr, UI_PROBE_TIMEOUT).ok()?;
+    Some(build_ui_url(
+        &addr,
+        root,
+        format,
+        edges,
+        algorithm,
+        min_confidence,
+        max_nodes,
+        focus,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +579,62 @@ mod tests {
     #[test]
     fn base_url_appends_mcp_path() {
         assert_eq!(base_url("127.0.0.1:51786"), "http://127.0.0.1:51786/mcp");
+    }
+
+    #[test]
+    fn build_ui_url_encodes_root_and_all_knobs() {
+        let addr: SocketAddr = "127.0.0.1:51786".parse().unwrap();
+        let url = build_ui_url(
+            &addr,
+            Path::new("/tmp/my repo"),
+            "html",
+            "all",
+            "label_propagation",
+            Some(0.5),
+            Some(200),
+            Some("src/mcp"),
+        );
+        assert!(url.starts_with("http://127.0.0.1:51786/ui?"), "got {url}");
+        // A space and `/` in the root are percent/plus-encoded — the query survives the round-trip.
+        assert!(url.contains("root=%2Ftmp%2Fmy+repo"), "root encoded: {url}");
+        assert!(url.contains("format=html"), "{url}");
+        assert!(url.contains("edges=all"), "{url}");
+        assert!(url.contains("algorithm=label_propagation"), "{url}");
+        assert!(url.contains("min_confidence=0.5"), "{url}");
+        assert!(url.contains("max_nodes=200"), "{url}");
+        assert!(url.contains("focus=src%2Fmcp"), "{url}");
+        // Round-trips back through the route parser to the same knobs.
+        let query = url.split_once('?').unwrap().1;
+        let args = parse_ui_args(Some(query)).expect("route parses its own URL");
+        assert_eq!(args.root, PathBuf::from("/tmp/my repo"));
+        assert_eq!(args.format, "html");
+        assert_eq!(args.min_confidence, Some(0.5));
+        assert_eq!(args.max_nodes, Some(200));
+        assert_eq!(args.focus.as_deref(), Some("src/mcp"));
+    }
+
+    #[test]
+    fn build_ui_url_omits_absent_optionals() {
+        let addr: SocketAddr = "127.0.0.1:51786".parse().unwrap();
+        let url = build_ui_url(&addr, Path::new("/repo"), "svg", "calls", "louvain", None, None, None);
+        assert!(url.contains("format=svg"), "{url}");
+        assert!(!url.contains("min_confidence"), "{url}");
+        assert!(!url.contains("max_nodes"), "{url}");
+        assert!(!url.contains("focus"), "{url}");
+    }
+
+    #[test]
+    fn parse_ui_args_requires_root_and_defaults_knobs() {
+        assert!(parse_ui_args(Some("format=html")).is_none(), "root is required");
+        assert!(parse_ui_args(Some("root=%20%20")).is_none(), "blank root rejected");
+        assert!(parse_ui_args(None).is_none());
+        let args = parse_ui_args(Some("root=%2Frepo")).expect("root-only parses");
+        assert_eq!(args.root, PathBuf::from("/repo"));
+        assert_eq!(args.format, "html");
+        assert_eq!(args.edges, "all");
+        assert_eq!(args.algorithm, "label_propagation");
+        assert_eq!(args.min_confidence, None);
+        assert_eq!(args.max_nodes, None);
+        assert_eq!(args.focus, None);
     }
 }

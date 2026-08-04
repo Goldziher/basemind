@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Interactive UI over HTTP + the `ui` tool (ADR-0006).** A new `ui` MCP tool (and `query ui` CLI, in
+  full parity) renders the code-graph and returns a URL to view and drive it: a live
+  `http://<addr>/ui?root=…` page served by the basemind daemon's HTTP front-end when one is reachable,
+  otherwise a `file://` URL to the self-contained offline export (which the tool always writes). The
+  served page is the same zero-dependency interactive canvas as `display`/`graph_export html`, so a
+  browser — or an agent driving one — can navigate, search, pan/zoom, and screenshot it. `open: false`
+  returns the URL without launching a viewer (agents/tests). The daemon's streamable-HTTP front-end
+  gained a `GET /ui` route alongside `POST /mcp` (both behind the `comms` feature).
 - **Desktop UI launch path (ADR-0006, first slice).** A new `basemind ui` subcommand launches the
   desktop UI front-end (`basemind-ui`) by re-exec'ing the sibling binary shipped alongside `basemind`
   in the release archive — mirroring how `basemind agent` launches `basemind-tui`. This slice wires

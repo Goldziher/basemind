@@ -171,7 +171,7 @@ pub mod params {
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
     };
     pub use super::types_graph::CallGraphParams;
-    pub use super::types_graphview::{DisplayParams, GraphExportParams};
+    pub use super::types_graphview::{DisplayParams, GraphExportParams, UiParams};
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,

@@ -20,7 +20,9 @@ use super::helpers_traverse::{describe, kinds_from};
 use super::shared_state::SharedReadStack;
 use super::traverse::Adjacency;
 use super::types::LifecycleNotice;
-use super::types_graphview::{DisplayParams, DisplayResponse, GraphExportParams, GraphExportResponse};
+use super::types_graphview::{
+    DisplayParams, DisplayResponse, GraphExportParams, GraphExportResponse, UiParams, UiResponse,
+};
 use crate::index::IndexDb;
 
 /// Sweep bound for community detection when tagging nodes; converges well inside this on real graphs.
@@ -314,39 +316,42 @@ fn report_for_outcome(outcome: OpenOutcome) -> (bool, &'static str, Option<Strin
     }
 }
 
-/// Attempt to open `path` in the user's default desktop viewer, best-effort. Never fails the tool:
+/// Attempt to open `target` in the user's default desktop viewer, best-effort. Never fails the tool:
 /// any inability to launch degrades to [`OpenOutcome::Skipped`] with a reason, so the caller always
-/// still has the written export path.
+/// still has the written export path (or the served URL). `target` is either a filesystem path to
+/// basemind's own export (the `display` tool and the `ui` file fallback) or a loopback
+/// `http://127.0.0.1:<port>/ui…` URL (the `ui` served path) — the platform openers accept both.
 ///
-/// Injection surface: `path` is basemind's own export file, but its *parent directories* come from the
-/// workspace path / `BASEMIND_DATA_HOME`, which are environment-controlled and may contain shell or
-/// `cmd` metacharacters. Every launcher here is therefore a **real program invoked with the path as a
-/// discrete argument — never a shell string and never `cmd /C start`**, so the OS argument parser
-/// (`execvp` on Unix, `CommandLineToArgvW` for `explorer.exe`) treats the path literally: no
-/// command-injection or path-traversal surface (CWE-22 / CWE-78). `start` is deliberately avoided — it
-/// is a `cmd.exe` builtin that re-parses `& ^ % ( )` even inside quotes.
-fn open_in_viewer(path: &std::path::Path) -> OpenOutcome {
+/// Injection surface: a path's *parent directories* come from the workspace path /
+/// `BASEMIND_DATA_HOME`, which are environment-controlled and may contain shell or `cmd`
+/// metacharacters; a served URL is basemind's own loopback address. Either way every launcher here is
+/// a **real program invoked with `target` as a discrete argument — never a shell string and never
+/// `cmd /C start`**, so the OS argument parser (`execvp` on Unix, `CommandLineToArgvW` for
+/// `explorer.exe`) treats it literally: no command-injection or path-traversal surface (CWE-22 /
+/// CWE-78). `start` is deliberately avoided — it is a `cmd.exe` builtin that re-parses `& ^ % ( )`
+/// even inside quotes.
+fn open_in_viewer(target: &std::ffi::OsStr) -> OpenOutcome {
     #[cfg(target_os = "macos")]
     {
-        spawn_opener("open", &[path.as_os_str()])
+        spawn_opener("open", &[target])
     }
     #[cfg(target_os = "linux")]
     {
         if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
             return OpenOutcome::Skipped("no GUI session (DISPLAY/WAYLAND_DISPLAY unset)".to_string());
         }
-        spawn_opener("xdg-open", &[path.as_os_str()])
+        spawn_opener("xdg-open", &[target])
     }
     #[cfg(target_os = "windows")]
     {
-        // `explorer.exe <path>` opens the default handler as a real PE program (args parsed by
+        // `explorer.exe <target>` opens the default handler as a real PE program (args parsed by
         // CommandLineToArgvW), so `& ^ % ( )` in the export's parent directories stay literal —
         // unlike `cmd /C start`, which re-interprets them. explorer's exit code is unreliable (it
         // often returns nonzero even on success), so a clean *spawn* is the launch signal; a dropped
         // Child handle is reaped by the OS on Windows (no zombie), and spawn returns at once so the
         // caller's timeout never fires on this path.
         match std::process::Command::new("explorer.exe")
-            .arg(path)
+            .arg(target)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -358,7 +363,7 @@ fn open_in_viewer(path: &std::path::Path) -> OpenOutcome {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
-        let _ = path;
+        let _ = target;
         OpenOutcome::Skipped("no desktop opener for this platform".to_string())
     }
 }
@@ -451,7 +456,7 @@ pub(super) async fn run_display(
         // I/O) rather than the async worker pool the daemon runtime services other tool calls on, and
         // bound it: a launcher blocking on a chooser/portal degrades to export-only, not a hung call.
         let path = output_path.clone();
-        let launch = tokio::task::spawn_blocking(move || open_in_viewer(std::path::Path::new(&path)));
+        let launch = tokio::task::spawn_blocking(move || open_in_viewer(std::ffi::OsStr::new(&path)));
         match tokio::time::timeout(OPENER_LAUNCH_TIMEOUT, launch).await {
             Ok(Ok(outcome)) => report_for_outcome(outcome),
             Ok(Err(join_err)) => (false, "export", Some(format!("opener task failed: {join_err}"))),
@@ -481,6 +486,164 @@ pub(super) async fn run_display(
         notice,
         elapsed_us: elapsed_us(started),
     })
+}
+
+/// The rendered UI payload plus the counts and format the `ui` surfaces report. Produced by
+/// [`render_ui_parts`] and consumed by both [`run_ui`] (the tool) and the `/ui` HTTP route, so the two
+/// surfaces render byte-identically from one code path.
+pub(super) struct UiParts {
+    pub content: String,
+    pub format: GraphFormat,
+    pub node_count: u32,
+    pub edge_count: u32,
+    pub community_count: u32,
+    pub truncated: bool,
+}
+
+/// Parse the UI knobs (visual formats only, like `display`), build the canonical graph view, and
+/// render it. The single producer shared by the `ui` tool and the `/ui` route; it neither awaits the
+/// cache nor writes or opens anything — the caller owns those side effects.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render_ui_parts(
+    shared: &SharedReadStack,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    format: &str,
+    edges: &str,
+    algorithm: &str,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    focus: Option<String>,
+) -> Result<UiParts, McpError> {
+    let format = GraphFormat::parse(format)
+        .filter(|f| matches!(f, GraphFormat::Html | GraphFormat::Svg))
+        .ok_or_else(|| {
+            McpError::invalid_params(
+                format!("ui format must be html or svg — the graph data formats live on graph_export, got {format:?}"),
+                None,
+            )
+        })?;
+    let algo = CommunityAlgo::parse(algorithm).ok_or_else(|| {
+        McpError::invalid_params(
+            format!("algorithm must be label_propagation or louvain, got {algorithm:?}"),
+            None,
+        )
+    })?;
+    let kinds = kinds_from(edges, false)?;
+    let min_conf = min_confidence.unwrap_or(0.0).clamp(0.0, 1.0);
+    let max_nodes = max_nodes.unwrap_or(DEFAULT_MAX_NODES).min(MAX_MAX_NODES) as usize;
+
+    let view = build_graph_view(shared, idx, cache, kinds, min_conf, algo, focus, max_nodes)?;
+    let mut comms: AHashSet<u32> = AHashSet::new();
+    for node in &view.nodes {
+        comms.insert(node.community);
+    }
+    let content = graph_view::render(&view, format);
+    Ok(UiParts {
+        content,
+        format,
+        node_count: view.nodes.len() as u32,
+        edge_count: view.edges.len() as u32,
+        community_count: comms.len() as u32,
+        truncated: view.truncated,
+    })
+}
+
+/// `ui` (ADR-0006) — open the interactive basemind UI for a human. Renders the graph, always writes
+/// the self-contained export (so there is a durable `file://` artifact), and resolves a URL: a live
+/// `http://<addr>/ui?root=…` page when a basemind daemon is serving HTTP for this machine, otherwise
+/// the `file://` export. `open` (default) launches the URL in the human's default viewer, reusing the
+/// same reactor-safe, best-effort launcher as `display`; `open:false` returns the URL without
+/// launching (agents/tests). The durable product is the URL, so — unlike `display`, whose whole point
+/// is the launch — the launch outcome is not reported.
+pub(super) async fn run_ui(
+    shared: &SharedReadStack,
+    idx: Option<&IndexDb>,
+    cache: &MapCache,
+    basemind_dir: &std::path::Path,
+    params: UiParams,
+    notice: Option<LifecycleNotice>,
+    started: std::time::Instant,
+) -> Result<CallToolResult, McpError> {
+    let parts = render_ui_parts(
+        shared,
+        idx,
+        cache,
+        &params.format,
+        &params.edges,
+        &params.algorithm,
+        params.min_confidence,
+        params.max_nodes,
+        params.focus.clone(),
+    )?;
+    // Always persist so there is a stable artifact backing the `file://` fallback and any viewer open.
+    let output_path = write_export(basemind_dir, parts.format, &parts.content)?;
+
+    let (url, served, method, detail) = match resolve_served_ui_url(
+        &shared.root,
+        &params.format,
+        &params.edges,
+        &params.algorithm,
+        params.min_confidence,
+        params.max_nodes,
+        params.focus.as_deref(),
+    ) {
+        Some(url) => (url, true, "http", None),
+        None => (
+            format!("file://{output_path}"),
+            false,
+            "file",
+            Some("no basemind daemon serving HTTP; using the written export file".to_string()),
+        ),
+    };
+
+    if params.open {
+        // Reactor-safe, best-effort launch (mirrors `run_display`): offload the external opener to the
+        // blocking pool and bound it, so a launcher blocking on a chooser/portal never pins an async
+        // worker or hangs the call. The URL is the durable product; the launch outcome is not reported.
+        let target = url.clone();
+        let launch = tokio::task::spawn_blocking(move || open_in_viewer(std::ffi::OsStr::new(&target)));
+        let _ = tokio::time::timeout(OPENER_LAUNCH_TIMEOUT, launch).await;
+    }
+
+    json_result(&UiResponse {
+        url,
+        served,
+        method: method.to_string(),
+        output_path,
+        detail,
+        node_count: parts.node_count,
+        edge_count: parts.edge_count,
+        community_count: parts.community_count,
+        truncated: parts.truncated,
+        notice,
+        elapsed_us: elapsed_us(started),
+    })
+}
+
+/// Resolve the live daemon-served UI URL for `root`, or `None` when no reachable HTTP daemon is
+/// serving it (no comms build, no daemon running, or the port is not answering). On `None` the `ui`
+/// tool falls back to the written `file://` export. The comms build delegates to
+/// [`crate::comms::http_frontend::served_ui_url`], which reads the portfile and probes the port.
+#[allow(clippy::too_many_arguments)]
+fn resolve_served_ui_url(
+    root: &std::path::Path,
+    format: &str,
+    edges: &str,
+    algorithm: &str,
+    min_confidence: Option<f32>,
+    max_nodes: Option<u32>,
+    focus: Option<&str>,
+) -> Option<String> {
+    #[cfg(all(feature = "comms", any(unix, windows)))]
+    {
+        crate::comms::http_frontend::served_ui_url(root, format, edges, algorithm, min_confidence, max_nodes, focus)
+    }
+    #[cfg(not(all(feature = "comms", any(unix, windows))))]
+    {
+        let _ = (root, format, edges, algorithm, min_confidence, max_nodes, focus);
+        None
+    }
 }
 
 #[cfg(test)]

@@ -49,6 +49,26 @@ async fn http_post(addr: &str, target: &str, body: &[u8], extra_headers: &[(&str
     (status, body)
 }
 
+/// One HTTP/1.1 GET over loopback, returning `(status_code, lowercased_header_block, body)`.
+/// `Connection: close` lets us read to EOF without parsing `Content-Length`.
+async fn http_get(addr: &str, target: &str) -> (u16, String, String) {
+    let mut stream = TcpStream::connect(addr).await.expect("connect loopback");
+    let request = format!("GET {target} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.expect("write request");
+    stream.flush().await.expect("flush");
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.expect("read response");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let status = text
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("no status line in response: {text}"));
+    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    (status, head.to_lowercase(), body.to_string())
+}
+
 fn json_headers() -> Vec<(&'static str, &'static str)> {
     vec![
         ("content-type", "application/json"),
@@ -136,6 +156,65 @@ async fn streamable_http_serves_initialize_and_tools_list() {
     // --- routing: a missing root is a 404 ---
     let (status, _) = http_post(&addr, "/mcp", list.to_string().as_bytes(), &json_headers()).await;
     assert_eq!(status, 404, "missing ?root must 404");
+
+    shutdown_tx.send(true).ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+}
+
+/// ADR-0006: `GET /ui?root=<repo>` serves the self-contained interactive graph page (the browser/
+/// agent-drivable twin the `ui` tool points at), and the route's error paths return the right status.
+#[tokio::test]
+async fn ui_route_serves_interactive_html() {
+    basemind::store::init_isolated_cache();
+
+    let comms_dir = tempfile::tempdir().expect("comms tempdir");
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    std::fs::write(
+        repo.path().join("a.rs"),
+        b"pub fn alpha() { beta(); }\npub fn beta() {}\n",
+    )
+    .expect("write source");
+    let root = std::fs::canonicalize(repo.path()).expect("canonicalize repo root");
+
+    // SAFETY: set before the server task reads it; both HTTP tests use the same "127.0.0.1:0" value,
+    // so a concurrent set is benign, and each test discovers its actual port via its own portfile.
+    unsafe { std::env::set_var(http_frontend::HTTP_ADDR_ENV, "127.0.0.1:0") };
+
+    let store = Arc::new(CommsStore::open(comms_dir.path()).expect("open comms store"));
+    let broker = Arc::new(Broker::new(store));
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let broker_for_http = broker.clone();
+    let comms_path = comms_dir.path().to_path_buf();
+    let server = tokio::spawn(async move { http_frontend::serve_http(broker_for_http, comms_path, shutdown_rx).await });
+
+    let addr = http_frontend::await_http_ready(comms_dir.path(), Duration::from_secs(10))
+        .await
+        .expect("streamable-HTTP transport ready");
+
+    let root_str = root.to_str().expect("utf-8 repo path");
+    // The route reads a percent-encoded root; `/` encodes to %2F.
+    let encoded_root = root_str.replace('/', "%2F");
+    let (status, head, body) = http_get(&addr, &format!("/ui?root={encoded_root}")).await;
+    assert_eq!(status, 200, "GET /ui must return 200: {body}");
+    assert!(head.contains("content-type: text/html"), "html content-type: {head}");
+    assert!(
+        body.contains("<!doctype html>"),
+        "serves the self-contained page: {}",
+        &body[..body.len().min(120)]
+    );
+    assert!(body.contains("id=\"c\""), "the canvas element is present");
+    assert!(body.contains("id=\"search\""), "the live-search input is present");
+    assert!(
+        body.contains("application/json"),
+        "the embedded graph-data island is present"
+    );
+
+    // A missing root is a 400 (the query is malformed), a nonexistent root is a 404.
+    let (status, _, _) = http_get(&addr, "/ui").await;
+    assert_eq!(status, 400, "missing ?root must 400");
+    let (status, _, _) = http_get(&addr, "/ui?root=%2Fno%2Fsuch%2Fpath%2Fbm-xyz").await;
+    assert_eq!(status, 404, "a root that does not resolve must 404");
 
     shutdown_tx.send(true).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
