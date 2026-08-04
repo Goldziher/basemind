@@ -49,6 +49,6 @@ them.
 | [0005](0005-rendering-engine.md) | Rendering engine — one payload, pluggable renderers | Accepted |
 | [0006](0006-interactive-ui-tauri.md) | Interactive UI — Tauri desktop app | Proposed |
 | [0007](0007-agent-launchable-display-tool.md) | Agent-launchable UI display tool | Proposed |
-| [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Proposed |
-| [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Proposed |
-| [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Proposed |
+| [0008](0008-documents-code-graph.md) | Documents ↔ code graph | Accepted |
+| [0009](0009-rationale-decision-nodes.md) | Rationale / decision nodes | Accepted |
+| [0010](0010-branch-integration-release-strategy.md) | Branch, integration & release strategy | Accepted |

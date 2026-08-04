@@ -1,10 +1,23 @@
 # ADR-0008: Documents ↔ code graph
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented on `feat/agent-layer`, 2026-08-04)
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0002 (edge provenance + confidence),
   ADR-0009 (rationale / decision nodes)
+
+## Implementation note
+
+Landed feature-gated behind `documents` as `NodeKey::DocChunk` + `EdgeKind::Documents` and a read-side
+`documents` build lane in `src/mcp/codegraph.rs`. At document-scan time each chunk's keyword/entity
+name mentions and path-like citations are written to a vector-free LanceDB `doc_links` table
+(`src/scanner_doc_links.rs`, `src/lance/doc_links.rs`) — persisted in the **document store, not the code
+index**, so ADR-0008 required **no `RELEASE_MINOR` bump**. The serve cache-warm path reloads the links
+into `MapCache.doc_links` on a non-reactor thread (avoiding the `LanceStore` `block_on`-in-reactor
+hazard). Resolution is deferred to the build lane: a name mention resolves against the repo symbol table
+(INFERRED/AMBIGUOUS/virtual), a path citation to an indexed file is EXTRACTED (else INFERRED). Deferred
+per the ADR: audio/video transcription and model-based entity linking — the producer is a deterministic
+text heuristic.
 
 ## Context
 

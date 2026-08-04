@@ -1,10 +1,26 @@
 # ADR-0009: Rationale / decision nodes
 
-- **Status:** Proposed
+- **Status:** Accepted (implemented on `feat/agent-layer`, 2026-08-04)
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 (unified typed code-graph), ADR-0002 (edge provenance + confidence),
   ADR-0008 (documents ↔ code graph)
+
+## Implementation note
+
+Landed as `NodeKey::{Rationale, Decision}` + `EdgeKind::{Annotates, Cites}` with two read-side build
+lanes in `src/mcp/codegraph.rs`, fed by a deterministic comment classifier in
+`src/extract/rationale.rs` that populates `FileMapL1.rationale` (WHY/RATIONALE/NOTE/TODO/FIXME/HACK/
+XXX/SAFETY markers + normalized `ADR-`/`RFC-NNNN` citations). `Annotates` attaches a note to the
+nearest enclosing/following symbol by proximity (INFERRED); `Cites` resolves a citation to its ADR/RFC
+file (EXTRACTED) or a virtual node when unresolved (INFERRED), so `docs/adr/` is self-hosting.
+
+The persisted-state change landed as a `#[serde(default)]` field on the L1 blob, which is
+backward-compatible, so it did **not** require a hand-edited `RELEASE_MINOR` bump: existing repos
+populate `rationale` on their next rescan, and the full cache wipe rides the next minor-release cut via
+the single sanctioned `release:sync-version` bumper (per the schema-and-blob-compat + release-versioning
+policies). This keeps the "bound to a minor release, announced in the changelog" intent below without a
+mid-development version skew.
 
 ## Context
 

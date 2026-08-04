@@ -1,10 +1,18 @@
 # ADR-0010: Branch, integration & release strategy
 
-- **Status:** Proposed
+- **Status:** Accepted (adopted as the governing policy, 2026-08-04)
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0001 … ADR-0009 (all capabilities delivered under this roadmap),
   ADR-0006 (interactive UI), ADR-0007 (agent-launchable display)
+
+## Adoption note
+
+Adopted as the standing policy for this roadmap. Confirmed in practice by ADR-0008 and ADR-0009, which
+were authored on `feat/agent-layer` with **no dependency on the agent layer** (they touch only
+`codegraph` / `extract` / `lance`), so they are cherry-pickable to `main` per the mechanism below. The
+UI work (ADR-0006/0007) remains on the branch, and the document store stays feature-gated behind
+`documents` so default builds and the release matrix are unaffected.
 
 ## Context
 
