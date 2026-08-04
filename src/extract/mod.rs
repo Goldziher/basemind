@@ -4,6 +4,7 @@ pub mod l1;
 pub mod l2;
 pub mod l3;
 pub mod locals;
+mod rationale;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -100,7 +101,8 @@ pub struct FileMapL1 {
     /// Inline rationale markers (WHY/NOTE/TODO/FIXME/HACK/SAFETY) and decision-record
     /// citations classified from this file's comments (ADR-0009). Persisted in the L1 blob so
     /// the read-side graph build consumes them synchronously; `#[serde(default)]` keeps older
-    /// blobs deserializable. Populating this field is what gates the `RELEASE_MINOR` bump.
+    /// blobs deserializable, so no `RELEASE_MINOR` bump is required — repos populate it on their
+    /// next rescan (fully on the next minor-release cache wipe).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rationale: Vec<RationaleRecord>,
 }

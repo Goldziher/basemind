@@ -35,6 +35,7 @@ pub(crate) fn extract_l1_from_tree(
     };
 
     let (symbols, imports, implementations) = run_combined(lang, root, source)?;
+    let rationale = super::rationale::extract_rationale(root, source);
 
     Ok(FileMapL1 {
         schema_ver: SCHEMA_VER,
@@ -45,8 +46,7 @@ pub(crate) fn extract_l1_from_tree(
         symbols,
         imports,
         implementations,
-        // Populated by the rationale classifier (ADR-0009); empty until that lane lands.
-        rationale: Vec::new(),
+        rationale,
     })
 }
 
@@ -396,6 +396,7 @@ fn build_import(q: &Query, m: &QueryMatch, source: &[u8]) -> Option<Import> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extract::RationaleKind;
 
     #[test]
     fn extract_implementation_rust_trait_impl() {
@@ -470,6 +471,55 @@ pub fn good_two() {}
             names.contains(&"good_one") || names.contains(&"good_two"),
             "at least one well-formed sibling symbol should be recovered; got {names:?}"
         );
+    }
+
+    #[test]
+    fn extract_rationale_markers_and_citations_from_rust_comments() {
+        let src = br#"
+// WHY: keep the lock tight
+pub fn locked() {}
+
+// TODO: refactor
+pub fn old() {}
+
+pub fn danger() {
+    // SAFETY: ptr is valid
+    let _x = 1;
+}
+
+// see ADR-1 and RFC-2119
+pub fn cited() {}
+"#;
+        let map = extract_l1("rust", src).expect("extract");
+        let rationale = &map.rationale;
+        assert_eq!(rationale.len(), 4, "expected 4 rationale records; got {rationale:?}");
+
+        let why = rationale
+            .iter()
+            .find(|r| r.kind == RationaleKind::Why)
+            .expect("why record");
+        assert_eq!(why.text, "keep the lock tight");
+        assert!(why.citations.is_empty());
+
+        let todo = rationale
+            .iter()
+            .find(|r| r.kind == RationaleKind::Todo)
+            .expect("todo record");
+        assert_eq!(todo.text, "refactor");
+
+        let safety = rationale
+            .iter()
+            .find(|r| r.kind == RationaleKind::Safety)
+            .expect("safety record");
+        assert_eq!(safety.text, "ptr is valid");
+
+        let cited = rationale
+            .iter()
+            .find(|r| r.citations.contains(&"ADR-0001".to_string()))
+            .expect("cited record");
+        assert_eq!(cited.kind, RationaleKind::Note);
+        assert_eq!(cited.text, "see ADR-1 and RFC-2119");
+        assert_eq!(cited.citations, vec!["ADR-0001".to_string(), "RFC-2119".to_string()]);
     }
 
     #[test]

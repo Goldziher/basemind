@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Inline rationale extraction (ADR-0009).** L1 extraction now classifies source comments carrying
+  `WHY:` / `RATIONALE:` / `NOTE:` / `TODO:` / `FIXME:` / `HACK:` / `XXX:` / `SAFETY:` markers (and
+  bare comments citing `ADR`/`RFC` decision records) into `FileMapL1.rationale`, which the read-side
+  graph build consumes to emit `Annotates` / `Cites` edges. Blob-compatible (`#[serde(default)]`); no
+  schema bump.
+
 ### Changed
 
 - **`call_graph` is re-expressed over the shared `codegraph`.** The tool no longer maintains its own
