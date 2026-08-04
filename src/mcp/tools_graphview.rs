@@ -9,8 +9,8 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::helpers_graphview::run_graph_export;
-use super::types_graphview::GraphExportParams;
+use super::helpers_graphview::{run_display, run_graph_export};
+use super::types_graphview::{DisplayParams, GraphExportParams};
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_graphview")]
 impl BasemindServer {
@@ -67,6 +67,65 @@ impl BasemindServer {
         }
         .await;
         record_call(&self.state, "graph_export", &__params_json, __started, &__result);
+        __result
+    }
+
+    /// Show the code-graph to a human by opening a rendered view (ADR-0007).
+    #[tool(
+        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_graphview::DisplayResponse>()",
+        description = "Show a human the code-graph: render a *visual* view and open it in their \
+                       default desktop viewer — the agent's human-facing output channel, for when a \
+                       reviewer or pair should SEE what you found, not just read a description. \
+                       Renders the same canonical payload as graph_export (nodes carry \
+                       identity/label/location/kind + community + centrality; edges carry \
+                       kind + provenance/confidence/weight) but only in a visual `format`: \"html\" \
+                       (default; a self-contained, offline interactive page — pan/zoom/search/\
+                       community legend, zero dependencies) or \"svg\" (a static self-contained \
+                       picture). `focus` scopes to a path prefix; `edges` picks the lanes \
+                       (all/calls/imports/inherits/both/contains); `algorithm` \
+                       (label_propagation/louvain) tags communities; `min_confidence` floors edge \
+                       confidence; `max_nodes` (default 500, max 2000) keeps the most central nodes. \
+                       The view is always written to basemind's cache and its absolute `output_path` \
+                       returned. `open` (default true) launches the viewer; set false for headless \
+                       automation and tests so no viewer process is spawned. `displayed` reports \
+                       whether a viewer launched; `method` is \"viewer\" (opened in the OS default \
+                       handler) or \"export\" (written only — headless / no GUI session / open:false), \
+                       with a `detail` reason when it degraded. Use graph_export instead when you want the graph \
+                       DATA (node_link/dot/mermaid/graphml/cypher) rather than a picture for a human.",
+        // read_only_hint is false (unlike graph_export): by default this launches an external desktop
+        // viewer — a user-visible side effect on their session, not a pure read — so a client that
+        // auto-approves read-only tools should NOT silently pop a window without confirmation. The
+        // only persisted write is still a derived, content-addressed cache artifact (never the repo/
+        // index). open_world_hint is true because it reaches outside the process to the desktop.
+        annotations(read_only_hint = false, open_world_hint = true)
+    )]
+    pub(crate) async fn display(
+        &self,
+        Parameters(params): Parameters<DisplayParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let __started = std::time::Instant::now();
+        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
+        let __result: Result<CallToolResult, McpError> = async {
+            let __body = std::time::Instant::now();
+            self.state.await_cache_ready().await;
+            let store = self.state.shared.store.read().await;
+            let idx = store.index_db.as_ref().cloned();
+            let basemind_dir = store.basemind_dir.clone();
+            drop(store);
+            let cache = self.state.shared.cache.load_full();
+            run_display(
+                &self.state.shared,
+                idx.as_ref(),
+                &cache,
+                &basemind_dir,
+                params,
+                self.state.lifecycle_notice(),
+                __body,
+            )
+            .await
+        }
+        .await;
+        record_call(&self.state, "display", &__params_json, __started, &__result);
         __result
     }
 }

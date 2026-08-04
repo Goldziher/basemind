@@ -4664,6 +4664,101 @@ async fn graph_export_renders_every_format() {
     let _ = service.cancel().await;
 }
 
+/// ADR-0007: the `display` tool renders a *visual* view, always writes it to the export cache, and
+/// (with `open: false`, the headless/test path) degrades to export-only without spawning a viewer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_writes_visual_view_and_degrades_without_opening() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(
+        root.join("core.rs"),
+        "pub fn engine() {}\npub fn helper() { engine(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("app.rs"),
+        "use crate::core::helper;\npub fn run() { helper(); }\n",
+    )
+    .unwrap();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    // Default format is html; open:false takes the export-only path (never launches a viewer in CI).
+    let shown = service
+        .call_tool(call_params("display", json!({"open": false})))
+        .await
+        .expect("display html");
+    assert_structured_matches_text(&shown);
+    let body = decode_text(&shown);
+    assert_eq!(
+        body.get("format").and_then(Value::as_str),
+        Some("html"),
+        "default format html: {body}"
+    );
+    assert_eq!(
+        body.get("displayed").and_then(Value::as_bool),
+        Some(false),
+        "open:false does not launch a viewer: {body}"
+    );
+    assert_eq!(
+        body.get("method").and_then(Value::as_str),
+        Some("export"),
+        "degrades to export-only: {body}"
+    );
+    assert!(
+        body.get("node_count").and_then(Value::as_u64).unwrap_or(0) >= 3,
+        "nodes: {body}"
+    );
+    // The product is the file, not inline bytes: output_path is always present and content is not.
+    assert!(
+        body.get("content").is_none(),
+        "display does not return rendered bytes inline: {body}"
+    );
+    let output_path = body
+        .get("output_path")
+        .and_then(Value::as_str)
+        .expect("output_path always present");
+    assert!(
+        output_path.ends_with(".html"),
+        "html export named by extension: {output_path}"
+    );
+    let on_disk = std::fs::read_to_string(output_path).expect("export file exists on disk");
+    assert!(
+        on_disk.contains("<!doctype html>"),
+        "written file is the interactive HTML page"
+    );
+
+    // svg is the other accepted visual format.
+    let svg = service
+        .call_tool(call_params("display", json!({"format": "svg", "open": false})))
+        .await
+        .expect("display svg");
+    let body = decode_text(&svg);
+    assert_eq!(body.get("format").and_then(Value::as_str), Some("svg"), "{body}");
+    assert!(
+        body.get("output_path")
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.ends_with(".svg")),
+        "svg export path: {body}"
+    );
+
+    // A graph *data* format is rejected — display shows a picture; graph_export returns the data.
+    let rejected = service
+        .call_tool(call_params("display", json!({"format": "node_link", "open": false})))
+        .await;
+    assert!(
+        rejected.is_err(),
+        "a non-visual format must be rejected, not silently rendered"
+    );
+
+    let _ = service.cancel().await;
+}
+
 /// ADR-0009: a `// WHY:` comment citing an ADR surfaces a rationale node with an `annotates` edge to
 /// the code it precedes and a `cites` edge to the decision record. Extraction populates
 /// `l1.rationale` at scan time; `graph_export edges="rationale"` renders both edge kinds.

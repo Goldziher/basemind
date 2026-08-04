@@ -447,6 +447,15 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     )
     .await;
 
+    // open:false keeps the sweep headless — never launch a desktop viewer from the harness.
+    call(
+        svc,
+        &mut records,
+        "display",
+        json!({ "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
+    )
+    .await;
+
     if let Some(sample) = sample {
         call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
 
