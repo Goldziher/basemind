@@ -20,6 +20,7 @@ members = [
     "crates/basemind-agent",
     "crates/basemind-agent-ipc",
     "crates/basemind-tui",
+    "crates/basemind-ui",
     "crates/lsp-positions",
     "crates/stack-graphs",
     "crates/tree-sitter-graph",

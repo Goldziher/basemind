@@ -54,3 +54,20 @@ there is demand.
   mode.
 - **Embed a browser control ad hoc, bypassing the seam.** Rejected: throws away the transport
   architecture the agent layer was built around and couples the UI to engine internals.
+
+## Implementation note (first slice)
+
+The **launch path and packaging** shipped first, carrying no GUI-toolchain blast radius:
+
+- A new `crates/basemind-ui` workspace crate produces the sibling `basemind-ui` binary, and a
+  `basemind ui` subcommand (`src/ui_cmd.rs`) re-execs it from beside `basemind` in the release
+  archive — the exact pattern `basemind agent` uses for `basemind-tui`. It ships in every per-triple
+  archive via `scripts/package-release.sh` and tracks the release version in lock-step.
+- The interactive Tauri window — driving `basemind_agent::transport::AgentClient` and rendering the
+  ADR-0005 graph-view payload offline — lands behind an off-by-default `desktop` cargo feature in a
+  later slice, so `cargo build --workspace` / CI and default builds stay free of the per-platform
+  webview dependency (ADR-0010).
+- Until the window lands, `basemind ui` opens the offline, self-contained interactive HTML graph the
+  `display` tool produces (ADR-0007) — the working baseline the resident window replaces.
+
+Status stays **Proposed** until the interactive window and its seam bridge land.

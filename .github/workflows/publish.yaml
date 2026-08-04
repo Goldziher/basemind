@@ -361,6 +361,12 @@ jobs:
           cargo build --release -p basemind-tui --features room \
             --target "${{ matrix.triple }}"
 
+      - name: Build release desktop-UI binary
+        shell: bash
+        run: |
+          cargo build --release -p basemind-ui \
+            --target "${{ matrix.triple }}"
+
       - name: Package release
         shell: bash
         run: ./scripts/package-release.sh ${{ matrix.triple }}
@@ -532,6 +538,7 @@ jobs:
           export "${rustflags_var}=-C link-arg=${shim_obj}"
           cargo build --release --features full --bin basemind --target "$TRIPLE"
           cargo build --release -p basemind-tui --features room --target "$TRIPLE"
+          cargo build --release -p basemind-ui --target "$TRIPLE"
 
       - name: Verify glibc floor (<= 2.28)
         shell: bash

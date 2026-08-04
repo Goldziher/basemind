@@ -31,10 +31,10 @@ esac
 
 RELEASE_DIR="target/${TRIPLE}/release"
 
-# basemind is the code-map/MCP server; basemind-tui is the agent TUI. Both ship in every ~keep
-# per-triple archive, side by side at the archive root, so `basemind agent` can re-exec its ~keep
-# sibling basemind-tui found next to it. ~keep
-BINARIES=(basemind basemind-tui)
+# basemind is the code-map/MCP server; basemind-tui is the agent TUI; basemind-ui is the desktop ~keep
+# UI. All ship in every per-triple archive, side by side at the archive root, so `basemind agent` ~keep
+# and `basemind ui` can re-exec their sibling binaries found next to `basemind`. ~keep
+BINARIES=(basemind basemind-tui basemind-ui)
 
 for bin in "${BINARIES[@]}"; do
 	bin_path="${RELEASE_DIR}/${bin}${BINEXT}"

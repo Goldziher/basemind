@@ -13,6 +13,7 @@ use basemind::watcher::{BatchKind, WatchBatch};
 mod agent_cmd;
 mod comms_cli;
 mod lang_cli;
+mod ui_cmd;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -124,6 +125,8 @@ enum Cmd {
     Serve(ServeArgs),
     /// Launch the basemind agent TUI (a coding agent over the code map).
     Agent(AgentArgs),
+    /// Launch the basemind desktop UI (an interactive code graph over the code map).
+    Ui(UiArgs),
     /// Print a compact one-line summary of the daemon's currently-hot workspaces, for a shell
     /// statusline. Fast and silent: prints nothing and exits 0 when no daemon is running.
     Statusline,
@@ -258,6 +261,14 @@ struct AgentArgs {
     args: Vec<String>,
 }
 
+#[derive(clap::Args, Debug)]
+struct UiArgs {
+    /// Arguments forwarded verbatim to the sibling `basemind-ui` binary (e.g. `--root <path>`). The
+    /// environment is inherited unchanged.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    args: Vec<String>,
+}
+
 #[derive(Subcommand, Debug)]
 enum LangCmd {
     /// Show installed grammars and where they live.
@@ -361,6 +372,7 @@ fn main() -> Result<()> {
         Cmd::DetectWaste(args) => basemind::textcompress::cli::run_detect_waste(&args),
         Cmd::Serve(args) => cmd_serve(&root, &view, &args, json),
         Cmd::Agent(args) => agent_cmd::run(&root, &args.args),
+        Cmd::Ui(args) => ui_cmd::run(&root, &args.args),
         Cmd::Cache(action) => basemind::cli::run_cache(&root, action, json),
         // An explicit `--root` selects the per-repo line for that (resolved) workspace; bare
         // `basemind statusline` keeps the daemon hot-workspace summary.

@@ -1,0 +1,26 @@
+# This crate inherits `[workspace.lints]` from the root workspace via `[lints] workspace = true`. ~keep
+# It is the desktop-UI front-end (ADR-0006). The interactive Tauri window — which carries a per- ~keep
+# platform webview toolchain — lands behind a `desktop` feature in a later slice, so the default ~keep
+# build (and `cargo build --workspace` / CI) stays webview-free. ~keep
+[package]
+name = "basemind-ui"
+version = "0.22.3"
+edition = "2024"
+license = "MIT"
+description = "Desktop UI front-end for basemind — renders the code graph over the code map (ADR-0006)."
+publish = false
+
+[[bin]]
+name = "basemind-ui"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+basemind = { path = "../..", default-features = false }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

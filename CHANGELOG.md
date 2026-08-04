@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Desktop UI launch path (ADR-0006, first slice).** A new `basemind ui` subcommand launches the
+  desktop UI front-end (`basemind-ui`) by re-exec'ing the sibling binary shipped alongside `basemind`
+  in the release archive — mirroring how `basemind agent` launches `basemind-tui`. This slice wires
+  the launch path and packaging; today the binary opens the offline, self-contained interactive HTML
+  code graph (the same ADR-0005 payload the `display` tool produces). The resident Tauri window that
+  drives the agent client/event/command seam lands behind a `desktop` feature in a later slice, so
+  default builds stay free of the per-platform webview dependency.
 - **Inline rationale extraction (ADR-0009).** L1 extraction now classifies source comments carrying
   `WHY:` / `RATIONALE:` / `NOTE:` / `TODO:` / `FIXME:` / `HACK:` / `XXX:` / `SAFETY:` markers (and
   bare comments citing `ADR`/`RFC` decision records) into `FileMapL1.rationale`, which the read-side

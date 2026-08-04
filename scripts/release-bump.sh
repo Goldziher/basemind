@@ -39,6 +39,7 @@ WORKSPACE_CRATES=(
 	crates/basemind-agent/Cargo.toml
 	crates/basemind-agent-ipc/Cargo.toml
 	crates/basemind-tui/Cargo.toml
+	crates/basemind-ui/Cargo.toml
 )
 for crate_manifest in "${WORKSPACE_CRATES[@]}"; do
 	[[ -f "$crate_manifest" ]] || continue
