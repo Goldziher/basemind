@@ -4789,3 +4789,75 @@ async fn documents_lane_surfaces_doc_to_code_edges() {
 
     let _ = service.cancel().await;
 }
+
+/// ADR-0008 regression: the doc↔code lane must SURVIVE an unscoped rescan. Before the fix only the
+/// boot cache-warm attached `doc_links`; an unscoped `scan_and_refresh` rebuilt the `MapCache` bare, so
+/// the `documents` lane silently went empty after the first rescan. `doc_links_cache::attach_async`
+/// now reattaches the persisted links on that path. This test fails on the pre-fix tree.
+#[cfg(feature = "documents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn documents_lane_survives_unscoped_rescan() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("core.rs"), b"pub fn engine() {}\n").unwrap();
+    std::fs::write(
+        root.join("notes.svg"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\">\n\
+          <text>The engine lives in core.rs and drives the whole pipeline.</text>\n\
+          </svg>\n",
+    )
+    .unwrap();
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.embed = false;
+    basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(
+                root,
+                &mut store,
+                &cfg,
+                basemind::scanner::ScanSource::WorkingTree,
+                basemind::scanner::EmbedMode::Inline,
+            )
+            .expect("scan");
+        });
+    });
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let doc_edges = json!({ "edges": "documents", "format": "node_link" });
+
+    // Baseline: the boot cache-warm attached the persisted link.
+    let before = service
+        .call_tool(call_params("graph_export", doc_edges.clone()))
+        .await
+        .expect("graph_export documents (before)");
+    let edges_before = decode_text(&before)
+        .get("edge_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(edges_before >= 1, "baseline documents edge missing after warm");
+
+    // An unscoped rescan rebuilds the whole MapCache — the path that used to wipe doc_links.
+    let _ = service
+        .call_tool(call_params("rescan", json!({})))
+        .await
+        .expect("rescan");
+
+    let after = service
+        .call_tool(call_params("graph_export", doc_edges))
+        .await
+        .expect("graph_export documents (after)");
+    let edges_after = decode_text(&after)
+        .get("edge_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    assert!(edges_after >= 1, "the documents lane was wiped by an unscoped rescan");
+
+    let _ = service.cancel().await;
+}

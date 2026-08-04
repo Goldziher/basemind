@@ -5,71 +5,6 @@ use std::sync::Arc;
 use super::helpers;
 use super::{MapCache, ServerState};
 
-/// Load the persisted document→code links (ADR-0008) for this workspace's ingestion scope from the
-/// LanceDB document store, mapping each stored row back into a [`codegraph::DocLink`](super::codegraph::DocLink).
-///
-/// Opens the store read-side with the configured embedding preset's dim (matching how the scanner
-/// wrote it), so links load even on an embedding-free store. Returns empty — never fails a cache
-/// build — when the lance dir is absent or a read errors: the `documents` graph lane then simply has
-/// no edges. Runs only from the blocking cache-build closure / the std-thread view watcher, so the
-/// `LanceStore`'s internal `block_on` never nests inside the async reactor.
-#[cfg(feature = "documents")]
-fn load_doc_links(basemind_dir: &std::path::Path, scope: &str, preset: &str) -> Vec<super::codegraph::DocLink> {
-    use super::codegraph::{DocLink, DocMention};
-
-    let lance_dir = basemind_dir.join(crate::store::LANCE_DIR);
-    if !lance_dir.exists() {
-        return Vec::new();
-    }
-    let dim = match crate::scanner_docs::preset_dim(preset) {
-        Ok(dim) => dim,
-        Err(error) => {
-            tracing::warn!(?error, preset = %preset, "doc links load: unknown preset; skipping");
-            return Vec::new();
-        }
-    };
-    let lance = match crate::lance::LanceStore::open(&lance_dir, dim, preset) {
-        Ok(lance) => lance,
-        Err(error) => {
-            tracing::warn!(?error, "doc links load: open LanceStore failed; skipping");
-            return Vec::new();
-        }
-    };
-    let rows = match lance.all_doc_links(scope) {
-        Ok(rows) => rows,
-        Err(error) => {
-            tracing::warn!(?error, "doc links load: query failed; skipping");
-            return Vec::new();
-        }
-    };
-    rows.into_iter()
-        .map(|r| DocLink {
-            doc_path: crate::path::RelPath::from(r.doc_path.as_str()),
-            chunk_idx: r.chunk_idx,
-            mention: if r.mention_kind == "path" {
-                DocMention::Path(crate::path::RelPath::from(r.mention_value.as_str()))
-            } else {
-                DocMention::Name(r.mention_value)
-            },
-        })
-        .collect()
-}
-
-/// Attach the persisted document→code links to a freshly built [`MapCache`]. A no-op without the
-/// `documents` feature — the `&mut cache` argument keeps the binding "used" so the default build
-/// stays warning-free without an `#[allow]`.
-#[cfg(feature = "documents")]
-fn attach_doc_links(cache: &mut MapCache, basemind_dir: &std::path::Path, state: &ServerState) {
-    cache.doc_links = load_doc_links(
-        basemind_dir,
-        &state.shared.scope,
-        &state.shared.config.documents.embedding_preset,
-    );
-}
-
-#[cfg(not(feature = "documents"))]
-fn attach_doc_links(_cache: &mut MapCache, _basemind_dir: &std::path::Path, _state: &ServerState) {}
-
 /// Run an in-process blob GC once, logging the outcome and swallowing any error.
 ///
 /// Uses the UNLOCKED `store_gc` primitives (`collect_referenced_hashes` + `gc_blobs`)
@@ -203,7 +138,12 @@ pub(super) fn spawn_cache_warm(state: Arc<ServerState>) {
             let mut cache = MapCache::build(&store);
             // Load persisted doc↔code links (ADR-0008) on this blocking thread — the LanceStore's own
             // block_on must not nest inside the async reactor.
-            attach_doc_links(&mut cache, &store.basemind_dir, &build_state);
+            super::doc_links_cache::attach(
+                &mut cache,
+                &store,
+                &build_state.shared.config,
+                &build_state.shared.scope,
+            );
             cache
         })
         .await;
@@ -403,7 +343,7 @@ pub(super) fn spawn_view_watcher(state: Arc<ServerState>) {
                 let mut rebuilt = MapCache::build(&new_store);
                 // Reload doc↔code links (ADR-0008) after a refreshed-index rebuild; safe here because
                 // this runs on a plain std thread with no tokio runtime entered.
-                attach_doc_links(&mut rebuilt, &new_store.basemind_dir, &state);
+                super::doc_links_cache::attach(&mut rebuilt, &new_store, &state.shared.config, &state.shared.scope);
                 let new_cache = Arc::new(rebuilt);
                 tracing::info!(
                     files = new_cache.by_path.len(),

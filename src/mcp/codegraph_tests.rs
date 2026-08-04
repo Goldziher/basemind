@@ -300,13 +300,15 @@ fn documents_lane_links_doc_chunks_to_code() {
             chunk_idx: 1,
             mention: DocMention::Path(crate::path::RelPath::from("mod_a.rs")),
         },
-        // chunk 1 cites a file that is not indexed ⇒ INFERRED edge to a (virtual) file node.
+        // chunk 1 cites a file that is not indexed ⇒ INFERRED edge to a virtual Name node (never a
+        // phantom File node for a path that was never indexed).
         DocLink {
             doc_path: crate::path::RelPath::from("docs/guide.md"),
             chunk_idx: 1,
             mention: DocMention::Path(crate::path::RelPath::from("no/such_file.rs")),
         },
-    ];
+    ]
+    .into();
 
     let kinds = EdgeKindSet {
         documents: true,
@@ -346,12 +348,18 @@ fn documents_lane_links_doc_chunks_to_code() {
 
     let inferred_path = doc_edges
         .iter()
-        .find(|e| matches!(&e.to, NodeKey::File { path } if path.as_str() == Some("no/such_file.rs")))
-        .expect("an unindexed path citation still yields a file edge");
+        .find(|e| matches!(&e.to, NodeKey::Name(n) if n == "no/such_file.rs"))
+        .expect("an unindexed path citation resolves to a virtual Name node, not a phantom File");
     assert_eq!(
         inferred_path.provenance,
         Provenance::Inferred,
         "an unindexed citation degrades to INFERRED"
+    );
+    assert!(
+        !doc_edges
+            .iter()
+            .any(|e| matches!(&e.to, NodeKey::File { path } if path.as_str() == Some("no/such_file.rs"))),
+        "an unindexed path must NOT invent a File node"
     );
 
     // The lane stays off unless selected: a calls-only build emits no Documents edges.

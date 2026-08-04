@@ -406,18 +406,19 @@ pub(crate) fn normalize_decision_id(prefix: &str, number: u32) -> String {
 /// ordinary source file. Used to resolve rationale citations to [`NodeKey::Decision`] nodes.
 fn decision_id_of_path(path: &RelPath) -> Option<String> {
     let s = path.as_str()?;
-    let mut segments: Vec<&str> = s.split('/').collect();
-    let base = segments.pop()?;
-    let in_adr = segments.iter().any(|seg| seg.eq_ignore_ascii_case("adr"));
-    let in_rfc = segments.iter().any(|seg| seg.eq_ignore_ascii_case("rfc"));
+    // A decision record lives under an `adr/` or `rfc/` directory, so it always has a `/`; split off
+    // the filename and scan the directory segments without allocating a `Vec`.
+    let (dir, base) = s.rsplit_once('/')?;
+    let in_adr = dir.split('/').any(|seg| seg.eq_ignore_ascii_case("adr"));
+    let in_rfc = dir.split('/').any(|seg| seg.eq_ignore_ascii_case("rfc"));
     if !in_adr && !in_rfc {
         return None;
     }
-    let digits: String = base.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
+    let digits = base.as_bytes().iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 {
         return None;
     }
-    let number: u32 = digits.parse().ok()?;
+    let number: u32 = base[..digits].parse().ok()?;
     Some(normalize_decision_id(if in_adr { "ADR" } else { "RFC" }, number))
 }
 
@@ -680,11 +681,11 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     // they annotate (proximity ⇒ INFERRED), and cite decision records they reference (a resolved
     // ADR/RFC file ⇒ EXTRACTED; an unresolved citation ⇒ a virtual `Name` node, INFERRED).
     if kinds.annotates || kinds.cites {
-        let mut decisions_by_id: AHashMap<String, &RelPath> = AHashMap::new();
+        let mut decisions_by_id: AHashMap<String, Vec<&RelPath>> = AHashMap::new();
         if kinds.cites {
             for path in cache.by_path.keys() {
                 if let Some(id) = decision_id_of_path(path) {
-                    decisions_by_id.entry(id).or_insert(path);
+                    decisions_by_id.entry(id).or_default().push(path);
                 }
             }
         }
@@ -711,14 +712,25 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                 }
                 if kinds.cites {
                     for citation in &rec.citations {
-                        match decisions_by_id.get(citation.as_str()) {
-                            Some(dp) => push(
-                                from.clone(),
-                                NodeKey::Decision { path: (*dp).clone() },
-                                EdgeKind::Cites,
-                                Provenance::Extracted,
-                                1,
-                            ),
+                        match decisions_by_id.get(citation.as_str()).filter(|c| !c.is_empty()) {
+                            // Resolved to exactly one decision file ⇒ EXTRACTED; a colliding id that
+                            // two files both claim ⇒ AMBIGUOUS (one edge each), mirroring the other lanes.
+                            Some(paths) => {
+                                let prov = if paths.len() > 1 {
+                                    Provenance::Ambiguous
+                                } else {
+                                    Provenance::Extracted
+                                };
+                                for dp in paths {
+                                    push(
+                                        from.clone(),
+                                        NodeKey::Decision { path: (*dp).clone() },
+                                        EdgeKind::Cites,
+                                        prov,
+                                        1,
+                                    );
+                                }
+                            }
                             None => push(
                                 from.clone(),
                                 NodeKey::Name(citation.clone()),
@@ -739,7 +751,7 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
     // cited file is indexed, INFERRED otherwise.
     #[cfg(feature = "documents")]
     if kinds.documents {
-        for link in &cache.doc_links {
+        for link in cache.doc_links.iter() {
             if !in_focus(&link.doc_path) {
                 continue;
             }
@@ -750,18 +762,20 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
             match &link.mention {
                 DocMention::Name(name) => resolve_named_edge(&mut push, &defs_by_name, from, name, EdgeKind::Documents),
                 DocMention::Path(target) => {
-                    let prov = if cache.by_path.contains_key(target) {
-                        Provenance::Extracted
+                    if cache.by_path.contains_key(target) {
+                        push(
+                            from,
+                            NodeKey::File { path: target.clone() },
+                            EdgeKind::Documents,
+                            Provenance::Extracted,
+                            1,
+                        );
                     } else {
-                        Provenance::Inferred
-                    };
-                    push(
-                        from,
-                        NodeKey::File { path: target.clone() },
-                        EdgeKind::Documents,
-                        prov,
-                        1,
-                    );
+                        // Unresolved path: don't invent a `File` node for a path that was never
+                        // indexed — mirror the Name/import lane and point at a virtual `Name` node.
+                        let name = target.as_str().unwrap_or_default().to_string();
+                        push(from, NodeKey::Name(name), EdgeKind::Documents, Provenance::Inferred, 1);
+                    }
                 }
             }
         }

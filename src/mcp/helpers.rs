@@ -576,11 +576,16 @@ pub(super) async fn scan_and_refresh(
             .shared
             .corpus_bytes
             .store(corpus_bytes, std::sync::atomic::Ordering::Relaxed);
-        let cache = if was_scoped {
+        let mut cache = if was_scoped {
             state.shared.cache.load().with_delta(&store, &updated, &removed)
         } else {
             super::MapCache::build(&store)
         };
+        // A scoped rescan carries doc↔code links (ADR-0008) forward via `with_delta`; a full rebuild
+        // starts empty, so reattach them (off-reactor) before publish or the `documents` lane goes stale.
+        if !was_scoped {
+            super::doc_links_cache::attach_async(&mut cache, &store, &state.shared.config, &state.shared.scope).await;
+        }
         std::sync::Arc::new(cache)
     };
     state.shared.cache.store(new_cache);

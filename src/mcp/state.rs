@@ -169,11 +169,14 @@ impl ServerState {
                 let multi_thread = tokio::runtime::Handle::try_current()
                     .map(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
                     .unwrap_or(false);
-                let cache = if multi_thread {
+                let mut cache = if multi_thread {
                     tokio::task::block_in_place(|| MapCache::build(&store))
                 } else {
                     MapCache::build(&store)
                 };
+                // Attach persisted doc↔code links (ADR-0008) before publish; `attach_async` offloads
+                // the LanceStore read to a blocking thread so its block_on never nests on the reactor.
+                super::doc_links_cache::attach_async(&mut cache, &store, &self.shared.config, &self.shared.scope).await;
                 let files = cache.by_path.len();
                 self.shared.cache.store(Arc::new(cache));
                 self.shared.cache_generation.fetch_add(1, Relaxed);
@@ -217,9 +220,10 @@ pub(crate) struct MapCache {
     /// Persisted document→code links (ADR-0008), loaded from the LanceDB document store by the async
     /// cache-warm path ([`super::background::spawn_cache_warm`]) and the view watcher. Empty until
     /// loaded; the codegraph `documents` lane reads it. Preserved across incremental
-    /// [`with_delta`](Self::with_delta) rescans.
+    /// [`with_delta`](Self::with_delta) rescans. `Arc<[_]>` so a scoped rescan carries the links
+    /// forward with a refcount bump, not a deep clone of the whole vector.
     #[cfg(feature = "documents")]
-    pub(crate) doc_links: Vec<codegraph::DocLink>,
+    pub(crate) doc_links: std::sync::Arc<[codegraph::DocLink]>,
 }
 
 impl MapCache {
@@ -257,7 +261,7 @@ impl MapCache {
             calls,
             impls,
             #[cfg(feature = "documents")]
-            doc_links: Vec::new(),
+            doc_links: Default::default(),
         }
     }
 
@@ -275,7 +279,7 @@ impl MapCache {
             calls: None,
             impls: None,
             #[cfg(feature = "documents")]
-            doc_links: Vec::new(),
+            doc_links: Default::default(),
         }
     }
 
@@ -298,6 +302,15 @@ impl MapCache {
     ) -> Self {
         use rayon::prelude::*;
         if self.calls.is_some() || self.impls.is_some() {
+            // Carry doc↔code links (ADR-0008) forward from the previous cache rather than dropping
+            // them: a degraded full rebuild has no off-reactor context to reload the LanceStore.
+            #[cfg(feature = "documents")]
+            {
+                let mut rebuilt = Self::build(store);
+                rebuilt.doc_links = std::sync::Arc::clone(&self.doc_links);
+                return rebuilt;
+            }
+            #[cfg(not(feature = "documents"))]
             return Self::build(store);
         }
         let mut by_path = self.by_path.clone();
@@ -327,7 +340,7 @@ impl MapCache {
             calls: None,
             impls: None,
             #[cfg(feature = "documents")]
-            doc_links: self.doc_links.clone(),
+            doc_links: std::sync::Arc::clone(&self.doc_links),
         }
     }
 }
