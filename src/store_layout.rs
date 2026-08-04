@@ -246,6 +246,20 @@ pub fn init_isolated_cache() {
         unsafe {
             std::env::set_var(DATA_HOME_ENV, dir.path());
             std::env::set_var("BASEMIND_COMMS_DIR", comms_dir);
+            // A test binary spawns its own isolated daemon (per the comms_dir above). Pin a fast idle
+            // reap so it self-terminates within seconds of the suite going quiet instead of lingering
+            // the shipped window — otherwise a parallel `cargo test` accumulates one daemon per binary,
+            // each with tens of threads, which is what exhausted the process table. Only set when unset
+            // so a test that wants a specific reap window (e.g. the idle-reap suite, via `Command::env`)
+            // still wins. Well above any inter-RPC gap these suites have, so no daemon reaps mid-test.
+            for (key, value) in [
+                ("BASEMIND_COMMS_IDLE_REAP_SECS", "20"),
+                ("BASEMIND_COMMS_IDLE_CHECK_SECS", "3"),
+            ] {
+                if std::env::var_os(key).is_none() {
+                    std::env::set_var(key, value);
+                }
+            }
         }
     });
 }
