@@ -1,9 +1,30 @@
 # ADR-0007: Agent-launchable UI display tool
 
-- **Status:** Proposed
+- **Status:** Accepted — baseline implemented on `feat/agent-layer`, 2026-08-04; the live-window push
+  deferred with ADR-0006
 - **Date:** 2026-08-02
 - **Deciders:** basemind maintainers
 - **Related:** ADR-0005 (rendering engine), ADR-0006 (interactive UI)
+
+## Implementation note
+
+Landed as the `display` MCP tool (`src/mcp/{tools,helpers,types}_graphview.rs`), co-located with
+`graph_export` so it reuses the module-private `build_graph_view` + `write_export` without widening
+their visibility. The shipped slice is the ADR's **reliable baseline**: it renders the canonical
+`GraphView` (ADR-0005) to a *visual* format (`html` interactive by default, or `svg`), always writes
+the content-addressed export to the workspace cache, and then opens it in the human's default desktop
+viewer (`open` / `xdg-open` / `cmd start`, every child's stdio detached so the stdio MCP transport is
+never corrupted). It degrades to export-only — returning the path with `method: "export"` and a
+`detail` reason — when headless (no `DISPLAY`/`WAYLAND_DISPLAY`, opener missing, or `open: false`, the
+path tests and the harden sweep take so no viewer is ever spawned in CI). The launch is best-effort
+and never fails the call.
+
+The **rich native-window push** — dropping a typed descriptor onto a running basemind UI window over
+the agent-layer IPC — is deliberately deferred with **ADR-0006**: with no UI window built yet there is
+no channel consumer, so coding the display channel now would be building against nothing. `method`
+reserves `"window"` for it; until then a browser-opened self-contained interactive HTML page is the
+"agent opened a view for the human" primitive. Broadening the view descriptor beyond the graph (search
+results, file spans) waits on renderers for those shapes.
 
 ## Context
 
