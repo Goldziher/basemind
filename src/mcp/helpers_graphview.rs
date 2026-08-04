@@ -303,11 +303,28 @@ enum OpenOutcome {
     Skipped(String),
 }
 
+/// Map an [`OpenOutcome`] to the `display` response triple `(displayed, method, detail)`. Extracted
+/// as a pure function so the headline mapping — a launch MUST report `displayed=true`/`"viewer"`, a
+/// skip MUST report `displayed=false`/`"export"` with its reason — is unit-testable without spawning a
+/// real viewer (the tool's `open:true` path otherwise never runs in CI).
+fn report_for_outcome(outcome: OpenOutcome) -> (bool, &'static str, Option<String>) {
+    match outcome {
+        OpenOutcome::Launched => (true, "viewer", None),
+        OpenOutcome::Skipped(why) => (false, "export", Some(why)),
+    }
+}
+
 /// Attempt to open `path` in the user's default desktop viewer, best-effort. Never fails the tool:
 /// any inability to launch degrades to [`OpenOutcome::Skipped`] with a reason, so the caller always
-/// still has the written export path. `path` is basemind's own content-addressed export file — no
-/// caller-supplied component — passed as a single argument (never through a shell), so there is no
-/// command-injection or path-traversal surface (CWE-22 / CWE-78).
+/// still has the written export path.
+///
+/// Injection surface: `path` is basemind's own export file, but its *parent directories* come from the
+/// workspace path / `BASEMIND_DATA_HOME`, which are environment-controlled and may contain shell or
+/// `cmd` metacharacters. Every launcher here is therefore a **real program invoked with the path as a
+/// discrete argument — never a shell string and never `cmd /C start`**, so the OS argument parser
+/// (`execvp` on Unix, `CommandLineToArgvW` for `explorer.exe`) treats the path literally: no
+/// command-injection or path-traversal surface (CWE-22 / CWE-78). `start` is deliberately avoided — it
+/// is a `cmd.exe` builtin that re-parses `& ^ % ( )` even inside quotes.
 fn open_in_viewer(path: &std::path::Path) -> OpenOutcome {
     #[cfg(target_os = "macos")]
     {
@@ -322,13 +339,22 @@ fn open_in_viewer(path: &std::path::Path) -> OpenOutcome {
     }
     #[cfg(target_os = "windows")]
     {
-        use std::ffi::OsStr;
-        // `cmd /C start "" <path>`: the empty "" is start's window-title argument, so a quoted path
-        // is never misparsed as the title.
-        spawn_opener(
-            "cmd",
-            &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()],
-        )
+        // `explorer.exe <path>` opens the default handler as a real PE program (args parsed by
+        // CommandLineToArgvW), so `& ^ % ( )` in the export's parent directories stay literal —
+        // unlike `cmd /C start`, which re-interprets them. explorer's exit code is unreliable (it
+        // often returns nonzero even on success), so a clean *spawn* is the launch signal; a dropped
+        // Child handle is reaped by the OS on Windows (no zombie), and spawn returns at once so the
+        // caller's timeout never fires on this path.
+        match std::process::Command::new("explorer.exe")
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_child) => OpenOutcome::Launched,
+            Err(e) => OpenOutcome::Skipped(format!("could not launch explorer.exe: {e}")),
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
@@ -337,11 +363,13 @@ fn open_in_viewer(path: &std::path::Path) -> OpenOutcome {
     }
 }
 
-/// Run a viewer-launcher (`open` / `xdg-open` / `cmd start`) with every stdio stream detached to
-/// null. Detaching is mandatory: the stdio MCP transport speaks the protocol over this process's
-/// stdout, so a child inheriting stdout would corrupt the wire. Waiting reaps the launcher (which
-/// exits promptly after handing the file to the GUI app — the app itself is reparented, not waited
-/// on) and yields a real launch signal without accumulating zombies in the long-lived server.
+/// Run a Unix viewer-launcher (`open` / `xdg-open`) with every stdio stream detached to null.
+/// Detaching is mandatory: the stdio MCP transport speaks the protocol over this process's stdout, so
+/// a child inheriting stdout would corrupt the wire. `.status()` waits for and reaps the launcher — no
+/// zombie is left in the long-lived server. The launcher usually hands off to the GUI app and exits
+/// promptly, but `xdg-open`'s generic-desktop fallback can block until the viewer itself exits; the
+/// caller's [`OPENER_LAUNCH_TIMEOUT`] frees the response in that case (the abandoned wait finishes on
+/// the blocking pool). A non-success exit (e.g. `xdg-open` found no handler) degrades to Skipped.
 fn spawn_opener(program: &str, args: &[&std::ffi::OsStr]) -> OpenOutcome {
     match std::process::Command::new(program)
         .args(args)
@@ -425,8 +453,7 @@ pub(super) async fn run_display(
         let path = output_path.clone();
         let launch = tokio::task::spawn_blocking(move || open_in_viewer(std::path::Path::new(&path)));
         match tokio::time::timeout(OPENER_LAUNCH_TIMEOUT, launch).await {
-            Ok(Ok(OpenOutcome::Launched)) => (true, "viewer", None),
-            Ok(Ok(OpenOutcome::Skipped(why))) => (false, "export", Some(why)),
+            Ok(Ok(outcome)) => report_for_outcome(outcome),
             Ok(Err(join_err)) => (false, "export", Some(format!("opener task failed: {join_err}"))),
             Err(_elapsed) => (
                 false,
@@ -459,6 +486,22 @@ pub(super) async fn run_display(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_for_outcome_maps_launch_and_skip_distinctly() {
+        // The headline contract of `display{open:true}`: a launch is displayed=true/"viewer", a skip
+        // is displayed=false/"export" carrying the reason. This guards against a swapped mapping that
+        // the open:false smoke test (which never reaches this branch) cannot catch.
+        let (displayed, method, detail) = report_for_outcome(OpenOutcome::Launched);
+        assert!(displayed, "a launch reports displayed=true");
+        assert_eq!(method, "viewer");
+        assert_eq!(detail, None, "a launch carries no degrade reason");
+
+        let (displayed, method, detail) = report_for_outcome(OpenOutcome::Skipped("no GUI session".to_string()));
+        assert!(!displayed, "a skip reports displayed=false");
+        assert_eq!(method, "export");
+        assert_eq!(detail.as_deref(), Some("no GUI session"), "a skip surfaces its reason");
+    }
 
     #[test]
     fn spawn_opener_degrades_when_program_is_missing() {
