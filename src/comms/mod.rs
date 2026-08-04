@@ -24,12 +24,19 @@ pub mod daemon;
 /// out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward_handlers;
+/// RAII refcount guards (`LinkGuard` / `WorkGuard`) split out of `daemon.rs` for the line cap and
+/// re-exported from it so their historical `daemon::` path stays stable.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+mod daemon_guards;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_handlers;
 /// Second `impl Broker` block: the streamable-HTTP per-request seam (activity guard, workspace
 /// read-stack resolution, connection accounting), split out of `daemon.rs` for the line cap.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod daemon_http;
+/// Single-owner daemon lock + pidfile + the machine-wide live-daemon registry and ceiling.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+pub mod daemon_lock;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 pub mod frontend_inproc;
 #[cfg(all(feature = "comms", any(unix, windows)))]

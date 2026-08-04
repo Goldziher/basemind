@@ -21,7 +21,7 @@
 //! exactly what "nobody is using" means and why silence on the socket is not part of it.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
@@ -48,17 +48,25 @@ pub const MAX_LIMIT: u32 = 1000;
 /// Note what "idle" costs here: nothing holds a link between requests — every caller (`serve`, the
 /// CLI verbs, the MCP comms helpers) connects, does its RPC, and drops the client — so
 /// `link_count == 0` is the steady state even DURING an active session, and this window is really
-/// "thirty minutes since anyone last called us". So each throwaway `BASEMIND_COMMS_DIR` (every test
-/// run, every CI job) leaves a daemon resident for the whole window, and a machine running the suite
-/// every few minutes carries a standing population of them — around a dozen at ~6 MB RSS each,
-/// measured. They do all exit; the unbounded growth was [`LinkGuard`] leaking its refcount on an
-/// unwind, not this constant. Shortening the window would shrink that standing population, and
-/// reaping early is cheap (a respawn re-OPENS the on-disk fjall indexes rather than rebuilding
-/// them), but that is a change to shipped behaviour and is left as a separate decision.
-pub const IDLE_REAP_AFTER: Duration = Duration::from_secs(30 * 60);
+/// "N minutes since anyone last called us". Reaping early is cheap (a respawn re-OPENS the on-disk
+/// fjall indexes rather than rebuilding them), so this is deliberately short: ten minutes keeps an
+/// interactive session's daemon warm across normal pauses while shrinking the standing population a
+/// machine running the suite carries. The complementary [`BOOTSTRAP_TIMEOUT`] handles the other leak
+/// shape — a daemon nobody ever connected to (a spawn-and-abandon from a test or script).
+pub const IDLE_REAP_AFTER: Duration = Duration::from_secs(10 * 60);
 /// How often the idle reaper re-checks the broker. Small relative to [`IDLE_REAP_AFTER`], so the
 /// worst-case overshoot past the window is one tick.
 pub const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// Grace window for a daemon that NO client has ever connected to. A daemon is auto-spawned on
+/// demand, so one that never sees a single link within this window was spawned and abandoned (a test
+/// or script that ran `daemon ensure` then exited, or a spawner that died) — it self-terminates
+/// rather than lingering the full [`IDLE_REAP_AFTER`]. Distinct from idle: idle needs a prior
+/// connection; this fires precisely when there has never been one. See [`Broker::ever_served`].
+pub const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(120);
+/// Env override for [`BOOTSTRAP_TIMEOUT`], in whole seconds. Lets tests drive the bootstrap reap
+/// without waiting two minutes, and is a field escape hatch. See [`IDLE_REAP_AFTER_ENV`].
+pub const BOOTSTRAP_TIMEOUT_ENV: &str = "BASEMIND_COMMS_BOOTSTRAP_SECS";
 
 /// Env var overriding [`IDLE_REAP_AFTER`], in whole seconds. Exists so tests can exercise the reap
 /// without sleeping for half an hour; also a field escape hatch for a machine that wants daemons to
@@ -90,6 +98,11 @@ pub fn idle_reap_check_every() -> Duration {
     duration_from_env(IDLE_REAP_CHECK_EVERY_ENV, IDLE_REAP_CHECK_EVERY)
 }
 
+/// The effective bootstrap grace: [`BOOTSTRAP_TIMEOUT`] unless [`BOOTSTRAP_TIMEOUT_ENV`] overrides it.
+pub fn bootstrap_timeout() -> Duration {
+    duration_from_env(BOOTSTRAP_TIMEOUT_ENV, BOOTSTRAP_TIMEOUT)
+}
+
 /// How long a drain waits for links accepted before it started to finish their in-flight request
 /// before exiting anyway. Bounded so one wedged client cannot pin a draining daemon forever; ample
 /// for any request that is actually progressing, and the idle path normally finds zero links.
@@ -103,41 +116,10 @@ const DRAIN_POLL_EVERY: Duration = Duration::from_millis(25);
 /// a runaway rescan is how the maintenance loop silently parked forever (116 GB incident).
 const GC_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// RAII refcount for one connected link, held for the link's whole life; see
-/// [`Broker::register_link`].
-///
-/// The guard is taken in the ACCEPT LOOP, synchronously, before the link is spawned onto its own
-/// task — not inside that task. That ordering is the point: if the increment happened inside the
-/// spawned task, there would be a window in which a connection had been accepted but was not yet
-/// counted, and an idle check landing in that window would see zero links and reap a daemon that
-/// had just taken on work.
-pub struct LinkGuard {
-    broker: Arc<Broker>,
-}
-
-impl Drop for LinkGuard {
-    fn drop(&mut self) {
-        self.broker.link_disconnected();
-    }
-}
-
-/// RAII marker that a unit of daemon-internal work is in flight; see [`Broker::begin_work`].
-///
-/// Work with a client attached is already covered by the link refcount — the client blocks on the
-/// socket for the whole RPC. This exists for the work that has NO client: the periodic
-/// cross-workspace blob GC, which the reaper must not tear down mid-sweep (it is the sole writer of
-/// the global blob store, and a half-applied sweep is exactly the torn state the reap is supposed to
-/// avoid). Dropping the guard stamps activity, so a sweep that finishes also restarts the idle clock.
-pub struct WorkGuard<'a> {
-    broker: &'a Broker,
-}
-
-impl Drop for WorkGuard<'_> {
-    fn drop(&mut self) {
-        self.broker.work_inflight.fetch_sub(1, Ordering::SeqCst);
-        self.broker.touch();
-    }
-}
+/// The RAII refcount guards ([`LinkGuard`], [`WorkGuard`]) live in `daemon_guards.rs` to keep this
+/// file under the module-size cap. Re-exported here so their historical path (`daemon::LinkGuard`)
+/// stays stable for the front-ends that import them.
+pub use super::daemon_guards::{LinkGuard, WorkGuard};
 
 /// How long an ACTIVE thread may sit idle before the system auto-archives it. Conservative — a
 /// thread past two weeks of silence is almost certainly done. The daemon's periodic sweep
@@ -246,6 +228,10 @@ pub struct Broker {
     scan_cancel: crate::scanner::ScanCancel,
     pub(super) subscriber_count: AtomicUsize,
     link_count: AtomicUsize,
+    /// Latches true the first time any link connects. Drives the bootstrap reaper: a daemon that
+    /// stays `false` past [`BOOTSTRAP_TIMEOUT`] was spawned and abandoned (nobody ever dialed it) and
+    /// self-terminates. Never reset — once a session has used the daemon, the idle window governs.
+    ever_linked: AtomicBool,
     /// Daemon-internal work units in flight (see [`Broker::begin_work`]). Distinct from
     /// `link_count`: this covers work NO client is attached to — the blob GC above all — which the
     /// idle reaper would otherwise be free to tear down mid-sweep.
@@ -307,6 +293,7 @@ impl Broker {
             scan_cancel,
             subscriber_count: AtomicUsize::new(0),
             link_count: AtomicUsize::new(0),
+            ever_linked: AtomicBool::new(false),
             work_inflight: AtomicUsize::new(0),
             last_activity_ms: AtomicU64::new(0),
             http_inflight: AtomicUsize::new(0),
@@ -340,7 +327,17 @@ impl Broker {
     /// Record a newly connected front-end link and stamp activity.
     pub fn link_connected(&self) {
         self.link_count.fetch_add(1, Ordering::Relaxed);
+        self.ever_linked.store(true, Ordering::Relaxed);
         self.touch();
+    }
+
+    /// Whether any client has ever touched this daemon, over EITHER transport: a UDS/pipe link
+    /// (`ever_linked`) or a streamable-HTTP request (`last_http_ms` stamped away from its `0` epoch).
+    /// Feeds the bootstrap reaper — a daemon that stays `false` past [`BOOTSTRAP_TIMEOUT`] was
+    /// spawned and abandoned. Covering HTTP too keeps it from reaping a daemon serving `/ui` or
+    /// `/mcp` clients that never open a persistent link.
+    pub fn ever_served(&self) -> bool {
+        self.ever_linked.load(Ordering::Relaxed) || self.last_http_ms.load(Ordering::Relaxed) != 0
     }
 
     /// Record a front-end link closing and stamp activity.
@@ -471,6 +468,13 @@ impl Broker {
     pub fn begin_work(&self) -> WorkGuard<'_> {
         self.work_inflight.fetch_add(1, Ordering::SeqCst);
         WorkGuard { broker: self }
+    }
+
+    /// Note a client-less work unit finished: drop the in-flight count and stamp activity. The
+    /// counterpart to [`begin_work`](Self::begin_work), called by [`WorkGuard`]'s `Drop`.
+    pub(super) fn end_work(&self) {
+        self.work_inflight.fetch_sub(1, Ordering::SeqCst);
+        self.touch();
     }
 
     /// Number of daemon-internal work units currently running. Exposed for tests.

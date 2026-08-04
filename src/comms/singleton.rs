@@ -81,6 +81,20 @@ pub enum SingletonError {
         /// The stale daemon's process id.
         pid: u32,
     },
+    /// The machine already runs at (or above) the live-daemon ceiling, so spawning another is
+    /// refused rather than risking a runaway pile-up. Surfaced instead of silently forking an
+    /// N+1-th daemon — the leak class this guards against exhausted the process table.
+    #[error(
+        "refusing to spawn another basemind comms daemon: {count} are already live (ceiling {max}); \
+         run `basemind comms doctor` to inspect and `basemind comms stop --all` to reclaim, or raise \
+         BASEMIND_MAX_DAEMONS"
+    )]
+    TooManyDaemons {
+        /// Live daemons counted in the machine registry.
+        count: usize,
+        /// The effective ceiling.
+        max: usize,
+    },
 }
 
 /// Environment override for the comms data directory. When set, it is used verbatim as the
@@ -296,6 +310,14 @@ pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
             });
         }
     }
+    // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling first so
+    // a runaway (each isolated comms dir spawning its own detached daemon) is refused loudly, not
+    // silently piled up. The count prunes dead holders as a side effect.
+    let live = super::daemon_lock::count_live_daemons();
+    let max = super::daemon_lock::max_live_daemons();
+    if live >= max {
+        return Err(SingletonError::TooManyDaemons { count: live, max });
+    }
     ensure_daemon_with(paths, probe_alive, spawn_detached_daemon).await
 }
 
@@ -320,8 +342,10 @@ fn daemon_status(socket_path: &Path) -> Option<StatusReport> {
 }
 
 /// Best-effort `Stop` request asking a daemon to drain and exit. Errors are ignored — the caller
-/// polls the socket to confirm the daemon actually went away.
-fn request_stop(socket_path: &Path) {
+/// polls the socket to confirm the daemon actually went away. Public so `comms stop --all` can
+/// signal each registered daemon by its socket without opening a full [`CommsClient`] (which could
+/// respawn a daemon it meant to stop).
+pub fn request_stop(socket_path: &Path) {
     let _ = roundtrip(socket_path, &CommsRequest::Stop);
 }
 

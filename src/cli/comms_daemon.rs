@@ -59,6 +59,22 @@ pub fn run() -> Result<()> {
         .context("build tokio runtime")?;
 
     let result = runtime.block_on(async move {
+        // Single-owner lock FIRST, before bind: a redundant daemon converges (exit 0) without ever
+        // touching the live daemon's socket. This — plus the machine-registry entry it writes — is
+        // the authoritative "one daemon per comms dir" gate, uniform across Unix and Windows.
+        use crate::comms::daemon_lock::{DaemonLock, DaemonLockOutcome};
+        let _daemon_lock = match DaemonLock::acquire(&paths.comms_dir, env!("CARGO_PKG_VERSION")) {
+            Ok(DaemonLockOutcome::Acquired(lock)) => lock,
+            Ok(DaemonLockOutcome::AlreadyHeld(holder)) => {
+                tracing::info!(
+                    holder_pid = holder.as_ref().map(|record| record.pid),
+                    "comms daemon: another daemon already owns this comms dir; converging (exit 0)"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(anyhow::anyhow!("acquire daemon lock: {error}")),
+        };
+
         let listener = match singleton::bind_listener(&paths.socket_path, singleton::probe_alive) {
             Ok(listener) => listener,
             Err(singleton::SingletonError::AlreadyRunning(p)) => {
@@ -68,7 +84,19 @@ pub fn run() -> Result<()> {
             Err(e) => return Err(anyhow::anyhow!("bind comms socket: {e}")),
         };
 
-        let store = Arc::new(CommsStore::open(&paths.comms_dir).context("open comms store")?);
+        let store = match CommsStore::open(&paths.comms_dir) {
+            Ok(store) => Arc::new(store),
+            // The store flock is the second per-comms-dir guard. If a peer holds it we lost the race
+            // (e.g. a socket false-reclaim): converge quietly rather than exiting non-zero.
+            Err(crate::comms::store::CommsStoreError::Locked(path)) => {
+                tracing::info!(
+                    path = %path.display(),
+                    "comms daemon: store already owned by another daemon; converging (exit 0)"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(anyhow::anyhow!("open comms store: {error}")),
+        };
         match store.prune_expired(crate::comms::store::MESSAGE_TTL) {
             Ok(n) if n > 0 => {
                 tracing::info!(pruned = n, "comms: pruned expired messages on startup")
@@ -110,6 +138,23 @@ pub fn run() -> Result<()> {
                     );
                     break;
                 }
+            }
+        });
+
+        // Bootstrap reaper: a daemon nobody ever connects to (a spawn-and-abandon from a test or a
+        // script that ran `daemon ensure` then exited) self-terminates after one grace window,
+        // instead of lingering the full idle window. One-shot: once any client has touched either
+        // transport, the idle reaper above governs from then on.
+        let broker_for_bootstrap = broker.clone();
+        tokio::spawn(async move {
+            let bootstrap = crate::comms::daemon::bootstrap_timeout();
+            tokio::time::sleep(bootstrap).await;
+            if !broker_for_bootstrap.ever_served() {
+                tracing::info!(
+                    bootstrap_secs = bootstrap.as_secs(),
+                    "comms: no client connected within the bootstrap window; self-terminating"
+                );
+                broker_for_bootstrap.begin_drain().await;
             }
         });
 
