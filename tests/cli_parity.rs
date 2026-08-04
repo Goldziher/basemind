@@ -44,6 +44,7 @@ fn tool_to_cli() -> Vec<(&'static str, &'static str)> {
         ("subgraph", "query subgraph"),
         ("communities", "query communities"),
         ("graph_export", "query graph-export"),
+        ("display", "query display"),
         ("workspace_grep", "query grep"),
         ("list_files", "query list-files"),
         ("find_files", "query find-files"),

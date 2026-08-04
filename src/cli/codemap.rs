@@ -199,6 +199,24 @@ pub enum QueryCmd {
         #[arg(long)]
         write: bool,
     },
+    /// Render a visual view of the code-graph (html/svg) and open it in your default desktop viewer.
+    Display {
+        #[arg(long, default_value = "html")]
+        format: String,
+        #[arg(long)]
+        focus: Option<String>,
+        #[arg(long, default_value = "all")]
+        edges: String,
+        #[arg(long, default_value = "label_propagation")]
+        algorithm: String,
+        #[arg(long)]
+        min_confidence: Option<f32>,
+        #[arg(long)]
+        max_nodes: Option<u32>,
+        /// Only write the export and print its path; do not open a viewer.
+        #[arg(long = "no-open")]
+        no_open: bool,
+    },
     /// Regex content search across indexed files.
     Grep {
         pattern: String,
@@ -497,6 +515,27 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
             };
             let r = run_tool("graph_export", server.graph_export(Parameters(p)).await)?;
             emit("graph_export", &r, opts, out)
+        }
+        QueryCmd::Display {
+            format,
+            focus,
+            edges,
+            algorithm,
+            min_confidence,
+            max_nodes,
+            no_open,
+        } => {
+            let p = DisplayParams {
+                format,
+                focus,
+                edges,
+                algorithm,
+                min_confidence,
+                max_nodes,
+                open: !no_open,
+            };
+            let r = run_tool("display", server.display(Parameters(p)).await)?;
+            emit("display", &r, opts, out)
         }
         QueryCmd::Grep {
             pattern,
