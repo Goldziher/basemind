@@ -42,18 +42,21 @@ to first-class rationale nodes** on the unified graph (ADR-0001), and **link eac
 annotates (by proximity to the containing symbol) and to any decision record it cites. basemind's own
 `docs/adr/` records are ingested the same way, so the decision graph is self-hosting.
 
-This introduces a **new node kind with persisted extraction** in the code index, and therefore
-**requires a code-index schema version bump** and its wipe-and-rescan migration — called out
-explicitly, as the first ADR in this series to bump the code-index schema (ADR-0008 also persists, but
-in the document store, not the code index), and noted in the changelog per project policy. Classification of free-form
-comments is heuristic, so rationale links carry a confidence tag (ADR-0002).
+This introduces a **new node kind with persisted extraction** in the code index. The original design
+called for a **code-index schema version bump** and its wipe-and-rescan migration. In implementation
+this proved unnecessary: the persisted state landed as a `#[serde(default)]` field on the L1 blob,
+which is backward-compatible, so no `RELEASE_MINOR` bump was required (see the Implementation note
+above — existing repos populate `rationale` on their next rescan, and the wipe rides the next minor
+release). Classification of free-form comments is heuristic, so rationale links carry a confidence tag
+(ADR-0002).
 
 ## Consequences
 
 - The graph answers "why is this here / what decision governs this": rationale becomes navigable and
   renderable (ADR-0005) alongside structure, and ADRs become queryable.
-- Because the extraction is persisted, a schema bump + wipe is required — acceptable, bound to a minor
-  release and announced in the changelog, but a real migration users pay once.
+- The extraction is persisted, but as a backward-compatible `#[serde(default)]` field, so no schema
+  bump or forced wipe was needed — existing repos simply gain `rationale` on their next rescan (see the
+  Implementation note).
 - Rationale classification is heuristic; confidence tagging keeps weak classifications visibly weak.
 
 ## Alternatives considered
