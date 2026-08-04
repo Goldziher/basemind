@@ -97,6 +97,46 @@ pub struct FileMapL1 {
     /// L1 blobs without this field deserializable — no `SCHEMA_VER` bump needed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implementations: Vec<Implementation>,
+    /// Inline rationale markers (WHY/NOTE/TODO/FIXME/HACK/SAFETY) and decision-record
+    /// citations classified from this file's comments (ADR-0009). Persisted in the L1 blob so
+    /// the read-side graph build consumes them synchronously; `#[serde(default)]` keeps older
+    /// blobs deserializable. Populating this field is what gates the `RELEASE_MINOR` bump.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rationale: Vec<RationaleRecord>,
+}
+
+/// The class of an inline rationale marker (ADR-0009), classified by deterministic patterns over
+/// comment text. New variants extend the tail; `snake_case` wire names are stable.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RationaleKind {
+    /// An explicit rationale — `WHY:` / `Rationale:` — the design reason behind the code.
+    Why,
+    /// A `NOTE:` — a caveat or clarification worth surfacing.
+    Note,
+    /// A `TODO:` — deferred work.
+    Todo,
+    /// A `FIXME:` — a known defect to repair.
+    Fixme,
+    /// A `HACK:` / `XXX:` — a deliberate shortcut.
+    Hack,
+    /// A Rust `SAFETY:` invariant justifying an `unsafe` block.
+    Safety,
+}
+
+/// A rationale note extracted from a comment span and promoted to a graph node (ADR-0009).
+/// `start_byte` is the comment's offset; the read-side build attaches the note to the nearest
+/// code symbol and resolves any `citations` (e.g. `ADR-0001`) to decision-record nodes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RationaleRecord {
+    pub kind: RationaleKind,
+    /// The note text with the marker stripped, trimmed and length-bounded.
+    pub text: String,
+    /// Byte offset of the comment carrying the note.
+    pub start_byte: u32,
+    /// Normalized decision-record citations found in the note, e.g. `ADR-0001`, `RFC-2119`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<String>,
 }
 
 /// A single inheritance or interface-implementation relationship found in a source file.

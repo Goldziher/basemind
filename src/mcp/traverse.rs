@@ -485,12 +485,16 @@ mod tests {
         imports: true,
         inherits: true,
         contains: true,
+        annotates: false,
+        cites: false,
     };
     const CALLS: EdgeKindSet = EdgeKindSet {
         calls: true,
         imports: false,
         inherits: false,
         contains: false,
+        annotates: false,
+        cites: false,
     };
 
     #[test]
@@ -590,6 +594,8 @@ mod tests {
                 imports: true,
                 inherits: false,
                 contains: false,
+                annotates: false,
+                cites: false,
             },
             Bounds {
                 depth: 1,

@@ -41,6 +41,10 @@ pub(crate) enum EdgeKind {
     Inherits,
     /// A file→symbol containment (nesting) edge — structural.
     Contains,
+    /// A rationale marker (WHY/NOTE/TODO/…) attached to the code it annotates (ADR-0009).
+    Annotates,
+    /// A rationale marker citing a decision record (ADR/RFC) (ADR-0009).
+    Cites,
 }
 
 impl EdgeKind {
@@ -50,6 +54,8 @@ impl EdgeKind {
             EdgeKind::Imports => "imports",
             EdgeKind::Inherits => "inherits",
             EdgeKind::Contains => "contains",
+            EdgeKind::Annotates => "annotates",
+            EdgeKind::Cites => "cites",
         }
     }
 }
@@ -100,17 +106,36 @@ impl Provenance {
 /// virtual node for a target that did not resolve to a definition.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum NodeKey {
-    Symbol { path: RelPath, start_byte: u32 },
-    File { path: RelPath },
+    Symbol {
+        path: RelPath,
+        start_byte: u32,
+    },
+    File {
+        path: RelPath,
+    },
     Name(String),
+    /// A rationale marker span in a source file — a WHY/NOTE/TODO/… note promoted to a node
+    /// (ADR-0009). The source end of `Annotates` / `Cites` edges.
+    Rationale {
+        path: RelPath,
+        start_byte: u32,
+    },
+    /// A decision record (an ADR / RFC file) — the target of a `Cites` edge (ADR-0009).
+    Decision {
+        path: RelPath,
+    },
 }
 
 impl NodeKey {
-    /// The owning file path, when the node has one (`Symbol`/`File`). `None` for a virtual
-    /// name node. Consumers that aggregate to file/module granularity drop `None` endpoints.
+    /// The owning file path, when the node has one. `None` only for a virtual `Name` node.
+    /// Consumers that aggregate to file/module granularity drop `None` endpoints — so the
+    /// document / rationale / decision nodes carry their file to stay visible in those views.
     pub(crate) fn file(&self) -> Option<&RelPath> {
         match self {
-            NodeKey::Symbol { path, .. } | NodeKey::File { path } => Some(path),
+            NodeKey::Symbol { path, .. }
+            | NodeKey::File { path }
+            | NodeKey::Rationale { path, .. }
+            | NodeKey::Decision { path } => Some(path),
             NodeKey::Name(_) => None,
         }
     }
@@ -134,6 +159,10 @@ pub(crate) struct EdgeKindSet {
     pub(crate) imports: bool,
     pub(crate) inherits: bool,
     pub(crate) contains: bool,
+    /// Rationale→code annotation edges (ADR-0009). Opt-in — off in `from_edges_param`'s `"all"`.
+    pub(crate) annotates: bool,
+    /// Rationale→decision citation edges (ADR-0009). Opt-in.
+    pub(crate) cites: bool,
 }
 
 impl EdgeKindSet {
@@ -145,6 +174,8 @@ impl EdgeKindSet {
             imports: true,
             inherits: true,
             contains: true,
+            annotates: true,
+            cites: true,
         }
     }
 
@@ -154,6 +185,8 @@ impl EdgeKindSet {
             imports: false,
             inherits: false,
             contains: false,
+            annotates: false,
+            cites: false,
         }
     }
 
@@ -165,6 +198,8 @@ impl EdgeKindSet {
             EdgeKind::Imports => self.imports,
             EdgeKind::Inherits => self.inherits,
             EdgeKind::Contains => self.contains,
+            EdgeKind::Annotates => self.annotates,
+            EdgeKind::Cites => self.cites,
         }
     }
 
@@ -310,6 +345,48 @@ fn import_leaf(imp: &crate::extract::Import) -> Option<&str> {
     trailing_identifier(&imp.raw)
 }
 
+/// The canonical form of a decision-record citation id: `ADR-0007`, `RFC-2119` — an uppercase
+/// kind prefix and a zero-padded (min 4) number. Both the rationale extractor (which fills
+/// [`crate::extract::RationaleRecord::citations`]) and [`decision_id_of_path`] MUST produce this
+/// exact shape so a citation resolves to its decision file (ADR-0009).
+pub(crate) fn normalize_decision_id(prefix: &str, number: u32) -> String {
+    format!("{}-{number:04}", prefix.to_ascii_uppercase())
+}
+
+/// The decision-record id a file path denotes, if it is one — a file whose name begins with digits
+/// inside an `adr/` or `rfc/` directory (e.g. `docs/adr/0007-graph.md` → `ADR-0007`). `None` for an
+/// ordinary source file. Used to resolve rationale citations to [`NodeKey::Decision`] nodes.
+fn decision_id_of_path(path: &RelPath) -> Option<String> {
+    let s = path.as_str()?;
+    let mut segments: Vec<&str> = s.split('/').collect();
+    let base = segments.pop()?;
+    let in_adr = segments.iter().any(|seg| seg.eq_ignore_ascii_case("adr"));
+    let in_rfc = segments.iter().any(|seg| seg.eq_ignore_ascii_case("rfc"));
+    if !in_adr && !in_rfc {
+        return None;
+    }
+    let digits: String = base.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let number: u32 = digits.parse().ok()?;
+    Some(normalize_decision_id(if in_adr { "ADR" } else { "RFC" }, number))
+}
+
+/// The nearest code symbol to a rationale marker at byte `marker`, as a start byte. Prefers the
+/// innermost symbol whose span *contains* the marker (an inline note); failing that, the closest
+/// symbol that *starts after* the marker (a doc-comment above a definition). `None` ⇒ no symbol is
+/// near, so the note attaches to the file node. `syms_by_start` must be sorted by start byte.
+fn attach_symbol(syms_by_start: &[(u32, u32)], marker: u32) -> Option<u32> {
+    let hi = syms_by_start.partition_point(|&(sb, _)| sb <= marker);
+    for &(sb, eb) in syms_by_start[..hi].iter().rev() {
+        if marker < eb {
+            return Some(sb);
+        }
+    }
+    syms_by_start[hi..].first().map(|&(sb, _)| sb)
+}
+
 /// Accumulator key: an edge is unique by `(from, to, kind)`; weight sums and provenance
 /// folds to the strongest tier across duplicates.
 type EdgeKey = (NodeKey, NodeKey, EdgeKind);
@@ -429,9 +506,9 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
 
         if kinds.inherits {
             for imp in &l1.implementations {
-                // The `from` node is the impl site keyed by byte offset; that offset need not match
-                // an outline symbol, in which case the node stays identity-consistent but renders
-                // with an empty label (cosmetic only — `describe` falls back to the kind).
+                // The `from` node is the impl site keyed by byte offset; that offset need not match ~keep
+                // an outline symbol, in which case the node stays identity-consistent but renders ~keep
+                // with an empty label (cosmetic only — `describe` falls back to the kind). ~keep
                 let from = NodeKey::Symbol {
                     path: path.clone(),
                     start_byte: imp.start_byte,
@@ -551,6 +628,63 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
         }
     }
 
+    // ── Rationale lane (ADR-0009): promote WHY/NOTE/… notes to nodes, attach them to the code
+    // they annotate (proximity ⇒ INFERRED), and cite decision records they reference (a resolved
+    // ADR/RFC file ⇒ EXTRACTED; an unresolved citation ⇒ a virtual `Name` node, INFERRED).
+    if kinds.annotates || kinds.cites {
+        let mut decisions_by_id: AHashMap<String, &RelPath> = AHashMap::new();
+        if kinds.cites {
+            for path in cache.by_path.keys() {
+                if let Some(id) = decision_id_of_path(path) {
+                    decisions_by_id.entry(id).or_insert(path);
+                }
+            }
+        }
+        for (path, l1) in &cache.by_path {
+            if !in_focus(path) || l1.rationale.is_empty() {
+                continue;
+            }
+            let mut syms: Vec<(u32, u32)> = l1.symbols.iter().map(|s| (s.start_byte, s.end_byte)).collect();
+            syms.sort_unstable_by_key(|&(sb, _)| sb);
+            for rec in &l1.rationale {
+                let from = NodeKey::Rationale {
+                    path: path.clone(),
+                    start_byte: rec.start_byte,
+                };
+                if kinds.annotates {
+                    let target = match attach_symbol(&syms, rec.start_byte) {
+                        Some(sb) => NodeKey::Symbol {
+                            path: path.clone(),
+                            start_byte: sb,
+                        },
+                        None => NodeKey::File { path: path.clone() },
+                    };
+                    push(from.clone(), target, EdgeKind::Annotates, Provenance::Inferred, 1);
+                }
+                if kinds.cites {
+                    for citation in &rec.citations {
+                        match decisions_by_id.get(citation.as_str()) {
+                            Some(dp) => push(
+                                from.clone(),
+                                NodeKey::Decision { path: (*dp).clone() },
+                                EdgeKind::Cites,
+                                Provenance::Extracted,
+                                1,
+                            ),
+                            None => push(
+                                from.clone(),
+                                NodeKey::Name(citation.clone()),
+                                EdgeKind::Cites,
+                                Provenance::Inferred,
+                                1,
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     let mut edges: Vec<CodeEdge> = acc
         .into_iter()
         .map(|((from, to, kind), (weight, provenance))| CodeEdge {
@@ -573,406 +707,5 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::store::Store;
-    use tempfile::TempDir;
-
-    /// Scan an inline multi-file repo and return `(tempdir, store, cache)` ready to build a
-    /// graph. Mirrors the canonical scan primitive used across the `tests/` suites.
-    fn scan_repo(files: &[(&str, &str)]) -> (TempDir, Store, MapCache) {
-        crate::store::init_isolated_cache();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        for (name, body) in files {
-            std::fs::write(root.join(name), body.as_bytes()).expect("write fixture");
-        }
-        let cfg = crate::config::ConfigV1::with_defaults();
-        let mut store = Store::open(root, crate::store::VIEW_WORKING).expect("open store");
-        crate::scanner::scan(
-            root,
-            &mut store,
-            &cfg,
-            crate::scanner::ScanSource::WorkingTree,
-            crate::scanner::EmbedMode::Inline,
-        )
-        .expect("scan");
-        let cache = MapCache::build(&store);
-        (dir, store, cache)
-    }
-
-    /// A repo exercising every provenance tier + node kind, feature-independent:
-    /// - `mod_a.rs` defines `Widget`, a `Drawable` trait + impl, `helper`, `caller` (calls
-    ///   `helper` intra-file), and a first `shared`.
-    /// - `mod_b.rs` imports a resolvable symbol + an unknown module, defines a second
-    ///   `shared`, and calls the now-ambiguous `shared`.
-    /// - `mod_c.py` has a Python subclass for a reliable inheritance edge.
-    fn provenance_fixture() -> (TempDir, Store, MapCache) {
-        scan_repo(&[
-            (
-                "mod_a.rs",
-                "pub struct Widget;\n\
-                 pub trait Drawable { fn draw(&self); }\n\
-                 impl Drawable for Widget { fn draw(&self) {} }\n\
-                 pub fn gadget() {}\n\
-                 pub fn helper() {}\n\
-                 pub fn caller() { helper(); }\n\
-                 pub fn shared() {}\n",
-            ),
-            (
-                "mod_b.rs",
-                "use crate::mod_a::gadget;\n\
-                 use crate::unknown_mod::Thing;\n\
-                 pub fn shared() {}\n\
-                 pub fn use_shared() { shared(); }\n",
-            ),
-            ("mod_c.py", "class Foo:\n    pass\n\nclass Bar(Foo):\n    pass\n"),
-        ])
-    }
-
-    fn built(store: &Store, cache: &MapCache, kinds: EdgeKindSet) -> CodeGraph {
-        build(
-            store.index_db.as_ref(),
-            cache,
-            &BuildOpts {
-                kinds,
-                focus: None,
-                scan_cap: 1_000_000,
-            },
-        )
-        .expect("build codegraph")
-    }
-
-    fn name_of(sym_path: &str, key: &NodeKey, cache: &MapCache) -> Option<String> {
-        // Resolve a Symbol node back to its symbol name (for readable assertions).
-        if let NodeKey::Symbol { path, start_byte } = key
-            && path.as_str() == Some(sym_path)
-        {
-            let l1 = cache.by_path.get(path)?;
-            return l1
-                .symbols
-                .iter()
-                .find(|s| s.start_byte == *start_byte)
-                .map(|s| s.name.clone());
-        }
-        None
-    }
-
-    #[test]
-    fn confidence_ladder_is_fixed() {
-        assert_eq!(Provenance::Extracted.confidence(), 1.0);
-        assert_eq!(Provenance::Inferred.confidence(), 0.5);
-        assert_eq!(Provenance::Ambiguous.confidence(), 0.2);
-        assert!(Provenance::Extracted.rank() > Provenance::Inferred.rank());
-        assert!(Provenance::Inferred.rank() > Provenance::Ambiguous.rank());
-    }
-
-    #[test]
-    fn edge_kind_strings_are_stable() {
-        assert_eq!(EdgeKind::Calls.as_str(), "calls");
-        assert_eq!(EdgeKind::Imports.as_str(), "imports");
-        assert_eq!(EdgeKind::Inherits.as_str(), "inherits");
-        assert_eq!(EdgeKind::Contains.as_str(), "contains");
-    }
-
-    #[test]
-    fn edges_param_selects_lanes() {
-        let calls = EdgeKindSet::from_edges_param("calls");
-        assert!(calls.calls && !calls.imports && !calls.inherits);
-        let imports = EdgeKindSet::from_edges_param("imports");
-        assert!(imports.imports && !imports.calls);
-        let both = EdgeKindSet::from_edges_param("both");
-        assert!(both.calls && both.imports && !both.inherits);
-        let all = EdgeKindSet::from_edges_param("all");
-        assert!(all.calls && all.imports && all.inherits);
-        // unknown -> historical default (calls only) ~keep
-        let dflt = EdgeKindSet::from_edges_param("bogus");
-        assert!(dflt.calls && !dflt.imports && !dflt.inherits);
-    }
-
-    #[test]
-    fn contains_edges_are_extracted() {
-        let (_d, store, cache) = provenance_fixture();
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let contains: Vec<&CodeEdge> = g.edges.iter().filter(|e| e.kind == EdgeKind::Contains).collect();
-        assert!(!contains.is_empty(), "expected file→symbol contains edges");
-        for e in &contains {
-            assert_eq!(e.provenance, Provenance::Extracted, "contains edges are structural");
-            assert_eq!(e.provenance.confidence(), 1.0);
-            assert!(matches!(e.from, NodeKey::File { .. }), "contains source is a file node");
-            assert!(
-                matches!(e.to, NodeKey::Symbol { .. }),
-                "contains target is a symbol node"
-            );
-        }
-    }
-
-    #[test]
-    fn import_to_known_symbol_is_inferred() {
-        let (_d, store, cache) = provenance_fixture();
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let hit = g
-            .edges
-            .iter()
-            .find(|e| e.kind == EdgeKind::Imports && name_of("mod_a.rs", &e.to, &cache).as_deref() == Some("gadget"));
-        let hit = hit.expect("import of gadget should resolve to the gadget symbol");
-        assert_eq!(
-            hit.provenance,
-            Provenance::Inferred,
-            "name-resolved import is inferred, never extracted"
-        );
-        assert!(
-            matches!(hit.from, NodeKey::File { .. }),
-            "import source is the importing file"
-        );
-    }
-
-    #[test]
-    fn import_to_unknown_module_is_a_virtual_name_node() {
-        let (_d, store, cache) = provenance_fixture();
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let hit = g
-            .edges
-            .iter()
-            .find(|e| e.kind == EdgeKind::Imports && matches!(&e.to, NodeKey::Name(_)));
-        let hit = hit.expect("import of an unknown module yields a virtual Name node");
-        assert_ne!(
-            hit.provenance,
-            Provenance::Extracted,
-            "an unresolved import is never extracted"
-        );
-    }
-
-    #[test]
-    fn inherits_resolves_parent_and_is_inferred() {
-        let (_d, store, cache) = provenance_fixture();
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let hit = g
-            .edges
-            .iter()
-            .find(|e| e.kind == EdgeKind::Inherits && name_of("mod_c.py", &e.to, &cache).as_deref() == Some("Foo"));
-        let hit = hit.expect("Bar(Foo) should produce an inherits edge to Foo");
-        assert_eq!(hit.provenance, Provenance::Inferred);
-    }
-
-    #[test]
-    fn call_to_multi_definition_name_is_ambiguous() {
-        let (_d, store, cache) = provenance_fixture();
-        let g = built(&store, &cache, EdgeKindSet::all());
-        // `shared` is defined in both mod_a.rs and mod_b.rs → any call edge to it is AMBIGUOUS.
-        let shared_calls: Vec<&CodeEdge> = g
-            .edges
-            .iter()
-            .filter(|e| {
-                e.kind == EdgeKind::Calls
-                    && (name_of("mod_a.rs", &e.to, &cache).as_deref() == Some("shared")
-                        || name_of("mod_b.rs", &e.to, &cache).as_deref() == Some("shared"))
-            })
-            .collect();
-        assert!(!shared_calls.is_empty(), "expected call edges to `shared`");
-        for e in &shared_calls {
-            assert_eq!(
-                e.provenance,
-                Provenance::Ambiguous,
-                "a name with >1 definition is ambiguous"
-            );
-            assert_eq!(e.provenance.confidence(), 0.2);
-        }
-    }
-
-    #[test]
-    fn output_is_deterministic() {
-        let (_d, store, cache) = provenance_fixture();
-        let a = built(&store, &cache, EdgeKindSet::all());
-        let b = built(&store, &cache, EdgeKindSet::all());
-        let key = |e: &CodeEdge| {
-            (
-                e.kind.as_str(),
-                format!("{:?}", e.from),
-                format!("{:?}", e.to),
-                e.provenance.as_str(),
-            )
-        };
-        let ka: Vec<_> = a.edges.iter().map(key).collect();
-        let kb: Vec<_> = b.edges.iter().map(key).collect();
-        assert_eq!(ka, kb, "graph build must be deterministic across calls");
-    }
-
-    #[test]
-    fn call_attributes_to_innermost_enclosing_function() {
-        // `inner` is nested inside `outer`; the call to `helper` sits in `inner`'s body, so the
-        // call edge must originate from the innermost enclosing symbol (`inner`), not `outer`.
-        let (_d, store, cache) = scan_repo(&[(
-            "nested.rs",
-            "pub fn helper() {}\n\
-             pub fn outer() {\n\
-                 fn inner() { helper(); }\n\
-             }\n",
-        )]);
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let call = g
-            .edges
-            .iter()
-            .find(|e| e.kind == EdgeKind::Calls && name_of("nested.rs", &e.to, &cache).as_deref() == Some("helper"))
-            .expect("a call edge to helper");
-        assert_eq!(
-            name_of("nested.rs", &call.from, &cache).as_deref(),
-            Some("inner"),
-            "a call in the nested fn must attribute to the innermost enclosing symbol"
-        );
-    }
-
-    #[test]
-    fn call_outside_every_function_attributes_to_the_file() {
-        // The module-scope `helper()` call is enclosed by no function (it precedes `outer`), so it
-        // falls to the file node; the call inside `outer` attributes to `outer`. Guards the
-        // `enclosing` fallback path the partition-point rewrite must preserve.
-        let (_d, store, cache) = scan_repo(&[(
-            "m.py",
-            "def helper():\n    pass\n\nhelper()\n\ndef outer():\n    helper()\n",
-        )]);
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let calls: Vec<&CodeEdge> = g
-            .edges
-            .iter()
-            .filter(|e| e.kind == EdgeKind::Calls && name_of("m.py", &e.to, &cache).as_deref() == Some("helper"))
-            .collect();
-        assert!(
-            calls.iter().any(|e| matches!(e.from, NodeKey::File { .. })),
-            "the module-scope call must attribute to the file node, not a function"
-        );
-        assert!(
-            calls
-                .iter()
-                .any(|e| name_of("m.py", &e.from, &cache).as_deref() == Some("outer")),
-            "the in-function call must attribute to outer"
-        );
-    }
-
-    /// Cross-file/intra-file resolved call proof (EXTRACTED) is only available when a
-    /// precise-resolution feature is compiled in. Under default features call edges degrade
-    /// down to INFERRED — which the other tests already cover — so this proof is gated.
-    #[cfg(any(feature = "code-intel-js", feature = "code-intel-stack"))]
-    #[test]
-    fn resolved_calls_are_extracted_with_intel() {
-        use std::path::Path;
-        crate::store::init_isolated_cache();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/precise_resolution_py");
-        for entry in std::fs::read_dir(&src).expect("fixture dir") {
-            let entry = entry.expect("dir entry");
-            let name = entry.file_name().to_string_lossy().to_string();
-            std::fs::copy(entry.path(), root.join(&name)).expect("copy fixture");
-        }
-        let cfg = crate::config::ConfigV1::with_defaults();
-        let mut store = Store::open(root, crate::store::VIEW_WORKING).expect("open store");
-        crate::scanner::scan(
-            root,
-            &mut store,
-            &cfg,
-            crate::scanner::ScanSource::WorkingTree,
-            crate::scanner::EmbedMode::Inline,
-        )
-        .expect("scan");
-        let cache = MapCache::build(&store);
-        let g = built(&store, &cache, EdgeKindSet::all());
-        let has_extracted_call = g
-            .edges
-            .iter()
-            .any(|e| e.kind == EdgeKind::Calls && e.provenance == Provenance::Extracted);
-        assert!(
-            has_extracted_call,
-            "a resolved cross-file call should be EXTRACTED under intel features"
-        );
-    }
-
-    fn opts(kinds: EdgeKindSet) -> BuildOpts {
-        BuildOpts {
-            kinds,
-            focus: None,
-            scan_cap: CODEGRAPH_SCAN_CAP,
-        }
-    }
-
-    #[test]
-    fn memo_serves_the_same_build_for_one_snapshot() {
-        let (_dir, store, cache) = provenance_fixture();
-        let idx = store.index_db.as_ref();
-        let memo = Mutex::new(new_graph_memo());
-
-        let first = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("first build");
-        let second = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("second build");
-        assert!(
-            Arc::ptr_eq(&first, &second),
-            "same cache + key must return the cached Arc"
-        );
-
-        // The cached graph matches a fresh, un-memoized build.
-        let fresh = built(&store, &cache, EdgeKindSet::all());
-        assert_eq!(
-            first.edges.len(),
-            fresh.edges.len(),
-            "memoized graph must equal a direct build"
-        );
-    }
-
-    #[test]
-    fn memo_keys_on_lanes_and_index_mode() {
-        let (_dir, store, cache) = provenance_fixture();
-        let idx = store.index_db.as_ref();
-        let memo = Mutex::new(new_graph_memo());
-
-        let calls_only = EdgeKindSet {
-            calls: true,
-            ..EdgeKindSet::none()
-        };
-        let all = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes");
-        let calls = build_memoized(&memo, idx, &cache, &opts(calls_only)).expect("calls lane");
-        assert!(
-            !Arc::ptr_eq(&all, &calls),
-            "distinct lane sets are distinct cache entries"
-        );
-
-        // idx presence is part of the key: the same lanes without a live index build a distinct entry
-        // (call edges degrade to a different provenance tier).
-        let no_idx = build_memoized(&memo, None, &cache, &opts(EdgeKindSet::all())).expect("no-index build");
-        assert!(
-            !Arc::ptr_eq(&all, &no_idx),
-            "idx=Some and idx=None are distinct cache entries"
-        );
-
-        // Every key coexists in the LRU (cap 16 » 3): re-fetching returns each one's own cached Arc.
-        let all_again = build_memoized(&memo, idx, &cache, &opts(EdgeKindSet::all())).expect("all lanes again");
-        assert!(
-            Arc::ptr_eq(&all, &all_again),
-            "the all-lanes entry survives intervening distinct-key builds"
-        );
-    }
-
-    #[test]
-    fn memo_isolates_snapshots_by_fingerprint() {
-        // Two repos with different content have different cache fingerprints, so a build over one
-        // never serves the other's graph, and each keeps its own entry (proving the fingerprint is
-        // part of the key — a stale snapshot cannot masquerade as a fresh one).
-        let (_da, store_a, cache_a) = scan_repo(&[("m.rs", "pub fn a() {}\npub fn caller() { a(); }\n")]);
-        let (_db, store_b, cache_b) =
-            scan_repo(&[("m.rs", "pub fn a() {}\npub fn b() {}\npub fn caller() { a(); b(); }\n")]);
-        assert_ne!(
-            cache_a.fingerprint, cache_b.fingerprint,
-            "different content must fingerprint differently"
-        );
-        let memo = Mutex::new(new_graph_memo());
-
-        let ga = build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a");
-        let gb = build_memoized(&memo, store_b.index_db.as_ref(), &cache_b, &opts(EdgeKindSet::all())).expect("b");
-        assert!(!Arc::ptr_eq(&ga, &gb), "distinct fingerprints are distinct entries");
-
-        let ga_again =
-            build_memoized(&memo, store_a.index_db.as_ref(), &cache_a, &opts(EdgeKindSet::all())).expect("a again");
-        assert!(
-            Arc::ptr_eq(&ga, &ga_again),
-            "snapshot A still hits its own entry after B was inserted"
-        );
-    }
-}
+#[path = "codegraph_tests.rs"]
+mod tests;

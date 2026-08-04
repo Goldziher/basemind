@@ -401,6 +401,7 @@ mod tests {
                 .collect(),
             imports: Vec::new(),
             implementations: Vec::new(),
+            rationale: Vec::new(),
         }
     }
 

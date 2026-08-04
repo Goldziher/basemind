@@ -37,26 +37,46 @@ const PATH_RELAX_CAP: usize = 200_000;
 /// selectable lane here; `include_contains` forces the containment lane on regardless (for
 /// `path`'s `include_contains`). `"all"` is calls+imports+inherits — containment stays opt-in.
 pub(super) fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKindSet, McpError> {
-    let (calls, imports, inherits, contains) = match edges {
-        "all" => (true, true, true, false),
-        "calls" => (true, false, false, false),
-        "imports" => (false, true, false, false),
-        "inherits" => (false, false, true, false),
-        "both" => (true, true, false, false),
-        "contains" => (false, false, false, true),
+    let mut set = EdgeKindSet {
+        calls: false,
+        imports: false,
+        inherits: false,
+        contains: false,
+        annotates: false,
+        cites: false,
+    };
+    match edges {
+        "all" => {
+            set.calls = true;
+            set.imports = true;
+            set.inherits = true;
+        }
+        "calls" => set.calls = true,
+        "imports" => set.imports = true,
+        "inherits" => set.inherits = true,
+        "both" => {
+            set.calls = true;
+            set.imports = true;
+        }
+        "contains" => set.contains = true,
+        // ADR-0009 rationale lanes — opt-in, off in "all" (a different granularity).
+        "annotates" => set.annotates = true,
+        "cites" => set.cites = true,
+        "rationale" => {
+            set.annotates = true;
+            set.cites = true;
+        }
         other => {
             return Err(McpError::invalid_params(
-                format!("edges must be all/calls/imports/inherits/both/contains, got {other:?}"),
+                format!(
+                    "edges must be all/calls/imports/inherits/both/contains/annotates/cites/rationale, got {other:?}"
+                ),
                 None,
             ));
         }
-    };
-    Ok(EdgeKindSet {
-        calls,
-        imports,
-        inherits,
-        contains: contains || include_contains,
-    })
+    }
+    set.contains = set.contains || include_contains;
+    Ok(set)
 }
 
 /// Resolve a symbol name (optionally pinned to one path) to its definition-site node keys.
@@ -132,6 +152,55 @@ pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
             depth: None,
             centrality: None,
         },
+        NodeKey::Rationale { path, start_byte } => {
+            // Resolve the note back to its kind/text via the L1 cache, mirroring how a `Symbol`
+            // node is described — so the label reads e.g. "why: keep the lock scope tight".
+            let found = cache
+                .by_path
+                .get(path)
+                .and_then(|l1| l1.rationale.iter().find(|r| r.start_byte == *start_byte));
+            let name = match found {
+                Some(rec) => {
+                    let text: String = rec.text.chars().take(60).collect();
+                    format!("{}: {}", kind_to_str_rationale(rec.kind), text.trim())
+                }
+                None => "rationale".to_string(),
+            };
+            GraphNode {
+                name,
+                kind: "rationale".to_string(),
+                path: Some(path.clone()),
+                start_row: None,
+                start_col: None,
+                depth: None,
+                centrality: None,
+            }
+        }
+        NodeKey::Decision { path } => GraphNode {
+            name: path
+                .as_str()
+                .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
+                .unwrap_or_default(),
+            kind: "decision".to_string(),
+            path: Some(path.clone()),
+            start_row: None,
+            start_col: None,
+            depth: None,
+            centrality: None,
+        },
+    }
+}
+
+/// Stable lowercase label for a rationale marker kind — the node-label prefix in `describe`.
+fn kind_to_str_rationale(kind: crate::extract::RationaleKind) -> &'static str {
+    use crate::extract::RationaleKind::*;
+    match kind {
+        Why => "why",
+        Note => "note",
+        Todo => "todo",
+        Fixme => "fixme",
+        Hack => "hack",
+        Safety => "safety",
     }
 }
 

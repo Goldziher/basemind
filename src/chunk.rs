@@ -393,6 +393,7 @@ mod tests {
             symbols,
             imports: Vec::new(),
             implementations: Vec::new(),
+            rationale: Vec::new(),
         }
     }
 

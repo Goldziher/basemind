@@ -651,6 +651,8 @@ fn grouped_lane_edges(
         imports: sel.imports,
         inherits: sel.inherits,
         contains: false,
+        annotates: false,
+        cites: false,
     };
     let cg = shared.graph(
         idx,

@@ -45,6 +45,8 @@ pub(crate) fn extract_l1_from_tree(
         symbols,
         imports,
         implementations,
+        // Populated by the rationale classifier (ADR-0009); empty until that lane lands.
+        rationale: Vec::new(),
     })
 }
 
