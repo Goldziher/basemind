@@ -587,7 +587,9 @@ pub(super) async fn run_ui(
         params.min_confidence,
         params.max_nodes,
         params.focus.as_deref(),
-    ) {
+    )
+    .await
+    {
         Some(url) => (url, true, "http", None),
         None => (
             format!("file://{output_path}"),
@@ -626,7 +628,7 @@ pub(super) async fn run_ui(
 /// tool falls back to the written `file://` export. The comms build delegates to
 /// [`crate::comms::http_frontend::served_ui_url`], which reads the portfile and probes the port.
 #[allow(clippy::too_many_arguments)]
-fn resolve_served_ui_url(
+async fn resolve_served_ui_url(
     root: &std::path::Path,
     format: &str,
     edges: &str,
@@ -638,6 +640,7 @@ fn resolve_served_ui_url(
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
         crate::comms::http_frontend::served_ui_url(root, format, edges, algorithm, min_confidence, max_nodes, focus)
+            .await
     }
     #[cfg(not(all(feature = "comms", any(unix, windows))))]
     {

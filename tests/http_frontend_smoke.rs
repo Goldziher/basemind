@@ -69,6 +69,23 @@ async fn http_get(addr: &str, target: &str) -> (u16, String, String) {
     (status, head.to_lowercase(), body.to_string())
 }
 
+/// One HTTP/1.1 GET over loopback with an explicit `Host` header, returning the status code. Used to
+/// exercise the DNS-rebinding guard: a browser page that rebinds its domain to 127.0.0.1 sends the
+/// attacker's host here, not the loopback address.
+async fn http_get_with_host(addr: &str, target: &str, host: &str) -> u16 {
+    let mut stream = TcpStream::connect(addr).await.expect("connect loopback");
+    let request = format!("GET {target} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.expect("write request");
+    stream.flush().await.expect("flush");
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await.expect("read response");
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    text.split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse::<u16>().ok())
+        .unwrap_or_else(|| panic!("no status line in response: {text}"))
+}
+
 fn json_headers() -> Vec<(&'static str, &'static str)> {
     vec![
         ("content-type", "application/json"),
@@ -215,6 +232,17 @@ async fn ui_route_serves_interactive_html() {
     assert_eq!(status, 400, "missing ?root must 400");
     let (status, _, _) = http_get(&addr, "/ui?root=%2Fno%2Fsuch%2Fpath%2Fbm-xyz").await;
     assert_eq!(status, 404, "a root that does not resolve must 404");
+
+    // DNS-rebinding guard: a foreign `Host` (a rebound-to-127.0.0.1 attacker page) is rejected before
+    // the workspace is read, even for an otherwise-valid root — 403, not 200.
+    let status = http_get_with_host(&addr, &format!("/ui?root={encoded_root}"), "evil.example").await;
+    assert_eq!(
+        status, 403,
+        "a non-loopback Host must be rejected on the loopback listener"
+    );
+    // A `localhost` Host is loopback and still served (regression guard for the allowlist).
+    let status = http_get_with_host(&addr, &format!("/ui?root={encoded_root}"), "localhost:1234").await;
+    assert_eq!(status, 200, "a loopback Host (localhost) is still served");
 
     shutdown_tx.send(true).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;

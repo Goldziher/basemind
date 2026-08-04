@@ -216,12 +216,73 @@ struct HttpRouter {
     /// Parent cancellation token; each request's [`StreamableHttpServerConfig`] gets a child, so a
     /// daemon drain cancels in-flight handlers.
     cancel: CancellationToken,
+    /// Whether the bound listener is a loopback address. When true, [`HttpRouter::handle`] enforces
+    /// the DNS-rebinding `Host` guard; an explicit non-loopback bind (the documented remote-access
+    /// opt-in in [`serve_http`]) disables it, leaving host/origin policy to the operator.
+    loopback: bool,
+}
+
+/// The host part of a `Host` / `:authority` value, dropping any `:port`. A bracketed IPv6 literal
+/// (`[::1]` / `[::1]:port`) keeps its brackets so the caller sees `[::1]`.
+fn authority_host(authority: &str) -> &str {
+    if authority.starts_with('[') {
+        return match authority.find(']') {
+            Some(end) => &authority[..=end],
+            None => authority,
+        };
+    }
+    match authority.rsplit_once(':') {
+        Some((host, _port)) => host,
+        None => authority,
+    }
+}
+
+/// Whether the request's `Host` (HTTP/1.1) or `:authority` (HTTP/2) names a loopback address —
+/// `localhost`, `127.0.0.0/8`, or `::1`. A loopback-bound listener accepts only these; any other
+/// value is a DNS-rebinding attempt (a page on `evil.example` whose DNS later resolves to
+/// `127.0.0.1`, making the loopback server same-origin) and is rejected before the request can name
+/// or read a workspace. A missing header is rejected too — legitimate local clients always send one.
+fn host_is_loopback(request: &Request<Incoming>) -> bool {
+    let raw = match request
+        .headers()
+        .get(http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+    {
+        Some(header) => Some(header),
+        None => request.uri().authority().map(|authority| authority.as_str()),
+    };
+    let Some(raw) = raw else {
+        return false;
+    };
+    let host = authority_host(raw);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host);
+    bare.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 impl HttpRouter {
     /// Route and serve one HTTP request. Always returns a response (errors are HTTP status codes,
     /// never a torn connection), mirroring the relay path's never-brick-a-client contract.
     async fn handle(&self, request: Request<Incoming>) -> Response<HttpBody> {
+        // DNS-rebinding guard: a loopback-bound listener answers only requests whose `Host`/
+        // `:authority` is a loopback name. This runs first, before the daemon is pinned or any
+        // workspace is read, so a foreign-`Host` page (the rebinding-to-127.0.0.1 attack) cannot even
+        // stamp HTTP recency. Skipped on an explicit non-loopback bind (the remote-access opt-in in
+        // `serve_http`), where the operator owns host/origin policy.
+        if self.loopback && !host_is_loopback(&request) {
+            return text_response(
+                StatusCode::FORBIDDEN,
+                "forbidden: Host header is not a loopback address (DNS-rebinding protection)",
+            );
+        }
+
         // Pin the daemon (and stamp HTTP recency) for the whole request so the idle reaper cannot
         // tear the process down mid-request. See `Broker::begin_http_request`.
         let _activity = self.broker.begin_http_request();
@@ -401,6 +462,7 @@ pub async fn serve_http(broker: Arc<Broker>, comms_dir: PathBuf, mut shutdown: w
         broker,
         session_manager: Arc::new(NeverSessionManager::default()),
         cancel: cancel.clone(),
+        loopback: local.ip().is_loopback(),
     });
 
     loop {
@@ -511,7 +573,7 @@ fn build_ui_url(
 /// `None` (portfile absent/unreadable, or the port is not answering). Called by the `ui` tool
 /// (`crate::mcp`) to prefer a live served page over the static file export.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn served_ui_url(
+pub(crate) async fn served_ui_url(
     root: &Path,
     format: &str,
     edges: &str,
@@ -523,8 +585,12 @@ pub(crate) fn served_ui_url(
     let paths = super::singleton::resolve_paths().ok()?;
     let addr = read_portfile(&paths.comms_dir)?;
     // Confirm a daemon is actually answering before advertising the URL — a stale portfile (crashed
-    // daemon) must degrade to the file export, not hand back a dead link.
-    std::net::TcpStream::connect_timeout(&addr, UI_PROBE_TIMEOUT).ok()?;
+    // daemon) must degrade to the file export, not hand back a dead link. Async connect + timeout so
+    // the probe never blocks the calling tokio worker (`run_ui` awaits this on a hot path).
+    tokio::time::timeout(UI_PROBE_TIMEOUT, tokio::net::TcpStream::connect(addr))
+        .await
+        .ok()?
+        .ok()?;
     Some(build_ui_url(
         &addr,
         root,
