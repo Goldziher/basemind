@@ -210,8 +210,10 @@ pub(crate) fn cmd_comms(root: &std::path::Path, action: crate::CommsLifecycleCmd
     match action {
         crate::CommsLifecycleCmd::Daemon => basemind::cli::comms_daemon::run(),
         crate::CommsLifecycleCmd::Start => cmd_comms_start(),
-        crate::CommsLifecycleCmd::Stop => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
+        crate::CommsLifecycleCmd::Stop { all: true } => cmd_comms_stop_all(json),
+        crate::CommsLifecycleCmd::Stop { all: false } => cmd_comms_lifecycle_rpc(CommsRpc::Stop, json),
         crate::CommsLifecycleCmd::Status => cmd_comms_lifecycle_rpc(CommsRpc::Status, json),
+        crate::CommsLifecycleCmd::Doctor => cmd_comms_doctor(json),
         crate::CommsLifecycleCmd::Agent(cmd) => basemind::cli::comms::run(root, json, cmd),
     }
 }
@@ -334,6 +336,92 @@ fn cmd_comms_lifecycle_rpc(rpc: CommsRpc, json: bool) -> Result<()> {
         }
         Ok::<(), anyhow::Error>(())
     })?;
+    Ok(())
+}
+
+/// Unix seconds now, or `0` if the clock is before the epoch.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// `basemind comms doctor`: enumerate the live daemons registered on this machine and flag a
+/// pile-up over the ceiling. Pure and cheap — reads the pidfile registry (pruning dead holders),
+/// issues no daemon RPC — so it is safe to run even when the machine is in a bad state.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn cmd_comms_doctor(json: bool) -> Result<()> {
+    use basemind::comms::daemon_lock;
+
+    let daemons = daemon_lock::live_daemons();
+    let ceiling = daemon_lock::max_live_daemons();
+    let now = now_unix();
+
+    if json {
+        let items: Vec<serde_json::Value> = daemons
+            .iter()
+            .map(|record| {
+                serde_json::json!({
+                    "pid": record.pid,
+                    "comms_dir": record.comms_dir,
+                    "version": record.version,
+                    "uptime_secs": (now - record.started_unix).max(0),
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "count": daemons.len(),
+            "ceiling": ceiling,
+            "over_ceiling": daemons.len() > ceiling,
+            "daemons": items,
+        });
+        println!("{report}");
+        return Ok(());
+    }
+
+    if daemons.is_empty() {
+        println!("no live basemind daemons");
+        return Ok(());
+    }
+    println!("{} live daemon(s) (ceiling {ceiling}):", daemons.len());
+    for record in &daemons {
+        println!(
+            "  pid={} version={} uptime={}s comms_dir={}",
+            record.pid,
+            record.version,
+            (now - record.started_unix).max(0),
+            record.comms_dir.display(),
+        );
+    }
+    if daemons.len() > ceiling {
+        println!(
+            "WARNING: {} daemons exceed the ceiling of {ceiling}; run `basemind comms stop --all` to reclaim",
+            daemons.len(),
+        );
+    }
+    Ok(())
+}
+
+/// `basemind comms stop --all`: signal every live daemon on this machine to drain, addressing each
+/// by its own socket. Uses the low-level [`singleton::request_stop`] rather than a `CommsClient`
+/// (which could respawn the very daemon it meant to stop).
+#[cfg(all(feature = "comms", any(unix, windows)))]
+fn cmd_comms_stop_all(json: bool) -> Result<()> {
+    use basemind::comms::{daemon_lock, singleton};
+
+    let daemons = daemon_lock::live_daemons();
+    for record in &daemons {
+        singleton::request_stop(&singleton::comms_socket_path(&record.comms_dir));
+    }
+    if json {
+        println!("{{\"stopped\":{}}}", daemons.len());
+    } else if daemons.is_empty() {
+        println!("no live basemind daemons to stop");
+    } else {
+        println!("asked {} daemon(s) to stop", daemons.len());
+    }
     Ok(())
 }
 

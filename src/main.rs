@@ -177,10 +177,18 @@ enum CommsLifecycleCmd {
     Daemon,
     /// Ensure the daemon is running (spawn if needed); noop when already alive.
     Start,
-    /// Ask the running daemon to drain and stop.
-    Stop,
+    /// Ask the running daemon to drain and stop. With `--all`, stop EVERY live daemon registered on
+    /// this machine (reclaims a pile-up), not just the one for the current comms dir.
+    Stop {
+        /// Stop every live daemon on this machine, not just the current one.
+        #[arg(long)]
+        all: bool,
+    },
     /// Report the daemon's pid / version / uptime / room + subscriber counts.
     Status,
+    /// List every live daemon registered on this machine (pid / comms dir / version / uptime) and
+    /// flag any pile-up over the ceiling. Prunes dead registry entries as a side effect.
+    Doctor,
     /// Agent verbs (register / rooms / post / history / inbox …) against the broker.
     #[command(flatten)]
     Agent(basemind::cli::comms::CommsAgentCmd),
