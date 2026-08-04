@@ -14,10 +14,23 @@ publish = false
 name = "basemind-ui"
 path = "src/main.rs"
 
+[features]
+# Default builds (and `cargo build --workspace` / CI) resolve NEITHER tauri nor tauri-build: both are
+# optional deps activated only by `desktop`, so the webview toolchain stays out of the default tree. ~keep
+# `desktop` also turns on basemind's `comms` so the resident window can ensure the daemon + resolve the ~keep
+# live `/ui` URL it loads (the same served page the `ui` tool and a browser drive). ~keep
+default = []
+desktop = ["dep:tauri", "dep:tauri-build", "dep:url", "basemind/comms"]
+
 [dependencies]
 anyhow = "1"
 basemind = { path = "../..", default-features = false }
+tauri = { version = "2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+url = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
