@@ -22,12 +22,29 @@ const MIN_PATH_TOKEN_LEN: usize = 3;
 /// Maximum length a path-citation token may reach — bounds pathological runs of path-ish characters.
 const MAX_PATH_TOKEN_LEN: usize = 200;
 
+/// Source / doc file extensions that, on their own, mark a bare `stem.ext` token as a path citation.
+/// Bounded allowlist: a real filename extension, matched case-insensitively. Anything not here (a
+/// domain TLD like `com`/`dev`, a numeric version fragment like `0`/`14`) is not a path unless the
+/// token also carries a `/` separator.
+const PATH_EXTENSIONS: &[&str] = &[
+    "rs", "py", "ts", "tsx", "js", "jsx", "go", "java", "c", "h", "cpp", "hpp", "rb", "md", "txt", "toml", "yaml",
+    "yml", "json", "sql", "sh",
+];
+
 /// True when `tok` looks like a repo-relative path citation: made only of path characters and
-/// carrying either a `/` separator or a `stem.ext` filename with a 2–8 char alphanumeric extension
-/// (e.g. `core.rs`, `src/lib.rs`, `mod_a.py`). Deterministic, allocation-free; resolution to an
-/// indexed file happens in the build lane.
+/// carrying either a `/` separator (a genuine relative path like `src/lib.rs`) or a `stem.ext`
+/// filename whose extension is on [`PATH_EXTENSIONS`] (e.g. `core.rs`, `mod_a.py`). Rejects
+/// `scheme://` URLs outright (any token that is scheme-prefixed or carries a `//` run — including the
+/// `//host/...` remnant left after tokenizing on `:`), bare `word.tld` domains (`github.com`), and
+/// numeric `n.n` versions (`3.14`, `v2.0`), none of which is a real path. Deterministic,
+/// allocation-free; resolution to an indexed file happens in the build lane.
 fn looks_like_path(tok: &str) -> bool {
     if !(MIN_PATH_TOKEN_LEN..=MAX_PATH_TOKEN_LEN).contains(&tok.len()) {
+        return false;
+    }
+    // A URL is never a path citation. A `//` run covers both `://` and the `//host/...` remnant left
+    // after the tokenizer splits a URL on `:`; the scheme prefixes guard the (slash-free) rest.
+    if tok.contains("//") || tok.starts_with("http:") || tok.starts_with("https:") {
         return false;
     }
     if !tok
@@ -37,10 +54,10 @@ fn looks_like_path(tok: &str) -> bool {
         return false;
     }
     let has_slash = tok.contains('/');
-    let has_ext = tok.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty() && (2..=8).contains(&ext.len()) && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+    let has_known_ext = tok.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && PATH_EXTENSIONS.iter().any(|allowed| ext.eq_ignore_ascii_case(allowed))
     });
-    (has_slash || has_ext) && tok.bytes().any(|b| b.is_ascii_alphanumeric())
+    (has_slash || has_known_ext) && tok.bytes().any(|b| b.is_ascii_alphanumeric())
 }
 
 /// Split `text` on whitespace + common punctuation and yield the tokens that [`looks_like_path`]
@@ -151,17 +168,51 @@ mod tests {
 
     #[test]
     fn looks_like_path_accepts_filenames_and_paths_only() {
-        assert!(looks_like_path("core.rs"), "bare filename with a 2-char ext");
+        // Accepts: a `/` separator, or a filename whose extension is on the source/doc allowlist.
+        assert!(looks_like_path("core.rs"), "bare filename with an allowlisted ext");
         assert!(looks_like_path("src/lib.rs"), "slash-separated path");
         assert!(looks_like_path("mod_a.py"), "underscore stem");
+        assert!(looks_like_path("a/b/c.ts"), "multi-segment path");
+        assert!(looks_like_path("main.c"), "single-char allowlisted ext");
+        assert!(looks_like_path("notes.md"), "doc extension");
+        // A `/` separator alone is enough — no extension required.
+        assert!(looks_like_path("src/parser"), "extensionless path with a separator");
+
         assert!(!looks_like_path("engine"), "a plain word is not a path");
-        assert!(!looks_like_path("e.g"), "single-char ext is rejected");
+        assert!(!looks_like_path("e.g"), "non-allowlisted single-char ext is rejected");
         assert!(!looks_like_path("a/b c"), "embedded space rejects the token");
+        // Domains: the TLD is not an allowlisted extension.
+        assert!(!looks_like_path("github.com"), "domain name is not a path");
+        assert!(!looks_like_path("example.com"), "domain name is not a path");
+        assert!(!looks_like_path("basemind.dev"), "domain name is not a path");
+        // Decimals / versions: numeric fragment is not an allowlisted extension.
+        assert!(!looks_like_path("3.14"), "a decimal is not a path");
+        assert!(!looks_like_path("1.5"), "a decimal is not a path");
+        assert!(!looks_like_path("v2.0"), "a version string is not a path");
+        // URLs: reject scheme-prefixed and `//`-bearing tokens outright.
+        assert!(!looks_like_path("https://github.com/foo"), "a URL is not a path");
+        assert!(
+            !looks_like_path("http://example.com/a.rs"),
+            "a URL is not a path even with a real ext"
+        );
+        assert!(
+            !looks_like_path("//github.com/foo/bar"),
+            "a `//`-bearing URL remnant is not a path"
+        );
     }
 
     #[test]
     fn path_tokens_extracts_citations_from_prose() {
         let toks: Vec<&str> = path_tokens("The engine lives in `core.rs` and src/lib.rs, right?").collect();
         assert_eq!(toks, vec!["core.rs", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn path_tokens_rejects_urls_domains_and_versions() {
+        // Tokenizing splits the URL on `:`; neither the `https` head nor the `//github.com/...`
+        // remnant may survive as a citation. Domains and versions are dropped too.
+        let toks: Vec<&str> =
+            path_tokens("See https://github.com/foo/bar and github.com, version 3.14, but core.rs counts.").collect();
+        assert_eq!(toks, vec!["core.rs"]);
     }
 }
