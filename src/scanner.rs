@@ -763,6 +763,9 @@ fn flush_doc_batches_if_any(store: &mut Store, config: &Config, scope: &str, bat
     if batches.is_empty() {
         return;
     }
+    // Persist doc↔code links (ADR-0008) before the vector rows: `flush_document_batches` consumes
+    // `batches`, and links are independent of embeddings (they persist even when embed is off).
+    crate::scanner_doc_links::flush_doc_links(store, config, &batches);
     let _ = flush_document_batches(store, scope, batches, &config.documents.embedding_preset);
 }
 

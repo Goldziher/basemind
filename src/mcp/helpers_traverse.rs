@@ -44,6 +44,7 @@ pub(super) fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKind
         contains: false,
         annotates: false,
         cites: false,
+        documents: false,
     };
     match edges {
         "all" => {
@@ -66,11 +67,16 @@ pub(super) fn kinds_from(edges: &str, include_contains: bool) -> Result<EdgeKind
             set.annotates = true;
             set.cites = true;
         }
+        // ADR-0008 document→code lane — opt-in, off in "all"; only a `documents` build accepts it.
+        #[cfg(feature = "documents")]
+        "documents" => set.documents = true,
         other => {
+            #[cfg(feature = "documents")]
+            let valid = "all/calls/imports/inherits/both/contains/annotates/cites/rationale/documents";
+            #[cfg(not(feature = "documents"))]
+            let valid = "all/calls/imports/inherits/both/contains/annotates/cites/rationale";
             return Err(McpError::invalid_params(
-                format!(
-                    "edges must be all/calls/imports/inherits/both/contains/annotates/cites/rationale, got {other:?}"
-                ),
+                format!("edges must be {valid}, got {other:?}"),
                 None,
             ));
         }
@@ -182,6 +188,21 @@ pub(super) fn describe(cache: &MapCache, key: &NodeKey) -> GraphNode {
                 .map(|s| s.rsplit('/').next().unwrap_or(s).to_string())
                 .unwrap_or_default(),
             kind: "decision".to_string(),
+            path: Some(path.clone()),
+            start_row: None,
+            start_col: None,
+            depth: None,
+            centrality: None,
+        },
+        #[cfg(feature = "documents")]
+        NodeKey::DocChunk { path, chunk_idx } => GraphNode {
+            name: format!(
+                "{}#{chunk_idx}",
+                path.as_str()
+                    .map(|s| s.rsplit('/').next().unwrap_or(s))
+                    .unwrap_or_default()
+            ),
+            kind: "doc_chunk".to_string(),
             path: Some(path.clone()),
             start_row: None,
             start_col: None,

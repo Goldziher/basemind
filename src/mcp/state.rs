@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[cfg(feature = "documents")]
+use super::codegraph;
 use super::{SharedReadStack, helpers_calls, helpers_impls, map_fingerprint, types};
 use crate::extract::{FileMapL1, Import};
 use crate::store::Store;
@@ -212,6 +214,12 @@ pub(crate) struct MapCache {
     /// no-op daemon scan from transiently doubling serve's resident memory. `0` on the
     /// [`empty`](Self::empty) boot placeholder, which never matches a populated index.
     pub(crate) fingerprint: u64,
+    /// Persisted document→code links (ADR-0008), loaded from the LanceDB document store by the async
+    /// cache-warm path ([`super::background::spawn_cache_warm`]) and the view watcher. Empty until
+    /// loaded; the codegraph `documents` lane reads it. Preserved across incremental
+    /// [`with_delta`](Self::with_delta) rescans.
+    #[cfg(feature = "documents")]
+    pub(crate) doc_links: Vec<codegraph::DocLink>,
 }
 
 impl MapCache {
@@ -248,6 +256,8 @@ impl MapCache {
             imports_index,
             calls,
             impls,
+            #[cfg(feature = "documents")]
+            doc_links: Vec::new(),
         }
     }
 
@@ -264,6 +274,8 @@ impl MapCache {
             imports_index: Vec::new(),
             calls: None,
             impls: None,
+            #[cfg(feature = "documents")]
+            doc_links: Vec::new(),
         }
     }
 
@@ -314,6 +326,8 @@ impl MapCache {
             imports_index,
             calls: None,
             impls: None,
+            #[cfg(feature = "documents")]
+            doc_links: self.doc_links.clone(),
         }
     }
 }

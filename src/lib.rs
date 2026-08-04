@@ -30,6 +30,8 @@ pub mod scanner;
 #[cfg(feature = "code-search")]
 pub mod scanner_code;
 #[cfg(feature = "documents")]
+pub mod scanner_doc_links;
+#[cfg(feature = "documents")]
 pub mod scanner_docs;
 pub mod scanner_file;
 pub(crate) mod scanner_filter;

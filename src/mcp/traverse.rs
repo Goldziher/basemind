@@ -487,6 +487,7 @@ mod tests {
         contains: true,
         annotates: false,
         cites: false,
+        documents: false,
     };
     const CALLS: EdgeKindSet = EdgeKindSet {
         calls: true,
@@ -495,6 +496,7 @@ mod tests {
         contains: false,
         annotates: false,
         cites: false,
+        documents: false,
     };
 
     #[test]
@@ -596,6 +598,7 @@ mod tests {
                 contains: false,
                 annotates: false,
                 cites: false,
+                documents: false,
             },
             Bounds {
                 depth: 1,

@@ -105,9 +105,31 @@ pub fn code_chunks_schema(dim: u16) -> SchemaRef {
     ]))
 }
 
+/// Build the schema for the `doc_links` table — the persisted document→code links (ADR-0008).
+///
+/// Vector-free (dim-independent): a link is a raw mention, resolution happens at graph-build time.
+/// Columns:
+/// - `scope`         UTF-8   ingestion scope (repo identity)
+/// - `doc_path`      UTF-8   repo-relative path of the source document
+/// - `chunk_idx`     UInt32  0-based chunk index within the document
+/// - `mention_kind`  UTF-8   `"name"` (identifier / keyword / entity) or `"path"` (path citation)
+/// - `mention_value` UTF-8   the raw mention text
+#[cfg(feature = "documents")]
+pub fn doc_links_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        Field::new("scope", DataType::Utf8, false),
+        Field::new("doc_path", DataType::Utf8, false),
+        Field::new("chunk_idx", DataType::UInt32, false),
+        Field::new("mention_kind", DataType::Utf8, false),
+        Field::new("mention_value", DataType::Utf8, false),
+    ]))
+}
+
 /// Table names — small constants in one place so the `LanceStore` impl and any
 /// future migration code agree on what's where.
 pub const DOCUMENTS_TABLE: &str = "documents";
 pub const MEMORY_TABLE: &str = "memory";
 #[cfg(feature = "code-search")]
 pub const CODE_CHUNKS_TABLE: &str = "code_chunks";
+#[cfg(feature = "documents")]
+pub const DOC_LINKS_TABLE: &str = "doc_links";

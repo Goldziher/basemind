@@ -280,6 +280,100 @@ fn rationale_lanes_are_opt_in() {
     );
 }
 
+/// ADR-0008: the `documents` lane turns each persisted [`DocLink`] into a typed `Documents` edge —
+/// a name mention resolves through the symbol table (name-level ⇒ INFERRED), a path citation points
+/// at a file node (EXTRACTED when indexed, INFERRED otherwise). Off unless the lane is selected.
+#[cfg(feature = "documents")]
+#[test]
+fn documents_lane_links_doc_chunks_to_code() {
+    let (_dir, store, mut cache) = provenance_fixture();
+    cache.doc_links = vec![
+        // chunk 0 mentions `helper` by name — one def in mod_a.rs ⇒ INFERRED edge to that symbol.
+        DocLink {
+            doc_path: crate::path::RelPath::from("docs/guide.md"),
+            chunk_idx: 0,
+            mention: DocMention::Name("helper".to_string()),
+        },
+        // chunk 1 cites an indexed file ⇒ EXTRACTED edge to the file node.
+        DocLink {
+            doc_path: crate::path::RelPath::from("docs/guide.md"),
+            chunk_idx: 1,
+            mention: DocMention::Path(crate::path::RelPath::from("mod_a.rs")),
+        },
+        // chunk 1 cites a file that is not indexed ⇒ INFERRED edge to a (virtual) file node.
+        DocLink {
+            doc_path: crate::path::RelPath::from("docs/guide.md"),
+            chunk_idx: 1,
+            mention: DocMention::Path(crate::path::RelPath::from("no/such_file.rs")),
+        },
+    ];
+
+    let kinds = EdgeKindSet {
+        documents: true,
+        ..EdgeKindSet::none()
+    };
+    let g = built(&store, &cache, kinds);
+    let doc_edges: Vec<&CodeEdge> = g.edges.iter().filter(|e| e.kind == EdgeKind::Documents).collect();
+    assert_eq!(doc_edges.len(), 3, "one Documents edge per link: {doc_edges:?}");
+
+    let name_edge = doc_edges
+        .iter()
+        .find(|e| matches!(&e.to, NodeKey::Symbol { .. }))
+        .expect("a name mention resolves to a Symbol node");
+    assert!(
+        matches!(name_edge.from, NodeKey::DocChunk { chunk_idx: 0, .. }),
+        "the name edge originates at the citing doc chunk"
+    );
+    assert_eq!(
+        name_edge.provenance,
+        Provenance::Inferred,
+        "a bare name mention is name-level"
+    );
+    assert_eq!(
+        name_of("mod_a.rs", &name_edge.to, &cache).as_deref(),
+        Some("helper"),
+        "resolves to helper's definition"
+    );
+
+    let extracted = doc_edges
+        .iter()
+        .find(|e| e.provenance == Provenance::Extracted)
+        .expect("an indexed path citation is EXTRACTED");
+    assert!(
+        matches!(&extracted.to, NodeKey::File { path } if path.as_str() == Some("mod_a.rs")),
+        "the extracted edge points at the cited file node: {extracted:?}"
+    );
+
+    let inferred_path = doc_edges
+        .iter()
+        .find(|e| matches!(&e.to, NodeKey::File { path } if path.as_str() == Some("no/such_file.rs")))
+        .expect("an unindexed path citation still yields a file edge");
+    assert_eq!(
+        inferred_path.provenance,
+        Provenance::Inferred,
+        "an unindexed citation degrades to INFERRED"
+    );
+
+    // The lane stays off unless selected: a calls-only build emits no Documents edges.
+    let calls_only = build(
+        store.index_db.as_ref(),
+        &cache,
+        &BuildOpts {
+            kinds: EdgeKindSet {
+                calls: true,
+                ..EdgeKindSet::none()
+            },
+            focus: None,
+            scan_cap: 1_000_000,
+        },
+    )
+    .expect("calls-only build");
+    assert!(
+        !calls_only.edges.iter().any(|e| e.kind == EdgeKind::Documents),
+        "documents lane stays off unless selected"
+    );
+}
+
 #[test]
 fn edges_param_selects_lanes() {
     let calls = EdgeKindSet::from_edges_param("calls");

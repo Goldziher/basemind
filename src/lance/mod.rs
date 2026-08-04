@@ -11,7 +11,12 @@
 //! can share the same sync API surface without each callsite worrying about
 //! runtime context.
 
+#[cfg(feature = "documents")]
+mod doc_links;
 pub mod schema;
+
+#[cfg(feature = "documents")]
+pub use doc_links::DocLinkRow;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -201,6 +206,8 @@ impl LanceStore {
             ensure_table(&connection, MEMORY_TABLE, memory_schema(dim)).await?;
             #[cfg(feature = "code-search")]
             ensure_table(&connection, schema::CODE_CHUNKS_TABLE, schema::code_chunks_schema(dim)).await?;
+            #[cfg(feature = "documents")]
+            ensure_table(&connection, schema::DOC_LINKS_TABLE, schema::doc_links_schema()).await?;
             anyhow::Ok(())
         })?;
 

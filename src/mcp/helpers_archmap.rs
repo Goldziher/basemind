@@ -653,6 +653,7 @@ fn grouped_lane_edges(
         contains: false,
         annotates: false,
         cites: false,
+        documents: false,
     };
     let cg = shared.graph(
         idx,

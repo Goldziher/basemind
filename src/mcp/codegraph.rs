@@ -45,6 +45,9 @@ pub(crate) enum EdgeKind {
     Annotates,
     /// A rationale marker citing a decision record (ADR/RFC) (ADR-0009).
     Cites,
+    /// A document chunk mentioning a code symbol / file — the doc↔code lane (ADR-0008).
+    #[cfg(feature = "documents")]
+    Documents,
 }
 
 impl EdgeKind {
@@ -56,6 +59,8 @@ impl EdgeKind {
             EdgeKind::Contains => "contains",
             EdgeKind::Annotates => "annotates",
             EdgeKind::Cites => "cites",
+            #[cfg(feature = "documents")]
+            EdgeKind::Documents => "documents",
         }
     }
 }
@@ -124,6 +129,13 @@ pub(crate) enum NodeKey {
     Decision {
         path: RelPath,
     },
+    /// A chunk of an extracted document — the source of a `Documents` edge (ADR-0008). Identified by
+    /// its owning document path plus the 0-based chunk index within that document.
+    #[cfg(feature = "documents")]
+    DocChunk {
+        path: RelPath,
+        chunk_idx: u32,
+    },
 }
 
 impl NodeKey {
@@ -136,6 +148,8 @@ impl NodeKey {
             | NodeKey::File { path }
             | NodeKey::Rationale { path, .. }
             | NodeKey::Decision { path } => Some(path),
+            #[cfg(feature = "documents")]
+            NodeKey::DocChunk { path, .. } => Some(path),
             NodeKey::Name(_) => None,
         }
     }
@@ -152,6 +166,32 @@ pub(crate) struct CodeEdge {
     pub(crate) weight: u32,
 }
 
+/// A raw mention extracted from a document chunk (ADR-0008). Resolution to a graph node is deferred
+/// to the `documents` build lane: a [`Name`](DocMention::Name) resolves against the repo symbol
+/// table, a [`Path`](DocMention::Path) against the indexed file set.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DocMention {
+    /// An identifier / keyword / entity mention — resolved by name (INFERRED / AMBIGUOUS).
+    Name(String),
+    /// An explicit repo-relative path citation — resolved to a file node (EXTRACTED when indexed).
+    Path(RelPath),
+}
+
+/// One persisted document→code link (ADR-0008): a chunk of `doc_path` mentioning `mention`. Produced
+/// at document-scan time, stored in the LanceDB document store, and reloaded into the [`MapCache`] by
+/// the async cache-warm path; the `documents` build lane turns each into a typed `Documents` edge.
+#[cfg(feature = "documents")]
+#[derive(Debug, Clone)]
+pub(crate) struct DocLink {
+    /// Repo-relative path of the source document.
+    pub(crate) doc_path: RelPath,
+    /// 0-based chunk index within the document.
+    pub(crate) chunk_idx: u32,
+    /// The raw mention this chunk carries.
+    pub(crate) mention: DocMention,
+}
+
 /// Which edge lanes to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct EdgeKindSet {
@@ -163,6 +203,10 @@ pub(crate) struct EdgeKindSet {
     pub(crate) annotates: bool,
     /// Rationale→decision citation edges (ADR-0009). Opt-in.
     pub(crate) cites: bool,
+    /// Document→code edges (ADR-0008). Opt-in — off in `from_edges_param`'s `"all"`. The field is
+    /// ungated so the derived `Hash`/`Eq` (this type is a `GraphMemo` key) keep it live on the
+    /// default build; the lane it drives is only ever set under `feature = "documents"`.
+    pub(crate) documents: bool,
 }
 
 impl EdgeKindSet {
@@ -176,6 +220,7 @@ impl EdgeKindSet {
             contains: true,
             annotates: true,
             cites: true,
+            documents: true,
         }
     }
 
@@ -187,6 +232,7 @@ impl EdgeKindSet {
             contains: false,
             annotates: false,
             cites: false,
+            documents: false,
         }
     }
 
@@ -200,6 +246,8 @@ impl EdgeKindSet {
             EdgeKind::Contains => self.contains,
             EdgeKind::Annotates => self.annotates,
             EdgeKind::Cites => self.cites,
+            #[cfg(feature = "documents")]
+            EdgeKind::Documents => self.documents,
         }
     }
 
@@ -680,6 +728,40 @@ pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -
                             ),
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ── Document lane (ADR-0008): promote each persisted document→code link to a `DocChunk` node and
+    // resolve its mention. A name mention resolves through the shared symbol table (INFERRED /
+    // AMBIGUOUS / a virtual `Name` node); a path citation points at the file node — EXTRACTED when the
+    // cited file is indexed, INFERRED otherwise.
+    #[cfg(feature = "documents")]
+    if kinds.documents {
+        for link in &cache.doc_links {
+            if !in_focus(&link.doc_path) {
+                continue;
+            }
+            let from = NodeKey::DocChunk {
+                path: link.doc_path.clone(),
+                chunk_idx: link.chunk_idx,
+            };
+            match &link.mention {
+                DocMention::Name(name) => resolve_named_edge(&mut push, &defs_by_name, from, name, EdgeKind::Documents),
+                DocMention::Path(target) => {
+                    let prov = if cache.by_path.contains_key(target) {
+                        Provenance::Extracted
+                    } else {
+                        Provenance::Inferred
+                    };
+                    push(
+                        from,
+                        NodeKey::File { path: target.clone() },
+                        EdgeKind::Documents,
+                        prov,
+                        1,
+                    );
                 }
             }
         }

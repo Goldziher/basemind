@@ -4663,3 +4663,71 @@ async fn graph_export_renders_every_format() {
 
     let _ = service.cancel().await;
 }
+
+/// ADR-0008: a scanned document that cites an indexed source file surfaces a `Documents` edge in the
+/// shared code-graph. The document tier writes the doc→code link at scan time; the serve cache-warm
+/// path reloads it, and `graph_export edges="documents"` renders the resulting edge.
+#[cfg(feature = "documents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn documents_lane_surfaces_doc_to_code_edges() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("core.rs"), b"pub fn engine() {}\n").unwrap();
+    // SVG, not .md/.txt/.csv: those have tree-sitter grammars and route to the code tier, while SVG
+    // is xberg-extractable yet grammar-less, so it lands in the document tier (same choice bug_44 /
+    // scan_smoke make). Its text cites the indexed `core.rs`, producing a path-citation doc link.
+    std::fs::write(
+        root.join("notes.svg"),
+        b"<svg xmlns=\"http://www.w3.org/2000/svg\">\n\
+          <text>The engine lives in core.rs and drives the whole pipeline.</text>\n\
+          </svg>\n",
+    )
+    .unwrap();
+
+    // Embedding-free doc scan: doc links are keyword / path-citation heuristics over chunk text and
+    // do not depend on an ONNX embedding model being present in the test environment.
+    let mut cfg = basemind::config::default_for_root(root);
+    cfg.documents.embed = false;
+    basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(
+                root,
+                &mut store,
+                &cfg,
+                basemind::scanner::ScanSource::WorkingTree,
+                basemind::scanner::EmbedMode::Inline,
+            )
+            .expect("scan");
+        });
+    });
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let export = service
+        .call_tool(call_params(
+            "graph_export",
+            json!({ "edges": "documents", "format": "node_link" }),
+        ))
+        .await
+        .expect("graph_export documents");
+    assert_structured_matches_text(&export);
+    let body = decode_text(&export);
+    let edge_count = body.get("edge_count").and_then(Value::as_u64).unwrap_or(0);
+    assert!(
+        edge_count >= 1,
+        "the documents lane must surface a doc→code edge for the core.rs citation: {body}"
+    );
+    let content = body.get("content").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        content.contains("documents"),
+        "the rendered graph must carry a documents edge: {content}"
+    );
+
+    let _ = service.cancel().await;
+}
