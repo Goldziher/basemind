@@ -783,7 +783,8 @@ machine-readable output.
 | `history <thread> [--since-hours]` / `inbox [--mark-read]` / `wait [--thread --timeout-secs]` | A thread's history / your cross-thread inbox / block until a peer posts. |
 | `read <id>` | Read one message body in full. |
 | `register --name <handle>` / `agents [--thread]` | Set your handle / list active agents. |
-| `daemon` / `start` / `stop` / `status` | The broker daemon: run it, ensure it, stop it, or inspect pid / version / uptime. |
+| `daemon` / `start` / `stop [--all]` / `status` | The broker daemon: run it, ensure it, stop it (`--all` stops every live daemon on the machine), or inspect pid / version / uptime. |
+| `doctor` | List every live daemon on the machine (pid / comms dir / version / uptime), pruning dead registry entries, and flag a pile-up over the ceiling (`BASEMIND_MAX_DAEMONS`, default 8). |
 
 **Shells (`basemind shells`, `--features shells`)**
 

@@ -34,9 +34,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare comments citing `ADR`/`RFC` decision records) into `FileMapL1.rationale`, which the read-side
   graph build consumes to emit `Annotates` / `Cites` edges. Blob-compatible (`#[serde(default)]`); no
   schema bump.
+- **Single-daemon guarantees + leak safeguards.** The comms daemon now takes an exclusive
+  single-owner lock (`daemon.lock`) *before* binding its socket, so a redundant daemon on the same
+  comms dir converges (exits 0) instead of racing — uniform across Unix and Windows. Every live daemon
+  registers a pidfile under `<data_home>/daemons/`, and a new machine-wide ceiling
+  (`BASEMIND_MAX_DAEMONS`, default 8) **refuses** to spawn past it rather than letting daemons pile up.
+  New `basemind comms doctor` lists every live daemon (pid / comms dir / version / uptime, pruning dead
+  entries) and flags a pile-up; `basemind comms stop --all` reclaims them all in one call.
 
 ### Changed
 
+- **Daemons self-reap sooner to stop the process/memory leak class.** The idle-reap default drops
+  from 30 min to 10 min, and a new **bootstrap reaper** self-terminates a daemon that no client ever
+  connects to within ~2 min (env `BASEMIND_COMMS_BOOTSTRAP_SECS`) — catching the spawn-and-abandon
+  shape (a test or script that ran `daemon ensure` then exited) that previously left a daemon, and its
+  tens of threads, resident. Behavioural only; no schema/`RELEASE_MINOR` bump. Test binaries pin a fast
+  reap so a parallel `cargo test` no longer accumulates one lingering daemon per binary.
 - **`call_graph` is re-expressed over the shared `codegraph`.** The tool no longer maintains its own
   call scan; it projects the resolved `Calls` edges of the shared, memoized graph the other graph
   tools already read. One user-visible consequence: a call whose callee does not resolve to an
