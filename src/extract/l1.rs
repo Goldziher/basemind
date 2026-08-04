@@ -523,6 +523,24 @@ pub fn cited() {}
     }
 
     #[test]
+    fn extract_rationale_from_block_comment_rust() {
+        let src = br#"
+/**
+ * WHY: keep the lock tight; see ADR-0001
+ */
+pub fn locked() {}
+"#;
+        let map = extract_l1("rust", src).expect("extract");
+        let rationale = &map.rationale;
+        let record = rationale
+            .iter()
+            .find(|r| r.kind == RationaleKind::Why)
+            .expect("expected a WHY record from the block comment");
+        assert_eq!(record.text, "keep the lock tight; see ADR-0001");
+        assert_eq!(record.citations, vec!["ADR-0001".to_string()]);
+    }
+
+    #[test]
     fn extract_symbol_when_tslp_pattern_leads_with_doc_capture() {
         let src = b"# adds two numbers\ndef add(a, b)\n  a + b\nend\n";
         let Ok(map) = extract_l1("ruby", src) else {
