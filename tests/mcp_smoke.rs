@@ -4664,6 +4664,64 @@ async fn graph_export_renders_every_format() {
     let _ = service.cancel().await;
 }
 
+/// ADR-0009: a `// WHY:` comment citing an ADR surfaces a rationale node with an `annotates` edge to
+/// the code it precedes and a `cites` edge to the decision record. Extraction populates
+/// `l1.rationale` at scan time; `graph_export edges="rationale"` renders both edge kinds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rationale_lane_surfaces_annotates_and_cites_edges() {
+    basemind::store::init_isolated_cache();
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("docs/adr")).unwrap();
+    std::fs::write(root.join("docs/adr/0001-graph.md"), b"# ADR-0001: graph\n").unwrap();
+    std::fs::write(
+        root.join("core.rs"),
+        b"// WHY: keep the lock scope tight; see ADR-0001\npub fn engine() {}\n",
+    )
+    .unwrap();
+    basemind::lang::ensure_grammars().expect("grammar bootstrap");
+    let cfg = basemind::config::default_for_root(root);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let mut store = basemind::store::Store::open(root, basemind::store::VIEW_WORKING).expect("open store");
+            basemind::scanner::scan(
+                root,
+                &mut store,
+                &cfg,
+                basemind::scanner::ScanSource::WorkingTree,
+                basemind::scanner::EmbedMode::Inline,
+            )
+            .expect("scan");
+        });
+    });
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let export = service
+        .call_tool(call_params(
+            "graph_export",
+            json!({ "edges": "rationale", "format": "node_link" }),
+        ))
+        .await
+        .expect("graph_export rationale");
+    assert_structured_matches_text(&export);
+    let body = decode_text(&export);
+    let content = body.get("content").and_then(Value::as_str).unwrap_or_default();
+    assert!(
+        content.contains("annotates"),
+        "the rationale lane must annotate the engine fn: {content}"
+    );
+    assert!(
+        content.contains("cites"),
+        "the ADR-0001 citation must produce a cites edge to the decision record: {content}"
+    );
+
+    let _ = service.cancel().await;
+}
+
 /// ADR-0008: a scanned document that cites an indexed source file surfaces a `Documents` edge in the
 /// shared code-graph. The document tier writes the doc→code link at scan time; the serve cache-warm
 /// path reloads it, and `graph_export edges="documents"` renders the resulting edge.
