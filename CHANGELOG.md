@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   served page is the same zero-dependency interactive canvas as `display`/`graph_export html`, so a
   browser — or an agent driving one — can navigate, search, pan/zoom, and screenshot it. `open: false`
   returns the URL without launching a viewer (agents/tests). The daemon's streamable-HTTP front-end
-  gained a `GET /ui` route alongside `POST /mcp` (both behind the `comms` feature).
+  gained a `GET /ui` route alongside `POST /mcp` (both behind the `comms` feature). Both routes are
+  loopback-only: on a loopback bind the front-end rejects any request whose `Host`/`:authority` is not
+  a loopback name (DNS-rebinding protection), skipped only on an explicit non-loopback bind.
 - **Desktop UI launch path (ADR-0006, first slice).** A new `basemind ui` subcommand launches the
   desktop UI front-end (`basemind-ui`) by re-exec'ing the sibling binary shipped alongside `basemind`
   in the release archive — mirroring how `basemind agent` launches `basemind-tui`. This slice wires
