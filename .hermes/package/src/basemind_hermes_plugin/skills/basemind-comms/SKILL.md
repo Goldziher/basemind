@@ -9,8 +9,8 @@ description: >-
 
 <!--
 AI-RULEZ :: GENERATED FILE — DO NOT EDIT
-Content-Hash: blake3:f68f41182a2a47651f258f3559fa01a2aeb6c50e2fcdd5790f94c2a17053ea92
-Source-Hash: blake3:9806da0cbfb3de3f3647867da367064e91984fbd6b6c12190a83fa3733b2ec80
+Content-Hash: blake3:47f24c49386e1bdd52c17fc16063fbea776686b349c6b35bf130392664b7e2da
+Source-Hash: blake3:39867fc9cb507ee62ce14995638a96ec410e32ae97a5aa89c5901e31d78f4621
 Schema-Version: v1
 -->
 
@@ -74,6 +74,54 @@ flooding your context — you pull the messages relevant to your task, not the w
    changed, what's left).
 
 Keep posts concise — subject is a one-liner, body is a few sentences. No fluff, no emojis.
+
+## Polling — check for replies while you work
+
+Posting is half the contract. The other half is **reading replies before they go stale**: a peer
+that answers your question, hands you a finding, or claims a file you were about to edit is only
+useful if you notice within the task, not after it. An agent that posts once and then works silently
+for twenty minutes is as bad as one that never posts.
+
+Poll on a rhythm, not just at the start:
+
+- **Every few minutes during long work**, and **always** at a natural checkpoint — before you start
+  editing a new area, before you commit, and when a build or test run is doing the waiting for you.
+- `inbox_read` and `thread_history` are front-matter only, so a poll costs almost nothing. Only
+  `message_get` the ids whose subject actually concerns you.
+- `inbox_ack` the ids you have handled so the next poll shows a real delta instead of the same
+  backlog.
+
+Track the ids you have already seen and surface only **new** ones — otherwise every poll re-reports
+the whole thread and you learn nothing. If your harness can run a background watcher, poll on an
+interval (~60s is a good default) and have it emit only unseen ids, filtering out your own posts:
+
+```bash
+# Emit each NEW message on a thread; ignore your own. Prime `seen` first so you
+# only hear about what arrives from now on.
+TH=<thread-id>; ME=<your-agent-id>; seen=$(mktemp)
+basemind comms history "$TH" | awk -F'\t' '{print $NF}' > "$seen"
+while true; do
+  basemind comms history "$TH" | while IFS=$'\t' read -r subject from ts id; do
+    [ -z "$id" ] && continue
+    grep -qF "$id" "$seen" && continue
+    echo "$id" >> "$seen"
+    [ "$from" = "$ME" ] && continue
+    echo "NEW from ${from}: ${subject} [id=${id}]"
+  done
+  sleep 60
+done
+```
+
+Then `basemind comms read <id>` (MCP: `message_get`) only the ones worth a body.
+
+### When the MCP tools aren't there, use the CLI
+
+If the basemind MCP tools are missing from your registry — the server failed to start, the schema
+was rejected, the client dropped them — **coordination still works over the CLI**. Every comms tool
+has a CLI twin (table below), so `basemind comms threads / history / read / post` gets you a full
+conversation with no MCP at all. Don't conclude you are working alone just because the tools didn't
+load; check the CLI before assuming silence. Run `basemind comms doctor` (or the `basemind-doctor`
+skill) to find out why the tools are absent.
 
 ## MCP tools and CLI parity
 
