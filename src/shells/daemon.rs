@@ -20,8 +20,31 @@ use std::ffi::OsString;
 #[cfg(not(windows))]
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+
+const IDLE_REAP_AFTER: Duration = Duration::from_secs(10 * 60);
+const IDLE_REAP_CHECK_EVERY: Duration = Duration::from_secs(5);
+const IDLE_REAP_AFTER_ENV: &str = "BASEMIND_SHELLS_IDLE_REAP_SECS";
+const IDLE_REAP_CHECK_EVERY_ENV: &str = "BASEMIND_SHELLS_IDLE_CHECK_SECS";
+
+#[derive(Debug, Default)]
+struct IdleReapState {
+    empty_since: Option<Instant>,
+}
+
+impl IdleReapState {
+    fn observe(&mut self, sessions_empty: bool, now: Instant, idle_after: Duration) -> bool {
+        if !sessions_empty {
+            self.empty_since = None;
+            return false;
+        }
+
+        let empty_since = self.empty_since.get_or_insert(now);
+        now.duration_since(*empty_since) >= idle_after
+    }
+}
 
 /// Inspect the process arguments and, when basemind was re-execed as the
 /// embedded rmux daemon, run the daemon and return its result.
@@ -87,8 +110,11 @@ pub unsafe fn point_sdk_daemon_at(binary: &std::path::Path) {
 /// loading disabled and no web frontend.
 ///
 /// This builds its own multi-thread tokio runtime (the daemon owns the process
-/// at this point — `main` has not yet parsed clap and never will) and blocks on
-/// `bind().await` then `wait().await`.
+/// at this point — `main` has not yet parsed clap and never will), then polls
+/// rmux's live session set. After it remains empty for ten minutes, the server
+/// shuts down cleanly. Tests and operators can override that window with
+/// `BASEMIND_SHELLS_IDLE_REAP_SECS` and the five-second polling cadence with
+/// `BASEMIND_SHELLS_IDLE_CHECK_SECS`; both accept positive whole seconds.
 pub fn run_internal_daemon<I>(args: I) -> Result<()>
 where
     I: IntoIterator<Item = OsString>,
@@ -96,7 +122,7 @@ where
     let socket_path = parse_socket_path(args).context("the embedded rmux daemon requires a socket path argument")?;
     validate_socket_path(&socket_path)?;
 
-    let config = rmux_server::DaemonConfig::new(socket_path);
+    let config = rmux_server::DaemonConfig::new(socket_path.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -108,9 +134,89 @@ where
             .bind()
             .await
             .context("bind embedded rmux daemon socket")?;
-        server.wait().await.context("embedded rmux daemon wait loop")?;
+
+        let rmux = daemon_rmux(&socket_path);
+        wait_until_sessions_idle(
+            &rmux,
+            &socket_path,
+            duration_from_env(IDLE_REAP_AFTER_ENV, IDLE_REAP_AFTER),
+            duration_from_env(IDLE_REAP_CHECK_EVERY_ENV, IDLE_REAP_CHECK_EVERY),
+        )
+        .await;
+
+        server.shutdown().await.context("shut down idle embedded rmux daemon")?;
         Ok::<(), anyhow::Error>(())
     })
+}
+
+fn daemon_rmux(socket_path: &Path) -> rmux_sdk::Rmux {
+    #[cfg(windows)]
+    let builder = rmux_sdk::Rmux::builder().windows_pipe(socket_path.to_string_lossy().into_owned());
+    #[cfg(not(windows))]
+    let builder = rmux_sdk::Rmux::builder().unix_socket(socket_path.to_path_buf());
+
+    builder.build()
+}
+
+async fn wait_until_sessions_idle(
+    rmux: &rmux_sdk::Rmux,
+    socket_path: &Path,
+    idle_after: Duration,
+    check_every: Duration,
+) {
+    let mut state = IdleReapState::default();
+
+    loop {
+        tokio::time::sleep(check_every).await;
+        let sessions = match rmux.list_sessions().await {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                if endpoint_is_absent(socket_path).await {
+                    tracing::info!("embedded rmux daemon endpoint removed; shutdown already started");
+                    return;
+                }
+                tracing::warn!(error = %error, "embedded rmux daemon session poll failed; retrying");
+                state.observe(false, Instant::now(), idle_after);
+                continue;
+            }
+        };
+
+        if state.observe(sessions.is_empty(), Instant::now(), idle_after) {
+            tracing::info!(
+                idle_after_secs = idle_after.as_secs(),
+                "embedded rmux daemon idle; shutting down"
+            );
+            return;
+        }
+    }
+}
+
+async fn endpoint_is_absent(socket_path: &Path) -> bool {
+    let socket_path = socket_path.to_path_buf();
+    match tokio::task::spawn_blocking(move || rmux_client::connect_or_absent(&socket_path)).await {
+        Ok(Ok(rmux_client::ConnectResult::Absent)) => true,
+        Ok(Ok(rmux_client::ConnectResult::Connected(_))) => false,
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, "embedded rmux daemon endpoint probe failed");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "embedded rmux daemon endpoint probe task failed");
+            false
+        }
+    }
+}
+
+fn duration_from_env(name: &str, fallback: Duration) -> Duration {
+    duration_from_env_value(std::env::var_os(name), fallback)
+}
+
+fn duration_from_env_value(value: Option<OsString>, fallback: Duration) -> Duration {
+    value
+        .and_then(|value| value.to_str().and_then(|raw| raw.parse::<u64>().ok()))
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(fallback)
 }
 
 /// Extract the socket path from the internal-daemon argument list.
@@ -177,6 +283,124 @@ pub(crate) fn validate_socket_path(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_sessions_reap_only_after_the_idle_window() {
+        let started = std::time::Instant::now();
+        let idle_after = std::time::Duration::from_secs(10);
+        let mut state = IdleReapState::default();
+
+        assert!(!state.observe(true, started, idle_after));
+        assert!(!state.observe(
+            true,
+            started + idle_after - std::time::Duration::from_nanos(1),
+            idle_after
+        ));
+        assert!(state.observe(true, started + idle_after, idle_after));
+    }
+
+    #[test]
+    fn live_session_resets_the_empty_window() {
+        let started = std::time::Instant::now();
+        let idle_after = std::time::Duration::from_secs(10);
+        let mut state = IdleReapState::default();
+
+        assert!(!state.observe(true, started, idle_after));
+        assert!(!state.observe(false, started + idle_after, idle_after));
+        assert!(!state.observe(true, started + idle_after, idle_after));
+        assert!(!state.observe(
+            true,
+            started + idle_after * 2 - std::time::Duration::from_nanos(1),
+            idle_after
+        ));
+        assert!(state.observe(true, started + idle_after * 2, idle_after));
+    }
+
+    #[test]
+    fn duration_override_accepts_positive_whole_seconds() {
+        let fallback = std::time::Duration::from_secs(600);
+
+        assert_eq!(
+            duration_from_env_value(Some(OsString::from("2")), fallback),
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(duration_from_env_value(Some(OsString::from("0")), fallback), fallback);
+        assert_eq!(
+            duration_from_env_value(Some(OsString::from("invalid")), fallback),
+            fallback
+        );
+        assert_eq!(duration_from_env_value(None, fallback), fallback);
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn bound_daemon_reaps_after_live_session_set_stays_empty() {
+        let directory = tempfile::tempdir().expect("create daemon test directory");
+        let socket_path = directory.path().join("rmux.sock");
+        let server = rmux_server::ServerDaemon::new(rmux_server::DaemonConfig::new(socket_path.clone()))
+            .bind()
+            .await
+            .expect("bind test daemon");
+        let rmux = daemon_rmux(&socket_path);
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_until_sessions_idle(
+                &rmux,
+                &socket_path,
+                Duration::from_millis(20),
+                Duration::from_millis(10),
+            ),
+        )
+        .await
+        .expect("idle daemon should become reapable");
+        server.shutdown().await.expect("shut down test daemon");
+
+        assert!(!socket_path.exists(), "daemon shutdown should remove its socket");
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn monitor_finishes_when_last_hosted_session_removes_endpoint() {
+        let directory = tempfile::tempdir().expect("create daemon test directory");
+        let socket_path = directory.path().join("rmux.sock");
+        let server = rmux_server::ServerDaemon::new(rmux_server::DaemonConfig::new(socket_path.clone()))
+            .bind()
+            .await
+            .expect("bind test daemon");
+        let rmux = daemon_rmux(&socket_path);
+        let session = crate::shells::session::spawn_session(
+            &rmux,
+            crate::shells::session::SpawnSpec {
+                name: rmux_sdk::SessionName::new("idle-reap-regression").expect("valid session name"),
+                command: crate::shells::session::ShellCommand::Shell("sleep 60".to_owned()),
+                working_directory: None,
+                environment: Vec::new(),
+                cols: crate::shells::session::DEFAULT_COLS,
+                rows: crate::shells::session::DEFAULT_ROWS,
+            },
+        )
+        .await
+        .expect("spawn test session");
+        assert!(session.kill().await.expect("kill test session"));
+
+        let monitor_result = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_until_sessions_idle(
+                &rmux,
+                &socket_path,
+                Duration::from_millis(20),
+                Duration::from_millis(10),
+            ),
+        )
+        .await;
+        server.shutdown().await.expect("join stopped test daemon");
+
+        assert!(
+            monitor_result.is_ok(),
+            "monitor should recognize rmux exit-empty endpoint removal"
+        );
+    }
 
     #[cfg(not(windows))]
     #[test]

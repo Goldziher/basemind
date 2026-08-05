@@ -34,6 +34,11 @@ fn init_daemon_env() {
             // overruns the SDK's 5 s default startup deadline (a warm binary answers in ~50 ms).
             // Mirrors the same allowance in `mcp_smoke`'s shells test.
             std::env::set_var("RMUX_SDK_TIMEOUT_MS", "60000");
+            // Poll for idleness every second so a shut-down daemon is observed leaving promptly.
+            // The idle WINDOW is deliberately left at its ten-minute default: shortening it would
+            // let the reaper fire between the daemon's bind and this test's first spawn — a cold
+            // re-exec that can take seconds — and reap the daemon out from under the test.
+            std::env::set_var("BASEMIND_SHELLS_IDLE_CHECK_SECS", "1");
         }
     });
 }
@@ -122,35 +127,31 @@ fn daemon_pids(socket: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Leave no daemon behind: ask the sandboxed daemon to exit, then confirm the process is actually
-/// gone, signalling it if it is not.
+/// Leave no daemon behind: ask the sandboxed daemon to exit, then assert the process actually left.
 ///
-/// `Rmux::shutdown` consumes its handle, so the request goes out on a throwaway one. It is
-/// best-effort because a daemon whose last session just ended has already closed its transport.
-/// The signal is a backstop for a daemon-side defect: `run_internal_daemon` polls rmux for liveness
-/// over the very socket rmux unlinks when its last session ends, so after that the poll can never
-/// succeed, the idle reap never fires, and the basemind process spins forever. Drop the signalling
-/// once `src/shells/daemon.rs` exits on a dead server.
+/// No signal is sent, and that is the assertion. `run_internal_daemon` polls rmux over the very
+/// socket rmux unlinks when it shuts down, so a daemon that treats every failed poll as "retry
+/// later" can never observe its own server going away and spins forever — the leak that left one
+/// resident daemon per test run. Detecting the absent endpoint and returning is what makes the
+/// process exit on its own, so if this ever needs a `kill` again, that detection has regressed.
+///
+/// `Rmux::shutdown` consumes its handle, so the request goes out on a throwaway one, and it is
+/// best-effort: a daemon whose last session just ended may have closed its transport already. The
+/// exit is confirmed by the pid leaving, not by the request succeeding.
 async fn shutdown_daemon(socket: &std::path::Path) {
     let rmux = rmux_sdk::Rmux::builder().unix_socket(socket.to_path_buf()).build();
     let _ = rmux.shutdown().await;
 
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let pids = daemon_pids(socket);
         if pids.is_empty() {
             return;
         }
-        for pid in &pids {
-            // SIGKILL, not SIGTERM: the daemon traps the polite signal into a graceful shutdown
-            // that can never complete once its rmux server is gone (a run of SIGTERMs leaves it
-            // resident). Nothing durable is lost — the socket sits in a temp dir and every session
-            // in it is already dead.
-            let _ = std::process::Command::new("kill").arg("-KILL").arg(pid).status();
-        }
         assert!(
             Instant::now() < deadline,
-            "sandboxed shells daemon {pids:?} on {} survived shutdown",
+            "sandboxed shells daemon {pids:?} on {} never exited; it must reap itself once its \
+             rmux server is gone, without being signalled",
             socket.display()
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
