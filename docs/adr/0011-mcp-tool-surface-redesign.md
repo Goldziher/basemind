@@ -166,6 +166,21 @@ operations beneath them — losing the completeness gate precisely when the migr
 It is now keyed on `(tool, mode)` and walks `mode::domain_modes()`, generated from the same enums the
 schemas are, so a mode without a CLI subcommand fails the build.
 
+### Two per-tool metadata surfaces do not survive consolidation
+
+Both are real costs, accepted rather than solved, because MCP allows exactly one of each per tool:
+
+- **`output_schema` is dropped** on any domain whose modes return different shapes (`web`, `admin`,
+  `memory`, `workspace`). SEP-2106 allows one per tool, and expressing a union would mean nested
+  structs — which schemars emits as `$ref` into `$defs`, the construct that dropped the whole
+  registry in GH #50. The per-mode shapes are documented in the description instead.
+- **Annotations coarsen to the union of the domain's modes.** `admin` bundles the read-only `status`
+  and `repo` with `rescan` and `cache_clear`, so the tool advertises `read_only_hint: false` and
+  `destructive_hint: true` for all eleven. A host that gates by tool-level annotations will now
+  refuse `admin` mode `status` in a read-only context, where it would have allowed the old `status`
+  tool. Splitting a domain by mutability would restore the hint at the cost of reintroducing the
+  name proliferation this ADR removes, so the hint loses.
+
 ### Enum schemas must be hand-written
 
 `#[derive(JsonSchema)]` on an enum whose variants carry doc comments emits
