@@ -107,8 +107,11 @@ async fn serve_relays_stdio_client_to_the_daemon_hosted_router() {
         .peer_info()
         .and_then(|info| info.instructions.clone())
         .unwrap_or_default();
+    // Matched on the stable identity phrase rather than a quoted sentence: the instructions are prose
+    // that gets re-tuned (they were rewritten to fit the client's 2048-char ceiling), and quoting a
+    // phrase that later gets edited away turns this into a false failure about relaying.
     assert!(
-        instructions.contains("Context economy"),
+        instructions.contains("basemind") && instructions.contains("indexed context layer"),
         "relayed server should carry basemind's instructions: {instructions:?}"
     );
 

@@ -139,11 +139,12 @@ async fn streamable_http_serves_initialize_and_tools_list() {
         parsed["result"]["serverInfo"]["name"].is_string(),
         "initialize result must carry serverInfo: {parsed}"
     );
+    // Matched on the stable identity phrase, not on a whole opening sentence: the instructions are
+    // prose that gets re-tuned (they were rewritten to fit the client's 2048-char ceiling), and an
+    // assertion quoting a full sentence goes red on an edit that changed nothing this test is about.
+    let instructions = parsed["result"]["instructions"].as_str().unwrap_or_default();
     assert!(
-        parsed["result"]["instructions"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("basemind is the indexed context layer"),
+        instructions.contains("basemind") && instructions.contains("indexed context layer"),
         "initialize instructions must identify basemind: {parsed}"
     );
 
