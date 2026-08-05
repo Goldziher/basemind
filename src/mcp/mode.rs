@@ -226,6 +226,56 @@ define_mode! {
     }
 }
 
+define_mode! {
+    /// Which git-history operation the `git` tool should run.
+    pub enum GitMode {
+        domain: "git",
+        summary: "Git history operation to run.",
+        Status => "status", "uncommitted work in the tree, split into staged and unstaged";
+        Recent => "recent", "the latest commits with their touched paths and summaries";
+        Touching => "touching", "commits that modified a given path";
+        ByPath => "by_path", "path-filtered commit log";
+        Churn => "churn", "files ranked by how often they change";
+        Diff => "diff", "a file's textual diff between two revisions";
+        DiffOutline => "diff_outline", "which symbols a file gained, lost or changed between revisions";
+        Blame => "blame", "who last changed each line of a file";
+        BlameSymbol => "blame_symbol", "who last changed one symbol, resolved to its line span";
+        SymbolHistory => "symbol_history", "when a symbol's body actually changed, by structural hash";
+        Search => "search", "full-text search over commit messages and authors";
+    }
+}
+
+define_mode! {
+    /// Which code-graph operation the `graph` tool should run.
+    pub enum GraphMode {
+        domain: "graph",
+        summary: "Code-graph operation to run.",
+        Calls => "calls", "walk the call chain up or down from one definition";
+        Neighbors => "neighbors", "the n-hop neighborhood around a symbol";
+        Path => "path", "the confidence-weighted shortest path between two symbols";
+        Subgraph => "subgraph", "a symbol's neighborhood cut to its most central nodes";
+        Communities => "communities", "cluster the graph into its de-facto modules";
+        Map => "map", "whole-repo architecture: hub modules by centrality, plus dependency cycles";
+        Export => "export", "render the graph as node-link JSON, DOT, Mermaid, GraphML, Cypher or HTML";
+        Display => "display", "open a rendered view in a human's desktop viewer";
+        Open => "open", "return a live browsable URL for the interactive graph page";
+    }
+}
+
+define_mode! {
+    /// Which headless-terminal operation the `shell` tool should run.
+    pub enum ShellMode {
+        domain: "shell",
+        summary: "Shell session operation to run.",
+        Spawn => "spawn", "start a background terminal session running a command";
+        Send => "send", "type into a live session";
+        Capture => "capture", "read back what a session has printed";
+        Kill => "kill", "terminate a session";
+        List => "list", "every session the shell daemon currently hosts";
+        Broadcast => "broadcast", "type the same input into several sessions at once";
+    }
+}
+
 /// Fail a call that passed parameters the selected mode does not accept.
 ///
 /// `present` pairs each inapplicable field name with whether the caller actually supplied it. Every

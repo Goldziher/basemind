@@ -47,8 +47,8 @@ pub struct WebScrapeParams {
     /// Absolute http or https URL to fetch.
     pub url: crate::url::Url,
     /// When true (default), chunk + embed + write to LanceDB so the page is
-    /// reachable via `search_documents`. When false, fetch and return metadata
-    /// only — useful for previewing a URL before paying the embedding cost.
+    /// reachable via `memory` mode `documents`. When false, fetch and return
+    /// metadata only — useful for previewing a URL before paying the embedding cost.
     #[serde(default = "WebScrapeParams::default_index")]
     pub index: bool,
     /// LanceDB `scope` tag. Default `"web:<host>"`. Override to share a scope
@@ -87,7 +87,7 @@ pub struct WebCrawlParams {
     pub max_depth: Option<u32>,
     /// LanceDB `scope` tag. Default `"web:<host>"` derived from the seed URL's
     /// host. Every page indexed by this crawl uses the same scope so
-    /// `search_documents { scope: ... }` retrieves them together.
+    /// `memory { mode: "documents", scope: ... }` retrieves them together.
     #[serde(default)]
     pub scope: Option<String>,
 }
