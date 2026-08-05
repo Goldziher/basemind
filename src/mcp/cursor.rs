@@ -34,6 +34,9 @@ use serde::{Deserialize, Serialize};
 ///   for the same in-RAM snapshot. If the cache is swapped (rescan), the
 ///   response carries `cursor_invalidated = true` and the caller must restart.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
+// Inlined, not $ref'd into $defs: a $ref (often with a sibling `description`) is rejected by
+// the Anthropic input_schema subset, which silently drops the ENTIRE tool registry (GH #50). ~keep
+#[schemars(inline)]
 #[serde(transparent)]
 pub struct Cursor(pub String);
 

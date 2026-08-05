@@ -337,24 +337,28 @@ impl<'de> Deserialize<'de> for RelPath {
 }
 
 impl rmcp::schemars::JsonSchema for RelPath {
+    /// Inlined rather than referenced: a `$ref` into `$defs` (especially one carrying a sibling
+    /// `description`, as every path parameter does) is rejected by the Anthropic `input_schema`
+    /// subset, and that rejection drops the server's ENTIRE tool registry silently — see the module
+    /// docs on `tests/mcp_schema_wire.rs` and GH #50.
+    fn inline_schema() -> bool {
+        true
+    }
+
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "RelPath".into()
     }
+
+    /// A plain string on the wire.
+    ///
+    /// [`Deserialize`] still accepts raw bytes and the `{"bytes": [u8, …]}` map — serde's escape
+    /// hatch for the non-UTF-8 paths this type exists to preserve — so no existing caller breaks.
+    /// But advertising that arm as a schema `oneOf` is what made every tool carrying a path
+    /// unregistrable: `oneOf` at a property type is outside the accepted subset, and no MCP caller
+    /// would ever send the byte form anyway.
     fn json_schema(_: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
         rmcp::schemars::json_schema!({
-            "oneOf": [
-                { "type": "string" },
-                {
-                    "type": "object",
-                    "properties": {
-                        "bytes": {
-                            "type": "array",
-                            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
-                        }
-                    },
-                    "required": ["bytes"]
-                }
-            ]
+            "type": "string"
         })
     }
 }

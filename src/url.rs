@@ -189,6 +189,12 @@ impl<'de> Deserialize<'de> for Url {
 pub(crate) static PRIVATE_HOSTS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl rmcp::schemars::JsonSchema for Url {
+    /// Inlined, not referenced: a `$ref` into `$defs` is rejected by the Anthropic `input_schema`
+    /// subset, which silently drops the whole tool registry (GH #50).
+    fn inline_schema() -> bool {
+        true
+    }
+
     fn schema_name() -> std::borrow::Cow<'static, str> {
         "Url".into()
     }

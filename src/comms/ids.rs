@@ -99,6 +99,12 @@ macro_rules! id_newtype {
         }
 
         impl rmcp::schemars::JsonSchema for $name {
+            /// Inlined, not referenced: a `$ref` into `$defs` is rejected by the Anthropic
+            /// `input_schema` subset, which silently drops the whole tool registry (GH #50).
+            fn inline_schema() -> bool {
+                true
+            }
+
             fn schema_name() -> std::borrow::Cow<'static, str> {
                 $schema_name.into()
             }

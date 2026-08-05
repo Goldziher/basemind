@@ -18,6 +18,9 @@ use crate::path::RelPath;
 /// Modelled as a struct (rather than a raw `"K=V"` string) so the schema is
 /// self-documenting and the values are not re-parsed.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+// Inlined, not $ref'd into $defs: a $ref (often with a sibling `description`) is rejected by
+// the Anthropic input_schema subset, which silently drops the ENTIRE tool registry (GH #50). ~keep
+#[schemars(inline)]
 pub struct ShellEnv {
     /// Environment variable name.
     pub key: String,

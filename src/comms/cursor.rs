@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 /// Opaque resume token. Pass the `next_cursor` from a previous page back as `cursor` to fetch
 /// the following page. Stable across daemon restarts — append-only log, content-free position.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+// Inlined, not $ref'd into $defs: a $ref (often with a sibling `description`) is rejected by
+// the Anthropic input_schema subset, which silently drops the ENTIRE tool registry (GH #50). ~keep
+#[schemars(inline)]
 #[serde(transparent)]
 pub struct Cursor(pub String);
 

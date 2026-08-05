@@ -18,7 +18,7 @@ use super::types::default_true;
 /// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
 /// behavior, with an empty owner segment. `individual` scopes the entry to the calling
 /// agent (owner = its `AgentId`), so two agents can keep private same-key entries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Visibility {
     /// Shared, cross-agent memory (owner segment is empty). The default.
@@ -26,6 +26,32 @@ pub enum Visibility {
     Group,
     /// Per-agent memory (owner segment is the caller's `AgentId`).
     Individual,
+}
+
+impl schemars::JsonSchema for Visibility {
+    /// Inlined, not `$ref`'d into `$defs` — see [`crate::path::RelPath`]'s impl and GH #50.
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Visibility".into()
+    }
+
+    /// A flat string enum, written by hand rather than derived.
+    ///
+    /// The derive turns per-variant doc comments into `oneOf: [{const, description}, …]`, and
+    /// `oneOf` is outside the Anthropic `input_schema` subset — which silently drops the server's
+    /// entire tool registry (GH #50). The variant docs live in the description instead, so the
+    /// meaning survives without the rejected construct.
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "enum": ["group", "individual"],
+            "description": "Memory tier: `group` (default) is shared across agents; `individual` \
+                            scopes the entry to the calling agent."
+        })
+    }
 }
 
 impl Visibility {
