@@ -34,10 +34,10 @@ fn init_daemon_env() {
             // overruns the SDK's 5 s default startup deadline (a warm binary answers in ~50 ms).
             // Mirrors the same allowance in `mcp_smoke`'s shells test.
             std::env::set_var("RMUX_SDK_TIMEOUT_MS", "60000");
-            // Poll for idleness every second so a shut-down daemon is observed leaving promptly.
-            // The idle WINDOW is deliberately left at its ten-minute default: shortening it would
-            // let the reaper fire between the daemon's bind and this test's first spawn — a cold
-            // re-exec that can take seconds — and reap the daemon out from under the test.
+            // Poll for idleness every second so a shut-down daemon is observed leaving promptly. ~keep
+            // The idle WINDOW is deliberately left at its ten-minute default: shortening it would ~keep
+            // let the reaper fire between the daemon's bind and this test's first spawn — a cold ~keep
+            // re-exec that can take seconds — and reap the daemon out from under the test. ~keep
             std::env::set_var("BASEMIND_SHELLS_IDLE_CHECK_SECS", "1");
         }
     });
