@@ -206,6 +206,9 @@
         "max_retries": null,
         "max_tokens": null
       }
+    },
+    "agent": {
+      "description": "The `[agent]` table, accepted here but interpreted elsewhere.\n\nThe agent front-end owns this section and parses it itself, leniently, straight out of the\nTOML document (`crates/basemind-tui/src/config.rs`). The core server never reads it — but it\nmust still ACCEPT it, because `deny_unknown_fields` above applies to the whole file: without\nthis passthrough, a repo whose `basemind.toml` legitimately carries `[agent]` fails to parse,\nthe daemon cannot host that workspace (`host_build_failed`), `serve` dies before `initialize`,\nand every MCP tool silently disappears. Keeping it untyped avoids duplicating the agent\ncrate's role schema here while preserving strict typo-checking for every other section."
     }
   },
   "additionalProperties": false,
@@ -876,7 +879,11 @@
         },
         "default_visibility": {
           "description": "Default memory tier when a `memory_*` call omits `visibility`. `group` (shared) keeps\ntoday's behavior; set to `individual` so a user's writes default to their private tier.",
-          "$ref": "#/$defs/Visibility",
+          "type": "string",
+          "enum": [
+            "group",
+            "individual"
+          ],
           "default": "group"
         }
       },
@@ -893,21 +900,6 @@
           "description": "Always use the workdir realpath. Separates clones of the same repo.",
           "type": "string",
           "const": "workdir_only"
-        }
-      ]
-    },
-    "Visibility": {
-      "description": "Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's\nbehavior, with an empty owner segment. `individual` scopes the entry to the calling\nagent (owner = its `AgentId`), so two agents can keep private same-key entries.",
-      "oneOf": [
-        {
-          "description": "Shared, cross-agent memory (owner segment is empty). The default.",
-          "type": "string",
-          "const": "group"
-        },
-        {
-          "description": "Per-agent memory (owner segment is the caller's `AgentId`).",
-          "type": "string",
-          "const": "individual"
         }
       ]
     },

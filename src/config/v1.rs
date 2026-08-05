@@ -50,6 +50,17 @@ pub struct ConfigV1 {
     /// `api_key` `Unset` short-circuits any LLM-backed feature.
     #[serde(default)]
     pub llm: LlmConfig,
+    /// The `[agent]` table, accepted here but interpreted elsewhere.
+    ///
+    /// The agent front-end owns this section and parses it itself, leniently, straight out of the
+    /// TOML document (`crates/basemind-tui/src/config.rs`). The core server never reads it — but it
+    /// must still ACCEPT it, because `deny_unknown_fields` above applies to the whole file: without
+    /// this passthrough, a repo whose `basemind.toml` legitimately carries `[agent]` fails to parse,
+    /// the daemon cannot host that workspace (`host_build_failed`), `serve` dies before `initialize`,
+    /// and every MCP tool silently disappears. Keeping it untyped avoids duplicating the agent
+    /// crate's role schema here while preserving strict typo-checking for every other section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -419,6 +430,7 @@ impl ConfigV1 {
             crawl: CrawlConfig::default(),
             shells: ShellsConfig::default(),
             llm: LlmConfig::default(),
+            agent: None,
         }
     }
 }
