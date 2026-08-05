@@ -310,11 +310,12 @@ pub async fn ensure_daemon(paths: &CommsPaths) -> Result<(), SingletonError> {
             });
         }
     }
-    // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling first so
-    // a runaway (each isolated comms dir spawning its own detached daemon) is refused loudly, not
-    // silently piled up. The count prunes dead holders as a side effect.
-    let live = super::daemon_lock::count_live_daemons();
-    let max = super::daemon_lock::max_live_daemons();
+    // No compatible daemon answered — we are about to spawn one. Enforce the machine ceiling for the
+    // comms family first so a runaway (each isolated comms dir spawning its own detached daemon) is
+    // refused loudly, not silently piled up. Counting per kind keeps another family's daemons from
+    // consuming the comms budget. The count prunes dead holders as a side effect.
+    let live = crate::daemon_lock::count_live_daemons_of(crate::daemon_lock::DaemonKind::Comms);
+    let max = crate::daemon_lock::max_live_daemons();
     if live >= max {
         return Err(SingletonError::TooManyDaemons { count: live, max });
     }
@@ -479,10 +480,60 @@ pub fn probe_alive(_socket_path: &Path) -> bool {
     false
 }
 
+/// Env override naming the `basemind` binary to spawn the daemon from. Set it when the running
+/// executable is not itself `basemind` — a test harness, or an embedding host.
+pub const DAEMON_BINARY_ENV: &str = "BASEMIND_DAEMON_BINARY";
+
+/// Resolve the executable to re-exec as `basemind comms daemon`.
+///
+/// This deliberately refuses to re-exec an executable that is not a `basemind` binary, because
+/// blindly re-exec'ing `current_exe()` is a fork bomb rather than a mistake. Under `cargo test`,
+/// `current_exe()` is the libtest harness: it reads the appended `comms daemon` as a *test-name
+/// filter*, re-runs the whole suite, and every test in that re-run that reaches this function spawns
+/// another generation. One stray call took this machine from ~800 to 8256 processes.
+///
+/// [`DAEMON_BINARY_ENV`] is the escape hatch for a legitimate non-`basemind` caller, and it is what
+/// a test should set (to `env!("CARGO_BIN_EXE_basemind")`) when it genuinely wants a real daemon.
+fn resolve_daemon_binary() -> std::io::Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os(DAEMON_BINARY_ENV) {
+        return Ok(PathBuf::from(explicit));
+    }
+    daemon_binary_for(&std::env::current_exe()?)
+}
+
+/// The [`resolve_daemon_binary`] decision for a given running executable, split out so the refusal
+/// can be tested without a harness whose own path decides the outcome.
+fn daemon_binary_for(exe: &Path) -> std::io::Result<PathBuf> {
+    let stem = exe.file_stem().and_then(std::ffi::OsStr::to_str).unwrap_or_default();
+    if stem == "basemind" {
+        return Ok(exe.to_path_buf());
+    }
+    // A cargo test harness lives at `target/<profile>/deps/<name>-<hash>`, with the real binary its
+    // grandparent's `basemind`. Preferring that keeps a test that genuinely wants a daemon working
+    // while still never re-exec'ing the harness itself.
+    if let Some(sibling) = exe
+        .parent()
+        .and_then(std::path::Path::parent)
+        .map(|dir| dir.join(if cfg!(windows) { "basemind.exe" } else { "basemind" }))
+        .filter(|candidate| candidate.is_file())
+    {
+        return Ok(sibling);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!(
+            "refusing to spawn a comms daemon by re-exec'ing {}: it is not a `basemind` binary. \
+             Re-exec'ing a test harness makes it re-run its own suite and spawn again, without \
+             bound. Set {DAEMON_BINARY_ENV} to a real `basemind` executable to spawn one from here.",
+            exe.display()
+        ),
+    ))
+}
+
 /// Spawn `basemind comms daemon` detached so it outlives the spawning process. stdout/stderr
 /// are redirected to null; the daemon's own tracing goes to its log sink.
 pub fn spawn_detached_daemon(_paths: &CommsPaths) -> std::io::Result<()> {
-    let exe = std::env::current_exe()?;
+    let exe = resolve_daemon_binary()?;
     let mut command = std::process::Command::new(exe);
     command
         .arg("comms")
@@ -575,6 +626,66 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guard against the fork bomb. `current_exe()` under `cargo test` IS this harness binary,
+    /// and re-exec'ing it with `comms daemon` appended makes libtest read those as a test-name filter
+    /// and re-run the whole suite — which spawns again, without bound. So the resolver must refuse
+    /// here rather than hand back a path.
+    #[test]
+    fn should_refuse_to_re_exec_a_binary_that_is_not_basemind() {
+        let harness = std::path::Path::new("/nowhere/target/debug/deps/git_history_daemon-17c2bf1b");
+        let error = daemon_binary_for(harness).expect_err("a test harness must never be re-exec'd");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        let message = error.to_string();
+        assert!(
+            message.contains("not a `basemind` binary") && message.contains(DAEMON_BINARY_ENV),
+            "the refusal must name the cause and the escape hatch; got: {message}"
+        );
+    }
+
+    #[test]
+    fn should_re_exec_a_real_basemind_binary() {
+        let real = std::path::Path::new("/usr/local/bin/basemind");
+        assert_eq!(daemon_binary_for(real).expect("a basemind binary resolves"), real);
+    }
+
+    /// A harness DOES get a daemon when the real binary is sitting where cargo puts it — the guard
+    /// redirects the spawn, it does not disable it. What it must never return is the harness itself.
+    #[test]
+    fn should_redirect_a_harness_to_the_sibling_basemind_instead_of_itself() {
+        let target = tempfile::tempdir().expect("tempdir");
+        let deps = target.path().join("deps");
+        std::fs::create_dir_all(&deps).expect("create deps dir");
+        let real = target
+            .path()
+            .join(if cfg!(windows) { "basemind.exe" } else { "basemind" });
+        std::fs::write(&real, b"").expect("write the sibling binary");
+        let harness = deps.join("comms_smoke-deadbeef");
+
+        assert_eq!(
+            daemon_binary_for(&harness).expect("the sibling resolves"),
+            real,
+            "the harness must be redirected to the real binary, never re-exec'd"
+        );
+    }
+
+    /// The escape hatch for an embedding host whose executable is neither `basemind` nor sitting
+    /// beside one.
+    #[test]
+    fn should_use_the_explicit_binary_override_when_set() {
+        let previous = std::env::var_os(DAEMON_BINARY_ENV);
+        let explicit = std::path::PathBuf::from("/opt/somewhere/basemind-wrapper");
+        // SAFETY: single-threaded within this test; the previous value is restored before asserting.
+        unsafe { std::env::set_var(DAEMON_BINARY_ENV, &explicit) };
+        let resolved = resolve_daemon_binary();
+        match previous {
+            Some(value) => unsafe { std::env::set_var(DAEMON_BINARY_ENV, value) },
+            None => unsafe { std::env::remove_var(DAEMON_BINARY_ENV) },
+        }
+
+        assert_eq!(resolved.expect("the override resolves"), explicit);
+    }
 
     #[test]
     fn version_is_older_orders_releases_and_ignores_prerelease() {

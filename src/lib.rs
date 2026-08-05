@@ -6,6 +6,9 @@ pub mod chunk;
 pub mod cli;
 pub mod comms;
 pub mod config;
+/// Single-owner daemon lock + pidfile + the machine-wide, kind-tagged live-daemon registry and
+/// ceiling, shared by every daemon family (comms broker, agent-ipc, shells).
+pub mod daemon_lock;
 #[cfg(feature = "intelligence")]
 pub mod embeddings;
 pub mod extract;

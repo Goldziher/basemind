@@ -348,12 +348,12 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// `basemind comms doctor`: enumerate the live daemons registered on this machine and flag a
-/// pile-up over the ceiling. Pure and cheap — reads the pidfile registry (pruning dead holders),
+/// `basemind comms doctor`: enumerate the live daemons registered on this machine — every family in
+/// the shared registry, each row tagged with its `kind` — and flag a pile-up over the ceiling. Pure and cheap — reads the pidfile registry (pruning dead holders),
 /// issues no daemon RPC — so it is safe to run even when the machine is in a bad state.
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_doctor(json: bool) -> Result<()> {
-    use basemind::comms::daemon_lock;
+    use basemind::daemon_lock;
 
     let daemons = daemon_lock::live_daemons();
     let ceiling = daemon_lock::max_live_daemons();
@@ -365,7 +365,8 @@ fn cmd_comms_doctor(json: bool) -> Result<()> {
             .map(|record| {
                 serde_json::json!({
                     "pid": record.pid,
-                    "comms_dir": record.comms_dir,
+                    "kind": record.kind,
+                    "dir": record.dir,
                     "version": record.version,
                     "uptime_secs": (now - record.started_unix).max(0),
                 })
@@ -388,11 +389,12 @@ fn cmd_comms_doctor(json: bool) -> Result<()> {
     println!("{} live daemon(s) (ceiling {ceiling}):", daemons.len());
     for record in &daemons {
         println!(
-            "  pid={} version={} uptime={}s comms_dir={}",
+            "  pid={} kind={} version={} uptime={}s dir={}",
             record.pid,
+            record.kind,
             record.version,
             (now - record.started_unix).max(0),
-            record.comms_dir.display(),
+            record.dir.display(),
         );
     }
     if daemons.len() > ceiling {
@@ -404,16 +406,19 @@ fn cmd_comms_doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `basemind comms stop --all`: signal every live daemon on this machine to drain, addressing each
-/// by its own socket. Uses the low-level [`singleton::request_stop`] rather than a `CommsClient`
+/// `basemind comms stop --all`: signal every live comms daemon on this machine to drain, addressing
+/// each by its own socket. Uses the low-level [`singleton::request_stop`] rather than a `CommsClient`
 /// (which could respawn the very daemon it meant to stop).
 #[cfg(all(feature = "comms", any(unix, windows)))]
 fn cmd_comms_stop_all(json: bool) -> Result<()> {
-    use basemind::comms::{daemon_lock, singleton};
+    use basemind::comms::singleton;
+    use basemind::daemon_lock::{self, DaemonKind};
 
-    let daemons = daemon_lock::live_daemons();
+    // Comms-only: this addresses each holder over the comms stop protocol, which another daemon
+    // family in the shared registry does not speak.
+    let daemons = daemon_lock::live_daemons_of(DaemonKind::Comms);
     for record in &daemons {
-        singleton::request_stop(&singleton::comms_socket_path(&record.comms_dir));
+        singleton::request_stop(&singleton::comms_socket_path(&record.dir));
     }
     if json {
         println!("{{\"stopped\":{}}}", daemons.len());

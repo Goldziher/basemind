@@ -61,6 +61,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Runaway daemon spawning under `cargo test` (fork bomb).** `spawn_detached_daemon` re-exec'd
+  `std::env::current_exe()` with `comms daemon` appended. Under a test harness that executable is
+  libtest, which reads the appended words as a **test-name filter** and re-runs the whole suite — and
+  every test in that re-run reaching the spawn forked another generation. A single run reached 5610
+  orphaned daemons and 8256 processes, at which point `fork` itself began failing. The machine-wide
+  ceiling could not contain it because `init_isolated_cache` minted a fresh `$BASEMIND_DATA_HOME` in
+  every process, so each generation counted an empty registry. Now the spawn resolves a real
+  `basemind` binary or refuses: a harness is redirected to the sibling `target/<profile>/basemind`,
+  and `BASEMIND_DAEMON_BINARY` is the explicit override. The isolated test cache is stamped with a
+  marker and re-adopted by child processes, so one registry — and one ceiling — covers the whole
+  process tree, while an unmarked `$BASEMIND_DATA_HOME` (a developer's real cache) is never adopted.
 - **Blank statusline in global-cache mode.** With the index living in the machine-global cache there
   is no in-repo `.basemind/` for the shell statusline to read, so it fell back to a permanent "no
   index" hint even on a freshly-scanned repo. `basemind statusline` gains a `--root <path>` mode that
