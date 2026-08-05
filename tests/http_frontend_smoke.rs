@@ -227,9 +227,15 @@ async fn ui_route_serves_interactive_html() {
         "the embedded graph-data island is present"
     );
 
-    // A missing root is a 400 (the query is malformed), a nonexistent root is a 404.
-    let (status, _, _) = http_get(&addr, "/ui").await;
+    // A missing root is a 400 (the query is malformed), a nonexistent root is a 404. The error body
+    // is plain text that names the problem, not an opaque status.
+    let (status, head, body) = http_get(&addr, "/ui").await;
     assert_eq!(status, 400, "missing ?root must 400");
+    assert!(
+        head.contains("content-type: text/plain"),
+        "the 400 is plain text: {head}"
+    );
+    assert!(body.contains("root"), "the 400 body names the missing root: {body}");
     let (status, _, _) = http_get(&addr, "/ui?root=%2Fno%2Fsuch%2Fpath%2Fbm-xyz").await;
     assert_eq!(status, 404, "a root that does not resolve must 404");
 
@@ -243,6 +249,22 @@ async fn ui_route_serves_interactive_html() {
     // A `localhost` Host is loopback and still served (regression guard for the allowlist).
     let status = http_get_with_host(&addr, &format!("/ui?root={encoded_root}"), "localhost:1234").await;
     assert_eq!(status, 200, "a loopback Host (localhost) is still served");
+
+    // The route serves visual formats only (like the `ui` tool): a graph *data* format is a 400 whose
+    // body names the rejected knob — the route and tool reject it through the same `render_ui_parts`.
+    let (status, _, body) = http_get(&addr, &format!("/ui?root={encoded_root}&format=node_link")).await;
+    assert_eq!(status, 400, "a graph data format is rejected by the route: {body}");
+    assert!(body.contains("format"), "the 400 body names the bad format: {body}");
+    // `format=svg` renders and is served with the SVG content-type (proves the format knob is plumbed
+    // through to the response, not just the default HTML path).
+    let (status, head, _) = http_get(&addr, &format!("/ui?root={encoded_root}&format=svg")).await;
+    assert_eq!(status, 200, "svg renders");
+    assert!(head.contains("image/svg+xml"), "svg content-type: {head}");
+
+    // `/ui` is a pure read render, so it is method-agnostic: a POST carrying the same query serves the
+    // same page (the body is ignored). Pins current behavior — the route has no write/side-effect path.
+    let (status, _) = http_post(&addr, &format!("/ui?root={encoded_root}"), b"", &[]).await;
+    assert_eq!(status, 200, "POST /ui serves the same read-only page");
 
     shutdown_tx.send(true).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), server).await;

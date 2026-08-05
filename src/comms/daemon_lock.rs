@@ -224,7 +224,6 @@ impl DaemonLock {
 
 impl Drop for DaemonLock {
     fn drop(&mut self) {
-        // Best-effort: the flock releasing (on `File` drop) is what actually frees the singleton;
         // removing the pidfiles just keeps the registry tidy so a later count needs no liveness prune.
         let _ = std::fs::remove_file(&self.pid_path);
         let _ = std::fs::remove_file(&self.machine_path);

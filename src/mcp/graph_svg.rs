@@ -202,7 +202,6 @@ pub(super) fn to_svg(view: &GraphView) -> String {
         if a >= bodies.len() || b >= bodies.len() {
             continue;
         }
-        // Match the HTML engine's draw-time `l.confidence || 0.3` fallback exactly, so a
         // zero-confidence edge (none exist today, but the provenance ladder may grow one) draws
         // identically in both renderers.
         let conf = if e.confidence > 0.0 { e.confidence as f64 } else { 0.3 };
@@ -349,7 +348,6 @@ mod tests {
         assert_eq!(out.matches("<circle").count(), 3, "one circle per node: {out}");
         assert!(out.matches("<line").count() >= 2, "edges drawn: {out}");
         // Fully offline: no external resource references. (The SVG `xmlns` is an http *identifier*,
-        // never fetched, so the real test is that nothing loads a remote asset — no href, no url().)
         assert!(!out.contains("href"), "no linked/embedded resources: {out}");
         assert!(!out.contains("url("), "no CSS url() references: {out}");
     }

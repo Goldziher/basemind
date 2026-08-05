@@ -4836,6 +4836,34 @@ async fn ui_returns_url_and_writes_export_without_opening() {
         "written file is the interactive HTML page"
     );
 
+    // Knob plumbing: `max_nodes` caps the rendered graph and the response reports the cut. The repo has
+    // threads the graph-shaping knobs through `render_ui_parts`, not just the defaults.
+    let capped = service
+        .call_tool(call_params("ui", json!({"max_nodes": 1, "open": false})))
+        .await
+        .expect("ui max_nodes=1");
+    let capped = decode_text(&capped);
+    assert_eq!(
+        capped.get("node_count").and_then(Value::as_u64),
+        Some(1),
+        "max_nodes=1 caps the rendered graph to one node: {capped}"
+    );
+    assert_eq!(
+        capped.get("truncated").and_then(Value::as_bool),
+        Some(true),
+        "capping a larger graph reports truncated: {capped}"
+    );
+    // `focus` is threaded end-to-end (param -> render): the tool accepts it and renders without error.
+    let focused = service
+        .call_tool(call_params("ui", json!({"focus": "core.rs", "open": false})))
+        .await
+        .expect("ui focus renders");
+    let focused = decode_text(&focused);
+    assert!(
+        focused.get("node_count").and_then(Value::as_u64).is_some(),
+        "focus renders a graph carrying a node count: {focused}"
+    );
+
     // A graph *data* format is rejected — the UI shows a picture; graph_export returns the data.
     let rejected = service
         .call_tool(call_params("ui", json!({"format": "node_link", "open": false})))

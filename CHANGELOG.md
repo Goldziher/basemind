@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   graph build consumes to emit `Annotates` / `Cites` edges. Blob-compatible (`#[serde(default)]`); no
   schema bump.
 - **Single-daemon guarantees + leak safeguards.** The comms daemon now takes an exclusive
-  single-owner lock (`daemon.lock`) *before* binding its socket, so a redundant daemon on the same
+  single-owner lock (`daemon.lock`) _before_ binding its socket, so a redundant daemon on the same
   comms dir converges (exits 0) instead of racing — uniform across Unix and Windows. Every live daemon
   registers a pidfile under `<data_home>/daemons/`, and a new machine-wide ceiling
   (`BASEMIND_MAX_DAEMONS`, default 8) **refuses** to spawn past it rather than letting daemons pile up.

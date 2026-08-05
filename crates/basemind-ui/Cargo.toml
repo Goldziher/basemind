@@ -25,9 +25,7 @@ desktop = ["dep:tauri", "dep:tauri-build", "dep:url", "basemind/comms"]
 [dependencies]
 anyhow = "1"
 basemind = { path = "../..", default-features = false }
-tauri = { version = "2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-url = { version = "2", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true }

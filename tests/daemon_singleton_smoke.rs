@@ -178,7 +178,6 @@ fn spawning_past_the_ceiling_is_refused() {
     assert!(!status.success(), "spawning past the ceiling must fail");
 
     // Still only one daemon is registered, and doctor echoes the effective ceiling (passed here so
-    // its `max_live_daemons()` reads the same override).
     let (status, doctor) = run_bin(
         &comms_one,
         home.path(),
