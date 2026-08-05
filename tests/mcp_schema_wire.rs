@@ -58,3 +58,42 @@ async fn every_tool_input_schema_is_flat_and_inlined() {
 
     let _ = service.cancel().await;
 }
+
+/// Clients truncate server instructions at a fixed budget and say so only in their own debug log
+/// ("Server instructions truncated from 5585 to 2048 chars") — the agent never learns that most of
+/// what the server told it was thrown away. Truncation keeps the HEAD, so overflow silently deletes
+/// whatever sits at the END: when this text ran ~6.5k, the entire agent-coordination contract was
+/// discarded on every connection while appearing to be delivered.
+const INSTRUCTIONS_CEILING: usize = 2048;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn instructions_stay_under_the_client_ceiling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::write(root.join("lib.rs"), "pub fn seed() {}\n").expect("seed file");
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let instructions = service
+        .peer_info()
+        .and_then(|info| info.instructions.clone())
+        .unwrap_or_default();
+
+    assert!(
+        !instructions.is_empty(),
+        "the server must send instructions; an empty string means the agent gets no guidance at all"
+    );
+    assert!(
+        instructions.len() <= INSTRUCTIONS_CEILING,
+        "server instructions are {} chars, over the {INSTRUCTIONS_CEILING}-char client ceiling — the \
+         last {} chars would be silently dropped on every connection. Trim the text; per-tool routing \
+         detail belongs in tool descriptions, which is what deferred-tool search matches on.",
+        instructions.len(),
+        instructions.len() - INSTRUCTIONS_CEILING,
+    );
+
+    let _ = service.cancel().await;
+}

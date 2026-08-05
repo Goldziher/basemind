@@ -177,8 +177,12 @@ async fn mcp_server_exercises_representative_tools() {
         .and_then(|info| info.instructions.clone())
         .unwrap_or_default();
     assert!(
-        instructions.contains("Context economy"),
-        "server instructions should state the context-economy discipline: {instructions}"
+        instructions.contains("basemind first"),
+        "server instructions should state the prefer-basemind-over-grep directive: {instructions}"
+    );
+    assert!(
+        instructions.contains("fraction of the tokens"),
+        "server instructions should state the context-economy rationale: {instructions}"
     );
 
     let body = decode_text(
