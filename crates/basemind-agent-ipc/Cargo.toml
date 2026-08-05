@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 basemind = { path = "../..", default-features = false }
 basemind-agent = { path = "../basemind-agent" }
+fs2 = "0.4"
 futures = "0.3"
 rmp-serde = "1"
 serde = "1"

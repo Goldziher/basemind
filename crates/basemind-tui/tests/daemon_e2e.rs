@@ -168,6 +168,15 @@ async fn daemon_serves_a_scripted_session_over_the_socket() {
 
 #[tokio::test]
 async fn daemon_exits_cleanly_on_sigterm() {
+    assert_daemon_exits_cleanly_on_signal("-TERM").await;
+}
+
+#[tokio::test]
+async fn daemon_exits_cleanly_on_sigint() {
+    assert_daemon_exits_cleanly_on_signal("-INT").await;
+}
+
+async fn assert_daemon_exits_cleanly_on_signal(signal_name: &str) {
     let data_home = tempfile::tempdir().expect("data home tempdir");
     let root = tempfile::tempdir().expect("repo root tempdir");
     let mut scenario_file = tempfile::NamedTempFile::new().expect("scenario tempfile");
@@ -191,14 +200,14 @@ async fn daemon_exits_cleanly_on_sigterm() {
     wait_for_socket_state(&socket, true).await;
 
     let signal = Command::new("kill")
-        .arg("-TERM")
+        .arg(signal_name)
         .arg(guard.0.id().to_string())
         .status()
-        .expect("send SIGTERM");
-    assert!(signal.success(), "kill command sends SIGTERM: {signal}");
+        .expect("send shutdown signal");
+    assert!(signal.success(), "kill command sends {signal_name}: {signal}");
 
     let status = guard.wait_for_natural_exit();
-    assert!(status.success(), "daemon exits cleanly after SIGTERM: {status}");
+    assert!(status.success(), "daemon exits cleanly after {signal_name}: {status}");
     wait_for_socket_state(&socket, false).await;
 }
 

@@ -214,17 +214,21 @@ async fn run_in_proc(args: Args) -> Result<()> {
 /// lifecycle window. The initial prompt is ignored — prompts arrive from attaches so the session
 /// stays shared.
 async fn run_daemon(args: Args) -> Result<()> {
+    let (mut interrupt, mut terminate) = install_shutdown_signals()?;
     // Claim the singleton socket before building the engine: if another daemon won a spawn race, this
     // bind fails here, before `build_engine` creates an orphaned session directory on disk. ~keep
     let socket_path = agent_socket_path(&args.root);
-    let listener = bind_listener(&socket_path, probe_alive).context("bind agent daemon socket")?;
+    let listener = bind_listener(&socket_path, probe_alive)
+        .await
+        .context("bind agent daemon socket")?;
     let _socket_cleanup = SocketCleanupGuard::new(&socket_path).context("guard agent daemon socket")?;
     eprintln!("agent daemon listening on {}", socket_path.display());
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
-        if let Err(error) = wait_for_shutdown_signal().await {
-            tracing::warn!(%error, "agent daemon: shutdown signal listener failed");
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
         }
         let _ = shutdown_tx.send(true);
     });
@@ -242,14 +246,12 @@ async fn run_daemon(args: Args) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for_shutdown_signal() -> Result<()> {
-    let mut terminate =
+fn install_shutdown_signals() -> Result<(tokio::signal::unix::Signal, tokio::signal::unix::Signal)> {
+    let interrupt =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).context("install SIGINT handler")?;
+    let terminate =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).context("install SIGTERM handler")?;
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => result.context("listen for Ctrl-C")?,
-        _ = terminate.recv() => {}
-    }
-    Ok(())
+    Ok((interrupt, terminate))
 }
 
 /// Run the UI against a daemon-hosted engine, spawning a detached daemon first if none is running,

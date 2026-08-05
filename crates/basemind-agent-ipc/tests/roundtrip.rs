@@ -56,10 +56,10 @@ fn spawn_scripted_daemon(dir: &Path, scenario_json: &str) -> PathBuf {
 
 /// Bind a socket in `dir` and spawn a *persistent* daemon: one long-lived scripted session behind the
 /// [`serve`] accept loop, so the session outlives each connection and a later attach reuses it.
-fn spawn_persistent_daemon(dir: &Path, scenario_json: &str) -> PathBuf {
+async fn spawn_persistent_daemon(dir: &Path, scenario_json: &str) -> PathBuf {
     let scenario = Scenario::from_json(scenario_json).expect("parse scenario");
     let socket_path = dir.join("agent.sock");
-    let listener = bind_listener(&socket_path, probe_alive).expect("bind socket");
+    let listener = bind_listener(&socket_path, probe_alive).await.expect("bind socket");
 
     tokio::spawn(async move {
         let mut tools = ToolRegistry::new();
@@ -216,7 +216,8 @@ async fn a_persistent_session_survives_disconnect_and_advances_on_reattach() {
     let socket = spawn_persistent_daemon(
         dir.path(),
         r#"{ "user": "hi", "turns": [ { "text": "reply one" }, { "text": "reply two" } ] }"#,
-    );
+    )
+    .await;
 
     // First attach drives turn 1, then detaches the way the real UI does on exit: it sends
     // `Shutdown` before disconnecting. That must NOT kill the shared session. ~keep

@@ -95,11 +95,11 @@ impl ConnectionState {
     }
 
     fn should_reap(&self, config: ServeConfig) -> bool {
-        if self.live_connections.load(Ordering::SeqCst) != 0 {
-            return false;
-        }
         if !self.ever_connected.load(Ordering::SeqCst) {
             return self.started.elapsed() >= config.bootstrap_timeout;
+        }
+        if self.live_connections.load(Ordering::SeqCst) != 0 {
+            return false;
         }
         self.elapsed_since_activity() >= config.idle_reap_after
     }
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn daemon_does_not_reap_while_connection_is_live() {
+    async fn daemon_does_not_reap_while_served_connection_is_live() {
         let dir = tempfile::tempdir().expect("socket tempdir");
         let socket = dir.path().join("agent.sock");
         let listener = UnixListener::bind(&socket).expect("bind listener");
@@ -349,7 +349,13 @@ mod tests {
             shutdown_rx,
             test_config(),
         ));
-        let client = UnixStream::connect(&socket).await.expect("connect client");
+        let client = crate::client::UdsAgentClient::connect(&socket)
+            .await
+            .expect("connect client");
+        client
+            .send_command(AgentCommand::Cancel)
+            .await
+            .expect("mark a real attach");
         tokio::time::sleep(SHORT_WINDOW * 2).await;
 
         assert!(!task.is_finished(), "a live connection pins the daemon");
@@ -357,6 +363,33 @@ mod tests {
         tokio::time::timeout(TEST_TIMEOUT, &mut task)
             .await
             .expect("serve exits after the post-disconnect idle window")
+            .expect("serve task joins")
+            .expect("serve returns successfully");
+    }
+
+    #[tokio::test]
+    async fn commandless_connection_does_not_pin_past_bootstrap_grace() {
+        let dir = tempfile::tempdir().expect("socket tempdir");
+        let socket = dir.path().join("agent.sock");
+        let listener = UnixListener::bind(&socket).expect("bind listener");
+        let (_endpoint, template) = in_proc_channel(1, 1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let config = ServeConfig {
+            drain_grace: CHECK_INTERVAL,
+            ..test_config()
+        };
+
+        let task = tokio::spawn(serve_with_config(
+            listener,
+            move || template.new_client(),
+            shutdown_rx,
+            config,
+        ));
+        let _stuck_probe = UnixStream::connect(&socket).await.expect("connect stuck probe");
+
+        tokio::time::timeout(TEST_TIMEOUT, task)
+            .await
+            .expect("commandless connection cannot defeat bootstrap reap")
             .expect("serve task joins")
             .expect("serve returns successfully");
     }

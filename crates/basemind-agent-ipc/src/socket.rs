@@ -7,6 +7,7 @@
 //! confirms nobody is listening.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use tokio::net::UnixListener;
 
@@ -25,11 +26,16 @@ const OWNER_ONLY_DIR: u32 = 0o700;
 /// Owner-only file mode for the socket itself.
 #[cfg(unix)]
 const OWNER_ONLY_FILE: u32 = 0o600;
+/// Maximum time a successor waits for a predecessor to finish socket cleanup.
+const SOCKET_LOCK_WAIT: Duration = Duration::from_secs(15);
+/// Poll cadence while a predecessor holds the socket cleanup lock without a live listener.
+const SOCKET_LOCK_POLL: Duration = Duration::from_millis(25);
 
 /// Removes a daemon socket on drop only when the path still names the inode captured at creation.
 /// This prevents a shutting-down daemon from unlinking a replacement socket bound by its successor.
 #[derive(Debug)]
 pub struct SocketCleanupGuard {
+    _lock: std::fs::File,
     path: PathBuf,
     device: u64,
     inode: u64,
@@ -40,8 +46,10 @@ impl SocketCleanupGuard {
     pub fn new(path: &Path) -> Result<Self, IpcError> {
         use std::os::unix::fs::MetadataExt;
 
+        let lock = try_acquire_socket_lock(path)?;
         let metadata = std::fs::metadata(path)?;
         Ok(Self {
+            _lock: lock,
             path: path.to_path_buf(),
             device: metadata.dev(),
             inode: metadata.ino(),
@@ -93,13 +101,14 @@ pub fn probe_alive(socket_path: &Path) -> bool {
 /// `probe` is injected so tests can drive the live-vs-stale decision deterministically; production
 /// callers pass [`probe_alive`].
 #[cfg(unix)]
-pub fn bind_listener(socket_path: &Path, probe: impl Fn(&Path) -> bool) -> Result<UnixListener, IpcError> {
+pub async fn bind_listener(socket_path: &Path, probe: impl Fn(&Path) -> bool) -> Result<UnixListener, IpcError> {
     use std::os::unix::fs::PermissionsExt;
 
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)?;
         let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(OWNER_ONLY_DIR));
     }
+    let _bind_lock = acquire_bind_lock(socket_path, &probe).await?;
 
     let adopt = |listener: std::os::unix::net::UnixListener| -> Result<UnixListener, IpcError> {
         listener.set_nonblocking(true)?;
@@ -118,6 +127,58 @@ pub fn bind_listener(socket_path: &Path, probe: impl Fn(&Path) -> bool) -> Resul
             adopt(std::os::unix::net::UnixListener::bind(socket_path)?)
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+fn open_socket_lock(socket_path: &Path) -> Result<std::fs::File, IpcError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut lock_name = socket_path.as_os_str().to_owned();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    let _ = lock.set_permissions(std::fs::Permissions::from_mode(OWNER_ONLY_FILE));
+    Ok(lock)
+}
+
+#[cfg(unix)]
+fn try_acquire_socket_lock(socket_path: &Path) -> Result<std::fs::File, IpcError> {
+    let lock = open_socket_lock(socket_path)?;
+    match fs2::FileExt::try_lock_exclusive(&lock) {
+        Ok(()) => Ok(lock),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(IpcError::AlreadyRunning(socket_path.to_path_buf()))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(unix)]
+async fn acquire_bind_lock(socket_path: &Path, probe: &impl Fn(&Path) -> bool) -> Result<std::fs::File, IpcError> {
+    let deadline = Instant::now() + SOCKET_LOCK_WAIT;
+    loop {
+        match try_acquire_socket_lock(socket_path) {
+            Ok(lock) => return Ok(lock),
+            Err(IpcError::AlreadyRunning(_)) if probe(socket_path) => {
+                return Err(IpcError::AlreadyRunning(socket_path.to_path_buf()));
+            }
+            Err(IpcError::AlreadyRunning(_)) if Instant::now() < deadline => {
+                tokio::time::sleep(SOCKET_LOCK_POLL).await;
+            }
+            Err(IpcError::AlreadyRunning(_)) => {
+                return Err(IpcError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("timed out waiting to reclaim agent socket {}", socket_path.display()),
+                )));
+            }
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -167,12 +228,12 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let socket = dir.path().join("agent.sock");
 
-        let _listener = bind_listener(&socket, probe_alive).expect("first bind");
+        let _listener = bind_listener(&socket, probe_alive).await.expect("first bind");
         assert!(socket.exists(), "the socket file was created");
         assert!(probe_alive(&socket), "the live listener answers the probe");
 
         // The bind is the singleton lock: a second bind on the live socket is refused. ~keep
-        match bind_listener(&socket, probe_alive) {
+        match bind_listener(&socket, probe_alive).await {
             Err(IpcError::AlreadyRunning(path)) => assert_eq!(path, socket),
             other => panic!("expected AlreadyRunning, got {other:?}"),
         }
@@ -189,7 +250,7 @@ mod tests {
         assert!(socket.exists(), "the stale socket file remains after drop");
 
         // With a probe that reports the socket dead, the bind reclaims and rebinds. ~keep
-        let _listener = bind_listener(&socket, |_| false).expect("reclaim stale socket");
+        let _listener = bind_listener(&socket, |_| false).await.expect("reclaim stale socket");
         assert!(probe_alive(&socket), "the reclaimed listener now answers");
     }
 
@@ -197,7 +258,7 @@ mod tests {
     async fn cleanup_guard_unlinks_the_socket_it_owns() {
         let dir = tempfile::tempdir().expect("dir");
         let socket = dir.path().join("agent.sock");
-        let listener = bind_listener(&socket, probe_alive).expect("bind listener");
+        let listener = bind_listener(&socket, probe_alive).await.expect("bind listener");
         let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
 
         drop(listener);
@@ -210,7 +271,7 @@ mod tests {
     async fn cleanup_guard_preserves_a_replacement_socket() {
         let dir = tempfile::tempdir().expect("dir");
         let socket = dir.path().join("agent.sock");
-        let listener = bind_listener(&socket, probe_alive).expect("bind listener");
+        let listener = bind_listener(&socket, probe_alive).await.expect("bind listener");
         let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
 
         drop(listener);
@@ -220,5 +281,25 @@ mod tests {
 
         assert!(socket.exists(), "cleanup must not unlink a replacement socket");
         drop(replacement);
+    }
+
+    #[tokio::test]
+    async fn cleanup_guard_serializes_rebind_until_cleanup_finishes() {
+        let dir = tempfile::tempdir().expect("dir");
+        let socket = dir.path().join("agent.sock");
+        let listener = bind_listener(&socket, probe_alive).await.expect("bind listener");
+        let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
+        drop(listener);
+
+        let rebind_socket = socket.clone();
+        let mut rebind = tokio::spawn(async move { bind_listener(&rebind_socket, |_| false).await });
+        tokio::time::sleep(SOCKET_LOCK_POLL * 2).await;
+        assert!(!rebind.is_finished(), "rebind waits while cleanup owns the lock");
+        drop(guard);
+        let _replacement = tokio::time::timeout(Duration::from_secs(2), &mut rebind)
+            .await
+            .expect("rebind completes after cleanup")
+            .expect("rebind task joins")
+            .expect("rebind succeeds after cleanup releases lock");
     }
 }
