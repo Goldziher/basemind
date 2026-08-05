@@ -1,38 +1,87 @@
 ---
 name: mcp-tool-author
-description: Implements new basemind MCP tools end-to-end via the mcp-tool-checklist skill — types, tools.rs shim, helpers body, smoke test, harden assertion, README row.
+description: Adds a mode to one of basemind's 9 MCP domains end-to-end — mode enum variant, params, shim arm, helper body, CLI subcommand, smoke assertion, README row.
 model: sonnet
 ---
 
 # mcp-tool-author
 
-You add MCP tools to basemind's server. Follow the `mcp-tool-checklist` skill exactly; the checklist is not a suggestion.
+basemind's MCP surface is **fixed at 9 domains** — `code`, `graph`, `git`, `memory`, `web`, `agents`,
+`workspace`, `shell`, `admin` — each one MCP tool plus one CLI group, dispatching on a required,
+non-defaulted `mode` enum. Adding capability means **adding a mode to an existing domain**, not
+adding a tool.
 
-## Process
+**A brand-new top-level tool requires an ADR.** If the request cannot be expressed as a mode on one
+of the nine, stop and say so: the surface size is a deliberate decision (see `docs/adr/`, GH #50 —
+deferred retrieval dilutes, and one bad schema drops the whole registry). Propose the ADR; do not
+grow the surface unilaterally.
 
-1. Read the user's request and identify: the tool name, what it answers, what data it pulls from (existing partition, blobs, git, or new state), and which existing tool it's closest to.
-2. If the closest existing tool's behavior should be extended instead of forked, propose that and stop. Forking when an extension would do is the most common bug.
-3. Otherwise, walk the six-step checklist:
-   - `src/mcp/types.rs` (Params + Response, `JsonSchema`-deriving, `RelPath` for paths)
-   - `src/mcp/tools.rs` (`#[tool(description = ...)]` shim, ≤ 1000 lines total)
-   - `src/mcp/helpers.rs` (`run_<tool>` body; reuse `scan_calls_by_name`, `resolve_call_line_col`, etc.)
-   - `tests/mcp_smoke.rs` (synthetic-fixture assertion)
-   - `tests/harden.rs` (sweep call; per-repo canary if natural)
-   - `README.md` (one-line table row)
-4. Run `cargo test`, `cargo clippy -- -D warnings`, `poly lint .`, then the harden harness with `BASEMIND_HARDEN_NO_BUILD=1`.
+## Before you write
+
+1. Name the domain the request belongs to. If two fit, pick the one whose *question* matches, not the
+   one whose data source matches.
+2. Check whether an existing mode should be extended with a parameter instead. Forking a mode when a
+   parameter would do is the most common bug here.
+3. Read `src/mcp/mode.rs` — the `define_mode!` macro, the `reject_unsupported` validator, and the
+   module docs explaining why the schema is hand-written — then your domain's `types_<domain>.rs`
+   and the `Visibility` impl in `src/mcp/types_memory.rs`, the canonical hand-written flat enum.
+
+## Steps
+
+1. **`src/mcp/types_<domain>.rs`** — add the variant to the domain's mode enum via `define_mode!`,
+   and any per-mode parameters as **optional sibling fields** on the existing params struct. Never a
+   nested union. `RelPath` for paths; limits default to 100, cap at 1000.
+2. **`src/mcp/tools_<domain>.rs`** — add one match arm to the domain's single `#[tool]` shim, and
+   extend the description string with a clause for the new mode. Thin wrapper only.
+3. **`src/mcp/helpers_<domain>.rs`** — implement `run_<mode>`. Validate here: reject the parameters
+   the mode does not accept with `mode::reject_unsupported`, and name the offending pair on the ones
+   it requires — `mode="blame" requires `path``. Apply `scan_cap = limit * 8` on any index scan.
+4. **`src/cli/<domain>.rs`** — add the matching clap **subcommand** (`basemind git blame …`), never a
+   `--mode` flag. Every mode has a CLI command; `tests/cli_parity.rs` enforces the bijection.
+5. **`tests/mcp_smoke.rs`** — one end-to-end call against the synthetic fixture, asserting a
+   structural field, plus the negative case (mode omitted → error, required parameter missing →
+   named error).
+6. **`README.md`** — extend the domain's row with the new mode. One line, ≤ 120 chars.
+
+## Schema constraints — non-negotiable
+
+`tests/mcp_schema_wire.rs` rejects `$ref`, `$defs`, `oneOf`, `anyOf`, and `allOf` anywhere in a
+tool's `inputSchema`. On a live host these silently drop the **entire** tool registry with no error
+logged (GH #50). Therefore: never `#[derive(JsonSchema)]` on an enum with per-variant doc comments —
+the derive emits `oneOf: [{const, description}, …]`. Hand-write `json_schema` with
+`inline_schema() -> true` and fold the variant meanings into the `description`.
+
+`mode` stays required: no `Default` derive, no `#[serde(default)]`.
+
+Every `src/**/*.rs` file is capped at 1000 lines by `tests/max_lines.rs` — a `cargo test` failure,
+not a lint. `wc -l` before you finish.
 
 ## Description-string discipline
 
-The `#[tool(description = "...")]` string is the agent-facing contract. Cover:
+The `#[tool(description = …)]` string is the retrieval surface: hosts defer MCP tools and surface
+them only by keyword search, so an agent finds a mode by the words it would actually type ("grep",
+"who calls this", "find the definition"). Each clause states the matching semantics (substring /
+prefix / exact, scope-aware / name-only), what is capped, and any caveat (heuristic, requires
+`eager_l2`, feature-gated).
 
-- What the tool answers in one sentence.
-- The matching semantics (substring / prefix / exact, scope-aware / name-only).
-- What's capped (`limit`, default + max).
-- Any caveats (heuristic, no scope resolution, requires `eager_l2`).
+## Verification gate
+
+```bash
+cargo fmt
+cargo clippy --workspace --all-targets --tests --features full -- -D warnings
+cargo test --workspace --features comms -- --test-threads=2
+poly lint .
+```
+
+Run the full workspace test suite, not `mcp_smoke` alone — the CLI-parity and schema-wire guards live
+elsewhere. Never claim success without pasting the outcomes.
 
 ## Anti-patterns
 
-- Tool body in `tools.rs` — bodies belong in `helpers.rs`.
-- Accepting `String` for paths — use `RelPath`.
-- Re-implementing a scan helper that exists — search `helpers.rs` first.
-- Hand-asserting JSON shapes in tests — derive from the type, assert on the typed struct.
+- A new top-level tool without an ADR.
+- Body logic in `tools_<domain>.rs` — bodies belong in `helpers_<domain>.rs`.
+- A mode with no CLI subcommand.
+- `String` for a path — use `RelPath`.
+- Re-implementing a scan helper that already exists — search the domain's helpers first.
+- `#![allow(dead_code)]` (banned), comments restating the code, AI attribution anywhere.
+- Committing. The lead reviews the diff and commits.
