@@ -110,7 +110,7 @@ impl Capability {
                 "editing a worktree another session may already own",
             ),
             Capability::DocumentsRag => (
-                "`search_documents` / `web_scrape` / `web_crawl` / `web_map`",
+                "`search_documents` / `web` (modes `scrape` / `crawl` / `map`)",
                 "manually reading PDFs / docs or ad-hoc fetching",
             ),
             Capability::SemanticSearch => (

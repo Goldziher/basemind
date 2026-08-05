@@ -67,6 +67,7 @@ mod map_fingerprint;
 mod memory;
 #[cfg(feature = "memory")]
 pub(crate) mod memory_ops;
+pub mod mode;
 mod notifications;
 mod prompts;
 #[cfg(feature = "memory")]
@@ -153,6 +154,7 @@ pub mod params {
 
     pub(crate) use super::lenient::Lenient;
 
+    pub use super::mode::WebMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
         FindCallersParams, FindCommitsByPathParams, FindFilesParams, FindReferencesParams, GotoDefinitionParams,
@@ -160,8 +162,6 @@ pub mod params {
         SearchDocumentsParams, SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams,
         TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
-    #[cfg(feature = "crawl")]
-    pub use super::types::{WebCrawlParams, WebMapParams, WebScrapeParams};
     pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_archmap::ArchitectureMapParams;
     pub use super::types_code::{GetChunkParams, SearchCodeParams};
@@ -182,6 +182,8 @@ pub mod params {
         ShellSpawnParams,
     };
     pub use super::types_traverse::{NeighborsParams, PathParams, SubgraphParams};
+    #[cfg(feature = "crawl")]
+    pub use super::types_web::WebParams;
 }
 
 pub use params::Parameters;

@@ -1,10 +1,13 @@
-//! Web ingestion subcommands.
+//! `basemind web` — the CLI half of the `web` domain.
 //!
-//! The MCP `web_*` methods only exist when the crate is built with
-//! `--features crawl`. The clap enum is defined unconditionally so the
-//! subcommands always parse; dispatch returns a clear "built without crawl
-//! feature" error when the feature is off (mirroring MCP's behavior of not
-//! exposing the tools at all).
+//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
+//! its own argument validation; they map one-to-one onto the MCP `web` tool's [`WebMode`] values,
+//! which is what `tests/cli_parity.rs` asserts.
+//!
+//! The MCP `web` tool only exists when the crate is built with `--features crawl`. The clap enum is
+//! defined unconditionally so the subcommands always parse; dispatch returns a clear "built without
+//! crawl feature" error when the feature is off (mirroring MCP's behavior of not exposing the tool
+//! at all).
 
 use std::io::Write;
 
@@ -56,40 +59,46 @@ pub async fn run(server: &BasemindServer, cmd: WebCmd, opts: &Emit, out: &mut im
             .map_err(|e| anyhow::anyhow!("invalid url {s:?}: {e}"))
     }
 
-    match cmd {
-        WebCmd::Scrape { url, no_index, scope } => {
-            let p = WebScrapeParams {
-                url: parse_url(&url)?,
-                index: !no_index,
-                scope,
-            };
-            let r = run_tool("web_scrape", server.web_scrape(Parameters(p)).await)?;
-            emit("web_scrape", &r, opts, out)
+    /// Every field the `web` tool accepts, with the ones this mode does not use left `None` — the
+    /// helper rejects a field that belongs to another mode, so they must not be populated blindly.
+    fn params(mode: WebMode, url: crate::url::Url) -> WebParams {
+        WebParams {
+            mode,
+            url,
+            index: None,
+            scope: None,
+            max_pages: None,
+            max_depth: None,
+            limit: None,
         }
+    }
+
+    let p = match cmd {
+        WebCmd::Scrape { url, no_index, scope } => WebParams {
+            index: no_index.then_some(false),
+            scope,
+            ..params(WebMode::Scrape, parse_url(&url)?)
+        },
         WebCmd::Crawl {
             url,
             max_pages,
             max_depth,
             scope,
-        } => {
-            let p = WebCrawlParams {
-                url: parse_url(&url)?,
-                max_pages,
-                max_depth,
-                scope,
-            };
-            let r = run_tool("web_crawl", server.web_crawl(Parameters(p)).await)?;
-            emit("web_crawl", &r, opts, out)
-        }
-        WebCmd::Map { url, limit } => {
-            let p = WebMapParams {
-                url: parse_url(&url)?,
-                limit,
-            };
-            let r = run_tool("web_map", server.web_map(Parameters(p)).await)?;
-            emit("web_map", &r, opts, out)
-        }
-    }
+        } => WebParams {
+            max_pages,
+            max_depth,
+            scope,
+            ..params(WebMode::Crawl, parse_url(&url)?)
+        },
+        WebCmd::Map { url, limit } => WebParams {
+            limit,
+            ..params(WebMode::Map, parse_url(&url)?)
+        },
+    };
+
+    let key = p.mode.telemetry_key();
+    let r = run_tool(key, server.web(Parameters(Lenient(p))).await)?;
+    emit(key, &r, opts, out)
 }
 
 #[cfg(not(feature = "crawl"))]

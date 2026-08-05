@@ -44,7 +44,7 @@ impl ServerHandler for BasemindServer {
     /// In lean mode, route the three wrapper tools through `lean::lean_call_tool`, which itself
     /// delegates `invoke_tool` back to this same router — no tool logic is duplicated.
     ///
-    /// SEP-2663 Tasks: before the synchronous dispatch, a slow tool ([`tasks::SLOW_TOOLS`]) called by
+    /// SEP-2663 Tasks: before the synchronous dispatch, a slow call ([`tasks::SLOW_CALLS`]) made by
     /// a client that declared the tasks extension is offloaded onto the [`TaskManager`] and answered
     /// with a pollable task handle instead of a blocked call. Every other case takes the normal path.
     async fn call_tool(
@@ -56,7 +56,7 @@ impl ServerHandler for BasemindServer {
             return lean::lean_call_tool(self, &self.tool_router, request, context).await;
         }
         let client_supports_tasks = context.client_capabilities().is_some_and(|caps| caps.supports_tasks());
-        if client_supports_tasks && tasks::is_slow_tool(&request.name) {
+        if client_supports_tasks && tasks::is_slow_tool(&request.name, request.arguments.as_ref()) {
             return Ok(rmcp::model::CallToolResponse::Task(tasks::spawn_slow_tool(
                 self, request, context,
             )));
@@ -187,7 +187,7 @@ impl ServerHandler for BasemindServer {
              instead of grepping call sites; workspace_grep instead of ripgrep; find_files to \
              locate a file from a name fragment; the git tools (recent_changes, blame_file, \
              blame_symbol, diff_file, commits_touching) instead of git log or git blame; \
-             search_documents instead of opening PDFs and docs; web_scrape, web_crawl, and web_map \
+             search_documents instead of opening PDFs and docs; the web tool (modes scrape, crawl, map) \
              for the web. Do not re-read a file basemind already mapped. Run rescan after edits \
              instead of reconnecting; if a tool reports no indexed files, run basemind scan first.\n\
              You may be one of several agents in this repo, so coordinate rather than assuming you \

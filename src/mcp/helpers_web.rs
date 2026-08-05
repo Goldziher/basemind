@@ -24,10 +24,12 @@ use rmcp::model::CallToolResult;
 use super::ServerState;
 use super::helpers::json_result;
 use super::memory::lance_store;
+use super::mode::{WebMode, reject_unsupported};
 use super::types::{
     WebCrawlPageOutcome, WebCrawlParams, WebCrawlResponse, WebMapEntry, WebMapParams, WebMapResponse, WebScrapeParams,
     WebScrapeResponse,
 };
+use super::types_web::WebParams;
 use crate::embeddings::SharedEmbedder;
 use crate::web::ingest::{default_scope, index_page};
 
@@ -145,7 +147,65 @@ fn engine(state: &ServerState) -> Result<&crawlberg::CrawlEngineHandle, McpError
     })
 }
 
-pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams) -> Result<CallToolResult, McpError> {
+/// Dispatch the single `web` tool onto the per-operation helper its `mode` selects.
+///
+/// Fields that belong to another mode are rejected rather than dropped: a silently ignored
+/// `max_depth` on a `scrape` call reads to an agent as a successful bounded crawl.
+pub(super) async fn run_web(state: &ServerState, params: WebParams) -> Result<CallToolResult, McpError> {
+    let WebParams {
+        mode,
+        url,
+        index,
+        scope,
+        max_pages,
+        max_depth,
+        limit,
+    } = params;
+    let reject = |present: &[(&str, bool)]| reject_unsupported(WebMode::DOMAIN, mode.as_str(), present);
+
+    match mode {
+        WebMode::Scrape => {
+            reject(&[
+                ("max_pages", max_pages.is_some()),
+                ("max_depth", max_depth.is_some()),
+                ("limit", limit.is_some()),
+            ])?;
+            run_web_scrape(
+                state,
+                WebScrapeParams {
+                    url,
+                    index: index.unwrap_or(true),
+                    scope,
+                },
+            )
+            .await
+        }
+        WebMode::Crawl => {
+            reject(&[("index", index.is_some()), ("limit", limit.is_some())])?;
+            run_web_crawl(
+                state,
+                WebCrawlParams {
+                    url,
+                    max_pages,
+                    max_depth,
+                    scope,
+                },
+            )
+            .await
+        }
+        WebMode::Map => {
+            reject(&[
+                ("index", index.is_some()),
+                ("scope", scope.is_some()),
+                ("max_pages", max_pages.is_some()),
+                ("max_depth", max_depth.is_some()),
+            ])?;
+            run_web_map(state, WebMapParams { url, limit }).await
+        }
+    }
+}
+
+async fn run_web_scrape(state: &ServerState, params: WebScrapeParams) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
 
@@ -153,7 +213,7 @@ pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams)
         .await
         .map_err(|e| mcp_internal("crawlberg scrape", e))?;
 
-    reject_redirected_private_url("web_scrape", &result.final_url)?;
+    reject_redirected_private_url("web mode scrape", &result.final_url)?;
 
     let scope = resolve_scope(params.scope.as_deref(), &params.url, &result.final_url);
 
@@ -212,7 +272,7 @@ pub(super) async fn run_web_scrape(state: &ServerState, params: WebScrapeParams)
     json_result(&response)
 }
 
-pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<CallToolResult, McpError> {
+async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -> Result<CallToolResult, McpError> {
     engine(state)?;
     reject_zero_override("max_pages", params.max_pages)?;
     reject_zero_override("max_depth", params.max_depth)?;
@@ -245,10 +305,10 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
     let semaphore = Arc::new(tokio::sync::Semaphore::new(CRAWL_INDEX_CONCURRENCY));
 
     for (slot, page) in crawl_outcome.pages.into_iter().enumerate() {
-        if let Err(error) = reject_redirected_private_url("web_crawl", &page.normalized_url) {
+        if let Err(error) = reject_redirected_private_url("web mode crawl", &page.normalized_url) {
             tracing::warn!(
                 url = %page.normalized_url,
-                "web_crawl: skipping private/loopback page reached via crawl"
+                "web crawl: skipping private/loopback page reached via crawl"
             );
             outcomes.push(Some(WebCrawlPageOutcome {
                 url: page.normalized_url,
@@ -310,7 +370,7 @@ pub(super) async fn run_web_crawl(state: &ServerState, params: WebCrawlParams) -
                     error: None,
                 },
                 Ok(Err(error)) => {
-                    tracing::warn!(url = %normalized_url, ?error, "web_crawl index_page failed");
+                    tracing::warn!(url = %normalized_url, ?error, "web crawl index_page failed");
                     WebCrawlPageOutcome {
                         url: normalized_url,
                         status_code,
@@ -363,7 +423,7 @@ fn web_map_limit(limit: Option<u32>) -> usize {
     limit.unwrap_or(WEB_MAP_DEFAULT_LIMIT).min(WEB_MAP_MAX_LIMIT) as usize
 }
 
-pub(super) async fn run_web_map(state: &ServerState, params: WebMapParams) -> Result<CallToolResult, McpError> {
+async fn run_web_map(state: &ServerState, params: WebMapParams) -> Result<CallToolResult, McpError> {
     let engine = engine(state)?;
     let url_str = params.url.as_str().to_string();
     let limit = web_map_limit(params.limit);

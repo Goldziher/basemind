@@ -61,7 +61,7 @@ const DOCUMENT_READ_MULTIPLIER: u64 = 5;
 /// basemind returns the already-filtered set, saving the agent the extra listing it reads.
 const LIST_FILES_READ_MULTIPLIER: u64 = 2;
 
-/// Web-ingestion baseline multiplier (`web_scrape` / `web_crawl` / `web_map`). The alternative
+/// Web-ingestion baseline multiplier (`web:scrape` / `web:crawl` / `web:map`). The alternative
 /// is the agent browsing the page(s) and pasting raw page text into context; the cleaned/extracted
 /// response is a fraction of that. Modelled conservatively at 3× the returned payload.
 const WEB_INGEST_MULTIPLIER: u64 = 3;
@@ -109,7 +109,7 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
-        "web_scrape" | "web_crawl" | "web_map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
+        "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
         "memory_get"
         | "memory_put"
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn web_ingest_models_manual_browse_paste_at_3x() {
-        for tool in ["web_scrape", "web_crawl", "web_map"] {
+        for tool in ["web:scrape", "web:crawl", "web:map"] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(400));
             assert_eq!(s.baseline, "manual_browse_paste", "{tool} baseline name");
             assert_eq!(

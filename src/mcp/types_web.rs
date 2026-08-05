@@ -1,8 +1,46 @@
 //! Web scrape / crawl / map request + response shapes for the `crawl` feature.
 //! Extracted from `types.rs` to keep that file within the per-file size budget.
+//!
+//! [`WebParams`] is what crosses the wire: one flat parameter object for the single `web` tool,
+//! with a required [`WebMode`] selecting the operation and every per-mode field an optional
+//! sibling. The per-operation structs below stay as the helpers' internal shapes.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
+
+use super::mode::WebMode;
+
+/// Wire parameters for the `web` tool.
+///
+/// `url` is required by every mode; the rest apply to one mode each and are rejected — not ignored —
+/// when passed to a mode that has no use for them (see [`super::mode::reject_unsupported`]).
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WebParams {
+    /// Which operation to run.
+    pub mode: WebMode,
+    /// Absolute http or https URL: the page to fetch (`scrape`), the crawl seed (`crawl`), or the
+    /// site to enumerate (`map`).
+    pub url: crate::url::Url,
+    /// `scrape` only. When true (the default), chunk + embed + write to LanceDB so the page is
+    /// reachable via `memory` mode `documents`. When false, fetch and return metadata only —
+    /// useful for previewing a URL before paying the embedding cost.
+    #[serde(default)]
+    pub index: Option<bool>,
+    /// `scrape` and `crawl` only. LanceDB `scope` tag; defaults to `"web:<host>"`. Override to
+    /// share a scope across many hosts or to namespace per project.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// `crawl` only. Overrides the global `[crawl].max_pages` cap for this call.
+    #[serde(default)]
+    pub max_pages: Option<u32>,
+    /// `crawl` only. Overrides the global `[crawl].max_depth` cap for this call.
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+    /// `map` only. Cap the number of URLs returned. Default 100, max 1000 — the crawlberg fetch cap
+    /// that bounds peak memory. `total_urls` + `truncated` report whether more exist.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WebScrapeParams {
