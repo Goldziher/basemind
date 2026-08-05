@@ -18,6 +18,7 @@ use basemind_agent::{
 };
 use basemind_agent_ipc::{UdsAgentClient, bind_listener, probe_alive, serve, serve_connection};
 use tokio::net::UnixListener;
+use tokio::sync::watch;
 
 /// Model-step budget for a scripted turn (no network — cannot run away).
 const REPLAY_MAX_STEPS: u32 = 20;
@@ -73,9 +74,10 @@ fn spawn_persistent_daemon(dir: &Path, scenario_json: &str) -> PathBuf {
         );
         let (endpoint, template) = in_proc_channel(32, 256);
         tokio::spawn(session.run(endpoint));
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         // The template stays alive inside this closure, so the engine's command channel never
         // closes between connections and the session persists across reconnects. ~keep
-        serve(listener, move || template.new_client())
+        serve(listener, move || template.new_client(), shutdown_rx)
             .await
             .expect("serve accept loop");
     });

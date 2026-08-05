@@ -13,7 +13,7 @@ futures = "0.3"
 rmp-serde = "1"
 serde = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = "0.1"
 

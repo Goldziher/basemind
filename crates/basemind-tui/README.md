@@ -14,7 +14,16 @@ ANTHROPIC_API_KEY=… BASEMIND_AGENT_MODEL=anthropic/claude-sonnet-4 \
 # resume the latest session in this repo, or a specific one
 cargo run -p basemind-tui -- --continue
 cargo run -p basemind-tui -- --resume <session-id>
+
+# join a shared per-workspace session (spawns the daemon when needed)
+cargo run -p basemind-tui -- --attach
 ```
+
+`--daemon` runs the shared session headlessly; `--attach` starts it on demand and connects the UI.
+The daemon drains on SIGTERM/Ctrl-C, gives an unused spawn 120 seconds to receive a real command,
+and exits after 10 minutes with no attached clients. Override those windows for tests or local
+policy with `BASEMIND_AGENT_BOOTSTRAP_SECS`, `BASEMIND_AGENT_IDLE_REAP_SECS`, and
+`BASEMIND_AGENT_IDLE_CHECK_SECS`.
 
 ## Multi-agent room
 

@@ -40,4 +40,4 @@ pub use lifecycle::{ensure_daemon, ensure_daemon_with, spawn_detached};
 #[cfg(unix)]
 pub use server::{serve, serve_connection};
 #[cfg(unix)]
-pub use socket::{agent_socket_path, bind_listener, probe_alive};
+pub use socket::{SocketCleanupGuard, agent_socket_path, bind_listener, probe_alive};

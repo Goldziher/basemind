@@ -36,7 +36,8 @@ use basemind::mcp::BasemindServer;
 use basemind_agent::tools::{ShellTool, code_nav_tools, comms_tools, git_history_tools};
 use basemind_agent::{AgentClient, AgentCommand, Session, SessionStore, ToolRegistry, in_proc_channel};
 use basemind_agent_ipc::{
-    UdsAgentClient, agent_socket_path, bind_listener, ensure_daemon, probe_alive, serve, spawn_detached,
+    SocketCleanupGuard, UdsAgentClient, agent_socket_path, bind_listener, ensure_daemon, probe_alive, serve,
+    spawn_detached,
 };
 
 use crate::app::App;
@@ -209,14 +210,24 @@ async fn run_in_proc(args: Args) -> Result<()> {
 }
 
 /// Run the engine headless, hosting one long-lived session and serving attaches over the
-/// per-workspace socket. No UI; runs until the process is killed. The initial prompt is ignored —
-/// prompts arrive from attaches so the session stays shared.
+/// per-workspace socket. No UI; drains on SIGTERM/Ctrl-C and self-reaps after its bootstrap or idle
+/// lifecycle window. The initial prompt is ignored — prompts arrive from attaches so the session
+/// stays shared.
 async fn run_daemon(args: Args) -> Result<()> {
     // Claim the singleton socket before building the engine: if another daemon won a spawn race, this
     // bind fails here, before `build_engine` creates an orphaned session directory on disk. ~keep
     let socket_path = agent_socket_path(&args.root);
     let listener = bind_listener(&socket_path, probe_alive).context("bind agent daemon socket")?;
+    let _socket_cleanup = SocketCleanupGuard::new(&socket_path).context("guard agent daemon socket")?;
     eprintln!("agent daemon listening on {}", socket_path.display());
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        if let Err(error) = wait_for_shutdown_signal().await {
+            tracing::warn!(%error, "agent daemon: shutdown signal listener failed");
+        }
+        let _ = shutdown_tx.send(true);
+    });
 
     let (session, _model, _initial_prompt) = build_engine(&args).await?;
 
@@ -225,9 +236,19 @@ async fn run_daemon(args: Args) -> Result<()> {
 
     // The template client is held here for the process's lifetime, so the engine's command channel
     // never closes between connections and the session persists across attaches. ~keep
-    serve(listener, move || template.new_client())
+    serve(listener, move || template.new_client(), shutdown_rx)
         .await
         .context("serve agent daemon")?;
+    Ok(())
+}
+
+async fn wait_for_shutdown_signal() -> Result<()> {
+    let mut terminate =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).context("install SIGTERM handler")?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result.context("listen for Ctrl-C")?,
+        _ = terminate.recv() => {}
+    }
     Ok(())
 }
 

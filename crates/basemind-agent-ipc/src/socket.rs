@@ -26,6 +26,45 @@ const OWNER_ONLY_DIR: u32 = 0o700;
 #[cfg(unix)]
 const OWNER_ONLY_FILE: u32 = 0o600;
 
+/// Removes a daemon socket on drop only when the path still names the inode captured at creation.
+/// This prevents a shutting-down daemon from unlinking a replacement socket bound by its successor.
+#[derive(Debug)]
+pub struct SocketCleanupGuard {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl SocketCleanupGuard {
+    /// Capture ownership of the socket currently at `path` for best-effort cleanup on drop.
+    pub fn new(path: &Path) -> Result<Self, IpcError> {
+        use std::os::unix::fs::MetadataExt;
+
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+impl Drop for SocketCleanupGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::MetadataExt;
+
+        let owns_path = std::fs::metadata(&self.path)
+            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+            .unwrap_or(false);
+        if owns_path
+            && let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, socket = %self.path.display(), "agent ipc: socket cleanup failed");
+        }
+    }
+}
+
 /// The per-workspace daemon socket path: `cache_root()/agent/<workspace_key_prefix>.sock`.
 ///
 /// The name is a prefix of the same `workspace_key` the session store uses, so the socket is
@@ -152,5 +191,34 @@ mod tests {
         // With a probe that reports the socket dead, the bind reclaims and rebinds. ~keep
         let _listener = bind_listener(&socket, |_| false).expect("reclaim stale socket");
         assert!(probe_alive(&socket), "the reclaimed listener now answers");
+    }
+
+    #[tokio::test]
+    async fn cleanup_guard_unlinks_the_socket_it_owns() {
+        let dir = tempfile::tempdir().expect("dir");
+        let socket = dir.path().join("agent.sock");
+        let listener = bind_listener(&socket, probe_alive).expect("bind listener");
+        let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
+
+        drop(listener);
+        drop(guard);
+
+        assert!(!socket.exists(), "owned socket is removed during cleanup");
+    }
+
+    #[tokio::test]
+    async fn cleanup_guard_preserves_a_replacement_socket() {
+        let dir = tempfile::tempdir().expect("dir");
+        let socket = dir.path().join("agent.sock");
+        let listener = bind_listener(&socket, probe_alive).expect("bind listener");
+        let guard = SocketCleanupGuard::new(&socket).expect("create cleanup guard");
+
+        drop(listener);
+        std::fs::remove_file(&socket).expect("remove original socket");
+        let replacement = std::os::unix::net::UnixListener::bind(&socket).expect("bind replacement");
+        drop(guard);
+
+        assert!(socket.exists(), "cleanup must not unlink a replacement socket");
+        drop(replacement);
     }
 }

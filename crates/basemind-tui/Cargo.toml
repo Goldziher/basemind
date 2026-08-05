@@ -35,8 +35,9 @@ memory-stats = "1"
 # transcript height so the viewport can pin to the newest line (ratatui #293). ~keep
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 toml = "1"
+tracing = "0.1"
 
 [dev-dependencies]
 # Real-terminal (PTY) end-to-end harness for the `pty_replay` test (gated behind `replay`): ~keep
