@@ -174,6 +174,58 @@ define_mode! {
     }
 }
 
+define_mode! {
+    /// Which cache / server-administration operation the `admin` tool should run.
+    pub enum AdminMode {
+        domain: "admin",
+        summary: "Administrative operation to run.",
+        Status => "status", "index health for this workspace: file counts, languages, scan age";
+        Repo => "repo", "repository identity and layout: root, git remote, branch, view";
+        Rescan => "rescan", "re-index changed files, or the whole workspace when no paths are given";
+        CacheStats => "cache_stats", "on-disk size and entry counts for the machine-global cache";
+        Gc => "gc", "reclaim cache space by dropping blobs no live view references";
+        CacheClear => "cache_clear", "delete this workspace's cached index outright";
+        Telemetry => "telemetry", "aggregate recorded tool calls into a usage and token-savings summary";
+        Compress => "compress", "shrink a prior tool response for re-use in a smaller context";
+        Delta => "delta", "what changed in a response since a named checkpoint";
+        Checkpoint => "checkpoint", "name the current response so a later delta can diff against it";
+        Waste => "waste", "flag repeated or redundant tool calls in this session";
+    }
+}
+
+define_mode! {
+    /// Which workspace / worktree registry operation the `workspace` tool should run.
+    pub enum WorkspaceMode {
+        domain: "workspace",
+        summary: "Workspace registry operation to run.",
+        Workspaces => "workspaces", "every repository the machine daemon has indexed";
+        Worktrees => "worktrees", "git worktrees of this repository, with their branches and claims";
+        Branches => "branches", "branches known to this repository";
+        Claim => "claim", "take ownership of a worktree so another session does not edit it";
+        Release => "release", "give up a worktree claim this session holds";
+    }
+}
+
+define_mode! {
+    /// Which memory / document-retrieval operation the `memory` tool should run.
+    pub enum MemoryMode {
+        domain: "memory",
+        summary: "Memory operation to run.",
+        Put => "put", "write a durable note other sessions and agents will read";
+        Get => "get", "read one memory entry by key";
+        List => "list", "enumerate memory entries, newest first";
+        Search => "search", "semantic search across stored memory";
+        Delete => "delete", "remove a memory entry by key";
+        Audit => "audit", "the write history behind a memory entry";
+        Documents => "documents", "semantic search over indexed PDFs, Office files and HTML \
+                     instead of opening them";
+        Mine => "mine", "derive co-change proposals from git history";
+        Proposals => "proposals", "list proposals awaiting review";
+        Accept => "accept", "accept a proposal into memory";
+        Reject => "reject", "reject a proposal";
+    }
+}
+
 /// Fail a call that passed parameters the selected mode does not accept.
 ///
 /// `present` pairs each inapplicable field name with whether the caller actually supplied it. Every
