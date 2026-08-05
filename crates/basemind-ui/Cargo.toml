@@ -10,6 +10,13 @@ license = "MIT"
 description = "Desktop UI front-end for basemind — renders the code graph over the code map (ADR-0006)."
 publish = false
 
+# `tauri` / `tauri-build` / `url` are referenced ONLY through the `desktop` feature, so an
+# unused-dependency sweep sees no import and removes them — which silently breaks `desktop`'s
+# `dep:` references and makes the whole workspace manifest unparseable (every cargo command in the
+# repo fails to load). Pin them as ignored so the lint cannot strip them again. ~keep
+[package.metadata.cargo-machete]
+ignored = ["tauri", "tauri-build", "url"]
+
 [[bin]]
 name = "basemind-ui"
 path = "src/main.rs"
@@ -25,7 +32,9 @@ desktop = ["dep:tauri", "dep:tauri-build", "dep:url", "basemind/comms"]
 [dependencies]
 anyhow = "1"
 basemind = { path = "../..", default-features = false }
+tauri = { version = "2", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+url = { version = "2", optional = true }
 
 [build-dependencies]
 tauri-build = { version = "2", optional = true }
