@@ -27,7 +27,7 @@ fn mcp_internal(prefix: &str, err: impl std::fmt::Display) -> McpError {
 
 /// Reconstruct a [`SessionId`] from the caller-supplied string. The id is opaque
 /// to the client, so any non-empty string is accepted here and resolution
-/// against the in-process map decides validity.
+/// against the shared daemon's live session set decides validity.
 fn parse_session_id(raw: &str) -> Result<SessionId, McpError> {
     if raw.trim().is_empty() {
         return Err(McpError::invalid_params("session_id must not be empty", None));
@@ -35,16 +35,31 @@ fn parse_session_id(raw: &str) -> Result<SessionId, McpError> {
     Ok(SessionId::new(raw))
 }
 
-/// Resolve a `session_id` to its rmux session name, erroring when unknown.
+/// The `invalid_params` message for an id the daemon listed but does not hold.
+fn unknown_session_error(raw: &str) -> McpError {
+    McpError::invalid_params(
+        format!("unknown session_id {raw:?}; it may have been killed or never existed"),
+        None,
+    )
+}
+
+/// Resolve a `session_id` to its rmux session name against the shared daemon.
+///
+/// The two failure modes stay deliberately distinct: a daemon that is unreachable or
+/// erroring surfaces as an internal error naming the transport failure, while a
+/// successful listing that lacks the id is `invalid_params`. Collapsing them makes a
+/// broken daemon look like a stale id and hides the outage from the caller.
 async fn require_session(state: &ServerState, raw: &str) -> Result<(SessionId, rmux_sdk::SessionName), McpError> {
     let id = parse_session_id(raw)?;
-    match state.shared.shell_runtime.resolve(&id).await {
-        Some(name) => Ok((id, name)),
-        None => Err(McpError::invalid_params(
-            format!("unknown session_id {raw:?}; it may have been killed or never existed"),
-            None,
-        )),
-    }
+    let resolved = state
+        .shared
+        .shell_runtime
+        .resolve(&id)
+        .await
+        .map_err(|e| mcp_internal("resolve session against the embedded shell daemon", e))?;
+    resolved
+        .map(|name| (id, name))
+        .ok_or_else(|| unknown_session_error(raw))
 }
 
 /// `shell_spawn`: create a detached headless shell session.
@@ -124,11 +139,7 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
     if visual != crate::config::VisualMode::Headless {
         let terminal = state.shared.config.shells.terminal;
         if let Err(error) = crate::shells::launcher::present(visual, terminal, &target) {
-            tracing::warn!(
-                error = %error,
-                session_id = %session_id,
-                "shell_spawn: visual presentation failed; the headless session is still alive"
-            );
+            return Err(presentation_error(error, &session_id, &attach_command));
         }
     }
 
@@ -139,6 +150,21 @@ pub(super) async fn run_shell_spawn(state: &ServerState, params: ShellSpawnParam
         child_agent,
     };
     json_result(&response)
+}
+
+/// Turn a failed visual presentation into the error the caller sees.
+///
+/// The caller asked for a *visible* session; answering `Ok` with an `attach_command` after the
+/// terminal never launched reports a running command that nobody can see — the second half of the
+/// "opens a shell but launches nothing in it" bug. The session itself is genuinely alive and may
+/// already have side effects, so it is left running rather than torn down: the error carries the
+/// `session_id` and the attach command, and `shell_list` (daemon-backed) still shows it, so every
+/// recovery path — capture, kill, manual attach — stays open.
+fn presentation_error(error: anyhow::Error, session_id: &SessionId, attach_command: &str) -> McpError {
+    mcp_internal(
+        "present shell session",
+        format!("{error}; session {session_id} is live — attach with: {attach_command}"),
+    )
 }
 
 /// Loader-injection env vars worth a heads-up when a caller supplies them: they let the child
@@ -353,7 +379,10 @@ pub(super) async fn run_shell_capture(
     json_result(&ShellCaptureResponse { text })
 }
 
-/// `shell_kill`: terminate a session and forget its mapping.
+/// `shell_kill`: terminate a session.
+///
+/// Nothing is unregistered afterwards: the daemon's live session set is the only registry, so the
+/// killed session stops resolving as soon as the daemon drops it.
 pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams) -> Result<CallToolResult, McpError> {
     let (id, name) = require_session(state, &params.session_id).await?;
     let session = state
@@ -368,7 +397,6 @@ pub(super) async fn run_shell_kill(state: &ServerState, params: ShellKillParams)
     let killed = crate::shells::session::kill_session(&session)
         .await
         .map_err(|e| mcp_internal("kill shell session", e))?;
-    state.shared.shell_runtime.forget(&id).await;
 
     json_result(&ShellKillResponse {
         session_id: id.to_string(),
@@ -386,8 +414,20 @@ pub(super) async fn run_shell_broadcast(
     }
     let mut ids = Vec::with_capacity(params.session_ids.len());
     for raw in &params.session_ids {
-        let (id, _name) = require_session(state, raw).await?;
-        ids.push(id);
+        ids.push(parse_session_id(raw)?);
+    }
+    // `broadcast` resolves every id against one daemon snapshot and reports an unknown id as an
+    // opaque `anyhow` failure. Listing once here keeps "no such session" an `invalid_params` answer
+    // without paying a daemon round-trip per id.
+    let live = state
+        .shared
+        .shell_runtime
+        .list()
+        .await
+        .map_err(|e| mcp_internal("list shell sessions", e))?;
+    let live_ids: ahash::AHashSet<&str> = live.iter().map(|info| info.session_id.as_str()).collect();
+    if let Some(unknown) = ids.iter().find(|id| !live_ids.contains(id.as_str())) {
+        return Err(unknown_session_error(unknown.as_str()));
     }
     let delivered = state
         .shared
@@ -398,13 +438,14 @@ pub(super) async fn run_shell_broadcast(
     json_result(&ShellBroadcastResponse { delivered })
 }
 
-/// `shell_list`: enumerate the sessions THIS server spawned (the only ones it holds a live rmux
-/// handle for), each flagged by its liveness.
+/// `shell_list`: enumerate every session the shared shell daemon currently holds, each flagged by
+/// its liveness.
 ///
-/// The thread-model comms broker keeps no session-lineage keyspace, so there is no cross-server
-/// grandchild view to fold in — the list is the runtime's own sessions. The `parent_agent` /
-/// `child_agent` / `room_id` fields on each row stay `None` here; a spawned session's coupling
-/// thread is surfaced by `shell_spawn`'s own response instead.
+/// The daemon is the registry, so sessions spawned by another basemind process (a CLI invocation, a
+/// second `serve`) are listed here too, and a dead session is simply absent — `alive` is always
+/// `true`. The thread-model comms broker keeps no session-lineage keyspace, so the `parent_agent` /
+/// `child_agent` / `room_id` fields on each row stay `None`; a spawned session's coupling thread is
+/// surfaced by `shell_spawn`'s own response instead.
 pub(super) async fn run_shell_list(state: &ServerState, _params: ShellListParams) -> Result<CallToolResult, McpError> {
     let runtime = state
         .shared

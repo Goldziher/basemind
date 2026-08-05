@@ -93,9 +93,10 @@ impl BasemindServer {
 
     #[tool(
         output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_shells::ShellKillResponse>()",
-        description = "Kill a headless shell session by `session_id` and forget its mapping. \
-        Returns `killed=true` when a live session was terminated, `false` when it was already \
-        gone. Needs --features shells.",
+        description = "Kill a headless shell session by `session_id`. Returns `killed=true` when a \
+        live session was terminated, `false` when it was already gone. The session leaves the \
+        daemon's live set, so `shell_list` stops reporting it in every process, not just this one. \
+        Needs --features shells.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,

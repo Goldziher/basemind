@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ahash::AHashMap;
 use anyhow::{Context, Result};
 use rmux_sdk::{Rmux, RmuxBuilder, SessionName};
-use tokio::sync::{Mutex, OnceCell};
+use tokio::sync::OnceCell;
 
 use self::session::{ShellCommand, SpawnSpec};
 
@@ -74,16 +74,14 @@ impl std::fmt::Display for SessionId {
     }
 }
 
-/// One entry in a [`ShellRuntime::list`] snapshot: a basemind-minted session this
-/// runtime spawned, cross-checked against the daemon's live session set.
+/// One entry in a [`ShellRuntime::list`] snapshot of the daemon's live sessions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellSessionInfo {
     /// The basemind-minted [`SessionId`] this runtime handed to the client.
     pub session_id: SessionId,
     /// The underlying rmux session name.
     pub name: SessionName,
-    /// `true` when the daemon still reports a live session for `name`; `false`
-    /// when the session has exited (or was killed) but the mapping lingers.
+    /// Always `true`: dead sessions are absent from the daemon-backed snapshot.
     pub alive: bool,
 }
 
@@ -100,9 +98,8 @@ fn next_session_id() -> SessionId {
 /// Runtime handle for the embedded-shells feature.
 ///
 /// Lazily connects to (or starts) the embedded rmux daemon on first use and
-/// caches the [`Rmux`] handle. Holds the basemind-owned `session_id ->
-/// SessionName` map so MCP tools address sessions by the stable [`SessionId`]
-/// basemind minted rather than the raw rmux name.
+/// caches the [`Rmux`] handle. Session resolution always queries the shared rmux
+/// daemon, so separate CLI and MCP processes observe the same live sessions.
 pub struct ShellRuntime {
     /// Unix socket the embedded daemon binds. Owned by basemind; defaults to a
     /// per-user private path under the data dir, overridable for test isolation.
@@ -110,9 +107,6 @@ pub struct ShellRuntime {
     /// Lazily-initialized rmux handle. The first call to [`Self::rmux`] runs
     /// `connect_or_start`, which spawns the embedded daemon if absent.
     rmux: OnceCell<Rmux>,
-    /// `session_id -> rmux session name`. Guarded by an async mutex because the
-    /// MCP tools that mutate it are async.
-    sessions: Mutex<AHashMap<SessionId, SessionName>>,
 }
 
 /// Environment override for the embedded-daemon socket path. When set to a
@@ -152,7 +146,6 @@ impl ShellRuntime {
         Self {
             socket_path,
             rmux: OnceCell::new(),
-            sessions: Mutex::new(AHashMap::new()),
         }
     }
 
@@ -216,8 +209,8 @@ impl ShellRuntime {
         next_session_id()
     }
 
-    /// Spawn a detached headless session under the pre-minted [`SessionId`] and
-    /// register it. Returns the id (echoed back) and the rmux session name.
+    /// Spawn a detached headless session under the pre-minted [`SessionId`].
+    /// Returns the id (echoed back) and the byte-identical rmux session name.
     ///
     /// The id is minted by the caller (via [`Self::mint_session_id`]) rather than
     /// here, so the comms-coupling env built before the spawn and the rmux session
@@ -242,85 +235,55 @@ impl ShellRuntime {
             rows,
         };
         let _session = session::spawn_session(rmux, spec).await?;
-        self.sessions.lock().await.insert(session_id.clone(), name.clone());
         Ok((session_id, name))
     }
 
-    /// Resolve the rmux [`SessionName`] previously registered for `id`.
-    pub async fn resolve(&self, id: &SessionId) -> Option<SessionName> {
-        self.sessions.lock().await.get(id).cloned()
-    }
-
-    /// Forget the mapping for `id` (after a successful kill).
-    pub async fn forget(&self, id: &SessionId) {
-        self.sessions.lock().await.remove(id);
+    /// Resolve `id` against the shared daemon's live session set.
+    ///
+    /// Daemon connection and listing failures remain errors; only a successful
+    /// listing that lacks the byte-identical session name returns `Ok(None)`.
+    pub async fn resolve(&self, id: &SessionId) -> Result<Option<SessionName>> {
+        let rmux = self.rmux().await?;
+        let live = session::list_sessions(rmux).await?;
+        Ok(live.into_iter().find(|name| name.as_str() == id.as_str()))
     }
 
     /// Broadcast `text` to the primary pane of every session in `ids` at once.
     ///
-    /// Each id is resolved to its rmux [`SessionName`] via the in-process map;
+    /// Each id is resolved against one snapshot of the daemon's live sessions;
     /// an unknown id is an error (the broadcast is not attempted). When `enter`
     /// is true a trailing newline is appended so each shell executes the line.
     /// Returns the number of panes that accepted the input.
     pub async fn broadcast(&self, ids: &[SessionId], text: &str, enter: bool) -> Result<usize> {
-        let names = {
-            let map = self.sessions.lock().await;
-            let mut names = Vec::with_capacity(ids.len());
-            for id in ids {
-                let name = map
-                    .get(id)
-                    .cloned()
-                    .with_context(|| format!("unknown session_id {id}"))?;
-                names.push(name);
-            }
-            names
-        };
         let rmux = self.rmux().await?;
+        let live = session::list_sessions(rmux).await?;
+        let live_by_id: AHashMap<&str, &SessionName> = live.iter().map(|name| (name.as_str(), name)).collect();
+        let names = ids
+            .iter()
+            .map(|id| {
+                live_by_id
+                    .get(id.as_str())
+                    .copied()
+                    .cloned()
+                    .with_context(|| format!("unknown session_id {id}"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         session::broadcast(rmux, &names, text, enter).await
     }
 
-    /// Snapshot the sessions this runtime spawned, marking each `alive` against
-    /// the daemon's live session set.
-    ///
-    /// Reads the in-process `session_id -> SessionName` map, queries the daemon
-    /// for its live sessions once, then flags each mapped entry as alive when its
-    /// name appears in the live set. Entries whose session has exited (or was
-    /// killed without [`Self::forget`]) surface as `alive = false`.
-    ///
-    /// As a side effect, dead entries are pruned from the in-process map so it
-    /// cannot grow unbounded across a long-lived `serve`. The pruned entries are
-    /// still returned in this snapshot (the caller sees each dead session once),
-    /// but a subsequent `list` no longer reports them.
+    /// Snapshot every session currently reported by the shared daemon.
     pub async fn list(&self) -> Result<Vec<ShellSessionInfo>> {
-        let mapped: Vec<(SessionId, SessionName)> = {
-            let map = self.sessions.lock().await;
-            map.iter().map(|(id, name)| (id.clone(), name.clone())).collect()
-        };
         let rmux = self.rmux().await?;
-        let live = session::list_sessions(rmux).await?;
-        let live: ahash::AHashSet<&SessionName> = live.iter().collect();
-        let infos: Vec<ShellSessionInfo> = mapped
+        let mut live = session::list_sessions(rmux).await?;
+        live.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        Ok(live
             .into_iter()
-            .map(|(session_id, name)| {
-                let alive = live.contains(&name);
-                ShellSessionInfo {
-                    session_id,
-                    name,
-                    alive,
-                }
+            .map(|name| ShellSessionInfo {
+                session_id: SessionId::new(name.as_str()),
+                name,
+                alive: true,
             })
-            .collect();
-
-        {
-            let mut map = self.sessions.lock().await;
-            for info in &infos {
-                if !info.alive {
-                    map.remove(&info.session_id);
-                }
-            }
-        }
-
-        Ok(infos)
+            .collect())
     }
 }
 
