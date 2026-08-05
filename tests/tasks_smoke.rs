@@ -3,7 +3,7 @@
 //! Builds a throwaway repo, scans it, hosts the server in-process over an in-memory duplex
 //! transport, and drives the task lifecycle over the real rmcp client:
 //!
-//! * a task-capable client calling a slow tool (`rescan`) gets a `CallToolResponse::Task`, and
+//! * a task-capable client calling a slow call (`admin` mode `rescan`) gets a `CallToolResponse::Task`, and
 //!   polling `tasks/get` settles into a `Completed` payload carrying the tool's `CallToolResult`;
 //! * a plain client (no tasks extension) calling the same tool keeps the synchronous path and gets
 //!   an ordinary `CallToolResult`;
@@ -80,7 +80,7 @@ fn tasks_client() -> ClientInfo {
     )
 }
 
-/// A task-capable client calling a slow tool (`rescan`) is answered with a task handle; polling
+/// A task-capable client calling a slow call (`admin` mode `rescan`) is answered with a task handle; polling
 /// `tasks/get` settles into a `Completed` payload carrying the tool's real `CallToolResult`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slow_tool_offloads_to_task_and_completes() {
@@ -101,7 +101,10 @@ async fn slow_tool_offloads_to_task_and_completes() {
     );
 
     let response = client
-        .call_tool_once(CallToolRequestParams::new("rescan").with_arguments(json!({}).as_object().cloned().unwrap()))
+        .call_tool_once(
+            CallToolRequestParams::new("admin")
+                .with_arguments(json!({ "mode": "rescan" }).as_object().cloned().unwrap()),
+        )
         .await
         .expect("rescan call");
     let create = match response {
@@ -140,6 +143,48 @@ async fn slow_tool_offloads_to_task_and_completes() {
     client.cancel().await.expect("shutdown client");
 }
 
+/// Offload is decided per `(tool, mode)`, not per tool name.
+///
+/// This is the regression that consolidation invites and nothing else catches: `rescan` and `status`
+/// are now the SAME tool. Keyed on the name alone, the slow-call table would offload every `admin`
+/// call — turning an instant `status` into a task the client has to poll — or, if the entry were
+/// dropped instead, silently stop offloading `rescan` and let a multi-second scan block the
+/// transport. Both failures look like working software.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fast_mode_of_a_slow_tool_stays_synchronous() {
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let client = tasks_client().serve(serve(root).await).await.expect("rmcp handshake");
+
+    let response = client
+        .call_tool_once(
+            CallToolRequestParams::new("admin")
+                .with_arguments(json!({ "mode": "status" }).as_object().cloned().unwrap()),
+        )
+        .await
+        .expect("admin status call");
+
+    match response {
+        CallToolResponse::Complete(result) => {
+            let text = result.content[0].as_text().expect("status result has a text block");
+            let body: Value = serde_json::from_str(&text.text).expect("status text is JSON");
+            assert!(
+                body.get("file_count").and_then(Value::as_u64).is_some(),
+                "a fast mode must answer inline with its own result: {body}"
+            );
+        }
+        CallToolResponse::Task(create) => panic!(
+            "`admin` mode `status` is not a slow call and must not be offloaded; got task {:?}",
+            create.task.task_id
+        ),
+        other => panic!("unexpected response variant for a fast mode: {other:?}"),
+    }
+
+    client.cancel().await.expect("shutdown client");
+}
+
 /// A plain client that did not declare the tasks extension keeps the synchronous path: the same
 /// slow tool returns an ordinary `CallToolResult`, never a task handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -150,7 +195,10 @@ async fn slow_tool_stays_synchronous_without_capability() {
 
     let client = ().serve(serve(root).await).await.expect("rmcp handshake");
     let result = client
-        .call_tool(CallToolRequestParams::new("rescan").with_arguments(json!({}).as_object().cloned().unwrap()))
+        .call_tool(
+            CallToolRequestParams::new("admin")
+                .with_arguments(json!({ "mode": "rescan" }).as_object().cloned().unwrap()),
+        )
         .await
         .expect("synchronous rescan");
     let text = result.content[0].as_text().expect("rescan result has a text block");

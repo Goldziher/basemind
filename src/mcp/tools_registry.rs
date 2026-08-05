@@ -1,9 +1,10 @@
-//! Machine-registry coordination tool shims for `BasemindServer`.
+//! The `workspace` domain tool shim for `BasemindServer`.
 //!
-//! Five thin `#[tool]` wrappers over the daemon's machine registry (workspaces / worktrees /
-//! branches / advisory worktree claim + release). Each delegates to a `helpers_registry::run_*`
-//! body and records telemetry. Registered only under `#[cfg(feature = "comms")]`; the registry data
-//! lives in the comms daemon (the sole writer), so these tools read/mutate it over the broker link.
+//! One tool, one required `mode` — `workspaces` / `worktrees` / `branches` / `claim` / `release` —
+//! dispatched to `helpers_registry::run_workspace`. The whole module is gated on
+//! `feature = "comms"`: the registry data lives in the comms daemon (its sole writer), so with the
+//! feature off there is nothing to read and the tool is never registered rather than answering with
+//! a `not_enabled` stub.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -15,73 +16,36 @@ use serde_json::Value;
 
 use super::BasemindServer;
 use super::helpers::record_call;
-use super::types_registry::{
-    BranchesParams, WorkspacesParams, WorktreeClaimParams, WorktreeReleaseParams, WorktreesParams,
-};
+use super::lenient::Lenient;
+use super::types_registry::WorkspaceParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_registry")]
 impl BasemindServer {
+    // No `output_schema`: the five modes return three different response shapes, and SEP-2106 allows
+    // exactly one per tool. Declaring a union would mean nested structs, which schemars emits as
+    // `$ref` into `$defs` — the construct that silently dropped the whole registry in GH #50. The
+    // per-mode shapes are documented in the description instead. ~keep
+    //
+    // The annotations are the union of the five modes': `claim`/`release` write, so the tool cannot
+    // claim `read_only_hint`, but every mode is idempotent and none destroys data. ~keep
     #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorkspacesResponse>()",
-        description = "List every workspace the machine registry has seen: git worktrees and plain \
-        (non-git) directories, each with its stable key, kind, root, owning repo id, and last-seen \
-        time. Reads the comms daemon's machine registry (populated as serve sessions connect). \
-        Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn workspaces(
-        &self,
-        Parameters(p): Parameters<WorkspacesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_registry::run_workspaces(&self.state, p).await;
-        record_call(&self.state, "workspaces", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreesResponse>()",
-        description = "List the worktrees of a registered repo by its `repo_id` (a normalized remote \
-        URL, else `path:<root>`; see `workspaces` for known ids). Each row carries the worktree name \
-        (`(main)` or the linked directory name), checkout path, head sha, branch, and any advisory \
-        claimant. Reads the machine registry; an unknown repo id returns an empty list. \
-        Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn worktrees(
-        &self,
-        Parameters(p): Parameters<WorktreesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_registry::run_worktrees(&self.state, p).await;
-        record_call(&self.state, "worktrees", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::BranchesResponse>()",
-        description = "List the local branches of a registered repo by its `repo_id`, each with its \
-        short name and 40-hex head sha. Reads the machine registry; an unknown repo id returns an \
-        empty list. Needs --features comms.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn branches(&self, Parameters(p): Parameters<BranchesParams>) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_registry::run_branches(&self.state, p).await;
-        record_call(&self.state, "branches", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreeClaimResponse>()",
-        description = "ADVISORY-claim a worktree of a registered repo for this agent, to signal to \
-        peers that you're working it. The claim is a COORDINATION HINT recorded in the machine \
-        registry — it enforces NOTHING and blocks no file access. Returns `held: true` when the \
-        claim is now yours (freshly taken or already yours), `false` when another agent holds it or \
-        the worktree is unknown. Needs --features comms.",
+        description = "Find out which repos, worktrees and branches this machine has, and who is \
+        already working them, before you edit a shared checkout. `mode` is required. `workspaces` \
+        lists every workspace the daemon has seen — git checkouts and plain directories — with its \
+        stable key, kind, root, owning repo id and last-seen time; start here to learn the `repo_id` \
+        the other modes take. `worktrees` lists the git worktrees of one repo by `repo_id` (a \
+        normalized remote URL, else `path:<root>`), each with its name (`(main)` or the linked \
+        directory name), checkout path, head sha, branch, and the agent currently claiming it — use \
+        it to check whether another session already owns the tree you were about to edit. \
+        `branches` lists that repo's local branches with their 40-hex head shas. `claim` takes an \
+        ADVISORY claim on a worktree (`repo_id` + `name`) to tell peers you are working it, and \
+        `release` gives up a claim you hold. A claim is a COORDINATION HINT recorded in the \
+        registry: it enforces nothing, locks nothing, and blocks no file access — `held: true` \
+        means the claim is yours (claim) or yours was cleared (release), `false` means another \
+        agent holds it or the worktree is unknown. Reads the comms daemon's machine registry, \
+        populated as serve sessions connect; an unknown repo id returns an empty list. `repo_id` is \
+        required by every mode but `workspaces`, `name` additionally by `claim` and `release`; \
+        parameters that belong to another mode are rejected, not ignored. Needs --features comms.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -89,38 +53,15 @@ impl BasemindServer {
             open_world_hint = false
         )
     )]
-    pub(crate) async fn worktree_claim(
+    pub(crate) async fn workspace(
         &self,
-        Parameters(p): Parameters<WorktreeClaimParams>,
+        Parameters(Lenient(p)): Parameters<Lenient<WorkspaceParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
+        let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_registry::run_worktree_claim(&self.state, p).await;
-        record_call(&self.state, "worktree_claim", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_registry::WorktreeClaimResponse>()",
-        description = "Release YOUR advisory claim on a worktree (the inverse of `worktree_claim`). \
-        Only clears a claim held by this agent. Returns `held: true` when a claim of yours was \
-        cleared, `false` when the worktree is unknown or held by someone else / no one. \
-        Needs --features comms.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn worktree_release(
-        &self,
-        Parameters(p): Parameters<WorktreeReleaseParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result = super::helpers_registry::run_worktree_release(&self.state, p).await;
-        record_call(&self.state, "worktree_release", &__params_json, __started, &__result);
+        let __result: Result<CallToolResult, McpError> = super::helpers_registry::run_workspace(&self.state, p).await;
+        record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
     }
 }

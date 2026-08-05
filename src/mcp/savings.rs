@@ -51,7 +51,7 @@ const GREP_READ_MULTIPLIER: u64 = 3;
 /// less follow-up file reading than a name search, so this is lower than `GREP_READ_MULTIPLIER`.
 const DEPENDENTS_READ_MULTIPLIER: u64 = 2;
 
-/// `search_documents` baseline multiplier. The agent's alternative is reading whole documents
+/// `memory:documents` baseline multiplier. The agent's alternative is reading whole documents
 /// to find the relevant passages; the response returns just the matching chunks. Modelled like
 /// `outline` (~5×) — the source documents are typically several times the extracted snippet.
 const DOCUMENT_READ_MULTIPLIER: u64 = 5;
@@ -105,24 +105,29 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
 
         "neighbors" | "path" | "subgraph" | "communities" | "graph_export" => (actual, "no_baseline"),
 
-        "search_documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
+        "memory:documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
         "list_files" => (actual.saturating_mul(LIST_FILES_READ_MULTIPLIER), "find_plus_filter"),
 
         "web:scrape" | "web:crawl" | "web:map" => (actual.saturating_mul(WEB_INGEST_MULTIPLIER), "manual_browse_paste"),
 
-        "memory_get"
-        | "memory_put"
-        | "memory_list"
-        | "memory_search"
-        | "memory_delete"
-        | "telemetry_summary"
-        | "rescan"
-        | "cache_stats"
-        | "cache_gc"
-        | "cache_clear"
-        | "status"
-        | "repo_info"
+        "memory:get"
+        | "memory:put"
+        | "memory:list"
+        | "memory:search"
+        | "memory:delete"
+        | "admin:telemetry"
+        | "admin:rescan"
+        | "admin:cache_stats"
+        | "admin:gc"
+        | "admin:cache_clear"
+        | "admin:status"
+        | "admin:repo"
+        | "workspace:workspaces"
+        | "workspace:worktrees"
+        | "workspace:branches"
+        | "workspace:claim"
+        | "workspace:release"
         | "working_tree_status"
         | "recent_changes"
         | "commits_touching"
@@ -213,13 +218,14 @@ mod tests {
     #[test]
     fn no_baseline_tools_claim_zero_savings() {
         for tool in [
-            "memory_get",
-            "memory_put",
-            "status",
-            "repo_info",
-            "telemetry_summary",
-            "rescan",
-            "cache_stats",
+            "memory:get",
+            "memory:put",
+            "admin:status",
+            "admin:repo",
+            "admin:telemetry",
+            "admin:rescan",
+            "admin:cache_stats",
+            "workspace:worktrees",
             "recent_changes",
             "commits_touching",
             "diff_file",
@@ -236,7 +242,7 @@ mod tests {
 
     #[test]
     fn search_documents_models_full_document_read_at_5x() {
-        let s = estimate_from_text("search_documents", 1_000_000, &"a".repeat(400));
+        let s = estimate_from_text("memory:documents", 1_000_000, &"a".repeat(400));
         assert_eq!(s.baseline, "full_document_read");
         assert_eq!(s.baseline_tokens, s.actual_tokens.saturating_mul(5));
         assert_eq!(s.est_tokens_saved, s.baseline_tokens.saturating_sub(s.actual_tokens));

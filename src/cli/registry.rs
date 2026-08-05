@@ -1,15 +1,18 @@
-//! Machine-registry CLI verbs (`basemind registry <verb>`).
+//! `basemind workspace` — the CLI half of the `workspace` domain.
+//!
+//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
+//! its own argument validation; they map one-to-one onto the MCP `workspace` tool's
+//! [`WorkspaceMode`](crate::mcp::mode::WorkspaceMode) values, which is what `tests/cli_parity.rs`
+//! asserts.
 //!
 //! The registry lives in the always-on comms broker daemon (its sole writer). Like the
-//! [`comms`](super::comms) agent verbs — and unlike the code-map / memory CLI groups — these verbs
-//! connect to the daemon DIRECTLY via [`CommsClient::ensure_and_connect`] rather than building a
-//! full [`BasemindServer`](crate::mcp::BasemindServer), so they take no repo index lock and cannot
-//! clash with a running `basemind serve`.
+//! [`comms`](super::comms) agent verbs — and unlike the code-map / memory CLI groups — these
+//! subcommands connect to the daemon DIRECTLY via [`CommsClient::ensure_and_connect`] rather than
+//! building a full [`BasemindServer`](crate::mcp::BasemindServer), so they take no repo index lock
+//! and cannot clash with a running `basemind serve`.
 //!
-//! This is the human-admin + parity path for the machine registry MCP tools (`workspaces` /
-//! `worktrees` / `branches` / `worktree_claim` / `worktree_release`). `--json` emits the structured
-//! response for every verb. Worktree claims are ADVISORY: they record intent in the registry but
-//! enforce nothing.
+//! `--json` emits the structured response for every mode. Worktree claims are ADVISORY: they record
+//! intent in the registry but enforce nothing.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
@@ -23,9 +26,10 @@ use serde_json::json;
 use crate::comms::client::{CommsClient, scope_context_for};
 use crate::comms::ids::AgentId;
 
-/// Machine-registry verbs that talk to the broker daemon directly.
+/// The `workspace` domain's CLI subcommands, one per MCP mode; they talk to the broker daemon
+/// directly.
 #[derive(Subcommand, Debug)]
-pub enum RegistryCmd {
+pub enum WorkspaceCmd {
     /// List every registered workspace in the machine registry (git + plain).
     Workspaces {
         /// Act as this sub-identity instead of the CLI's default agent id.
@@ -89,8 +93,8 @@ async fn connect_as(root: &Path, as_agent: Option<String>) -> Result<CommsClient
         .map_err(|e| anyhow::anyhow!("connect to comms daemon: {e}"))
 }
 
-/// Dispatch one registry verb. Builds a small current-thread runtime, then runs the verb.
-pub fn run(root: &Path, json: bool, cmd: RegistryCmd) -> Result<()> {
+/// Dispatch one `workspace` subcommand. Builds a small current-thread runtime, then runs it.
+pub fn run(root: &Path, json: bool, cmd: WorkspaceCmd) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -101,10 +105,10 @@ pub fn run(root: &Path, json: bool, cmd: RegistryCmd) -> Result<()> {
     })
 }
 
-/// Run the verb: resolve the identity, connect, call the client method, and render to `out`.
-async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Write) -> Result<()> {
+/// Run the mode: resolve the identity, connect, call the client method, and render to `out`.
+async fn dispatch(root: &Path, json: bool, cmd: WorkspaceCmd, out: &mut impl Write) -> Result<()> {
     match cmd {
-        RegistryCmd::Workspaces { as_agent } => {
+        WorkspaceCmd::Workspaces { as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let workspaces = client
                 .list_workspaces()
@@ -145,7 +149,7 @@ async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Writ
                 }
             }
         }
-        RegistryCmd::Worktrees { repo_id, as_agent } => {
+        WorkspaceCmd::Worktrees { repo_id, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let label = repo_id.clone();
             let worktrees = client
@@ -188,7 +192,7 @@ async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Writ
                 }
             }
         }
-        RegistryCmd::Branches { repo_id, as_agent } => {
+        WorkspaceCmd::Branches { repo_id, as_agent } => {
             let mut client = connect_as(root, as_agent).await?;
             let label = repo_id.clone();
             let branches = client
@@ -220,7 +224,7 @@ async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Writ
                 }
             }
         }
-        RegistryCmd::Claim {
+        WorkspaceCmd::Claim {
             repo_id,
             name,
             as_agent,
@@ -234,7 +238,7 @@ async fn dispatch(root: &Path, json: bool, cmd: RegistryCmd, out: &mut impl Writ
                 .map_err(|e| anyhow::anyhow!("claim worktree: {e}"))?;
             render_claim(json, out, &repo_label, &name_label, &claimant, held, "claimed")?;
         }
-        RegistryCmd::Release {
+        WorkspaceCmd::Release {
             repo_id,
             name,
             as_agent,

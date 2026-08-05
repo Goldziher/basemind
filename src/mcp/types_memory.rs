@@ -1,18 +1,22 @@
-//! Request / response shapes for the memory MCP tools (`memory_put` / `_get` / `_list` /
-//! `_search` / `_delete`).
+//! Request / response shapes for the `memory` domain tool.
 //!
-//! Split out of `types.rs` to keep that file within the per-file size budget. Parameter and
-//! response structs derive `Serialize + JsonSchema` and are always compiled so each tool can
-//! advertise a SEP-2106 `output_schema` even without the `memory` feature (the response structs
-//! carry only plain fields — nothing behind the gate leaks in). The blob-record types
-//! (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) stay `#[cfg(feature = "memory")]`-gated
-//! since they only exist when the LanceDB-backed memory store is compiled in. The [`Visibility`]
-//! tier selector is always compiled — it is part of every memory param shape.
+//! [`MemoryParams`] is what crosses the wire: one flat parameter object for the single `memory`
+//! tool, with a required [`MemoryMode`] selecting the operation and every per-mode field an
+//! optional sibling. The per-operation structs below stay as the helpers' internal shapes.
+//!
+//! Split out of `types.rs` to keep that file within the per-file size budget. The param structs are
+//! always compiled — the `memory` tool is advertised in every build and gates per mode, so the
+//! shapes it deserializes into must exist without the `memory` feature. The response structs and
+//! the blob-record types (`MemoryRecord`, `SymbolRef`, `Provenance`, `VerifyState`) are
+//! `#[cfg(feature = "memory")]`-gated: they only exist when the LanceDB-backed memory store is
+//! compiled in to construct them. The [`Visibility`] tier selector is always compiled — it is part
+//! of the wire params.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use super::cursor::Cursor;
+use super::mode::MemoryMode;
 use super::types::default_true;
 
 /// Memory tier selector. `group` (the default) is the shared, cross-agent tier — today's
@@ -65,6 +69,122 @@ impl Visibility {
     }
 }
 
+/// Wire parameters for the `memory` tool.
+///
+/// `mode` is the only required field. Every other field belongs to a subset of the modes and is
+/// rejected — not ignored — when passed to a mode that has no use for it (see
+/// [`super::mode::reject_unsupported`]); a field a mode requires but did not receive is reported by
+/// name (`mode="put" requires \`value\``) rather than as a bare "missing parameter".
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct MemoryParams {
+    /// Which operation to run.
+    pub mode: MemoryMode,
+
+    /// Memory key. Required by `put` / `get` / `delete`. Optional for `audit` (audit this one
+    /// record instead of the whole scope) and for `accept` (override the auto-derived
+    /// `skill/cochange-<short_id>` key).
+    #[serde(default, alias = "name")]
+    pub key: Option<String>,
+    /// `put` only, required: the note body to store.
+    #[serde(default)]
+    pub value: Option<String>,
+    /// `put` only: tags attached to the entry, matched exactly by `list` / `search`.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    /// `put` only: also embed the value into LanceDB so `search` can reach it. Default true.
+    #[serde(default)]
+    pub embed: Option<bool>,
+    /// Memory tier for `put` / `get` / `list` / `search` / `delete` / `audit`: `group` (shared
+    /// across agents, the default) or `individual` (private to the calling agent).
+    #[serde(default)]
+    pub visibility: Option<Visibility>,
+
+    /// `list` only: key-PREFIX filter (not substring).
+    #[serde(default)]
+    pub prefix: Option<String>,
+    /// `list` and `search` only: exact tag filter.
+    #[serde(default)]
+    pub tag: Option<String>,
+    /// Result cap for `list` / `search` / `audit` / `documents` / `proposals`. `list`, `audit` and
+    /// `proposals` default to 100 (max 1000); `search` and `documents` default to 10 (max 100).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Resume token from the previous call's `next_cursor` — `list` and `proposals` only. Stable
+    /// across rescans because the underlying Fjall keys are content-addressed.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+
+    /// Search text. Required by `search` (vector KNN over stored memory) and by `documents`
+    /// (semantic search over indexed document chunks).
+    #[serde(
+        default,
+        alias = "needle",
+        alias = "pattern",
+        alias = "q",
+        alias = "text",
+        alias = "search"
+    )]
+    pub query: Option<String>,
+
+    /// `audit` only: compute verdicts and return them without persisting any mutation.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// `audit` only: also scan the archived (`memory_archive`) keyspace.
+    #[serde(default)]
+    pub include_archived: Option<bool>,
+
+    /// `documents` only: token budget bounding the returned `hits` list (best-first; sets
+    /// `budgeted`).
+    #[serde(default, alias = "token_budget", alias = "budget")]
+    pub max_tokens: Option<u32>,
+    /// `documents` only: wire format for the response — `"json"` (default) or `"toon"`.
+    #[serde(default, alias = "encoding")]
+    pub format: Option<String>,
+    /// `documents` only: exact MIME-type filter.
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    /// `documents` only: which ingestion scope to search. Defaults to this repo's; pages ingested
+    /// by the `web` tool live under `web:<host>` (it echoes the scope back).
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// `documents` only: case-insensitive substring match against a parent document's entity
+    /// categories (NER). Combined with `keywords_contains` via AND semantics when both are set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_category: Option<String>,
+    /// `documents` only: case-insensitive substring match against a parent document's keywords.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords_contains: Option<String>,
+
+    /// `mine` only: number of recent commits to inspect (default 200, max 2000).
+    #[serde(default)]
+    pub window: Option<u32>,
+    /// `mine` only: minimum co-change count for a candidate to be emitted (default 5).
+    #[serde(default)]
+    pub min_support: Option<u32>,
+    /// `mine` only: minimum `support / anchor_freq` for a candidate (default 0.6).
+    #[serde(default)]
+    pub min_confidence: Option<f32>,
+    /// `mine` only: skip commits touching more than this many files (default 25), so bulk/vendor
+    /// commits do not dominate the co-change map.
+    #[serde(default)]
+    pub max_files_per_commit: Option<u32>,
+
+    /// `proposals` only: filter by proposal kind — `"skill"` or `"memory"`. Omit for all.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Proposal id as returned by `proposals`. Required by `accept` and `reject`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// `reject` only: human-readable reason. Logged, never persisted.
+    #[serde(default)]
+    pub reason: Option<String>,
+
+    /// `documents` only: per-query overrides for any `documents.*` config knob, taking precedence
+    /// over serve-time config and CLI flags. Unrecognized fields are ignored — flatten semantics.
+    #[serde(flatten, default)]
+    pub overrides: crate::config::DocumentsCliOverrides,
+}
+
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryPutParams {
     #[serde(alias = "name")]
@@ -79,6 +199,7 @@ pub struct MemoryPutParams {
     pub visibility: Visibility,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryPutResponse {
     pub key: String,
@@ -95,6 +216,7 @@ pub struct MemoryGetParams {
     pub visibility: Visibility,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 pub(super) struct MemoryEntry {
     pub key: String,
@@ -121,6 +243,7 @@ pub struct MemoryListParams {
     pub visibility: Visibility,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryListResponse {
     pub total: usize,
@@ -153,6 +276,7 @@ pub struct MemorySearchParams {
     pub visibility: Visibility,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemorySearchHit {
     pub key: String,
@@ -161,6 +285,7 @@ pub(super) struct MemorySearchHit {
     pub distance: f32,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemorySearchResponse {
     pub query: String,
@@ -183,6 +308,7 @@ pub struct MemoryDeleteParams {
     pub visibility: Visibility,
 }
 
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryDeleteResponse {
     pub deleted: bool,
@@ -271,6 +397,57 @@ mod param_alias_tests {
     fn memory_get_accepts_name_alias_for_key() {
         let params: MemoryGetParams = serde_json::from_value(serde_json::json!({ "name": "skill/foo" })).unwrap();
         assert_eq!(params.key, "skill/foo");
+    }
+
+    /// `mode` carries no `Default` and no `#[serde(default)]`: an omitted mode must fail loudly
+    /// rather than silently pick an operation the caller did not ask for.
+    #[test]
+    fn memory_params_reject_an_omitted_mode() {
+        let error = serde_json::from_value::<MemoryParams>(serde_json::json!({ "key": "k" }))
+            .expect_err("a `memory` call without a mode must fail");
+        assert!(error.to_string().contains("mode"), "{error}");
+    }
+
+    #[test]
+    fn memory_params_report_every_accepted_mode_on_an_unknown_one() {
+        let error = serde_json::from_value::<MemoryParams>(serde_json::json!({ "mode": "recall" }))
+            .expect_err("an unknown mode must fail");
+        assert!(error.to_string().contains("put|get|list|search|delete"), "{error}");
+    }
+
+    #[test]
+    fn memory_params_accept_the_query_and_key_aliases() {
+        let by_needle: MemoryParams =
+            serde_json::from_value(serde_json::json!({ "mode": "search", "needle": "retry" })).unwrap();
+        assert_eq!(by_needle.query.as_deref(), Some("retry"));
+        let by_name: MemoryParams =
+            serde_json::from_value(serde_json::json!({ "mode": "get", "name": "skill/foo" })).unwrap();
+        assert_eq!(by_name.key.as_deref(), Some("skill/foo"));
+    }
+
+    /// The flattened documents overrides must keep landing in `overrides`, not vanish, or a
+    /// per-call `reranker_preset` would be accepted and ignored.
+    #[test]
+    fn memory_params_capture_flattened_documents_overrides() {
+        let params: MemoryParams = serde_json::from_value(serde_json::json!({
+            "mode": "documents",
+            "query": "retry",
+            "reranker_preset": "bge-reranker-base",
+        }))
+        .unwrap();
+        assert!(params.overrides.any(), "documents overrides must survive the flatten");
+    }
+
+    /// The published input schema must stay inside the Anthropic subset — one `oneOf`/`$ref`
+    /// anywhere silently drops the WHOLE tool registry (GH #50).
+    #[test]
+    fn memory_params_schema_stays_within_the_anthropic_subset() {
+        let mut generator = schemars::SchemaGenerator::default();
+        let schema =
+            serde_json::to_string(&<MemoryParams as schemars::JsonSchema>::json_schema(&mut generator)).unwrap();
+        for forbidden in ["$ref", "$defs", "oneOf", "anyOf", "allOf"] {
+            assert!(!schema.contains(forbidden), "{forbidden} leaked into {schema}");
+        }
     }
 
     #[test]

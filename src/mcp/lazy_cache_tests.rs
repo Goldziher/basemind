@@ -10,7 +10,7 @@ use std::sync::Arc;
 use rmcp::model::{ArgumentInfo, CallToolResult, CompleteRequestParams, ContentBlock, Reference};
 use serde_json::Value;
 
-use super::params::{Lenient, OutlineParams, Parameters, SearchSymbolsParams, StatusParams};
+use super::params::{AdminMode, AdminParams, Lenient, OutlineParams, Parameters, SearchSymbolsParams};
 use super::{BasemindServer, ServerState};
 use crate::config::ConfigV1;
 use crate::git_cache::GitCache;
@@ -48,7 +48,7 @@ fn mapped_files(state: &ServerState) -> usize {
 }
 
 /// A one-shot server must boot with an EMPTY code map, and a tool that never touches the map
-/// (`status` — a pure metadata query) must not cause it to be built. This is the whole point: the
+/// (`admin` mode `status` — a pure metadata query) must not cause it to be built. This is the whole point: the
 /// flat whole-corpus `MapCache::build` cost must not be charged to a query that never reads it.
 #[tokio::test]
 async fn one_shot_server_does_not_preload_the_code_map() {
@@ -61,7 +61,10 @@ async fn one_shot_server_does_not_preload_the_code_map() {
         "one-shot server must boot with an unbuilt code map, not a preloaded whole-corpus mirror"
     );
 
-    let result = server.status(Parameters(StatusParams {})).await.expect("status");
+    let result = server
+        .admin_cli(AdminParams::new(AdminMode::Status))
+        .await
+        .expect("admin mode=status");
     let payload = json_of(&result);
     assert_eq!(
         payload["file_count"].as_u64(),

@@ -131,11 +131,11 @@ fn query_status_reports_file_count() {
     let root = dir.path();
     let v = assert_json_fields(
         root,
-        &["query", "status"],
+        &["admin", "status"],
         &["file_count", "total_size_bytes", "languages", "schema_version"],
     );
     assert_eq!(v["file_count"], 2);
-    assert_human_contains(root, &["query", "status"], "file_count");
+    assert_human_contains(root, &["admin", "status"], "file_count");
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn rescan_full_reindexes_new_file() {
 
     let search = assert_json_fields(root, &["query", "search", "delta"], &["total", "results"]);
     assert_eq!(search["total"], 1, "rescan --full must index the new symbol");
-    let status = assert_json_fields(root, &["query", "status"], &["file_count"]);
+    let status = assert_json_fields(root, &["admin", "status"], &["file_count"]);
     assert_eq!(status["file_count"], 3, "rescan --full must index the new file");
 }
 
@@ -256,33 +256,33 @@ fn run_full(root: &Path, args: &[&str]) -> (String, String, bool) {
     )
 }
 
-/// End-to-end governance workflow under `--features memory`:
+/// End-to-end proposal workflow under `--features memory`:
 /// mine → proposals (list) → accept → memory get → reject.
 ///
 /// Requires genuine co-change history; uses `build_cochange_fixture()`.
 #[cfg(feature = "memory")]
 #[test]
-fn governance_mine_proposals_accept_get_reject_end_to_end() {
+fn memory_mine_proposals_accept_get_reject_end_to_end() {
     let dir = build_cochange_fixture();
     let root = dir.path();
 
     let mine_v = assert_json_fields(
         root,
-        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
+        &["memory", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined", "window_inspected", "skipped_bulk"],
     );
     assert!(
         mine_v["mined"].as_u64().unwrap() >= 1,
-        "governance mine must emit at least one co-change proposal; got: {mine_v}"
+        "`memory mine` must emit at least one co-change proposal; got: {mine_v}"
     );
 
-    let list_v = assert_json_fields(root, &["governance", "proposals"], &["total", "truncated", "proposals"]);
+    let list_v = assert_json_fields(root, &["memory", "proposals"], &["total", "truncated", "proposals"]);
     let proposals = list_v["proposals"]
         .as_array()
         .expect("proposals field must be an array");
     assert!(
         !proposals.is_empty(),
-        "governance proposals must list at least one proposal; got: {list_v}"
+        "`memory proposals` must list at least one proposal; got: {list_v}"
     );
 
     let first = &proposals[0];
@@ -291,21 +291,21 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         .expect("each proposal must have an 'id' string field");
     assert!(!id.is_empty(), "proposal id must not be empty");
 
-    let (accept_stdout, accept_stderr, accept_ok) = run_full(root, &["--json", "governance", "accept", id]);
+    let (accept_stdout, accept_stderr, accept_ok) = run_full(root, &["--json", "memory", "accept", id]);
     assert!(
         accept_ok,
-        "governance accept must exit 0 (no runtime-drop panic); stderr: {accept_stderr}"
+        "`memory accept` must exit 0 (no runtime-drop panic); stderr: {accept_stderr}"
     );
     let accept_v: Value = serde_json::from_str(accept_stdout.trim())
-        .unwrap_or_else(|e| panic!("governance accept did not emit JSON: {e}\nstdout: {accept_stdout}"));
+        .unwrap_or_else(|e| panic!("`memory accept` did not emit JSON: {e}\nstdout: {accept_stdout}"));
     assert_eq!(
         accept_v["accepted"],
         serde_json::Value::Bool(true),
-        "governance accept must return accepted=true in stdout; got: {accept_v}"
+        "`memory accept` must return accepted=true in stdout; got: {accept_v}"
     );
     let memory_key = accept_v["memory_key"]
         .as_str()
-        .expect("governance accept must return a memory_key field in stdout");
+        .expect("`memory accept` must return a memory_key field in stdout");
     assert!(
         memory_key.starts_with("skill/cochange-"),
         "accepted memory key must start with 'skill/cochange-'; got: {memory_key:?}"
@@ -332,7 +332,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
 
     let remine_v = assert_json_fields(
         root,
-        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
+        &["memory", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined"],
     );
     assert!(
@@ -340,7 +340,7 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
         "re-mine after accept must regenerate the cluster (accept does not tombstone); got: {remine_v}"
     );
 
-    let list2_v = assert_json_fields(root, &["governance", "proposals"], &["total", "proposals"]);
+    let list2_v = assert_json_fields(root, &["memory", "proposals"], &["total", "proposals"]);
     let proposals2 = list2_v["proposals"]
         .as_array()
         .expect("proposals field must be an array after re-mine");
@@ -351,21 +351,21 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
 
     let reject_v = assert_json_fields(
         root,
-        &["governance", "reject", reject_id, "--reason", "test rejection"],
+        &["memory", "reject", reject_id, "--reason", "test rejection"],
         &["rejected"],
     );
     assert_eq!(
         reject_v["rejected"],
         serde_json::Value::Bool(true),
-        "governance reject must return rejected=true; got: {reject_v}"
+        "`memory reject` must return rejected=true; got: {reject_v}"
     );
 
     let post_reject = assert_json_fields(
         root,
-        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
+        &["memory", "mine", "--min-support", "1", "--min-confidence", "0.1"],
         &["mined"],
     );
-    let still_listed = assert_json_fields(root, &["governance", "proposals"], &["proposals"]);
+    let still_listed = assert_json_fields(root, &["memory", "proposals"], &["proposals"]);
     let remaining = still_listed["proposals"].as_array().expect("array");
     assert!(
         !remaining.iter().any(|p| p["id"].as_str() == Some(reject_id)),
@@ -380,20 +380,20 @@ fn governance_mine_proposals_accept_get_reject_end_to_end() {
 /// Under `--features memory` the subcommand succeeds (the test is tolerant of
 /// that). Under default features it must NOT succeed and must NOT crash.
 #[test]
-fn governance_mine_without_memory_feature_does_not_panic() {
+fn memory_mine_without_the_memory_feature_does_not_panic() {
     let dir = build_and_scan();
     let root = dir.path();
 
     let (stdout, stderr, ok) = run_full(
         root,
-        &["governance", "mine", "--min-support", "1", "--min-confidence", "0.1"],
+        &["memory", "mine", "--min-support", "1", "--min-confidence", "0.1"],
     );
 
     if !ok {
         let combined = format!("{stdout}{stderr}");
         assert!(
             combined.to_lowercase().contains("memory") || combined.to_lowercase().contains("not enabled"),
-            "governance mine failure must mention 'memory' or 'not enabled'; got stdout={stdout:?} stderr={stderr:?}"
+            "`memory mine` failure must mention 'memory' or 'not enabled'; got stdout={stdout:?} stderr={stderr:?}"
         );
         assert!(
             !stderr.contains("thread 'main' panicked"),

@@ -187,7 +187,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("status", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "status"})))
             .await
             .expect("status"),
     );
@@ -894,7 +894,7 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("pre-rescan cursor")
         .to_string();
     let _ = service
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan"})))
         .await
         .expect("rescan");
     let stale_response = decode_text(
@@ -924,7 +924,7 @@ async fn mcp_server_exercises_representative_tools() {
         .expect("list_files pre-rescan cursor")
         .to_string();
     let _ = service
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan"})))
         .await
         .expect("rescan");
     let stale_response = decode_text(
@@ -1104,19 +1104,19 @@ async fn mcp_server_exercises_representative_tools() {
 
     let _ = service
         .call_tool(call_params(
-            "memory_put",
-            json!({ "key": "smoke_key", "value": "hello", "embed": false }),
+            "memory",
+            json!({ "mode": "put",  "key": "smoke_key", "value": "hello", "embed": false }),
         ))
         .await;
     let _ = service
-        .call_tool(call_params("memory_get", json!({ "key": "smoke_key" })))
+        .call_tool(call_params("memory", json!({ "mode": "get",  "key": "smoke_key" })))
         .await;
-    let _ = service.call_tool(call_params("memory_list", json!({}))).await;
+    let _ = service.call_tool(call_params("memory", json!({ "mode": "list"}))).await;
     let _ = service
-        .call_tool(call_params("memory_delete", json!({ "key": "smoke_key" })))
+        .call_tool(call_params("memory", json!({ "mode": "delete",  "key": "smoke_key" })))
         .await;
     let _ = service
-        .call_tool(call_params("search_documents", json!({ "query": "hello" })))
+        .call_tool(call_params("memory", json!({ "mode": "documents",  "query": "hello" })))
         .await;
 
     #[cfg(not(feature = "code-search"))]
@@ -1214,8 +1214,8 @@ async fn mcp_server_exercises_representative_tools() {
 
     let override_result = service
         .call_tool(call_params(
-            "search_documents",
-            json!({ "query": "hello", "reranker_preset": "bge-reranker-base" }),
+            "memory",
+            json!({ "mode": "documents",  "query": "hello", "reranker_preset": "bge-reranker-base" }),
         ))
         .await;
     if let Ok(r) = &override_result {
@@ -1225,12 +1225,12 @@ async fn mcp_server_exercises_representative_tools() {
     #[cfg(feature = "documents")]
     {
         let json_result = service
-            .call_tool(call_params("search_documents", json!({ "query": "hello" })))
+            .call_tool(call_params("memory", json!({ "mode": "documents",  "query": "hello" })))
             .await;
         let toon_result = service
             .call_tool(call_params(
-                "search_documents",
-                json!({ "query": "hello", "output_format": "toon" }),
+                "memory",
+                json!({ "mode": "documents",  "query": "hello", "output_format": "toon" }),
             ))
             .await;
         if let (Ok(json_resp), Ok(toon_resp)) = (&json_result, &toon_result) {
@@ -1271,8 +1271,8 @@ async fn mcp_server_exercises_representative_tools() {
     {
         let _ = service
             .call_tool(call_params(
-                "search_documents",
-                json!({ "query": "hello", "output_format": "toon" }),
+                "memory",
+                json!({ "mode": "documents",  "query": "hello", "output_format": "toon" }),
             ))
             .await;
     }
@@ -1282,8 +1282,8 @@ async fn mcp_server_exercises_representative_tools() {
         for i in 0..3 {
             let _ = service
                 .call_tool(call_params(
-                    "memory_put",
-                    json!({
+                    "memory",
+                    json!({ "mode": "put",
                         "key": format!("paging_key_{i}"),
                         "value": format!("v{i}"),
                         "embed": false,
@@ -1295,8 +1295,8 @@ async fn mcp_server_exercises_representative_tools() {
         let page1 = decode_text(
             &service
                 .call_tool(call_params(
-                    "memory_list",
-                    json!({ "prefix": "paging_key_", "limit": 2 }),
+                    "memory",
+                    json!({ "mode": "list",  "prefix": "paging_key_", "limit": 2 }),
                 ))
                 .await
                 .expect("memory_list page1"),
@@ -1311,8 +1311,8 @@ async fn mcp_server_exercises_representative_tools() {
         let page2 = decode_text(
             &service
                 .call_tool(call_params(
-                    "memory_list",
-                    json!({
+                    "memory",
+                    json!({ "mode": "list",
                         "prefix": "paging_key_",
                         "limit": 2,
                         "cursor": cursor1,
@@ -1333,8 +1333,8 @@ async fn mcp_server_exercises_representative_tools() {
     {
         let _ = service
             .call_tool(call_params(
-                "memory_put",
-                json!({
+                "memory",
+                json!({ "mode": "put",
                     "key": "audit_probe",
                     "value": "a memory note with no code refs",
                     "embed": false,
@@ -1345,7 +1345,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         let body = decode_text(
             &service
-                .call_tool(call_params("memory_audit", json!({ "key": "audit_probe" })))
+                .call_tool(call_params("memory", json!({ "mode": "audit",  "key": "audit_probe" })))
                 .await
                 .expect("memory_audit single-key"),
         );
@@ -1365,8 +1365,8 @@ async fn mcp_server_exercises_representative_tools() {
         let dry_body = decode_text(
             &service
                 .call_tool(call_params(
-                    "memory_audit",
-                    json!({ "key": "audit_probe", "dry_run": true }),
+                    "memory",
+                    json!({ "mode": "audit",  "key": "audit_probe", "dry_run": true }),
                 ))
                 .await
                 .expect("memory_audit dry_run"),
@@ -1379,7 +1379,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         let range_body = decode_text(
             &service
-                .call_tool(call_params("memory_audit", json!({ "limit": 50 })))
+                .call_tool(call_params("memory", json!({ "mode": "audit",  "limit": 50 })))
                 .await
                 .expect("memory_audit range"),
         );
@@ -1390,7 +1390,10 @@ async fn mcp_server_exercises_representative_tools() {
         );
 
         let _ = service
-            .call_tool(call_params("memory_delete", json!({ "key": "audit_probe" })))
+            .call_tool(call_params(
+                "memory",
+                json!({ "mode": "delete",  "key": "audit_probe" }),
+            ))
             .await
             .expect("memory_delete audit_probe");
     }
@@ -1399,7 +1402,7 @@ async fn mcp_server_exercises_representative_tools() {
     {
         let mine_body = decode_text(
             &service
-                .call_tool(call_params("proposals_mine", json!({})))
+                .call_tool(call_params("memory", json!({ "mode": "mine"})))
                 .await
                 .expect("proposals_mine default"),
         );
@@ -1419,7 +1422,10 @@ async fn mcp_server_exercises_representative_tools() {
 
         let list_body = decode_text(
             &service
-                .call_tool(call_params("proposals_list", json!({ "kind": "skill", "limit": 50 })))
+                .call_tool(call_params(
+                    "memory",
+                    json!({ "mode": "proposals",  "kind": "skill", "limit": 50 }),
+                ))
                 .await
                 .expect("proposals_list after default mine"),
         );
@@ -1441,8 +1447,8 @@ async fn mcp_server_exercises_representative_tools() {
         let mine_low = decode_text(
             &service
                 .call_tool(call_params(
-                    "proposals_mine",
-                    json!({
+                    "memory",
+                    json!({ "mode": "mine",
                         "min_support": 1,
                         "min_confidence": 0.1,
                         "max_files_per_commit": 10,
@@ -1460,7 +1466,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         let list2 = decode_text(
             &service
-                .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+                .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
                 .await
                 .expect("proposals_list after low-threshold mine"),
         );
@@ -1492,7 +1498,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         let accept_body = decode_text(
             &service
-                .call_tool(call_params("proposal_accept", json!({ "id": accept_id })))
+                .call_tool(call_params("memory", json!({ "mode": "accept",  "id": accept_id })))
                 .await
                 .expect("proposal_accept"),
         );
@@ -1513,7 +1519,7 @@ async fn mcp_server_exercises_representative_tools() {
 
         let audit_live = decode_text(
             &service
-                .call_tool(call_params("memory_audit", json!({ "key": &memory_key })))
+                .call_tool(call_params("memory", json!({ "mode": "audit",  "key": &memory_key })))
                 .await
                 .expect("memory_audit after accept"),
         );
@@ -1537,14 +1543,14 @@ async fn mcp_server_exercises_representative_tools() {
         let saved = std::fs::read(&probe_abs).expect("read probe file before delete");
         std::fs::remove_file(&probe_abs).expect("remove probe file");
         let _ = service
-            .call_tool(call_params("rescan", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "rescan"})))
             .await
             .expect("rescan after file deletion");
         let stale_audit = decode_text(
             &service
                 .call_tool(call_params(
-                    "memory_audit",
-                    json!({ "key": &memory_key, "dry_run": true }),
+                    "memory",
+                    json!({ "mode": "audit",  "key": &memory_key, "dry_run": true }),
                 ))
                 .await
                 .expect("memory_audit stale wedge"),
@@ -1563,18 +1569,18 @@ async fn mcp_server_exercises_representative_tools() {
 
         std::fs::write(&probe_abs, &saved).expect("restore probe file");
         let _ = service
-            .call_tool(call_params("rescan", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "rescan"})))
             .await
             .expect("rescan after restore");
         let _ = service
-            .call_tool(call_params("memory_delete", json!({ "key": &memory_key })))
+            .call_tool(call_params("memory", json!({ "mode": "delete",  "key": &memory_key })))
             .await;
 
         let mine_e = decode_text(
             &service
                 .call_tool(call_params(
-                    "proposals_mine",
-                    json!({
+                    "memory",
+                    json!({ "mode": "mine",
                         "min_support": 1,
                         "min_confidence": 0.1,
                         "max_files_per_commit": 10,
@@ -1591,7 +1597,7 @@ async fn mcp_server_exercises_representative_tools() {
         );
         let list_e = decode_text(
             &service
-                .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+                .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
                 .await
                 .expect("proposals_list for reject"),
         );
@@ -1603,8 +1609,8 @@ async fn mcp_server_exercises_representative_tools() {
         let reject_body = decode_text(
             &service
                 .call_tool(call_params(
-                    "proposal_reject",
-                    json!({ "id": reject_id, "reason": "smoke-test rejection" }),
+                    "memory",
+                    json!({ "mode": "reject",  "id": reject_id, "reason": "smoke-test rejection" }),
                 ))
                 .await
                 .expect("proposal_reject"),
@@ -1617,8 +1623,8 @@ async fn mcp_server_exercises_representative_tools() {
         let mine_after = decode_text(
             &service
                 .call_tool(call_params(
-                    "proposals_mine",
-                    json!({
+                    "memory",
+                    json!({ "mode": "mine",
                         "min_support": 1,
                         "min_confidence": 0.1,
                         "max_files_per_commit": 10,
@@ -1638,7 +1644,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("rescan", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "rescan"})))
             .await
             .expect("rescan"),
     );
@@ -1648,8 +1654,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "rescan",
-                json!({ "full": true, "paths": ["does-not-exist.rs"] }),
+                "admin",
+                json!({ "mode": "rescan",  "full": true, "paths": ["does-not-exist.rs"] }),
             ))
             .await
             .expect("rescan full"),
@@ -1663,7 +1669,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
+            .call_tool(call_params("admin", json!({ "mode": "rescan",  "paths": ["a.rs"] })))
             .await
             .expect("rescan scoped"),
     );
@@ -1684,14 +1690,14 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("telemetry_summary", json!({ "window": "all" })))
+            .call_tool(call_params("admin", json!({ "mode": "telemetry",  "window": "all" })))
             .await
             .expect("telemetry_summary"),
     );
     let total_calls = body.get("total_calls").and_then(Value::as_u64).expect("total_calls");
     assert!(
         total_calls >= 4,
-        "telemetry_summary should see at least the prior fixture calls (status/outline/search_symbols/recent_changes), got {total_calls}"
+        "telemetry_summary should see at least the prior fixture calls (admin:status/outline/search_symbols/recent_changes), got {total_calls}"
     );
     let per_tool = body.get("per_tool").and_then(Value::as_array).expect("per_tool array");
     assert!(!per_tool.is_empty(), "per_tool histogram must not be empty");
@@ -1736,7 +1742,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("cache_stats", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "cache_stats"})))
             .await
             .expect("cache_stats"),
     );
@@ -1787,7 +1793,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("cache_gc", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "gc"})))
             .await
             .expect("cache_gc"),
     );
@@ -1806,7 +1812,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("cache_clear", json!({ "component": "telemetry" })))
+            .call_tool(call_params(
+                "admin",
+                json!({ "mode": "cache_clear",  "component": "telemetry" }),
+            ))
             .await
             .expect("cache_clear(telemetry)"),
     );
@@ -1822,7 +1831,10 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let err = service
-        .call_tool(call_params("cache_clear", json!({ "component": "blobs" })))
+        .call_tool(call_params(
+            "admin",
+            json!({ "mode": "cache_clear",  "component": "blobs" }),
+        ))
         .await;
     assert!(
         err.is_err(),
@@ -1832,8 +1844,8 @@ async fn mcp_server_exercises_representative_tools() {
     for component in ["views", "all"] {
         let err = service
             .call_tool(call_params(
-                "cache_clear",
-                json!({ "component": component, "confirm": true }),
+                "admin",
+                json!({ "mode": "cache_clear",  "component": component, "confirm": true }),
             ))
             .await;
         assert!(
@@ -2025,7 +2037,7 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("compress", json!({ "path": "a.rs" })))
+            .call_tool(call_params("admin", json!({ "mode": "compress",  "path": "a.rs" })))
             .await
             .expect("compress(path=a.rs)"),
     );
@@ -2100,7 +2112,7 @@ async fn mcp_server_exercises_representative_tools() {
                  The code runs correctly.";
     let body = decode_text(
         &service
-            .call_tool(call_params("compress", json!({ "text": prose })))
+            .call_tool(call_params("admin", json!({ "mode": "compress",  "text": prose })))
             .await
             .expect("compress(text prose)"),
     );
@@ -2149,14 +2161,19 @@ async fn mcp_server_exercises_representative_tools() {
     );
 
     let err = service
-        .call_tool(call_params("compress", json!({ "text": "hello", "path": "a.rs" })))
+        .call_tool(call_params(
+            "admin",
+            json!({ "mode": "compress",  "text": "hello", "path": "a.rs" }),
+        ))
         .await;
     assert!(
         err.is_err(),
         "compress with both text and path must be rejected: {err:?}"
     );
 
-    let err = service.call_tool(call_params("compress", json!({}))).await;
+    let err = service
+        .call_tool(call_params("admin", json!({ "mode": "compress"})))
+        .await;
     assert!(
         err.is_err(),
         "compress with neither text nor path must be rejected: {err:?}"
@@ -2220,8 +2237,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "delta",
-                json!({
+                "admin",
+                json!({ "mode": "delta",
                     "old": "alpha\nbeta\ngamma\n",
                     "new": "alpha\nbeta2\ngamma\ndelta\n",
                 }),
@@ -2257,7 +2274,10 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("delta", json!({ "old": "same\n", "new": "same\n" })))
+            .call_tool(call_params(
+                "admin",
+                json!({ "mode": "delta",  "old": "same\n", "new": "same\n" }),
+            ))
             .await
             .expect("delta(identical)"),
     );
@@ -2271,8 +2291,8 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "checkpoint",
-                json!({ "text": "We decided to use rayon.\nerror: build failed\n" }),
+                "admin",
+                json!({ "mode": "checkpoint",  "text": "We decided to use rayon.\nerror: build failed\n" }),
             ))
             .await
             .expect("checkpoint(text)"),
@@ -2303,7 +2323,7 @@ async fn mcp_server_exercises_representative_tools() {
                {\"tool\":\"Read\",\"target\":\"a.rs\",\"bytes\":100}\n";
     let body = decode_text(
         &service
-            .call_tool(call_params("detect_waste", json!({ "log": log })))
+            .call_tool(call_params("admin", json!({ "mode": "waste",  "log": log })))
             .await
             .expect("detect_waste(log)"),
     );
@@ -2675,7 +2695,9 @@ fn split_blame_lines(root: &std::path::Path) {
 async fn blame_file_paginates_by_start_line() {
     let (dir, service) = spawn_paging_server().await;
     split_blame_lines(dir.path());
-    let _ = service.call_tool(call_params("rescan", json!({}))).await;
+    let _ = service
+        .call_tool(call_params("admin", json!({ "mode": "rescan"})))
+        .await;
     let page1 = decode_text(
         &service
             .call_tool(call_params("blame_file", json!({ "path": "paged.rs", "limit": 1 })))
@@ -2725,7 +2747,9 @@ async fn blame_file_paginates_by_start_line() {
 async fn blame_symbol_paginates_by_start_line() {
     let (dir, service) = spawn_paging_server().await;
     split_blame_lines(dir.path());
-    let _ = service.call_tool(call_params("rescan", json!({}))).await;
+    let _ = service
+        .call_tool(call_params("admin", json!({ "mode": "rescan"})))
+        .await;
     let page1 = decode_text(
         &service
             .call_tool(call_params(
@@ -2806,8 +2830,8 @@ async fn reranks_search_results() {
 
     let no_rerank = service
         .call_tool(call_params(
-            "search_documents",
-            json!({ "query": "function", "reranker_enabled": false }),
+            "memory",
+            json!({ "mode": "documents",  "query": "function", "reranker_enabled": false }),
         ))
         .await;
     if let Ok(ref resp) = no_rerank {
@@ -2826,8 +2850,8 @@ async fn reranks_search_results() {
 
     let reranked = service
         .call_tool(call_params(
-            "search_documents",
-            json!({
+            "memory",
+            json!({ "mode": "documents",
                 "query": "function",
                 "reranker_enabled": true,
                 "reranker_preset": "bge-reranker-base",
@@ -2874,8 +2898,8 @@ async fn summarizes_via_extractive_default() {
 
     let result = service
         .call_tool(call_params(
-            "search_documents",
-            json!({
+            "memory",
+            json!({ "mode": "documents",
                 "query": "test",
                 "limit": 5,
                 "summarization_enabled": true,
@@ -2933,8 +2957,8 @@ async fn search_documents_accepts_post_filter_params() {
 
     let result = service
         .call_tool(call_params(
-            "search_documents",
-            json!({
+            "memory",
+            json!({ "mode": "documents",
                 "query": "test",
                 "limit": 10,
                 "entity_category": "person",
@@ -3355,8 +3379,8 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
 
     let escaping = service
         .call_tool(call_params(
-            "rescan",
-            json!({ "paths": ["../../../../../../etc/passwd"] }),
+            "admin",
+            json!({ "mode": "rescan",  "paths": ["../../../../../../etc/passwd"] }),
         ))
         .await;
     assert!(
@@ -3365,7 +3389,7 @@ async fn rescan_rejects_paths_escaping_the_repo_root() {
     );
 
     let ok = service
-        .call_tool(call_params("rescan", json!({ "paths": ["a.rs"] })))
+        .call_tool(call_params("admin", json!({ "mode": "rescan",  "paths": ["a.rs"] })))
         .await;
     assert!(ok.is_ok(), "rescan must accept a valid in-repo path, got: {ok:?}");
 
@@ -3386,7 +3410,7 @@ async fn serve_auto_scan_reports_index_build_ms_on_status() {
     let mut settled: Option<Value> = None;
     for _ in 0..600 {
         let result = service
-            .call_tool(call_params("status", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "status"})))
             .await
             .expect("status");
         let v = decode_text(&result);
@@ -3441,8 +3465,6 @@ async fn tools_advertise_output_schema() {
         "call_graph",
         "find_implementations",
         "list_files",
-        "repo_info",
-        "status",
     ] {
         let schema = schema_of(name).unwrap_or_else(|| panic!("tool {name} must advertise output_schema"));
         assert_eq!(
@@ -3451,6 +3473,20 @@ async fn tools_advertise_output_schema() {
             "tool {name} output_schema must be a JSON object schema: {schema:?}"
         );
     }
+
+    // `admin` (formerly `status` / `repo_info` / `rescan` / …) is a consolidated domain tool whose
+    // eleven modes return eleven different response shapes; SEP-2106 allows exactly one
+    // `output_schema` per tool, so the consolidated tool deliberately advertises none (see the
+    // `tools_admin.rs` module docs). This is intentional, not a regression from consolidation.
+    assert!(
+        tools
+            .iter()
+            .find(|t| t.name.as_ref() == "admin")
+            .expect("`admin` present in full surface")
+            .output_schema
+            .is_none(),
+        "the consolidated `admin` tool must NOT advertise a single output_schema for its 11 modes"
+    );
 
     let _ = server.cancel().await;
 }
@@ -3491,7 +3527,6 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
         "outline",
         "search_symbols",
         "find_references",
-        "status",
         "list_files",
         "find_files",
     ] {
@@ -3501,17 +3536,20 @@ async fn lean_surface_is_opt_in_and_round_trips_through_invoke_tool() {
             "read-only tool {read_only} must advertise read_only_hint=true"
         );
     }
-    for mutating in ["rescan", "cache_clear"] {
-        assert_eq!(
-            annotations_of(mutating).read_only_hint,
-            Some(false),
-            "mutating tool {mutating} must advertise read_only_hint=false"
-        );
-    }
+    // `admin` (formerly `rescan` / `cache_clear` / … as distinct tools) bundles both read-only modes
+    // (`status`) and destructive ones (`rescan`, `cache_clear`) behind one tool, so its ONE set of
+    // annotations is read_only_hint=false / destructive_hint=true for the whole tool — including its
+    // read-only modes. This is an intentional consequence of consolidation, not a regression: a host
+    // that gates on tool-level annotations must treat the whole `admin` tool as mutating.
     assert_eq!(
-        annotations_of("cache_clear").destructive_hint,
+        annotations_of("admin").read_only_hint,
+        Some(false),
+        "the consolidated `admin` tool must advertise read_only_hint=false"
+    );
+    assert_eq!(
+        annotations_of("admin").destructive_hint,
         Some(true),
-        "cache_clear must advertise destructive_hint=true"
+        "the consolidated `admin` tool must advertise destructive_hint=true"
     );
     let direct = decode_text(
         &full
@@ -3748,7 +3786,7 @@ async fn rescan_emits_logging_and_progress_notifications() {
         .expect("in-memory serve");
     let server = capture.serve(transport).await.expect("rmcp handshake");
 
-    let mut params = call_params("rescan", json!({}));
+    let mut params = call_params("admin", json!({ "mode": "rescan"}));
     rmcp::model::RequestParamsMeta::set_progress_token(
         &mut params,
         rmcp::model::ProgressToken(NumberOrString::String("rescan-1".into())),
@@ -5061,7 +5099,7 @@ async fn documents_lane_survives_unscoped_rescan() {
 
     // An unscoped rescan rebuilds the whole MapCache — the path that used to wipe doc_links.
     let _ = service
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan"})))
         .await
         .expect("rescan");
 
@@ -5074,6 +5112,422 @@ async fn documents_lane_survives_unscoped_rescan() {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     assert!(edges_after >= 1, "the documents lane was wiped by an unscoped rescan");
+
+    let _ = service.cancel().await;
+}
+
+/// Per-mode contract for the consolidated `workspace` tool.
+///
+/// The five modes' bodies all talk to the comms broker daemon, which a hermetic smoke run has no
+/// business spawning — so what is asserted here is the layer that runs BEFORE the daemon round-trip
+/// and is exactly the layer consolidation introduced: `mode` is required, every mode is advertised,
+/// a field belonging to another mode is rejected rather than ignored, and a mode that needs
+/// `repo_id` / `name` names the missing pair instead of failing anonymously downstream.
+///
+/// A refusal reaches the caller two ways — `Lenient` renders a parameter-shape failure as an
+/// `is_error` result, while a helper-level rejection is a `-32602` — so [`refusal`] normalizes both
+/// to the message text and every assertion is made on the wording an agent actually reads.
+#[cfg(all(feature = "comms", any(unix, windows)))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_tool_validates_every_mode_before_touching_the_registry() {
+    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
+    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(result) => {
+                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
+                result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let workspace = tools
+        .iter()
+        .find(|t| t.name == "workspace")
+        .expect("the `workspace` domain tool must be advertised under --features comms");
+    let schema = serde_json::to_string(&workspace.input_schema).expect("serialize inputSchema");
+    for mode in ["workspaces", "worktrees", "branches", "claim", "release"] {
+        assert!(
+            schema.contains(&format!("\"{mode}\"")),
+            "`workspace` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // `mode` is required: an omitted mode errors, it never silently picks an operation.
+    let message = refusal(
+        service.call_tool(call_params("workspace", json!({}))).await,
+        "an omitted mode",
+    );
+    assert!(
+        message.contains("missing field `mode`"),
+        "an omitted mode must name the field: {message}"
+    );
+
+    let message = refusal(
+        service
+            .call_tool(call_params("workspace", json!({ "mode": "worktree" })))
+            .await,
+        "an unknown mode",
+    );
+    assert!(
+        message.contains("worktrees") && message.contains("claim"),
+        "an unknown mode must list the accepted set: {message}"
+    );
+
+    // mode `workspaces` takes neither `repo_id` nor `name` — a stray field is rejected, not ignored.
+    let message = refusal(
+        service
+            .call_tool(call_params(
+                "workspace",
+                json!({ "mode": "workspaces", "repo_id": "path:/nowhere" }),
+            ))
+            .await,
+        "mode `workspaces` with a stray `repo_id`",
+    );
+    assert!(
+        message.contains("mode `workspaces` does not accept") && message.contains("`repo_id`"),
+        "mode `workspaces` must name the field it rejected: {message}"
+    );
+
+    // modes `worktrees` / `branches` require `repo_id` and reject `name`.
+    for mode in ["worktrees", "branches"] {
+        let message = refusal(
+            service
+                .call_tool(call_params("workspace", json!({ "mode": mode })))
+                .await,
+            "a repo_id-less list mode",
+        );
+        assert!(
+            message.contains(&format!("mode=\"{mode}\" requires `repo_id`")),
+            "mode `{mode}` must name the missing `repo_id`: {message}"
+        );
+
+        let message = refusal(
+            service
+                .call_tool(call_params(
+                    "workspace",
+                    json!({ "mode": mode, "repo_id": "path:/nowhere", "name": "(main)" }),
+                ))
+                .await,
+            "a list mode given `name`",
+        );
+        assert!(
+            message.contains("`name`"),
+            "mode `{mode}` must reject `name` rather than ignore it: {message}"
+        );
+    }
+
+    // modes `claim` / `release` require both `repo_id` and `name`.
+    for mode in ["claim", "release"] {
+        let message = refusal(
+            service
+                .call_tool(call_params("workspace", json!({ "mode": mode, "name": "(main)" })))
+                .await,
+            "a repo_id-less claim/release",
+        );
+        assert!(
+            message.contains(&format!("mode=\"{mode}\" requires `repo_id`")),
+            "mode `{mode}` must name the missing `repo_id`: {message}"
+        );
+
+        let message = refusal(
+            service
+                .call_tool(call_params(
+                    "workspace",
+                    json!({ "mode": mode, "repo_id": "path:/nowhere" }),
+                ))
+                .await,
+            "a name-less claim/release",
+        );
+        assert!(
+            message.contains(&format!("mode=\"{mode}\" requires `name`")),
+            "mode `{mode}` must name the missing `name`: {message}"
+        );
+    }
+
+    let _ = service.cancel().await;
+}
+
+/// Per-mode contract for the consolidated `admin` tool: `mode` is required, every mode is
+/// advertised in the input schema, a field belonging to another mode is rejected rather than
+/// ignored, and a mode that needs a field it did not receive names the exact `mode`/field pair.
+///
+/// A refusal reaches the caller two ways — `Lenient` renders a parameter-shape failure as an
+/// `is_error` result, while a helper-level rejection is a `-32602` — so [`refusal`] normalizes both
+/// to the message text and every assertion is made on the wording an agent actually reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn admin_tool_validates_every_mode_before_running_it() {
+    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
+    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(result) => {
+                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
+                result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let admin = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "admin")
+        .expect("the `admin` domain tool must always be advertised");
+    let schema = serde_json::to_string(&admin.input_schema).expect("serialize inputSchema");
+    for mode in [
+        "status",
+        "repo",
+        "rescan",
+        "cache_stats",
+        "gc",
+        "cache_clear",
+        "telemetry",
+        "compress",
+        "delta",
+        "checkpoint",
+        "waste",
+    ] {
+        assert!(
+            schema.contains(&format!("\"{mode}\"")),
+            "`admin` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // `mode` is required: an omitted mode errors, it never silently picks an operation.
+    let message = refusal(
+        service.call_tool(call_params("admin", json!({}))).await,
+        "an omitted mode",
+    );
+    assert!(
+        message.contains("missing field `mode`"),
+        "an omitted mode must name the field: {message}"
+    );
+
+    // An unknown mode names every accepted spelling.
+    let message = refusal(
+        service
+            .call_tool(call_params("admin", json!({ "mode": "reindex" })))
+            .await,
+        "an unknown mode",
+    );
+    assert!(
+        message.contains("rescan") && message.contains("cache_clear"),
+        "an unknown mode must list the accepted set: {message}"
+    );
+
+    // mode `status` takes no sibling fields — a stray field is rejected, not ignored.
+    let message = refusal(
+        service
+            .call_tool(call_params("admin", json!({ "mode": "status", "paths": ["a.rs"] })))
+            .await,
+        "mode `status` with a stray `paths`",
+    );
+    assert!(
+        message.contains("`admin` mode `status` does not accept") && message.contains("`paths`"),
+        "mode `status` must name the field it rejected: {message}"
+    );
+
+    // A field belonging to a DIFFERENT mode (not just an arbitrary unknown one) is also rejected,
+    // never silently dropped: `component` belongs to `cache_clear`, not `rescan`.
+    let message = refusal(
+        service
+            .call_tool(call_params("admin", json!({ "mode": "rescan", "component": "blobs" })))
+            .await,
+        "mode `rescan` given a `cache_clear` field",
+    );
+    assert!(
+        message.contains("`admin` mode `rescan` does not accept") && message.contains("`component`"),
+        "mode `rescan` must reject a sibling mode's field rather than ignore it: {message}"
+    );
+
+    // `delta` requires both `old` and `new` — the missing one is named exactly.
+    let message = refusal(
+        service
+            .call_tool(call_params("admin", json!({ "mode": "delta", "old": "a" })))
+            .await,
+        "a `new`-less delta",
+    );
+    assert!(
+        message.contains("`admin` mode=\"delta\" requires `new`"),
+        "mode `delta` must name the missing `new`: {message}"
+    );
+
+    // `checkpoint` requires `text`.
+    let message = refusal(
+        service
+            .call_tool(call_params("admin", json!({ "mode": "checkpoint" })))
+            .await,
+        "a text-less checkpoint",
+    );
+    assert!(
+        message.contains("`admin` mode=\"checkpoint\" requires `text`"),
+        "mode `checkpoint` must name the missing `text`: {message}"
+    );
+
+    let _ = service.cancel().await;
+}
+
+/// Per-mode contract for the consolidated `memory` tool, mirroring the `admin` and `workspace`
+/// coverage above: `mode` is required, every mode is advertised, a field belonging to another mode
+/// is rejected rather than ignored, and a mode missing a required field names the exact pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn memory_tool_validates_every_mode_before_running_it() {
+    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
+    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(result) => {
+                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
+                result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let memory = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "memory")
+        .expect("the `memory` domain tool must always be advertised");
+    let schema = serde_json::to_string(&memory.input_schema).expect("serialize inputSchema");
+    for mode in [
+        "put",
+        "get",
+        "list",
+        "search",
+        "delete",
+        "audit",
+        "documents",
+        "mine",
+        "proposals",
+        "accept",
+        "reject",
+    ] {
+        assert!(
+            schema.contains(&format!("\"{mode}\"")),
+            "`memory` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // `mode` is required: an omitted mode errors, it never silently picks an operation.
+    let message = refusal(
+        service.call_tool(call_params("memory", json!({}))).await,
+        "an omitted mode",
+    );
+    assert!(
+        message.contains("missing field `mode`"),
+        "an omitted mode must name the field: {message}"
+    );
+
+    // An unknown mode names every accepted spelling.
+    let message = refusal(
+        service
+            .call_tool(call_params("memory", json!({ "mode": "recall" })))
+            .await,
+        "an unknown mode",
+    );
+    assert!(
+        message.contains("put") && message.contains("get") && message.contains("delete"),
+        "an unknown mode must list the accepted set: {message}"
+    );
+
+    // A field belonging to a DIFFERENT mode is rejected, not silently ignored: `window` belongs to
+    // `mine`, not `get`.
+    let message = refusal(
+        service
+            .call_tool(call_params(
+                "memory",
+                json!({ "mode": "get", "key": "k", "window": 10 }),
+            ))
+            .await,
+        "mode `get` given a `mine` field",
+    );
+    assert!(
+        message.contains("`memory` mode `get` does not accept") && message.contains("`window`"),
+        "mode `get` must reject a sibling mode's field rather than ignore it: {message}"
+    );
+
+    // `put` requires both `key` and `value` — the missing one is named exactly. `require()` only
+    // runs inside `run_memory_ops`, which is itself gated on `--features memory`: a build without it
+    // answers with the feature-gate message for every mode before ever reaching `require()`, so the
+    // exact-field wording is only checked on a `--features memory` build.
+    let message = refusal(
+        service
+            .call_tool(call_params("memory", json!({ "mode": "put", "key": "k" })))
+            .await,
+        "a value-less put",
+    );
+    if cfg!(feature = "memory") {
+        assert!(
+            message.contains("`memory`: mode=\"put\" requires `value`"),
+            "mode `put` must name the missing `value`: {message}"
+        );
+    } else {
+        assert!(
+            message.contains("requires the `memory` feature"),
+            "without --features memory, mode `put` must name the missing feature: {message}"
+        );
+    }
+
+    // `search` requires `query`, same feature-gate caveat as `put` above.
+    let message = refusal(
+        service
+            .call_tool(call_params("memory", json!({ "mode": "search" })))
+            .await,
+        "a query-less search",
+    );
+    if cfg!(feature = "memory") {
+        assert!(
+            message.contains("`memory`: mode=\"search\" requires `query`"),
+            "mode `search` must name the missing `query`: {message}"
+        );
+    } else {
+        assert!(
+            message.contains("requires the `memory` feature"),
+            "without --features memory, mode `search` must name the missing feature: {message}"
+        );
+    }
 
     let _ = service.cancel().await;
 }

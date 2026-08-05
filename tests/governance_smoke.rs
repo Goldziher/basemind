@@ -227,8 +227,8 @@ async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
     let mine_reject = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 5,
                     "min_confidence": 0.5,
                     "max_files_per_commit": 10,
@@ -251,8 +251,8 @@ async fn should_reject_pair_below_confidence_threshold_and_emit_above() {
     let mine_accept = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 5,
                     "min_confidence": 0.4,
                     "max_files_per_commit": 10,
@@ -284,8 +284,8 @@ async fn should_reject_pair_below_support_threshold_and_emit_above() {
     let mine_reject = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 6,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 10,
@@ -307,8 +307,8 @@ async fn should_reject_pair_below_support_threshold_and_emit_above() {
     let mine_accept = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 5,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 10,
@@ -338,8 +338,8 @@ async fn should_skip_bulk_commits_and_not_inflate_cochange() {
     let mine_body = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 3,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 3,
@@ -372,7 +372,10 @@ async fn should_skip_bulk_commits_and_not_inflate_cochange() {
 
     let list_body = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "skill" })))
+            .call_tool(call_params(
+                "memory",
+                json!({ "mode": "proposals",  "limit": 100, "kind": "skill" }),
+            ))
             .await
             .expect("proposals_list after bulk mine"),
     );
@@ -405,6 +408,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
     let service = spawn_serve(root).await;
 
     let mine_params = json!({
+        "mode": "mine",
         "min_support": 1,
         "min_confidence": 0.1,
         "max_files_per_commit": 10,
@@ -413,7 +417,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
 
     let mine1 = decode_text(
         &service
-            .call_tool(call_params("proposals_mine", mine_params.clone()))
+            .call_tool(call_params("memory", mine_params.clone()))
             .await
             .expect("proposals_mine first"),
     );
@@ -422,7 +426,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
 
     let list1 = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+            .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
             .await
             .expect("proposals_list after first mine"),
     );
@@ -437,7 +441,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
 
     let mine2 = decode_text(
         &service
-            .call_tool(call_params("proposals_mine", mine_params))
+            .call_tool(call_params("memory", mine_params))
             .await
             .expect("proposals_mine second"),
     );
@@ -445,7 +449,7 @@ async fn should_produce_same_proposal_id_on_repeated_mine() {
 
     let list2 = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+            .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
             .await
             .expect("proposals_list after second mine"),
     );
@@ -476,8 +480,8 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     let mine_body = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 5,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 10,
@@ -499,7 +503,10 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
 
     let page1 = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 1, "kind": "skill" })))
+            .call_tool(call_params(
+                "memory",
+                json!({ "mode": "proposals",  "limit": 1, "kind": "skill" }),
+            ))
             .await
             .expect("proposals_list page 1"),
     );
@@ -529,8 +536,8 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_list",
-                json!({ "limit": 100, "kind": "skill", "cursor": next_cursor }),
+                "memory",
+                json!({ "mode": "proposals",  "limit": 100, "kind": "skill", "cursor": next_cursor }),
             ))
             .await
             .expect("proposals_list page 2"),
@@ -562,7 +569,10 @@ async fn should_paginate_proposals_list_and_filter_by_kind() {
 
     let memory_list = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 100, "kind": "memory" })))
+            .call_tool(call_params(
+                "memory",
+                json!({ "mode": "proposals",  "limit": 100, "kind": "memory" }),
+            ))
             .await
             .expect("proposals_list kind=memory"),
     );
@@ -591,8 +601,8 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     let mine_body = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 1,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 10,
@@ -610,7 +620,7 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
 
     let list_body = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 10 })))
+            .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 10 })))
             .await
             .expect("proposals_list for reject test"),
     );
@@ -623,8 +633,8 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     let reject1 = decode_text(
         &service
             .call_tool(call_params(
-                "proposal_reject",
-                json!({ "id": reject_id, "reason": "smoke-test first reject" }),
+                "memory",
+                json!({ "mode": "reject",  "id": reject_id, "reason": "smoke-test first reject" }),
             ))
             .await
             .expect("proposal_reject first call"),
@@ -638,8 +648,8 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     let reject2 = decode_text(
         &service
             .call_tool(call_params(
-                "proposal_reject",
-                json!({ "id": reject_id, "reason": "smoke-test second reject" }),
+                "memory",
+                json!({ "mode": "reject",  "id": reject_id, "reason": "smoke-test second reject" }),
             ))
             .await
             .expect("proposal_reject second call (idempotent)"),
@@ -653,8 +663,8 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
     let mine_after = decode_text(
         &service
             .call_tool(call_params(
-                "proposals_mine",
-                json!({
+                "memory",
+                json!({ "mode": "mine",
                     "min_support": 1,
                     "min_confidence": 0.1,
                     "max_files_per_commit": 10,
@@ -667,7 +677,7 @@ async fn should_idempotently_reject_and_tombstone_suppresses_remine() {
 
     let list_after = decode_text(
         &service
-            .call_tool(call_params("proposals_list", json!({ "limit": 100 })))
+            .call_tool(call_params("memory", json!({ "mode": "proposals",  "limit": 100 })))
             .await
             .expect("proposals_list after reject"),
     );

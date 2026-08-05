@@ -26,9 +26,9 @@ pub enum Capability {
     FileFinding,
     /// `thread_post` / `inbox_read` — multi-agent thread coordination.
     AgentComms,
-    /// `workspaces` / `worktrees` / `worktree_claim` — daemon registry + worktree coordination.
+    /// `workspace` modes — daemon registry + worktree coordination.
     WorktreeCoordination,
-    /// `search_documents` — RAG over PDFs / Office / HTML / the web.
+    /// `memory` mode `documents` — RAG over PDFs / Office / HTML / the web.
     DocumentsRag,
     /// Semantic (vector) code search over the same index.
     SemanticSearch,
@@ -106,11 +106,11 @@ impl Capability {
                 "assuming you're the only agent in the repo",
             ),
             Capability::WorktreeCoordination => (
-                "`workspaces` / `worktrees` / `worktree_claim`",
+                "`workspace` (modes `workspaces` / `worktrees` / `claim`)",
                 "editing a worktree another session may already own",
             ),
             Capability::DocumentsRag => (
-                "`search_documents` / `web` (modes `scrape` / `crawl` / `map`)",
+                "`memory` mode `documents` / `web` (modes `scrape` / `crawl` / `map`)",
                 "manually reading PDFs / docs or ad-hoc fetching",
             ),
             Capability::SemanticSearch => (

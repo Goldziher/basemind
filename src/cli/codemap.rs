@@ -268,10 +268,6 @@ pub enum QueryCmd {
         #[arg(long)]
         limit: Option<u32>,
     },
-    /// High-level repo + cache state.
-    Status,
-    /// Workdir + branch + HEAD sha.
-    RepoInfo,
     /// Files whose imports mention the given module (heuristic).
     Dependents { module: String },
     /// Search indexed code chunks — `hybrid` (RRF fusion, default), `semantic` (vector), or
@@ -630,14 +626,6 @@ pub async fn run(server: &BasemindServer, cmd: QueryCmd, opts: &Emit, out: &mut 
             };
             let r = run_tool("find_files", server.find_files(Parameters(Lenient(p))).await)?;
             emit("find_files", &r, opts, out)
-        }
-        QueryCmd::Status => {
-            let r = run_tool("status", server.status(Parameters(StatusParams {})).await)?;
-            emit("status", &r, opts, out)
-        }
-        QueryCmd::RepoInfo => {
-            let r = run_tool("repo_info", server.repo_info(Parameters(RepoInfoParams {})).await)?;
-            emit("repo_info", &r, opts, out)
         }
         QueryCmd::Dependents { module } => {
             let p = DependentsParams { module };

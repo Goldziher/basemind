@@ -261,8 +261,12 @@ pub fn reject_unsupported(domain: &str, mode: &str, present: &[(&str, bool)]) ->
 /// tool names into modes, so parity has to be checked there or it silently stops covering them.
 pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
+        (AdminMode::DOMAIN, AdminMode::ALL_MODES),
+        (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
         #[cfg(feature = "crawl")]
         (WebMode::DOMAIN, WebMode::ALL_MODES),
+        #[cfg(all(feature = "comms", any(unix, windows)))]
+        (WorkspaceMode::DOMAIN, WorkspaceMode::ALL_MODES),
     ]
 }
 
@@ -291,9 +295,9 @@ mod tests {
 
     #[test]
     fn should_name_every_accepted_mode_when_the_mode_is_unknown() {
-        let error = TestMode::parse("alpah").expect_err("unknown mode must fail");
+        let error = TestMode::parse("alfa").expect_err("unknown mode must fail");
         let message = error.message.to_string();
-        assert!(message.contains("unknown mode `alpah` for `fixture`"), "{message}");
+        assert!(message.contains("unknown mode `alfa` for `fixture`"), "{message}");
         assert!(message.contains("alpha|beta"), "{message}");
     }
 

@@ -290,7 +290,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
 
     let _ = svc.list_tools(None).await;
 
-    call(svc, &mut records, "status", json!({})).await;
+    call(svc, &mut records, "admin", json!({ "mode": "status" })).await;
     call(svc, &mut records, "list_files", json!({ "limit": 50 })).await;
     call(svc, &mut records, "find_files", json!({ "query": "src", "limit": 50 })).await;
     call(
@@ -330,7 +330,7 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
         }
 
         call(svc, &mut records, "working_tree_status", json!({})).await;
-        call(svc, &mut records, "repo_info", json!({})).await;
+        call(svc, &mut records, "admin", json!({ "mode": "repo" })).await;
         call(
             svc,
             &mut records,
@@ -465,7 +465,13 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     .await;
 
     if let Some(sample) = sample {
-        call(svc, &mut records, "compress", json!({ "path": &sample.path })).await;
+        call(
+            svc,
+            &mut records,
+            "admin",
+            json!({ "mode": "compress", "path": &sample.path }),
+        )
+        .await;
 
         if let Some(sym) = &sample.sample_symbol {
             call(
@@ -481,47 +487,59 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "compress",
-        json!({ "text": "It is worth noting that basemind provides code-aware compression. The index is fast." }),
+        "admin",
+        json!({ "mode": "compress", "text": "It is worth noting that basemind provides code-aware compression. The index is fast." }),
     )
     .await;
 
     call(
         svc,
         &mut records,
-        "memory_put",
-        json!({ "key": "harden_probe", "value": "basemind harden probe", "embed": false }),
-    )
-    .await;
-    call(svc, &mut records, "memory_get", json!({ "key": "harden_probe" })).await;
-    call(svc, &mut records, "memory_list", json!({})).await;
-    call(svc, &mut records, "memory_delete", json!({ "key": "harden_probe" })).await;
-    call(
-        svc,
-        &mut records,
-        "memory_put",
-        json!({ "key": "harden_audit_probe", "value": "audit probe", "embed": false }),
+        "memory",
+        json!({ "mode": "put",  "key": "harden_probe", "value": "basemind harden probe", "embed": false }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "memory_audit",
-        json!({ "key": "harden_audit_probe", "dry_run": true }),
+        "memory",
+        json!({ "mode": "get",  "key": "harden_probe" }),
+    )
+    .await;
+    call(svc, &mut records, "memory", json!({ "mode": "list"})).await;
+    call(
+        svc,
+        &mut records,
+        "memory",
+        json!({ "mode": "delete",  "key": "harden_probe" }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "memory_delete",
-        json!({ "key": "harden_audit_probe" }),
+        "memory",
+        json!({ "mode": "put",  "key": "harden_audit_probe", "value": "audit probe", "embed": false }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "search_documents",
-        json!({ "query": "code map scanner" }),
+        "memory",
+        json!({ "mode": "audit",  "key": "harden_audit_probe", "dry_run": true }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "memory",
+        json!({ "mode": "delete",  "key": "harden_audit_probe" }),
+    )
+    .await;
+    call(
+        svc,
+        &mut records,
+        "memory",
+        json!({ "mode": "documents",  "query": "code map scanner" }),
     )
     .await;
     call(
@@ -556,20 +574,20 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "proposals_mine",
-        json!({ "window": 100, "min_support": 5, "min_confidence": 0.6 }),
+        "memory",
+        json!({ "mode": "mine",  "window": 100, "min_support": 5, "min_confidence": 0.6 }),
     )
     .await;
     call(
         svc,
         &mut records,
-        "proposals_list",
-        json!({ "kind": "skill", "limit": 20 }),
+        "memory",
+        json!({ "mode": "proposals",  "kind": "skill", "limit": 20 }),
     )
     .await;
 
-    call(svc, &mut records, "cache_stats", json!({})).await;
-    call(svc, &mut records, "cache_gc", json!({})).await;
+    call(svc, &mut records, "admin", json!({ "mode": "cache_stats" })).await;
+    call(svc, &mut records, "admin", json!({ "mode": "gc" })).await;
 
     if let Some(spawned) = call(
         svc,
@@ -946,7 +964,10 @@ fn git_first_line(repo: &Path, args: &[&str]) -> Option<String> {
 }
 
 async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path, record: &mut RepoRecord) {
-    if let Ok(out) = svc.call_tool(call_params("cache_stats", &json!({}))).await {
+    if let Ok(out) = svc
+        .call_tool(call_params("admin", &json!({ "mode": "cache_stats" })))
+        .await
+    {
         let body = decode_text(&out);
         if let Some(gh) = body.get("git_history_bytes").and_then(Value::as_u64) {
             record.canaries.insert("stats_git_history_bytes".into(), json!(gh));
@@ -1245,8 +1266,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "proposals_mine",
-                    &json!({ "window": 100, "min_support": 5, "min_confidence": 0.6 }),
+                    "memory",
+                    &json!({ "mode": "mine",  "window": 100, "min_support": 5, "min_confidence": 0.6 }),
                 ))
                 .await
             {

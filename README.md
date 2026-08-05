@@ -46,16 +46,14 @@ about your code costs a small fraction of the tokens it takes to read the source
 |---|---|---|
 | **Code intelligence** | Find where things are defined, what calls what, who implements what, how calls chain, the overall architecture (hub modules + dependency cycles), how any two symbols relate, and the repo's de-facto modules — traverse the typed code-graph for a symbol's neighborhood, the shortest path between two symbols, or a readable subgraph, cluster it into communities, and export the whole graph as node-link JSON / DOT / Mermaid / GraphML / Cypher, a self-contained offline interactive HTML page, or a static SVG picture — optionally written to the cache — or **show it to a human**: open a rendered view in their default desktop viewer, degrading to a written export when headless, or **open the interactive UI** — a live `http://…/ui` graph page served by the daemon (browser- and agent-drivable), falling back to the self-contained export. Every edge tagged with provenance + confidence. **Precise, scope- and import-aware resolution** (JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)) layered over [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `architecture_map` · `neighbors` · `path` · `subgraph` · `communities` · `graph_export` · `display` · `ui` · `find_implementations` · `find_files` · `workspace_grep` |
 | **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and full-text search commit authors + messages. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` · `search_git_history` |
-| **Document search** | Search PDFs, Office files, HTML, email, and images by meaning — with built-in text extraction and OCR, no extra setup. | `search_documents` |
+| **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Code search** | Find source code by meaning, term, or symbol — `mode` picks the strategy: `hybrid` (default, RRF fusion of vector + BM25 + exact-symbol lanes), `semantic` (vector KNN), or `keyword` (native BM25); optional `rerank` cross-encoder pass. Returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
-| **Shared memory** | A per-repo memory agents can write to and search; clones of the same repo share it, unrelated repos stay separate. | `memory_put` · `memory_search` · `memory_audit` |
-| **Suggestions** | Spots files that change together and suggests notes worth saving — you approve before anything is kept. | `proposals_mine` · `proposal_accept` |
-| **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web_scrape` · `web_crawl` · `web_map` |
+| **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
 | **Agent comms** | Threads for agents working the same repo: each addressed by at least two of subject / path-glob / members, discovered by scope (member, cwd path-match, or subject filter — never global), with a recency-filtered inbox. The creator manages membership and archives; idle threads auto-archive. One orchestrator can drive many named subagents (`as_agent`). | `thread_start` · `thread_post` · `thread_list` · `inbox_read` · `inbox_wait` · `agent_list` |
 | **Agent shells** | Let agents open, type into, and watch terminal sessions in the background. | `shell_spawn` · `shell_send` · `shell_capture` · `shell_list` |
-| **Token saving** | Hand an agent a file's outline instead of its full text, pull back only the one function it needs, diff a re-read instead of resending it whole, checkpoint a session, and flag wasteful tool use. | `compress` · `expand` · `delta` · `checkpoint` · `detect_waste` |
-| **Admin** | Refresh the index, see what's been queried, and check or clean up the on-disk cache. | `rescan` · `telemetry_summary` · `cache_stats` |
-| **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspaces` · `worktrees` · `branches` · `worktree_claim` · `worktree_release` |
+| **Token saving** | Pull back only the one function an agent needs from a file it has already outlined. | `expand` |
+| **Admin** | Refresh the index after edits, check index health and repo identity, see what's been queried and how many tokens were saved, inspect or clean the on-disk cache, and shrink what an agent carries: a file's outline instead of its text, a diff instead of a re-read, a checkpoint instead of a transcript, plus a wasteful-tool-use report. | `admin` (`status` · `repo` · `rescan` · `cache_stats` · `gc` · `cache_clear` · `telemetry` · `compress` · `delta` · `checkpoint` · `waste`) |
+| **Machine registry** | Machine-wide repo/worktree/branch coordination, backed by the daemon's always-on registry. Advisory claims let agent sessions avoid colliding on the same worktree. | `workspace` (`workspaces` · `worktrees` · `branches` · `claim` · `release`) |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -719,7 +717,6 @@ machine-readable output.
 | `architecture-map [--granularity --focus --depth --edges --include-churn]` | Deterministic architecture overview: hub modules/symbols ranked by graph centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
 | `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
 | `list-files [--path-contains --language]` | List indexed files. |
-| `status` / `repo-info` | Project overview / git info (branch, HEAD, origin). |
 | `dependents <module>` | What imports a given module. |
 | `search-code <query> [--limit --format]` | Semantic (vector) search over code chunks; returns pointers. Needs `--features code-search`. |
 | `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
@@ -745,16 +742,22 @@ machine-readable output.
 | `put <key> <value>` / `get <key>` / `delete <key>` | Store, retrieve, or remove a value. |
 | `list [--prefix]` | List keys, optionally by prefix. |
 | `search <query>` | Search stored values by meaning. |
-| `search-documents <query>` | Search documents and memory together. |
-
-**Suggestions (`basemind governance`)**
-
-| Command | Purpose |
-|---|---|
+| `documents <query>` | Search indexed PDFs / Office / HTML / images by meaning. |
 | `mine [--commits --min-count --min-confidence --max-files]` | Suggest notes from files that change together. |
 | `proposals [--kind --limit]` | List pending suggestions. |
 | `accept <id> [--key]` / `reject <id> [--reason]` | Keep a suggestion / dismiss it for good. |
 | `audit [--key --individual --dry-run --include-archived]` | Recompute memory importance, archive stale entries, refresh verdicts. |
+
+**Admin (`basemind admin`)**
+
+| Command | Purpose |
+|---|---|
+| `status` / `repo` | Index health (files, languages, scan state) / git identity (branch, HEAD, origin). |
+| `rescan [PATH…] [--full]` | Re-index the working tree, or only the given paths. |
+| `cache-stats` / `gc` | On-disk footprint + process RAM / reclaimable-blob report. |
+| `cache-clear --component <c> [--confirm]` | Clear one cache component (`views`/`all` need the offline `basemind cache clear`). |
+| `telemetry [--window --tool]` | What's been queried and how many tokens were saved. |
+| `compress` / `delta` / `checkpoint` / `waste` | Outline a file, diff a re-read, summarize a session, flag wasteful tool use. |
 
 **Cache (`basemind cache`)**
 
@@ -808,7 +811,6 @@ machine-readable output.
 | `hook install` | Add a git pre-commit hook that runs a scan. |
 | `compress-output` / `delta --old <path>` | Backends for the optional guardrails above. |
 | `checkpoint` / `detect-waste` | Summarize a session / flag wasteful tool use. |
-| `telemetry` | What's been queried and how many tokens were saved. |
 
 <!-- markdownlint-enable MD013 -->
 

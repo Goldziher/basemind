@@ -25,9 +25,9 @@ use super::BasemindServer;
 /// — consolidation put fast and slow operations behind one tool name, so keying on the name alone
 /// would make offload all-or-nothing per domain (every `web` call offloaded, or none).
 pub(super) const SLOW_CALLS: &[&str] = &[
-    "rescan",
+    "admin:rescan",
     #[cfg(feature = "documents")]
-    "search_documents",
+    "memory:documents",
     #[cfg(feature = "crawl")]
     "web:scrape",
     #[cfg(feature = "crawl")]
@@ -122,12 +122,16 @@ mod tests {
     }
 
     #[test]
-    fn should_offload_a_bare_named_slow_tool_whatever_its_arguments() {
-        assert!(is_slow_tool("rescan", None));
+    fn should_offload_the_slow_admin_mode_and_not_its_fast_siblings() {
         assert!(is_slow_tool(
-            "rescan",
-            Some(&args(serde_json::json!({ "paths": ["src"] })))
+            "admin",
+            Some(&args(serde_json::json!({ "mode": "rescan", "paths": ["src"] })))
         ));
+        assert!(!is_slow_tool(
+            "admin",
+            Some(&args(serde_json::json!({ "mode": "status" })))
+        ));
+        assert!(!is_slow_tool("admin", None));
     }
 
     #[test]

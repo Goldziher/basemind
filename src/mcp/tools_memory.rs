@@ -1,8 +1,10 @@
-//! Memory + document-search tool shims for `BasemindServer`.
+//! The `memory` domain tool shim for `BasemindServer`.
 //!
-//! Kept in a separate file so `tools.rs` stays under the 1000-line cap.
-//! Each shim delegates to `memory::run_*` helpers and returns a graceful
-//! MCP error when the gating feature is not enabled.
+//! One tool, one required `mode` — `put` / `get` / `list` / `search` / `delete` / `audit` /
+//! `documents` / `mine` / `proposals` / `accept` / `reject` — dispatched to
+//! `helpers_memory::run_memory`. The tool is registered in every build; the `memory` and
+//! `documents` feature gates are enforced per mode inside the helper, so a binary without them
+//! answers with "rebuild with --features …" instead of hiding the whole domain.
 
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
@@ -13,237 +15,54 @@ use serde_json::Value;
 use super::BasemindServer;
 use super::helpers::record_call;
 use super::lenient::Lenient;
-use super::types::SearchDocumentsParams;
-use super::types_memory::{MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams};
-
-fn not_enabled(feature: &'static str) -> Result<CallToolResult, McpError> {
-    Err(McpError::invalid_request(
-        format!(
-            "this tool requires the `{feature}` feature, which is not compiled into this \
-             basemind binary. Rebuild with `--features {feature}` (the published release \
-             binary includes it)."
-        ),
-        None,
-    ))
-}
+use super::types_memory::MemoryParams;
 
 #[rmcp::tool_router(vis = "pub(super)", router = "tool_router_memory")]
 impl BasemindServer {
+    // No `output_schema`: the eleven modes return eleven different response shapes, and SEP-2106
+    // allows exactly one per tool. Declaring a union would mean nested structs, which schemars
+    // emits as `$ref` into `$defs` — the construct that silently dropped the whole registry in
+    // GH #50. The per-mode shapes are documented in the description instead. ~keep
     #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryPutResponse>()",
-        description = "Persist a key-value in scoped memory (scope = git remote URL). Upsert \
-        semantics. `embed=true` also stores in LanceDB for `memory_search`. Needs --features \
-        memory.",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    pub(crate) async fn memory_put(
-        &self,
-        Parameters(p): Parameters<MemoryPutParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "memory")]
-            {
-                return super::memory::run_memory_put(&self.state, p).await;
-            }
-            #[cfg(not(feature = "memory"))]
-            {
-                let _ = p;
-                return not_enabled("memory");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("memory")
-        }
-        .await;
-        record_call(&self.state, "memory_put", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryEntry>()",
-        description = "Exact-key lookup in scoped memory. Returns entry \
-        (key,value,tags,timestamps) or null. Fjall only, no vector touch. \
-        Needs --features memory.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn memory_get(
-        &self,
-        Parameters(p): Parameters<MemoryGetParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "memory")]
-            {
-                return super::memory::run_memory_get(&self.state, p).await;
-            }
-            #[cfg(not(feature = "memory"))]
-            {
-                let _ = p;
-                return not_enabled("memory");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("memory")
-        }
-        .await;
-        record_call(&self.state, "memory_get", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryListResponse>()",
-        description = "List scoped memory entries. `prefix` is a key-prefix filter (not \
-        substring); `tag` is exact. Values truncated ~200 chars. Default 100, max 1000. \
-        `cursor` pages results. `elapsed_us` = server-side handler latency in µs (excludes \
-        transport). Needs --features memory.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn memory_list(
-        &self,
-        Parameters(p): Parameters<MemoryListParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "memory")]
-            {
-                return super::memory::run_memory_list(&self.state, p).await;
-            }
-            #[cfg(not(feature = "memory"))]
-            {
-                let _ = p;
-                return not_enabled("memory");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("memory")
-        }
-        .await;
-        record_call(&self.state, "memory_list", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemorySearchResponse>()",
-        description = "Vector KNN over stored memory. Embeds `query`, KNN in the scope-filtered \
-        LanceDB memory table; `tag` is a post-KNN exact filter. Default 10, max 100 by L2 \
-        distance. `elapsed_us` = server-side handler latency in µs (excludes transport). Needs \
-        --features memory.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn memory_search(
-        &self,
-        Parameters(p): Parameters<MemorySearchParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "memory")]
-            {
-                return super::memory::run_memory_search(&self.state, p).await;
-            }
-            #[cfg(not(feature = "memory"))]
-            {
-                let _ = p;
-                return not_enabled("memory");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("memory")
-        }
-        .await;
-        record_call(&self.state, "memory_search", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_memory::MemoryDeleteResponse>()",
-        description = "Delete memory entry by exact key from Fjall and LanceDB. \
-        Returns {deleted:true} when found. Needs --features memory.",
+        description = "Durable repo-scoped memory plus retrieval over indexed documents: remember \
+        this, recall what we know, search the PDFs, and review mined suggestions. `mode` is \
+        required. `put` writes (upserts) a note under a key so later sessions and other agents \
+        read it back — `embed=false` skips vector indexing; `get` is an exact-key lookup, no \
+        vector touch; `list` enumerates entries with a key-PREFIX filter (`prefix`, not substring) \
+        and an exact `tag` filter, `cursor`-paged (default 100, max 1000); `search` is vector KNN \
+        over stored notes — \"what do we already know about X\" (default 10, max 100, ranked by L2 \
+        distance, `tag` filtered after the KNN); `delete` removes one key from both the index and \
+        the vector store. `audit` re-verifies stored notes against the LIVE code index — file and \
+        symbol provenance, structural-hash drift — decaying importance and archiving records stale \
+        for over 90 days; `dry_run` previews the verdicts (default 100, max 1000). `documents` is \
+        semantic search over indexed PDFs, Office files, HTML, email and OCR'd images — read the \
+        matching chunks instead of opening the file; `mime_type` filters exactly and `scope` picks \
+        the ingestion scope (pages ingested by the `web` tool live under `web:<host>`), \
+        `max_tokens` budgets the hits and `format:\"toon\"` compacts them. `mine` derives \
+        co-change proposals from git history (a candidate needs `min_support` co-changes and \
+        `min_confidence` = support / anchor commits; bulk commits over `max_files_per_commit` are \
+        skipped); `proposals` lists what is awaiting review; `accept` promotes one into searchable \
+        memory tagged skill/cochange; `reject` tombstones it so mining never resurfaces it. \
+        `visibility` selects the tier for the memory modes: `group` (shared across agents, the \
+        default) or `individual` (private to the calling agent). Parameters that belong to another \
+        mode are rejected, not ignored. Every mode except `documents` needs --features memory; \
+        `documents` needs --features documents.",
         annotations(
             read_only_hint = false,
             destructive_hint = true,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = false
         )
     )]
-    pub(crate) async fn memory_delete(
+    pub(crate) async fn memory(
         &self,
-        Parameters(p): Parameters<MemoryDeleteParams>,
+        Parameters(Lenient(p)): Parameters<Lenient<MemoryParams>>,
     ) -> Result<CallToolResult, McpError> {
         let __started = std::time::Instant::now();
+        let __key = p.mode.telemetry_key();
         let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            #[cfg(feature = "memory")]
-            {
-                return super::memory::run_memory_delete(&self.state, p).await;
-            }
-            #[cfg(not(feature = "memory"))]
-            {
-                let _ = p;
-                return not_enabled("memory");
-            }
-            #[allow(unreachable_code)]
-            not_enabled("memory")
-        }
-        .await;
-        record_call(&self.state, "memory_delete", &__params_json, __started, &__result);
-        __result
-    }
-
-    // `search_documents` is split across two `#[cfg]` variants so its SEP-2106 `output_schema` is ~keep
-    // advertised only when the `documents` feature (and thus the `SearchDocumentsResponse` type, ~keep
-    // which nests the `documents`-gated `extract::doc` NER/summary shapes) is compiled in. Without ~keep
-    // the feature the tool exists but errors, so it carries no output schema. ~keep
-    #[cfg(feature = "documents")]
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_documents::SearchDocumentsResponse>()",
-        description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
-        `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
-        filter. `scope` selects which ingestion scope to search and defaults to this repo's — \
-        pages ingested by `web` modes `scrape` / `crawl` live under `web:<host>` (that tool echoes \
-        the scope back), so pass it to reach them. Default 10, max 100. `max_tokens` budgets the \
-        hits (best-first, sets `budgeted`; no cursor — raise it for more). `format:\"toon\"` for \
-        compact rows (overrides config). `elapsed_us` = server-side handler latency in µs \
-        (excludes transport). Needs --features documents.",
-        annotations(read_only_hint = true, open_world_hint = true)
-    )]
-    pub(crate) async fn search_documents(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<SearchDocumentsParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = super::memory::run_search_documents(&self.state, p).await;
-        record_call(&self.state, "search_documents", &__params_json, __started, &__result);
-        __result
-    }
-
-    #[cfg(not(feature = "documents"))]
-    #[tool(
-        description = "Semantic search over indexed document chunks (PDF/Office/HTML). Embeds \
-        `query`, KNN in the scope-filtered LanceDB documents table; `mime_type` is an exact \
-        filter. `scope` selects which ingestion scope to search and defaults to this repo's — \
-        pages ingested by `web` modes `scrape` / `crawl` live under `web:<host>` (that tool echoes \
-        the scope back), so pass it to reach them. Default 10, max 100. `max_tokens` budgets the \
-        hits (best-first, sets `budgeted`; no cursor — raise it for more). `format:\"toon\"` for \
-        compact rows (overrides config). `elapsed_us` = server-side handler latency in µs \
-        (excludes transport). Needs --features documents.",
-        annotations(read_only_hint = true, open_world_hint = true)
-    )]
-    pub(crate) async fn search_documents(
-        &self,
-        Parameters(Lenient(p)): Parameters<Lenient<SearchDocumentsParams>>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&p).unwrap_or(Value::Null);
-        let _ = p;
-        let __result: Result<CallToolResult, McpError> = not_enabled("documents");
-        record_call(&self.state, "search_documents", &__params_json, __started, &__result);
+        let __result: Result<CallToolResult, McpError> = super::helpers_memory::run_memory(&self.state, p).await;
+        record_call(&self.state, __key, &__params_json, __started, &__result);
         __result
     }
 }

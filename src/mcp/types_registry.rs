@@ -4,14 +4,43 @@
 //! et al.) that derive serde but NOT `JsonSchema`. To keep the MCP schema surface honest and stable,
 //! this module defines MCP-facing DTOs and maps the registry rows into them at the helper boundary —
 //! the raw persistence structs never leak into the tool schema.
+//!
+//! [`WorkspaceParams`] is what crosses the wire: one flat parameter object for the single `workspace`
+//! tool, with a required [`WorkspaceMode`] selecting the operation and every per-mode field an
+//! optional sibling. The per-operation params structs below stay as the helpers' internal shapes.
 
 #![cfg(all(feature = "comms", any(unix, windows)))]
 
 use serde::{Deserialize, Serialize};
 
+use super::mode::WorkspaceMode;
 use crate::registry::{BranchRecord, WorkspaceKind, WorkspaceRecord, WorktreeRecord};
 
-/// Params for `workspaces`: list every registered workspace in the machine registry.
+/// Wire parameters for the `workspace` tool.
+///
+/// Only `mode` is always required. `repo_id` and `name` apply to a subset of the modes and are
+/// rejected — not ignored — when passed to a mode that has no use for them (see
+/// [`super::mode::reject_unsupported`]); the modes that need them name the missing pair instead.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct WorkspaceParams {
+    /// Which operation to run.
+    pub mode: WorkspaceMode,
+    /// Required by `worktrees`, `branches`, `claim` and `release`; rejected by `workspaces`. The
+    /// repo id is a normalized remote URL, else `path:<root>` — run mode `workspaces` to see the
+    /// known ids.
+    #[serde(default)]
+    pub repo_id: Option<String>,
+    /// Required by `claim` and `release`; rejected by the list modes. The worktree name is `(main)`
+    /// for the primary checkout, else the linked-worktree directory name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Every mode. Optional sub-identity to act as; defaults to the server's own agent. Lets one
+    /// orchestrator drive many named subagents, each claiming worktrees under its own identity.
+    #[serde(default)]
+    pub as_agent: Option<String>,
+}
+
+/// Params for mode `workspaces`: list every registered workspace in the machine registry.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorkspacesParams {
     /// Optional sub-identity to act as; defaults to the server's own agent. Lets one orchestrator
@@ -20,7 +49,7 @@ pub struct WorkspacesParams {
     pub as_agent: Option<String>,
 }
 
-/// One workspace row in a `workspaces` response.
+/// One workspace row in a mode-`workspaces` response.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspaceDto {
     /// Stable workspace key (blake3 of the canonical root); also the cache-dir identity.
@@ -55,7 +84,7 @@ impl From<&WorkspaceRecord> for WorkspaceDto {
     }
 }
 
-/// Response for `workspaces`.
+/// Response for mode `workspaces`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorkspacesResponse {
     /// Number of workspaces returned.
@@ -64,7 +93,7 @@ pub(super) struct WorkspacesResponse {
     pub workspaces: Vec<WorkspaceDto>,
 }
 
-/// Params for `worktrees`: list the worktrees of a registered repo.
+/// Params for mode `worktrees`: list the worktrees of a registered repo.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorktreesParams {
     /// The repo id (normalized remote URL or `path:<root>`) whose worktrees to list.
@@ -74,7 +103,7 @@ pub struct WorktreesParams {
     pub as_agent: Option<String>,
 }
 
-/// One worktree row in a `worktrees` response.
+/// One worktree row in a mode-`worktrees` response.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreeDto {
     /// Owning repo id.
@@ -113,7 +142,7 @@ impl From<&WorktreeRecord> for WorktreeDto {
     }
 }
 
-/// Response for `worktrees`.
+/// Response for mode `worktrees`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreesResponse {
     /// The repo id queried.
@@ -124,7 +153,7 @@ pub(super) struct WorktreesResponse {
     pub worktrees: Vec<WorktreeDto>,
 }
 
-/// Params for `branches`: list the local branches of a registered repo.
+/// Params for mode `branches`: list the local branches of a registered repo.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct BranchesParams {
     /// The repo id whose branches to list.
@@ -134,7 +163,7 @@ pub struct BranchesParams {
     pub as_agent: Option<String>,
 }
 
-/// One branch row in a `branches` response.
+/// One branch row in a mode-`branches` response.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct BranchDto {
     /// Owning repo id.
@@ -158,7 +187,7 @@ impl From<&BranchRecord> for BranchDto {
     }
 }
 
-/// Response for `branches`.
+/// Response for mode `branches`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct BranchesResponse {
     /// The repo id queried.
@@ -169,7 +198,7 @@ pub(super) struct BranchesResponse {
     pub branches: Vec<BranchDto>,
 }
 
-/// Params for `worktree_claim`: advisory-claim a worktree.
+/// Params for mode `claim`: advisory-claim a worktree.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorktreeClaimParams {
     /// The owning repo id.
@@ -181,7 +210,7 @@ pub struct WorktreeClaimParams {
     pub as_agent: Option<String>,
 }
 
-/// Params for `worktree_release`: release an advisory worktree claim.
+/// Params for mode `release`: release an advisory worktree claim.
 #[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct WorktreeReleaseParams {
     /// The owning repo id.
@@ -193,7 +222,7 @@ pub struct WorktreeReleaseParams {
     pub as_agent: Option<String>,
 }
 
-/// Response for `worktree_claim` / `worktree_release`.
+/// Response for modes `claim` / `release`.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct WorktreeClaimResponse {
     /// The owning repo id.

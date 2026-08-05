@@ -44,6 +44,7 @@ mod helpers_graphview;
 mod helpers_grep;
 mod helpers_impls;
 mod helpers_intel;
+mod helpers_memory;
 #[cfg(feature = "memory")]
 mod helpers_proposals;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -89,7 +90,6 @@ mod tools_comms;
 mod tools_community;
 mod tools_compress;
 mod tools_git;
-mod tools_governance;
 mod tools_graphview;
 mod tools_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -154,6 +154,7 @@ pub mod params {
 
     pub(crate) use super::lenient::Lenient;
 
+    pub use super::mode::AdminMode;
     pub use super::mode::WebMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
@@ -162,7 +163,7 @@ pub mod params {
         SearchDocumentsParams, SearchGitHistoryParams, SearchSymbolsParams, StatusParams, SymbolHistoryParams,
         TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
-    pub use super::types_admin::{CacheClearParams, CacheGcParams, CacheStatsParams};
+    pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
     pub use super::types_archmap::ArchitectureMapParams;
     pub use super::types_code::{GetChunkParams, SearchCodeParams};
     pub use super::types_community::CommunitiesParams;
@@ -429,7 +430,6 @@ impl BasemindServer {
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()
-            + Self::tool_router_governance()
             + Self::tool_router_admin()
             + Self::tool_router_compress();
         #[cfg(feature = "crawl")]

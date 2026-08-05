@@ -187,9 +187,10 @@ impl ServerHandler for BasemindServer {
              instead of grepping call sites; workspace_grep instead of ripgrep; find_files to \
              locate a file from a name fragment; the git tools (recent_changes, blame_file, \
              blame_symbol, diff_file, commits_touching) instead of git log or git blame; \
-             search_documents instead of opening PDFs and docs; the web tool (modes scrape, crawl, map) \
-             for the web. Do not re-read a file basemind already mapped. Run rescan after edits \
-             instead of reconnecting; if a tool reports no indexed files, run basemind scan first.\n\
+             memory mode documents instead of opening PDFs and docs; web modes scrape, crawl and map \
+             for the web. Do not re-read a file basemind already mapped. Run admin mode rescan after \
+             edits instead of reconnecting; if a tool reports no indexed files, run basemind scan \
+             first.\n\
              You may be one of several agents in this repo, so coordinate rather than assuming you \
              are alone. Coordination runs over threads: scoped conversations addressed by at least \
              two of subject, path-glob, and members, discovered by scope and never globally, and \

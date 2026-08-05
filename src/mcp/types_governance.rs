@@ -1,13 +1,11 @@
-//! Request / response shapes for the governance MCP tools (`memory_audit`, `proposals_mine`,
-//! `proposals_list`, `proposal_accept`, `proposal_reject`).
+//! Internal request / response shapes for the governance modes of the `memory` domain tool
+//! (`audit`, `mine`, `proposals`, `accept`, `reject`).
 //!
-//! Param structs are always compiled so the `not_enabled` fallback in `tools_governance.rs` can
-//! deserialize params regardless of the feature gate. The response/view structs
-//! (`MemoryAuditResponse`, `AuditResult`, `ProposalEntry`, `Proposals*Response`, `Proposal*Response`)
-//! are also always compiled so each tool can advertise a SEP-2106 `output_schema` even in a build
-//! without the `memory` feature — they carry only plain fields, so nothing behind the gate leaks in.
-//! The blob-record + internal types (`ProposalRecord`, `AuditVerdict`, `VerifyState`) stay
-//! `#[cfg(feature = "memory")]`-gated.
+//! The param structs are no longer wire types — the wire shape is the flat
+//! [`MemoryParams`](super::types_memory::MemoryParams) — but they stay the helpers' argument
+//! shapes, and stay always-compiled because `src/mcp/mod.rs` re-exports them unconditionally for
+//! the in-process CLI. Everything only the gated helpers construct — the responses, the blob record
+//! and the internal verdict — is `#[cfg(feature = "memory")]`-gated.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
@@ -15,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use super::cursor::Cursor;
 use super::types_memory::Visibility;
 
-/// Parameters for the `memory_audit` tool. All fields default so an empty `{}` call
+/// Arguments for `memory` mode `audit`. All fields default so a bare `{mode:"audit"}` call
 /// runs a full group-scope audit with a limit of 100.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct MemoryAuditParams {
@@ -38,6 +36,7 @@ pub struct MemoryAuditParams {
 }
 
 /// Per-record audit outcome.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct AuditResult {
     /// The memory key.
@@ -52,7 +51,8 @@ pub(super) struct AuditResult {
     pub archived: bool,
 }
 
-/// Response from `memory_audit`.
+/// Response from `memory` mode `audit`.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct MemoryAuditResponse {
     /// Number of records examined.
@@ -103,7 +103,7 @@ pub struct ProposalRecord {
     pub created_at: i64,
 }
 
-/// Parameters for `proposals_mine`. All thresholds are optional with sensible defaults.
+/// Arguments for `memory` mode `mine`. All thresholds are optional with sensible defaults.
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ProposalsMineParams {
     /// Number of recent commits to inspect (default 200, max 2000).
@@ -121,7 +121,7 @@ pub struct ProposalsMineParams {
     pub max_files_per_commit: Option<u32>,
 }
 
-/// Parameters for `proposals_list`. Paginates via Fjall-backed cursors (stable across rescans).
+/// Arguments for `memory` mode `proposals`. Paginates via Fjall-backed cursors (stable across rescans).
 #[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ProposalsListParams {
     /// Filter by proposal kind: `"skill"` or `"memory"`. Omit for all non-tombstone proposals.
@@ -135,28 +135,29 @@ pub struct ProposalsListParams {
     pub cursor: Option<Cursor>,
 }
 
-/// Parameters for `proposal_accept`. Promotes the proposal to a searchable skill memory.
+/// Arguments for `memory` mode `accept`. Promotes the proposal to a searchable skill memory.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ProposalAcceptParams {
-    /// The proposal id (hex blake3 of the sorted file-set), as returned by `proposals_list`.
+    /// The proposal id (hex blake3 of the sorted file-set), as returned by mode `proposals`.
     pub id: String,
     /// Override the auto-derived memory key. Default: `"skill/cochange-<short_id>"`.
     #[serde(default)]
     pub key: Option<String>,
 }
 
-/// Parameters for `proposal_reject`. Deletes the proposal and writes a tombstone so
+/// Arguments for `memory` mode `reject`. Deletes the proposal and writes a tombstone so
 /// re-mining will not resurface the same candidate.
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct ProposalRejectParams {
-    /// The proposal id, as returned by `proposals_list`.
+    /// The proposal id, as returned by mode `proposals`.
     pub id: String,
     /// Optional human-readable reason (stored only in logs; not persisted).
     #[serde(default)]
     pub reason: Option<String>,
 }
 
-/// One entry in the `proposals_list` response.
+/// One entry in the mode `proposals` response.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalEntry {
     pub id: String,
@@ -170,7 +171,8 @@ pub(super) struct ProposalEntry {
     pub created_at: i64,
 }
 
-/// Response from `proposals_mine`.
+/// Response from `memory` mode `mine`.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalsMineResponse {
     /// Number of new proposals written (existing proposals for the same candidate are overwritten).
@@ -181,7 +183,8 @@ pub(super) struct ProposalsMineResponse {
     pub skipped_bulk: u32,
 }
 
-/// Response from `proposals_list`.
+/// Response from `memory` mode `proposals`.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalsListResponse {
     pub total: usize,
@@ -191,7 +194,8 @@ pub(super) struct ProposalsListResponse {
     pub next_cursor: Option<Cursor>,
 }
 
-/// Response from `proposal_accept`.
+/// Response from `memory` mode `accept`.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalAcceptResponse {
     pub accepted: bool,
@@ -199,7 +203,8 @@ pub(super) struct ProposalAcceptResponse {
     pub memory_key: String,
 }
 
-/// Response from `proposal_reject`.
+/// Response from `memory` mode `reject`.
+#[cfg(feature = "memory")]
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(super) struct ProposalRejectResponse {
     pub rejected: bool,

@@ -206,7 +206,7 @@ async fn concurrent_search_and_rescan() {
     let task_b = tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         let result = peer_b
-            .call_tool(call_params("rescan", json!({})))
+            .call_tool(call_params("admin", json!({ "mode": "rescan" })))
             .await
             .expect("rescan call");
         let body = decode_text(&result);
@@ -248,8 +248,8 @@ async fn parallel_memory_put_and_search() {
         let p = Arc::clone(&peer);
         set.spawn(async move {
             p.call_tool(call_params(
-                "memory_put",
-                json!({
+                "memory",
+                json!({ "mode": "put",
                     "key": format!("concurrency_test_k_{n}"),
                     "value": format!("concurrency_test_v_{n}"),
                     "embed": false
@@ -263,8 +263,8 @@ async fn parallel_memory_put_and_search() {
         let p = Arc::clone(&peer);
         set.spawn(async move {
             p.call_tool(call_params(
-                "memory_search",
-                json!({ "query": "concurrency_test", "limit": 10 }),
+                "memory",
+                json!({ "mode": "search",  "query": "concurrency_test", "limit": 10 }),
             ))
             .await
             .unwrap_or_else(|e| panic!("memory_search {n} failed: {e}"));
@@ -280,7 +280,10 @@ async fn parallel_memory_put_and_search() {
     .expect("parallel_memory_put_and_search timed out");
 
     let list_result = peer
-        .call_tool(call_params("memory_list", json!({ "prefix": "concurrency_test_k_" })))
+        .call_tool(call_params(
+            "memory",
+            json!({ "mode": "list",  "prefix": "concurrency_test_k_" }),
+        ))
         .await
         .expect("memory_list");
     let body = decode_text(&list_result);
@@ -368,8 +371,8 @@ async fn concurrent_same_key_put_preserves_created_at() {
 
     let seed = peer
         .call_tool(call_params(
-            "memory_put",
-            json!({ "key": KEY, "value": "seed", "embed": false }),
+            "memory",
+            json!({ "mode": "put",  "key": KEY, "value": "seed", "embed": false }),
         ))
         .await
         .expect("seed memory_put");
@@ -387,8 +390,8 @@ async fn concurrent_same_key_put_preserves_created_at() {
         set.spawn(async move {
             let result = p
                 .call_tool(call_params(
-                    "memory_put",
-                    json!({ "key": KEY, "value": format!("v{n}"), "embed": false }),
+                    "memory",
+                    json!({ "mode": "put",  "key": KEY, "value": format!("v{n}"), "embed": false }),
                 ))
                 .await
                 .unwrap_or_else(|e| panic!("memory_put {n} failed: {e}"));
@@ -412,7 +415,7 @@ async fn concurrent_same_key_put_preserves_created_at() {
     .expect("concurrent_same_key_put timed out after 60 s");
 
     let get_result = peer
-        .call_tool(call_params("memory_get", json!({ "key": KEY })))
+        .call_tool(call_params("memory", json!({ "mode": "get",  "key": KEY })))
         .await
         .expect("memory_get");
     let body = decode_text(&get_result);
@@ -612,7 +615,7 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
     let peer_a = serve_a.peer().clone();
 
     let rescan = peer_a
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan" })))
         .await
         .expect("rescan A forwarded to daemon");
     let scanned = decode_text(&rescan)
@@ -646,7 +649,7 @@ async fn daemon_writer_serve_forwards_rescan_and_sees_fresh_symbols() {
         "serve B reads 'Beta' from the shared index: {names_b:?}"
     );
     let rescan_b = peer_b
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan" })))
         .await
         .expect("rescan B also forwards + succeeds");
     let scanned_b = decode_text(&rescan_b)
@@ -696,7 +699,7 @@ async fn daemon_writer_serve_resolves_cross_file_callers_through_the_daemon() {
     let peer = serve.peer().clone();
 
     let rescan = peer
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan" })))
         .await
         .expect("rescan forwarded to daemon");
     let scanned = decode_text(&rescan).get("scanned").and_then(Value::as_u64).unwrap_or(0);
@@ -755,7 +758,7 @@ async fn daemon_writer_serve_resolves_cross_file_python_callers_through_the_daem
     let peer = serve.peer().clone();
 
     let rescan = peer
-        .call_tool(call_params("rescan", json!({})))
+        .call_tool(call_params("admin", json!({ "mode": "rescan" })))
         .await
         .expect("rescan forwarded to daemon");
     let scanned = decode_text(&rescan).get("scanned").and_then(Value::as_u64).unwrap_or(0);

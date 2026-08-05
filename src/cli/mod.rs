@@ -19,7 +19,6 @@ pub mod comms;
 pub mod comms_daemon;
 pub mod context;
 pub mod git;
-pub mod governance;
 pub mod init;
 pub mod init_rules;
 pub mod memory;
@@ -51,29 +50,21 @@ pub enum ToolCmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
-    /// Shared agent memory + document search (needs `--features memory,documents`).
+    /// Shared agent memory, document search, and the co-change proposal queue
+    /// (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(memory::MemoryCmd),
-    /// Governance: mine co-change proposals, list, accept, reject (needs `--features memory`).
-    #[command(subcommand)]
-    Governance(governance::GovernanceCmd),
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(web::WebCmd),
+    /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
+    #[command(subcommand)]
+    Admin(admin::AdminCmd),
     /// Headless agent shells: spawn / send / capture / kill / broadcast / list
     /// (needs `--features shells`).
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
     Shells(shells::ShellsCmd),
-    /// Aggregate telemetry into a usage summary.
-    Telemetry {
-        /// Aggregation window: `today` (default), `1h`, `24h`, `all`.
-        #[arg(long)]
-        window: Option<String>,
-        /// Optional exact tool-name filter.
-        #[arg(long)]
-        tool: Option<String>,
-    },
 }
 
 /// Map a tool `Result<CallToolResult, McpError>` into an `anyhow::Result`,
@@ -121,11 +112,10 @@ pub fn run(
             ToolCmd::Query(q) => codemap::run(&server, q, &opts, &mut out).await?,
             ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
-            ToolCmd::Governance(g) => governance::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
+            ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,
             #[cfg(all(feature = "shells", any(unix, windows)))]
             ToolCmd::Shells(s) => shells::run(&server, s, &opts, &mut out).await?,
-            ToolCmd::Telemetry { window, tool } => admin::run_telemetry(&server, window, tool, &opts, &mut out).await?,
         }
         out.flush().context("flush stdout")?;
         Ok(())

@@ -76,9 +76,6 @@ enum Cmd {
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
-    /// Governance: mine co-change proposals, list, accept, reject (needs `--features memory`).
-    #[command(subcommand)]
-    Governance(basemind::cli::governance::GovernanceCmd),
     /// On-demand web ingestion (needs `--features crawl`).
     #[command(subcommand)]
     Web(basemind::cli::web::WebCmd),
@@ -87,15 +84,9 @@ enum Cmd {
     #[cfg(all(feature = "shells", any(unix, windows)))]
     #[command(subcommand)]
     Shells(basemind::cli::shells::ShellsCmd),
-    /// Aggregate telemetry into a usage summary.
-    Telemetry {
-        /// Aggregation window: `today` (default), `1h`, `24h`, `all`.
-        #[arg(long)]
-        window: Option<String>,
-        /// Optional exact tool-name filter.
-        #[arg(long)]
-        tool: Option<String>,
-    },
+    /// Server + cache administration: status, repo, rescan, caches, telemetry, compression.
+    #[command(subcommand)]
+    Admin(basemind::cli::admin::AdminCmd),
     /// Install a pre-commit hook that runs `basemind scan --staged`.
     Hook {
         #[command(subcommand)]
@@ -142,9 +133,9 @@ enum Cmd {
     /// Machine-registry coordination: workspaces / worktrees / branches / advisory claims (needs
     /// `--features comms`). Talks to the broker daemon directly, like `comms`.
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    Registry {
+    Workspace {
         #[command(subcommand)]
-        action: basemind::cli::registry::RegistryCmd,
+        action: basemind::cli::registry::WorkspaceCmd,
     },
     /// Manage the daemon that hosts the streamable-HTTP MCP transport (needs `--features comms`).
     #[cfg(all(feature = "comms", any(unix, windows)))]
@@ -361,11 +352,10 @@ fn main() -> Result<()> {
         }
         Cmd::Git(g) => dispatch(basemind::cli::ToolCmd::Git(g)),
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
-        Cmd::Governance(g) => dispatch(basemind::cli::ToolCmd::Governance(g)),
         Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
         #[cfg(all(feature = "shells", any(unix, windows)))]
         Cmd::Shells(s) => dispatch(basemind::cli::ToolCmd::Shells(s)),
-        Cmd::Telemetry { window, tool } => dispatch(basemind::cli::ToolCmd::Telemetry { window, tool }),
+        Cmd::Admin(a) => dispatch(basemind::cli::ToolCmd::Admin(a)),
         Cmd::Hook { action } => match action {
             HookCmd::Install => cmd_hook_install(&root),
         },
@@ -388,7 +378,7 @@ fn main() -> Result<()> {
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Comms { action } => comms_cli::cmd_comms(&root, action, json),
         #[cfg(all(feature = "comms", any(unix, windows)))]
-        Cmd::Registry { action } => basemind::cli::registry::run(&root, json, action),
+        Cmd::Workspace { action } => basemind::cli::registry::run(&root, json, action),
         #[cfg(all(feature = "comms", any(unix, windows)))]
         Cmd::Daemon { action } => comms_cli::cmd_daemon(action, json),
     }
@@ -401,16 +391,10 @@ fn main() -> Result<()> {
 fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = matches!(
         cmd,
-        Cmd::Query(_)
-            | Cmd::Git(_)
-            | Cmd::Memory(_)
-            | Cmd::Governance(_)
-            | Cmd::Web(_)
-            | Cmd::Telemetry { .. }
-            | Cmd::Cache(_)
+        Cmd::Query(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Web(_) | Cmd::Admin(_) | Cmd::Cache(_)
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
-    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Registry { .. } | Cmd::Daemon { .. });
+    let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. });
     #[cfg(all(feature = "shells", any(unix, windows)))]
     let consumes_json = consumes_json || matches!(cmd, Cmd::Shells(_));
     let consumes_view = consumes_json || matches!(cmd, Cmd::Serve(_));

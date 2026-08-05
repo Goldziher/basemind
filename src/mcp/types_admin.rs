@@ -1,12 +1,104 @@
-//! Param and response types for the cache admin MCP tools (`cache_stats`,
-//! `cache_gc`, `cache_clear`).
+//! Request + response shapes for the consolidated `admin` domain tool.
 //!
-//! Split out of `types.rs` to keep that file under the 1000-line cap. The
-//! response structs mirror the `store_gc` layer's `Serialize`-only structs and
-//! add the `JsonSchema` derive the MCP surface requires.
+//! [`AdminParams`] is what crosses the wire: one flat parameter object with a required
+//! [`AdminMode`] selecting the operation and every per-mode field an optional sibling. The
+//! per-operation structs below (`CacheStatsParams`, `CacheClearParams`, …) stay as the helpers'
+//! internal shapes, so the bodies keep taking exactly the arguments they always did.
+//!
+//! Split out of `types.rs` to keep that file under the 1000-line cap. The response structs mirror
+//! the `store_gc` layer's `Serialize`-only structs and add the `JsonSchema` derive the MCP surface
+//! requires.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
+
+use super::mode::AdminMode;
+use crate::path::RelPath;
+
+/// Wire parameters for the `admin` tool.
+///
+/// Only `mode` is required. Every other field belongs to one or two modes and is rejected — not
+/// ignored — when passed to a mode that has no use for it (see [`super::mode::reject_unsupported`]);
+/// a mode that needs one names the missing field.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct AdminParams {
+    /// Which operation to run.
+    pub mode: AdminMode,
+    /// `rescan` only. Repo-relative paths to re-index incrementally. Omit to walk the whole
+    /// working tree. Forward-slash, no leading `/`.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    /// `rescan` only. Force a complete working-tree re-index even when `paths` is supplied
+    /// (full wins). Use when the index is stale or reports "no indexed files".
+    #[serde(default)]
+    pub full: Option<bool>,
+    /// `telemetry` only. Aggregation window: `today` (default), `1h`, `24h`, `all`.
+    #[serde(default)]
+    pub window: Option<String>,
+    /// `telemetry` only. Exact tool-name filter, e.g. `"code"` or `"admin:rescan"`.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// `cache_clear` only. Component to clear: `blobs|views|lance|git-cache|telemetry|all`, or
+    /// `views:<name>` for a single non-live view. Required by that mode.
+    #[serde(default)]
+    pub component: Option<String>,
+    /// `cache_clear` only. Required gate for the destructive components that back the live code
+    /// map. Ignored for the non-live caches.
+    #[serde(default)]
+    pub confirm: Option<bool>,
+    /// `compress` (prose input) and `checkpoint` (session transcript). Required by `checkpoint`;
+    /// `compress` takes exactly one of `text` or `path`.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// `compress` only. Repo-relative path of an indexed source file to compress structurally.
+    /// Mutually exclusive with `text`.
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// `compress` only. Reduction intensity: `off|light|moderate|aggressive|maximum`.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// `compress` only. When true (the default), code blocks inside prose are left intact.
+    #[serde(default)]
+    pub preserve_code: Option<bool>,
+    /// `compress` only. Soft token budget hint, echoed back; it does not hard-cap the output.
+    #[serde(default)]
+    pub target_tokens: Option<u32>,
+    /// `delta` only. Previously seen content. Required by that mode.
+    #[serde(default)]
+    pub old: Option<String>,
+    /// `delta` only. Current content to diff against `old`. Required by that mode.
+    #[serde(default)]
+    pub new: Option<String>,
+    /// `waste` only. JSON-Lines tool-call log, one `{"tool","target","bytes"}` record per line.
+    /// Required by that mode.
+    #[serde(default)]
+    pub log: Option<String>,
+}
+
+impl AdminParams {
+    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
+    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
+    /// would fail the call.
+    pub fn new(mode: AdminMode) -> Self {
+        Self {
+            mode,
+            paths: None,
+            full: None,
+            window: None,
+            tool: None,
+            component: None,
+            confirm: None,
+            text: None,
+            path: None,
+            level: None,
+            preserve_code: None,
+            target_tokens: None,
+            old: None,
+            new: None,
+            log: None,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CacheStatsParams {}

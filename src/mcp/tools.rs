@@ -3,8 +3,6 @@
 //! Every `#[tool]`-annotated method below becomes a dispatchable MCP tool. Helpers live
 //! in `super::helpers`; param/response shapes in `super::types`.
 
-use std::collections::BTreeMap;
-
 use rmcp::ErrorData as McpError;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
@@ -397,127 +395,6 @@ impl BasemindServer {
         __result
     }
 
-    /// High-level repo + cache state.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::StatusResponse>()",
-        description = "Indexed-repo report: file count, on-disk `blob_count`, total bytes, \
-                       per-language breakdown, root path, grammar cache directory, schema \
-                       version. A `note` appears when the view index is empty but blobs exist \
-                       (lost index — rescan). \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn status(&self, Parameters(_): Parameters<StatusParams>) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = Value::Null;
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            let indexing = self
-                .state
-                .shared
-                .initial_scan_active
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let index_build_ms = {
-                let ms = self
-                    .state
-                    .shared
-                    .initial_scan_ms
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                (ms > 0).then_some(ms)
-            };
-            let warming = self
-                .state
-                .shared
-                .cache_warming
-                .load(std::sync::atomic::Ordering::Relaxed);
-            let warm_ms = {
-                let ms = self
-                    .state
-                    .shared
-                    .cache_warm_ms
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                (ms > 0).then_some(ms)
-            };
-            let notice = self.state.lifecycle_notice();
-            let store = match self.state.shared.store.try_read() {
-                Ok(store) => store,
-                Err(_) => {
-                    return json_result(&StatusResponse {
-                        file_count: 0,
-                        blob_count: count_fm_blobs(),
-                        note: Some(
-                            "a rebuild is in progress (another basemind process holds the store \
-                             lock); index counts are unavailable until it completes"
-                                .to_string(),
-                        ),
-                        rebuild_in_progress: true,
-                        indexing,
-                        index_build_ms,
-                        warming,
-                        warm_ms,
-                        notice,
-                        total_size_bytes: 0,
-                        languages: BTreeMap::new(),
-                        cache_dir: crate::lang::grammar_cache_dir()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| "(unresolved)".to_string()),
-                        schema_version: crate::extract::SCHEMA_VER,
-                        root: self.state.shared.root.display().to_string(),
-                        submodules: self
-                            .state
-                            .shared
-                            .repo
-                            .as_ref()
-                            .map(|r| r.submodule_paths())
-                            .unwrap_or_default(),
-                        elapsed_us: elapsed_us(__body),
-                    });
-                }
-            };
-            let mut by_lang_ref: BTreeMap<&str, usize> = BTreeMap::new();
-            let mut total_size: u64 = 0;
-            for entry in store.index.files.values() {
-                *by_lang_ref.entry(entry.language.as_str()).or_insert(0) += 1;
-                total_size = total_size.saturating_add(entry.size_bytes);
-            }
-            let by_lang: BTreeMap<String, usize> = by_lang_ref.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-            let cache_dir = crate::lang::grammar_cache_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "(unresolved)".to_string());
-            let submodules = self
-                .state
-                .shared
-                .repo
-                .as_ref()
-                .map(|r| r.submodule_paths())
-                .unwrap_or_default();
-            let file_count = store.index.files.len();
-            let blob_count = count_fm_blobs();
-            let note = blob_divergence_note(file_count, blob_count);
-            json_result(&StatusResponse {
-                file_count,
-                blob_count,
-                note,
-                rebuild_in_progress: false,
-                indexing,
-                index_build_ms,
-                warming,
-                warm_ms,
-                notice,
-                total_size_bytes: total_size,
-                languages: by_lang,
-                cache_dir,
-                schema_version: crate::extract::SCHEMA_VER,
-                root: self.state.shared.root.display().to_string(),
-                submodules,
-                elapsed_us: elapsed_us(__body),
-            })
-        }
-        .await;
-        record_call(&self.state, "status", &__params_json, __started, &__result);
-        __result
-    }
-
     /// Incoming call sites for any callee whose identifier contains `name`.
     #[tool(
         output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::FindReferencesResponse>()",
@@ -757,39 +634,6 @@ impl BasemindServer {
         }
         .await;
         record_call(&self.state, "call_graph", &__params_json, __started, &__result);
-        __result
-    }
-
-    /// Workdir + branch + HEAD sha.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types::RepoInfoResponse>()",
-        description = "Repository identity: workdir path, current branch (if HEAD is on one), full \
-                       + short HEAD sha. Pairs with `working_tree_status`. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn repo_info(
-        &self,
-        Parameters(_): Parameters<RepoInfoParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = Value::Null;
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            let repo = require_git_repo(&self.state)?;
-            let info = repo
-                .info()
-                .map_err(|e| McpError::internal_error(format!("repo info: {e}"), None))?;
-            json_result(&RepoInfoResponse {
-                workdir: info.workdir.display().to_string(),
-                head_sha: info.head_sha,
-                head_short_sha: info.head_short_sha,
-                branch: info.branch,
-                elapsed_us: elapsed_us(__body),
-            })
-        }
-        .await;
-        record_call(&self.state, "repo_info", &__params_json, __started, &__result);
         __result
     }
 }
