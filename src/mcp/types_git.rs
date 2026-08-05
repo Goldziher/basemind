@@ -1,14 +1,125 @@
-//! Request/response shapes for the git-context tools (`working_tree_status`, `recent_changes`,
-//! `commits_touching`, `find_commits_by_path`, `hot_files`, `diff_file`, `diff_outline`,
-//! `blame_file`, `blame_symbol`, `symbol_history`). Split out of `types.rs` to keep both files
-//! within the per-file size budget; the public paths stay stable via re-exports in `types.rs`.
+//! Request/response shapes for the consolidated `git` domain tool.
+//!
+//! [`GitParams`] is what crosses the wire: one flat parameter object with a required [`GitMode`]
+//! selecting the operation and every per-mode field an optional sibling. The per-operation structs
+//! below (`RecentChangesParams`, `BlameFileParams`, …) stay as the helpers' internal shapes, so the
+//! bodies keep taking exactly the arguments they always did.
+//!
+//! Split out of `types.rs` to keep both files within the per-file size budget; the public paths stay
+//! stable via re-exports in `types.rs`.
 
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use super::cursor::Cursor;
+use super::mode::GitMode;
 use super::types::default_true;
 use crate::path::RelPath;
+
+/// Wire parameters for the `git` tool.
+///
+/// Only `mode` is required. Every other field belongs to one or more modes and is rejected — not
+/// ignored — when passed to a mode that has no use for it (see [`super::mode::reject_unsupported`]);
+/// a mode that cannot run without one names the exact `mode`/field pair.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GitParams {
+    /// Which operation to run.
+    pub mode: GitMode,
+    /// `touching`, `diff`, `diff_outline`, `blame`, `blame_symbol`, `symbol_history`. Repository-
+    /// relative path (forward-slash, no leading `/`). Required by each of those modes.
+    #[serde(default)]
+    pub path: Option<RelPath>,
+    /// `by_path` — a regular expression matched against each commit's changed **file paths**; and
+    /// `search` — a full-text query over commit author + message, tokenized (lowercased, split on
+    /// non-alphanumeric) and matched as an AND. Required by both modes.
+    #[serde(
+        default,
+        alias = "query",
+        alias = "needle",
+        alias = "regex",
+        alias = "q",
+        alias = "search"
+    )]
+    pub pattern: Option<String>,
+    /// `search` only. Field to scope the query to: `author` (name + email), `message` (summary +
+    /// body), or `all` (default). `summary` / `body` are accepted as aliases for `message`.
+    #[serde(default)]
+    pub field: Option<String>,
+    /// `blame_symbol` and `symbol_history`. Name of the symbol to resolve in `path`. Required by
+    /// both modes.
+    #[serde(default, alias = "symbol")]
+    pub name: Option<String>,
+    /// `blame_symbol` and `symbol_history`. Symbol-kind filter that disambiguates same-named
+    /// symbols (`function`, `struct`, `class`, …).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// `recent`, `touching`, `by_path`, `search`, `blame`, `blame_symbol`, `symbol_history`. Page
+    /// size; the default and cap differ per mode (see the tool description).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// `recent`, `touching`, `by_path`, `search`, `blame`, `blame_symbol`, `symbol_history`. Resume
+    /// token returned by the previous call's `next_cursor`.
+    #[serde(default)]
+    pub cursor: Option<Cursor>,
+    /// `recent` only. Include each commit's per-file change list. Default true.
+    #[serde(default)]
+    pub include_files: Option<bool>,
+    /// `churn` only. How many files to keep in the churn ranking. Default 20, max 200.
+    #[serde(default)]
+    pub top_k: Option<u32>,
+    /// `by_path` and `churn`. How many commits back from HEAD to inspect before filtering
+    /// (`by_path` default 200 / max 1000; `churn` default 200 / max 2000).
+    #[serde(default)]
+    pub window: Option<u32>,
+    /// `diff_outline`, `blame`, `blame_symbol`. Revision to read at. Defaults to HEAD.
+    #[serde(default)]
+    pub rev: Option<String>,
+    /// `diff` only. Left-hand revision. Required by that mode.
+    #[serde(default)]
+    pub rev_old: Option<String>,
+    /// `diff` only. Right-hand revision. Required by that mode.
+    #[serde(default)]
+    pub rev_new: Option<String>,
+    /// `blame` only. 1-based first line of the range to blame. Must be supplied together with
+    /// `line_end`.
+    #[serde(default)]
+    pub line_start: Option<u32>,
+    /// `blame` only. 1-based last line (inclusive) of the range to blame. Must be supplied together
+    /// with `line_start`.
+    #[serde(default)]
+    pub line_end: Option<u32>,
+    /// `symbol_history` only. Fingerprint strategy for detecting body changes between commits:
+    /// `normalized` (default), `structural`, or `structural_loose`.
+    #[serde(default)]
+    pub hash_mode: Option<String>,
+}
+
+impl GitParams {
+    /// A call carrying only `mode`. Callers set the fields their mode uses and leave the rest
+    /// `None`: the helper rejects a field belonging to another mode, so populating them blindly
+    /// would fail the call.
+    pub fn new(mode: GitMode) -> Self {
+        Self {
+            mode,
+            path: None,
+            pattern: None,
+            field: None,
+            name: None,
+            kind: None,
+            limit: None,
+            cursor: None,
+            include_files: None,
+            top_k: None,
+            window: None,
+            rev: None,
+            rev_old: None,
+            rev_new: None,
+            line_start: None,
+            line_end: None,
+            hash_mode: None,
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SearchGitHistoryParams {

@@ -141,8 +141,9 @@ async fn parallel_symbol_history_same_symbol() {
         let hash_mode = if i < 4 { "normalized" } else { "structural" };
         set.spawn(async move {
             p.call_tool(call_params(
-                "symbol_history",
+                "git",
                 json!({
+                    "mode": "symbol_history",
                     "path": "a.rs",
                     "name": "alpha",
                     "limit": 10,
@@ -318,7 +319,7 @@ async fn parallel_blame_same_file() {
     for i in 0_u8..4 {
         let p = Arc::clone(&peer);
         set.spawn(async move {
-            p.call_tool(call_params("blame_file", json!({ "path": "a.rs" })))
+            p.call_tool(call_params("git", json!({ "mode": "blame", "path": "a.rs" })))
                 .await
                 .unwrap_or_else(|error| panic!("blame_file task {i} failed: {error}"))
         });
@@ -492,8 +493,8 @@ async fn second_session_resolves_call_graph_and_impls_from_blobs() {
 
     let cg = peer2
         .call_tool(call_params(
-            "call_graph",
-            json!({ "name": "alpha", "direction": "callers" }),
+            "graph",
+            json!({ "mode": "calls", "name": "alpha", "direction": "callers" }),
         ))
         .await
         .expect("call_graph on 2nd session");

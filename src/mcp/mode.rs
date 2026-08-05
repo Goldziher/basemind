@@ -312,6 +312,8 @@ pub fn reject_unsupported(domain: &str, mode: &str, present: &[(&str, bool)]) ->
 pub fn domain_modes() -> Vec<(&'static str, &'static [&'static str])> {
     vec![
         (AdminMode::DOMAIN, AdminMode::ALL_MODES),
+        (GitMode::DOMAIN, GitMode::ALL_MODES),
+        (GraphMode::DOMAIN, GraphMode::ALL_MODES),
         (MemoryMode::DOMAIN, MemoryMode::ALL_MODES),
         #[cfg(feature = "crawl")]
         (WebMode::DOMAIN, WebMode::ALL_MODES),

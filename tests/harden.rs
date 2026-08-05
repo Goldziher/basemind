@@ -329,66 +329,78 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             call(svc, &mut records, "dependents", json!({ "module": module })).await;
         }
 
-        call(svc, &mut records, "working_tree_status", json!({})).await;
+        call(svc, &mut records, "git", json!({ "mode": "status" })).await;
         call(svc, &mut records, "admin", json!({ "mode": "repo" })).await;
         call(
             svc,
             &mut records,
-            "recent_changes",
-            json!({ "limit": 20, "include_files": true }),
+            "git",
+            json!({ "mode": "recent", "limit": 20, "include_files": true }),
         )
         .await;
         call(
             svc,
             &mut records,
-            "commits_touching",
-            json!({ "path": &sample.path, "limit": 10 }),
+            "git",
+            json!({ "mode": "touching", "path": &sample.path, "limit": 10 }),
         )
         .await;
         call(
             svc,
             &mut records,
-            "find_commits_by_path",
-            json!({ "pattern": "\\.md$", "window": 200, "limit": 20 }),
+            "git",
+            json!({ "mode": "by_path", "pattern": "\\.md$", "window": 200, "limit": 20 }),
         )
         .await;
         call(
             svc,
             &mut records,
-            "search_git_history",
-            json!({ "pattern": "fix", "field": "message", "limit": 20 }),
-        )
-        .await;
-        call(svc, &mut records, "hot_files", json!({ "window": 200, "top_k": 20 })).await;
-        call(
-            svc,
-            &mut records,
-            "diff_outline",
-            json!({ "path": &sample.path, "rev": "HEAD" }),
+            "git",
+            json!({ "mode": "search", "pattern": "fix", "field": "message", "limit": 20 }),
         )
         .await;
         call(
             svc,
             &mut records,
-            "diff_file",
-            json!({ "path": &sample.path, "rev_old": "HEAD~1", "rev_new": "HEAD" }),
+            "git",
+            json!({ "mode": "churn", "window": 200, "top_k": 20 }),
         )
         .await;
-        call(svc, &mut records, "blame_file", json!({ "path": &sample.path })).await;
+        call(
+            svc,
+            &mut records,
+            "git",
+            json!({ "mode": "diff_outline", "path": &sample.path, "rev": "HEAD" }),
+        )
+        .await;
+        call(
+            svc,
+            &mut records,
+            "git",
+            json!({ "mode": "diff", "path": &sample.path, "rev_old": "HEAD~1", "rev_new": "HEAD" }),
+        )
+        .await;
+        call(
+            svc,
+            &mut records,
+            "git",
+            json!({ "mode": "blame", "path": &sample.path }),
+        )
+        .await;
 
         if let Some(sym) = &sample.sample_symbol {
             call(
                 svc,
                 &mut records,
-                "blame_symbol",
-                json!({ "path": &sample.path, "name": sym }),
+                "git",
+                json!({ "mode": "blame_symbol", "path": &sample.path, "name": sym }),
             )
             .await;
             call(
                 svc,
                 &mut records,
-                "symbol_history",
-                json!({ "path": &sample.path, "name": sym, "limit": 20 }),
+                "git",
+                json!({ "mode": "symbol_history", "path": &sample.path, "name": sym, "limit": 20 }),
             )
             .await;
             call(
@@ -401,23 +413,29 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
             call(
                 svc,
                 &mut records,
-                "call_graph",
-                json!({ "name": sym, "direction": "callers", "max_depth": 2 }),
+                "graph",
+                json!({ "mode": "calls", "name": sym, "direction": "callers", "max_depth": 2 }),
             )
             .await;
             call(
                 svc,
                 &mut records,
-                "neighbors",
-                json!({ "name": sym, "direction": "both", "depth": 2, "max_nodes": 100 }),
+                "graph",
+                json!({ "mode": "neighbors", "name": sym, "direction": "both", "depth": 2, "max_nodes": 100 }),
             )
             .await;
-            call(svc, &mut records, "path", json!({ "from": sym, "to": sym })).await;
             call(
                 svc,
                 &mut records,
-                "subgraph",
-                json!({ "name": sym, "depth": 2, "max_nodes": 30 }),
+                "graph",
+                json!({ "mode": "path", "from": sym, "to": sym }),
+            )
+            .await;
+            call(
+                svc,
+                &mut records,
+                "graph",
+                json!({ "mode": "subgraph", "name": sym, "depth": 2, "max_nodes": 30 }),
             )
             .await;
         }
@@ -434,16 +452,16 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "communities",
-        json!({ "algorithm": "label_propagation", "edges": "all", "max_communities": 50 }),
+        "graph",
+        json!({ "mode": "communities", "algorithm": "label_propagation", "edges": "all", "max_communities": 50 }),
     )
     .await;
 
     call(
         svc,
         &mut records,
-        "graph_export",
-        json!({ "format": "dot", "edges": "all", "max_nodes": 200 }),
+        "graph",
+        json!({ "mode": "export", "format": "dot", "edges": "all", "max_nodes": 200 }),
     )
     .await;
 
@@ -451,16 +469,16 @@ async fn drive_tools(svc: &ServiceHandle, sample: Option<&SampleFile>) -> Vec<To
     call(
         svc,
         &mut records,
-        "display",
-        json!({ "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
+        "graph",
+        json!({ "mode": "display", "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
     )
     .await;
 
     call(
         svc,
         &mut records,
-        "ui",
-        json!({ "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
+        "graph",
+        json!({ "mode": "open", "format": "html", "edges": "all", "max_nodes": 200, "open": false }),
     )
     .await;
 
@@ -997,20 +1015,13 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
         }
         name if name.ends_with("-shallow") => {
             let mut truncated = false;
-            for tool in ["recent_changes", "blame_file"] {
-                let args = if tool == "blame_file" {
-                    json!({
-                        "path": record
-                            .tools
-                            .iter()
-                            .find(|t| t.tool == "blame_file")
-                            .map(|_| "README.md")
-                            .unwrap_or("README.md")
-                    })
+            for mode in ["recent", "blame"] {
+                let args = if mode == "blame" {
+                    json!({ "mode": mode, "path": "README.md" })
                 } else {
-                    json!({ "limit": 5, "include_files": false })
+                    json!({ "mode": mode, "limit": 5, "include_files": false })
                 };
-                if let Ok(out) = svc.call_tool(call_params(tool, &args)).await {
+                if let Ok(out) = svc.call_tool(call_params("git", &args)).await {
                     let body = decode_text(&out);
                     if body.get("truncated").and_then(Value::as_bool) == Some(true) {
                         truncated = true;
@@ -1065,8 +1076,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "call_graph",
-                    &json!({ "name": "spawn", "direction": "callers", "max_depth": 2, "max_nodes": 500 }),
+                    "graph",
+                    &json!({ "mode": "calls", "name": "spawn", "direction": "callers", "max_depth": 2, "max_nodes": 500 }),
                 ))
                 .await
             {
@@ -1080,8 +1091,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "architecture_map",
-                    &json!({ "granularity": "module", "depth": 2, "max_nodes": 100, "include_churn": false }),
+                    "graph",
+                    &json!({ "mode": "map", "granularity": "module", "depth": 2, "max_nodes": 100, "include_churn": false }),
                 ))
                 .await
             {
@@ -1100,8 +1111,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "architecture_map",
-                    &json!({ "granularity": "module", "depth": 2, "max_nodes": 100, "max_edges": 2000, "edges": "all", "include_churn": false }),
+                    "graph",
+                    &json!({ "mode": "map", "granularity": "module", "depth": 2, "max_nodes": 100, "max_edges": 2000, "edges": "all", "include_churn": false }),
                 ))
                 .await
             {
@@ -1119,8 +1130,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "neighbors",
-                    &json!({ "name": "spawn", "direction": "in", "depth": 2, "edges": "calls", "max_nodes": 200 }),
+                    "graph",
+                    &json!({ "mode": "neighbors", "name": "spawn", "direction": "in", "depth": 2, "edges": "calls", "max_nodes": 200 }),
                 ))
                 .await
             {
@@ -1137,8 +1148,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "communities",
-                    &json!({ "algorithm": "louvain", "edges": "all", "max_communities": 200 }),
+                    "graph",
+                    &json!({ "mode": "communities", "algorithm": "louvain", "edges": "all", "max_communities": 200 }),
                 ))
                 .await
             {
@@ -1148,8 +1159,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "graph_export",
-                    &json!({ "format": "node_link", "edges": "all", "max_nodes": 500 }),
+                    "graph",
+                    &json!({ "mode": "export", "format": "node_link", "edges": "all", "max_nodes": 500 }),
                 ))
                 .await
             {
@@ -1201,8 +1212,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "commits_touching",
-                    &json!({ "path": "django/db/models/query.py", "limit": 100 }),
+                    "git",
+                    &json!({ "mode": "touching", "path": "django/db/models/query.py", "limit": 100 }),
                 ))
                 .await
             {
@@ -1216,8 +1227,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
             }
             if let Ok(out) = svc
                 .call_tool(call_params(
-                    "search_git_history",
-                    &json!({ "pattern": "fixed", "field": "message", "limit": 100 }),
+                    "git",
+                    &json!({ "mode": "search", "pattern": "fixed", "field": "message", "limit": 100 }),
                 ))
                 .await
             {
@@ -1235,8 +1246,8 @@ async fn capture_canaries(svc: &ServiceHandle, repo_name: &str, repo_root: &Path
                     .find(|w| w.chars().all(char::is_alphabetic) && w.len() >= 3)
                 && let Ok(out) = svc
                     .call_tool(call_params(
-                        "search_git_history",
-                        &json!({ "pattern": token, "field": "author", "limit": 100 }),
+                        "git",
+                        &json!({ "mode": "search", "pattern": token, "field": "author", "limit": 100 }),
                     ))
                     .await
             {

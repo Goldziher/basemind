@@ -595,47 +595,6 @@ impl BasemindServer {
         );
         __result
     }
-
-    /// Transitive call-graph walk from a root function.
-    #[tool(
-        output_schema = "rmcp::handler::server::tool::schema_for_output::<super::types_graph::CallGraphResponse>()",
-        description = "BFS the call graph from a function. `direction=\"callers\"` (default) walks \
-                       who calls `name`; `\"callees\"` walks what `name` calls. Returns a DAG \
-                       (`nodes` + `edges_to` indices). Only resolved, in-repo calls are edges: a \
-                       call to an unindexed/external symbol (a library function) carries no node. \
-                       Bounded by `max_depth` (default 3, max 6) \
-                       and `max_nodes` (default 100, max 500). `name` is exact (not substring); \
-                       use `path` to disambiguate overloads. Cycles detected; recursion surfaces \
-                       as a self-edge on the root. \
-                       `elapsed_us` = server-side handler latency in µs (excludes transport).",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    pub(crate) async fn call_graph(
-        &self,
-        Parameters(params): Parameters<CallGraphParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let __started = std::time::Instant::now();
-        let __params_json = serde_json::to_value(&params).unwrap_or(Value::Null);
-        let __result: Result<CallToolResult, McpError> = async {
-            let __body = std::time::Instant::now();
-            self.state.await_cache_ready().await;
-            let store = self.state.shared.store.read().await;
-            let idx = store.index_db.as_ref().cloned();
-            drop(store);
-            let cache = self.state.shared.cache.load_full();
-            run_call_graph(
-                &self.state.shared,
-                idx.as_ref(),
-                params,
-                &cache,
-                self.state.lifecycle_notice(),
-                __body,
-            )
-        }
-        .await;
-        record_call(&self.state, "call_graph", &__params_json, __started, &__result);
-        __result
-    }
 }
 
 /// Resolve the effective `list_files` page limit and report whether the caller's

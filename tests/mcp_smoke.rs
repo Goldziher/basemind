@@ -282,11 +282,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "recent_changes",
-                json!({ "limit": 5, "include_files": true }),
+                "git",
+                json!({ "mode": "recent", "limit": 5, "include_files": true }),
             ))
             .await
-            .expect("recent_changes"),
+            .expect("git recent"),
     );
     let commits = body.get("commits").and_then(Value::as_array).expect("commits");
     assert_eq!(commits.len(), 2, "two commits expected");
@@ -298,11 +298,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "search_git_history",
-                json!({ "pattern": "tweak", "field": "message", "limit": 10 }),
+                "git",
+                json!({ "mode": "search", "pattern": "tweak", "field": "message", "limit": 10 }),
             ))
             .await
-            .expect("search_git_history"),
+            .expect("git search"),
     );
     let hits = body.get("commits").and_then(Value::as_array).expect("commits");
     assert_eq!(hits.len(), 1, "one commit summary contains 'tweak', got {hits:?}");
@@ -316,11 +316,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "search_git_history",
-                json!({ "pattern": "tweak", "field": "author" }),
+                "git",
+                json!({ "mode": "search", "pattern": "tweak", "field": "author" }),
             ))
             .await
-            .expect("search_git_history author scope"),
+            .expect("git search author scope"),
     );
     assert_eq!(
         body.get("commits").and_then(Value::as_array).map(Vec::len),
@@ -330,11 +330,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "search_git_history",
-                json!({ "pattern": "tweak alpha", "field": "all" }),
+                "git",
+                json!({ "mode": "search", "pattern": "tweak alpha", "field": "all" }),
             ))
             .await
-            .expect("search_git_history AND same-commit"),
+            .expect("git search AND same-commit"),
     );
     assert_eq!(
         body.get("commits").and_then(Value::as_array).map(Vec::len),
@@ -344,11 +344,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "search_git_history",
-                json!({ "pattern": "init tweak", "field": "all" }),
+                "git",
+                json!({ "mode": "search", "pattern": "init tweak", "field": "all" }),
             ))
             .await
-            .expect("search_git_history AND cross-commit"),
+            .expect("git search AND cross-commit"),
     );
     assert_eq!(
         body.get("commits").and_then(Value::as_array).map(Vec::len),
@@ -359,11 +359,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "symbol_history",
-                json!({ "path": "a.rs", "name": "alpha", "limit": 10 }),
+                "git",
+                json!({ "mode": "symbol_history", "path": "a.rs", "name": "alpha", "limit": 10 }),
             ))
             .await
-            .expect("symbol_history"),
+            .expect("git symbol_history"),
     );
     let history = body.get("history").and_then(Value::as_array).expect("history");
     let modifieds = history
@@ -383,11 +383,17 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "symbol_history",
-                json!({ "path": "a.rs", "name": "alpha", "limit": 10, "hash_mode": "structural" }),
+                "git",
+                json!({
+                    "mode": "symbol_history",
+                    "path": "a.rs",
+                    "name": "alpha",
+                    "limit": 10,
+                    "hash_mode": "structural"
+                }),
             ))
             .await
-            .expect("symbol_history(structural)"),
+            .expect("git symbol_history(structural)"),
     );
     assert_eq!(
         body.get("hash_mode").and_then(Value::as_str),
@@ -554,11 +560,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "call_graph",
-                json!({ "name": "inner", "direction": "callers", "max_depth": 2 }),
+                "graph",
+                json!({ "mode": "calls", "name": "inner", "direction": "callers", "max_depth": 2 }),
             ))
             .await
-            .expect("call_graph callers"),
+            .expect("graph calls callers"),
     );
     let nodes = body.get("nodes").and_then(Value::as_array).expect("nodes");
     let names: Vec<String> = nodes
@@ -619,11 +625,11 @@ async fn mcp_server_exercises_representative_tools() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "call_graph",
-                json!({ "name": "caller", "direction": "callees", "max_depth": 1 }),
+                "graph",
+                json!({ "mode": "calls", "name": "caller", "direction": "callees", "max_depth": 1 }),
             ))
             .await
-            .expect("call_graph callees"),
+            .expect("graph calls callees"),
     );
     let nodes = body.get("nodes").and_then(Value::as_array).expect("callee nodes");
     let names: Vec<String> = nodes
@@ -647,11 +653,11 @@ async fn mcp_server_exercises_representative_tools() {
     let sym = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({ "granularity": "symbol", "include_churn": false }),
+                "graph",
+                json!({ "mode": "map", "granularity": "symbol", "include_churn": false }),
             ))
             .await
-            .expect("architecture_map symbol"),
+            .expect("graph map symbol"),
     );
     let sym_nodes = sym.get("nodes").and_then(Value::as_array).expect("symbol nodes");
     assert!(!sym_nodes.is_empty(), "symbol tier returns hub functions: {sym:?}");
@@ -688,11 +694,11 @@ async fn mcp_server_exercises_representative_tools() {
     let filem = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({ "granularity": "file", "include_churn": false }),
+                "graph",
+                json!({ "mode": "map", "granularity": "file", "include_churn": false }),
             ))
             .await
-            .expect("architecture_map file"),
+            .expect("graph map file"),
     );
     let file_nodes = filem.get("nodes").and_then(Value::as_array).expect("file nodes");
     let cycles = filem.get("cycles").and_then(Value::as_array).expect("cycles");
@@ -722,11 +728,11 @@ async fn mcp_server_exercises_representative_tools() {
     let filem2 = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({ "granularity": "file", "include_churn": false }),
+                "graph",
+                json!({ "mode": "map", "granularity": "file", "include_churn": false }),
             ))
             .await
-            .expect("architecture_map file (repeat)"),
+            .expect("graph map file (repeat)"),
     );
     assert_eq!(
         filem.get("nodes"),
@@ -739,22 +745,22 @@ async fn mcp_server_exercises_representative_tools() {
     let modm = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({ "granularity": "module", "include_churn": false }),
+                "graph",
+                json!({ "mode": "map", "granularity": "module", "include_churn": false }),
             ))
             .await
-            .expect("architecture_map module"),
+            .expect("graph map module"),
     );
     let mod_nodes = modm.get("nodes").and_then(Value::as_array).expect("module nodes");
     assert!(!mod_nodes.is_empty(), "module tier must emit grouped nodes: {modm:?}");
     let modm2 = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({ "granularity": "module", "include_churn": false }),
+                "graph",
+                json!({ "mode": "map", "granularity": "module", "include_churn": false }),
             ))
             .await
-            .expect("architecture_map module (repeat)"),
+            .expect("graph map module (repeat)"),
     );
     assert_eq!(
         modm.get("nodes"),
@@ -1031,9 +1037,9 @@ async fn mcp_server_exercises_representative_tools() {
 
     let body = decode_text(
         &service
-            .call_tool(call_params("blame_file", json!({ "path": "a.rs" })))
+            .call_tool(call_params("git", json!({ "mode": "blame", "path": "a.rs" })))
             .await
-            .expect("blame_file"),
+            .expect("git blame"),
     );
     let hunks = body.get("hunks").and_then(Value::as_array).expect("hunks");
     assert!(!hunks.is_empty(), "blame should return hunks on a real file");
@@ -2417,39 +2423,45 @@ fn commit_shas(body: &Value) -> Vec<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn recent_changes_paginates_with_stable_cursor() {
+async fn git_recent_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
     let page1 = decode_text(
         &service
-            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .call_tool(call_params("git", json!({ "mode": "recent", "limit": 2 })))
             .await
-            .expect("recent_changes page1"),
+            .expect("git recent page1"),
     );
     let p1_shas = commit_shas(&page1);
-    assert_eq!(p1_shas.len(), 2, "recent_changes limit=2 → 2 commits");
+    assert_eq!(p1_shas.len(), 2, "git recent limit=2 → 2 commits");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
-        .expect("recent_changes page1 must carry next_cursor")
+        .expect("git recent page1 must carry next_cursor")
         .to_string();
     let page2 = decode_text(
         &service
-            .call_tool(call_params("recent_changes", json!({ "limit": 2, "cursor": cursor1 })))
+            .call_tool(call_params(
+                "git",
+                json!({ "mode": "recent", "limit": 2, "cursor": cursor1 }),
+            ))
             .await
-            .expect("recent_changes page2"),
+            .expect("git recent page2"),
     );
     let p2_shas = commit_shas(&page2);
-    assert_eq!(p2_shas.len(), 2, "recent_changes page2 → 2 more commits");
+    assert_eq!(p2_shas.len(), 2, "git recent page2 → 2 more commits");
     assert!(
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
-        "recent_changes pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+        "git recent pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
     let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
     let stale = decode_text(
         &service
-            .call_tool(call_params("recent_changes", json!({ "limit": 2, "cursor": bogus })))
+            .call_tool(call_params(
+                "git",
+                json!({ "mode": "recent", "limit": 2, "cursor": bogus }),
+            ))
             .await
-            .expect("recent_changes stale"),
+            .expect("git recent stale"),
     );
     assert_eq!(
         stale.get("cursor_invalidated"),
@@ -2460,48 +2472,48 @@ async fn recent_changes_paginates_with_stable_cursor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn commits_touching_paginates_with_stable_cursor() {
+async fn git_touching_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
     let page1 = decode_text(
         &service
             .call_tool(call_params(
-                "commits_touching",
-                json!({ "path": "paged.rs", "limit": 2 }),
+                "git",
+                json!({ "mode": "touching", "path": "paged.rs", "limit": 2 }),
             ))
             .await
-            .expect("commits_touching page1"),
+            .expect("git touching page1"),
     );
     let p1_shas = commit_shas(&page1);
-    assert_eq!(p1_shas.len(), 2, "commits_touching page1 → 2 commits");
+    assert_eq!(p1_shas.len(), 2, "git touching page1 → 2 commits");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
-        .expect("commits_touching must carry next_cursor")
+        .expect("git touching must carry next_cursor")
         .to_string();
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "commits_touching",
-                json!({ "path": "paged.rs", "limit": 2, "cursor": cursor1 }),
+                "git",
+                json!({ "mode": "touching", "path": "paged.rs", "limit": 2, "cursor": cursor1 }),
             ))
             .await
-            .expect("commits_touching page2"),
+            .expect("git touching page2"),
     );
     let p2_shas = commit_shas(&page2);
-    assert_eq!(p2_shas.len(), 2, "commits_touching page2 → 2 more commits");
+    assert_eq!(p2_shas.len(), 2, "git touching page2 → 2 more commits");
     assert!(
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
-        "commits_touching pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+        "git touching pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
     let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
     let stale = decode_text(
         &service
             .call_tool(call_params(
-                "commits_touching",
-                json!({ "path": "paged.rs", "limit": 2, "cursor": bogus }),
+                "git",
+                json!({ "mode": "touching", "path": "paged.rs", "limit": 2, "cursor": bogus }),
             ))
             .await
-            .expect("commits_touching stale"),
+            .expect("git touching stale"),
     );
     assert_eq!(
         stale.get("cursor_invalidated"),
@@ -2511,24 +2523,24 @@ async fn commits_touching_paginates_with_stable_cursor() {
     let _ = service.cancel().await;
 }
 
-/// `hot_files` aggregates the churn window. The paging fixture touches `paged.rs` in all 5
+/// `git` mode `churn` aggregates the churn window. The paging fixture touches `paged.rs` in all 5
 /// commits, so it must rank first with `commits_touching == 5`. Exercises the tool end-to-end
 /// through the real `serve` subprocess (whichever of the git-history index / live-walk path is
 /// active — both must agree).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hot_files_ranks_the_churned_file_first() {
+async fn git_churn_ranks_the_churned_file_first() {
     let (_dir, service) = spawn_paging_server().await;
     let body = decode_text(
         &service
-            .call_tool(call_params("hot_files", json!({ "window": 50, "top_k": 5 })))
+            .call_tool(call_params("git", json!({ "mode": "churn", "window": 50, "top_k": 5 })))
             .await
-            .expect("hot_files"),
+            .expect("git churn"),
     );
     let files = body
         .get("files")
         .and_then(Value::as_array)
-        .expect("hot_files returns a files array");
-    assert!(!files.is_empty(), "hot_files returns entries: {body}");
+        .expect("git churn returns a files array");
+    assert!(!files.is_empty(), "git churn returns entries: {body}");
     let top = &files[0];
     assert_eq!(
         top.get("path").and_then(Value::as_str),
@@ -2544,29 +2556,30 @@ async fn hot_files_ranks_the_churned_file_first() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn find_commits_by_path_paginates_with_stable_cursor() {
+async fn git_by_path_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
     let page1 = decode_text(
         &service
             .call_tool(call_params(
-                "find_commits_by_path",
-                json!({ "pattern": "paged\\.rs", "window": 50, "limit": 2 }),
+                "git",
+                json!({ "mode": "by_path", "pattern": "paged\\.rs", "window": 50, "limit": 2 }),
             ))
             .await
-            .expect("find_commits_by_path page1"),
+            .expect("git by_path page1"),
     );
     let p1_shas = commit_shas(&page1);
-    assert_eq!(p1_shas.len(), 2, "find_commits_by_path page1 → 2 commits: {page1}");
+    assert_eq!(p1_shas.len(), 2, "git by_path page1 → 2 commits: {page1}");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
-        .expect("find_commits_by_path must carry next_cursor")
+        .expect("git by_path must carry next_cursor")
         .to_string();
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "find_commits_by_path",
+                "git",
                 json!({
+                    "mode": "by_path",
                     "pattern": "paged\\.rs",
                     "window": 50,
                     "limit": 2,
@@ -2574,23 +2587,21 @@ async fn find_commits_by_path_paginates_with_stable_cursor() {
                 }),
             ))
             .await
-            .expect("find_commits_by_path page2"),
+            .expect("git by_path page2"),
     );
     let p2_shas = commit_shas(&page2);
-    assert!(
-        !p2_shas.is_empty(),
-        "find_commits_by_path page2 must have ≥ 1 commit: {page2}"
-    );
+    assert!(!p2_shas.is_empty(), "git by_path page2 must have ≥ 1 commit: {page2}");
     assert!(
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
-        "find_commits_by_path pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+        "git by_path pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
     let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
     let stale = decode_text(
         &service
             .call_tool(call_params(
-                "find_commits_by_path",
+                "git",
                 json!({
+                    "mode": "by_path",
                     "pattern": "paged\\.rs",
                     "window": 50,
                     "limit": 2,
@@ -2598,7 +2609,7 @@ async fn find_commits_by_path_paginates_with_stable_cursor() {
                 }),
             ))
             .await
-            .expect("find_commits_by_path stale"),
+            .expect("git by_path stale"),
     );
     assert_eq!(
         stale.get("cursor_invalidated"),
@@ -2609,7 +2620,7 @@ async fn find_commits_by_path_paginates_with_stable_cursor() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn symbol_history_paginates_with_stable_cursor() {
+async fn git_symbol_history_paginates_with_stable_cursor() {
     let (_dir, service) = spawn_paging_server().await;
     let history_shas = |body: &Value| -> Vec<String> {
         body.get("history")
@@ -2624,24 +2635,25 @@ async fn symbol_history_paginates_with_stable_cursor() {
     let page1 = decode_text(
         &service
             .call_tool(call_params(
-                "symbol_history",
-                json!({ "path": "paged.rs", "name": "paged", "limit": 2 }),
+                "git",
+                json!({ "mode": "symbol_history", "path": "paged.rs", "name": "paged", "limit": 2 }),
             ))
             .await
-            .expect("symbol_history page1"),
+            .expect("git symbol_history page1"),
     );
     let p1_shas = history_shas(&page1);
-    assert_eq!(p1_shas.len(), 2, "symbol_history page1 → 2 entries: {page1}");
+    assert_eq!(p1_shas.len(), 2, "git symbol_history page1 → 2 entries: {page1}");
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
-        .expect("symbol_history must carry next_cursor")
+        .expect("git symbol_history must carry next_cursor")
         .to_string();
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "symbol_history",
+                "git",
                 json!({
+                    "mode": "symbol_history",
                     "path": "paged.rs",
                     "name": "paged",
                     "limit": 2,
@@ -2649,20 +2661,24 @@ async fn symbol_history_paginates_with_stable_cursor() {
                 }),
             ))
             .await
-            .expect("symbol_history page2"),
+            .expect("git symbol_history page2"),
     );
     let p2_shas = history_shas(&page2);
-    assert!(!p2_shas.is_empty(), "symbol_history page2 must have ≥ 1 entry: {page2}");
+    assert!(
+        !p2_shas.is_empty(),
+        "git symbol_history page2 must have ≥ 1 entry: {page2}"
+    );
     assert!(
         p2_shas.iter().all(|s| !p1_shas.contains(s)),
-        "symbol_history pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
+        "git symbol_history pages must not overlap: {p1_shas:?} vs {p2_shas:?}"
     );
     let bogus = basemind::testing::encode_in_memory_cursor(0, 0xDEAD_BEEF);
     let stale = decode_text(
         &service
             .call_tool(call_params(
-                "symbol_history",
+                "git",
                 json!({
+                    "mode": "symbol_history",
                     "path": "paged.rs",
                     "name": "paged",
                     "limit": 2,
@@ -2670,7 +2686,7 @@ async fn symbol_history_paginates_with_stable_cursor() {
                 }),
             ))
             .await
-            .expect("symbol_history stale"),
+            .expect("git symbol_history stale"),
     );
     assert_eq!(
         stale.get("cursor_invalidated"),
@@ -2692,7 +2708,7 @@ fn split_blame_lines(root: &std::path::Path) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blame_file_paginates_by_start_line() {
+async fn git_blame_paginates_by_start_line() {
     let (dir, service) = spawn_paging_server().await;
     split_blame_lines(dir.path());
     let _ = service
@@ -2700,15 +2716,18 @@ async fn blame_file_paginates_by_start_line() {
         .await;
     let page1 = decode_text(
         &service
-            .call_tool(call_params("blame_file", json!({ "path": "paged.rs", "limit": 1 })))
+            .call_tool(call_params(
+                "git",
+                json!({ "mode": "blame", "path": "paged.rs", "limit": 1 }),
+            ))
             .await
-            .expect("blame_file page1"),
+            .expect("git blame page1"),
     );
     let p1_hunks = page1
         .get("hunks")
         .and_then(Value::as_array)
-        .expect("blame_file page1 hunks");
-    assert_eq!(p1_hunks.len(), 1, "blame_file limit=1 → 1 hunk: {page1}");
+        .expect("git blame page1 hunks");
+    assert_eq!(p1_hunks.len(), 1, "git blame limit=1 → 1 hunk: {page1}");
     let p1_start: Vec<u64> = p1_hunks
         .iter()
         .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
@@ -2716,35 +2735,35 @@ async fn blame_file_paginates_by_start_line() {
     let cursor1 = page1
         .get("next_cursor")
         .and_then(Value::as_str)
-        .expect("blame_file must carry next_cursor when more hunks remain")
+        .expect("git blame must carry next_cursor when more hunks remain")
         .to_string();
     let page2 = decode_text(
         &service
             .call_tool(call_params(
-                "blame_file",
-                json!({ "path": "paged.rs", "limit": 1, "cursor": cursor1 }),
+                "git",
+                json!({ "mode": "blame", "path": "paged.rs", "limit": 1, "cursor": cursor1 }),
             ))
             .await
-            .expect("blame_file page2"),
+            .expect("git blame page2"),
     );
     let p2_hunks = page2
         .get("hunks")
         .and_then(Value::as_array)
-        .expect("blame_file page2 hunks");
-    assert!(!p2_hunks.is_empty(), "blame_file page2 must have ≥ 1 hunk: {page2}");
+        .expect("git blame page2 hunks");
+    assert!(!p2_hunks.is_empty(), "git blame page2 must have ≥ 1 hunk: {page2}");
     let p2_start: Vec<u64> = p2_hunks
         .iter()
         .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
         .collect();
     assert!(
         p2_start.iter().all(|s| !p1_start.contains(s)),
-        "blame_file pages must not overlap by start_line: {p1_start:?} vs {p2_start:?}"
+        "git blame pages must not overlap by start_line: {p1_start:?} vs {p2_start:?}"
     );
     let _ = service.cancel().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn blame_symbol_paginates_by_start_line() {
+async fn git_blame_symbol_paginates_by_start_line() {
     let (dir, service) = spawn_paging_server().await;
     split_blame_lines(dir.path());
     let _ = service
@@ -2753,32 +2772,33 @@ async fn blame_symbol_paginates_by_start_line() {
     let page1 = decode_text(
         &service
             .call_tool(call_params(
-                "blame_symbol",
-                json!({ "path": "paged.rs", "name": "paged", "limit": 1 }),
+                "git",
+                json!({ "mode": "blame_symbol", "path": "paged.rs", "name": "paged", "limit": 1 }),
             ))
             .await
-            .expect("blame_symbol page1"),
+            .expect("git blame_symbol page1"),
     );
     let p1_hunks = page1
         .get("hunks")
         .and_then(Value::as_array)
-        .expect("blame_symbol page1 hunks");
-    assert_eq!(p1_hunks.len(), 1, "blame_symbol limit=1 → 1 hunk: {page1}");
+        .expect("git blame_symbol page1 hunks");
+    assert_eq!(p1_hunks.len(), 1, "git blame_symbol limit=1 → 1 hunk: {page1}");
     let p1_start = p1_hunks
         .iter()
         .filter_map(|h| h.get("start_line").and_then(Value::as_u64))
         .next()
-        .expect("blame_symbol page1 start_line");
+        .expect("git blame_symbol page1 start_line");
     assert!(
         p1_start >= 1,
-        "blame_symbol start_line should be 1-based, got {p1_start}"
+        "git blame_symbol start_line should be 1-based, got {p1_start}"
     );
     let huge_cursor = basemind::testing::encode_in_memory_cursor(9_999, 0);
     let page_empty = decode_text(
         &service
             .call_tool(call_params(
-                "blame_symbol",
+                "git",
                 json!({
+                    "mode": "blame_symbol",
                     "path": "paged.rs",
                     "name": "paged",
                     "limit": 1,
@@ -2786,19 +2806,19 @@ async fn blame_symbol_paginates_by_start_line() {
                 }),
             ))
             .await
-            .expect("blame_symbol cursor past end"),
+            .expect("git blame_symbol cursor past end"),
     );
     let empty_hunks = page_empty
         .get("hunks")
         .and_then(Value::as_array)
-        .expect("blame_symbol empty page hunks");
+        .expect("git blame_symbol empty page hunks");
     assert!(
         empty_hunks.is_empty(),
-        "blame_symbol with cursor past end should be empty: {page_empty}"
+        "git blame_symbol with cursor past end should be empty: {page_empty}"
     );
     assert!(
         page_empty.get("next_cursor").is_none(),
-        "blame_symbol exhausted page must NOT carry next_cursor"
+        "git blame_symbol exhausted page must NOT carry next_cursor"
     );
     let _ = service.cancel().await;
 }
@@ -3462,7 +3482,6 @@ async fn tools_advertise_output_schema() {
         "search_symbols",
         "find_references",
         "find_callers",
-        "call_graph",
         "find_implementations",
         "list_files",
     ] {
@@ -3474,19 +3493,23 @@ async fn tools_advertise_output_schema() {
         );
     }
 
-    // `admin` (formerly `status` / `repo_info` / `rescan` / …) is a consolidated domain tool whose
-    // eleven modes return eleven different response shapes; SEP-2106 allows exactly one
-    // `output_schema` per tool, so the consolidated tool deliberately advertises none (see the
-    // `tools_admin.rs` module docs). This is intentional, not a regression from consolidation.
-    assert!(
-        tools
-            .iter()
-            .find(|t| t.name.as_ref() == "admin")
-            .expect("`admin` present in full surface")
-            .output_schema
-            .is_none(),
-        "the consolidated `admin` tool must NOT advertise a single output_schema for its 11 modes"
-    );
+    // `admin` (formerly `status` / `repo_info` / `rescan` / …), `git` (formerly `recent_changes` /
+    // `blame_file` / … ), and `graph` (formerly `call_graph` / `architecture_map` / …) are
+    // consolidated domain tools whose modes return differently-shaped responses; SEP-2106 allows
+    // exactly one `output_schema` per tool, so each deliberately advertises none (see the
+    // `tools_admin.rs` / `tools_git.rs` / `tools_graph.rs` module docs). This is intentional, not a
+    // regression from consolidation.
+    for domain in ["admin", "git", "graph"] {
+        assert!(
+            tools
+                .iter()
+                .find(|t| t.name.as_ref() == domain)
+                .unwrap_or_else(|| panic!("`{domain}` present in full surface"))
+                .output_schema
+                .is_none(),
+            "the consolidated `{domain}` tool must NOT advertise a single output_schema for its modes"
+        );
+    }
 
     let _ = server.cancel().await;
 }
@@ -3890,7 +3913,7 @@ async fn latency_tools_report_microsecond_elapsed_us() {
 
     let recent = decode_text(
         &service
-            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .call_tool(call_params("git", json!({ "mode": "recent", "limit": 2 })))
             .await
             .expect("recent_changes"),
     );
@@ -3957,7 +3980,7 @@ async fn elapsed_us_is_additive_for_older_clients() {
 
     let recent = decode_text(
         &service
-            .call_tool(call_params("recent_changes", json!({ "limit": 2 })))
+            .call_tool(call_params("git", json!({ "mode": "recent", "limit": 2 })))
             .await
             .expect("recent_changes"),
     );
@@ -4247,8 +4270,8 @@ async fn architecture_map_emits_typed_provenance_edges() {
     let body = decode_text(
         &service
             .call_tool(call_params(
-                "architecture_map",
-                json!({"granularity": "file", "edges": "all", "include_churn": false}),
+                "graph",
+                json!({ "mode": "map", "granularity": "file", "edges": "all", "include_churn": false}),
             ))
             .await
             .expect("architecture_map"),
@@ -4331,8 +4354,8 @@ async fn traversal_tools_walk_the_shared_graph() {
     // neighbors(helper, both): reaches engine (helper->engine) and run (run->helper). ~keep
     let neighbors = service
         .call_tool(call_params(
-            "neighbors",
-            json!({"name": "helper", "direction": "both", "depth": 2, "edges": "all"}),
+            "graph",
+            json!({ "mode": "neighbors", "name": "helper", "direction": "both", "depth": 2, "edges": "all"}),
         ))
         .await
         .expect("neighbors");
@@ -4358,8 +4381,8 @@ async fn traversal_tools_walk_the_shared_graph() {
     // path(run -> engine): the confidence-weighted route run -> helper -> engine. ~keep
     let path = service
         .call_tool(call_params(
-            "path",
-            json!({"from": "run", "to": "engine", "edges": "calls"}),
+            "graph",
+            json!({"mode": "path", "from": "run", "to": "engine", "edges": "calls"}),
         ))
         .await
         .expect("path");
@@ -4394,8 +4417,8 @@ async fn traversal_tools_walk_the_shared_graph() {
     // subgraph(helper): a readable neighborhood; nodes carry a centrality score.
     let subgraph = service
         .call_tool(call_params(
-            "subgraph",
-            json!({"name": "helper", "depth": 2, "edges": "all", "max_nodes": 10}),
+            "graph",
+            json!({ "mode": "subgraph", "name": "helper", "depth": 2, "edges": "all", "max_nodes": 10}),
         ))
         .await
         .expect("subgraph");
@@ -4411,8 +4434,8 @@ async fn traversal_tools_walk_the_shared_graph() {
     // edges="contains" honors the containment lane — it must not silently degrade to calls-only.
     let contains = service
         .call_tool(call_params(
-            "neighbors",
-            json!({"name": "engine", "direction": "both", "edges": "contains"}),
+            "graph",
+            json!({ "mode": "neighbors", "name": "engine", "direction": "both", "edges": "contains"}),
         ))
         .await
         .expect("neighbors contains");
@@ -4429,7 +4452,10 @@ async fn traversal_tools_walk_the_shared_graph() {
 
     // A bogus edges value is rejected, not silently coerced to a different lane set.
     let bogus = service
-        .call_tool(call_params("neighbors", json!({"name": "engine", "edges": "nonsense"})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "neighbors", "name": "engine", "edges": "nonsense"}),
+        ))
         .await;
     assert!(
         bogus.is_err(),
@@ -4439,7 +4465,10 @@ async fn traversal_tools_walk_the_shared_graph() {
     // Unresolved-name contract (stated in each tool's description): an unknown symbol yields an
     // empty result, never an error — so an agent can probe freely without exception handling.
     let missing = service
-        .call_tool(call_params("neighbors", json!({"name": "does_not_exist_zzz"})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "neighbors", "name": "does_not_exist_zzz"}),
+        ))
         .await
         .expect("neighbors on an unknown name returns Ok, not an error");
     assert!(
@@ -4450,7 +4479,10 @@ async fn traversal_tools_walk_the_shared_graph() {
         "neighbors of an unresolved name is empty"
     );
     let missing = service
-        .call_tool(call_params("subgraph", json!({"name": "does_not_exist_zzz"})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "subgraph", "name": "does_not_exist_zzz"}),
+        ))
         .await
         .expect("subgraph on an unknown name returns Ok, not an error");
     assert!(
@@ -4462,8 +4494,8 @@ async fn traversal_tools_walk_the_shared_graph() {
     );
     let missing = service
         .call_tool(call_params(
-            "path",
-            json!({"from": "does_not_exist_zzz", "to": "engine"}),
+            "graph",
+            json!({"mode": "path", "from": "does_not_exist_zzz", "to": "engine"}),
         ))
         .await
         .expect("path from an unknown source returns Ok, not an error");
@@ -4504,8 +4536,8 @@ async fn communities_cluster_the_shared_graph() {
 
     let communities = service
         .call_tool(call_params(
-            "communities",
-            json!({"algorithm": "label_propagation", "edges": "all"}),
+            "graph",
+            json!({ "mode": "communities", "algorithm": "label_propagation", "edges": "all"}),
         ))
         .await
         .expect("communities");
@@ -4533,7 +4565,10 @@ async fn communities_cluster_the_shared_graph() {
 
     // Louvain is the opt-in higher-quality algorithm; it must also run and echo its name.
     let louvain = service
-        .call_tool(call_params("communities", json!({"algorithm": "louvain"})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "communities", "algorithm": "louvain"}),
+        ))
         .await
         .expect("communities louvain");
     let body = decode_text(&louvain);
@@ -4546,8 +4581,8 @@ async fn communities_cluster_the_shared_graph() {
     // max_communities=1 caps the returned list below the detected count and flags truncated.
     let capped = service
         .call_tool(call_params(
-            "communities",
-            json!({"algorithm": "label_propagation", "max_communities": 1}),
+            "graph",
+            json!({ "mode": "communities", "algorithm": "label_propagation", "max_communities": 1}),
         ))
         .await
         .expect("communities capped");
@@ -4568,7 +4603,10 @@ async fn communities_cluster_the_shared_graph() {
 
     // An invalid algorithm is rejected, not silently defaulted.
     let bogus = service
-        .call_tool(call_params("communities", json!({"algorithm": "kmeans"})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "communities", "algorithm": "kmeans"}),
+        ))
         .await;
     assert!(bogus.is_err(), "an invalid algorithm must be an error");
 
@@ -4602,8 +4640,8 @@ async fn graph_export_renders_every_format() {
     // node_link: the response body carries valid node-link JSON as a string.
     let export = service
         .call_tool(call_params(
-            "graph_export",
-            json!({"format": "node_link", "edges": "all"}),
+            "graph",
+            json!({ "mode": "export", "format": "node_link", "edges": "all"}),
         ))
         .await
         .expect("graph_export node_link");
@@ -4633,7 +4671,7 @@ async fn graph_export_renders_every_format() {
         ("svg", "<svg xmlns="),
     ] {
         let out = service
-            .call_tool(call_params("graph_export", json!({"format": fmt})))
+            .call_tool(call_params("graph", json!({ "mode": "export", "format": fmt})))
             .await
             .unwrap_or_else(|_| panic!("graph_export {fmt}"));
         let body = decode_text(&out);
@@ -4646,8 +4684,8 @@ async fn graph_export_renders_every_format() {
     // stays within the remapped node range.
     let capped = service
         .call_tool(call_params(
-            "graph_export",
-            json!({"format": "node_link", "edges": "all", "max_nodes": 2}),
+            "graph",
+            json!({ "mode": "export", "format": "node_link", "edges": "all", "max_nodes": 2}),
         ))
         .await
         .expect("graph_export capped");
@@ -4670,7 +4708,10 @@ async fn graph_export_renders_every_format() {
     // write: true persists the rendered content to the cache and returns its path; the inline
     // content is still returned, and the on-disk file matches it byte-for-byte.
     let written = service
-        .call_tool(call_params("graph_export", json!({"format": "svg", "write": true})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "export", "format": "svg", "write": true}),
+        ))
         .await
         .expect("graph_export write");
     let body = decode_text(&written);
@@ -4689,7 +4730,7 @@ async fn graph_export_renders_every_format() {
 
     // Without write, no file path is returned.
     let unwritten = service
-        .call_tool(call_params("graph_export", json!({"format": "svg"})))
+        .call_tool(call_params("graph", json!({ "mode": "export", "format": "svg"})))
         .await
         .expect("graph_export no-write");
     assert!(
@@ -4699,7 +4740,7 @@ async fn graph_export_renders_every_format() {
 
     // An invalid format is rejected, not silently defaulted.
     let bogus = service
-        .call_tool(call_params("graph_export", json!({"format": "nonesuch"})))
+        .call_tool(call_params("graph", json!({ "mode": "export", "format": "nonesuch"})))
         .await;
     assert!(bogus.is_err(), "an unsupported format must be an error");
 
@@ -4732,7 +4773,7 @@ async fn display_writes_visual_view_and_degrades_without_opening() {
 
     // Default format is html; open:false takes the export-only path (never launches a viewer in CI).
     let shown = service
-        .call_tool(call_params("display", json!({"open": false})))
+        .call_tool(call_params("graph", json!({ "mode": "display", "open": false})))
         .await
         .expect("display html");
     assert_structured_matches_text(&shown);
@@ -4777,7 +4818,10 @@ async fn display_writes_visual_view_and_degrades_without_opening() {
 
     // svg is the other accepted visual format.
     let svg = service
-        .call_tool(call_params("display", json!({"format": "svg", "open": false})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "display", "format": "svg", "open": false}),
+        ))
         .await
         .expect("display svg");
     let body = decode_text(&svg);
@@ -4791,7 +4835,10 @@ async fn display_writes_visual_view_and_degrades_without_opening() {
 
     // A graph *data* format is rejected — display shows a picture; graph_export returns the data.
     let rejected = service
-        .call_tool(call_params("display", json!({"format": "node_link", "open": false})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "display", "format": "node_link", "open": false}),
+        ))
         .await;
     assert!(
         rejected.is_err(),
@@ -4828,7 +4875,7 @@ async fn ui_returns_url_and_writes_export_without_opening() {
 
     // Default format html; open:false returns the URL without launching (never spawns a viewer in CI).
     let shown = service
-        .call_tool(call_params("ui", json!({"open": false})))
+        .call_tool(call_params("graph", json!({ "mode": "open", "open": false})))
         .await
         .expect("ui html");
     assert_structured_matches_text(&shown);
@@ -4881,7 +4928,10 @@ async fn ui_returns_url_and_writes_export_without_opening() {
     // Knob plumbing: `max_nodes` caps the rendered graph and the response reports the cut. The repo has
     // threads the graph-shaping knobs through `render_ui_parts`, not just the defaults.
     let capped = service
-        .call_tool(call_params("ui", json!({"max_nodes": 1, "open": false})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "open", "max_nodes": 1, "open": false}),
+        ))
         .await
         .expect("ui max_nodes=1");
     let capped = decode_text(&capped);
@@ -4897,7 +4947,10 @@ async fn ui_returns_url_and_writes_export_without_opening() {
     );
     // `focus` is threaded end-to-end (param -> render): the tool accepts it and renders without error.
     let focused = service
-        .call_tool(call_params("ui", json!({"focus": "core.rs", "open": false})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "open", "focus": "core.rs", "open": false}),
+        ))
         .await
         .expect("ui focus renders");
     let focused = decode_text(&focused);
@@ -4908,7 +4961,10 @@ async fn ui_returns_url_and_writes_export_without_opening() {
 
     // A graph *data* format is rejected — the UI shows a picture; graph_export returns the data.
     let rejected = service
-        .call_tool(call_params("ui", json!({"format": "node_link", "open": false})))
+        .call_tool(call_params(
+            "graph",
+            json!({ "mode": "open", "format": "node_link", "open": false}),
+        ))
         .await;
     assert!(
         rejected.is_err(),
@@ -4956,8 +5012,8 @@ async fn rationale_lane_surfaces_annotates_and_cites_edges() {
 
     let export = service
         .call_tool(call_params(
-            "graph_export",
-            json!({ "edges": "rationale", "format": "node_link" }),
+            "graph",
+            json!({ "mode": "export", "edges": "rationale", "format": "node_link" }),
         ))
         .await
         .expect("graph_export rationale");
@@ -5023,8 +5079,8 @@ async fn documents_lane_surfaces_doc_to_code_edges() {
 
     let export = service
         .call_tool(call_params(
-            "graph_export",
-            json!({ "edges": "documents", "format": "node_link" }),
+            "graph",
+            json!({ "mode": "export", "edges": "documents", "format": "node_link" }),
         ))
         .await
         .expect("graph_export documents");
@@ -5084,11 +5140,11 @@ async fn documents_lane_survives_unscoped_rescan() {
         .expect("in-memory serve");
     let service = ().serve(transport).await.expect("rmcp handshake");
 
-    let doc_edges = json!({ "edges": "documents", "format": "node_link" });
+    let doc_edges = json!({ "mode": "export", "edges": "documents", "format": "node_link" });
 
     // Baseline: the boot cache-warm attached the persisted link.
     let before = service
-        .call_tool(call_params("graph_export", doc_edges.clone()))
+        .call_tool(call_params("graph", doc_edges.clone()))
         .await
         .expect("graph_export documents (before)");
     let edges_before = decode_text(&before)
@@ -5104,7 +5160,7 @@ async fn documents_lane_survives_unscoped_rescan() {
         .expect("rescan");
 
     let after = service
-        .call_tool(call_params("graph_export", doc_edges))
+        .call_tool(call_params("graph", doc_edges))
         .await
         .expect("graph_export documents (after)");
     let edges_after = decode_text(&after)
@@ -5488,10 +5544,10 @@ async fn memory_tool_validates_every_mode_before_running_it() {
         "mode `get` must reject a sibling mode's field rather than ignore it: {message}"
     );
 
-    // `put` requires both `key` and `value` — the missing one is named exactly. `require()` only
-    // runs inside `run_memory_ops`, which is itself gated on `--features memory`: a build without it
-    // answers with the feature-gate message for every mode before ever reaching `require()`, so the
-    // exact-field wording is only checked on a `--features memory` build.
+    // `put` requires both `key` and `value` — the missing one is named exactly. `require()` only ~keep
+    // runs inside `run_memory_ops`, which is itself gated on `--features memory`: a build without it ~keep
+    // answers with the feature-gate message for every mode before ever reaching `require()`, so the ~keep
+    // exact-field wording is only checked on a `--features memory` build. ~keep
     let message = refusal(
         service
             .call_tool(call_params("memory", json!({ "mode": "put", "key": "k" })))
@@ -5528,6 +5584,255 @@ async fn memory_tool_validates_every_mode_before_running_it() {
             "without --features memory, mode `search` must name the missing feature: {message}"
         );
     }
+
+    let _ = service.cancel().await;
+}
+
+/// Per-mode contract for the consolidated `git` tool, mirroring the `admin` / `workspace` /
+/// `memory` coverage above: every mode is advertised, `mode` is required, a field belonging to
+/// another mode is rejected rather than ignored, and a mode missing a required field names the
+/// exact `mode`/field pair.
+///
+/// Consolidation moved eleven operations from tool names into `mode`. Coverage has to be asserted
+/// on the modes or it silently stops covering them — `tools/list` would still show one healthy
+/// `git` tool while any number of its modes were unreachable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_tool_validates_every_mode_before_running_it() {
+    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
+    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(result) => {
+                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
+                result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let git = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "git")
+        .expect("the `git` domain tool must always be advertised");
+    let schema = serde_json::to_string(&git.input_schema).expect("serialize inputSchema");
+    for mode in [
+        "status",
+        "recent",
+        "touching",
+        "by_path",
+        "churn",
+        "diff",
+        "diff_outline",
+        "blame",
+        "blame_symbol",
+        "symbol_history",
+        "search",
+    ] {
+        assert!(
+            schema.contains(&format!("\"{mode}\"")),
+            "`git` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // `mode` is required: an omitted mode errors, it never silently picks an operation.
+    let message = refusal(
+        service.call_tool(call_params("git", json!({}))).await,
+        "an omitted mode",
+    );
+    assert!(
+        message.contains("missing field `mode`"),
+        "an omitted mode must name the field: {message}"
+    );
+
+    // An unknown mode names the accepted spellings.
+    let message = refusal(
+        service.call_tool(call_params("git", json!({ "mode": "log" }))).await,
+        "an unknown mode",
+    );
+    assert!(
+        message.contains("recent") && message.contains("blame_symbol"),
+        "an unknown mode must list the accepted set: {message}"
+    );
+
+    // mode `status` takes no sibling fields — a stray field is rejected, not ignored.
+    let message = refusal(
+        service
+            .call_tool(call_params("git", json!({ "mode": "status", "path": "a.rs" })))
+            .await,
+        "mode `status` with a stray `path`",
+    );
+    assert!(
+        message.contains("`git` mode `status` does not accept") && message.contains("`path`"),
+        "mode `status` must name the field it rejected: {message}"
+    );
+
+    // A field belonging to a DIFFERENT mode is rejected, never silently dropped: `rev` belongs to
+    // `blame` / `diff_outline`, not `recent`. Ignoring it would read as a log at that revision.
+    let message = refusal(
+        service
+            .call_tool(call_params("git", json!({ "mode": "recent", "rev": "HEAD" })))
+            .await,
+        "mode `recent` given a `blame` field",
+    );
+    assert!(
+        message.contains("`git` mode `recent` does not accept") && message.contains("`rev`"),
+        "mode `recent` must reject a sibling mode's field rather than ignore it: {message}"
+    );
+
+    // `blame` cannot run without `path` — the missing field is named with its mode.
+    let message = refusal(
+        service.call_tool(call_params("git", json!({ "mode": "blame" }))).await,
+        "a path-less blame",
+    );
+    assert!(
+        message.contains("`git` mode=\"blame\" requires `path`"),
+        "mode `blame` must name the missing `path`: {message}"
+    );
+
+    let _ = service.cancel().await;
+}
+
+/// Per-mode contract for the consolidated `graph` tool: every one of its nine modes is advertised,
+/// `mode` is required, a field belonging to another mode is rejected rather than ignored, and a
+/// mode missing a required field names the exact `mode`/field pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graph_tool_validates_every_mode_before_running_it() {
+    /// The refusal text of a call that must not have succeeded, whichever way it was refused.
+    fn refusal(result: Result<CallToolResult, rmcp::service::ServiceError>, context: &str) -> String {
+        match result {
+            Err(error) => error.to_string(),
+            Ok(result) => {
+                assert_eq!(result.is_error, Some(true), "{context} must be refused: {result:?}");
+                result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        }
+    }
+
+    let dir = build_repo();
+    let root = dir.path();
+    run_scan(root);
+
+    let transport = basemind::mcp::serve_in_memory(root, "working")
+        .await
+        .expect("in-memory serve");
+    let service = ().serve(transport).await.expect("rmcp handshake");
+
+    let tools = service.list_all_tools().await.expect("list tools");
+    let graph = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "graph")
+        .expect("the `graph` domain tool must always be advertised");
+    let schema = serde_json::to_string(&graph.input_schema).expect("serialize inputSchema");
+    for mode in [
+        "calls",
+        "neighbors",
+        "path",
+        "subgraph",
+        "communities",
+        "map",
+        "export",
+        "display",
+        "open",
+    ] {
+        assert!(
+            schema.contains(&format!("\"{mode}\"")),
+            "`graph` inputSchema must advertise mode `{mode}`: {schema}"
+        );
+    }
+
+    // `mode` is required: an omitted mode errors, it never silently picks an operation.
+    let message = refusal(
+        service.call_tool(call_params("graph", json!({}))).await,
+        "an omitted mode",
+    );
+    assert!(
+        message.contains("missing field `mode`"),
+        "an omitted mode must name the field: {message}"
+    );
+
+    // An unknown mode names the accepted spellings.
+    let message = refusal(
+        service
+            .call_tool(call_params("graph", json!({ "mode": "callgraph" })))
+            .await,
+        "an unknown mode",
+    );
+    assert!(
+        message.contains("calls") && message.contains("communities"),
+        "an unknown mode must list the accepted set: {message}"
+    );
+
+    // A field belonging to a DIFFERENT mode is rejected, never silently dropped: `name` belongs to
+    // `calls` / `neighbors` / `subgraph`, not to `communities`. Ignoring it would read to an agent
+    // as a clustering scoped to that symbol.
+    let message = refusal(
+        service
+            .call_tool(call_params("graph", json!({ "mode": "communities", "name": "alpha" })))
+            .await,
+        "mode `communities` given a `subgraph` field",
+    );
+    assert!(
+        message.contains("`graph` mode `communities` does not accept") && message.contains("`name`"),
+        "mode `communities` must reject a sibling mode's field rather than ignore it: {message}"
+    );
+
+    // `calls` walks the call lane only — an `edges` lane selector is rejected, not quietly ignored.
+    let message = refusal(
+        service
+            .call_tool(call_params(
+                "graph",
+                json!({ "mode": "calls", "name": "alpha", "edges": "all" }),
+            ))
+            .await,
+        "mode `calls` with a stray `edges`",
+    );
+    assert!(
+        message.contains("`graph` mode `calls` does not accept") && message.contains("`edges`"),
+        "mode `calls` must name the field it rejected: {message}"
+    );
+
+    // `calls` requires `name` — the missing field is named with its mode.
+    let message = refusal(
+        service
+            .call_tool(call_params("graph", json!({ "mode": "calls" })))
+            .await,
+        "a name-less calls walk",
+    );
+    assert!(
+        message.contains("`graph` mode=\"calls\" requires `name`"),
+        "mode `calls` must name the missing `name`: {message}"
+    );
+
+    // `path` requires both ends — the missing one is named exactly.
+    let message = refusal(
+        service
+            .call_tool(call_params("graph", json!({ "mode": "path", "from": "alpha" })))
+            .await,
+        "a `to`-less path",
+    );
+    assert!(
+        message.contains("`graph` mode=\"path\" requires `to`"),
+        "mode `path` must name the missing `to`: {message}"
+    );
 
     let _ = service.cancel().await;
 }

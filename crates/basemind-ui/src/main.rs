@@ -10,19 +10,20 @@
 //! build (and `cargo build --workspace` / CI) stays free of the per-platform webview dependency.
 //!
 //! Until then this binary is the launch path's working baseline: it opens the same offline,
-//! self-contained interactive HTML graph the `display` MCP tool produces (ADR-0005 render, ADR-0007
-//! launch), for the selected repository — the surface the resident window will replace.
+//! self-contained interactive HTML graph the `graph` tool's `display` mode produces (ADR-0005
+//! render, ADR-0007 launch), for the selected repository — the surface the resident window will
+//! replace.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use basemind::cli::codemap::{self, QueryCmd};
 use basemind::cli::context::build_server;
+use basemind::cli::graph::{self, GraphCmd};
 use basemind::cli::render::Emit;
 use basemind::store::VIEW_WORKING;
 
 /// Parsed `basemind-ui` arguments: just the repository root today. The graph-shaping knobs the
-/// `display` tool exposes are defaulted here; the interactive window will surface them as live
+/// `display` mode exposes are defaulted here; the interactive window will surface them as live
 /// controls in a later slice.
 struct Args {
     root: PathBuf,
@@ -50,12 +51,12 @@ async fn main() -> Result<()> {
 }
 
 /// Render the repository's code graph as the offline interactive HTML view and open it in the
-/// human's default viewer, reusing the shared `query display` path (ADR-0005 payload, ADR-0007
+/// human's default viewer, reusing the shared `graph display` path (ADR-0005 payload, ADR-0007
 /// launch). This is the baseline the resident Tauri window replaces.
 async fn open_graph_window(root: &Path) -> Result<()> {
     let server = build_server(root, VIEW_WORKING, Default::default())
         .context("open the basemind code map (run `basemind scan` first)")?;
-    let command = QueryCmd::Display {
+    let command = GraphCmd::Display {
         format: "html".to_string(),
         focus: None,
         edges: "all".to_string(),
@@ -69,7 +70,7 @@ async fn open_graph_window(root: &Path) -> Result<()> {
         startup_us: 0,
     };
     let mut out = std::io::stdout().lock();
-    codemap::run(&server, command, &emit, &mut out)
+    graph::run(&server, command, &emit, &mut out)
         .await
         .context("render and open the code graph")
 }

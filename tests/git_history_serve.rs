@@ -126,8 +126,8 @@ async fn serve_answers_git_history_from_the_index_not_the_live_walk() {
     loop {
         let result = peer
             .call_tool(call_params(
-                "search_git_history",
-                json!({ "pattern": BODY_ONLY_TOKEN, "limit": 5 }),
+                "git",
+                json!({ "mode": "search", "pattern": BODY_ONLY_TOKEN, "limit": 5 }),
             ))
             .await
             .expect("search_git_history call");

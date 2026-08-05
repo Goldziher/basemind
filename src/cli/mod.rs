@@ -9,7 +9,7 @@
 //! Layout:
 //! - `context.rs` — one-shot server construction.
 //! - `render.rs` — JSON extraction + generic human renderer.
-//! - `codemap.rs` / `git.rs` / `memory.rs` / `web.rs` / `admin.rs` — subcommand groups.
+//! - `codemap.rs` / `git.rs` / `graph.rs` / `memory.rs` / `web.rs` / `admin.rs` — subcommand groups.
 
 pub mod admin;
 pub mod codemap;
@@ -19,6 +19,7 @@ pub mod comms;
 pub mod comms_daemon;
 pub mod context;
 pub mod git;
+pub mod graph;
 pub mod init;
 pub mod init_rules;
 pub mod memory;
@@ -50,6 +51,10 @@ pub enum ToolCmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(git::GitCmd),
+    /// Code-graph navigation: calls, neighbors, path, subgraph, communities, map, export, display,
+    /// open.
+    #[command(subcommand)]
+    Graph(graph::GraphCmd),
     /// Shared agent memory, document search, and the co-change proposal queue
     /// (needs `--features memory,documents`).
     #[command(subcommand)]
@@ -111,6 +116,7 @@ pub fn run(
         match cmd {
             ToolCmd::Query(q) => codemap::run(&server, q, &opts, &mut out).await?,
             ToolCmd::Git(g) => git::run(&server, g, &opts, &mut out).await?,
+            ToolCmd::Graph(g) => graph::run(&server, g, &opts, &mut out).await?,
             ToolCmd::Memory(m) => memory::run(&server, m, &opts, &mut out).await?,
             ToolCmd::Web(w) => web::run(&server, w, &opts, &mut out).await?,
             ToolCmd::Admin(a) => admin::run(&server, a, &opts, &mut out).await?,

@@ -93,17 +93,16 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
             "grep_imports_top_hits",
         ),
 
-        "hot_files" => (actual.saturating_mul(3), "git_log_per_file"),
+        "git:churn" => (actual.saturating_mul(3), "git_log_per_file"),
 
-        "symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
+        "git:symbol_history" => (actual.saturating_mul(4), "per_commit_outline_diff"),
 
         "workspace_grep" => (actual, "no_baseline"),
 
-        "call_graph" => (actual, "no_baseline"),
-
-        "architecture_map" => (actual, "no_baseline"),
-
-        "neighbors" | "path" | "subgraph" | "communities" | "graph_export" => (actual, "no_baseline"),
+        // `display` and `open` join their read-only siblings here rather than staying unclassified:
+        // a rendered view replaces no grep/read baseline, so "saved nothing" is the honest label.
+        "graph:calls" | "graph:neighbors" | "graph:path" | "graph:subgraph" | "graph:communities" | "graph:map"
+        | "graph:export" | "graph:display" | "graph:open" => (actual, "no_baseline"),
 
         "memory:documents" => (actual.saturating_mul(DOCUMENT_READ_MULTIPLIER), "full_document_read"),
 
@@ -128,14 +127,15 @@ pub fn estimate_from_text(tool: &str, _corpus_bytes: u64, resp_text: &str) -> Sa
         | "workspace:branches"
         | "workspace:claim"
         | "workspace:release"
-        | "working_tree_status"
-        | "recent_changes"
-        | "commits_touching"
-        | "find_commits_by_path"
-        | "diff_file"
-        | "diff_outline"
-        | "blame_file"
-        | "blame_symbol" => (actual, "no_baseline"),
+        | "git:status"
+        | "git:recent"
+        | "git:touching"
+        | "git:by_path"
+        | "git:diff"
+        | "git:diff_outline"
+        | "git:blame"
+        | "git:blame_symbol"
+        | "git:search" => (actual, "no_baseline"),
 
         _ => (actual, "unclassified"),
     };
@@ -226,13 +226,15 @@ mod tests {
             "admin:rescan",
             "admin:cache_stats",
             "workspace:worktrees",
-            "recent_changes",
-            "commits_touching",
-            "diff_file",
-            "blame_file",
-            "working_tree_status",
+            "git:recent",
+            "git:touching",
+            "git:diff",
+            "git:blame",
+            "git:status",
+            "git:search",
             "workspace_grep",
-            "call_graph",
+            "graph:calls",
+            "graph:display",
         ] {
             let s = estimate_from_text(tool, 1_000_000, &"a".repeat(500));
             assert_eq!(s.est_tokens_saved, 0, "{tool} must not claim savings");

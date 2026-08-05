@@ -44,8 +44,9 @@ about your code costs a small fraction of the tokens it takes to read the source
 
 | Capability | What it does | Key tools |
 |---|---|---|
-| **Code intelligence** | Find where things are defined, what calls what, who implements what, how calls chain, the overall architecture (hub modules + dependency cycles), how any two symbols relate, and the repo's de-facto modules — traverse the typed code-graph for a symbol's neighborhood, the shortest path between two symbols, or a readable subgraph, cluster it into communities, and export the whole graph as node-link JSON / DOT / Mermaid / GraphML / Cypher, a self-contained offline interactive HTML page, or a static SVG picture — optionally written to the cache — or **show it to a human**: open a rendered view in their default desktop viewer, degrading to a written export when headless, or **open the interactive UI** — a live `http://…/ui` graph page served by the daemon (browser- and agent-drivable), falling back to the self-contained export. Every edge tagged with provenance + confidence. **Precise, scope- and import-aware resolution** (JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)) layered over [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `call_graph` · `architecture_map` · `neighbors` · `path` · `subgraph` · `communities` · `graph_export` · `display` · `ui` · `find_implementations` · `find_files` · `workspace_grep` |
-| **Git intelligence** | Ask what changed recently, who last touched a function, where the churn is, how a file's structure differs across commits, and full-text search commit authors + messages. | `blame_symbol` · `symbol_history` · `recent_changes` · `hot_files` · `diff_outline` · `commits_touching` · `search_git_history` |
+| **Code intelligence** | Find where things are defined, what calls what, who implements what, and where a name resolves to. **Precise, scope- and import-aware resolution** (JS/TS via oxc, Python & Java via in-tree [stack-graphs](#how-it-works)) layered over [300+ languages](#how-it-works). | `outline` · `search_symbols` · `find_references` · `find_callers` · `goto_definition` · `find_implementations` · `find_files` · `workspace_grep` |
+| **Code graph** | Walk the typed code-graph: who calls what and what a function reaches (`calls`), a symbol's n-hop blast radius (`neighbors`), the confidence-weighted shortest route between two symbols (`path`), a readable centrality-cut neighborhood (`subgraph`), the repo's de-facto modules (`communities`), and the whole-repo architecture ranked by PageRank + git churn with its dependency cycles (`map`). Render it as node-link JSON / DOT / Mermaid / GraphML / Cypher / offline interactive HTML / static SVG (`export`), **show it to a human** in their desktop viewer (`display`), or **open the interactive UI** at a live `http://…/ui` URL (`open`) — both take `open: false` to return the path or URL without launching anything. Every edge carries provenance + confidence; every result is deterministic and bounded. | `graph` (`calls` · `neighbors` · `path` · `subgraph` · `communities` · `map` · `export` · `display` · `open`) |
+| **Git intelligence** | Ask what changed recently, who last touched a function or a line, where the churn is, when a symbol's body actually changed, how a file's structure differs across commits, and full-text search commit authors + messages at full branch depth. | `git` (`status` · `recent` · `touching` · `by_path` · `churn` · `diff` · `diff_outline` · `blame` · `blame_symbol` · `symbol_history` · `search`) |
 | **Memory & documents** | A per-repo memory agents write to and search by meaning — clones of the same repo share it, unrelated repos stay separate — plus semantic search over PDFs, Office files, HTML, email, and images (OCR included, no extra setup), and a review queue of notes mined from files that change together, which you approve before anything is kept. | `memory` (`put` · `get` · `list` · `search` · `delete` · `audit` · `documents` · `mine` · `proposals` · `accept` · `reject`) |
 | **Code search** | Find source code by meaning, term, or symbol — `mode` picks the strategy: `hybrid` (default, RRF fusion of vector + BM25 + exact-symbol lanes), `semantic` (vector KNN), or `keyword` (native BM25); optional `rerank` cross-encoder pass. Returns pointers, fetch bodies with `get_chunk`. Needs `--features code-search`. | `search_code` · `get_chunk` |
 | **Web crawl** | Fetch a page or follow links from a starting URL; results join the document search above. | `web` (`scrape` · `crawl` · `map`) |
@@ -713,8 +714,6 @@ machine-readable output.
 | `callers <path> <name> [--kind]` | Find callers of one specific definition. |
 | `goto-definition <path> <line> [--column]` | Resolve a reference position to its scope-resolved definition. |
 | `implementations <trait>` | Types that implement or inherit from a name. |
-| `call-graph <name> [--direction --max-depth]` | Walk the call chain up or down. |
-| `architecture-map [--granularity --focus --depth --edges --include-churn]` | Deterministic architecture overview: hub modules/symbols ranked by graph centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
 | `grep <pattern> [--language --path-contains]` | Pattern search with filters. |
 | `list-files [--path-contains --language]` | List indexed files. |
 | `dependents <module>` | What imports a given module. |
@@ -722,17 +721,31 @@ machine-readable output.
 | `get-chunk <path> [--chunk-id --byte-start]` | Fetch one code chunk's source body (the `search-code` fetch half). |
 | `expand <path> <name> [--kind]` | A symbol's raw source body (the inverse of an outline entry). |
 
+**Graph (`basemind graph`)**
+
+| Command | Purpose |
+|---|---|
+| `calls <name> [--direction --max-depth --max-nodes]` | Walk the call chain up (`callers`, default) or down (`callees`). |
+| `neighbors <name> [--direction --depth --edges --max-nodes]` | A symbol's n-hop neighborhood — its blast radius before you change it. |
+| `path <from> <to> [--edges --include-contains]` | Confidence-weighted shortest route between two symbols. |
+| `subgraph <name> [--depth --edges --max-nodes]` | The neighborhood cut to its most central nodes — readable, not a dump. |
+| `communities [--algorithm --max-communities]` | Cluster the graph into de-facto modules with deterministic labels. |
+| `map [--granularity --focus --depth --edges --include-churn]` | Architecture overview: hub modules/symbols ranked by centrality + churn, plus dependency cycles (SCCs). `--edges` selects lanes (`calls`/`imports`/`inherits`/`both`/`all`); every edge carries a provenance tag (`extracted`/`inferred`/`ambiguous`) + confidence. |
+| `export [--format --focus --edges --write]` | Render as node-link JSON / DOT / Mermaid / GraphML / Cypher / HTML / SVG. |
+| `display [--format --no-open]` | Open a rendered view in the human's desktop viewer. `--no-open` writes the artifact and returns its path. |
+| `open [--format --no-open]` | Return a live `http://…/ui` URL for the interactive graph (or a `file://` export). `--no-open` launches nothing. |
+
 **Git (`basemind git`)**
 
 | Command | Purpose |
 |---|---|
-| `working-tree-status` | What's staged and unstaged right now. |
-| `recent-changes [--limit]` | Recent commits with their files. |
+| `status` | What's staged and unstaged right now. |
+| `recent [--limit] [--no-files]` | Recent commits with their files (a recency window, not a search). |
 | `search <pattern> [--field author\|message\|all] [--limit]` | Full-text search over commit history at full branch depth. |
-| `commits-touching <path>` / `find-commits-by-path <pattern>` | Commits for a path or pattern. |
-| `hot-files [--limit]` | The most frequently changed files. |
-| `diff-file <path> <old> <new>` / `diff-outline <path> [--rev]` | File or structure diff across commits. |
-| `blame-file <path>` / `blame-symbol <path> <name>` | Who last changed each line / a symbol. |
+| `touching <path>` / `by-path <pattern>` | Commits for a path or a changed-path regex. |
+| `churn [--window --top-k]` | The most frequently changed files. |
+| `diff <path> <old> <new>` / `diff-outline <path> [--rev]` | File or structure diff across commits. |
+| `blame <path>` / `blame-symbol <path> <name>` | Who last changed each line / a symbol. |
 | `symbol-history <path> <name>` | When a symbol's body changed over time. |
 
 **Memory (`basemind memory`)**

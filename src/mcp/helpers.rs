@@ -17,7 +17,6 @@ pub(super) use super::helpers_calls::{RefsSource, run_find_callers, run_find_ref
 pub(super) use super::helpers_documents::format_response;
 pub(super) use super::helpers_files::{run_find_files, run_list_files};
 pub(super) use super::helpers_fingerprint::{HashMode, outline_entry_for_blob, parse_hash_mode, symbol_fingerprint};
-pub(super) use super::helpers_graph::run_call_graph;
 pub(super) use super::helpers_grep::run_workspace_grep;
 pub(super) use super::helpers_impls::run_find_implementations;
 pub(super) use super::helpers_telemetry::record_call;

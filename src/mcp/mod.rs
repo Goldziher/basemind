@@ -37,6 +37,7 @@ mod helpers_documents;
 mod helpers_files;
 mod helpers_fingerprint;
 mod helpers_git;
+mod helpers_git_file;
 #[cfg(feature = "memory")]
 mod helpers_governance;
 mod helpers_graph;
@@ -83,20 +84,17 @@ mod telemetry;
 mod tokens;
 mod tools;
 mod tools_admin;
-mod tools_archmap;
 mod tools_code;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_comms;
-mod tools_community;
 mod tools_compress;
 mod tools_git;
-mod tools_graphview;
+mod tools_graph;
 mod tools_memory;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod tools_registry;
 #[cfg(all(feature = "shells", any(unix, windows)))]
 mod tools_shells;
-mod tools_traverse;
 #[cfg(feature = "crawl")]
 mod tools_web;
 mod toon;
@@ -155,6 +153,8 @@ pub mod params {
     pub(crate) use super::lenient::Lenient;
 
     pub use super::mode::AdminMode;
+    pub use super::mode::GitMode;
+    pub use super::mode::GraphMode;
     pub use super::mode::WebMode;
     pub use super::types::{
         BlameFileParams, BlameSymbolParams, CommitsTouchingParams, DependentsParams, DiffFileParams, DiffOutlineParams,
@@ -164,15 +164,13 @@ pub mod params {
         TelemetrySummaryParams, WorkingTreeStatusParams, WorkspaceGrepParams,
     };
     pub use super::types_admin::{AdminParams, CacheClearParams, CacheGcParams, CacheStatsParams};
-    pub use super::types_archmap::ArchitectureMapParams;
     pub use super::types_code::{GetChunkParams, SearchCodeParams};
-    pub use super::types_community::CommunitiesParams;
     pub use super::types_compress::ExpandParams;
+    pub use super::types_git::GitParams;
     pub use super::types_governance::{
         MemoryAuditParams, ProposalAcceptParams, ProposalRejectParams, ProposalsListParams, ProposalsMineParams,
     };
-    pub use super::types_graph::CallGraphParams;
-    pub use super::types_graphview::{DisplayParams, GraphExportParams, UiParams};
+    pub use super::types_graph::{CallGraphParams, GraphParams};
     pub use super::types_impls::FindImplementationsParams;
     pub use super::types_memory::{
         MemoryDeleteParams, MemoryGetParams, MemoryListParams, MemoryPutParams, MemorySearchParams, Visibility,
@@ -182,7 +180,6 @@ pub mod params {
         ShellBroadcastParams, ShellCaptureParams, ShellEnv, ShellKillParams, ShellListParams, ShellSendParams,
         ShellSpawnParams,
     };
-    pub use super::types_traverse::{NeighborsParams, PathParams, SubgraphParams};
     #[cfg(feature = "crawl")]
     pub use super::types_web::WebParams;
 }
@@ -423,10 +420,7 @@ impl BasemindServer {
     fn assemble_router() -> ToolRouter<Self> {
         #[allow(unused_mut)]
         let mut router = Self::tool_router_core()
-            + Self::tool_router_archmap()
-            + Self::tool_router_traverse()
-            + Self::tool_router_community()
-            + Self::tool_router_graphview()
+            + Self::tool_router_graph()
             + Self::tool_router_git()
             + Self::tool_router_memory()
             + Self::tool_router_code()

@@ -181,6 +181,13 @@ Both are real costs, accepted rather than solved, because MCP allows exactly one
   tool. Splitting a domain by mutability would restore the hint at the cost of reintroducing the
   name proliferation this ADR removes, so the hint loses.
 
+  `graph` pays the same cost for a different reason: seven of its nine modes are pure reads, but
+  `display` and `open` launch a viewer on the human's session by default, so the tool takes the
+  side-effecting side of the union (`read_only_hint: false`, `open_world_hint: true`). The union
+  must resolve toward the side effect — a client that auto-approves read-only tools must not be able
+  to pop a window — which means the read-only majority is labelled more conservatively than it was.
+  `open: false` is the per-call escape hatch that keeps those two modes pure.
+
 ### Enum schemas must be hand-written
 
 `#[derive(JsonSchema)]` on an enum whose variants carry doc comments emits

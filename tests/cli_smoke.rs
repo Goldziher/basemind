@@ -148,16 +148,16 @@ fn query_list_files_enumerates() {
 }
 
 #[test]
-fn git_working_tree_status_is_clean() {
+fn git_status_is_clean() {
     let dir = build_and_scan();
     let root = dir.path();
     let v = assert_json_fields(
         root,
-        &["git", "working-tree-status"],
+        &["git", "status"],
         &["staged_added", "modified", "untracked", "is_clean"],
     );
     assert_eq!(v["is_clean"], true, "repo should be clean after commit");
-    assert_human_contains(root, &["git", "working-tree-status"], "is_clean");
+    assert_human_contains(root, &["git", "status"], "is_clean");
 }
 
 #[test]

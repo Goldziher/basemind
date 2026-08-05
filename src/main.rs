@@ -73,6 +73,9 @@ enum Cmd {
     /// Git history / blame / diff queries.
     #[command(subcommand)]
     Git(basemind::cli::git::GitCmd),
+    /// Navigate the code graph (calls, neighbors, path, subgraph, communities, map, export, …).
+    #[command(subcommand)]
+    Graph(basemind::cli::graph::GraphCmd),
     /// Shared agent memory + document search (needs `--features memory,documents`).
     #[command(subcommand)]
     Memory(basemind::cli::memory::MemoryCmd),
@@ -351,6 +354,10 @@ fn main() -> Result<()> {
             dispatch(basemind::cli::ToolCmd::Query(q))
         }
         Cmd::Git(g) => dispatch(basemind::cli::ToolCmd::Git(g)),
+        Cmd::Graph(g) => {
+            let _ = basemind::lang::ensure_grammars();
+            dispatch(basemind::cli::ToolCmd::Graph(g))
+        }
         Cmd::Memory(m) => dispatch(basemind::cli::ToolCmd::Memory(m)),
         Cmd::Web(w) => dispatch(basemind::cli::ToolCmd::Web(w)),
         #[cfg(all(feature = "shells", any(unix, windows)))]
@@ -391,7 +398,7 @@ fn main() -> Result<()> {
 fn warn_ignored_global_flags(cmd: &Cmd, json: bool, view: &str) {
     let consumes_json = matches!(
         cmd,
-        Cmd::Query(_) | Cmd::Git(_) | Cmd::Memory(_) | Cmd::Web(_) | Cmd::Admin(_) | Cmd::Cache(_)
+        Cmd::Query(_) | Cmd::Git(_) | Cmd::Graph(_) | Cmd::Memory(_) | Cmd::Web(_) | Cmd::Admin(_) | Cmd::Cache(_)
     );
     #[cfg(all(feature = "comms", any(unix, windows)))]
     let consumes_json = consumes_json || matches!(cmd, Cmd::Comms { .. } | Cmd::Workspace { .. } | Cmd::Daemon { .. });

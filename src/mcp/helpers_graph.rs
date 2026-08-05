@@ -1,4 +1,14 @@
-//! Body of the `call_graph` MCP tool — re-expressed over the shared `codegraph` (ADR-0001).
+//! The `graph` domain dispatcher, plus the body of its `calls` mode.
+//!
+//! [`run_graph`] is what the `#[tool]` shim and the CLI both call: it validates the flat
+//! [`GraphParams`] against the selected [`GraphMode`], resolves the shared read stack once, and
+//! delegates to the per-mode body. The bodies themselves stay where they already lived —
+//! `helpers_traverse` (`neighbors`/`path`/`subgraph`), `helpers_community` (`communities`),
+//! `helpers_archmap` (`map`), `helpers_graphview` (`export`/`display`/`open`) — so consolidation
+//! moved the surface, not the queries.
+//!
+//! Body of the `calls` mode (formerly the `call_graph` tool) — re-expressed over the shared
+//! `codegraph` (ADR-0001).
 //!
 //! Rather than re-scanning `calls_by_callee` / `calls_by_path` itself, `call_graph` now builds
 //! the calls lane of the shared, memoized [`codegraph`](super::codegraph) once (an `Arc` clone
@@ -28,10 +38,352 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::codegraph::{self, BuildOpts, CodeGraph, EdgeKind, EdgeKindSet, NodeKey};
 use super::helpers::{elapsed_us, json_result, kind_to_str};
+use super::mode::{GraphMode, reject_unsupported};
 use super::shared_state::SharedReadStack;
-use super::types_graph::{CallGraphNode, CallGraphParams, CallGraphResponse, CallGraphSite};
+use super::types_archmap::ArchitectureMapParams;
+use super::types_community::CommunitiesParams;
+use super::types_graph::{CallGraphNode, CallGraphParams, CallGraphResponse, CallGraphSite, GraphParams};
+use super::types_graphview::{DisplayParams, GraphExportParams, UiParams};
+use super::types_traverse::{NeighborsParams, PathParams, SubgraphParams};
 use crate::extract::SymbolKind;
 use crate::path::RelPath;
+
+/// Edge-lane default for every mode but `map`, whose historical default is the calls lane only.
+const DEFAULT_EDGES: &str = "all";
+const DEFAULT_MAP_EDGES: &str = "calls";
+const DEFAULT_ALGORITHM: &str = "label_propagation";
+const DEFAULT_CALLS_DIRECTION: &str = "callers";
+const DEFAULT_NEIGHBORS_DIRECTION: &str = "both";
+const DEFAULT_GRANULARITY: &str = "module";
+const DEFAULT_EXPORT_FORMAT: &str = "node_link";
+const DEFAULT_VISUAL_FORMAT: &str = "html";
+/// `map`'s churn window, clamped the way the pre-consolidation shim clamped it.
+const DEFAULT_CHURN_WINDOW: u32 = 200;
+const MAX_CHURN_WINDOW: u32 = 2000;
+
+/// Fail a mode that was given a field belonging to some other mode.
+///
+/// Inverted against `allowed` rather than listing every rejected field per mode: with nine modes
+/// and twenty-five sibling fields, an explicit per-mode reject list is where a newly added field
+/// silently becomes accept-everywhere.
+fn reject_foreign_fields(mode: GraphMode, present: &[(&str, bool)], allowed: &[&str]) -> Result<(), McpError> {
+    let foreign: Vec<(&str, bool)> = present
+        .iter()
+        .filter(|(field, _)| !allowed.contains(field))
+        .copied()
+        .collect();
+    reject_unsupported(GraphMode::DOMAIN, mode.as_str(), &foreign)
+}
+
+/// Unwrap a field this mode cannot run without, naming the exact `mode`/field pair.
+fn require_field<T>(mode: GraphMode, field: &str, value: Option<T>) -> Result<T, McpError> {
+    value
+        .ok_or_else(|| McpError::invalid_params(format!("`graph` mode=\"{}\" requires `{field}`", mode.as_str()), None))
+}
+
+/// Dispatch the single `graph` tool onto the per-operation helper its `mode` selects.
+///
+/// Fields belonging to another mode are rejected rather than dropped: a silently ignored
+/// `max_communities` on a `subgraph` call reads to an agent as a successful capped clustering.
+pub(super) async fn run_graph(state: &super::ServerState, params: GraphParams) -> Result<CallToolResult, McpError> {
+    let GraphParams {
+        mode,
+        name,
+        path,
+        from,
+        from_path,
+        to,
+        to_path,
+        direction,
+        depth,
+        max_depth,
+        max_nodes,
+        max_edges,
+        max_tokens,
+        edges,
+        include_contains,
+        min_confidence,
+        algorithm,
+        max_communities,
+        members_per_community,
+        granularity,
+        focus,
+        include_churn,
+        churn_window,
+        format,
+        write,
+        open,
+    } = params;
+    let present = [
+        ("name", name.is_some()),
+        ("path", path.is_some()),
+        ("from", from.is_some()),
+        ("from_path", from_path.is_some()),
+        ("to", to.is_some()),
+        ("to_path", to_path.is_some()),
+        ("direction", direction.is_some()),
+        ("depth", depth.is_some()),
+        ("max_depth", max_depth.is_some()),
+        ("max_nodes", max_nodes.is_some()),
+        ("max_edges", max_edges.is_some()),
+        ("max_tokens", max_tokens.is_some()),
+        ("edges", edges.is_some()),
+        ("include_contains", include_contains.is_some()),
+        ("min_confidence", min_confidence.is_some()),
+        ("algorithm", algorithm.is_some()),
+        ("max_communities", max_communities.is_some()),
+        ("members_per_community", members_per_community.is_some()),
+        ("granularity", granularity.is_some()),
+        ("focus", focus.is_some()),
+        ("include_churn", include_churn.is_some()),
+        ("churn_window", churn_window.is_some()),
+        ("format", format.is_some()),
+        ("write", write.is_some()),
+        ("open", open.is_some()),
+    ];
+    reject_foreign_fields(mode, &present, allowed_fields(mode))?;
+
+    // Timed from here, matching the pre-consolidation shims: the cache-ready wait a cold server
+    // pays is part of the reported `elapsed_us` (such responses also carry a lifecycle `notice`).
+    let started = std::time::Instant::now();
+    state.await_cache_ready().await;
+    let store = state.shared.store.read().await;
+    let idx = store.index_db.as_ref().cloned();
+    let basemind_dir = store.basemind_dir.clone();
+    drop(store);
+    let cache = state.shared.cache.load_full();
+    let shared = &state.shared;
+    let idx = idx.as_ref();
+    let notice = state.lifecycle_notice();
+    let edges_or = |fallback: &str| edges.clone().unwrap_or_else(|| fallback.to_string());
+    let algorithm_or = || algorithm.clone().unwrap_or_else(|| DEFAULT_ALGORITHM.to_string());
+
+    match mode {
+        GraphMode::Calls => run_call_graph(
+            shared,
+            idx,
+            CallGraphParams {
+                name: require_field(mode, "name", name)?,
+                direction: direction.unwrap_or_else(|| DEFAULT_CALLS_DIRECTION.to_string()),
+                path,
+                max_depth,
+                max_nodes,
+            },
+            &cache,
+            notice,
+            started,
+        ),
+        GraphMode::Neighbors => super::helpers_traverse::run_neighbors(
+            shared,
+            idx,
+            &cache,
+            NeighborsParams {
+                name: require_field(mode, "name", name)?,
+                path,
+                direction: direction.unwrap_or_else(|| DEFAULT_NEIGHBORS_DIRECTION.to_string()),
+                depth,
+                edges: edges_or(DEFAULT_EDGES),
+                min_confidence,
+                max_nodes,
+            },
+            notice,
+            started,
+        ),
+        GraphMode::Path => super::helpers_traverse::run_path(
+            shared,
+            idx,
+            &cache,
+            PathParams {
+                from: require_field(mode, "from", from)?,
+                from_path,
+                to: require_field(mode, "to", to)?,
+                to_path,
+                edges: edges_or(DEFAULT_EDGES),
+                include_contains: include_contains.unwrap_or(false),
+                min_confidence,
+            },
+            notice,
+            started,
+        ),
+        GraphMode::Subgraph => super::helpers_traverse::run_subgraph(
+            shared,
+            idx,
+            &cache,
+            SubgraphParams {
+                name: require_field(mode, "name", name)?,
+                path,
+                depth,
+                edges: edges_or(DEFAULT_EDGES),
+                min_confidence,
+                max_nodes,
+            },
+            notice,
+            started,
+        ),
+        GraphMode::Communities => super::helpers_community::run_communities(
+            shared,
+            idx,
+            &cache,
+            CommunitiesParams {
+                edges: edges_or(DEFAULT_EDGES),
+                algorithm: algorithm_or(),
+                min_confidence,
+                max_communities,
+                members_per_community,
+            },
+            notice,
+            started,
+        ),
+        GraphMode::Map => {
+            let include_churn = include_churn.unwrap_or(true);
+            let churn = if include_churn {
+                let window = churn_window.unwrap_or(DEFAULT_CHURN_WINDOW).min(MAX_CHURN_WINDOW);
+                super::helpers_archmap::churn_commit_counts(state, window).ok()
+            } else {
+                None
+            };
+            super::helpers_archmap::run_architecture_map(
+                shared,
+                idx,
+                &cache,
+                churn.as_ref(),
+                ArchitectureMapParams {
+                    granularity: granularity.unwrap_or_else(|| DEFAULT_GRANULARITY.to_string()),
+                    focus,
+                    depth,
+                    edges: edges_or(DEFAULT_MAP_EDGES),
+                    include_churn,
+                    churn_window,
+                    max_nodes,
+                    max_edges,
+                    max_tokens,
+                },
+                notice,
+                started,
+            )
+        }
+        GraphMode::Export => super::helpers_graphview::run_graph_export(
+            shared,
+            idx,
+            &cache,
+            &basemind_dir,
+            GraphExportParams {
+                format: format.unwrap_or_else(|| DEFAULT_EXPORT_FORMAT.to_string()),
+                focus,
+                edges: edges_or(DEFAULT_EDGES),
+                algorithm: algorithm_or(),
+                min_confidence,
+                max_nodes,
+                write: write.unwrap_or(false),
+            },
+            notice,
+            started,
+        ),
+        GraphMode::Display => {
+            super::helpers_graphview::run_display(
+                shared,
+                idx,
+                &cache,
+                &basemind_dir,
+                DisplayParams {
+                    format: format.unwrap_or_else(|| DEFAULT_VISUAL_FORMAT.to_string()),
+                    focus,
+                    edges: edges_or(DEFAULT_EDGES),
+                    algorithm: algorithm_or(),
+                    min_confidence,
+                    max_nodes,
+                    open: open.unwrap_or(true),
+                },
+                notice,
+                started,
+            )
+            .await
+        }
+        GraphMode::Open => {
+            super::helpers_graphview::run_ui(
+                shared,
+                idx,
+                &cache,
+                &basemind_dir,
+                UiParams {
+                    format: format.unwrap_or_else(|| DEFAULT_VISUAL_FORMAT.to_string()),
+                    focus,
+                    edges: edges_or(DEFAULT_EDGES),
+                    algorithm: algorithm_or(),
+                    min_confidence,
+                    max_nodes,
+                    open: open.unwrap_or(true),
+                },
+                notice,
+                started,
+            )
+            .await
+        }
+    }
+}
+
+/// The sibling fields each mode accepts. Everything else present on the call is rejected by
+/// [`reject_foreign_fields`], so a parameter an agent believed took effect never silently doesn't.
+fn allowed_fields(mode: GraphMode) -> &'static [&'static str] {
+    match mode {
+        GraphMode::Calls => &["name", "path", "direction", "max_depth", "max_nodes"],
+        GraphMode::Neighbors => &[
+            "name",
+            "path",
+            "direction",
+            "depth",
+            "edges",
+            "min_confidence",
+            "max_nodes",
+        ],
+        GraphMode::Path => &[
+            "from",
+            "from_path",
+            "to",
+            "to_path",
+            "edges",
+            "include_contains",
+            "min_confidence",
+        ],
+        GraphMode::Subgraph => &["name", "path", "depth", "edges", "min_confidence", "max_nodes"],
+        GraphMode::Communities => &[
+            "edges",
+            "algorithm",
+            "min_confidence",
+            "max_communities",
+            "members_per_community",
+        ],
+        GraphMode::Map => &[
+            "granularity",
+            "focus",
+            "depth",
+            "edges",
+            "include_churn",
+            "churn_window",
+            "max_nodes",
+            "max_edges",
+            "max_tokens",
+        ],
+        GraphMode::Export => &[
+            "format",
+            "focus",
+            "edges",
+            "algorithm",
+            "min_confidence",
+            "max_nodes",
+            "write",
+        ],
+        GraphMode::Display | GraphMode::Open => &[
+            "format",
+            "focus",
+            "edges",
+            "algorithm",
+            "min_confidence",
+            "max_nodes",
+            "open",
+        ],
+    }
+}
 
 const MAX_DEPTH_CEILING: u32 = 6;
 const MAX_NODES_CEILING: u32 = 500;

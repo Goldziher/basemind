@@ -1,7 +1,8 @@
-//! Git-aware query subcommands: 1:1 with the MCP git tools.
+//! `basemind git` — the CLI half of the `git` domain.
 //!
-//! Each handler builds the matching `*Params` struct and dispatches to the
-//! identical `#[tool]` method on the in-process [`BasemindServer`].
+//! Real clap subcommands rather than a `--mode` flag, so each operation keeps its own `--help` and
+//! its own argument validation; they map one-to-one onto the MCP `git` tool's [`GitMode`] values,
+//! which is what `tests/cli_parity.rs` asserts.
 
 use std::io::Write;
 
@@ -17,9 +18,9 @@ use super::run_tool;
 #[derive(Subcommand, Debug)]
 pub enum GitCmd {
     /// Staged / unstaged / untracked working-tree status.
-    WorkingTreeStatus,
-    /// Recent commits with paths + summaries.
-    RecentChanges {
+    Status,
+    /// Recent commits with paths + summaries (a recency window, not a search).
+    Recent {
         #[arg(long)]
         limit: Option<u32>,
         /// Omit the per-file change list.
@@ -27,7 +28,7 @@ pub enum GitCmd {
         no_files: bool,
     },
     /// Full-text search over commit history (author / message / all) at full branch depth.
-    /// This is the "what did <author> do" / "which commit mentions <X>" tool — it scans every
+    /// This is the "what did <author> do" / "which commit mentions <X>" mode — it scans every
     /// commit reachable from HEAD, not a recent window.
     Search {
         /// Query tokens (lowercased, split on non-alphanumeric) matched as an AND.
@@ -41,13 +42,13 @@ pub enum GitCmd {
         limit: Option<u32>,
     },
     /// Commits that modified a given path.
-    CommitsTouching {
+    Touching {
         path: String,
         #[arg(long)]
         limit: Option<u32>,
     },
     /// Path-filtered commit log (regex over changed paths).
-    FindCommitsByPath {
+    ByPath {
         pattern: String,
         #[arg(long)]
         window: Option<u32>,
@@ -55,14 +56,14 @@ pub enum GitCmd {
         limit: Option<u32>,
     },
     /// Churn-ranked files in a recent commit window.
-    HotFiles {
+    Churn {
         #[arg(long)]
         window: Option<u32>,
         #[arg(long)]
         top_k: Option<u32>,
     },
     /// File content diff between two revisions.
-    DiffFile {
+    Diff {
         path: String,
         rev_old: String,
         rev_new: String,
@@ -74,7 +75,7 @@ pub enum GitCmd {
         rev: Option<String>,
     },
     /// Per-line blame for a file.
-    BlameFile {
+    Blame {
         path: String,
         #[arg(long)]
         line_start: Option<u32>,
@@ -109,128 +110,121 @@ pub enum GitCmd {
     },
 }
 
+/// Dispatch a `git` subcommand through the in-process server.
 pub async fn run(server: &BasemindServer, cmd: GitCmd, opts: &Emit, out: &mut impl Write) -> Result<()> {
-    match cmd {
-        GitCmd::WorkingTreeStatus => {
-            let r = run_tool(
-                "working_tree_status",
-                server.working_tree_status(Parameters(WorkingTreeStatusParams {})).await,
-            )?;
-            emit("working_tree_status", &r, opts, out)
-        }
-        GitCmd::RecentChanges { limit, no_files } => {
-            let p = RecentChangesParams {
-                limit,
-                include_files: !no_files,
-                cursor: None,
-            };
-            let r = run_tool("recent_changes", server.recent_changes(Parameters(p)).await)?;
-            emit("recent_changes", &r, opts, out)
-        }
-        GitCmd::Search { pattern, field, limit } => {
-            let p = SearchGitHistoryParams {
-                pattern,
-                field,
-                limit,
-                cursor: None,
-            };
-            let r = run_tool("search_git_history", server.search_git_history(Parameters(p)).await)?;
-            emit("search_git_history", &r, opts, out)
-        }
-        GitCmd::CommitsTouching { path, limit } => {
-            let p = CommitsTouchingParams {
-                path: path.as_str().into(),
-                limit,
-                cursor: None,
-            };
-            let r = run_tool("commits_touching", server.commits_touching(Parameters(p)).await)?;
-            emit("commits_touching", &r, opts, out)
-        }
-        GitCmd::FindCommitsByPath { pattern, window, limit } => {
-            let p = FindCommitsByPathParams {
-                pattern,
-                window,
-                limit,
-                cursor: None,
-            };
-            let r = run_tool("find_commits_by_path", server.find_commits_by_path(Parameters(p)).await)?;
-            emit("find_commits_by_path", &r, opts, out)
-        }
-        GitCmd::HotFiles { window, top_k } => {
-            let p = HotFilesParams { window, top_k };
-            let r = run_tool("hot_files", server.hot_files(Parameters(p)).await)?;
-            emit("hot_files", &r, opts, out)
-        }
-        GitCmd::DiffFile { path, rev_old, rev_new } => {
-            let p = DiffFileParams {
-                rev_old,
-                rev_new,
-                path: path.as_str().into(),
-            };
-            let r = run_tool("diff_file", server.diff_file(Parameters(p)).await)?;
-            emit("diff_file", &r, opts, out)
-        }
-        GitCmd::DiffOutline { path, rev } => {
-            let p = DiffOutlineParams {
-                path: path.as_str().into(),
-                rev,
-            };
-            let r = run_tool("diff_outline", server.diff_outline(Parameters(p)).await)?;
-            emit("diff_outline", &r, opts, out)
-        }
-        GitCmd::BlameFile {
+    let p = match cmd {
+        GitCmd::Status => GitParams::new(GitMode::Status),
+        GitCmd::Recent { limit, no_files } => GitParams {
+            limit,
+            include_files: no_files.then_some(false),
+            ..GitParams::new(GitMode::Recent)
+        },
+        GitCmd::Search { pattern, field, limit } => GitParams {
+            pattern: Some(pattern),
+            field,
+            limit,
+            ..GitParams::new(GitMode::Search)
+        },
+        GitCmd::Touching { path, limit } => GitParams {
+            path: Some(path.as_str().into()),
+            limit,
+            ..GitParams::new(GitMode::Touching)
+        },
+        GitCmd::ByPath { pattern, window, limit } => GitParams {
+            pattern: Some(pattern),
+            window,
+            limit,
+            ..GitParams::new(GitMode::ByPath)
+        },
+        GitCmd::Churn { window, top_k } => GitParams {
+            window,
+            top_k,
+            ..GitParams::new(GitMode::Churn)
+        },
+        GitCmd::Diff { path, rev_old, rev_new } => GitParams {
+            path: Some(path.as_str().into()),
+            rev_old: Some(rev_old),
+            rev_new: Some(rev_new),
+            ..GitParams::new(GitMode::Diff)
+        },
+        GitCmd::DiffOutline { path, rev } => GitParams {
+            path: Some(path.as_str().into()),
+            rev,
+            ..GitParams::new(GitMode::DiffOutline)
+        },
+        GitCmd::Blame {
             path,
             line_start,
             line_end,
             rev,
             limit,
-        } => {
-            let p = BlameFileParams {
-                path: path.as_str().into(),
-                line_start,
-                line_end,
-                rev,
-                limit,
-                cursor: None,
-            };
-            let r = run_tool("blame_file", server.blame_file(Parameters(p)).await)?;
-            emit("blame_file", &r, opts, out)
-        }
+        } => GitParams {
+            path: Some(path.as_str().into()),
+            line_start,
+            line_end,
+            rev,
+            limit,
+            ..GitParams::new(GitMode::Blame)
+        },
         GitCmd::BlameSymbol {
             path,
             name,
             kind,
             rev,
             limit,
-        } => {
-            let p = BlameSymbolParams {
-                path: path.as_str().into(),
-                name,
-                kind,
-                rev,
-                limit,
-                cursor: None,
-            };
-            let r = run_tool("blame_symbol", server.blame_symbol(Parameters(p)).await)?;
-            emit("blame_symbol", &r, opts, out)
-        }
+        } => GitParams {
+            path: Some(path.as_str().into()),
+            name: Some(name),
+            kind,
+            rev,
+            limit,
+            ..GitParams::new(GitMode::BlameSymbol)
+        },
         GitCmd::SymbolHistory {
             path,
             name,
             kind,
             limit,
             hash_mode,
-        } => {
-            let p = SymbolHistoryParams {
-                path: path.as_str().into(),
-                name,
-                kind,
-                limit,
-                hash_mode,
-                cursor: None,
-            };
-            let r = run_tool("symbol_history", server.symbol_history(Parameters(p)).await)?;
-            emit("symbol_history", &r, opts, out)
+        } => GitParams {
+            path: Some(path.as_str().into()),
+            name: Some(name),
+            kind,
+            limit,
+            hash_mode,
+            ..GitParams::new(GitMode::SymbolHistory)
+        },
+    };
+
+    let key = p.mode.telemetry_key();
+    let r = run_tool(key, server.git(Parameters(Lenient(p))).await)?;
+    emit(key, &r, opts, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{CommandFactory, Parser, Subcommand as _};
+
+    use super::GitCmd;
+
+    #[derive(Parser)]
+    struct Harness {
+        #[command(subcommand)]
+        cmd: GitCmd,
+    }
+
+    /// The CLI half of the parity contract, checked from this side too: every `git` mode the MCP
+    /// tool advertises must resolve to a clap subcommand of the same (kebab-cased) name.
+    #[test]
+    fn should_expose_one_subcommand_per_advertised_git_mode() {
+        let command = GitCmd::augment_subcommands(Harness::command());
+        let names: Vec<String> = command.get_subcommands().map(|s| s.get_name().to_string()).collect();
+        for mode in crate::mcp::mode::GitMode::ALL_MODES {
+            let expected = mode.replace('_', "-");
+            assert!(
+                names.contains(&expected),
+                "`git` mode `{mode}` has no `basemind git {expected}` subcommand; got {names:?}"
+            );
         }
     }
 }

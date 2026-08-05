@@ -859,7 +859,6 @@ pub(super) use super::types_git::{
     HotFilesResponse, HunkView, RecentChangesResponse, SearchGitHistoryResponse, SymbolHistoryEntry,
     SymbolHistoryResponse, WorkingTreeStatusView,
 };
-pub use super::types_graph::CallGraphParams;
 pub use super::types_impls::FindImplementationsParams;
 
 #[cfg(test)]
@@ -900,7 +899,8 @@ mod tests {
 
     #[test]
     fn call_graph_accepts_query_alias_for_name() {
-        let params: super::CallGraphParams = serde_json::from_value(serde_json::json!({ "query": "main" })).unwrap();
+        let params: super::super::types_graph::CallGraphParams =
+            serde_json::from_value(serde_json::json!({ "query": "main" })).unwrap();
         assert_eq!(params.name, "main");
     }
 
