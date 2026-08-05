@@ -276,6 +276,51 @@ define_mode! {
     }
 }
 
+define_mode! {
+    /// Which multi-agent coordination operation the `agents` tool should run.
+    pub enum AgentsMode {
+        domain: "agents",
+        summary: "Agent coordination operation to run.",
+        Register => "register", "publish or update this agent's identity card with the broker";
+        List => "list", "the agents the broker knows, optionally restricted to one thread";
+        ThreadStart => "thread_start", "open a thread addressed by subject, path-glob and/or members";
+        ThreadList => "thread_list", "threads discoverable to you: membership, cwd path-match or subject";
+        Join => "join", "join a thread so its messages reach your inbox";
+        Leave => "leave", "leave a thread you joined";
+        Members => "members", "who belongs to a thread";
+        AddMember => "add_member", "add an agent to a thread you created";
+        RemoveMember => "remove_member", "remove an agent from a thread you created";
+        Archive => "archive", "close a thread; creator or human admin only";
+        Post => "post", "send a message to a thread";
+        History => "history", "a thread's messages as front-matter only; bodies come from `message`";
+        Message => "message", "read one message body by id — the only path to a body";
+        Inbox => "inbox", "unread messages across your joined threads, front-matter only";
+        Ack => "ack", "clear messages you have read from your inbox";
+        Wait => "wait", "block until a peer posts, or until the timeout elapses";
+    }
+}
+
+define_mode! {
+    /// Which code-map lookup the `code` tool should run.
+    pub enum CodeMode {
+        domain: "code",
+        summary: "Code-map lookup to run.",
+        Outline => "outline", "a file's structure: symbols, lines, signatures — read this instead of the file";
+        Symbols => "symbols", "find a definition by name across every indexed file";
+        Grep => "grep", "pattern search across the workspace, filtered by language or path";
+        Files => "files", "enumerate indexed files";
+        Find => "find", "locate a file by a fuzzy fragment of its name or path";
+        Definition => "definition", "resolve a reference position to the definition it binds to";
+        References => "references", "every call site of a name";
+        Callers => "callers", "callers of one specific definition, disambiguated by path";
+        Implementations => "implementations", "types implementing or inheriting a trait, interface or base class";
+        Dependents => "dependents", "what imports a given module";
+        Expand => "expand", "one symbol's raw source body — the inverse of an outline entry";
+        Semantic => "semantic", "search code by meaning; returns pointers, fetch bodies with `chunk`";
+        Chunk => "chunk", "fetch one code chunk's source body";
+    }
+}
+
 /// Fail a call that passed parameters the selected mode does not accept.
 ///
 /// `present` pairs each inapplicable field name with whether the caller actually supplied it. Every
