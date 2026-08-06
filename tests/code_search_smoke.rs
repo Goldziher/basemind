@@ -1,12 +1,18 @@
-//! End-to-end smoke test for the semantic code-search tier (`search_code` + `get_chunk`).
+//! End-to-end smoke test for the semantic code-search tier (`code semantic` + `code chunk`).
 //!
 //! Gated on `feature = "code-search"`. Drives the real `basemind` binary: scan a tiny fixture
-//! (which chunks + embeds source), then `query search-code` and `query get-chunk` over the CLI —
-//! the same tool code an MCP client dispatches.
+//! (which chunks + embeds source), then `code semantic` and `code chunk` over the CLI — the same
+//! tool code an MCP client dispatches.
 //!
 //! The embedding model downloads on first use. When it is unavailable (offline CI, cold grammar),
-//! the scan still succeeds but produces no vectors, so `search-code` yields no hits or errors — the
-//! test then SKIPS gracefully rather than failing, per the plan's cold-start contract.
+//! the scan still succeeds but produces no vectors, so `code semantic` yields no hits or errors —
+//! the test then SKIPS gracefully rather than failing, per the plan's cold-start contract.
+//!
+//! These invocations were left on the removed `basemind query …` group by the nine-domain
+//! consolidation. Because the whole file is `code-search`-gated and that feature is in no default
+//! test run, the breakage stayed invisible: two tests failed the moment the feature was switched on
+//! and a third "passed" only by taking its offline-SKIP branch on an unrecognized-subcommand error.
+//! Same shape as the stale `find_implementations` call sites in `tests/harden.rs` (3544daa). ~keep
 #![cfg(feature = "code-search")]
 
 use std::process::Command;
@@ -47,12 +53,7 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
 
     let out = Command::new(bin())
         .current_dir(root)
-        .args([
-            "--json",
-            "query",
-            "search-code",
-            "parse a configuration file into a struct",
-        ])
+        .args(["--json", "code", "semantic", "parse a configuration file into a struct"])
         .output()
         .expect("spawn search-code");
     if !out.status.success() {
@@ -97,7 +98,7 @@ fn search_code_finds_chunk_then_get_chunk_fetches_body() {
 
     let gc = Command::new(bin())
         .current_dir(root)
-        .args(["--json", "query", "get-chunk", "lib.rs", "--chunk-id", chunk_id])
+        .args(["--json", "code", "chunk", "lib.rs", "--chunk-id", chunk_id])
         .output()
         .expect("spawn get-chunk");
     assert!(
@@ -283,7 +284,7 @@ fn search_code_keyword_mode_ranks_by_bm25() {
 
     let out = Command::new(bin())
         .current_dir(root)
-        .args(["--json", "query", "search-code", "--mode", "keyword", "config parser"])
+        .args(["--json", "code", "semantic", "--lane", "keyword", "config parser"])
         .output()
         .expect("spawn keyword search-code");
     assert!(
@@ -327,7 +328,7 @@ fn search_code_keyword_mode_ranks_by_bm25() {
         .expect("keyword hit carries a chunk_id pointer");
     let gc = Command::new(bin())
         .current_dir(root)
-        .args(["--json", "query", "get-chunk", "lib.rs", "--chunk-id", chunk_id])
+        .args(["--json", "code", "chunk", "lib.rs", "--chunk-id", chunk_id])
         .output()
         .expect("spawn get-chunk");
     assert!(
@@ -373,7 +374,7 @@ fn search_code_hybrid_ranks_exact_symbol_first() {
 
     let out = Command::new(bin())
         .current_dir(root)
-        .args(["--json", "query", "search-code", "parse_config"])
+        .args(["--json", "code", "semantic", "parse_config"])
         .output()
         .expect("spawn hybrid search-code");
     assert!(
