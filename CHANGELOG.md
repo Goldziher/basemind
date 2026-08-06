@@ -195,7 +195,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `multi-agent-room` skill now ships to every plugin tree.** `scripts/sync-plugin-skills.sh`
   carried a hand-maintained list of nine skills while `skills/` held ten, so `multi-agent-room` was
   copied into the Hermes bundle (generated separately by ai-rulez) but never into the Codex, Cursor
-  or opencode plugins — while the `agent-comms` rule those plugins *do* ship tells the agent to
+  or opencode plugins — while the `agent-comms` rule those plugins _do_ ship tells the agent to
   consult it. The skill and command lists are now derived from the canonical `skills/` and
   `commands/` trees, so adding either ships it everywhere instead of only where someone remembered.
 - **Documentation named tools and commands that no longer exist.** The consolidation swept the

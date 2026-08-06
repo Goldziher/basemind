@@ -281,7 +281,7 @@ pub(crate) fn run_architecture_map(
     let max_nodes = params.max_nodes.unwrap_or(60).min(300) as usize;
     let max_edges = params.max_edges.unwrap_or(200).min(2000) as usize;
     let depth = params.depth.unwrap_or(2).max(1) as usize;
-    let focus = params.focus.as_deref();
+    let focus = params.focus.as_ref();
 
     let rg = RepoGraph::build(idx, cache, codegraph::CODEGRAPH_SCAN_CAP)?;
 
@@ -369,7 +369,7 @@ struct GroupRanking {
 /// grouping bookkeeping stays separate from graph construction and ranking.
 fn assign_file_groups(
     rg: &RepoGraph,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
     rollup: Option<usize>,
     churn: Option<&AHashMap<RelPath, u32>>,
 ) -> FileGroups {
@@ -382,7 +382,7 @@ fn assign_file_groups(
     for (fid, path) in rg.files.iter().enumerate() {
         let ps = path.as_str().unwrap_or("");
         if let Some(fx) = focus
-            && !ps.starts_with(fx)
+            && !path.as_bytes().starts_with(fx.as_bytes())
         {
             continue;
         }
@@ -539,7 +539,7 @@ fn run_tier_grouped(
     idx: Option<&IndexDb>,
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
     rollup: Option<usize>,
     params: &ArchitectureMapParams,
     max_nodes: usize,
@@ -640,7 +640,7 @@ fn grouped_lane_edges(
     rg: &RepoGraph,
     group_of: &[Option<u32>],
     sel: EdgeKindSet,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
 ) -> Result<(LaneEdges, bool), McpError> {
     let mut out: LaneEdges = AHashMap::new();
     if !sel.imports && !sel.inherits {
@@ -660,7 +660,7 @@ fn grouped_lane_edges(
         cache,
         &BuildOpts {
             kinds: lane_kinds,
-            focus: focus.map(str::to_string),
+            focus: focus.cloned(),
             scan_cap: codegraph::CODEGRAPH_SCAN_CAP,
         },
     )?;
@@ -764,14 +764,13 @@ fn collect_symbol_candidates(
     rg: &RepoGraph,
     cache: &MapCache,
     churn: Option<&AHashMap<RelPath, u32>>,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
     max_nodes: usize,
 ) -> (Vec<SymCand>, u32) {
     let mut cands: Vec<SymCand> = Vec::new();
     for (path, l1) in &cache.by_path {
-        let ps = path.as_str().unwrap_or("");
         if let Some(fx) = focus
-            && !ps.starts_with(fx)
+            && !path.as_bytes().starts_with(fx.as_bytes())
         {
             continue;
         }
@@ -916,7 +915,7 @@ fn run_tier_symbol(
     cache: &MapCache,
     idx: Option<&IndexDb>,
     churn: Option<&AHashMap<RelPath, u32>>,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
     params: &ArchitectureMapParams,
     max_nodes: usize,
     max_edges: usize,

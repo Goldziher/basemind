@@ -274,7 +274,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             max_tokens,
         } => GraphParams {
             granularity: Some(granularity),
-            focus,
+            focus: focus.map(RelPath::from),
             depth,
             edges: Some(edges),
             include_churn: Some(include_churn),
@@ -294,7 +294,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             write,
         } => GraphParams {
             format: Some(format),
-            focus,
+            focus: focus.map(RelPath::from),
             edges: Some(edges),
             algorithm: Some(algorithm),
             min_confidence,
@@ -312,7 +312,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             no_open,
         } => GraphParams {
             format: Some(format),
-            focus,
+            focus: focus.map(RelPath::from),
             edges: Some(edges),
             algorithm: Some(algorithm),
             min_confidence,
@@ -330,7 +330,7 @@ pub async fn run(server: &BasemindServer, cmd: GraphCmd, opts: &Emit, out: &mut 
             no_open,
         } => GraphParams {
             format: Some(format),
-            focus,
+            focus: focus.map(RelPath::from),
             edges: Some(edges),
             algorithm: Some(algorithm),
             min_confidence,

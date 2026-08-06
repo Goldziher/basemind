@@ -120,7 +120,7 @@ impl BasemindServer {
             algorithm,
             min_confidence,
             max_nodes,
-            focus,
+            focus.map(crate::path::RelPath::from),
         )?;
         let content_type = if matches!(parts.format, GraphFormat::Svg) {
             "image/svg+xml"

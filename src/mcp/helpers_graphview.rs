@@ -13,6 +13,7 @@ use rmcp::model::CallToolResult;
 use super::MapCache;
 use super::codegraph::{self, BuildOpts, CodeEdge, EdgeKindSet};
 use super::community::{self, CommunityAlgo};
+use super::file_url::file_url;
 use super::graph_view::{self, GraphFormat, GraphView, GraphViewEdge, GraphViewNode};
 use super::helpers::{elapsed_us, json_result};
 use super::helpers_community::label_for;
@@ -24,6 +25,7 @@ use super::types_graphview::{
     DisplayParams, DisplayResponse, GraphExportParams, GraphExportResponse, UiParams, UiResponse,
 };
 use crate::index::IndexDb;
+use crate::path::RelPath;
 
 /// Sweep bound for community detection when tagging nodes; converges well inside this on real graphs.
 const GRAPHVIEW_COMMUNITY_ITERS: u32 = 50;
@@ -83,7 +85,7 @@ pub(super) fn build_graph_view(
     kinds: EdgeKindSet,
     min_conf: f32,
     algo: CommunityAlgo,
-    focus: Option<String>,
+    focus: Option<RelPath>,
     max_nodes: usize,
 ) -> Result<GraphView, McpError> {
     let built = shared.graph(
@@ -181,7 +183,15 @@ const EXPORTS_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 /// absolute path. The filename is content-addressed (a blake3 of the rendered bytes), so it is
 /// deterministic, dedups identical renders, and carries no caller-supplied path component — there is
 /// no traversal surface (CWE-22). An I/O failure is surfaced as an MCP internal error, not swallowed.
-fn write_export(basemind_dir: &std::path::Path, format: GraphFormat, content: &str) -> Result<String, McpError> {
+///
+/// Returns a `PathBuf`, never a `String`: `basemind_dir` comes from `BASEMIND_DATA_HOME` / the
+/// platform cache dir, so its bytes are not guaranteed to be UTF-8, and a lossy stringification here
+/// would hand the caller a path that no longer opens the file it just wrote.
+fn write_export(
+    basemind_dir: &std::path::Path,
+    format: GraphFormat,
+    content: &str,
+) -> Result<std::path::PathBuf, McpError> {
     let dir = basemind_dir.join(EXPORTS_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| McpError::internal_error(format!("create exports dir: {e}"), None))?;
     let hash = crate::hashing::hex(&crate::hashing::hash_bytes(content.as_bytes()));
@@ -190,7 +200,7 @@ fn write_export(basemind_dir: &std::path::Path, format: GraphFormat, content: &s
     crate::store_blob::write_bytes_atomic(path.clone(), content.as_bytes())
         .map_err(|e| McpError::internal_error(format!("write export: {e}"), None))?;
     prune_exports(&dir, EXPORTS_BUDGET_BYTES);
-    Ok(path.to_string_lossy().into_owned())
+    Ok(path)
 }
 
 /// Evict the oldest exports (by modified time) until the directory is at or under `budget` bytes,
@@ -272,7 +282,7 @@ pub(super) fn run_graph_export(
     let content = graph_view::render(&view, format);
 
     let output_path = if params.write {
-        Some(write_export(basemind_dir, format, &content)?)
+        Some(RelPath::from(write_export(basemind_dir, format, &content)?.as_path()))
     } else {
         None
     };
@@ -455,8 +465,8 @@ pub(super) async fn run_display(
         // Offload the external-process wait to Tokio's blocking pool (built for unbounded blocking
         // I/O) rather than the async worker pool the daemon runtime services other tool calls on, and
         // bound it: a launcher blocking on a chooser/portal degrades to export-only, not a hung call.
-        let path = output_path.clone();
-        let launch = tokio::task::spawn_blocking(move || open_in_viewer(std::ffi::OsStr::new(&path)));
+        let path = output_path.clone().into_os_string();
+        let launch = tokio::task::spawn_blocking(move || open_in_viewer(&path));
         match tokio::time::timeout(OPENER_LAUNCH_TIMEOUT, launch).await {
             Ok(Ok(outcome)) => report_for_outcome(outcome),
             Ok(Err(join_err)) => (false, "export", Some(format!("opener task failed: {join_err}"))),
@@ -475,7 +485,7 @@ pub(super) async fn run_display(
 
     json_result(&DisplayResponse {
         format: format.as_str().to_string(),
-        output_path,
+        output_path: RelPath::from(output_path.as_path()),
         displayed,
         method: method.to_string(),
         detail,
@@ -513,7 +523,7 @@ pub(super) fn render_ui_parts(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
-    focus: Option<String>,
+    focus: Option<RelPath>,
 ) -> Result<UiParts, McpError> {
     let format = GraphFormat::parse(format)
         .filter(|f| matches!(f, GraphFormat::Html | GraphFormat::Svg))
@@ -586,13 +596,13 @@ pub(super) async fn run_ui(
         &params.algorithm,
         params.min_confidence,
         params.max_nodes,
-        params.focus.as_deref(),
+        params.focus.as_ref(),
     )
     .await
     {
         Some(url) => (url, true, "http", None),
         None => (
-            format!("file://{output_path}"),
+            file_url(&output_path),
             false,
             "file",
             Some("no basemind daemon serving HTTP; using the written export file".to_string()),
@@ -612,7 +622,7 @@ pub(super) async fn run_ui(
         url,
         served,
         method: method.to_string(),
-        output_path,
+        output_path: RelPath::from(output_path.as_path()),
         detail,
         node_count: parts.node_count,
         edge_count: parts.edge_count,
@@ -627,6 +637,10 @@ pub(super) async fn run_ui(
 /// serving it (no comms build, no daemon running, or the port is not answering). On `None` the `ui`
 /// tool falls back to the written `file://` export. The comms build delegates to
 /// [`crate::comms::http_frontend::served_ui_url`], which reads the portfile and probes the port.
+///
+/// A non-UTF-8 `focus` also resolves to `None`: the served URL carries the prefix in a query string,
+/// which cannot express those bytes, and serving a *wider* graph than the caller asked for would be
+/// a silent wrong answer. The file export honours the raw bytes, so degrade to it.
 #[allow(clippy::too_many_arguments)]
 async fn resolve_served_ui_url(
     root: &std::path::Path,
@@ -635,8 +649,12 @@ async fn resolve_served_ui_url(
     algorithm: &str,
     min_confidence: Option<f32>,
     max_nodes: Option<u32>,
-    focus: Option<&str>,
+    focus: Option<&RelPath>,
 ) -> Option<String> {
+    let focus: Option<&str> = match focus {
+        Some(prefix) => Some(prefix.as_str()?),
+        None => None,
+    };
     #[cfg(all(feature = "comms", any(unix, windows)))]
     {
         crate::comms::http_frontend::served_ui_url(root, format, edges, algorithm, min_confidence, max_nodes, focus)
@@ -667,6 +685,34 @@ mod tests {
         assert!(!displayed, "a skip reports displayed=false");
         assert_eq!(method, "export");
         assert_eq!(detail.as_deref(), Some("no GUI session"), "a skip surfaces its reason");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_export_returns_a_path_that_opens_under_a_non_utf8_cache_dir() {
+        use std::os::unix::ffi::OsStrExt;
+
+        // `BASEMIND_DATA_HOME` (and the platform cache dir it falls back to) is not guaranteed to be
+        // UTF-8. The caller opens the file by the path this returns, so a lossy conversion would hand
+        // back a path naming nothing on disk.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path().join(std::ffi::OsStr::from_bytes(b"data-\xff"));
+        if std::fs::create_dir(&cache_dir).is_err() {
+            // APFS / HFS+ reject non-UTF-8 filenames outright, so on macOS this input cannot be
+            // built at all; the assertion still runs on the filesystems that allow it (ext4, xfs).
+            return;
+        }
+
+        let content = r#"{"nodes":[]}"#;
+        let path = write_export(&cache_dir, GraphFormat::NodeLink, content).expect("write export");
+        assert!(
+            path.as_os_str().as_bytes().contains(&0xff),
+            "the raw directory byte survives: {path:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("the returned path opens the file just written"),
+            content
+        );
     }
 
     #[test]

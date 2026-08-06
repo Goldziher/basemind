@@ -114,7 +114,7 @@ pub struct GraphParams {
     /// `map` / `export` / `display` / `open`. Repo-relative path prefix scoping the graph (e.g.
     /// `"src/mcp"`). Omit for the whole repository.
     #[serde(default, alias = "dir", alias = "scope")]
-    pub focus: Option<String>,
+    pub focus: Option<RelPath>,
     /// `map` only. Overlay git churn (commits touching each node) onto the ranking and as a
     /// per-node field. Default true; a silent no-op outside a git repo.
     #[serde(default)]

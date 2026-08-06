@@ -28,7 +28,7 @@ pub struct ArchitectureMapParams {
     /// Optional repo-relative path prefix to scope the map (e.g. `"src/mcp"`). Omit for
     /// the whole repository.
     #[serde(default, alias = "path", alias = "dir", alias = "scope")]
-    pub focus: Option<String>,
+    pub focus: Option<RelPath>,
     /// Directory-rollup depth for `granularity="module"` (number of leading path
     /// components). Default 2, minimum 1.
     #[serde(default)]

@@ -6,6 +6,8 @@
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
+use crate::path::RelPath;
+
 fn default_graphview_edges() -> String {
     "all".into()
 }
@@ -35,7 +37,7 @@ pub struct GraphExportParams {
     pub format: String,
     /// Repo-relative path prefix to scope the graph; omit for the whole repo.
     #[serde(default)]
-    pub focus: Option<String>,
+    pub focus: Option<RelPath>,
     /// Edge lanes the graph is built over: `"all"` (default; calls+imports+inherits), `"calls"`,
     /// `"imports"`, `"inherits"`, `"both"` (calls+imports), or `"contains"`.
     #[serde(default = "default_graphview_edges")]
@@ -74,7 +76,7 @@ pub struct GraphExportResponse {
     pub truncated: bool,
     /// Absolute path of the file written to the cache when `write` was set; omitted otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_path: Option<String>,
+    pub output_path: Option<RelPath>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<super::types::LifecycleNotice>,
     /// Server-side handler latency in microseconds (excludes transport).
@@ -93,7 +95,7 @@ pub struct DisplayParams {
     pub format: String,
     /// Repo-relative path prefix to scope the graph; omit for the whole repo.
     #[serde(default)]
-    pub focus: Option<String>,
+    pub focus: Option<RelPath>,
     /// Edge lanes the graph is built over: `"all"` (default; calls+imports+inherits), `"calls"`,
     /// `"imports"`, `"inherits"`, `"both"` (calls+imports), or `"contains"`.
     #[serde(default = "default_graphview_edges")]
@@ -125,7 +127,9 @@ pub struct DisplayResponse {
     /// Absolute path of the rendered view written to basemind's machine-global cache
     /// (`<cache>/exports/graph-<hash>.<ext>`). Always present — `display` always persists so there
     /// is a stable artifact to open (or hand to the human) regardless of whether a viewer launched.
-    pub output_path: String,
+    /// Typed as `RelPath` — basemind's byte-precise path type — so a cache directory whose bytes are
+    /// not UTF-8 round-trips instead of arriving mangled.
+    pub output_path: RelPath,
     /// True when a viewer was launched for the human; false when the tool degraded to export-only
     /// (headless / no GUI session / opener unavailable / `open: false`).
     pub displayed: bool,
@@ -162,7 +166,7 @@ pub struct UiParams {
     pub format: String,
     /// Repo-relative path prefix to scope the graph; omit for the whole repo.
     #[serde(default)]
-    pub focus: Option<String>,
+    pub focus: Option<RelPath>,
     /// Edge lanes the graph is built over: `"all"` (default; calls+imports+inherits), `"calls"`,
     /// `"imports"`, `"inherits"`, `"both"` (calls+imports), or `"contains"`.
     #[serde(default = "default_graphview_edges")]
@@ -199,8 +203,9 @@ pub struct UiResponse {
     pub method: String,
     /// Absolute path of the rendered view written to basemind's machine-global cache
     /// (`<cache>/exports/graph-<hash>.<ext>`). Always present — the UI always persists a stable
-    /// artifact, which also backs the `file://` fallback.
-    pub output_path: String,
+    /// artifact, which also backs the `file://` fallback. Typed as `RelPath` — basemind's
+    /// byte-precise path type — so a cache directory whose bytes are not UTF-8 round-trips.
+    pub output_path: RelPath,
     /// Human-readable reason the UI degraded to the file export, when it did (e.g. `"no daemon
     /// reachable"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

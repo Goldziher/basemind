@@ -292,7 +292,7 @@ pub(crate) const CODEGRAPH_SCAN_CAP: usize = 4_000_000;
 pub(crate) struct BuildOpts {
     pub(crate) kinds: EdgeKindSet,
     /// Repo-relative path prefix to scope the build; `None` = whole repo.
-    pub(crate) focus: Option<String>,
+    pub(crate) focus: Option<RelPath>,
     /// Hard cap on call sites scanned (bounds work on huge repos).
     pub(crate) scan_cap: usize,
 }
@@ -309,7 +309,7 @@ pub(crate) struct CodeGraph {
 /// different snapshot than it claims. The lanes and `focus` prefix select which relationships are
 /// built; `idx_present` records whether a live index proved call edges (`Some`/`None` changes the
 /// provenance tier). `min_confidence` is deliberately absent — it is a per-call post-build filter.
-pub(crate) type GraphKey = (u64, EdgeKindSet, Option<String>, bool);
+pub(crate) type GraphKey = (u64, EdgeKindSet, Option<RelPath>, bool);
 
 /// Capacity of the graph memo — distinct `(fingerprint, lanes, focus, idx-mode)` graphs held at once.
 /// `focus` is caller-supplied so the key space is unbounded in principle; an LRU bounds RAM while
@@ -485,10 +485,13 @@ fn resolve_named_edge(
 /// INFERRED/AMBIGUOUS — never falsely EXTRACTED.
 pub(crate) fn build(idx: Option<&IndexDb>, cache: &MapCache, opts: &BuildOpts) -> Result<CodeGraph, McpError> {
     let kinds = opts.kinds;
+    // Compared byte-wise, not as `&str`: for UTF-8 paths a byte prefix and a `str` prefix are the
+    // same test, and matching on bytes additionally keeps non-UTF-8 indexed paths in scope instead
+    // of dropping them from every focused build. ~keep
     let in_focus = |p: &RelPath| {
         opts.focus
-            .as_deref()
-            .is_none_or(|fx| p.as_str().is_some_and(|s| s.starts_with(fx)))
+            .as_ref()
+            .is_none_or(|fx| p.as_bytes().starts_with(fx.as_bytes()))
     };
 
     // Repo-wide name → definition sites, so a target resolves even when the source file is

@@ -18,6 +18,7 @@ pub(crate) mod cursor;
 #[cfg(all(feature = "comms", any(unix, windows)))]
 mod daemon_forward;
 mod doc_links_cache;
+mod file_url;
 mod graph_html;
 mod graph_svg;
 mod graph_view;

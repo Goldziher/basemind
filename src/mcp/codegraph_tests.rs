@@ -415,6 +415,36 @@ fn contains_edges_are_extracted() {
 }
 
 #[test]
+fn focus_scopes_the_build_to_files_under_the_path_prefix() {
+    let (_d, store, cache) = provenance_fixture();
+    let kinds = EdgeKindSet {
+        contains: true,
+        ..EdgeKindSet::none()
+    };
+    let g = build(
+        store.index_db.as_ref(),
+        &cache,
+        &BuildOpts {
+            kinds,
+            focus: Some(RelPath::from("mod_a")),
+            scan_cap: 1_000_000,
+        },
+    )
+    .expect("build codegraph");
+
+    assert!(!g.edges.is_empty(), "the focused prefix still matches a file");
+    for edge in &g.edges {
+        let NodeKey::File { path } = &edge.from else {
+            panic!("contains edges originate at a file node, got {:?}", edge.from);
+        };
+        assert!(
+            path.as_bytes().starts_with(b"mod_a"),
+            "focus excludes files outside the prefix, got {path}"
+        );
+    }
+}
+
+#[test]
 fn import_to_known_symbol_is_inferred() {
     let (_d, store, cache) = provenance_fixture();
     let g = built(&store, &cache, EdgeKindSet::all());
