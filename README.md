@@ -257,7 +257,7 @@ The standalone program, for scripts, headless runs, and CI. [Install it](#instal
 basemind scan                          # index the project once
 basemind code symbols "parseQuery"     # find a definition by name
 basemind code references "processFile" # find everywhere it's called
-basemind git blame-file src/main.rs    # who last changed each line
+basemind git blame src/main.rs         # who last changed each line
 basemind watch                         # keep the index fresh as files change
 ```
 
