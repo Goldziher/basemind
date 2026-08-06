@@ -5,25 +5,24 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SKILLS=(
-	"basemind"
-	"basemind-cli"
-	"basemind-code-search"
-	"basemind-comms"
-	"basemind-documents"
-	"basemind-doctor"
-	"basemind-git-history"
-	"basemind-scan"
-	"basemind-stats"
-)
-COMMANDS=(
-	"bm"
-	"bm-doctor"
-	"bm-init"
-	"bm-scan"
-	"bm-statusline"
-	"bm-stats"
-)
+# Derived from the canonical trees rather than listed, so adding a skill or command ships it
+# everywhere instead of silently reaching only the trees someone remembered to update. The
+# hand-maintained list had drifted to 9 of 10 skills: multi-agent-room existed in skills/ and was
+# referenced by the shipped agent-comms rule, but was absent from every plugin bundle that rule
+# ships into, so the agent was told to consult a skill its host did not have. ~keep
+SKILLS=()
+while IFS= read -r dir; do
+	SKILLS+=("$(basename "$dir")")
+done < <(find skills -mindepth 1 -maxdepth 1 -type d | sort)
+COMMANDS=()
+while IFS= read -r file; do
+	COMMANDS+=("$(basename "$file" .md)")
+done < <(find commands -mindepth 1 -maxdepth 1 -name '*.md' | sort)
+
+[[ ${#SKILLS[@]} -gt 0 && ${#COMMANDS[@]} -gt 0 ]] || {
+	printf 'sync-plugin-skills: no canonical skills or commands found — wrong cwd?\n' >&2
+	exit 1
+}
 HOOK_SCRIPTS=(
 	"session-start"
 	"inbox-notify"

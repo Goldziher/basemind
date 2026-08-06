@@ -14,8 +14,6 @@ They share the same machine-global cache (Linux `~/.local/share/basemind/`, macO
 `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`) and are safe to run
 alongside each other. Reach for the CLI
 when you're scripting, batching queries, running in headless environments, or CI.
-Its nine domain groups mirror the MCP tools: `code`, `graph`, `git`, `memory`, `admin`, `web`,
-`agents`, `workspace`, and `shell`.
 
 ## Capabilities
 
@@ -36,7 +34,7 @@ Its nine domain groups mirror the MCP tools: `code`, `graph`, `git`, `memory`, `
 - Controlling tool routing explicitly (no agent routing decisions).
 - Clearing caches destructively (only the CLI allows `--component all`).
 
-**basemind first, shell/grep/git fallback.** Prefer `basemind code` over reading files, over
+**basemind first, shell/grep/git fallback.** Prefer `basemind code` / `graph` over reading files, over
 `grep`/`rg`, and over naked `git`: use it for code parsing (outlines, references, callers), git
 history / blame / diffs (`basemind git`), document extraction / RAG / keyword + entity (NER) /
 summary (`basemind memory documents`), and web scraping / crawling / sitemaps
@@ -60,7 +58,7 @@ command covers the question.
 | "Who wrote this line / symbol?" | `basemind git blame path` / `blame-symbol path name` | Per-line / per-symbol. |
 | "Where's the churn?" | `basemind git churn [--window N --top-k K]` | Churn-ranked files. |
 | "What's dirty in the working tree?" | `basemind git status` | Staged/unstaged summary. |
-| "Diff a file between revs?" | `basemind git diff path old new` / `diff-outline path --rev old` | File / outline diffs. |
+| "Diff a file between revs?" | `basemind git diff path old new` / `diff-outline path` | File / outline diffs. |
 | "What's indexed?" | `basemind admin status` | File count, languages, cache dir. |
 | "What's HEAD / branch?" | `basemind admin repo` | Branch, HEAD, origin. |
 | "Regex over file contents?" | `basemind code grep "pattern" [--language --path-contains]` | Full-text search. |
@@ -68,14 +66,15 @@ command covers the question.
 | "Recall something stored earlier?" | `basemind memory get "key"` / `list` / `search "q"` | KNN + exact match. |
 | "Remember this for future sessions?" | `basemind memory put "key" "value"` | Delete with `memory delete "key"`. |
 | "Cache size?" | `basemind admin cache-stats` | On-disk size + orphan accounting. |
-| "Reclaim cache space?" | `basemind admin gc` | Report orphaned blobs without deleting them. |
+| "What cache space is reclaimable?" | `basemind admin gc` | Report orphaned blobs without deleting them. |
 | "Clear caches?" | `basemind admin cache-clear --component blobs --confirm` | Destructive; `views` / `all` require the offline cache command. |
 | "Pull this URL into RAG?" | `basemind web scrape <url>` | Single page (requires `--features crawl`). |
 | "Ingest a docs site?" | `basemind web crawl <seed-url>` | Link-following crawl. |
 | "What URLs exist on this site?" | `basemind web map <url>` | Sitemap + link discovery. |
 | "Keep index fresh?" | `basemind watch` | Live re-index watcher; no MCP server (that's `serve`). |
-| "Refresh the index after edits?" | `basemind admin rescan [path…]` | Full or incremental in-process scan. |
-| "Per-tool activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
+| "Refresh the index after edits?" | `basemind scan` | Full or incremental scan. |
+| "Refresh changed paths?" | `basemind admin rescan [path…]` | Re-index in the live server. |
+| "Per-operation activity summary?" | `basemind admin telemetry` | Histogram + estimated tokens saved. |
 
 ## Output format
 
@@ -156,14 +155,13 @@ basemind admin cache-clear --component blobs --confirm
 ## Notes
 
 - All paths are repository-relative with forward-slash separators.
-- Read-only CLI queries share the same cache as `basemind serve`; mutating `admin` modes enforce
-  their own confirmation and concurrency gates.
+- The CLI opens the index read-only; safe to run alongside a live `basemind serve` process.
 - Lists are capped (`--limit`, default 100, max 1000).
-- Matching on symbol names is substring-based; `basemind code references "bar"` matches
+- Matching on symbol names is substring-based; `code` mode `references` with `name: "bar"` matches
   `Foo::bar()` and `bar()` alike.
 - Git tools require basemind to be running inside a git repository.
-- The `memory documents` mode and other memory modes require basemind to be built with `--features full`
+- `memory` modes require basemind to be built with `--features full`
   (or the individual `documents` / `memory` flags).
 - Memory is scoped by the normalized `origin` remote URL — clones of the same repo share memory;
   unrelated repos do not see each other's entries.
-- The `web` domain's `scrape`, `crawl`, and `map` modes require `--features crawl`.
+- `web` modes `scrape`, `crawl`, and `map` require `--features crawl`.

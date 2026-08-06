@@ -46,8 +46,8 @@ Finding the binary (in order of preference):
 - Files tree-sitter doesn't recognize as code go through the document tier; anything that isn't an
   extractable document (e.g. an exotic source file) is **skipped**, not counted as a failure.
 - If a `basemind serve` MCP server is already running for this repo it holds the store lock, so a
-  CLI `scan` will fail with a lock error. Use the `admin` MCP tool with mode `rescan` (it re-indexes
-  in-process) instead, or stop the server first.
+  CLI `scan` will fail with a lock error. Use `admin { mode: "rescan" }` over MCP (it re-indexes in-process)
+  instead, or stop the server first.
 - **Indexing directories outside the repo** — set `scan.extra_roots` in the repo-root `basemind.toml`
   to a list of absolute paths (e.g. a Bazel external repo cache) to index them alongside the repo.
   Their files are keyed by absolute path (so results for them are absolute, not repo-relative) and

@@ -192,6 +192,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The `multi-agent-room` skill now ships to every plugin tree.** `scripts/sync-plugin-skills.sh`
+  carried a hand-maintained list of nine skills while `skills/` held ten, so `multi-agent-room` was
+  copied into the Hermes bundle (generated separately by ai-rulez) but never into the Codex, Cursor
+  or opencode plugins — while the `agent-comms` rule those plugins *do* ship tells the agent to
+  consult it. The skill and command lists are now derived from the canonical `skills/` and
+  `commands/` trees, so adding either ships it everywhere instead of only where someone remembered.
+- **Documentation named tools and commands that no longer exist.** The consolidation swept the
+  README, `llms.txt`, `docs/`, `skills/` and the plugin manifests but missed the `website/` docs
+  site, the `pre-tool-guard` hook (which suggested `search_symbols` / `find_references` /
+  `list_files` on every Grep and Glob), and `basemind git blame-file` in the README quickstart.
+  Every `basemind <domain> <mode>` command now appearing in the docs or plugin trees is verified to
+  resolve against the built binary.
 - **Runaway daemon spawning under `cargo test` (fork bomb).** `spawn_detached_daemon` re-exec'd
   `std::env::current_exe()` with `comms daemon` appended. Under a test harness that executable is
   libtest, which reads the appended words as a **test-name filter** and re-runs the whole suite — and

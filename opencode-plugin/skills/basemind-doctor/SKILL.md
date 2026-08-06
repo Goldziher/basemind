@@ -39,7 +39,7 @@ directory under the machine-global cache (Linux `~/.local/share/basemind/`, macO
 in the repo.
 
 - If that `pid` is **alive** (`ps -p <pid>`), the server is up — use the MCP tools, or the
-  `admin` MCP tool with mode `rescan` to refresh. Don't run a CLI `scan` (it will contend on the lock).
+  `admin { mode: "rescan" }` to refresh. Don't run a CLI `scan` (it will contend on the lock).
 - If that `pid` is **dead**, the lock is stale. The OS releases the advisory lock when a process
   dies, so a fresh `basemind scan` / `basemind serve` should just work — retry it. (You may delete
   the stale `.lock.meta` sidecar in that workspace cache dir to clear the advisory holder record.)
@@ -72,10 +72,10 @@ out to any external `rmux` binary, so there is nothing extra to install. The dae
 per-user socket under the data dir (`<data_dir>/basemind/shells/rmux.sock`, `0o700`), overridable
 with `BASEMIND_SHELLS_SOCKET`. It is **separate** from the comms broker daemon.
 
-- `shell` mode `list` (MCP) enumerates sessions with liveness; a dead-but-listed session was killed
-  or exited — re-run after `shell` mode `kill` to confirm it's gone.
+- `shell { mode: "list" }` enumerates sessions with liveness; a dead-but-listed session was killed
+  or exited — re-run after `shell { mode: "kill", session_id: "…" }` to confirm it's gone.
 - The daemon **self-terminates once it has no sessions left**, so an idle daemon disappearing is
-  expected, not a fault. A new `shell` mode `spawn` starts a fresh one.
+  expected, not a fault. `shell` mode `spawn` starts a fresh one.
 - Sessions are independent of `serve`: they outlive a single MCP call but are torn down by
   `shell` mode `kill` (which also drops the comms lineage row) or when the daemon exits.
 

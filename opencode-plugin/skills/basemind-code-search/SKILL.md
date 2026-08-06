@@ -20,40 +20,40 @@ raw shell only when no tool covers the question.
 
 ## The discipline
 
-- **`code` mode `outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
+- **Use `code` mode `outline` before you open a file.** A 1000-line file becomes a 30-line table of contents.
   Read the actual source only once you have the exact span, then read _that range_, not the file.
-- **`code` mode `symbols` instead of `grep` for a definition.** It matches indexed symbol names and
+- **Use `code` mode `symbols` instead of `grep` for a definition.** It matches indexed symbol names and
   returns `path:line`, skipping the comment/string/test-name noise grep drowns you in.
-- **`code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges, not
+- **Use `code` modes `references` / `callers` instead of grepping call sites.** Indexed call edges, not
   text matches.
-- **`code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
+- **Use `code` mode `grep` instead of shelling out to ripgrep** when you genuinely need regex over
   content — it runs over the in-RAM index and returns capped, structured hits.
 - **Do not re-read a file basemind already mapped.** If the outline answered the question, stop.
-- **`admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
+- **Use `admin` mode `rescan` after you edit code**, not a server reconnect. Pass `paths: [...]` to limit it.
 
 ## Tool routing
 
 | Question | MCP tool | CLI |
 |---|---|---|
-| "Where is X defined?" | `code` mode `symbols` (substring, optional `kind`) | `basemind code symbols "X"` |
-| "Jump to the definition of X used here?" | `code` mode `definition` (scope-aware, from a use site) | `basemind code definition F line [--column]` |
-| "What's the high-level architecture / module map?" | `graph` mode `map` | `basemind graph map` |
-| "What's the shape of file F?" | `code` mode `outline` (add `l2: true` for calls + docs) | `basemind code outline F [--l2]` |
-| "What calls X?" (any name) | `code` mode `references` | `basemind code references "X"` |
-| "What calls this specific definition?" | `code` mode `callers` (path + name + optional kind) | `basemind code callers F name [--kind]` |
-| "Trace the call graph from a function?" | `graph` mode `calls` (BFS, bounded by `max_depth` / `max_nodes`) | `basemind graph calls "name" [--direction --max-depth]` |
-| "What implements / extends / inherits X?" | `code` mode `implementations` (Rust, Python, TS/TSX, JS) | `basemind code implementations "X"` |
-| "What imports module M?" | `code` mode `dependents` | `basemind code dependents "M"` |
-| "What files are indexed?" | `code` mode `files` (filter by `language` / `path_contains`) | `basemind code files [--language --path-contains]` |
-| "Regex over file contents?" | `code` mode `grep` | `basemind code grep "pattern" [--language --path-contains]` |
-| "What's indexed?" | `admin` mode `status` | `basemind admin status` |
-| "Refresh the index after editing?" | `admin` mode `rescan` (optional `paths`) | `basemind admin rescan [path…]` |
+| "Where is X defined?" | `code { mode: "symbols", name: "X" }` (substring, optional `kind`) | `basemind code symbols "X"` |
+| "Jump to the definition of X used here?" | `code { mode: "definition", path: F, line }` (scope-aware) | `basemind code definition F line [--column]` |
+| "What's the high-level architecture / module map?" | `graph { mode: "map" }` | `basemind graph map` |
+| "What's the shape of file F?" | `code { mode: "outline", path: F }` (add `l2: true`) | `basemind code outline F [--l2]` |
+| "What calls X?" (any name) | `code { mode: "references", name: "X" }` | `basemind code references "X"` |
+| "What calls this specific definition?" | `code { mode: "callers", path: F, name }` | `basemind code callers F name [--kind]` |
+| "Trace the call graph from a function?" | `graph { mode: "calls", name }` (bounded BFS) | `basemind graph calls "name" [--direction --max-depth]` |
+| "What implements / extends / inherits X?" | `code { mode: "implementations", trait_name: "X" }` | `basemind code implementations "X"` |
+| "What imports module M?" | `code { mode: "dependents", module: "M" }` | `basemind code dependents "M"` |
+| "What files are indexed?" | `code { mode: "files" }` (filter by language/path) | `basemind code files [--language --path-contains]` |
+| "Regex over file contents?" | `code { mode: "grep", pattern: "…" }` | `basemind code grep "pattern" [--language --path-contains]` |
+| "What's indexed?" | `admin { mode: "status" }` | `basemind admin status` |
+| "Refresh the index after editing?" | `admin { mode: "rescan", paths: […] }` | `basemind admin rescan [path…]` |
 | "Fetch the next page?" | pass `next_cursor` from the prior response as `cursor` | — |
 
 ## Examples
 
 ```text
-code { mode: "symbols", needle: "MapCache" }
+code { mode: "symbols", name: "MapCache" }
 → src/mcp/mod.rs:79:1 MapCache (struct)
   src/mcp/mod.rs:88:1 MapCache (impl)
 
@@ -62,15 +62,15 @@ code { mode: "references", name: "process_file" }
   src/scanner.rs:201:13 process_file
 
 code { mode: "outline", path: "src/mcp/tools.rs" }
-→ 21 #[tool] outline (function)
-  112 #[tool] code (function)
+→ 21 code router (function)
+  112 code helper (function)
 ```
 
 ## Notes
 
-- Matching on symbol names is **substring**: `code { mode: "references", name: "bar" }` matches
-  `Foo::bar()` and `bar()` alike. There is no scope resolution — cross-check with mode `outline`
-  when disambiguation matters.
+- Matching on symbol names is **substring**: `code` mode `references` with `name: "bar"` matches
+  `Foo::bar()` and `bar()` alike. There is no scope resolution — cross-check with `code` mode
+  `outline` when disambiguation matters.
 - Lists are capped (`limit`, default 100, max 1000). Index scanners use `scan_cap = limit * 8` to
   bound work on common names.
 - Needs an index in the machine-global cache (Linux `~/.local/share/basemind/`, macOS

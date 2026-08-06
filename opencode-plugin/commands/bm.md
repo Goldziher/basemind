@@ -28,14 +28,14 @@ Route the question to the tool that answers it directly:
 |---|---|
 | "Where is X defined?" | `code` mode `symbols` |
 | "What calls X?" | `code` mode `references` (any name) or `callers` (specific definition) |
-| "What's the shape of this file?" | `code` mode `outline` (add `l2: true` for calls + docs) |
-| "What changed recently?" | `git` modes `recent`, `touching`, or `symbol_history` |
-| "Who last touched this?" | `git` mode `blame` / `blame_symbol` |
+| "What's the shape of this file?" | `code` mode `outline` (add `l2: true`) |
+| "What changed recently?" | `git` mode `recent`, `touching`, or `symbol_history` |
+| "Who last touched this?" | `git` mode `blame` or `blame_symbol` |
 | "Where's the churn?" | `git` mode `churn` |
 | "Search PDFs/docs in the repo by meaning?" | `memory` mode `documents` |
 | "Recall something remembered earlier?" | `memory` mode `get`, `list`, or `search` |
-| "Remember this for later sessions?" | `memory` mode `put` (delete with mode `delete`) |
-| "Refresh the index after editing code?" | `admin` mode `rescan` (pass `paths: [...]` to limit the scope) |
+| "Remember this for later sessions?" | `memory` mode `put` (delete with `delete`) |
+| "Refresh the index after editing code?" | `admin` mode `rescan` (`paths` limits scope) |
 
 ## Notes
 

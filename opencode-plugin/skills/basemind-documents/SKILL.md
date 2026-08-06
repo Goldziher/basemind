@@ -24,8 +24,8 @@ this skill is for prose and documents.
 - `memory` mode `documents` needs a build with `--features documents` (or `full`); the other memory
   modes need `--features memory`.
   Without them the tools dispatch but return an MCP error.
-- The `web` modes `scrape` / `crawl` / `map` need `--features crawl`. When that feature is **off**
-  the `web` domain tool is not registered at all — it simply won't appear in the tool list.
+- Web ingestion (`web` modes `scrape` / `crawl` / `map`) needs `--features crawl`. When that feature
+  is **off** these tools are not registered at all — they simply won't appear in the tool list.
 - Documents must be scanned first: `basemind scan` with the documents feature extracts and embeds
   them into the machine-global cache (Linux `~/.local/share/basemind/`, macOS
   `~/Library/Application Support/basemind/`; override `BASEMIND_DATA_HOME`). See the `basemind-scan` skill.
@@ -34,15 +34,15 @@ this skill is for prose and documents.
 
 | Question | MCP tool | CLI |
 |---|---|---|
-| "Semantic search over PDFs/Office/HTML docs?" | `memory` mode `documents` | `basemind memory documents "query"` |
-| "Narrow to docs mentioning an entity?" | `memory { mode: "documents", entity_category: "…" }` | *(MCP only)* |
-| "Narrow to docs with a keyword?" | `memory { mode: "documents", keywords_contains: "…" }` | *(MCP only)* |
-| "Filter by file type?" | `memory { mode: "documents", mime_type: "application/pdf" }` | *(MCP only)* |
-| "Pull a single URL into RAG?" | `web` mode `scrape` (robots-aware) | `basemind web scrape <url>` |
-| "Ingest a docs site section?" | `web` mode `crawl` (link-following from a seed) | `basemind web crawl <seed-url>` |
-| "What URLs exist on this site?" | `web` mode `map` (sitemap + link discovery, no bodies) | `basemind web map <url>` |
-| "Recall something the agent stored earlier?" | `memory` mode `get` / `list` / `search` | `basemind memory get "key"` / `list` / `search "q"` |
-| "Remember this for future sessions?" | `memory` mode `put` (delete with mode `delete`) | `basemind memory put "key" "value"` |
+| "Semantic search over PDFs/Office/HTML docs?" | `memory { mode: "documents", query: "…" }` | `basemind memory documents "query"` |
+| "Narrow to docs mentioning an entity?" | `memory { mode: "documents", query: "…", entity_category: "…" }` | *(MCP only)* |
+| "Narrow to docs with a keyword?" | `memory { mode: "documents", query: "…", keywords_contains: "…" }` | *(MCP only)* |
+| "Filter by file type?" | `memory { mode: "documents", query: "…", mime_type: "application/pdf" }` | `basemind memory documents "…" --mime-type application/pdf` |
+| "Pull a single URL into RAG?" | `web { mode: "scrape", url: "…" }` (robots-aware) | `basemind web scrape <url>` |
+| "Ingest a docs site section?" | `web { mode: "crawl", url: "…" }` | `basemind web crawl <seed-url>` |
+| "What URLs exist on this site?" | `web { mode: "map", url: "…" }` | `basemind web map <url>` |
+| "Recall something the agent stored earlier?" | `memory` mode `get`, `list`, or `search` | `basemind memory get "key"` / `list` / `search "q"` |
+| "Remember this for future sessions?" | `memory { mode: "put", key, value }` | `basemind memory put "key" "value"` |
 
 ## What a hit carries
 
